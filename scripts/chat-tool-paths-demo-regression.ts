@@ -206,12 +206,15 @@ createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture />
 const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertInApp: false });
 let shots = 0;
 const captures: string[] = [];
-async function shot(page: Page, name: string, full = false): Promise<void> {
+async function shot(page: Page, name: string, pointer = false): Promise<void> {
   if (evidence === null) return;
+  // a state the pointer is not part of: the pointer rests on empty page, off every row's hover plate
+  const viewport = page.viewportSize();
+  if (!pointer && viewport !== null && viewport.width > 390) await page.mouse.move(viewport.width - 4, viewport.height / 2);
   const file = `tool-paths-${name}.png`;
   // a sheet still sliding in or out is no state: shoot once every running animation has finished
   await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
-  await page.screenshot({ path: join(evidence, file), fullPage: full });
+  await page.screenshot({ path: join(evidence, file) });
   captures.push(file);
   shots += 1;
 }
@@ -347,7 +350,7 @@ async function captureSet(browser: Browser, base: string, bareBase: string, widt
     const link = first.locator("button");
     if (width === 1440) {
       await link.hover();
-      await shot(page, name("hover"));
+      await shot(page, name("hover"), true);
       await page.mouse.move(0, 0);
     }
     // keyboard focus: the ring a Tab shows
@@ -361,7 +364,7 @@ async function captureSet(browser: Browser, base: string, bareBase: string, widt
     const box = (await link.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
-    await shot(page, name("pressed"));
+    await shot(page, name("pressed"), true);
     await page.mouse.move(0, 0);
     await page.mouse.up();
     // the outside, sibling, relative and Windows paths, then the long and Unicode ones
