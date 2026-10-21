@@ -1030,6 +1030,7 @@ export function PaneTerminal({
             onOutcomes={onChatOutcomes}
             interactive={!observing && role === "interact"}
             onRewindInTerminal={onOpenTerminal ? rewindInTerminal : undefined}
+            cwd={cwd}
           />
           </RenderBoundary>
         )}

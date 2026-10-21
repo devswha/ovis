@@ -1768,6 +1768,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A row expands to the typed input (command, diff, file, checklist, raw) and an Output pane. Under
   a verb the tool's own id (`exec`, `Bash`, `apply_patch`) is the first line of that detail
   (`.work-row-tool`, mono, dim) and the row's title.
+- A file the detail names (`.chat-tool-file`: an edit's or a read's file, each file of a patch,
+  a sent file) reads from the pane's folder as the file browser does, with the folder's name
+  first: `/work/app/src/a.ts` in a pane on `/work/app` is `app/src/a.ts`. Only a folder herdr
+  reports as an absolute path counts; a file outside it, in a sibling (`/work/app-2`), a relative
+  or Windows path, or a pane with no folder known reads as written. The label alone is shorter:
+  its title (`Open /work/app/src/a.ts`, or the bare path where nothing can open it), the file the
+  viewer opens and every copy keep the path as written. Follows T3 Code's workspace-relative
+  paths (`formatWorkspaceRelativePath`), already credited for the file browser.
 - Mid-work narration sits between rows. While the turn runs it is the agent's voice: answer prose
   (`--text`, `--fs-chat` on `--lh-prose`) on the prose edge. Once the turn settles it is a quiet
   row again: `--text-dim`, `--fs-sm`.
