@@ -209,6 +209,8 @@ const captures: string[] = [];
 async function shot(page: Page, name: string, full = false): Promise<void> {
   if (evidence === null) return;
   const file = `tool-paths-${name}.png`;
+  // a sheet still sliding in or out is no state: shoot once every running animation has finished
+  await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
   await page.screenshot({ path: join(evidence, file), fullPage: full });
   captures.push(file);
   shots += 1;
