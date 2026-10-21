@@ -256,8 +256,11 @@
   outline-offset: var(--ring-offset);
 }
 
-/* the chat reply's quote button: pressed reads as the hover fill, and a finger gets a full target */
+/* the chat reply's quote button: pressed reads as the hover fill, and a finger gets a full target.
+   It floats over the transcript, so a touch press keeps its opacity whole instead of the dim
+   (styles.css): a dimmed button would show the words under it */
 .chat-quote:active {
+  opacity: 1;
   background: var(--bg-hover);
 }
 

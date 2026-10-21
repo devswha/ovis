@@ -396,6 +396,10 @@ async function captureAll(browser: Browser, dir: string): Promise<void> {
     await shot(page, "focus-visible");
     await quoteButton.hover();
     await page.mouse.down();
+    // pressed, it stays whole over the transcript: a dimmed button would show the words under it
+    const pressedOpacity = await quoteButton.evaluate((node) => getComputedStyle(node).opacity);
+    assert.equal(pressedOpacity, "1", "a pressed quote action is not see-through");
+    measurements.at(-1)!["pressedOpacity"] = pressedOpacity;
     await shot(page, "pressed");
     await page.mouse.up();
     await composer.waitFor();
