@@ -226,14 +226,15 @@ createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture />
 const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertInApp: false });
 let shots = 0;
 const captures: string[] = [];
+/** Once every running animation has finished: a sheet still sliding in or out is no state. */
+const settled = (page: Page): Promise<unknown> => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
 async function shot(page: Page, name: string, pointer = false): Promise<void> {
   if (evidence === null) return;
   // a state the pointer is not part of: the pointer rests on empty page, off every row's hover plate
   const viewport = page.viewportSize();
   if (!pointer && viewport !== null && viewport.width > 390) await page.mouse.move(viewport.width - 4, viewport.height / 2);
   const file = `tool-paths-${name}.png`;
-  // a sheet still sliding in or out is no state: shoot once every running animation has finished
-  await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
+  await settled(page);
   await page.screenshot({ path: join(evidence, file) });
   captures.push(file);
   shots += 1;
@@ -314,6 +315,8 @@ async function viewerLoading(page: Page, pane: Locator, label: string, capture: 
   const opening = page.locator('.file-viewer-note[role="status"]').filter({ hasText: "Opening…" });
   await opening.waitFor();
   assert.equal(await page.evaluate(() => (window as unknown as { heldFiles: () => number }).heldFiles()), 1, `${label}: the file's content is held`);
+  // the phone's viewer is a sheet that slides up: measured where it comes to rest
+  await settled(page);
   const box = (await opening.boundingBox())!;
   const viewport = page.viewportSize()!;
   assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height, `${label}: the loading note fits the page: ${JSON.stringify(box)}`);
