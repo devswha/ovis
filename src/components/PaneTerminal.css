@@ -256,6 +256,18 @@
   outline-offset: var(--ring-offset);
 }
 
+/* the chat reply's quote button: pressed reads as the hover fill, and a finger gets a full target */
+.chat-quote:active {
+  background: var(--bg-hover);
+}
+
+@media (pointer: coarse) {
+  .chat-quote {
+    min-height: var(--touch-target);
+    padding: 0 var(--space-3);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .terminal-quote {
     transition: none;

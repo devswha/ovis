@@ -25,7 +25,7 @@ import { composerLift, greetingMemory, greetingFits, greetingFolder, roomOverCom
 import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 import { answerHint } from "../lib/promptAnswer.ts";
 import { composerDrafts } from "../lib/composerDraft.ts";
-import { appendQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
+import { appendQuote, formatReplyQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -488,6 +488,30 @@ export function PaneTerminal({
   const [dismissedNotices, setDismissedNotices] = useState<DismissedNotices>(NO_DISMISSALS);
   // the text of the last drag, offered to the chat draft while its highlight stays (herdr's rows when it gave them)
   const [selectionQuote, setSelectionQuote] = useState<{ pane: string; text: string; range: { start: number; end: number } | null } | null>(null);
+  // the text selected in one of the chat's replies, with the draft it was selected for. A press on
+  // its button holds it: a tap that clears the selection on its way must not take the button away
+  const [replyQuote, setReplyQuote] = useState<{ pane: string; draft: string; text: string } | null>(null);
+  const latestReply = useRef<{ pane: string; draft: string; text: string } | null>(null);
+  const replyHold = useRef(false);
+  const onReplySelection = useCallback((text: string | null) => {
+    latestReply.current = text === null || paneId === null ? null
+      : { pane: paneId, draft: `herdr-web-ui:composer-draft:${paneStorageId(machineId, paneId)}`, text };
+    if (latestReply.current === null && replyHold.current) return;
+    setReplyQuote(latestReply.current);
+  }, [machineId, paneId]);
+  const releaseReply = useCallback(() => {
+    if (!replyHold.current) return;
+    replyHold.current = false;
+    setReplyQuote(latestReply.current);
+  }, []);
+  // a press that lifts off the button clicks nothing: the hold ends there
+  useEffect(() => {
+    const lifted = (event: PointerEvent) => {
+      if (!(event.target instanceof Element && event.target.closest(".chat-quote"))) releaseReply();
+    };
+    window.addEventListener("pointerup", lifted, true);
+    return () => window.removeEventListener("pointerup", lifted, true);
+  }, [releaseReply]);
   // Explicit sends refresh immediately; continuous transcript invalidations are rate-limited.
   const [chatRefresh, setChatRefresh] = useState(0);
   const [chatInvalidation, setChatInvalidation] = useState(0);
@@ -954,6 +978,32 @@ export function PaneTerminal({
             <Quote aria-hidden="true" />{t("Quote in message")}
           </button>
         )}
+        {/* a reply's selected words go to this pane's draft only: nothing is sent, and a connection
+            that only watches has no draft to change */}
+        {paneId !== null && chatView && !observing && role === "interact" && !secretActive && !ended && replyQuote?.pane === paneId && (
+          <button type="button" className="terminal-banner terminal-banner-action terminal-quote chat-quote"
+            onPointerDown={() => { replyHold.current = true; }}
+            onPointerCancel={releaseReply}
+            onMouseDown={(event) => { event.preventDefault(); }}
+            onClick={() => {
+              replyHold.current = false;
+              const block = formatReplyQuote(replyQuote.text);
+              if (block === null) return;
+              if (!composerDrafts.appendQuote(replyQuote.draft, block, MAX_COMPOSER_CHARS)) {
+                setReplyQuote(latestReply.current);
+                noteClipboard(t("Too long for the message draft"));
+                return;
+              }
+              latestReply.current = null;
+              setReplyQuote(null);
+              getSelection()?.removeAllRanges();
+              // the box takes the quote on this render; focused now, its caret lands after it
+              stackRef.current?.querySelector<HTMLTextAreaElement>(".composer-text")?.focus();
+              noteClipboard(t("Added to the message draft"));
+            }}>
+            <Quote aria-hidden="true" />{t("Quote in message")}
+          </button>
+        )}
         {clipboardNote && !noticesDocked && (
           <div className="terminal-banner" role="status">
             {clipboardNote}
@@ -1031,6 +1081,7 @@ export function PaneTerminal({
             interactive={!observing && role === "interact"}
             onRewindInTerminal={onOpenTerminal ? rewindInTerminal : undefined}
             cwd={cwd}
+            onReplySelection={onReplySelection}
           />
           </RenderBoundary>
         )}
