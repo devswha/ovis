@@ -309,10 +309,11 @@ function ompEditLineClass(line: string): string | undefined {
 function ToolFile({ path, suffix }: { path: string; suffix?: string }) {
   const t = useT();
   const open = useContext(OpenFileContext);
-  // shorter to read only: the title, the viewer and every copy keep the path as written
+  // shorter to read only: the title, the viewer and every copy keep the path as written (a copy
+  // of the whole label takes data-raw-path: lib/markdownClipboard.ts)
   const shown = workspaceRelativePath(path, useContext(ToolPathRootContext), path);
-  if (open === null) return <p className="chat-tool-file" title={path}>{shown}{suffix}</p>;
-  return <p className="chat-tool-file"><button type="button" className="chat-tool-file-link" title={t("Open {path}", { path })} onClick={() => open(path)}>{shown}</button>{suffix}</p>;
+  if (open === null) return <p className="chat-tool-file" title={path}><span data-raw-path={path}>{shown}</span>{suffix}</p>;
+  return <p className="chat-tool-file"><button type="button" className="chat-tool-file-link" title={t("Open {path}", { path })} data-raw-path={path} onClick={() => open(path)}>{shown}</button>{suffix}</p>;
 }
 
 /** An edit's old and new text as one diff: the unchanged lines once, the changes in place. */
