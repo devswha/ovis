@@ -104,7 +104,8 @@ const groups = (page: Page): Promise<Group[]> => page.evaluate(() => [...documen
   };
 }));
 
-const settings = (theme: string, language: string) => JSON.stringify({ language, theme });
+// the demo's own turn ends a few seconds in and would drop its alert over the captures
+const settings = (theme: string, language: string) => JSON.stringify({ language, theme, alertInApp: false });
 
 async function open(context: BrowserContext, base: string, pane: string): Promise<Page> {
   const page = await context.newPage();
@@ -165,9 +166,27 @@ async function noSidewaysScroll(page: Page, what: string): Promise<void> {
 const shots: { file: string; width: number; height: number; theme: string; language: string; state: string; sha256: string; capturedAt: string }[] = [];
 const measurements: Record<string, unknown>[] = [];
 
-async function shoot(page: Page, config: Config, state: string): Promise<void> {
+/** The end of the chat, by the app's own Jump to latest: nothing floats over the last rows then. */
+async function toEnd(page: Page): Promise<void> {
+  const jump = page.locator(".chat-virtual-jump");
+  if (await jump.count() > 0) {
+    await jump.click();
+    await jump.waitFor({ state: "detached", timeout: 10_000 });
+  }
+}
+
+async function shoot(page: Page, config: Config, state: string, end = false): Promise<void> {
   if (evidence === null) return;
-  await page.locator("[data-todo-group]").first().scrollIntoViewIfNeeded().catch(() => undefined);
+  // a pane waiting on an approval keeps its card over the chat: folded, as a reader can
+  const fold = page.locator(".prompt-card-fold[aria-expanded=\"true\"]");
+  if (await fold.count() > 0) await fold.click();
+  if (end) await toEnd(page);
+  else await page.locator("[data-todo-group]").first().scrollIntoViewIfNeeded().catch(() => undefined);
+  // a rest state is drawn without the pointer over it: the last click leaves it on the head
+  if (state !== "hover" && state !== "pressed") {
+    const viewport = page.viewportSize()!;
+    await page.mouse.move(viewport.width - 2, Math.round(viewport.height / 2));
+  }
   await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   const file = `todo-snapshots-${config.width}-${config.theme}${config.language === "ko" ? "-ko" : ""}-${state}.png`;
   const buffer = await page.screenshot({ path: join(evidence, file) });
@@ -397,7 +416,7 @@ try {
           assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "the narration stays in the open");
           assert.equal(await page.locator(".chat-turn-agent .work-block-rows > .work-row:not(.work-row-thinking)").count(), 3, "the first run of two folds, the one alone stays a row, then the last run");
           if (en) assert.deepEqual(split.map((group) => group.head), ["Plan 2 updates · 1/3 done", "Plan 2 updates · 2/3 done 1 failed"]);
-          await shoot(page, config, "narration-boundary");
+          await shoot(page, config, "narration-boundary", true);
           await noSidewaysScroll(page, `${label} narration`);
 
           // a later pending and a failed call never stand for the list: the earlier ok one does
@@ -439,14 +458,7 @@ try {
           await noSidewaysScroll(page, `${label} long labels`);
           await shoot(page, config, "long-labels");
           // the end of the chat, scrolled to
-          await page.locator(".chat-virtual-row").last().scrollIntoViewIfNeeded();
-          if (evidence !== null) {
-            await page.evaluate(() => { const scroller = document.querySelector<HTMLElement>(".chat-virtual-row")?.closest<HTMLElement>("[class*=scroll], .chat-scroll") ?? null; scroller?.scrollTo({ top: scroller.scrollHeight }); });
-            const file = `todo-snapshots-${config.width}-${config.theme}${en ? "" : "-ko"}-list-end.png`;
-            const buffer = await page.screenshot({ path: join(evidence, file) });
-            const viewport = page.viewportSize()!;
-            shots.push({ file, width: viewport.width * config.scale, height: viewport.height * config.scale, theme: config.theme, language: config.language, state: "list-end", sha256: createHash("sha256").update(buffer).digest("hex"), capturedAt: new Date().toISOString() });
-          }
+          await shoot(page, config, "list-end", true);
           console.log(`PASS ${label}: narration and hidden thinking split runs; failed, all-failed, unreadable, identical and long runs read right`);
 
           // an observer reads the same runs
@@ -454,7 +466,7 @@ try {
           await page.evaluate(() => { for (const socket of (window as unknown as { todoSockets: Set<{ send: (text: string) => void; readyState: number }> }).todoSockets) if (socket.readyState === 1) socket.send(JSON.stringify({ type: "role", mode: "observe" })); });
           await expand(page);
           assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1);
-          await shoot(page, config, "observe-readonly");
+          await shoot(page, config, "observe-readonly", true);
           // the PC goes away: what was drawn stays readable
           await page.evaluate(() => {
             const view = window as unknown as { todoOffline: boolean; todoSockets: Set<{ close: () => void }> };
@@ -464,7 +476,7 @@ try {
           await page.locator(".conn-live").waitFor({ state: "detached", timeout: 10_000 });
           assert.equal(await page.locator("[data-todo-group]").count(), 2, "an offline chat keeps the runs");
           assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "and the narration");
-          await shoot(page, config, "offline");
+          await shoot(page, config, "offline", true);
           console.log(`PASS ${label}: observe-only and offline transcripts keep the run and the narration readable`);
           assert.deepEqual(errors, []);
           await page.close();
