@@ -289,6 +289,112 @@ describe("Devin conversation API", () => {
   });
 });
 
+describe("native tool call id and state on GET /api/pane/conversation", () => {
+  it.skipIf(process.platform !== "linux")("carries Claude's id and recorded outcome, Codex's id and pending only, and neither for another agent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-call-state-contract-"));
+    const cwd = realpathSync(root);
+    const originalHome = process.env["HOME"];
+    const claudeId = "6f1c2a9e-0b7d-4c3e-8a51-2d9f0e7b4c11";
+    const claudeFile = join(cwd, ".claude", "projects", claudeProjectDir(cwd), `${claudeId}.jsonl`);
+    const codexHome = join(cwd, "codex");
+    const codexFile = join(codexHome, "sessions", "2026", "10", "21", "rollout-2026-10-21T09-00-00-00000000-0000-4000-8000-000000000014.jsonl");
+    const ompFile = join(cwd, ".omp", "agent", "sessions", "-call-state", "2026-10-21T00-00-00-000Z_omp-call-state.jsonl");
+    for (const file of [claudeFile, codexFile, ompFile]) mkdirSync(join(file, ".."), { recursive: true });
+    const line = (record: unknown) => `${JSON.stringify(record)}\n`;
+    const todos = { todos: [{ content: "Read", status: "completed", activeForm: "Reading" }] };
+    const claudeUse = (id: string) => line({ type: "assistant", timestamp: "2026-10-21T09:00:01.000Z", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name: "TodoWrite", input: todos }] } });
+    const claudeResult = (id: string, content: string, isError?: boolean) => line({ type: "user", timestamp: "2026-10-21T09:00:02.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(isError === undefined ? {} : { is_error: isError }) }] } });
+    writeFileSync(claudeFile, line({ type: "user", timestamp: "2026-10-21T09:00:00.000Z", message: { role: "user", content: "plan it" } }) + claudeUse("toolu_ok") + claudeUse("toolu_err") + claudeUse("toolu_wait"));
+    const codexCall = (id: string, kind: "function_call" | "custom_tool_call") => line({ type: "response_item", timestamp: "2026-10-21T09:00:01.000Z", payload: kind === "function_call"
+      ? { type: kind, call_id: id, name: "update_plan", arguments: JSON.stringify({ plan: [{ step: "Read", status: "completed" }] }) }
+      : { type: kind, call_id: id, name: "apply_patch", input: "*** Begin Patch\n*** End Patch" } });
+    const codexOutput = (id: string, kind: "function_call_output" | "custom_tool_call_output", output: string) => line({ type: "response_item", timestamp: "2026-10-21T09:00:02.000Z", payload: { type: kind, call_id: id, output } });
+    writeFileSync(codexFile, line({ type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000014", timestamp: "2026-10-21T09:00:00.000Z", cwd, source: "cli" } })
+      + line({ type: "event_msg", timestamp: "2026-10-21T09:00:00.000Z", payload: { type: "user_message", message: "plan it" } })
+      + codexCall("call_fn", "function_call") + codexCall("call_custom", "custom_tool_call") + codexCall("call_fail_text", "function_call"));
+    writeFileSync(ompFile, [
+      { type: "session", version: 3, id: "omp-call-state", cwd },
+      { type: "message", id: "u1", parentId: null, timestamp: "2026-10-21T09:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "plan it" }] } },
+      { type: "message", id: "a1", parentId: "u1", timestamp: "2026-10-21T09:00:01.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "omp_call_1", name: "todo", arguments: { op: "init", list: [{ phase: "Plan", items: ["Read"] }] } }] } },
+      { type: "message", id: "r1", parentId: "a1", timestamp: "2026-10-21T09:00:02.000Z", message: { role: "toolResult", toolCallId: "omp_call_1", toolName: "todo", isError: false, content: [{ type: "text", text: "Overall: 0/1 done.\n  Plan:\n    - [ ] Read" }] } },
+    ].map(line).join(""));
+    const workspaces: string[] = [];
+    let app: ReturnType<typeof createServer> | undefined;
+    let seq = Date.now() * 1000;
+    const agentPane = async (agent: string, session: Record<string, string>): Promise<string> => {
+      const created = await workspaceCreate({ cwd, label: `herdr-web-ui-test-call-state-${agent}` });
+      workspaces.push(created.workspace.workspace_id);
+      const paneId = created.root_pane.pane_id;
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent, state: "idle" });
+      await herdrRpc("pane.report_agent_session", { pane_id: paneId, source: `herdr:${agent}`, agent, seq: ++seq, ...session });
+      return paneId;
+    };
+    try {
+      process.env["HOME"] = cwd;
+      forgetTranscriptState();
+      const claude = await agentPane("claude", { agent_session_id: claudeId });
+      // Codex is found by the rollout its process holds open: a native stand-in that only sleeps
+      const codexExe = join(cwd, "bin", "codex");
+      mkdirSync(join(cwd, "bin"));
+      copyFileSync("/bin/sleep", codexExe); chmodSync(codexExe, 0o755);
+      const codexCreated = await workspaceCreate({ cwd, label: "herdr-web-ui-test-call-state-codex" });
+      workspaces.push(codexCreated.workspace.workspace_id);
+      const codex = codexCreated.root_pane.pane_id;
+      await herdrRpc("pane.send_text", { pane_id: codex, text: `${codexExe} 600 3<${codexFile}\n` });
+      for (const deadline = Date.now() + 10_000;;) {
+        if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === codex)?.agent === "codex") break;
+        if (Date.now() > deadline) throw new Error("fixture Codex process did not start");
+        await Bun.sleep(50);
+      }
+      // omp's session report is taken for a pane herdr sees running omp: the same kind of stand-in
+      const ompExe = join(cwd, "bin", "omp");
+      copyFileSync("/bin/sleep", ompExe); chmodSync(ompExe, 0o755);
+      const ompCreated = await workspaceCreate({ cwd, label: "herdr-web-ui-test-call-state-omp" });
+      workspaces.push(ompCreated.workspace.workspace_id);
+      const omp = ompCreated.root_pane.pane_id;
+      await herdrRpc("pane.send_text", { pane_id: omp, text: `${ompExe} 600\n` });
+      for (const deadline = Date.now() + 10_000;;) {
+        if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === omp)?.agent === "omp") break;
+        if (Date.now() > deadline) throw new Error("fixture omp process did not start");
+        await Bun.sleep(50);
+      }
+      await herdrRpc("pane.report_agent", { pane_id: omp, source: "herdr:omp", agent: "omp", state: "idle", seq: ++seq });
+      await herdrRpc("pane.report_agent_session", { pane_id: omp, source: "herdr:omp", agent: "omp", seq: ++seq, agent_session_path: ompFile, session_start_source: "startup" });
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(cwd, "state"), codexHome });
+      const tools = async (paneId: string, source: string) => {
+        const response = await fetch(`http://127.0.0.1:${app!.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as { source: string; turns: { parts: Record<string, unknown>[] }[] };
+        expect(body.source).toBe(source);
+        return body.turns.flatMap((turn) => turn.parts).filter((part) => part["kind"] === "tool");
+      };
+      const idState = (parts: Record<string, unknown>[]) => parts.map((part) => [part["call_id"], "state" in part ? part["state"] : "omitted"]);
+
+      // before any result: every native call is pending under its own id
+      expect(idState(await tools(claude, "claude-transcript"))).toEqual([["toolu_ok", "pending"], ["toolu_err", "pending"], ["toolu_wait", "pending"]]);
+      expect(idState(await tools(codex, "codex-transcript"))).toEqual([["call_fn", "pending"], ["call_custom", "pending"], ["call_fail_text", "pending"]]);
+
+      // results appended: Claude's flag decides (an empty result is ok); the next poll replaces the page
+      appendFileSync(claudeFile, claudeResult("toolu_ok", "") + claudeResult("toolu_err", "<tool_use_error>InputValidationError</tool_use_error>", true));
+      expect(idState(await tools(claude, "claude-transcript"))).toEqual([["toolu_ok", "ok"], ["toolu_err", "error"], ["toolu_wait", "pending"]]);
+      // Codex records no outcome: either output record ends pending, empty or failure-looking alike
+      appendFileSync(codexFile, codexOutput("call_fn", "function_call_output", "") + codexOutput("call_custom", "custom_tool_call_output", "applied")
+        + codexOutput("call_fail_text", "function_call_output", "Error: plan update failed\nProcess exited with code 1"));
+      expect(idState(await tools(codex, "codex-transcript"))).toEqual([["call_fn", "omitted"], ["call_custom", "omitted"], ["call_fail_text", "omitted"]]);
+
+      // another agent's parser fabricates neither, though its transcript has ids of its own
+      const ompTools = await tools(omp, "omp-transcript");
+      expect(ompTools).toHaveLength(1);
+      expect(["call_id" in ompTools[0]!, "state" in ompTools[0]!]).toEqual([false, false]);
+    } finally {
+      app?.stop();
+      for (const id of workspaces) await workspaceClose(id);
+      if (originalHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = originalHome;
+      forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
 describe("usage API", () => {
   it("returns OpenCode Go windows without exposing its credential", async () => {
     const usageState = mkdtempSync(join(tmpdir(), "herdr-opencode-contract-"));

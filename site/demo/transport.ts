@@ -804,7 +804,8 @@ function answerPrompt(paneId: string, optionIndex: number | undefined): void {
       role: "assistant", ts: now(), end_ts: now(),
       parts: declined
         ? [{ kind: "text", phase: "final_answer", text: "Understood, I won't push. The changes stay on `feat/export-guard` locally; tell me what to do differently." }]
-        : [{ kind: "tool", name: "exec", summary: "git push origin feat/export-guard", input: JSON.stringify({ cmd: "git push origin feat/export-guard" }, null, 2), output: "To github.com:acme/checkout-api.git\n * [new branch]      feat/export-guard -> feat/export-guard" },
+        // Codex: its own call id, and no state once its output is recorded (it records no outcome)
+        : [{ kind: "tool", name: "exec", summary: "git push origin feat/export-guard", input: JSON.stringify({ cmd: "git push origin feat/export-guard" }, null, 2), output: "To github.com:acme/checkout-api.git\n * [new branch]      feat/export-guard -> feat/export-guard", call_id: "call_demo_web_push" },
           { kind: "text", phase: "final_answer", text: "Pushed `feat/export-guard`. The export button is guarded and the branch is ready for a pull request." }],
     });
     if (chat) conversationChanged(paneId);
@@ -2182,7 +2183,8 @@ setTimeout(() => {
   const turn = chat?.turns.filter((turn) => turn.role === "assistant" && !turn.end_ts).at(-1);
   if (!chat || !turn || turn.role !== "assistant") return;
   turn.parts.push(
-    { kind: "tool", name: "Bash", summary: "bun test metrics", input: JSON.stringify({ command: "bun test metrics" }, null, 2), output: " 6 pass\n 0 fail\nRan 6 tests across 1 file. [201ms]" },
+    // Claude: its own call id, and `ok` from the unflagged tool_result that answered it
+    { kind: "tool", name: "Bash", summary: "bun test metrics", input: JSON.stringify({ command: "bun test metrics" }, null, 2), output: " 6 pass\n 0 fail\nRan 6 tests across 1 file. [201ms]", call_id: "toolu_demo_api_metrics_test", state: "ok" },
     { kind: "text", phase: "final_answer", text: "Added `payments_idempotent_replays_total`, incremented where a stored response is replayed, and exposed with the other counters on `/metrics`. 6 tests pass." },
   );
   turn.end_ts = now();

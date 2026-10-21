@@ -113,6 +113,7 @@ run_script scripts/chat-tool-paths-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
 run_script scripts/replay-clipboard-demo-regression.ts
+run_script scripts/todo-snapshots-demo-regression.ts
 run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts

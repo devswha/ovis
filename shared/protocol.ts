@@ -370,6 +370,15 @@ export type ConversationPart =
     output_ref?: string; output_size?: number;
     /** images the call returned (pi reads a picture into the result); same fetch as a user image */
     images?: { media_type: string; ref: string }[];
+    /** the agent's own id for the call (Claude `tool_use.id`, Codex `call_id`); absent from other agents and older servers */
+    call_id?: string;
+    /**
+     * What the transcript itself records of the call's outcome, never guessed from its output text.
+     * Claude: `pending` until its tool_result, then `ok`, or `error` when the result is flagged so.
+     * Codex: `pending` until its output record, then absent (it records no failure flag: done, outcome
+     * unknown). Absent for other agents and older servers.
+     */
+    state?: "pending" | "ok" | "error";
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }

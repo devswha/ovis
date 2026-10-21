@@ -1821,6 +1821,27 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   narrowest phone the title wraps to a second line instead.
 - An OmO or omp `task` row opens to the tasks it starts (`.chat-task-calls`): each summary in
   `--text`, the agent as a hairline mono pill, the prompt in the bounded mono input box.
+- Todo updates the agent made one after another (`.work-todo-group`) are one row:
+  `▸ Plan 3 updates · 1/3 done [1 pending] [1 failed]`. Only an unbroken run folds: any other part between two
+  updates, narration and hidden thinking included, ends it, and a single update stays an ordinary
+  row, so the order of the work is never rewritten. The verb is the interface face like any verb;
+  the summary is words, so it is the interface face too. Pending and failed counts are their own
+  items after it (`.work-row-state` outlined in `--border`, `.work-row-failed` on its tint), never
+  cut and never colour alone. Opened, it shows the list the row stands for with a caption saying
+  what it is, then every update in order as ordinary rows, each with its state in words.
+- The list it stands for is the latest update that completed, judged only by what the transcript
+  records (`call_id` / `state` on the tool part, `shared/protocol.ts`): Claude Code's tool_result
+  says ok or error (an empty result is ok); Codex records no outcome, so an answered Codex update,
+  like one from any agent that records neither, shows its list with "outcome not recorded" and no
+  success claim, even after an earlier ok one. Output text and its emptiness are never read for an
+  outcome. A later pending or failed update is counted beside the list, never taken for it; when
+  the latest completed list cannot be read the row says so instead of showing an earlier one, and
+  with no completed update it shows none.
+- The run is named by its first call's own id in its turn's row (by the row and that call's index
+  when the agent records no id), so appended updates and the next poll keep it open, focused and
+  where the reader left it. This follows the app's own Codex-style work block (Codex app, Claude
+  app: one row per action, folded under the turn); Agent of Empires' todo cards gave only the
+  evidence that contiguous plan updates read better as one item, and none of its code is used.
 
 ### Plan (`.bg-tasks-plan`, `.bg-step`, `.plan-count`)
 - A pane's plan has no control of its own: it shares the composer's background-task chip
