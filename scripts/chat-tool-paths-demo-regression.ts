@@ -85,8 +85,14 @@ const shownFiles = (scope: Locator): Promise<Shown[]> => scope.locator(".chat-to
 /** Opens the work block and each of its rows, so every tool card shows its files. */
 async function expandCards(scope: Locator): Promise<void> {
   await scope.getByText(REPLY).waitFor();
-  await scope.locator(".work-block-head").first().waitFor();
-  for (const head of await scope.locator('.work-block-head[aria-expanded="false"]').all()) await head.click();
+  // the block folds by itself when its turn settles, which may land at any moment; a click is the
+  // reader's choice, which it keeps from then on: one click pins it, a second opens it when the
+  // first folded it
+  const head = scope.locator("button.work-block-head");
+  await head.waitFor();
+  await head.click();
+  if (await head.getAttribute("aria-expanded") === "false") await head.click();
+  await scope.locator('button.work-block-head[aria-expanded="true"]').waitFor();
   const rows = scope.locator(".work-row-head");
   await rows.first().waitFor();
   for (let index = 0; index < await rows.count(); index += 1) {
@@ -271,7 +277,7 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
     assert.deepEqual(requests.map((request) => request.endpoint), ["/api/fs/stat", "/api/fs/file"]);
     assert.ok(requests.every((request) => request.path === "/work/app/src/a.ts"), `the viewer asked only for the whole path: ${JSON.stringify(requests)}`);
     record("relative-tool-target", "hovering shows the whole path, and the viewer requests exactly /work/app/src/a.ts", { title: "Open /work/app/src/a.ts", requests });
-    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Close file", exact: true }).click();
     await page.getByText("export const viewed = true;").first().waitFor({ state: "detached" });
 
     // the copies and the transcript keep what the agent wrote
@@ -368,12 +374,13 @@ async function captureSet(browser: Browser, base: string, bareBase: string, widt
     await page.getByText("export const viewed = true;").first().waitFor();
     await noPageScroll(page, name("viewer"));
     await shot(page, name("viewer"));
-    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Close file", exact: true }).click();
     await page.getByText("export const viewed = true;").first().waitFor({ state: "detached" });
     await pane.getByRole("button", { name: "app/src/b.ts", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "The file could not be opened." }).waitFor();
     await shot(page, name("viewer-error"));
-    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Close file", exact: true }).click();
+    await page.getByText("The file could not be opened.").waitFor({ state: "detached" });
     // a pane with no folder known
     const empty = await openPane(page, base, panes.api);
     await empty.locator(".chat-tool-file").first().scrollIntoViewIfNeeded();
