@@ -1,3 +1,4 @@
+import type { SystemReport } from "../shared/system.ts";
 import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
 import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
 import { Database } from "bun:sqlite";
@@ -649,6 +650,27 @@ describe("usage API", () => {
       const withToken = await fetch(`http://localhost:${gated.port}/api/usage`, { headers: { authorization: "Bearer test-usage-token" } });
       expect(withToken.status).toBe(200);
     } finally { open.stop(); gated.stop(); rmSync(usageState, { recursive: true, force: true }); }
+  });
+});
+
+describe("system API", () => {
+  const report: SystemReport = { sampled_at: 1, platform: "linux", uptime_s: 5, cpu_count: 2, cpu_percent: 10, memory: null, load: null, disks: [] };
+  const sampler = { read: async () => report };
+
+  it("answers GET without caching, keeps it behind the token gate, and takes the bridge token too", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-system-contract-"));
+    const open = createServer({ port: 0, stateDir: dir, system: sampler });
+    const gated = createServer({ port: 0, stateDir: dir, system: sampler, token: "system-test-token" });
+    try {
+      const answered = await fetch(`http://localhost:${open.port}/api/system`);
+      expect(answered.status).toBe(200);
+      expect(answered.headers.get("cache-control")).toBe("no-store");
+      expect(await answered.json()).toEqual(report);
+      expect((await fetch(`http://localhost:${gated.port}/api/system`)).status).toBe(401);
+      const withToken = await fetch(`http://localhost:${gated.port}/api/system`, { headers: { authorization: "Bearer system-test-token" } });
+      expect(withToken.status).toBe(200);
+      expect((await fetch(`http://localhost:${open.port}/api/system`, { method: "POST", headers: { origin: `http://localhost:${open.port}` } })).status).toBe(405);
+    } finally { open.stop(); gated.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
