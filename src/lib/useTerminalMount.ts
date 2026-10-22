@@ -158,6 +158,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
     // cancelled when the user leaves, even to come back (the copy made on release still finishes).
     const viewRef = useRef({ key: "", changes: 0 });
+    /** set while text composed before input was ready is committed: it goes to the draft, not the pane */
+    const holdPendingTextRef = useRef(false);
     useLayoutEffect(() => {
       const key = JSON.stringify([paneRef.current, activeRef.current, presentedRef.current, shownRef.current, chatViewRef.current]);
       if (key === viewRef.current.key) return;
@@ -889,6 +891,21 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let deferredAttach = false;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
+      // Text composed while the pane could not take input (a dictated phrase still in the editor)
+      // was typed offline: when input returns before its commit key, it goes to the draft and
+      // waits for Send or Discard like the rest, never to the pane by the next key.
+      let inputWasReady = false;
+      const noteInputReady = () => {
+        const pane = paneRef.current;
+        if (!pane) return;
+        const ready = socket.canInput(pane);
+        if (ready && !inputWasReady) {
+          holdPendingTextRef.current = true;
+          try { commitPendingText(); } finally { holdPendingTextRef.current = false; }
+        }
+        inputWasReady = ready;
+        setInputReady(ready);
+      };
       const off = session.on((message, sent) => {
         onServerMessageRef.current?.(message);
         if (rereadHerdrUi) {
@@ -922,7 +939,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           && chatMountedRef.current && document.visibilityState !== "hidden") {
           setChatInvalidation((current) => current + 1);
         }
-        if (paneRef.current) setInputReady(socket.canInput(paneRef.current));
+        noteInputReady();
         if (message.type === "input-ready" || message.type === "output-recovering") {
           // output-recovering: this client joined after the stream ended, so the replay is the screen from before
           if (message.type === "output-recovering" || message.ready === false) {
@@ -1009,6 +1026,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // reclaims it when the user comes back: the refit below)
           cancelTouchRef.current();
           const nowObserving = message.mode === "observe";
+          // text still pending in the editor was composed without the role: it is committed while
+          // observing still refuses it, so the next accepted key cannot carry it into the pane
+          if (observeRef.current && !nowObserving) commitPendingText();
           observeRef.current = nowObserving;
           // no fit runs while observing: a font shrunk for this client's own grid would stay
           if (nowObserving) term.options.fontSize = baseFontRef.current;
@@ -1116,6 +1136,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         outputRecovering = false;
         retireOutputRef.current();
         setOutputReady(false);
+        inputWasReady = false;
         setInputReady(false);
         setConnected(false);
         setConversationPushes(false);
@@ -1131,7 +1152,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const poll = window.setInterval(() => {
         setConnected(socket.connected);
         setConversationPushes(socket.conversationPushes());
-        if (paneRef.current) setInputReady(socket.canInput(paneRef.current));
+        noteInputReady();
       }, 1000);
 
       // onKey runs after xterm drains a pending IME commit, immediately before the
@@ -1267,7 +1288,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           return;
         }
-        if (socket.sendInput(current, input, stopKey && input === "\u001b")) return;
+        if (!holdPendingTextRef.current && socket.sendInput(current, input, stopKey && input === "\u001b")) return;
         if (secret) {
           const t = tRef.current;
           setInputError(t("Not sent: the terminal is not ready, and a password is never held for later."));

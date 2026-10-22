@@ -307,6 +307,22 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await input.press("a");
     await check("a", "refused context cannot seed the next accepted rewrite: a syllable committed while observing");
     report("refused context cannot seed the next accepted rewrite: role lost mid-syllable");
+    // Dictation spoken while observing is refused, and is gone once the role comes back: the next
+    // accepted key commits nothing of it.
+    await reset();
+    const observingDictation = signal("role:observe");
+    toServer({ type: "role", mode: "observe" });
+    await observingDictation;
+    await page.locator(".terminal-banner-observe").waitFor();
+    await dictate(hypotheses, false);
+    const interactingAfterDictation = signal("role:interact");
+    toServer({ type: "role", mode: "interact" });
+    await interactingAfterDictation;
+    await page.locator(".terminal-banner-observe").waitFor({ state: "detached" });
+    await input.focus();
+    await input.press("a");
+    await check("a", "refused context cannot seed the next accepted rewrite: dictation while observing");
+    report("refused context cannot seed the next accepted rewrite: dictated while observing");
 
     // A lost attachment: the committed syllable waits in the draft, later typing joins it, and only
     // Send sends it, once; a discarded draft leaves nothing for the next key.
@@ -336,6 +352,26 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await input.press("b");
     await check("b", "refused context cannot seed the next accepted rewrite: a discarded draft");
     report("refused context cannot seed the next accepted rewrite: draft discarded");
+    // Dictation spoken while the pane is not ready belongs to the draft even when readiness returns
+    // before the next key: the phrase and that key wait there, and only Send sends them, once.
+    await reset();
+    toPage({ type: "input-ready", pane_id: pane, ready: false });
+    await page.getByText("Waiting for terminal input…").first().waitFor({ state: "attached" });
+    await dictate(hypotheses, false);
+    toPage({ type: "input-ready", pane_id: pane, ready: true });
+    await page.getByText("Waiting for terminal input…").first().waitFor({ state: "detached" });
+    await input.focus();
+    await input.press("a");
+    await check("", "refused context cannot seed the next accepted rewrite: dictation while not ready waits for Send");
+    assert.equal(await page.locator(".draft-text").textContent(), "This is a test.a", "the dictated phrase and the next key wait in the draft");
+    report("refused context cannot seed the next accepted rewrite: dictated while not ready, held in the draft");
+    sent.length = 0;
+    const heldPhrase = signal("input:This is a test.a");
+    await page.locator(".draft-send").click();
+    await heldPhrase;
+    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await check("This is a test.a", "a dictated draft is sent once, by Send");
+    report("refused context: the dictated draft reaches the pane only by Send");
 
     // A pane switch during a pending dictation phrase: neither pane receives it.
     await reset(); await dictate(hypotheses.slice(0, 3), false);

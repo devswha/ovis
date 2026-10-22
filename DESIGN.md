@@ -2576,7 +2576,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane
-  switch, an observe role or a pane that is not ready drops or holds it as any other typing.
+  switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still
+  pending when the role comes back is dropped. One composed while the pane was not ready goes to
+  the draft when input returns, before its commit key, and waits there for Send or Discard.
 - While herdr's viewport is above the bottom and the pane is interactive, a round ArrowDown
   "Jump to bottom" button floats over the grid's bottom-right corner and sends `pane.scroll`
   offset 0, the one-tap way back to the live bottom now that no scrollbar offers End. It uses

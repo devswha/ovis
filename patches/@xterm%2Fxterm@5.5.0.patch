@@ -164,7 +164,7 @@ index 9ebc55d..208ea82 100644
    compositionstart(): void;
    compositionupdate(ev: CompositionEvent): void;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index 7542969..52f0753 100644
+index 7542969..260decc 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -6,6 +6,11 @@
@@ -204,7 +204,7 @@ index 7542969..52f0753 100644
  
    /**
     * Data already sent due to keydown event.
-@@ -50,17 +63,156 @@ export class CompositionHelper {
+@@ -50,17 +63,158 @@ export class CompositionHelper {
      @IRenderService private readonly _renderService: IRenderService
    ) {
      this._isComposing = false;
@@ -286,9 +286,11 @@ index 7542969..52f0753 100644
 +    // syllables back at once when a final consonant moves on (\ub9dd + \u314f: \ub9c8\uc544).
 +    // Dictation replaces its hypothesis in place (thi, this, this is): sending each one put
 +    // every provisional word in the pane, so the corrected text is sent once, at the commit.
-+    // A replacement of text before the caret (already sent) keeps its existing handling.
++    // A replacement of text before the caret (already sent) keeps its existing handling, and a
++    // terminal that takes no input (view only) holds no phrase to send once input returns.
 +    const dictation = ev.inputType === 'insertReplacementText' && !!ev.data
-+      && this._textarea.selectionStart === this._textarea.value.length;
++      && this._textarea.selectionStart === this._textarea.value.length
++      && !this._optionsService.rawOptions.disableStdin;
 +    if ((ev.inputType === 'insertText' && ev.data && HANGUL_TEXT.test(ev.data)) || dictation) {
 +      this._commitInsert = undefined;
 +      this.compositionstart();
@@ -363,7 +365,7 @@ index 7542969..52f0753 100644
      this._compositionView.textContent = '';
      this._dataAlreadySent = '';
      this._compositionView.classList.add('active');
-@@ -71,9 +223,12 @@ export class CompositionHelper {
+@@ -71,9 +225,12 @@ export class CompositionHelper {
     * @param ev The event.
     */
    public compositionupdate(ev: Pick<CompositionEvent, 'data'>): void {
@@ -376,7 +378,7 @@ index 7542969..52f0753 100644
        this._compositionPosition.end = this._textarea.value.length;
      }, 0);
    }
-@@ -83,6 +238,7 @@ export class CompositionHelper {
+@@ -83,6 +240,7 @@ export class CompositionHelper {
     * the handler.
     */
    public compositionend(): void {
@@ -384,7 +386,7 @@ index 7542969..52f0753 100644
      this._finalizeComposition(true);
    }
  
-@@ -92,7 +248,24 @@ export class CompositionHelper {
+@@ -92,7 +250,24 @@ export class CompositionHelper {
     * @returns Whether the Terminal should continue processing the keydown event.
     */
    public keydown(ev: KeyboardEvent): boolean {
@@ -410,7 +412,7 @@ index 7542969..52f0753 100644
        if (ev.keyCode === 229) {
          // Continue composing if the keyCode is the "composition character"
          return false;
-@@ -125,56 +298,46 @@ export class CompositionHelper {
+@@ -125,56 +300,46 @@ export class CompositionHelper {
     *   the command is executed.
     */
    private _finalizeComposition(waitForPropagation: boolean): void {
@@ -495,7 +497,7 @@ index 7542969..52f0753 100644
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -183,7 +346,9 @@ export class CompositionHelper {
+@@ -183,7 +348,9 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
@@ -505,7 +507,7 @@ index 7542969..52f0753 100644
        // Ignore if a composition has started since the timeout
        if (!this._isComposing) {
          const newValue = this._textarea.value;
-@@ -216,25 +381,38 @@ export class CompositionHelper {
+@@ -216,25 +383,38 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
