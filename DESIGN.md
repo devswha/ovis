@@ -2570,6 +2570,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   resize it to reveal the caret. No terminal pixels or input handling code are copied from Zed.
   Local wheel panning in an oversized mirror survives subsequent output. A tap or a touch movement
   that produces no history step sends no shared scroll request.
+- In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
+  editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
+  every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
+  as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
+  provisional input stays marked text and only the inserted result reaches the shell. A pane
+  switch, an observe role or a pane that is not ready drops or holds it as any other typing.
 - While herdr's viewport is above the bottom and the pane is interactive, a round ArrowDown
   "Jump to bottom" button floats over the grid's bottom-right corner and sends `pane.scroll`
   offset 0, the one-tap way back to the live bottom now that no scrollbar offers End. It uses

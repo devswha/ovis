@@ -314,6 +314,12 @@ export function PaneTerminal({
   const [lineComposing, setLineComposingState] = useState(false);
   const setLineComposing = useCallback((active: boolean) => { lineComposingRef.current = active; setLineComposingState(active); }, []);
   const compositionCommitPendingRef = useRef(false);
+  // A Safari syllable or dictation phrase still in the editor is text: before a chord, a held
+  // modifier or a key-bar key it goes out as an IME commit, or the chord would take its place.
+  const commitPendingText = useCallback(() => {
+    compositionCommitPendingRef.current = true;
+    try { termRef.current?.finishComposition(); } finally { compositionCommitPendingRef.current = false; }
+  }, []);
   const barKeyRef = useRef<{ key: string; chord: string | null } | null>(null);
   /** set while the composer's Stop types its ESC, so it goes out as a Stop (ClientMessage `input.stop`) */
   const stopKeyRef = useRef(false);
@@ -590,7 +596,7 @@ export function PaneTerminal({
     }, 2500);
   }, []);
 
-  useTerminalMount({ activeRef, barKeyRef, baseFontRef, cachedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
+  useTerminalMount({ activeRef, barKeyRef, baseFontRef, cachedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
 
   useTerminalRefits({ activeRef, autoSelected, baseFontRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme });
 
@@ -626,7 +632,7 @@ export function PaneTerminal({
 
   const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
 
-  const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, paneId, reassertIfStaleRef, setInputError, setModifiers, socketRef, stopKeyRef, tRef, termRef });
+  const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, paneId, reassertIfStaleRef, setInputError, setModifiers, socketRef, stopKeyRef, tRef, termRef });
 
   // While the agent runs, append to its held messages. Each requires an explicit send.
   // a question in Codex's queue leaves the composer alone: Codex keeps working, and a

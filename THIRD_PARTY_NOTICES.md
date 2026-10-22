@@ -17,6 +17,17 @@ validation approach from
 The MIT license text below applies. Ovis uses independent server IDs,
 bounded private storage and absent-only response defaults.
 
+## Agent of Empires IME rewrite sequences
+
+The dictation hypotheses and SwiftKey word-commit sequences in
+`scripts/terminal-safari-ime-regression.ts` and `scripts/terminal-ipad-ime-regression.ts` adapt
+the test sequences of
+[`agent-of-empires/agent-of-empires`](https://github.com/agent-of-empires/agent-of-empires),
+`web/tests/live-terminal-ime-rewrite.spec.ts` and
+`web/src/components/__tests__/MobileLiveTerminal.composition.test.tsx`, under MIT, Copyright (c)
+2026 Nathan Brake. The MIT license text below applies. Ovis asserts them against its own xterm
+preedit and commit handling, not that project's hidden-input model.
+
 ## Theme palettes
 
 The CSS theme colors adapt herdr's pinned palettes, with readability adjustments recorded in
