@@ -1965,7 +1965,10 @@ export function transcriptToolOutput(source: StreamSource, path: string, ref: st
   }
   if (source === "grok-transcript") return grokToolOutput(path, ref);
   if (source === "agy-transcript") return agyToolOutput(path, ref);
-  if (source === "muse-transcript") return museToolOutput(path, ref);
+  if (source === "muse-transcript") {
+    const output = museToolOutput(path, ref);
+    return output !== null && output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
+  }
   if (source === "pi-transcript" || source === "cmd-transcript") return piToolOutput(path, ref);
   if (source === "copilot-transcript") {
     let fd: number;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetTranscriptState, transcriptPage } from "./conversation.ts";
+import { forgetTranscriptState, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { museResult, museToolOutput, parseMuseTranscript } from "./muse.ts";
 import { isMuseExecutable, museSessionFor, museSessionLive, parseMuseLock } from "./muse-store.ts";
 import type { ConversationPart } from "../shared/protocol.ts";
@@ -96,6 +96,11 @@ describe("Muse session log", () => {
     expect(museToolOutput(path, "call_05")).toBe(Array.from({ length: 1200 }, (_, n) => `${n + 1}\n`).join(""));
     expect(museToolOutput(path, "call_03")).toBe("cat: missing.txt: No such file or directory\n");
     expect(museToolOutput(path, "call_99")).toBeNull();
+    // Show all is bounded as for every other agent
+    const batch = lines.find((line) => line.includes('"call_02"') && line.includes("tool_result_batch_committed"))!;
+    appendFileSync(path, batch.replace('"call_02"', '"call_big"').replace("one\\ntwo\\nthree\\n", "x".repeat(2_000_001)));
+    expect(transcriptToolOutput("muse-transcript", path, "call_big")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+    expect(transcriptToolOutput("muse-transcript", path, "call_05")).toBe(museToolOutput(path, "call_05"));
   });
 });
 
