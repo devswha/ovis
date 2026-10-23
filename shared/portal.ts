@@ -43,8 +43,8 @@ export interface PortalAuth {
   readonly method: PortalAuthMethod;
   /**
    * `--auth-allow`: link names (credential), Ethereum addresses (siwe), verified emails, @domains
-   * and sub:<id> (oidc). An empty credential list lets in every unexpired link; Portal runs no other
-   * method without one.
+   * and sub:<id> (oidc). An empty credential list lets in every unexpired link; siwe and oidc need
+   * at least one entry (checkPortalAuth).
    */
   readonly allow: readonly string[];
   /** oidc only: the identity provider's https address */
