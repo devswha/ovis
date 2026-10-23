@@ -17,9 +17,11 @@
  * Who may open the address is the user's choice (shared/portal.ts PortalAuth): only the app's own
  * token or a paired device, as before, or Portal's own sign-in in front of everything, a private
  * link, an Ethereum wallet or an OIDC account (Google or a company's). The choice is saved with the
- * rest of the state and a relaunch goes ahead only while it is unchanged. The OIDC client secret is
- * OVIS_PORTAL_OIDC_CLIENT_SECRET, read at each start into the Portal's environment: it is in no
- * argument (`ps` shows those), no saved file and no answer.
+ * rest of the state and a relaunch goes ahead only while it is unchanged. Two secrets reach the
+ * Portal's environment and nothing else: the OIDC client secret, OVIS_PORTAL_OIDC_CLIENT_SECRET,
+ * read at each start, and a proof made at each launch of a Portal with a sign-in, which Portal sends
+ * with the identity it vouches for (`vouches`, server/access.ts). Neither is in an argument (`ps`
+ * shows those), a saved file, a log or an answer.
  *
  * Portal keeps retrying a relay it cannot use and never exits for it (v2.6.1), so the relay's
  * version is asked first and readiness has a deadline of its own.
@@ -28,7 +30,7 @@
  * port and identity, after this server's own guards and the saved state say it still may; a
  * second exit, or one before it was ever ready, is an error the user acts on.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, PORTAL_OIDC_SECRET_VARIABLE, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
@@ -148,16 +150,29 @@ function oidcSecret(): string | null {
   return value ? value : null;
 }
 
-/** Portal's environment; `secret` is the one thing besides what running and reaching the relay need. */
-function portalEnv(secret: string | null = null): Record<string, string> {
+/** Portal's environment: what running and reaching the relay need, and the secrets of a start that has them. */
+function portalEnv(secrets: { oidcSecret?: string | null; proof?: string | null } = {}): Record<string, string> {
   const env: Record<string, string> = { NO_COLOR: "1" };
   for (const name of PORTAL_ENV) {
     const value = process.env[name];
     if (value !== undefined) env[name] = value;
   }
-  // the name Portal reads (AUTH_OIDC_CLIENT_SECRET); this server's own is OVIS_PORTAL_OIDC_CLIENT_SECRET
-  if (secret !== null) env["AUTH_OIDC_CLIENT_SECRET"] = secret;
+  // the names Portal reads; this server's own for the first is OVIS_PORTAL_OIDC_CLIENT_SECRET
+  if (secrets.oidcSecret) env["AUTH_OIDC_CLIENT_SECRET"] = secrets.oidcSecret;
+  if (secrets.proof) env["AUTH_IDENTITY_PROOF"] = secrets.proof;
   return env;
+}
+
+/**
+ * Whether `given`, a request's X-Portal-Proof, is the proof of the running Portal. Compared in
+ * constant time, and a length that differs is no match rather than a throw: the proof is always as
+ * long as the one made here, so its length is nothing to keep secret.
+ */
+export function proofMatches(proof: string | null, given: string | null): boolean {
+  if (proof === null || given === null) return false;
+  const expected = Buffer.from(proof);
+  const offered = Buffer.from(given);
+  return expected.length === offered.length && timingSafeEqual(expected, offered);
 }
 
 /**
@@ -166,7 +181,7 @@ function portalEnv(secret: string | null = null): Record<string, string> {
  * With one, Portal drops them itself and sets both from the sign-in it verified
  * (`--auth-identity-headers`), which is all server/access.ts trusts; Portal refuses to strip them
  * as well. Values join their flag with `=`, so none can read as another flag. The OIDC client secret
- * is not here: arguments show in `ps`.
+ * and the proof are not here: arguments show in `ps`.
  */
 export function authArgs(auth: PortalAuth): string[] {
   if (auth.method === "none") return ["--strip-request-header", "X-Portal-User", "--strip-request-header", "X-Portal-Auth"];
@@ -311,8 +326,10 @@ async function readVersion(bin: string): Promise<string | null> {
 
 /**
  * The sign-ins this `portal` offers, by the flags its `expose --help` lists (`  -auth string`, single
- * dash). A version cannot say: OIDC is in no release yet, and a build from source has it early.
- * credential and siwe share the flags of `--auth`, which every Portal that runs this app's tunnel has.
+ * dash). A version cannot say: a build from source has a flag before any release does. None is
+ * offered without `-auth-identity-proof`: a Portal that signs visitors in but cannot prove the
+ * identity it states would leave the app to believe a header anyone could type. credential and siwe
+ * share those flags; OIDC adds its own.
  */
 async function readSignIns(bin: string): Promise<PortalSignIn[]> {
   try {
@@ -325,7 +342,7 @@ async function readSignIns(bin: string): Promise<PortalSignIn[]> {
     if (code !== 0) return [];
     const listed = new Set([...`${out}\n${err}`.matchAll(/^ +-([a-z][\w-]*)/gm)].map((match) => match[1]));
     const has = (...flags: string[]) => flags.every((flag) => listed.has(flag));
-    if (!has("auth", "auth-allow", "auth-identity-headers")) return [];
+    if (!has("auth", "auth-allow", "auth-identity-headers", "auth-identity-proof")) return [];
     return has("auth-oidc-issuer", "auth-oidc-client-id") ? ["credential", "siwe", "oidc"] : ["credential", "siwe"];
   } catch { return []; }
 }
@@ -364,6 +381,8 @@ export class PortalService {
   private serverPort: number | null = null;
   /** this server's own token and serve-only answer, bound by createServer; a relaunch asks it, never a request */
   private guards: (() => Guards) | null = null;
+  /** what the running Portal, started with a sign-in, sends with the identity it vouches for; made at its launch, kept here and nowhere else */
+  private proof: string | null = null;
   /** the child that printed its address, and the identity file it served with */
   private readyChild: Child | null = null;
   private readyIdentity: string | null = null;
@@ -457,12 +476,12 @@ export class PortalService {
   }
 
   /**
-   * The public host of the running Portal while it signs visitors in, else null. Only a request for
-   * that host can carry an identity this server believes (server/access.ts): routed mode keeps the
-   * browser's Host, and the address is up only while the Portal started with the sign-in is.
+   * Whether a request's X-Portal-Proof is the proof of the Portal running now with a sign-in. Only
+   * such a request carries an identity this server believes (server/access.ts): Portal sends the
+   * proof with the identity it vouches for and drops a visitor's copy, and nothing else has it.
    */
-  signInHost(): string | null {
-    return this.url !== null && this.auth.method !== "none" ? new URL(this.url).hostname : null;
+  vouches(given: string | null): boolean {
+    return proofMatches(this.proof, given);
   }
 
   /**
@@ -541,6 +560,7 @@ export class PortalService {
   private end(child: Child): void {
     if (this.ending === child) return;
     this.ending = child;
+    this.proof = null;
     child.kill("SIGTERM");
     const killer = setTimeout(() => child.kill("SIGKILL"), this.options.stopGraceMs ?? STOP_GRACE_MS);
     void child.exited.finally(() => clearTimeout(killer));
@@ -599,17 +619,26 @@ export class PortalService {
     if (recovery !== null) this.checkRecovery(request, recovery);
     // Portal needs its identity parent before it starts; it contains the saved address.
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const child = Bun.spawn([
-      bin, "expose",
-      "--http-route", `/=${port}`,
-      "--strip-request-header", "Tailscale-User-Login",
-      ...authArgs(auth),
-      // a name counts only when the identity file is created; later runs keep the saved one
-      "--name", `herdr-${randomBytes(8).toString("hex")}`,
-      "--identity-path", this.identityPath,
-      "--relays", relay, "--discovery=false",
-      "--hide",
-    ], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv(auth.method === "oidc" ? oidcSecret() : null), windowsHide: true });
+    // a Portal with a sign-in gets a proof of its own at each launch, in its environment alone
+    const proof = auth.method === "none" ? null : randomBytes(32).toString("hex");
+    this.proof = proof;
+    let child: Child;
+    try {
+      child = Bun.spawn([
+        bin, "expose",
+        "--http-route", `/=${port}`,
+        "--strip-request-header", "Tailscale-User-Login",
+        ...authArgs(auth),
+        // a name counts only when the identity file is created; later runs keep the saved one
+        "--name", `herdr-${randomBytes(8).toString("hex")}`,
+        "--identity-path", this.identityPath,
+        "--relays", relay, "--discovery=false",
+        "--hide",
+      ], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv({ oidcSecret: auth.method === "oidc" ? oidcSecret() : null, proof }), windowsHide: true });
+    } catch (error) {
+      this.proof = null;
+      throw error;
+    }
     this.child = child;
     // a Portal whose pid cannot be kept is one the next server could not stop: it ends before its address can show
     try {
@@ -638,6 +667,7 @@ export class PortalService {
     if (this.child !== child) return;
     this.child = null;
     this.url = null;
+    this.proof = null;
     const wasReady = this.readyChild === child;
     const identity = this.readyIdentity;
     this.readyChild = null;

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, setSystemTime } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -221,69 +221,185 @@ describe("a token set: guessing it", () => {
 describe("a Portal that signs its visitors in", () => {
   const TOKEN = "the-token-only-the-owner-holds";
   const HOST = "herdr-test-0123.relay.example";
-  /** as the service answers while a Portal started with a sign-in is up (portal.test.ts runs the real one) */
-  class SignedInPortal extends PortalService {
-    override signInHost(): string | null { return HOST; }
-  }
   const servers: ReturnType<typeof createServer>[] = [];
-  const start = (portal: PortalService): string => {
-    const stateDir = mkdtempSync(join(root, "portal-"));
-    const server = createServer({ port: 0, stateDir, token: TOKEN, portal });
-    servers.push(server);
-    return `http://127.0.0.1:${server.port}`;
-  };
   afterAll(() => { for (const server of servers) server.stop(); });
-  /** what Portal sends: the visitor's Host kept, Forwarded-Proto https, and the identity it verified */
-  const portalHeaders = { host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9", "x-portal-user": "alice", "x-portal-auth": "credential" };
-  const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
 
-  it("lets in what its Portal vouches for, as a device that may drive, with no token", async () => {
-    const base = start(new SignedInPortal({ stateDir: root }));
-    expect(await health(base, portalHeaders)).toEqual({ required: false, authenticated: true, via: "portal", role: "drive", portal: { user: "alice", method: "credential" } });
-    expect((await fetch(`${base}/api/devices`, { headers: portalHeaders })).status).toBe(200);
-    // the token and the sign-in are both ways in, and the token does not become the sign-in's
-    expect(await health(base, { ...portalHeaders, authorization: `Bearer ${TOKEN}` })).toMatchObject({ via: "token" });
-    expect(await health(base, {})).toMatchObject({ required: true, authenticated: false, reason: "token_required" });
+  // a portal that lists the sign-in flags, notes the proof in its environment, says it is ready and runs until stopped
+  const dir = mkdtempSync(join(root, "bin-"));
+  const bin = join(dir, "portal");
+  const noted = join(dir, "proof");
+  writeFileSync(bin, [
+    "#!/bin/sh",
+    'case "$1" in',
+    "  version) echo v2.6.1 ;;",
+    "  expose)",
+    `    [ "$2" = --help ] && { printf '%s\\n' '  -auth string' '  -auth-allow value' '  -auth-identity-headers' '  -auth-identity-proof string'; exit 0; }`,
+    `    printf '%s' "\${AUTH_IDENTITY_PROOF-}" > '${noted}'`,
+    "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
+    "    [ -f \"$id\" ] || echo '{}' > \"$id\"",
+    "    trap 'exit 0' TERM",
+    `    echo 'INF service ready at https://${HOST}:443'`,
+    "    while :; do sleep 0.05; done ;;",
+    `  auth) echo "Redeem URL: https://$3/_portal/auth/login#credential=a-link" ;;`,
+    "  *) exit 2 ;;",
+    "esac",
+    "",
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  const relay = (async () => Response.json({ data: { release_version: "v2.6.1" } })) as unknown as typeof fetch;
+  const credential = { method: "credential", allow: [] };
+
+  /** a server whose Portal can be started on a sign-in, and asked for the proof it was given */
+  function serving() {
+    const stateDir = mkdtempSync(join(root, "portal-"));
+    const server = createServer({ port: 0, stateDir, token: TOKEN, portal: new PortalService({ stateDir, bin, fetch: relay }) });
+    servers.push(server);
+    const main = `http://127.0.0.1:${server.port}`;
+    const owner = { authorization: `Bearer ${TOKEN}` };
+    const post = (action: string, body: unknown) => fetch(`${main}/api/portal/${action}`, { method: "POST", headers: { ...owner, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
+    const phase = async () => ((await (await fetch(`${main}/api/portal`, { headers: owner })).json()) as { phase: string }).phase;
+    const until = async (want: string) => {
+      const deadline = Date.now() + 10_000;
+      while ((await phase()) !== want) {
+        if (Date.now() > deadline) throw new Error(`Timed out: Portal was ${want}`);
+        await Bun.sleep(20);
+      }
+    };
+    return {
+      server, main, owner, post,
+      /** starts Portal and returns the proof it was given, or "" when it was given none */
+      async start(auth: unknown): Promise<string> {
+        rmSync(noted, { force: true });
+        expect((await post("start", { relay: "relay.example", auth })).status).toBe(202);
+        await until("running");
+        return readFileSync(noted, "utf8");
+      },
+      async stop(): Promise<void> {
+        expect((await post("stop", {})).status).toBe(202);
+        await until("idle");
+      },
+    };
+  }
+  /** what Portal sends with a visitor it vouches for: the visitor's Host kept, Forwarded-Proto https, the identity and the proof */
+  const identity = { host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9", "x-portal-user": "alice", "x-portal-auth": "credential" };
+  const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
+  const signedIn = { required: false, authenticated: true, via: "portal", role: "drive", portal: { user: "alice", method: "credential" } };
+  const refused = { authenticated: false, reason: "token_required" };
+
+  it("lets in what carries its Portal's proof, as a device that may drive, with no token", async () => {
+    const portal = serving();
+    const proof = await portal.start(credential);
+    expect(proof).toMatch(/^[0-9a-f]{64}$/);
+    const vouched = { ...identity, "x-portal-proof": proof };
+    expect(await health(portal.main, vouched)).toEqual(signedIn);
+    expect((await fetch(`${portal.main}/api/devices`, { headers: vouched })).status).toBe(200);
+    // the proof is nowhere the app answers
+    for (const path of ["/api/portal", "/api/access", "/api/health"]) {
+      expect(await (await fetch(`${portal.main}${path}`, { headers: { ...portal.owner, ...vouched } })).text()).not.toContain(proof);
+    }
+    // the token still means the token, and without either it is refused
+    expect(await health(portal.main, { ...vouched, ...portal.owner })).toMatchObject({ via: "token" });
+    expect(await health(portal.main, {})).toMatchObject(refused);
+  });
+
+  it("believes nothing of those headers without the proof, from loopback or through another proxy, whatever Host or forwarding headers come with them", async () => {
+    const portal = serving();
+    const proof = await portal.start(credential);
+    const ignored = async (headers: Record<string, string>) => {
+      expect((await fetch(`${portal.main}/api/devices`, { headers })).status).toBe(401);
+      expect(await health(portal.main, headers)).toMatchObject(refused);
+    };
+    // another proxy on this PC, a tagged tailscale serve or a local client typing the identity
+    await ignored(identity);
+    await ignored({ ...identity, host: `127.0.0.1:${new URL(portal.main).port}` });
+    await ignored({ ...identity, host: "pc.tail5cc90b.ts.net" });
+    await ignored({ "x-portal-user": "alice", "x-portal-auth": "credential" });
+    // a proof that is wrong, in any way: other, shorter, longer, in another case, empty, twice
+    for (const given of ["0".repeat(64), proof.slice(1), proof.slice(0, -1), `${proof}0`, proof.toUpperCase(), "", `${proof}, ${proof}`]) {
+      await ignored({ ...identity, "x-portal-proof": given });
+    }
+    // the proof alone says nothing of who it is for
+    await ignored({ host: HOST, "x-portal-proof": proof });
+    expect((await fetch(`${portal.main}/api/devices`, { headers: portal.owner })).status).toBe(200);
+  });
+
+  it("ignores values Portal does not make, even with the proof", async () => {
+    const portal = serving();
+    const vouched = { ...identity, "x-portal-proof": await portal.start(credential) };
+    for (const headers of [{ ...vouched, "x-portal-user": "" }, { ...vouched, "x-portal-auth": "saml" }, { ...vouched, "x-portal-auth": "siwe" }, { ...vouched, "x-portal-user": "a".repeat(261) }]) {
+      expect(await health(portal.main, headers)).toMatchObject(refused);
+    }
+  });
+
+  it("believes nothing while its Portal runs no sign-in, and nothing when it has no Portal", async () => {
+    const portal = serving();
+    expect(await portal.start(undefined)).toBe("");
+    const guess = { ...identity, "x-portal-proof": "a".repeat(64) };
+    expect(await health(portal.main, guess)).toMatchObject(refused);
+    // not even the empty proof a Portal without one was started with
+    expect(await health(portal.main, { ...identity, "x-portal-proof": "" })).toMatchObject(refused);
+    const stateDir = mkdtempSync(join(root, "portal-"));
+    const alone = createServer({ port: 0, stateDir, token: TOKEN });
+    servers.push(alone);
+    expect(await health(`http://127.0.0.1:${alone.port}`, guess)).toMatchObject(refused);
+  });
+
+  it("stops believing a proof when its Portal stops, and a Portal started again has a proof of its own", async () => {
+    const portal = serving();
+    const first = await portal.start(credential);
+    const vouched = (proof: string) => ({ ...identity, "x-portal-proof": proof });
+    expect(await health(portal.main, vouched(first))).toEqual(signedIn);
+    await portal.stop();
+    expect(await health(portal.main, vouched(first))).toMatchObject(refused);
+    const second = await portal.start(credential);
+    expect(second).toMatch(/^[0-9a-f]{64}$/);
+    expect(second).not.toBe(first);
+    expect(await health(portal.main, vouched(second))).toEqual(signedIn);
+    expect(await health(portal.main, vouched(first))).toMatchObject(refused);
+    // and a Portal started without a sign-in after one with it does not take the old proof either
+    await portal.stop();
+    await portal.start(undefined);
+    expect(await health(portal.main, vouched(second))).toMatchObject(refused);
+  });
+
+  it("serves the terminal's WebSocket to what carries the proof, and refuses it without", async () => {
+    const portal = serving();
+    const proof = await portal.start(credential);
+    const open = (headers: Record<string, string>) => new Promise<WebSocket | null>((resolve) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${new URL(portal.main).port}/ws`, { headers } as unknown as string[]);
+      socket.onopen = () => resolve(socket);
+      // a refused upgrade ends in a close, with or without an error
+      socket.onclose = () => resolve(null);
+      socket.onerror = () => resolve(null);
+    });
+    expect(await open(identity)).toBeNull();
+    const socket = (await open({ ...identity, "x-portal-proof": proof }))!;
+    expect(socket).not.toBeNull();
+    const frames: { type: string; id?: number }[] = [];
+    socket.onmessage = (event) => frames.push(JSON.parse(String(event.data)));
+    socket.send(JSON.stringify({ type: "ping", id: 7 }));
+    const deadline = Date.now() + 4_000;
+    while (!frames.some((frame) => frame.type === "pong")) {
+      if (Date.now() > deadline) throw new Error("Timed out: the pong");
+      await Bun.sleep(10);
+    }
+    expect(frames.find((frame) => frame.type === "pong")).toEqual({ type: "pong", id: 7 });
+    socket.close();
   });
 
   it("does not let a visitor it signed in issue private links, while the owner's token may", async () => {
-    const base = start(new SignedInPortal({ stateDir: root }));
-    const issue = (headers: Record<string, string>) => fetch(`${base}/api/portal/invite`, {
+    const portal = serving();
+    const proof = await portal.start(credential);
+    const issue = (headers: Record<string, string>) => fetch(`${portal.main}/api/portal/invite`, {
       method: "POST", headers: { ...headers, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ name: "alice", days: 30 }),
     });
-    const refused = await issue(portalHeaders);
-    expect(refused.status).toBe(403);
-    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("owner_only");
-    // the owner is not asked to be anyone else: this Portal runs nothing yet, which is all that stops the answer
-    const owner = await issue({ authorization: `Bearer ${TOKEN}` });
-    expect(((await owner.json()) as { error: { code: string } }).error.code).toBe("portal_not_credential");
-  });
-
-  it("believes nothing of those headers from anywhere else, or about anyone else", async () => {
-    const base = start(new SignedInPortal({ stateDir: root }));
-    const refused = async (headers: Record<string, string>) => {
-      expect((await fetch(`${base}/api/devices`, { headers })).status).toBe(401);
-      expect(await health(base, headers)).toMatchObject({ authenticated: false, reason: "token_required" });
-    };
-    // a local client, tailscale serve or another proxy typing them under its own host
-    await refused({ ...portalHeaders, host: `127.0.0.1:${new URL(base).port}` });
-    await refused({ ...portalHeaders, host: "pc.tail5cc90b.ts.net" });
-    // a request that states a Tailscale login did not come through Portal, which strips it
-    await refused({ ...portalHeaders, "tailscale-user-login": "me@example.com" });
-    // values Portal does not make
-    await refused({ ...portalHeaders, "x-portal-user": "" });
-    await refused({ ...portalHeaders, "x-portal-auth": "saml" });
-    await refused({ ...portalHeaders, "x-portal-auth": "siwe" });
-    const { "x-portal-user": _user, ...nameless } = portalHeaders;
-    await refused(nameless);
-  });
-
-  it("believes nothing of them while its Portal runs no sign-in: a visitor can type them", async () => {
-    const base = start(new PortalService({ stateDir: root }));
-    expect(await health(base, portalHeaders)).toMatchObject({ authenticated: false, reason: "token_required" });
-    expect((await fetch(`${base}/api/devices`, { headers: portalHeaders })).status).toBe(401);
-    // and a server with no Portal at all
-    const alone = `http://127.0.0.1:${(() => { const server = createServer({ port: 0, stateDir: mkdtempSync(join(root, "portal-")), token: TOKEN }); servers.push(server); return server.port; })()}`;
-    expect(await health(alone, portalHeaders)).toMatchObject({ authenticated: false, reason: "token_required" });
+    const denied = await issue({ ...identity, "x-portal-proof": proof });
+    expect(denied.status).toBe(403);
+    expect(((await denied.json()) as { error: { code: string } }).error.code).toBe("owner_only");
+    // the same request without the proof is no visitor at all
+    expect((await issue(identity)).status).toBe(401);
+    const issued = await issue(portal.owner);
+    expect(issued.status).toBe(200);
+    expect(((await issued.json()) as { redeem_url: string }).redeem_url).toBe(`https://${HOST}/_portal/auth/login#credential=a-link`);
   });
 });

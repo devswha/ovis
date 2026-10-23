@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PortalStatus } from "../shared/protocol.ts";
 import { NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, type PortalAuth } from "../shared/portal.ts";
-import { atLeast, authArgs, handlePortalRequest, PortalService, readyUrl, relayOrigin } from "./portal.ts";
+import { atLeast, authArgs, handlePortalRequest, PortalService, proofMatches, readyUrl, relayOrigin } from "./portal.ts";
 
 /**
  * The service runs a stand-in portal here, a shell script, and asks a relay through an injected
@@ -18,13 +18,23 @@ const RELAY = "https://relay.example";
 const open = { tokenSet: true, serveOnly: false };
 
 /** The flags a `portal expose --help` lists, in Go's layout: `-auth string`, with its words on the next line. */
-const SIGN_IN_FLAGS = ["auth string", "auth-allow value", "auth-identity-headers"];
+const PROOF_FLAG = "auth-identity-proof string";
+const SIGN_IN_FLAGS = ["auth string", "auth-allow value", "auth-identity-headers", PROOF_FLAG];
 const OIDC_FLAGS = ["auth-oidc-issuer string", "auth-oidc-client-id string", "auth-oidc-client-secret string"];
 const credential = (...allow: string[]): PortalAuth => ({ method: "credential", allow, issuer: null, client_id: null });
 const OIDC: PortalAuth = { method: "oidc", allow: ["me@example.com", "@example.com"], issuer: "https://accounts.google.com", client_id: "client-1.apps.example" };
 const SIWE_AUTH: PortalAuth = { method: "siwe", allow: ["0x52908400098527886E0F7030069857D2E4169EE7"], issuer: null, client_id: null };
-/** what the stand-in's `expose` finds in the environment, last on its `seen` line */
+/** what the stand-in's `expose` finds in the environment, on its `seen` line before the proof */
 const NO_SECRET = "secret=unset ovis=unset";
+/** the arguments of the last `expose`: its `seen` lines but the last, which is its environment */
+const argsOf = (seen: string[]): string[] => seen.slice(0, -1);
+/** the environment of the last `expose`, without its proof */
+const envOf = (seen: string[]): string => seen.at(-1)!.replace(/ proof=\S+$/, "");
+/** the proof the last `expose` was given in its environment, or null */
+const proofOf = (seen: string[]): string | null => {
+  const proof = /proof=(\S+)$/.exec(seen.at(-1)!)?.[1];
+  return proof === undefined || proof === "unset" ? null : proof;
+};
 
 interface StandIn {
   path: string;
@@ -54,7 +64,7 @@ function standIn(options: { version?: string; ready?: boolean; says?: string; ig
     // a question about its flags, not a service
     `    [ "$2" = --help ] && { printf '%s\\n' 'Flags:' ${(options.flags ?? [...SIGN_IN_FLAGS, ...OIDC_FLAGS]).map((flag) => `'  -${flag}' '    \t'`).join(" ")}; exit 0; }`,
     `    echo $$ >> '${pids}'`,
-    `    { printf '%s\\n' "$@"; echo "token=\${OVIS_TOKEN-unset} identity=\${IDENTITY_PATH-unset} secret=\${AUTH_OIDC_CLIENT_SECRET-unset} ovis=\${OVIS_PORTAL_OIDC_CLIENT_SECRET-unset}"; } > '${seen}'`,
+    `    { printf '%s\\n' "$@"; echo "token=\${OVIS_TOKEN-unset} identity=\${IDENTITY_PATH-unset} secret=\${AUTH_OIDC_CLIENT_SECRET-unset} ovis=\${OVIS_PORTAL_OIDC_CLIENT_SECRET-unset} proof=\${AUTH_IDENTITY_PROOF-unset}"; } > '${seen}'`,
     "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
     "    [ -z \"$id\" ] || [ -f \"$id\" ] || echo '{\"fixture\":true}' > \"$id\"",
     options.ignoreTerm ? "    trap '' TERM" : "    trap 'exit 0' TERM",
@@ -145,7 +155,8 @@ function seedSavedPortal(stateDir: string, pid: number | null = process.pid): vo
 const SECRET = "client-secret-that-only-the-environment-holds";
 /** the bearer secret a stand-in `auth issue` prints, which nothing may keep */
 const LINK = "credential-for-one-visitor-only";
-const inherited = { OVIS_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json", OVIS_PORTAL_OIDC_CLIENT_SECRET: SECRET };
+const AMBIENT_PROOF = "an-ambient-proof-the-server-was-started-with";
+const inherited = { OVIS_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json", OVIS_PORTAL_OIDC_CLIENT_SECRET: SECRET, AUTH_IDENTITY_PROOF: AMBIENT_PROOF };
 const previous: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const [name, value] of Object.entries(inherited)) { previous[name] = process.env[name]; process.env[name] = value; }
@@ -227,7 +238,8 @@ describe("running Portal", () => {
     expect(seen).toContain("--discovery=false");
     expect(seen).toContain("--hide");
     // the OIDC secret is set on this server and goes only to a Portal that signs in with OIDC
-    expect(seen.at(-1)).toBe(`token=unset identity=unset ${NO_SECRET}`);
+    expect(envOf(seen)).toBe(`token=unset identity=unset ${NO_SECRET}`);
+    expect(proofOf(seen)).toBeNull();
     expect(seen.slice(0, -1).filter((line) => line.startsWith("--auth"))).toEqual([]);
     expect(seen.filter((arg, index) => seen[index - 1] === "--strip-request-header")).toEqual(["Tailscale-User-Login", "X-Portal-User", "X-Portal-Auth"]);
 
@@ -709,7 +721,6 @@ describe("running Portal", () => {
 });
 
 describe("who may open the address", () => {
-  const argsOf = (seen: string[]) => seen.slice(0, -1);
 
   it("builds each sign-in's arguments, with nothing a visitor or the secret could change", () => {
     // no sign-in: a visitor's own identity headers are dropped, so none can pass for Portal's
@@ -734,7 +745,7 @@ describe("who may open the address", () => {
       expect(service.start({ relay: RELAY, port: 7317, auth: OIDC, ...open })).toBe("started");
       const status = await until(service, (s) => s.phase === "running", "Portal was ready");
       const seen = portal.seen();
-      expect(seen.at(-1)).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
+      expect(envOf(seen)).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
       expect(argsOf(seen).some((arg) => arg.includes(SECRET))).toBe(false);
       for (const arg of authArgs(OIDC)) expect(seen).toContain(arg);
       expect(seen).toContain("Tailscale-User-Login");
@@ -762,13 +773,17 @@ describe("who may open the address", () => {
     const offered = async (options: Parameters<typeof standIn>[0]) => (await new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn(options).path, fetch: relay() }).status(open)).auth_methods;
     expect(await offered({})).toEqual(["credential", "siwe", "oidc"]);
     expect(await offered({ flags: SIGN_IN_FLAGS })).toEqual(["credential", "siwe"]);
+    // a Portal that signs visitors in but cannot prove the identity it states offers nothing, whatever else it lists
+    expect(await offered({ flags: [...SIGN_IN_FLAGS.filter((flag) => flag !== PROOF_FLAG), ...OIDC_FLAGS] })).toEqual([]);
+    expect(await offered({ flags: [PROOF_FLAG, "auth-identity-headers", "auth-allow value"] })).toEqual([]);
+    expect(await offered({ flags: ["auth string", PROOF_FLAG, "auth-allow value"] })).toEqual([]);
     expect(await offered({ flags: ["auth string", "auth-allow value"] })).toEqual([]);
     expect(await offered({ flags: [] })).toEqual([]);
     // a Portal too old to run the tunnel, and none at all, offer nothing
     expect(await offered({ version: "v2.5.1" })).toEqual([]);
     expect((await new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: join(root, "no-such-portal"), fetch: relay() }).status(open)).auth_methods).toEqual([]);
 
-    for (const [flags, auth, said] of [[SIGN_IN_FLAGS, OIDC, "--auth oidc"], [[], credential(), "--auth credential"]] as const) {
+    for (const [flags, auth, said] of [[SIGN_IN_FLAGS, OIDC, "--auth oidc"], [[], credential(), "--auth credential"], [SIGN_IN_FLAGS.filter((flag) => flag !== PROOF_FLAG), credential(), "--auth credential"]] as const) {
       const portal = standIn({ flags: [...flags] });
       const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
       service.start({ relay: RELAY, port: 7317, auth, ...open });
@@ -779,18 +794,15 @@ describe("who may open the address", () => {
     }
   });
 
-  it("keeps the choice across stops and restarts, and trusts a sign-in's identity headers only while its Portal is up", async () => {
+  it("keeps the choice across stops and restarts", async () => {
     const stateDir = mkdtempSync(join(root, "state-"));
     const portal = standIn();
     const first = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
-    expect(first.signInHost()).toBeNull();
     first.start({ relay: RELAY, port: 7317, auth: credential("alice", "bob"), ...open });
     await until(first, (s) => s.phase === "running", "Portal was ready");
-    expect(first.signInHost()).toBe(new URL(ADDRESS).hostname);
     expect(argsOf(portal.seen())).toEqual(expect.arrayContaining(["--auth=credential", "--auth-identity-headers=true", "--auth-allow=alice", "--auth-allow=bob"]));
     first.stop();
     await until(first, (s) => s.phase === "idle", "Portal stopped");
-    expect(first.signInHost()).toBeNull();
     // what is shown in the panel once stopped is the choice the next start offers
     expect((await first.status(open)).auth).toEqual(credential("alice", "bob"));
 
@@ -801,8 +813,7 @@ describe("who may open the address", () => {
     expect(await next.status(open)).toMatchObject({ phase: "idle", auth: credential("alice", "bob") });
     next.start({ relay: RELAY, port: 7317, ...open });
     await until(next, (s) => s.phase === "running", "Portal was ready again");
-    // a start without a sign-in is the app's own token or a paired device again, and nobody's headers are believed
-    expect(next.signInHost()).toBeNull();
+    // a start without a sign-in is the app's own token or a paired device again
     expect(portal.seen().some((arg) => arg.startsWith("--auth"))).toBe(false);
     expect(savedState(stateDir)).toMatchObject({ auth: { method: "none", allow: [] } });
     await next.shutdown();
@@ -814,7 +825,6 @@ describe("who may open the address", () => {
     await resumed.resume({ port: 7317, ...open });
     await until(resumed, (s) => s.phase === "running", "the resumed Portal was ready");
     expect(argsOf(portal.seen())).toEqual(expect.arrayContaining(["--auth=siwe", `--auth-allow=${SIWE_AUTH.allow[0]}`]));
-    expect(resumed.signInHost()).toBe(new URL(ADDRESS).hostname);
     await resumed.shutdown();
   });
 
@@ -833,7 +843,7 @@ describe("who may open the address", () => {
       await back;
       expect(watch.exposes).toHaveLength(2);
       expect(portal.seen()).toEqual(expect.arrayContaining(authArgs(OIDC)));
-      expect(portal.seen().at(-1)).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
+      expect(envOf(portal.seen())).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
     } finally {
       watch.dispose();
       await bounded(service.shutdown(), "Portal shutdown settled");
@@ -881,6 +891,138 @@ describe("who may open the address", () => {
       const service = new PortalService({ stateDir, fetch: relay() });
       await expect(service.resume({ port: 7317, ...open })).rejects.toThrow("Saved Portal state is invalid");
     }
+  });
+});
+
+describe("the proof of a Portal with a sign-in", () => {
+  const PROOF = /^[0-9a-f]{64}$/;
+  const started = async (service: PortalService, auth: PortalAuth | undefined) => {
+    service.start({ relay: RELAY, port: 7317, auth, ...open });
+    await until(service, (s) => s.phase === "running", "Portal was ready");
+  };
+
+  it("matches only the proof itself, and a length that differs is no match rather than a throw", () => {
+    const proof = "a1".repeat(32);
+    expect(proofMatches(proof, proof)).toBe(true);
+    for (const given of [null, "", "a", proof.slice(1), proof.slice(0, -1), `${proof}0`, `${proof}${proof}`, proof.replace(/.$/, "b"), proof.toUpperCase(), ` ${proof}`, "x".repeat(10_000)]) {
+      expect(proofMatches(proof, given)).toBe(false);
+    }
+    // no proof made: nothing matches
+    for (const given of [null, "", proof]) expect(proofMatches(null, given)).toBe(false);
+  });
+
+  it("is made for a Portal with a sign-in and given to its environment alone: no argument, state, answer or log has it", async () => {
+    const stateDir = mkdtempSync(join(root, "state-"));
+    const portal = standIn();
+    const service = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
+    const logs = (["log", "info", "warn", "error"] as const).map((level) => spyOn(console, level).mockImplementation(() => undefined));
+    try {
+      expect(service.vouches(null)).toBe(false);
+      await started(service, credential());
+      const proof = proofOf(portal.seen())!;
+      expect(proof).toMatch(PROOF);
+      expect(service.vouches(proof)).toBe(true);
+      // the one made here, never one this server's own environment had
+      expect(service.vouches(AMBIENT_PROOF)).toBe(false);
+      for (const wrong of [null, "", proof.slice(1), proof.slice(0, -1), `${proof}0`, "0".repeat(64), proof.toUpperCase()]) expect(service.vouches(wrong)).toBe(false);
+      expect(argsOf(portal.seen()).some((arg) => arg.includes(proof))).toBe(false);
+      const status = JSON.stringify(await service.status(open));
+      expect(status).not.toContain(proof);
+      expect(readFileSync(join(stateDir, "portal", "state.json"), "utf8")).not.toContain(proof);
+      service.stop();
+      await until(service, (s) => s.phase === "idle", "Portal stopped");
+      expect(JSON.stringify(logs.flatMap((log) => log.mock.calls))).not.toContain(proof);
+    } finally {
+      for (const log of logs) log.mockRestore();
+      await bounded(service.shutdown(), "Portal shutdown settled");
+    }
+  });
+
+  it("is not made for a Portal without a sign-in, whatever an earlier one had", async () => {
+    const portal = standIn();
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+    await started(service, credential());
+    const earlier = proofOf(portal.seen())!;
+    service.stop();
+    await until(service, (s) => s.phase === "idle", "Portal stopped");
+    await started(service, undefined);
+    expect(proofOf(portal.seen())).toBeNull();
+    for (const given of [null, "", earlier]) expect(service.vouches(given)).toBe(false);
+    await bounded(service.shutdown(), "Portal shutdown settled");
+  });
+
+  it("is a new one for each launch, and the one before stops counting", async () => {
+    const portal = standIn();
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+    service.authorize(() => open);
+    const watch = observe(service);
+    try {
+      const ready = watch.when(() => watch.internals.url !== null, "Portal was ready");
+      service.start({ relay: RELAY, port: 7317, auth: credential(), ...open });
+      await ready;
+      const [first] = watch.exposes;
+      const before = proofOf(portal.seen())!;
+      expect(service.vouches(before)).toBe(true);
+      const back = watch.when(() => watch.internals.url !== null && watch.internals.child?.pid !== first, "the replacement was ready");
+      process.kill(first!, "SIGUSR1");
+      await back;
+      const after = proofOf(portal.seen())!;
+      expect(after).toMatch(PROOF);
+      expect(after).not.toBe(before);
+      expect(service.vouches(after)).toBe(true);
+      expect(service.vouches(before)).toBe(false);
+    } finally {
+      watch.dispose();
+      await bounded(service.shutdown(), "Portal shutdown settled");
+    }
+  });
+
+  it("stops counting with its Portal: when it is stopped, when the server shuts down, when it ends on its own, when it cannot be spawned", async () => {
+    const stopped = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn().path, fetch: relay() });
+    const first = standIn();
+    const one = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: first.path, fetch: relay() });
+    await started(one, credential());
+    const stoppedProof = proofOf(first.seen())!;
+    one.stop();
+    // at once, not when the process has gone
+    expect(one.vouches(stoppedProof)).toBe(false);
+    await until(one, (s) => s.phase === "idle", "Portal stopped");
+    expect(stopped.vouches(stoppedProof)).toBe(false);
+
+    const second = standIn();
+    const shut = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: second.path, fetch: relay() });
+    await started(shut, credential());
+    const shutProof = proofOf(second.seen())!;
+    const done = shut.shutdown();
+    expect(shut.vouches(shutProof)).toBe(false);
+    await bounded(done, "Portal shutdown settled");
+
+    // ended on its own with no relaunch allowed (nothing authorized one)
+    const third = standIn({ exitAfter: true });
+    const ended = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: third.path, fetch: relay() });
+    ended.start({ relay: RELAY, port: 7317, auth: credential(), ...open });
+    await until(ended, (s) => s.phase === "error", "Portal ended");
+    expect(ended.vouches(proofOf(third.seen()))).toBe(false);
+
+    // a spawn that fails: whatever was made for it counts for nothing
+    const fourth = standIn();
+    const failing = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: fourth.path, fetch: relay() });
+    const spawn = Bun.spawn;
+    let made: string | undefined;
+    const refusing = spyOn(Bun, "spawn").mockImplementation(((command: string[], options?: Parameters<typeof Bun.spawn>[1]) => {
+      if (Array.isArray(command) && command[1] === "expose" && command[2] !== "--help") {
+        made = (options?.env as Record<string, string> | undefined)?.["AUTH_IDENTITY_PROOF"];
+        throw new Error("fixture: cannot spawn");
+      }
+      return spawn(command, options);
+    }) as typeof Bun.spawn);
+    try {
+      failing.start({ relay: RELAY, port: 7317, auth: credential(), ...open });
+      const status = await until(failing, (s) => s.phase !== "starting", "the start ended");
+      expect(status.error).toContain("fixture: cannot spawn");
+      expect(made).toMatch(PROOF);
+      expect(failing.vouches(made!)).toBe(false);
+    } finally { refusing.mockRestore(); }
   });
 });
 

@@ -29,7 +29,8 @@
  * Portal's own sign-in (a private link, an Ethereum wallet, an OIDC account) is one more way in,
  * and the one exception to "a token is required of everything but a paired device": a visitor it let
  * in is let in like a paired device that may drive, with no token asked, and the PC's owner chose that
- * when starting Portal with it. Its X-Portal-User and X-Portal-Auth are believed only as `portalLogin` says.
+ * when starting Portal with it. Its X-Portal-User and X-Portal-Auth are believed only with the
+ * proof Portal sends beside them (`portalLogin`).
  */
 import { BlockList, isIP } from "node:net";
 import { PORTAL_SIGN_INS } from "../shared/portal.ts";
@@ -70,8 +71,8 @@ export interface AccessInput {
   gated: boolean;
   /** Portal's sign-in, when this server's Portal runs one; unset is as if it did not */
   portal?: {
-    /** that Portal's public host while it is up (`PortalService.signInHost`); null: no X-Portal-* header means anything */
-    host: string | null;
+    /** the request's X-Portal-Proof is the proof of the Portal running with a sign-in (`PortalService.vouches`) */
+    proven: boolean;
     /** the request's X-Portal-User, as sent */
     user: string | null;
     /** the request's X-Portal-Auth, as sent */
@@ -218,23 +219,20 @@ const tailnetIpv6 = new BlockList();
 tailnetIpv6.addSubnet("fd7a:115c:a1e0::", 48, "ipv6");
 
 /**
- * Who Portal's sign-in let in, when this request is one Portal vouches for. Portal sets
- * X-Portal-User and X-Portal-Auth from the sign-in it verified and removes a visitor's copies, but
- * only on the requests it carries: every other way to this port (a local client, `tailscale serve`,
- * another proxy) passes a visitor's copy on. So the headers count only when
- * - this server started its Portal with a sign-in and that Portal is up (`portal.host`),
- * - the request names that Portal's host, which routed mode keeps from the browser, and comes from
- *   this machine's loopback, where Portal connects from,
- * - it states no Tailscale login and is not Funnel, which Portal's own requests never are,
- * - and both values are shaped as Portal makes them.
- * That shuts the other ways in out. It does not shut out a process on this PC that names the host
- * itself: Portal gives the app nothing to prove a request is its own, so the PC's other users are
- * held back only by who may reach this port, as they are for a proxy's token header.
+ * Who Portal's sign-in let in. A header proves nothing by itself: any other way to this port
+ * (`tailscale serve`, another proxy, a local client) lets a visitor type X-Portal-User and
+ * X-Portal-Auth. So Portal also sends X-Portal-Proof, a secret made for each of its launches that
+ * only this server and that Portal have (it is in the Portal's environment), and drops a visitor's
+ * copy; the identity counts only with it (`portal.proven`). Without it, or with a wrong one, the
+ * headers are ignored and the request meets the token rules like any other. The values must also be
+ * shaped as Portal makes them.
+ *
+ * The proof is as private as the token: a process that can read this server's or Portal's
+ * environment can read OVIS_TOKEN too.
  */
-export function portalLogin(input: Pick<AccessInput, "loopback" | "funnel" | "tailscaleLogin" | "host" | "portal">): PortalLogin | null {
-  const { portal, host } = input;
-  if (portal === undefined || portal.host === null || !input.loopback || input.funnel || input.tailscaleLogin !== null) return null;
-  if (host === null || hostName(host) !== portal.host) return null;
+export function portalLogin(input: Pick<AccessInput, "portal">): PortalLogin | null {
+  const { portal } = input;
+  if (portal === undefined || !portal.proven) return null;
   const { user, auth } = portal;
   const method = PORTAL_SIGN_INS.find((candidate) => candidate === auth);
   if (user === null || method === undefined || !/^[\x20-\x7e]{1,260}$/.test(user) || user !== user.trim()) return null;

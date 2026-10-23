@@ -155,27 +155,23 @@ describe("decideAccess", () => {
 });
 
 describe("Portal's sign-in", () => {
-  // what a request through the running Portal looks like: its host, from loopback, the identity it vouches for
+  // what a request through the running Portal looks like: the identity it states, and its proof
   const HOST = "herdr-test-0123.relay.example";
   const WALLET = "0x52908400098527886E0F7030069857D2E4169EE7";
   const through = (portal: Partial<NonNullable<AccessInput["portal"]>> = {}, over: Partial<AccessInput> = {}): Partial<AccessInput> => ({
-    tokenConfigured: true, forwarded: true, host: HOST, portal: { host: HOST, user: "alice", auth: "credential", ...portal }, ...over,
+    tokenConfigured: true, forwarded: true, host: HOST, portal: { proven: true, user: "alice", auth: "credential", ...portal }, ...over,
   });
   const REFUSED = "refused:token_required";
 
-  // a visitor can type X-Portal-User wherever Portal is not the one setting it
+  // a visitor can type X-Portal-User wherever Portal is not the one carrying the request; only Portal has the proof
   const cases: [string, Partial<AccessInput>, string][] = [
-    ["the identity of a Portal started with a sign-in lets in, like a device that may drive", through(), "portal"],
-    ["whatever the case or port of the host", through({}, { host: `${HOST.toUpperCase()}:443` }), "portal"],
-    ["a Portal started with no sign-in has no host: the headers mean nothing", through({ host: null }), REFUSED],
-    // a Host that is no authority names no host, which must not equal a Portal that has none
-    ["a Host that is no host, with no Portal host to differ from", through({ host: null }, { host: "not a host" }), REFUSED],
-    ["no Portal at all", { ...through(), portal: undefined }, REFUSED],
-    ["a connection from off this machine", through({}, { loopback: false }), REFUSED],
-    ["another host: tailscale serve, a proxy or a local client typing the headers", through({}, { host: "pc.tail5cc90b.ts.net" }), REFUSED],
-    ["no host", through({}, { host: null }), REFUSED],
-    ["a request that states a Tailscale login: Portal strips it, so this came through tailscale serve", through({}, { tailscaleLogin: "me@example.com", owner: "me@example.com" }), REFUSED],
-    ["Funnel", through({}, { funnel: true }), REFUSED],
+    ["the identity of a request that carries the Portal's proof, like a device that may drive", through(), "portal"],
+    ["whatever Host, forwarding headers or Tailscale login come with it: the proof is the only condition", through({}, { host: "anything.example", forwardedFor: "100.64.0.9", tailscaleLogin: "me@example.com", owner: "me@example.com", funnel: true }), "portal"],
+    ["a request with no proof, from loopback, naming Portal's public host", through({ proven: false }), REFUSED],
+    ["a request with no proof, from off this machine", through({ proven: false }, { loopback: false }), REFUSED],
+    ["a request with no proof, through a proxy that sends the Host and the forwarding headers", through({ proven: false }, { forwardedFor: "203.0.113.9", host: HOST }), REFUSED],
+    ["a request with no proof, through a tagged tailscale serve", through({ proven: false }, { forwardedFor: "100.64.0.9", host: HOST, tagged: true }), REFUSED],
+    ["no Portal sign-in started: nothing has a proof to carry, so the headers mean nothing", { ...through(), portal: undefined }, REFUSED],
     ["no user", through({ user: null }), REFUSED],
     ["no method", through({ auth: null }), REFUSED],
     ["an empty user", through({ user: "" }), REFUSED],
@@ -206,8 +202,8 @@ describe("Portal's sign-in", () => {
     expect(decideAccess({ ...base, ...through(), device: { ...device, role: "watch" } })).toMatchObject({ via: "device", role: "watch" });
   });
 
-  it("changes nothing for a request it does not vouch for", () => {
-    const forged = { host: null, user: "alice", auth: "credential" };
+  it("changes nothing for a request that has no proof", () => {
+    const forged = { proven: false, user: "alice", auth: "credential" };
     const requests: Partial<AccessInput>[] = [
       {}, { forwarded: true, gated: true }, { loopback: false }, { loopback: false, gated: true }, { tokenConfigured: true }, { tokenConfigured: true, tokenMatched: true }, { tokenConfigured: true, device },
       { forwarded: true, tailscaleLogin: "me@example.com", owner: "me@example.com" }, { forwarded: true, tailscaleLogin: "them@example.com", owner: "me@example.com", tokenConfigured: true },

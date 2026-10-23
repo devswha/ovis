@@ -340,7 +340,7 @@ export function createServer(
         ...identity,
         tokenConfigured: token !== "",
         gated: devices.gated,
-        portal: { host: options.portal?.signInHost() ?? null, user: request.headers.get("x-portal-user"), auth: request.headers.get("x-portal-auth") },
+        portal: { proven: options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false, user: request.headers.get("x-portal-user"), auth: request.headers.get("x-portal-auth") },
       });
       const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
