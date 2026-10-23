@@ -36,9 +36,9 @@ import { loadIntegrations, outcomeFor, type IntegrationsResult } from "../lib/in
 import type { VoiceStatus } from "../../shared/voice.ts";
 import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
-import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
+import { SignOutRow } from "./SignOutRow.tsx";
 import { copyText } from "../lib/clipboard.ts";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -962,7 +962,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext }, access ?? null);
   // where a phone can open this app now, for the pairing QR code: the served address, else this one when it is not loopback
   const pairUrl = plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
-  const [confirmSignOut, setConfirmSignOut] = useState(false);
   // what keeps the switch from working here, only while it does (lib/wakeLock.ts asks for the same two)
   const wakeLockProblem = !window.isSecureContext ? t("Needs HTTPS or localhost.") : !("wakeLock" in navigator) ? t("This browser can't keep the screen on.") : null;
   return (
@@ -986,16 +985,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
 
       <SettingsGroup title={t("Devices")} section="devices">
         <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} onRevokedAll={onRevokedAll} /></div>
-        {onSignOut && (
-          <SettingsRow label={t("Sign out")} description={t("Forget this browser's sign-in. Getting back in takes the access token or a pairing code.")}>
-            <button type="button" className="btn" onClick={() => setConfirmSignOut(true)}>{t("Sign out")}</button>
-          </SettingsRow>
-        )}
-        {onSignOut && confirmSignOut && (
-          <ConfirmDialog title={t("Sign out of this browser?")}
-            body={t("Getting back in takes the access token, or a pairing code from the PC: Settings → Phone & devices there, or the pair command in its terminal.")}
-            confirmLabel={t("Sign out")} onClose={() => setConfirmSignOut(false)} onConfirm={onSignOut} />
-        )}
+        {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} onSignOut={onSignOut} />}
       </SettingsGroup>
 
       <AccessFacts facts={security} />

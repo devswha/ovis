@@ -537,6 +537,13 @@ export async function signOut(): Promise<void> {
   if (!response.ok) throw await errorFrom("/api/auth", response);
 }
 
+/** Portal's own sign-out, answered by its gateway and never by this server: a same-origin POST that clears Portal's session cookie for this address. */
+export async function signOutOfPortal(): Promise<void> {
+  const url = "/_portal/auth/logout";
+  const response = await fetch(url, { method: "POST" });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** Chunked btoa: the naive one-liner blows the stack on multi-MB screenshots. */
 function base64FromBytes(bytes: Uint8Array): string {
   let binary = "";

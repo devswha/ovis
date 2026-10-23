@@ -1,6 +1,6 @@
 /**
  * Japanese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/KeyBarSettings.tsx,
+ * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
  * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
@@ -119,6 +119,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Sign out of this browser?": "このブラウザーからサインアウトしますか？",
   "Getting back in takes the access token, or a pairing code from the PC: Settings → Phone & devices there, or the pair command in its terminal.": "再び入るにはアクセストークンか、PC のペアリングコードが必要です。コードは PC の設定 → Phone & devices か、PC のターミナルの pair コマンドで表示されます。",
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "このブラウザーのサインインを消去します。再び入るにはアクセストークンかペアリングコードが必要です。",
+  "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "このブラウザーのサインインを消去します。再び入るには Portal で再度サインインする必要があります。",
+  "Getting back in means signing in through Portal again.": "再び入るには Portal で再度サインインする必要があります。",
   "Sidebar rows": "サイドバーの行",
   "One line": "1 行",
   "Two lines": "2 行",

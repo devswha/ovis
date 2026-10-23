@@ -2,8 +2,9 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, us
 import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
 
 import type { HerdrPane } from "../shared/protocol.ts";
-import { authenticate, createTab, moveTabToWorkspace, shareSeen, signOut, splitPane, swapPaneWith, zoomPane } from "./lib/api.ts";
+import { authenticate, createTab, moveTabToWorkspace, shareSeen, splitPane, swapPaneWith, zoomPane } from "./lib/api.ts";
 import { displayPaneTitle } from "./components/Sidebar.tsx";
+import { endSignIn } from "./lib/signOut.ts";
 import { PaneCanvas } from "./components/PaneCanvas.tsx";
 import { MachineSessionsProvider } from "./lib/machineSessionContext.tsx";
 import { PaneTerminal } from "./components/PaneTerminal.tsx";
@@ -258,15 +259,17 @@ export function App() {
     await removePushSubscription().catch(() => undefined);
     setPushOn(false);
     resetPushHealth();
+    let reload = false;
     try {
-      await signOut();
+      ({ reload } = await endSignIn(auth?.via));
     } catch {
       throw new Error(t("Could not sign out. Try again."));
     } finally {
       // The response may have been lost after the cookie was cleared.
-      await loadHealth();
+      if (!reload) await loadHealth();
     }
-  }, [loadHealth, t]);
+    if (reload) window.location.reload();
+  }, [auth?.via, loadHealth, t]);
 
   const { selectedMachineRef, selectTarget, selectTargetRef, picks } = useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes });
 

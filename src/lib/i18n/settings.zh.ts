@@ -1,6 +1,6 @@
 /**
  * Simplified Chinese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/KeyBarSettings.tsx,
+ * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
  * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
@@ -119,6 +119,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Sign out of this browser?": "要从此浏览器退出登录吗？",
   "Getting back in takes the access token, or a pairing code from the PC: Settings → Phone & devices there, or the pair command in its terminal.": "再次进入需要访问令牌，或 PC 上的配对码：在 PC 的设置 → Phone & devices 中，或在其终端运行 pair 命令获取。",
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "清除此浏览器的登录。再次进入需要访问令牌或配对码。",
+  "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "清除此浏览器的登录。再次进入需要重新通过 Portal 登录。",
+  "Getting back in means signing in through Portal again.": "再次进入需要重新通过 Portal 登录。",
   "Sidebar rows": "侧边栏行",
   "One line": "单行",
   "Two lines": "双行",

@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/KeyBarSettings.tsx,
+ * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
  * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
@@ -119,6 +119,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Sign out of this browser?": "이 브라우저에서 로그아웃할까요?",
   "Getting back in takes the access token, or a pairing code from the PC: Settings → Phone & devices there, or the pair command in its terminal.": "다시 들어오려면 액세스 토큰이나 PC의 페어링 코드가 필요합니다. 코드는 PC의 설정 → Phone & devices나 PC 터미널의 pair 명령에서 받습니다.",
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "이 브라우저의 로그인을 지웁니다. 다시 들어오려면 액세스 토큰이나 페어링 코드가 필요합니다.",
+  "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "이 브라우저의 로그인을 지웁니다. 다시 들어오려면 Portal로 다시 로그인해야 합니다.",
+  "Getting back in means signing in through Portal again.": "다시 들어오려면 Portal로 다시 로그인해야 합니다.",
   "Sidebar rows": "사이드바 행",
   "One line": "한 줄",
   "Two lines": "두 줄",
