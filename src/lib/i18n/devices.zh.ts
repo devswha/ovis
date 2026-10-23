@@ -30,6 +30,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "You are in as this PC's Tailscale login.": "你已通过此 PC 的 Tailscale 登录身份访问。",
   "This is a paired device.": "这是已配对的设备。",
   "You are in with the access token.": "你已通过访问 Token 访问。",
+  "You are in through Portal's sign-in.": "你已通过 Portal 的登录访问。",
   "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.": "此浏览器能够访问，仅因为尚未配对任何设备：任何能访问此地址的人都同样可以进入。",
   "Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.": "配对设备后，除了代理登录之外，应用自身的登录也会开启：之后其他浏览器需要配对或使用访问令牌。如果代理已经负责登录，请设置 OVIS_TOKEN，并让代理代为发送。",
   "Pair this device now": "立即配对此设备",

@@ -390,7 +390,7 @@ export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageRe
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, RemoteAccess, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, RemoteAccess, TailscaleAccess } from "./access.ts";
 
 /**
  * Browser stream keys: how the server tells one browser from another without a credential, so a

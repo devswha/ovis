@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { DeviceStore } from "./devices.ts";
 import { forgetAuthAttempts } from "./auth.ts";
+import { PortalService } from "./portal.ts";
 
 /**
  * The access gate at the HTTP seam: what this PC needs to reach, and what a watching
@@ -214,5 +215,62 @@ describe("a token set: guessing it", () => {
     const signIn = await fetch(`${base}/api/auth`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-forwarded-for": "100.64.0.3" }, body: JSON.stringify({ token: TOKEN }) });
     expect(signIn.status).toBe(204);
     expect((await devices(TOKEN, "100.64.0.3")).status).toBe(200);
+  });
+});
+
+describe("a Portal that signs its visitors in", () => {
+  const TOKEN = "the-token-only-the-owner-holds";
+  const HOST = "herdr-test-0123.relay.example";
+  /** as the service answers while a Portal started with a sign-in is up (portal.test.ts runs the real one) */
+  class SignedInPortal extends PortalService {
+    override signInHost(): string | null { return HOST; }
+  }
+  const servers: ReturnType<typeof createServer>[] = [];
+  const start = (portal: PortalService): string => {
+    const stateDir = mkdtempSync(join(root, "portal-"));
+    const server = createServer({ port: 0, stateDir, token: TOKEN, portal });
+    servers.push(server);
+    return `http://127.0.0.1:${server.port}`;
+  };
+  afterAll(() => { for (const server of servers) server.stop(); });
+  /** what Portal sends: the visitor's Host kept, Forwarded-Proto https, and the identity it verified */
+  const portalHeaders = { host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9", "x-portal-user": "alice", "x-portal-auth": "credential" };
+  const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
+
+  it("lets in what its Portal vouches for, as a device that may drive, with no token", async () => {
+    const base = start(new SignedInPortal({ stateDir: root }));
+    expect(await health(base, portalHeaders)).toEqual({ required: false, authenticated: true, via: "portal", role: "drive", portal: { user: "alice", method: "credential" } });
+    expect((await fetch(`${base}/api/devices`, { headers: portalHeaders })).status).toBe(200);
+    // the token and the sign-in are both ways in, and the token does not become the sign-in's
+    expect(await health(base, { ...portalHeaders, authorization: `Bearer ${TOKEN}` })).toMatchObject({ via: "token" });
+    expect(await health(base, {})).toMatchObject({ required: true, authenticated: false, reason: "token_required" });
+  });
+
+  it("believes nothing of those headers from anywhere else, or about anyone else", async () => {
+    const base = start(new SignedInPortal({ stateDir: root }));
+    const refused = async (headers: Record<string, string>) => {
+      expect((await fetch(`${base}/api/devices`, { headers })).status).toBe(401);
+      expect(await health(base, headers)).toMatchObject({ authenticated: false, reason: "token_required" });
+    };
+    // a local client, tailscale serve or another proxy typing them under its own host
+    await refused({ ...portalHeaders, host: `127.0.0.1:${new URL(base).port}` });
+    await refused({ ...portalHeaders, host: "pc.tail5cc90b.ts.net" });
+    // a request that states a Tailscale login did not come through Portal, which strips it
+    await refused({ ...portalHeaders, "tailscale-user-login": "me@example.com" });
+    // values Portal does not make
+    await refused({ ...portalHeaders, "x-portal-user": "" });
+    await refused({ ...portalHeaders, "x-portal-auth": "saml" });
+    await refused({ ...portalHeaders, "x-portal-auth": "siwe" });
+    const { "x-portal-user": _user, ...nameless } = portalHeaders;
+    await refused(nameless);
+  });
+
+  it("believes nothing of them while its Portal runs no sign-in: a visitor can type them", async () => {
+    const base = start(new PortalService({ stateDir: root }));
+    expect(await health(base, portalHeaders)).toMatchObject({ authenticated: false, reason: "token_required" });
+    expect((await fetch(`${base}/api/devices`, { headers: portalHeaders })).status).toBe(401);
+    // and a server with no Portal at all
+    const alone = `http://127.0.0.1:${(() => { const server = createServer({ port: 0, stateDir: mkdtempSync(join(root, "portal-")), token: TOKEN }); servers.push(server); return server.port; })()}`;
+    expect(await health(alone, portalHeaders)).toMatchObject({ authenticated: false, reason: "token_required" });
   });
 });

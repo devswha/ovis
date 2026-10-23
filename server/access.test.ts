@@ -154,6 +154,73 @@ describe("decideAccess", () => {
   });
 });
 
+describe("Portal's sign-in", () => {
+  // what a request through the running Portal looks like: its host, from loopback, the identity it vouches for
+  const HOST = "herdr-test-0123.relay.example";
+  const WALLET = "0x52908400098527886E0F7030069857D2E4169EE7";
+  const through = (portal: Partial<NonNullable<AccessInput["portal"]>> = {}, over: Partial<AccessInput> = {}): Partial<AccessInput> => ({
+    tokenConfigured: true, forwarded: true, host: HOST, portal: { host: HOST, user: "alice", auth: "credential", ...portal }, ...over,
+  });
+  const REFUSED = "refused:token_required";
+
+  // a visitor can type X-Portal-User wherever Portal is not the one setting it
+  const cases: [string, Partial<AccessInput>, string][] = [
+    ["the identity of a Portal started with a sign-in lets in, like a device that may drive", through(), "portal"],
+    ["whatever the case or port of the host", through({}, { host: `${HOST.toUpperCase()}:443` }), "portal"],
+    ["a Portal started with no sign-in has no host: the headers mean nothing", through({ host: null }), REFUSED],
+    // a Host that is no authority names no host, which must not equal a Portal that has none
+    ["a Host that is no host, with no Portal host to differ from", through({ host: null }, { host: "not a host" }), REFUSED],
+    ["no Portal at all", { ...through(), portal: undefined }, REFUSED],
+    ["a connection from off this machine", through({}, { loopback: false }), REFUSED],
+    ["another host: tailscale serve, a proxy or a local client typing the headers", through({}, { host: "pc.tail5cc90b.ts.net" }), REFUSED],
+    ["no host", through({}, { host: null }), REFUSED],
+    ["a request that states a Tailscale login: Portal strips it, so this came through tailscale serve", through({}, { tailscaleLogin: "me@example.com", owner: "me@example.com" }), REFUSED],
+    ["Funnel", through({}, { funnel: true }), REFUSED],
+    ["no user", through({ user: null }), REFUSED],
+    ["no method", through({ auth: null }), REFUSED],
+    ["an empty user", through({ user: "" }), REFUSED],
+    ["a user with a control character", through({ user: "alice\u0007" }), REFUSED],
+    ["a user with other than printable ASCII", through({ user: "김철수" }), REFUSED],
+    ["a user with spaces around it", through({ user: " alice " }), REFUSED],
+    ["a user of 261 characters", through({ user: "a".repeat(261) }), REFUSED],
+    ["a method Portal does not have", through({ auth: "saml" }), REFUSED],
+    ["a method in another case", through({ auth: "Credential" }), REFUSED],
+    ["a link name of 256 characters, spaces inside", through({ user: `${"a ".repeat(127)}ab` }), "portal"],
+    ["a wallet that is an address", through({ user: WALLET, auth: "siwe" }), "portal"],
+    ["a wallet that is not", through({ user: "alice", auth: "siwe" }), REFUSED],
+    ["an email for OIDC", through({ user: "me@example.com", auth: "oidc" }), "portal"],
+    ["an id for OIDC", through({ user: "sub:1234567890", auth: "oidc" }), "portal"],
+    ["a bare word for OIDC", through({ user: "alice", auth: "oidc" }), REFUSED],
+  ];
+  for (const [name, input, expected] of cases) it(`${expected === "portal" ? "accepts" : "ignores"} ${name}`, () => {
+    expect(via(input)).toBe(expected);
+  });
+
+  it("says who signed in and how, and gives them the drive role", () => {
+    expect(decideAccess({ ...base, ...through({ user: WALLET, auth: "siwe" }) })).toEqual({ level: "full", via: "portal", role: "drive", portal: { user: WALLET, method: "siwe" } });
+  });
+
+  it("is believed after the token and a paired device, never before them", () => {
+    expect(via({ ...through(), tokenMatched: true })).toBe("token");
+    expect(via({ ...through(), device })).toBe("device");
+    expect(decideAccess({ ...base, ...through(), device: { ...device, role: "watch" } })).toMatchObject({ via: "device", role: "watch" });
+  });
+
+  it("changes nothing for a request it does not vouch for", () => {
+    const forged = { host: null, user: "alice", auth: "credential" };
+    const requests: Partial<AccessInput>[] = [
+      {}, { forwarded: true, gated: true }, { loopback: false }, { loopback: false, gated: true }, { tokenConfigured: true }, { tokenConfigured: true, tokenMatched: true }, { tokenConfigured: true, device },
+      { forwarded: true, tailscaleLogin: "me@example.com", owner: "me@example.com" }, { forwarded: true, tailscaleLogin: "them@example.com", owner: "me@example.com", tokenConfigured: true },
+      { forwarded: true, funnel: true }, { forwarded: true, tagged: true, tailscaleLogin: "me@example.com" },
+      { forwarded: true, owner: "me@example.com", soleLogin: "me@example.com", serveOnly: true, ...node },
+    ];
+    for (const request of requests) {
+      expect(decideAccess({ ...base, ...request, portal: forged })).toEqual(decideAccess({ ...base, ...request }));
+      expect(decideAccess({ ...base, ...request, host: HOST, portal: forged })).toEqual(decideAccess({ ...base, ...request, host: HOST }));
+    }
+  });
+});
+
 describe("lanExposed", () => {
   const open = { hostname: "0.0.0.0", tokenConfigured: false, gated: false };
   const warned = (over: Partial<typeof open>): boolean => lanExposed({ ...open, ...over });

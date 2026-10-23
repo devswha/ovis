@@ -30,6 +30,7 @@ export const DEVICES_KO: Record<string, string> = {
   "You are in as this PC's Tailscale login.": "이 PC의 Tailscale 로그인으로 접속했습니다.",
   "This is a paired device.": "페어링된 기기입니다.",
   "You are in with the access token.": "접속 토큰으로 로그인했습니다.",
+  "You are in through Portal's sign-in.": "Portal 로그인으로 접속했습니다.",
   "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.": "아직 페어링된 기기가 없어 로그인 없이 접속된 상태입니다. 이 주소로 접속할 수 있는 사람은 누구나 똑같이 들어올 수 있습니다.",
   "Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.": "기기를 페어링하면 프록시 로그인과 별도로 앱 자체 로그인이 켜집니다. 그 뒤 다른 브라우저는 페어링이나 액세스 토큰이 필요합니다. 프록시가 이미 로그인을 받고 있다면 OVIS_TOKEN을 설정하고 프록시가 대신 보내게 하세요.",
   "Pair this device now": "지금 이 기기 페어링",

@@ -340,6 +340,7 @@ export function createServer(
         ...identity,
         tokenConfigured: token !== "",
         gated: devices.gated,
+        portal: { host: options.portal?.signInHost() ?? null, user: request.headers.get("x-portal-user"), auth: request.headers.get("x-portal-auth") },
       });
       const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
@@ -536,7 +537,7 @@ export function createServer(
       if (pathname === "/api/health") {
         setRequestRoute(pathname);
         const auth: HealthAuth = access.level === "full"
-          ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}) }
+          ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}) }
           : { required: true, authenticated, ...(authenticated ? {} : { reason: access.reason }) };
         // this server is open to the network with no token and nothing paired, told to a client
         // that got in and to nobody else: naming it to an anonymous caller would be

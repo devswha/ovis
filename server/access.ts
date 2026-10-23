@@ -25,9 +25,15 @@
  * what it sends: a forwarding header, or a Host that is not a name for this machine. A proxy
  * that sends neither (nginx's bare `proxy_pass` rewrites Host to the upstream address and adds
  * nothing) cannot be told from a local client: only a token closes that setup.
+ *
+ * Portal's own sign-in (a private link, an Ethereum wallet, an OIDC account) is one more way in,
+ * and the one exception to "a token is required of everything but a paired device": a visitor it let
+ * in is let in like a paired device that may drive, with no token asked, and the PC's owner chose that
+ * when starting Portal with it. Its X-Portal-User and X-Portal-Auth are believed only as `portalLogin` says.
  */
 import { BlockList, isIP } from "node:net";
-import type { AccessRefusal, AccessVia, BindScope, DeviceRole, ObservedIngress } from "../shared/protocol.ts";
+import { PORTAL_SIGN_INS } from "../shared/portal.ts";
+import type { AccessRefusal, AccessVia, BindScope, DeviceRole, ObservedIngress, PortalLogin } from "../shared/protocol.ts";
 import type { DeviceMatch } from "./devices.ts";
 
 export interface AccessInput {
@@ -62,10 +68,19 @@ export interface AccessInput {
   tokenConfigured: boolean;
   /** a device cookie was confirmed by DeviceStore.match: the gate is closed to strangers */
   gated: boolean;
+  /** Portal's sign-in, when this server's Portal runs one; unset is as if it did not */
+  portal?: {
+    /** that Portal's public host while it is up (`PortalService.signInHost`); null: no X-Portal-* header means anything */
+    host: string | null;
+    /** the request's X-Portal-User, as sent */
+    user: string | null;
+    /** the request's X-Portal-Auth, as sent */
+    auth: string | null;
+  };
 }
 
 export type Access =
-  | { level: "full"; via: AccessVia; role: DeviceRole; device?: DeviceMatch; login?: string }
+  | { level: "full"; via: AccessVia; role: DeviceRole; device?: DeviceMatch; login?: string; portal?: PortalLogin }
   | { level: "none"; reason: AccessRefusal };
 
 export function isLoopbackAddress(address: string): boolean {
@@ -202,9 +217,38 @@ tailnetIpv4.addSubnet("100.64.0.0", 10, "ipv4");
 const tailnetIpv6 = new BlockList();
 tailnetIpv6.addSubnet("fd7a:115c:a1e0::", 48, "ipv6");
 
+/**
+ * Who Portal's sign-in let in, when this request is one Portal vouches for. Portal sets
+ * X-Portal-User and X-Portal-Auth from the sign-in it verified and removes a visitor's copies, but
+ * only on the requests it carries: every other way to this port (a local client, `tailscale serve`,
+ * another proxy) passes a visitor's copy on. So the headers count only when
+ * - this server started its Portal with a sign-in and that Portal is up (`portal.host`),
+ * - the request names that Portal's host, which routed mode keeps from the browser, and comes from
+ *   this machine's loopback, where Portal connects from,
+ * - it states no Tailscale login and is not Funnel, which Portal's own requests never are,
+ * - and both values are shaped as Portal makes them.
+ * That shuts the other ways in out. It does not shut out a process on this PC that names the host
+ * itself: Portal gives the app nothing to prove a request is its own, so the PC's other users are
+ * held back only by who may reach this port, as they are for a proxy's token header.
+ */
+export function portalLogin(input: Pick<AccessInput, "loopback" | "funnel" | "tailscaleLogin" | "host" | "portal">): PortalLogin | null {
+  const { portal, host } = input;
+  if (portal === undefined || portal.host === null || !input.loopback || input.funnel || input.tailscaleLogin !== null) return null;
+  if (host === null || hostName(host) !== portal.host) return null;
+  const { user, auth } = portal;
+  const method = PORTAL_SIGN_INS.find((candidate) => candidate === auth);
+  if (user === null || method === undefined || !/^[\x20-\x7e]{1,260}$/.test(user) || user !== user.trim()) return null;
+  // a wallet is its address; an OIDC account is an email or sub:<id>; a link is whatever its name is
+  if (method === "siwe" ? !/^0x[0-9a-f]{40}$/i.test(user) : method === "oidc" && !user.startsWith("sub:") && !user.includes("@")) return null;
+  return { user, method };
+}
+
 export function decideAccess(input: AccessInput): Access {
   if (input.tokenMatched) return { level: "full", via: "token", role: "drive" };
   if (input.device !== null) return { level: "full", via: "device", role: input.device.role, device: input.device };
+  // before the token gate below, which holds every other way in: Portal's sign-in replaces the token
+  const portal = portalLogin(input);
+  if (portal !== null) return { level: "full", via: "portal", role: "drive", portal };
   // before the login header: a token must hold against a header a visitor can send through another proxy
   if (input.tokenConfigured) return { level: "none", reason: "token_required" };
   // the identity header is only worth something from the local tailscaled, never from a LAN client
