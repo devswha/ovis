@@ -11,27 +11,34 @@ herdr labels a pane that runs `muse`, or the versioned `muse-bin-…` binary its
 as `muse`, but reports no session for it. Muse writes `.session.lock` into each session
 directory it opens, with `pid=<pid>` and, on recent builds, `host=<host>`, and never removes it.
 
-The reader takes the pane's one Muse foreground process, then the top-level locks under
-`${XDG_DATA_HOME:-~/.local/share}/muse/sessions/YYYY/MM/DD/<id>/` that name its pid (and this
-PC's host name, when a lock names one) and were written since that process started. A lock left
-by an earlier process with the same pid is older than the process, so it never counts. A session
-the TUI switched away from ends its log with `session.end` and is dropped, as is a lock whose log
-does not exist yet. Exactly one session must be left; otherwise Chat uses Terminal. Folder,
-recency and argv never choose a session, so panes in one folder each show their own, and an
-in-TUI `/resume` is followed at once: Muse writes the resumed session's lock and its
-`session.resumed` record as it switches.
+The reader takes the pane's Muse foreground processes, then the top-level locks under
+`${XDG_DATA_HOME:-~/.local/share}/muse/sessions/YYYY/MM/DD/<id>/` that name one of their pids
+(and this PC's host name, when a lock names one) and were written since that process started.
+A lock left by an earlier process with the same pid is older than the process, so it never
+counts. A `muse` launcher that stays alive beside its `muse-bin-…` child holds no lock, so it
+binds nothing.
+
+A session the TUI switched away from ends its log with `session.end` and is dropped, as is a
+lock whose log does not exist yet. Exactly one session must be left; otherwise Chat uses
+Terminal. Folder, recency and argv never choose a session, so panes in one folder each show
+their own, and an in-TUI `/resume` is followed at once: Muse writes the resumed session's lock
+and its `session.resumed` record as it switches.
+
+The server keeps each binding and later checks only that session's lock and log end. It reads
+all the locks again only when that check fails, as after a switch. A store of more than 4096
+sessions is not read, and Chat uses Terminal.
 
 The data directory comes from the server's `XDG_DATA_HOME`; a Muse started with another one
 uses Terminal. A process's start time comes from `ps` on macOS (whole seconds, so a three-second
-margin) and `/proc` on Linux. Windows uses Terminal. Each read checks the lock time of every
-session in the store.
+margin) and `/proc` on Linux. Windows uses Terminal.
 
 ## What is read
 
 - **Prompts:** `runtime.user_intent.accepted`, once per message sent, including one sent while
   Muse works. `run/started` repeats the words and is not read.
 - **Answers:** `assistant_message_committed`. Muse marks progress prose `commentary`, which folds
-  into the turn's work block; the rest is the answer.
+  into the turn's work block; the rest is the answer. When a run ends with
+  `terminal: "completed"` on an answer, that answer is final, and Chat marks the turn as done.
 - **Reasoning:** `reasoning_summary_committed`. `reasoning_committed` is encrypted and skipped.
 - **Tools:** calls from `assistant_tool_calls_committed`, results from
   `tool_result_batch_committed` by call id. A JSON envelope shows its `output`, and a non-zero

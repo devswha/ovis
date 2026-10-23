@@ -27,7 +27,8 @@ describe("Muse session log", () => {
     // run/started repeats the prompt; only the accepted intent is the user's message
     expect(prompt!.parts).toEqual([{ kind: "text", text: "Count the lines in notes.txt" }]);
     expect(work!.parts[1]).toEqual({ kind: "text", text: "Counting the lines now.", phase: "commentary" });
-    expect(work!.parts.at(-1)).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
+    // the run's completed end makes its last answer final
+    expect(work!.parts.at(-1)).toEqual({ kind: "text", text: "notes.txt has 3 lines.", phase: "final_answer" });
     const tools = work!.parts.filter((part): part is Tool => part.kind === "tool");
     expect(tools.map((tool) => [tool.name, tool.summary, tool.output.slice(0, 50), tool.error ?? false])).toEqual([
       ["bash", "Count the lines", "3 notes.txt\n", false],
@@ -55,6 +56,19 @@ describe("Muse session log", () => {
     const unnamed = parseMuseTranscript(batch.replace('"tool_call_id":"call_01"', '"tool_call_id":""').replace("3 notes.txt", "x".repeat(5000)))
       .flatMap((turn) => turn.parts).find((part): part is Tool => part.kind === "tool")!;
     expect([unnamed.output.length < 5000, unnamed.output_ref, unnamed.output_size]).toEqual([true, undefined, undefined]);
+  });
+
+  test("only a run that completes on an answer marks it final", () => {
+    const lines = fixture.trimEnd().split("\n");
+    const last = (log: string[]) => parseMuseTranscript(log.join("\n")).at(-1)!.parts.at(-1);
+    const end = lines.findIndex((line) => line.includes('"terminal":"completed"'));
+    expect(last(lines.slice(0, end))).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
+    expect(last([...lines.slice(0, end), lines[end]!.replace('"terminal":"completed"', '"terminal":"failed"')])).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
+    // a run that ends on progress prose or on a tool has no answer to mark
+    const commentary = lines.find((line) => line.includes('"phase":"commentary"'))!;
+    expect(last([lines[2]!, commentary, lines[end]!])).toEqual({ kind: "text", text: "Counting the lines now.", phase: "commentary" });
+    const call = lines.find((line) => line.includes("assistant_tool_calls_committed"))!;
+    expect(last([lines[2]!, call, lines[end]!])?.kind).toBe("tool");
   });
 
   test("unwraps result envelopes and the harness's own verdicts", () => {
@@ -98,13 +112,15 @@ describe("Muse session binding", () => {
     return join(dir, "session.jsonl");
   };
   const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, "0")}`;
-  const ended = `${fixture}{"payload_type":"session.end","payload":{"kind":"session_end"}}\n`;
+  const END = '{"payload_type":"session.end","payload":{"kind":"session_end"}}\n';
+  const ended = `${fixture}${END}`;
+  const owner = [{ pid: 4242, startedAt: start }];
 
   test("binds the one live session whose lock names the process", () => {
     const live = session("22", id(1), "pid=4242\nhost=fiction\n");
     session("22", id(2), "pid=7\nhost=fiction\n");
     session("21", id(3), null);
-    expect(museSessionFor(root, 4242, start, "fiction")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction")).toBe(live);
   });
 
   test("a lock from before the process started, another host's lock, an ended session and a lock without its log never bind", () => {
@@ -112,22 +128,49 @@ describe("Muse session binding", () => {
     session("22", id(2), "pid=4242\nhost=elsewhere\n");
     session("22", id(3), "pid=4242\nhost=fiction\n", ended);
     rmSync(session("22", id(5), "pid=4242\nhost=fiction\n"));
-    expect(museSessionFor(root, 4242, start, "fiction")).toBeNull();
+    expect(museSessionFor(root, owner, "fiction")).toBeNull();
     // after an in-TUI switch, the session left behind ends and the one switched to is live
     const live = session("22", id(4), "pid=4242\nhost=fiction\n");
-    expect(museSessionFor(root, 4242, start, "fiction")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction")).toBe(live);
   });
 
   test("a host name matches by its first label", () => {
     const live = session("22", id(1), "pid=4242\nhost=Fiction\n");
-    expect(museSessionFor(root, 4242, start, "fiction.local")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction.local")).toBe(live);
   });
 
-  test("an older lock without a host still binds, and two live sessions for one process bind neither", () => {
+  test("two live sessions for one process bind neither, and an older lock without a host binds", () => {
     const old = session("22", id(1), "pid=4242\n");
-    expect(museSessionFor(root, 4242, start, "fiction")).toBe(old);
-    session("22", id(2), "pid=4242\nhost=fiction\n");
-    expect(museSessionFor(root, 4242, start, "fiction")).toBeNull();
+    const other = session("22", id(2), "pid=4242\nhost=fiction\n");
+    expect(museSessionFor(root, owner, "fiction")).toBeNull();
+    appendFileSync(other, END);
+    expect(museSessionFor(root, owner, "fiction")).toBe(old);
+  });
+
+  test("keeps a binding while its lock and log hold, and scans again once the log ends", () => {
+    const first = session("22", id(1), "pid=4242\nhost=fiction\n");
+    expect(museSessionFor(root, owner, "fiction")).toBe(first);
+    // a later resolve checks only the bound session: the store is not scanned again
+    const second = session("22", id(2), "pid=4242\nhost=fiction\n");
+    expect(museSessionFor(root, owner, "fiction")).toBe(first);
+    // an in-TUI switch ends the bound log
+    appendFileSync(first, END);
+    expect(museSessionFor(root, owner, "fiction")).toBe(second);
+    // a process that took the pid later never keeps the binding
+    expect(museSessionFor(root, [{ pid: 4242, startedAt: start + 3_600_000 }], "fiction")).toBeNull();
+  });
+
+  test("a launcher alive beside its muse-bin child binds the session the child holds", () => {
+    const live = session("22", id(1), "pid=4242\nhost=fiction\n");
+    expect(museSessionFor(root, [{ pid: 4241, startedAt: start }, ...owner], "fiction")).toBe(live);
+  });
+
+  test("a store of more than 4096 sessions is not scanned", () => {
+    const live = session("22", id(1), "pid=4242\nhost=fiction\n");
+    for (let n = 2; n <= 4097; n++) mkdirSync(join(root, "sessions", "2026", "10", "23", id(n)), { recursive: true });
+    expect(museSessionFor(root, owner, "fiction")).toBeNull();
+    rmSync(join(root, "sessions", "2026", "10", "23", id(4097)), { recursive: true });
+    expect(museSessionFor(root, owner, "fiction")).toBe(live);
   });
 
   test("a subagent's nested session is never a candidate", () => {
@@ -136,7 +179,7 @@ describe("Muse session binding", () => {
     mkdirSync(nested, { recursive: true });
     writeFileSync(join(nested, ".session.lock"), "pid=4242\nhost=fiction\n");
     writeFileSync(join(nested, "session.jsonl"), fixture);
-    expect(museSessionFor(root, 4242, start, "fiction")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction")).toBe(live);
   });
 
   test("reads locks, ends and executables as Muse writes them", () => {

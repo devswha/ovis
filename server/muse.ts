@@ -8,7 +8,8 @@
  * - reasoning: `reasoning_summary_committed` (`reasoning_committed` holds encrypted content only);
  * - tool calls: `assistant_tool_calls_committed`, arguments as a JSON string; their results:
  *   `tool_result_batch_committed`, by `tool_call_id` (`task/output` is the stream of them);
- * - a compaction: `context_compaction_installed` with a `summary_text` replacement.
+ * - a compaction: `context_compaction_installed` with a `summary_text` replacement;
+ * - a run's end: `terminal`, whose `completed` makes the answer before it final.
  * Every other record is bookkeeping. The shapes are the same from Muse 1.4.2 to 1.4.12.
  */
 import { closeSync, openSync, readSync } from "node:fs";
@@ -24,7 +25,7 @@ const str = (value: unknown): string => typeof value === "string" ? value : "";
 
 /** Lines without one of these hold nothing the reader takes; they are skipped before parsing. */
 const MARKS = ['"runtime.user_intent.accepted"', '"assistant_message_committed"', '"reasoning_summary_committed"',
-  '"assistant_tool_calls_committed"', '"tool_result_batch_committed"', '"context_compaction_installed"'];
+  '"assistant_tool_calls_committed"', '"tool_result_batch_committed"', '"context_compaction_installed"', '"terminal":"completed"'];
 
 function iso(value: unknown): string | null {
   return typeof value === "number" && Number.isFinite(value) ? new Date(Math.floor(value / 1000)).toISOString() : null;
@@ -105,6 +106,11 @@ export function parseMuseTranscript(text: string): ConversationTurn[] {
         if (id === "") { delete part.output_ref; delete part.output_size; }
         if (result.error) part.error = true;
       }
+    } else if (event.kind === "terminal" && event.terminal === "completed") {
+      // the run ended on its answer: a run that ends on a tool or on progress prose has none
+      const last = turns.at(-1);
+      const part = last?.role === "assistant" ? last.parts.at(-1) : undefined;
+      if (part?.kind === "text" && part.phase === undefined) part.phase = "final_answer";
     } else if (event.kind === "context_compaction_installed") {
       const replacement = record(event.replacement);
       if (replacement.kind === "summary_text" && str(replacement.text).trim() !== "") {
@@ -129,8 +135,10 @@ export function museModel(text: string, model: string | null): string | null {
   return model;
 }
 
-/** The whole result of one call, by its id, unwrapped as the page unwraps it. */
-// ponytail: reads the log from the start per request; read backwards from the end if logs grow past a few hundred MB
+/**
+ * The whole result of one call, by its id, unwrapped as the page unwraps it. ponytail: reads the
+ * log from the start on each request; read backwards from the end if logs grow past a few hundred MB.
+ */
 export function museToolOutput(path: string, ref: string): string | null {
   const id = JSON.stringify(ref);
   let fd: number;

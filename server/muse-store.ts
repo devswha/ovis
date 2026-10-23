@@ -58,43 +58,80 @@ function names(dir: string, pattern: RegExp): string[] {
   try { return readdirSync(dir).filter((name) => pattern.test(name)); } catch { return []; }
 }
 
+/** Past this many sessions the store is not scanned and Chat uses Terminal, as in grok-store.ts. */
+const MAX_SESSIONS = 4096;
+
+/** A Muse process of the pane, with an upper bound of its start time. */
+export interface MuseOwner { pid: number; startedAt: number }
+
+/** The session directory each process was last bound to, by store and pid; checked again on each resolve. */
+const bound = new Map<string, string>();
+
 /**
- * The log of the one session `pid` holds open: its lock names the pid (and this host, when it
- * names one) and was written since the process started, and its log has not ended. A lock left
- * by an earlier process that had the same pid is older than this one; a session the process
- * switched away from has ended. Null unless exactly one is left.
+ * The log in `dir` when its lock names `owner` (and this host, when it names one) and was written
+ * since the process started, and the log has not ended; else null. A lock left by an earlier
+ * process that had the same pid is older than this one; a session the process switched away
+ * from has ended.
  */
-// ponytail: stats every session lock on each resolve; index locks by mtime if stores grow to thousands
-export function museSessionFor(data: string, pid: number, startedAt: number, host = hostname()): string | null {
-  const found: string[] = [];
+function heldLog(dir: string, owner: MuseOwner, host: string): string | null {
+  const lock = join(dir, ".session.lock");
+  try {
+    if (statSync(lock).mtimeMs < owner.startedAt - START_SLACK_MS) return null;
+    const named = parseMuseLock(readFileSync(lock, "utf8"));
+    if (named === null || named.pid !== owner.pid || (named.host !== null && !sameHost(named.host, host))) return null;
+  } catch { return null; }
+  const log = join(dir, "session.jsonl");
+  return museSessionLive(log) ? log : null;
+}
+
+/**
+ * The log of the one session the pane's Muse processes hold open (heldLog). A binding is kept
+ * per process and only its own lock and log end are checked on later resolves. The store is
+ * scanned again when that check fails, as after an in-TUI switch, which ends the old log. Null
+ * unless the scan leaves exactly one session, or when the store holds more than MAX_SESSIONS.
+ * ponytail: while nothing binds, each resolve scans again; remember a failed scan if a pane
+ * stays in that state.
+ */
+export function museSessionFor(data: string, owners: MuseOwner[], host = hostname()): string | null {
+  for (const owner of owners) {
+    const key = `${owner.pid}\0${data}`;
+    const dir = bound.get(key);
+    if (dir === undefined) continue;
+    const log = heldLog(dir, owner, host);
+    if (log !== null) return log;
+    bound.delete(key);
+  }
+  const dirs: string[] = [];
   const sessions = join(data, "sessions");
   for (const year of names(sessions, /^\d{4}$/)) {
     for (const month of names(join(sessions, year), /^\d{2}$/)) {
       for (const day of names(join(sessions, year, month), /^\d{2}$/)) {
         for (const id of names(join(sessions, year, month, day), SESSION)) {
-          const dir = join(sessions, year, month, day, id);
-          const lock = join(dir, ".session.lock");
-          try {
-            if (statSync(lock).mtimeMs < startedAt - START_SLACK_MS) continue;
-            const owner = parseMuseLock(readFileSync(lock, "utf8"));
-            if (owner === null || owner.pid !== pid || (owner.host !== null && !sameHost(owner.host, host))) continue;
-          } catch { continue; }
-          const log = join(dir, "session.jsonl");
-          if (museSessionLive(log)) found.push(log);
+          if (dirs.push(join(sessions, year, month, day, id)) > MAX_SESSIONS) return null;
         }
       }
     }
   }
-  return found.length === 1 ? found[0]! : null;
+  const found = dirs.flatMap((dir) => owners.flatMap((owner) => {
+    const log = heldLog(dir, owner, host);
+    return log === null ? [] : [{ pid: owner.pid, dir, log }];
+  }));
+  if (found.length !== 1) return null;
+  bound.set(`${found[0]!.pid}\0${data}`, found[0]!.dir);
+  if (bound.size > 64) bound.delete(bound.keys().next().value!);
+  return found[0]!.log;
 }
 
-/** The session log a Muse pane shows, or null when its one Muse process holds no single session. */
+/**
+ * The session log a Muse pane shows, or null when its Muse processes hold no single session.
+ * A `muse` launcher that stays alive beside its `muse-bin-…` child holds no lock of its own.
+ */
 export async function resolveMuseSession(pane: HerdrPane, data = defaultMuseData()): Promise<string | null> {
   try {
     const info = await paneProcessInfo(pane.pane_id);
-    const owners = (info?.foreground_processes ?? []).filter((p) => Number.isSafeInteger(p.pid) && p.pid > 1 && isMuseExecutable(p.argv?.[0] ?? p.argv0 ?? ""));
-    if (owners.length !== 1) return null;
-    const startedAt = await processStartUpperBoundAsync(owners[0]!.pid);
-    return startedAt === null ? null : museSessionFor(data, owners[0]!.pid, startedAt);
+    const pids = (info?.foreground_processes ?? []).filter((p) => Number.isSafeInteger(p.pid) && p.pid > 1 && isMuseExecutable(p.argv?.[0] ?? p.argv0 ?? "")).map((p) => p.pid);
+    const owners = (await Promise.all(pids.map(async (pid) => ({ pid, startedAt: await processStartUpperBoundAsync(pid) }))))
+      .filter((owner): owner is MuseOwner => owner.startedAt !== null);
+    return owners.length === 0 ? null : museSessionFor(data, owners);
   } catch { return null; }
 }
