@@ -1100,7 +1100,7 @@ const PLUGINS: PluginActions[] = [
   ] },
 ];
 
-const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null };
+const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false };
 /**
  * The demo opens no public address, so its Portal section stays hidden. A QA script may stage a
  * fictional status (a recovering Portal, say) as JSON in sessionStorage["ovis:demo-portal"]

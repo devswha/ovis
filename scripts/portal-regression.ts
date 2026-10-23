@@ -78,6 +78,8 @@ try {
     'case "$1" in',
     "  version) printf '%s\\n' 'v2.6.1' ;;",
     "  expose)",
+    // the status asks which sign-ins this Portal offers: that is a question, not a service
+    "    [ \"$2\" = --help ] && exit 0",
     "    trap 'exit 0' TERM",
     // the stand-in's way to end on its own, as a crashed Portal would
     "    trap 'exit 3' USR1",
@@ -262,6 +264,7 @@ try {
   const recoveringFixture = {
     supported: true, version: "v2.6.1", min_version: "v2.6.1", usable: true, phase: "recovering",
     relay: "https://relay.example", url: null, blocked: null, error: null, output: `INF service ready at ${portalAddress}:443`,
+    auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false,
   } satisfies PortalStatus;
   let answer: "recovering" | "offline" | "older" = "recovering";
   const portalPosts: string[] = [];

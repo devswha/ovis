@@ -1058,7 +1058,7 @@ describe("Portal API", () => {
       "#!/bin/sh",
       'case "$1" in',
       "  version) echo v2.6.1 ;;",
-      "  expose) trap 'exit 0' TERM; echo 'INF service ready at https://herdr-test-0123.relay.example:443'; while :; do sleep 0.05; done ;;",
+      "  expose) [ \"$2\" = --help ] && exit 0; trap 'exit 0' TERM; echo 'INF service ready at https://herdr-test-0123.relay.example:443'; while :; do sleep 0.05; done ;;",
       "  *) exit 2 ;;",
       "esac",
       "",

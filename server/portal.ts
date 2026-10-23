@@ -14,6 +14,13 @@
  * - only the relay's origin comes from the request, and Portal gets none of this server's
  *   environment beyond what running and reaching the relay need: the token stays here.
  *
+ * Who may open the address is the user's choice (shared/portal.ts PortalAuth): only the app's own
+ * token or a paired device, as before, or Portal's own sign-in in front of everything, a private
+ * link, an Ethereum wallet or an OIDC account (Google or a company's). The choice is saved with the
+ * rest of the state and a relaunch goes ahead only while it is unchanged. The OIDC client secret is
+ * OVIS_PORTAL_OIDC_CLIENT_SECRET, read at each start into the Portal's environment: it is in no
+ * argument (`ps` shows those), no saved file and no answer.
+ *
  * Portal keeps retrying a relay it cannot use and never exits for it (v2.6.1), so the relay's
  * version is asked first and readiness has a deadline of its own.
  *
@@ -24,6 +31,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
 import type { PortalStatus } from "../shared/protocol.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
@@ -39,13 +47,15 @@ const STOP_GRACE_MS = 4_000;
 const PROCESS_POLL_MS = 100;
 const KILL_CONFIRM_MS = 1_000;
 const VERSION_TIMEOUT_MS = 2_500;
-/** the panel polls the status; `portal version` is a process each time */
-const VERSION_CACHE_MS = 5_000;
+/** the panel polls the status; `portal version` and `portal expose --help` are a process each time */
+const PROBE_CACHE_MS = 5_000;
 const RELAY_TIMEOUT_MS = 5_000;
 /** what is still in Portal's pipes when it exits: its last words */
 const PIPE_GRACE_MS = 250;
 /** Portal's last words kept for the panel */
 const OUTPUT_LINES = 30;
+/** the OIDC client secret, which only this server's environment holds (Settings says so) */
+const OIDC_SECRET_VARIABLE = "OVIS_PORTAL_OIDC_CLIENT_SECRET";
 /** what Portal may keep of this server's environment: enough to run and to reach the relay */
 const PORTAL_ENV = ["PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 
@@ -61,7 +71,11 @@ interface StartRequest extends Guards {
   relay: string;
   /** this server's port, Portal's upstream */
   port: number;
+  /** who may open the address; unset, only the app's own token or a paired device */
+  auth?: PortalAuth;
 }
+/** a start as it runs: the sign-in settled */
+type Launch = Required<StartRequest>;
 /** what a relaunch must find unchanged: the exited child's saved pid and the identity it served with */
 interface Recovery {
   pid: number;
@@ -76,6 +90,8 @@ interface SavedState {
   port: number | null;
   /** the Portal last started, so the next server can stop it if it is still running */
   pid: number | null;
+  /** who may open the address, for a start that comes from this file (the boot's resume, a relaunch) */
+  auth: PortalAuth;
 }
 
 export interface PortalServiceOptions {
@@ -127,13 +143,45 @@ function blockedBy({ tokenSet, serveOnly }: Guards): PortalStatus["blocked"] {
   return null;
 }
 
-function portalEnv(): Record<string, string> {
+function oidcSecret(): string | null {
+  const value = process.env[OIDC_SECRET_VARIABLE]?.trim();
+  return value ? value : null;
+}
+
+/** Portal's environment; `secret` is the one thing besides what running and reaching the relay need. */
+function portalEnv(secret: string | null = null): Record<string, string> {
   const env: Record<string, string> = { NO_COLOR: "1" };
   for (const name of PORTAL_ENV) {
     const value = process.env[name];
     if (value !== undefined) env[name] = value;
   }
+  // the name Portal reads (AUTH_OIDC_CLIENT_SECRET); this server's own is OVIS_PORTAL_OIDC_CLIENT_SECRET
+  if (secret !== null) env["AUTH_OIDC_CLIENT_SECRET"] = secret;
   return env;
+}
+
+/**
+ * Who may open the address, as `portal expose` takes it. With no sign-in, a visitor's own
+ * X-Portal-* headers are dropped before they reach this server, so none can ever pass for Portal's.
+ * With one, Portal drops them itself and sets both from the sign-in it verified
+ * (`--auth-identity-headers`), which is all server/access.ts trusts; Portal refuses to strip them
+ * as well. Values join their flag with `=`, so none can read as another flag. The OIDC client secret
+ * is not here: arguments show in `ps`.
+ */
+export function authArgs(auth: PortalAuth): string[] {
+  if (auth.method === "none") return ["--strip-request-header", "X-Portal-User", "--strip-request-header", "X-Portal-Auth"];
+  return [
+    `--auth=${auth.method}`,
+    "--auth-identity-headers=true",
+    ...auth.allow.map((entry) => `--auth-allow=${entry}`),
+    ...(auth.issuer === null ? [] : [`--auth-oidc-issuer=${auth.issuer}`]),
+    ...(auth.client_id === null ? [] : [`--auth-oidc-client-id=${auth.client_id}`]),
+  ];
+}
+
+function sameAuth(a: PortalAuth, b: PortalAuth): boolean {
+  return a.method === b.method && a.issuer === b.issuer && a.client_id === b.client_id
+    && a.allow.length === b.allow.length && a.allow.every((entry, index) => entry === b.allow[index]);
 }
 
 function messageOf(error: unknown): string {
@@ -261,6 +309,37 @@ async function readVersion(bin: string): Promise<string | null> {
   } catch { return null; }
 }
 
+/**
+ * The sign-ins this `portal` offers, by the flags its `expose --help` lists (`  -auth string`, single
+ * dash). A version cannot say: OIDC is in no release yet, and a build from source has it early.
+ * credential and siwe share the flags of `--auth`, which every Portal that runs this app's tunnel has.
+ */
+async function readSignIns(bin: string): Promise<PortalSignIn[]> {
+  try {
+    const proc = Bun.spawn([bin, "expose", "--help"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv(), windowsHide: true, timeout: VERSION_TIMEOUT_MS, killSignal: "SIGKILL" });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+      new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) return [];
+    const listed = new Set([...`${out}\n${err}`.matchAll(/^ +-([a-z][\w-]*)/gm)].map((match) => match[1]));
+    const has = (...flags: string[]) => flags.every((flag) => listed.has(flag));
+    if (!has("auth", "auth-allow", "auth-identity-headers")) return [];
+    return has("auth-oidc-issuer", "auth-oidc-client-id") ? ["credential", "siwe", "oidc"] : ["credential", "siwe"];
+  } catch { return []; }
+}
+
+/** What a `portal` subcommand said, and when and of which `portal`. */
+interface Probe<T> { at: number; bin: string | null; value: Promise<T> }
+
+/** `last` while it is recent and of the same `bin`, else a new question: the panel polls, and each one is a process. */
+function ask<T>(last: Probe<T> | null, bin: string | null, fresh: boolean, read: (bin: string) => Promise<T>, none: T): Probe<T> {
+  const now = Date.now();
+  if (!fresh && last !== null && last.bin === bin && now - last.at < PROBE_CACHE_MS) return last;
+  return { at: now, bin, value: bin === null ? Promise.resolve(none) : read(bin) };
+}
+
 export class PortalService {
   private phase: Phase = "idle";
   private relay: string | null = null;
@@ -277,7 +356,10 @@ export class PortalService {
   private cleanup: Promise<void> | null = null;
   /** a child asked to end, once: its exit is no failure */
   private ending: Child | null = null;
-  private versionRead: { at: number; bin: string | null; value: Promise<string | null> } | null = null;
+  private versionRead: Probe<string | null> | null = null;
+  private signInsRead: Probe<PortalSignIn[]> | null = null;
+  /** who may open the address: the running Portal's, else the saved choice the next start uses */
+  private auth: PortalAuth = NO_PORTAL_AUTH;
   /** the port this service represents; a service for another port must not change the owner's saved choice */
   private serverPort: number | null = null;
   /** this server's own token and serve-only answer, bound by createServer; a relaunch asks it, never a request */
@@ -306,27 +388,33 @@ export class PortalService {
   }
 
   private version(fresh = false): Promise<string | null> {
-    const bin = this.bin();
-    const now = Date.now();
-    if (!fresh && this.versionRead && this.versionRead.bin === bin && now - this.versionRead.at < VERSION_CACHE_MS) return this.versionRead.value;
-    const value = bin === null ? Promise.resolve(null) : readVersion(bin);
-    this.versionRead = { at: now, bin, value };
-    return value;
+    this.versionRead = ask(this.versionRead, this.bin(), fresh, readVersion, null);
+    return this.versionRead.value;
+  }
+
+  private signIns(fresh = false): Promise<PortalSignIn[]> {
+    this.signInsRead = ask(this.signInsRead, this.bin(), fresh, readSignIns, []);
+    return this.signInsRead.value;
   }
 
   async status(guards: Guards): Promise<PortalStatus> {
     const version = await this.version();
+    const usable = version !== null && atLeast(version, PORTAL_VERSION);
+    const methods = usable ? await this.signIns() : [];
     return {
       supported: true,
       version,
       min_version: PORTAL_VERSION,
-      usable: version !== null && atLeast(version, PORTAL_VERSION),
+      usable,
       phase: this.phase,
       relay: this.relay,
       url: this.url,
       blocked: blockedBy(guards),
       error: this.error,
       output: this.lines.length > 0 ? this.lines.join("\n") : null,
+      auth: this.auth,
+      auth_methods: methods,
+      oidc_secret: oidcSecret() !== null,
     };
   }
 
@@ -339,6 +427,7 @@ export class PortalService {
     if (this.shutdownRequested || this.child !== null || this.launching) return;
     const saved = this.saved();
     this.relay = saved.relay;
+    this.auth = saved.auth;
     this.serverPort = request.port;
     // a server on another port shares this state directory: what runs is its own
     if (saved.port !== null && saved.port !== request.port) return;
@@ -346,7 +435,7 @@ export class PortalService {
     this.launching = true;
     try { await this.cleanLeftover(saved.pid); } finally { this.launching = false; }
     if (this.shutdownRequested || this.operation !== operation) return;
-    if (saved.enabled && saved.relay !== null && blockedBy(request) === null) this.start({ ...request, relay: saved.relay });
+    if (saved.enabled && saved.relay !== null && blockedBy(request) === null) this.start({ ...request, relay: saved.relay, auth: saved.auth });
   }
 
   start(request: StartRequest): "started" | "busy" | "token_required" | "serve_only" | "state_in_use" {
@@ -358,15 +447,25 @@ export class PortalService {
     if (saved.port !== null && saved.port !== request.port) return "state_in_use";
     this.phase = "starting";
     this.relay = request.relay;
+    this.auth = request.auth ?? NO_PORTAL_AUTH;
     this.url = null;
     this.error = null;
     this.lines = [];
     this.recovered = false;
-    this.run(request, ++this.operation, null);
+    this.run({ ...request, auth: this.auth }, ++this.operation, null);
     return "started";
   }
 
-  private run(request: StartRequest, operation: number, recovery: Recovery | null): void {
+  /**
+   * The public host of the running Portal while it signs visitors in, else null. Only a request for
+   * that host can carry an identity this server believes (server/access.ts): routed mode keeps the
+   * browser's Host, and the address is up only while the Portal started with the sign-in is.
+   */
+  signInHost(): string | null {
+    return this.url !== null && this.auth.method !== "none" ? new URL(this.url).hostname : null;
+  }
+
+  private run(request: Launch, operation: number, recovery: Recovery | null): void {
     this.launching = true;
     void this.launch(request, operation, recovery)
       // a start stopped meanwhile failed for no one
@@ -435,7 +534,7 @@ export class PortalService {
   }
 
   /** A relaunch goes ahead only while this server may open the address and the saved state is still the exited child's. */
-  private checkRecovery(relay: string, port: number, recovery: Recovery): void {
+  private checkRecovery({ relay, port, auth }: Launch, recovery: Recovery): void {
     const guards = this.guards?.() ?? null;
     if (guards === null) throw new Error("this server gave no authority to restart it. Start it again.");
     const blocked = blockedBy(guards);
@@ -443,42 +542,49 @@ export class PortalService {
     if (blocked === "serve_only") throw new Error("OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Turn it off and restart the app before you start Portal again.");
     const saved = this.saved();
     if (!saved.enabled || saved.relay !== relay || saved.port !== port || saved.pid !== recovery.pid) throw new Error("its saved state changed meanwhile. Start it again.");
+    if (!sameAuth(saved.auth, auth)) throw new Error("its saved sign-in settings changed meanwhile, so it would let in someone else. Start it again.");
     if (this.identityDigest() !== recovery.identity) throw new Error("its identity file changed or is missing, so the address would not be the same. Start it again.");
   }
 
-  private async launch(request: StartRequest, operation: number, recovery: Recovery | null): Promise<void> {
-    const { relay, port } = request;
-    if (recovery !== null) this.checkRecovery(relay, port, recovery);
+  private async launch(request: Launch, operation: number, recovery: Recovery | null): Promise<void> {
+    const { relay, port, auth } = request;
+    if (recovery !== null) this.checkRecovery(request, recovery);
     const bin = this.bin();
     const version = bin === null ? null : await this.version(true);
     if (!this.isCurrentStart(operation)) return;
     if (bin === null || version === null) throw new Error("Portal is not installed on this PC.");
     if (!atLeast(version, PORTAL_VERSION)) throw new Error(`This PC has Portal ${version}; the app needs ${PORTAL_VERSION} or later.`);
+    if (auth.method !== "none") {
+      const offered = await this.signIns(true);
+      if (!this.isCurrentStart(operation)) return;
+      if (!offered.includes(auth.method)) throw new Error(`The Portal on this PC does not support --auth ${auth.method} yet. Update it, or choose another sign-in.`);
+    }
     await this.checkRelay(relay);
     if (!this.isCurrentStart(operation)) return;
     // a relaunch must not stop a Portal that another server recorded meanwhile
-    if (recovery !== null) this.checkRecovery(relay, port, recovery);
+    if (recovery !== null) this.checkRecovery(request, recovery);
     // another server of this app on this identity: two Portals keep taking the address from each other
     await this.cleanLeftover(this.saved().pid);
     if (!this.isCurrentStart(operation)) return;
     // what was true before the awaits may not be now
-    if (recovery !== null) this.checkRecovery(relay, port, recovery);
+    if (recovery !== null) this.checkRecovery(request, recovery);
     // Portal needs its identity parent before it starts; it contains the saved address.
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const child = Bun.spawn([
       bin, "expose",
       "--http-route", `/=${port}`,
       "--strip-request-header", "Tailscale-User-Login",
+      ...authArgs(auth),
       // a name counts only when the identity file is created; later runs keep the saved one
       "--name", `herdr-${randomBytes(8).toString("hex")}`,
       "--identity-path", this.identityPath,
       "--relays", relay, "--discovery=false",
       "--hide",
-    ], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv(), windowsHide: true });
+    ], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv(auth.method === "oidc" ? oidcSecret() : null), windowsHide: true });
     this.child = child;
     // a Portal whose pid cannot be kept is one the next server could not stop: it ends before its address can show
     try {
-      this.save({ enabled: true, relay, port, pid: child.pid });
+      this.save({ enabled: true, relay, port, pid: child.pid, auth });
     } catch (error) {
       this.end(child);
       await child.exited;
@@ -499,7 +605,7 @@ export class PortalService {
     });
   }
 
-  private exited(child: Child, code: number | null, request: StartRequest, operation: number): void {
+  private exited(child: Child, code: number | null, request: Launch, operation: number): void {
     if (this.child !== child) return;
     this.child = null;
     this.url = null;
@@ -660,12 +766,15 @@ export class PortalService {
     try {
       value = JSON.parse(readFileSync(this.statePath, "utf8"));
     } catch (error) {
-      if (processErrorCode(error) === "ENOENT") return { enabled: false, relay: null, port: null, pid: null };
+      if (processErrorCode(error) === "ENOENT") return { enabled: false, relay: null, port: null, pid: null, auth: NO_PORTAL_AUTH };
       throw new Error("Could not read saved Portal state; refusing to assume its tunnel is stopped.", { cause: error });
     }
     if (!isJsonObject(value)) throw new Error("Saved Portal state is invalid.");
     const { enabled, relay, port, pid } = value;
     const origin = relayOrigin(relay);
+    // a file from before the choice existed has none: the app's own token or a paired device
+    const auth = checkPortalAuth(value["auth"]);
+    if ("problem" in auth) throw new Error("Saved Portal state is invalid.");
     if (typeof enabled !== "boolean"
       || (relay !== null && origin === null)
       || (port !== null && !(typeof port === "number" && Number.isSafeInteger(port) && port > 0 && port <= 65535))
@@ -673,7 +782,7 @@ export class PortalService {
       || (enabled && (origin === null || port === null || pid === null))) {
       throw new Error("Saved Portal state is invalid.");
     }
-    return { enabled, relay: origin, port: port as number | null, pid: pid as number | null };
+    return { enabled, relay: origin, port: port as number | null, pid: pid as number | null, auth: auth.auth };
   }
 
   /** at once, not awaited: a stop and a start's own save never interleave */
@@ -685,7 +794,7 @@ export class PortalService {
   }
 }
 
-const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: PORTAL_VERSION, usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null };
+const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: PORTAL_VERSION, usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: NO_PORTAL_AUTH, auth_methods: [], oidc_secret: false };
 
 /** /api/portal and its actions. What this server is (its port, token and serve-only setting) comes from index.ts. */
 export async function handlePortalRequest(request: Request, pathname: string, portal: PortalService | undefined, context: Omit<StartRequest, "relay">): Promise<Response> {
@@ -711,8 +820,10 @@ export async function handlePortalRequest(request: Request, pathname: string, po
   try { body = await request.json(); } catch { /* checked below */ }
   const relay = relayOrigin(isJsonObject(body) ? body["relay"] : undefined);
   if (relay === null) return fail("invalid_relay", "Give the relay as an https address, such as https://relay.example.com.", 400);
+  const auth = checkPortalAuth(isJsonObject(body) ? body["auth"] : undefined);
+  if ("problem" in auth) return fail("invalid_portal_auth", PORTAL_AUTH_PROBLEMS[auth.problem], 400);
   let started: ReturnType<PortalService["start"]>;
-  try { started = portal.start({ ...context, relay }); } catch (error) { return errorResponse(error); }
+  try { started = portal.start({ ...context, relay, auth: auth.auth }); } catch (error) { return errorResponse(error); }
   if (started === "token_required") return fail("token_required", "Set OVIS_TOKEN and restart the app before you start Portal: anyone on the internet can open its address.", 409);
   if (started === "serve_only") return fail("serve_only", "Turn off OVIS_TAILSCALE_SERVE_ONLY and restart the app before you start Portal: it says tailscale serve is the only way in.", 409);
   if (started === "busy") return fail("portal_busy", "Portal is busy; try again once it is idle.", 409);

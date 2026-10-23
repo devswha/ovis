@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PortalStatus } from "../shared/protocol.ts";
-import { atLeast, handlePortalRequest, PortalService, readyUrl, relayOrigin } from "./portal.ts";
+import { NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, type PortalAuth } from "../shared/portal.ts";
+import { atLeast, authArgs, handlePortalRequest, PortalService, readyUrl, relayOrigin } from "./portal.ts";
 
 /**
  * The service runs a stand-in portal here, a shell script, and asks a relay through an injected
@@ -15,6 +16,14 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const ADDRESS = "https://herdr-test-0123456789abcdef0123456789abcdef01234567.relay.example";
 const RELAY = "https://relay.example";
 const open = { tokenSet: true, serveOnly: false };
+
+/** The flags a `portal expose --help` lists, in Go's layout: `-auth string`, with its words on the next line. */
+const SIGN_IN_FLAGS = ["auth string", "auth-allow value", "auth-identity-headers"];
+const OIDC_FLAGS = ["auth-oidc-issuer string", "auth-oidc-client-id string", "auth-oidc-client-secret string"];
+const credential = (...allow: string[]): PortalAuth => ({ method: "credential", allow, issuer: null, client_id: null });
+const OIDC: PortalAuth = { method: "oidc", allow: ["me@example.com", "@example.com"], issuer: "https://accounts.google.com", client_id: "client-1.apps.example" };
+/** what the stand-in's `expose` finds in the environment, last on its `seen` line */
+const NO_SECRET = "secret=unset ovis=unset";
 
 interface StandIn {
   path: string;
@@ -28,7 +37,7 @@ interface StandIn {
  * A portal whose `expose` writes its identity file as Portal does, prints `says`, then the ready
  * line unless `ready` is false, and runs until stopped. SIGUSR1 makes it end on its own (exit 3).
  */
-function standIn(options: { version?: string; ready?: boolean; says?: string; ignoreTerm?: boolean; exitAfter?: boolean } = {}): StandIn {
+function standIn(options: { version?: string; ready?: boolean; says?: string; ignoreTerm?: boolean; exitAfter?: boolean; flags?: string[] } = {}): StandIn {
   const dir = mkdtempSync(join(root, "bin-"));
   const path = join(dir, "portal");
   const seen = join(dir, "seen");
@@ -38,8 +47,10 @@ function standIn(options: { version?: string; ready?: boolean; says?: string; ig
     'case "$1" in',
     `  version) echo '${options.version ?? "v2.6.1"}' ;;`,
     "  expose)",
+    // a question about its flags, not a service
+    `    [ "$2" = --help ] && { printf '%s\\n' 'Flags:' ${(options.flags ?? [...SIGN_IN_FLAGS, ...OIDC_FLAGS]).map((flag) => `'  -${flag}' '    \t'`).join(" ")}; exit 0; }`,
     `    echo $$ >> '${pids}'`,
-    `    { printf '%s\\n' "$@"; echo "token=\${OVIS_TOKEN-unset} identity=\${IDENTITY_PATH-unset}"; } > '${seen}'`,
+    `    { printf '%s\\n' "$@"; echo "token=\${OVIS_TOKEN-unset} identity=\${IDENTITY_PATH-unset} secret=\${AUTH_OIDC_CLIENT_SECRET-unset} ovis=\${OVIS_PORTAL_OIDC_CLIENT_SECRET-unset}"; } > '${seen}'`,
     "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
     "    [ -z \"$id\" ] || [ -f \"$id\" ] || echo '{\"fixture\":true}' > \"$id\"",
     options.ignoreTerm ? "    trap '' TERM" : "    trap 'exit 0' TERM",
@@ -120,7 +131,8 @@ function seedSavedPortal(stateDir: string, pid: number | null = process.pid): vo
 }
 
 // what a server started by the herdr plugin may carry: its own token, and Portal's own settings
-const inherited = { OVIS_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json" };
+const SECRET = "client-secret-that-only-the-environment-holds";
+const inherited = { OVIS_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json", OVIS_PORTAL_OIDC_CLIENT_SECRET: SECRET };
 const previous: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const [name, value] of Object.entries(inherited)) { previous[name] = process.env[name]; process.env[name] = value; }
@@ -201,7 +213,10 @@ describe("running Portal", () => {
     expect(flag("--identity-path")).toBe(join(stateDir, "portal", "identity.json"));
     expect(seen).toContain("--discovery=false");
     expect(seen).toContain("--hide");
-    expect(seen.at(-1)).toBe("token=unset identity=unset");
+    // the OIDC secret is set on this server and goes only to a Portal that signs in with OIDC
+    expect(seen.at(-1)).toBe(`token=unset identity=unset ${NO_SECRET}`);
+    expect(seen.slice(0, -1).filter((line) => line.startsWith("--auth"))).toEqual([]);
+    expect(seen.filter((arg, index) => seen[index - 1] === "--strip-request-header")).toEqual(["Tailscale-User-Login", "X-Portal-User", "X-Portal-Auth"]);
 
     service.stop();
     expect((await until(service, (s) => s.phase === "idle", "Portal stopped")).url).toBeNull();
@@ -220,7 +235,7 @@ describe("running Portal", () => {
     const service = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
     const spawn = Bun.spawn;
     const observed = spyOn(Bun, "spawn").mockImplementation(((command: string[], options?: Parameters<typeof Bun.spawn>[1]) => {
-      if (Array.isArray(command) && command[1] === "expose") {
+      if (Array.isArray(command) && command[1] === "expose" && command[2] !== "--help") {
         expect(existsSync(portalDir)).toBe(true);
         expect(statSync(portalDir).mode & 0o777).toBe(0o700);
       }
@@ -680,6 +695,183 @@ describe("running Portal", () => {
   });
 });
 
+describe("who may open the address", () => {
+  const SIWE: PortalAuth = { method: "siwe", allow: ["0x52908400098527886E0F7030069857D2E4169EE7"], issuer: null, client_id: null };
+  const argsOf = (seen: string[]) => seen.slice(0, -1);
+
+  it("builds each sign-in's arguments, with nothing a visitor or the secret could change", () => {
+    // no sign-in: a visitor's own identity headers are dropped, so none can pass for Portal's
+    expect(authArgs({ method: "none", allow: [], issuer: null, client_id: null })).toEqual(["--strip-request-header", "X-Portal-User", "--strip-request-header", "X-Portal-Auth"]);
+    expect(authArgs(credential())).toEqual(["--auth=credential", "--auth-identity-headers=true"]);
+    // a name with spaces, or one that starts like a flag, stays one argument and never reads as a flag
+    expect(authArgs(credential("Alice Smith", "-bob", "--hide"))).toEqual(["--auth=credential", "--auth-identity-headers=true", "--auth-allow=Alice Smith", "--auth-allow=-bob", "--auth-allow=--hide"]);
+    expect(authArgs(SIWE)).toEqual(["--auth=siwe", "--auth-identity-headers=true", `--auth-allow=${SIWE.allow[0]}`]);
+    expect(authArgs(OIDC)).toEqual([
+      "--auth=oidc", "--auth-identity-headers=true", "--auth-allow=me@example.com", "--auth-allow=@example.com",
+      "--auth-oidc-issuer=https://accounts.google.com", "--auth-oidc-client-id=client-1.apps.example",
+    ]);
+    // Portal refuses to strip the identity headers it sets itself
+    for (const auth of [credential(), SIWE, OIDC]) expect(authArgs(auth)).not.toContain("--strip-request-header");
+  });
+
+  it("gives the OIDC client secret to an OIDC Portal's environment only, and keeps it out of its arguments, the saved state and every answer", async () => {
+    const stateDir = mkdtempSync(join(root, "state-"));
+    const portal = standIn();
+    const service = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
+    try {
+      expect(service.start({ relay: RELAY, port: 7317, auth: OIDC, ...open })).toBe("started");
+      const status = await until(service, (s) => s.phase === "running", "Portal was ready");
+      const seen = portal.seen();
+      expect(seen.at(-1)).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
+      expect(argsOf(seen).some((arg) => arg.includes(SECRET))).toBe(false);
+      for (const arg of authArgs(OIDC)) expect(seen).toContain(arg);
+      expect(seen).toContain("Tailscale-User-Login");
+      expect(status).toMatchObject({ oidc_secret: true, auth: OIDC });
+      expect(JSON.stringify(status)).not.toContain(SECRET);
+      const saved = readFileSync(join(stateDir, "portal", "state.json"), "utf8");
+      expect(saved).not.toContain(SECRET);
+      expect(JSON.parse(saved)).toMatchObject({ enabled: true, auth: OIDC });
+    } finally {
+      service.stop();
+      await bounded(service.shutdown(), "Portal shutdown settled");
+    }
+  });
+
+  it("says whether the secret is set without saying what it is", async () => {
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn().path, fetch: relay() });
+    expect((await service.status(open)).oidc_secret).toBe(true);
+    delete process.env["OVIS_PORTAL_OIDC_CLIENT_SECRET"];
+    expect((await service.status(open)).oidc_secret).toBe(false);
+    process.env["OVIS_PORTAL_OIDC_CLIENT_SECRET"] = "  ";
+    expect((await service.status(open)).oidc_secret).toBe(false);
+  });
+
+  it("offers the sign-ins whose flags the installed Portal lists, and refuses to start one it does not", async () => {
+    const offered = async (options: Parameters<typeof standIn>[0]) => (await new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn(options).path, fetch: relay() }).status(open)).auth_methods;
+    expect(await offered({})).toEqual(["credential", "siwe", "oidc"]);
+    expect(await offered({ flags: SIGN_IN_FLAGS })).toEqual(["credential", "siwe"]);
+    expect(await offered({ flags: ["auth string", "auth-allow value"] })).toEqual([]);
+    expect(await offered({ flags: [] })).toEqual([]);
+    // a Portal too old to run the tunnel, and none at all, offer nothing
+    expect(await offered({ version: "v2.5.1" })).toEqual([]);
+    expect((await new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: join(root, "no-such-portal"), fetch: relay() }).status(open)).auth_methods).toEqual([]);
+
+    for (const [flags, auth, said] of [[SIGN_IN_FLAGS, OIDC, "--auth oidc"], [[], credential(), "--auth credential"]] as const) {
+      const portal = standIn({ flags: [...flags] });
+      const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+      service.start({ relay: RELAY, port: 7317, auth, ...open });
+      const status = await until(service, (s) => s.phase !== "starting", "the start ended");
+      expect(status).toMatchObject({ phase: "error", url: null });
+      expect(status.error).toContain(said);
+      expect(portal.pids()).toEqual([]);
+    }
+  });
+
+  it("keeps the choice across stops and restarts, and trusts a sign-in's identity headers only while its Portal is up", async () => {
+    const stateDir = mkdtempSync(join(root, "state-"));
+    const portal = standIn();
+    const first = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
+    expect(first.signInHost()).toBeNull();
+    first.start({ relay: RELAY, port: 7317, auth: credential("alice", "bob"), ...open });
+    await until(first, (s) => s.phase === "running", "Portal was ready");
+    expect(first.signInHost()).toBe(new URL(ADDRESS).hostname);
+    expect(argsOf(portal.seen())).toEqual(expect.arrayContaining(["--auth=credential", "--auth-identity-headers=true", "--auth-allow=alice", "--auth-allow=bob"]));
+    first.stop();
+    await until(first, (s) => s.phase === "idle", "Portal stopped");
+    expect(first.signInHost()).toBeNull();
+    // what is shown in the panel once stopped is the choice the next start offers
+    expect((await first.status(open)).auth).toEqual(credential("alice", "bob"));
+
+    // a restart of the app brings the address back with the same sign-in
+    const next = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
+    expect((await next.status(open)).auth.method).toBe("none");
+    await next.resume({ port: 7317, ...open });
+    expect(await next.status(open)).toMatchObject({ phase: "idle", auth: credential("alice", "bob") });
+    next.start({ relay: RELAY, port: 7317, ...open });
+    await until(next, (s) => s.phase === "running", "Portal was ready again");
+    // a start without a sign-in is the app's own token or a paired device again, and nobody's headers are believed
+    expect(next.signInHost()).toBeNull();
+    expect(portal.seen().some((arg) => arg.startsWith("--auth"))).toBe(false);
+    expect(savedState(stateDir)).toMatchObject({ auth: { method: "none", allow: [] } });
+    await next.shutdown();
+
+    const resumed = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
+    first.start({ relay: RELAY, port: 7317, auth: SIWE, ...open });
+    await until(first, (s) => s.phase === "running", "Portal was ready with a wallet");
+    await first.shutdown();
+    await resumed.resume({ port: 7317, ...open });
+    await until(resumed, (s) => s.phase === "running", "the resumed Portal was ready");
+    expect(argsOf(portal.seen())).toEqual(expect.arrayContaining(["--auth=siwe", `--auth-allow=${SIWE.allow[0]}`]));
+    expect(resumed.signInHost()).toBe(new URL(ADDRESS).hostname);
+    await resumed.shutdown();
+  });
+
+  it("relaunches a sign-in it served with, with the same arguments", async () => {
+    const portal = standIn();
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+    service.authorize(() => open);
+    const watch = observe(service);
+    try {
+      const ready = watch.when(() => watch.internals.url !== null, "Portal was ready");
+      service.start({ relay: RELAY, port: 7317, auth: OIDC, ...open });
+      await ready;
+      const [first] = watch.exposes;
+      const back = watch.when(() => watch.internals.url !== null && watch.internals.child?.pid !== first, "the replacement was ready");
+      process.kill(first!, "SIGUSR1");
+      await back;
+      expect(watch.exposes).toHaveLength(2);
+      expect(portal.seen()).toEqual(expect.arrayContaining(authArgs(OIDC)));
+      expect(portal.seen().at(-1)).toBe(`token=unset identity=unset secret=${SECRET} ovis=unset`);
+    } finally {
+      watch.dispose();
+      await bounded(service.shutdown(), "Portal shutdown settled");
+    }
+  });
+
+  it("refuses a sign-in no request could make before anything runs", async () => {
+    const portal = standIn();
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+    const server = { port: 7317, ...open };
+    const own = { "x-herdr-update": "1", origin: "http://127.0.0.1:7317", "sec-fetch-site": "same-origin", "content-type": "application/json" };
+    const start = (auth: unknown) => handlePortalRequest(new Request("http://127.0.0.1:7317/api/portal/start", { method: "POST", headers: own, body: JSON.stringify({ relay: "relay.example", auth }) }), "/api/portal/start", service, server);
+    const refused: [unknown, keyof typeof PORTAL_AUTH_PROBLEMS][] = [
+      ["credential", "invalid"],
+      [{ method: "saml" }, "invalid"],
+      [{ method: "credential", allow: "alice" }, "invalid"],
+      [{ method: "credential", allow: ["bad\u0001name"] }, "name"],
+      [{ method: "credential", allow: ["x".repeat(257)] }, "name"],
+      [{ method: "siwe", allow: [] }, "no_wallet"],
+      [{ method: "siwe", allow: ["0x1234"] }, "wallet"],
+      [{ method: "oidc", allow: [], issuer: "https://accounts.google.com", client_id: "c" }, "no_principal"],
+      [{ method: "oidc", allow: ["me"], issuer: "https://accounts.google.com", client_id: "c" }, "principal"],
+      [{ method: "oidc", allow: ["me@example.com"], issuer: "http://accounts.example", client_id: "c" }, "issuer"],
+      [{ method: "oidc", allow: ["me@example.com"], issuer: "https://accounts.example/?x=1", client_id: "c" }, "issuer"],
+      [{ method: "oidc", allow: ["me@example.com"], issuer: "https://accounts.example", client_id: "" }, "client_id"],
+    ];
+    for (const [auth, problem] of refused) {
+      const response = await start(auth);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: { code: "invalid_portal_auth", message: PORTAL_AUTH_PROBLEMS[problem] } });
+    }
+    expect(portal.pids()).toEqual([]);
+    expect((await service.status(open)).phase).toBe("idle");
+    // no sign-in named is none: an older panel starts as before
+    expect((await start(undefined)).status).toBe(202);
+    await until(service, (s) => s.phase === "running", "Portal was ready");
+    await bounded(service.shutdown(), "Portal shutdown settled");
+  });
+
+  it("does not take damaged saved sign-in settings for none", async () => {
+    for (const auth of [{ method: "siwe", allow: [] }, { method: "saml" }, "credential", { method: "oidc", allow: ["me@example.com"], issuer: "http://x.example", client_id: "c" }]) {
+      const stateDir = mkdtempSync(join(root, "state-"));
+      mkdirSync(join(stateDir, "portal"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(stateDir, "portal", "state.json"), JSON.stringify({ enabled: true, relay: RELAY, port: 7317, pid: process.pid, auth }));
+      const service = new PortalService({ stateDir, fetch: relay() });
+      await expect(service.resume({ port: 7317, ...open })).rejects.toThrow("Saved Portal state is invalid");
+    }
+  });
+});
+
 interface Internals {
   phase: PortalStatus["phase"];
   url: string | null;
@@ -741,7 +933,8 @@ function observe(service: PortalService, options: { refuseSave?: (pid: number) =
       return launched;
     }),
     spyOn(Bun, "spawn").mockImplementation(((command: string[], spawnOptions?: Parameters<typeof Bun.spawn>[1]) => {
-      const expose = Array.isArray(command) && command[1] === "expose";
+      // `expose --help` is the status asking which sign-ins this Portal offers, not a tunnel
+      const expose = Array.isArray(command) && command[1] === "expose" && command[2] !== "--help";
       if (expose) earlierGone.push(exposes.every((pid) => !alive(pid)));
       const child = spawn(command, spawnOptions);
       if (expose) {
@@ -822,7 +1015,7 @@ describe("recovering Portal", () => {
       expect(flag("--http-route")).toBe("/=7317");
       expect(flag("--identity-path")).toBe(identityPath);
       expect(readFileSync(identityPath, "utf8")).toBe(identity);
-      expect(savedState(stateDir)).toEqual({ enabled: true, relay: RELAY, port: 7317, pid: second });
+      expect(savedState(stateDir)).toEqual({ enabled: true, relay: RELAY, port: 7317, pid: second, auth: NO_PORTAL_AUTH });
       // the replacement's pid was saved before its address was shown
       expect(watch.events.indexOf(`save:${second}`)).toBeGreaterThan(watch.events.indexOf(`spawn:${second}`));
       expect(watch.events.indexOf(`save:${second}`)).toBeLessThan(watch.events.indexOf(`url:${second}`));
@@ -906,7 +1099,7 @@ describe("recovering Portal", () => {
           expect(watch.exposes).toEqual([first!]);
           expect(await service.status(open)).toMatchObject({ phase: "idle", url: null, error: null });
           // a stop is remembered as off; a shutdown leaves the choice for the next server
-          expect(savedState(stateDir)).toEqual({ enabled: action === "shutdown", relay: RELAY, port: 7317, pid: first });
+          expect(savedState(stateDir)).toEqual({ enabled: action === "shutdown", relay: RELAY, port: 7317, pid: first, auth: NO_PORTAL_AUTH });
         } finally {
           gate.release.resolve();
           release.resolve();
@@ -934,6 +1127,9 @@ describe("recovering Portal", () => {
       { name: "saved port changed", at: "exit", change: (c) => rewrite(c.stateDir, { port: 7318 }), says: "saved state changed" },
       { name: "saved relay changed before the spawn", at: "spawn", change: (c) => rewrite(c.stateDir, { relay: "https://other.example" }), says: "saved state changed" },
       { name: "saved pid taken over before the spawn", at: "spawn", change: (c) => rewrite(c.stateDir, { pid: 987654321 }), says: "saved state changed" },
+      { name: "saved sign-in loosened", at: "exit", change: (c) => rewrite(c.stateDir, { auth: credential() }), says: "sign-in settings" },
+      { name: "saved sign-in changed before the spawn", at: "spawn", change: (c) => rewrite(c.stateDir, { auth: credential("mallory") }), says: "sign-in settings" },
+      { name: "saved sign-in removed", at: "exit", change: (c) => rewrite(c.stateDir, { auth: { method: "none", allow: [], issuer: null, client_id: null } }), says: "sign-in settings" },
       { name: "identity changed", at: "exit", change: (c) => writeFileSync(c.identityPath, '{"other":true}'), says: "identity file" },
       { name: "identity removed before the spawn", at: "spawn", change: (c) => rmSync(c.identityPath), says: "identity file" },
     ];
@@ -956,7 +1152,7 @@ describe("recovering Portal", () => {
       service.authorize(() => context.authorize ? context.guards : (undefined as unknown as typeof open));
       try {
         const ready = watch.when(() => watch.internals.url !== null, `${testCase.name}: Portal was ready`);
-        service.start({ relay: RELAY, port: 7317, ...open });
+        service.start({ relay: RELAY, port: 7317, auth: credential("alice"), ...open });
         await ready;
         const [first] = watch.exposes;
         const failed = watch.when(() => watch.internals.phase === "error", `${testCase.name}: the recovery was refused`);
@@ -1009,7 +1205,7 @@ describe("recovering Portal", () => {
       expect(status).toMatchObject({ phase: "error", url: null });
       expect(status.error).toContain("could not record its process");
       // the saved record still names the pid it had, and no more were started
-      expect(savedState(stateDir)).toEqual({ enabled: true, relay: RELAY, port: 7317, pid: first });
+      expect(savedState(stateDir)).toEqual({ enabled: true, relay: RELAY, port: 7317, pid: first, auth: NO_PORTAL_AUTH });
       expect(watch.exposes).toHaveLength(2);
       expect(watch.launches).toHaveLength(2);
     } finally {

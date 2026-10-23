@@ -114,8 +114,10 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Tailscale on this PC already serves, or the command to run), no-store
  *  GET    /api/portal                    -> PortalStatus (an optional public HTTPS address through
  *         Portal, server/portal.ts), no-store
- *  POST   /api/portal/start              -> 202 { accepted: true }; body { relay }; 400 invalid_relay,
- *         409 token_required / serve_only / portal_busy / portal_state_in_use / portal_unsupported
+ *  POST   /api/portal/start              -> 202 { accepted: true }; body { relay, auth? } (PortalAuth: who may
+ *         open the address; unset, only the app's own token or a paired device); 400 invalid_relay /
+ *         invalid_portal_auth, 409 token_required / serve_only / portal_busy / portal_state_in_use /
+ *         portal_unsupported
  *  POST   /api/portal/stop               -> 202 { accepted: true }; 409 portal_unsupported
  *         Portal POSTs require X-Herdr-Update: 1 and same-origin, like the update POSTs:
  *         403 invalid_portal_request (or invalid_origin from the outer origin gate).
@@ -416,7 +418,7 @@ export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, Bin
  */
 export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
-export type { PortalStatus } from "./portal.ts";
+export type { PortalAuth, PortalAuthMethod, PortalSignIn, PortalStatus } from "./portal.ts";
 
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
