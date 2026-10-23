@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { POSIX_INSTALL_LOCK, POSIX_INSTALL_RELEASE } from "./remote-host.ts";
+import { POSIX_INSTALL_LOCK, POSIX_INSTALL_RELEASE, WINDOWS_INSTALL_LOCK, WINDOWS_INSTALL_RELEASE } from "./remote-host.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -88,5 +88,112 @@ describe("POSIX install lock", () => {
     writeFileSync(join(lock, "pid"), "2147483646");
     expect(sh(`lock="$base/install.lock"; ${POSIX_INSTALL_RELEASE}`).exitCode).toBe(0);
     expect(readFileSync(join(lock, "pid"), "utf8")).toBe("2147483646");
+  });
+});
+
+/**
+ * The Windows mirror, run through `pwsh` wherever it exists (the GitHub Linux runner has it) so the
+ * scripts are exercised rather than only spelled out. The lock's owner is this server, so a lock
+ * whose owner token matches is this server's own leftover and is reclaimed at once; a peer's lock
+ * waits for the install's longest life, as on POSIX.
+ */
+const pwsh = Bun.which("pwsh");
+const psq = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+function acquireWindows(owner = "test-host:1") {
+  const base = mkdtempSync(join(tmpdir(), "install-lock-win-"));
+  dirs.push(base);
+  const lock = join(base, "install.lock");
+  const script = (body: string) => ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference = 'Stop'; $base = ${psq(base)}; $owner = ${psq(owner)}; ${body}`] as const;
+  const run = (who = owner) => Bun.spawnSync([pwsh!, ...script(`$owner = ${psq(who)}; ${WINDOWS_INSTALL_LOCK}; Write-Output 'acquired'`)]);
+  const sh = (body: string) => Bun.spawnSync([pwsh!, ...script(body)]);
+  return { base, lock, run, sh };
+}
+
+describe.skipIf(!pwsh)("Windows install lock", () => {
+  it("takes a free lock and records this server as its owner", () => {
+    const { lock, run } = acquireWindows();
+    const result = run();
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("test-host:1");
+  });
+
+  it("refuses a lock held by another installer", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    const result = run();
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("Another installation is in progress");
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("peer-host:9");
+  });
+
+  it("reclaims a lock this server left behind", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "test-host:1");
+    expect(run().exitCode).toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("test-host:1");
+  });
+
+  it("reclaims a peer's lock older than any install can run", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    const old = new Date(Date.now() - 40 * 60_000);
+    utimesSync(lock, old, old);
+    expect(run().exitCode).toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("test-host:1");
+  });
+
+  it("leaves a live peer's lock alone while another installer holds the reclaim mutex", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    mkdirSync(`${lock}.reclaim`);
+    const result = run();
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("Another installation is in progress");
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("peer-host:9");
+    expect(existsSync(`${lock}.reclaim`)).toBe(true);
+  });
+
+  it("drops a reclaim mutex its holder died with, so the retry takes the lock", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "test-host:1");
+    mkdirSync(`${lock}.reclaim`);
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(`${lock}.reclaim`, old, old);
+    expect(run().exitCode).not.toBe(0);
+    expect(existsSync(`${lock}.reclaim`)).toBe(false);
+    expect(run().exitCode).toBe(0);
+    expect(existsSync(`${lock}.reclaim`)).toBe(false);
+  });
+
+  it("keeps a live peer's lock after a dead reclaim mutex is dropped", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    mkdirSync(`${lock}.reclaim`);
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(`${lock}.reclaim`, old, old);
+    expect(run().exitCode).not.toBe(0);
+    expect(run().exitCode).not.toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("peer-host:9");
+  });
+
+  it("releases a lock it still owns", () => {
+    const { lock, sh } = acquireWindows();
+    expect(sh(`${WINDOWS_INSTALL_LOCK}; ${WINDOWS_INSTALL_RELEASE}`).exitCode).toBe(0);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it("keeps a lock a newer installer took over", () => {
+    const { lock, sh } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    expect(sh(WINDOWS_INSTALL_RELEASE).exitCode).toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("peer-host:9");
   });
 });
