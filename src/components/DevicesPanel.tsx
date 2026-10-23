@@ -6,6 +6,7 @@ import "./DevicesPanel.css";
 import { ApiError, fetchDevices, pairDevice, renameDevice, revokeAllDevices, revokeDevice, startPairing } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { deviceLabel } from "../lib/phone.ts";
+import { methodName } from "../lib/portalAuth.ts";
 import type { HealthAuth, PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -183,6 +184,7 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
   return (
     <div className="devices-panel">
       {auth?.via !== undefined && <p className={auth.via === "open" ? "settings-hint devices-open" : "settings-description"}>{t(VIA[auth.via])}</p>}
+      {auth?.portal !== undefined && <p className="settings-description devices-portal">{t("Signed in as {name} with {method}.", { name: auth.portal.user, method: methodName(auth.portal.method) })}</p>}
       {auth?.via === "open" && <>
         <p className="settings-hint">{t("Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.")}</p>
         <div className="phone-actions"><button type="button" className="btn btn-primary" onClick={() => void pairSelf()} disabled={pairingSelf}>{t("Pair this device now")}</button></div>

@@ -52,6 +52,8 @@ import type {
   ProjectFavicon,
   PromptAnswer,
   PushKey,
+  PortalAuth,
+  PortalInvite,
   PushSubscriptionStatus,
   PortalStatus,
   RemoteAccess,
@@ -160,10 +162,18 @@ export function fetchPortal(): Promise<PortalStatus> {
   return getJson<PortalStatus>("/api/portal");
 }
 
-export async function requestPortal(action: "start" | "stop", relay?: string): Promise<void> {
+export async function requestPortal(action: "start" | "stop", relay?: string, auth?: PortalAuth): Promise<void> {
   const url = `/api/portal/${action}`;
-  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(relay === undefined ? {} : { relay }) });
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(relay === undefined ? {} : { relay, auth }) });
   if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** A private link for `name`, good for `days`: a bearer secret the server keeps nowhere, so this is the one time it is read. */
+export async function issuePortalInvite(name: string, days: number): Promise<PortalInvite> {
+  const url = "/api/portal/invite";
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ name, days }) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return (await response.json()) as PortalInvite;
 }
 
 /** Anonymous install and update counts; null from a server that sends none (404). */

@@ -2924,6 +2924,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   or a wide Relay row whose text field and Start stack on a phone. Starting and stopping are one
   dim status line, at body size (`--fs-md`, `--fs-lg` under a finger) since it is what Portal is
   doing now; a failure is the server's sentence over Portal's own lines, folded.
+- Who may open the address is the first row of the stopped Portal group: four radios, each a
+  label with one dim sentence (token or paired device only, chosen at first; private link;
+  Ethereum wallet; Google or company login). A choice the `portal` on this PC does not list is
+  disabled, dim, and says why in `.settings-condition`. Under the chosen one: its allow-list as
+  chips (`--bg-input`, `--radius-pill`, mono) with a text field and Add that check each entry as
+  Portal does and say what is wrong in `.portal-warning` (`--status-blocked` border,
+  `--danger-tint`); for Google or company login also a Google/Other choice, the client ID, the
+  redirect address to register (copyable) and where the secret is read from, with a warning
+  while it is not set. While Portal runs the same choice is a read-only summary, since changing it
+  means stopping Portal; a private-link Portal adds **Invite someone** (name or a select of the
+  listed names, 1, 7, 30 or 90 days, Create link), which shows the link once in a bearer-secret
+  warning with Copy and Done. No coding-agent app offers a public address with a sign-in, so the
+  design follows an operational one: Cloudflare Access's allow rules (emails and email domains)
+  and login methods. It differs on purpose: one method at a time, chosen where Portal starts.
 - A Portal that was serving and ends on its own is started again once by the server, on the same
   relay, port and identity: the address goes, the same dim status line says **Recovering…**
   with Stop still offered (disabled on a watch-only device), and a second exit or a restart

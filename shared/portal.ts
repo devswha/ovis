@@ -55,8 +55,14 @@ export interface PortalAuth {
 
 export const NO_PORTAL_AUTH: PortalAuth = { method: "none", allow: [], issuer: null, client_id: null };
 
-/** What a check refuses, in the words the server answers with and the panel shows (translated there). */
-export const PORTAL_AUTH_PROBLEMS = {
+/** The environment variable of the server's PC that holds the OIDC client secret, which no request, file or answer carries. */
+export const PORTAL_OIDC_SECRET_VARIABLE = "OVIS_PORTAL_OIDC_CLIENT_SECRET";
+
+/** Why a check refuses. */
+export type PortalAuthProblem = "invalid" | "name" | "wallet" | "principal" | "duplicate" | "no_wallet" | "no_principal" | "issuer" | "client_id";
+
+/** What a check refuses, in the words the server answers with and the panel shows (translated there: src/lib/i18n.test.ts reads this map). */
+export const PORTAL_AUTH_PROBLEMS: Record<PortalAuthProblem, string> = {
   invalid: "The sign-in settings are not valid.",
   name: "A link name is 1 to 256 printable ASCII characters; spaces are fine.",
   wallet: "A wallet is an Ethereum address: 0x and 40 hexadecimal digits.",
@@ -66,8 +72,7 @@ export const PORTAL_AUTH_PROBLEMS = {
   no_principal: "Add at least one email, @domain or sub:<id>: Portal will not start Google or company login without one.",
   issuer: "The provider is an https address with no query or fragment, such as https://accounts.google.com.",
   client_id: "Enter the client ID your provider gave you: up to 256 characters, no spaces.",
-} as const;
-export type PortalAuthProblem = keyof typeof PORTAL_AUTH_PROBLEMS;
+};
 
 type Checked<T> = T | { readonly problem: PortalAuthProblem };
 

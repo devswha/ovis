@@ -31,7 +31,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
+import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, PORTAL_OIDC_SECRET_VARIABLE, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
 import type { PortalStatus } from "../shared/protocol.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
@@ -54,8 +54,6 @@ const RELAY_TIMEOUT_MS = 5_000;
 const PIPE_GRACE_MS = 250;
 /** Portal's last words kept for the panel */
 const OUTPUT_LINES = 30;
-/** the OIDC client secret, which only this server's environment holds (Settings says so) */
-const OIDC_SECRET_VARIABLE = "OVIS_PORTAL_OIDC_CLIENT_SECRET";
 /** `portal auth issue` reads the identity file and signs: a local call */
 const ISSUE_TIMEOUT_MS = 10_000;
 /** what Portal may keep of this server's environment: enough to run and to reach the relay */
@@ -146,7 +144,7 @@ function blockedBy({ tokenSet, serveOnly }: Guards): PortalStatus["blocked"] {
 }
 
 function oidcSecret(): string | null {
-  const value = process.env[OIDC_SECRET_VARIABLE]?.trim();
+  const value = process.env[PORTAL_OIDC_SECRET_VARIABLE]?.trim();
   return value ? value : null;
 }
 

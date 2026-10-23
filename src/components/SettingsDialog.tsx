@@ -982,7 +982,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
         </SettingsRow>
       </SettingsGroup>
 
-      <PortalPanel readOnly={auth?.role === "watch"} />
+      <PortalPanel readOnly={auth?.role === "watch"} viaPortal={auth?.via === "portal"} />
 
       <SettingsGroup title={t("Devices")} section="devices">
         <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} onRevokedAll={onRevokedAll} /></div>
