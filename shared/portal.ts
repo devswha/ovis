@@ -136,3 +136,12 @@ export function checkPortalAuth(input: unknown): Checked<{ readonly auth: Portal
   if ("problem" in client) return client;
   return { auth: { method: "oidc", allow: entries, issuer: provider.issuer, client_id: client.clientId } };
 }
+
+/** How long a private link lasts, in days, to choose from. */
+export const PORTAL_INVITE_DAYS = [1, 7, 30, 90] as const;
+export const DEFAULT_INVITE_DAYS = 30;
+
+/** POST /api/portal/invite: the link to send. It is a bearer secret, shown once and kept nowhere. */
+export interface PortalInvite {
+  readonly redeem_url: string;
+}

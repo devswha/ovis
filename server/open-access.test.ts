@@ -246,6 +246,19 @@ describe("a Portal that signs its visitors in", () => {
     expect(await health(base, {})).toMatchObject({ required: true, authenticated: false, reason: "token_required" });
   });
 
+  it("does not let a visitor it signed in issue private links, while the owner's token may", async () => {
+    const base = start(new SignedInPortal({ stateDir: root }));
+    const issue = (headers: Record<string, string>) => fetch(`${base}/api/portal/invite`, {
+      method: "POST", headers: { ...headers, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ name: "alice", days: 30 }),
+    });
+    const refused = await issue(portalHeaders);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("owner_only");
+    // the owner is not asked to be anyone else: this Portal runs nothing yet, which is all that stops the answer
+    const owner = await issue({ authorization: `Bearer ${TOKEN}` });
+    expect(((await owner.json()) as { error: { code: string } }).error.code).toBe("portal_not_credential");
+  });
+
   it("believes nothing of those headers from anywhere else, or about anyone else", async () => {
     const base = start(new SignedInPortal({ stateDir: root }));
     const refused = async (headers: Record<string, string>) => {

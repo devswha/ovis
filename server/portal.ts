@@ -31,7 +31,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
+import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
 import type { PortalStatus } from "../shared/protocol.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
@@ -56,6 +56,8 @@ const PIPE_GRACE_MS = 250;
 const OUTPUT_LINES = 30;
 /** the OIDC client secret, which only this server's environment holds (Settings says so) */
 const OIDC_SECRET_VARIABLE = "OVIS_PORTAL_OIDC_CLIENT_SECRET";
+/** `portal auth issue` reads the identity file and signs: a local call */
+const ISSUE_TIMEOUT_MS = 10_000;
 /** what Portal may keep of this server's environment: enough to run and to reach the relay */
 const PORTAL_ENV = ["PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 
@@ -465,6 +467,35 @@ export class PortalService {
     return this.url !== null && this.auth.method !== "none" ? new URL(this.url).hostname : null;
   }
 
+  /**
+   * A private link for `name`, good for `days`: `portal auth issue` for this app's own identity and
+   * address, which prints the credential and the URL that redeems it. The link is a bearer secret:
+   * it is read from the process's output and handed back once, never kept, logged or put in an error.
+   */
+  async invite(name: string, days: number): Promise<{ redeem_url: string } | { refused: "unavailable" | "not_listed" } | { failed: string }> {
+    const bin = this.bin();
+    if (bin === null || this.auth.method !== "credential" || this.url === null) return { refused: "unavailable" };
+    // a link for a name the list does not hold would be one Portal turns away
+    if (this.auth.allow.length > 0 && !this.auth.allow.includes(name)) return { refused: "not_listed" };
+    const host = new URL(this.url).host;
+    try {
+      const proc = Bun.spawn([bin, "auth", "issue", host, `--subject=${name}`, `--expires=${days * 24}h`, "--identity-path", this.identityPath], {
+        stdin: "ignore", stdout: "pipe", stderr: "pipe", env: portalEnv(), windowsHide: true, timeout: ISSUE_TIMEOUT_MS, killSignal: "SIGKILL",
+      });
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+        new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+        proc.exited,
+      ]);
+      const redeem = /^Redeem URL: (https:\/\/\S+)$/m.exec(out)?.[1];
+      if (code === 0 && redeem?.startsWith(`https://${host}/_portal/auth/login#credential=`)) return { redeem_url: redeem };
+      const said = err.trim().split("\n").at(-1);
+      return { failed: `Portal could not issue the link (exit ${code}).${said ? ` Portal said: ${said}` : ""}` };
+    } catch (error) {
+      return { failed: `Portal could not issue the link (${messageOf(error)}).` };
+    }
+  }
+
   private run(request: Launch, operation: number, recovery: Recovery | null): void {
     this.launching = true;
     void this.launch(request, operation, recovery)
@@ -796,8 +827,12 @@ export class PortalService {
 
 const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: PORTAL_VERSION, usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: NO_PORTAL_AUTH, auth_methods: [], oidc_secret: false };
 
-/** /api/portal and its actions. What this server is (its port, token and serve-only setting) comes from index.ts. */
-export async function handlePortalRequest(request: Request, pathname: string, portal: PortalService | undefined, context: Omit<StartRequest, "relay">): Promise<Response> {
+/**
+ * /api/portal and its actions. What this server is (its port, token and serve-only setting) comes
+ * from index.ts, and so does whether the request was let in by Portal's own sign-in: the visitors it
+ * lets in may not issue links, or a link's holder could keep issuing new ones past its expiry.
+ */
+export async function handlePortalRequest(request: Request, pathname: string, portal: PortalService | undefined, context: Omit<StartRequest, "relay">, throughPortal = false): Promise<Response> {
   const reply = (body: unknown, code = 200) => jsonResponse(body, code, { "cache-control": "no-store" });
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/portal" && request.method === "GET") {
@@ -806,18 +841,34 @@ export async function handlePortalRequest(request: Request, pathname: string, po
     return reply(portal ? await portal.status(context) : NO_PORTAL);
   }
   const action = pathname.slice("/api/portal/".length);
-  if (request.method !== "POST" || (action !== "start" && action !== "stop")) {
-    return fail("method_not_allowed", "Use GET /api/portal, or POST /api/portal/start or /stop", 405);
+  if (request.method !== "POST" || (action !== "start" && action !== "stop" && action !== "invite")) {
+    return fail("method_not_allowed", "Use GET /api/portal, or POST /api/portal/start, /stop or /invite", 405);
   }
-  setRequestRoute(action === "start" ? "/api/portal/start" : "/api/portal/stop");
+  setRequestRoute(action === "start" ? "/api/portal/start" : action === "stop" ? "/api/portal/stop" : "/api/portal/invite");
   if (!updateRequestAllowed(request)) return fail("invalid_portal_request", "Use the Portal controls from this app.", 403);
   if (!portal) return fail("portal_unsupported", "This server offers no Portal.", 409);
   if (action === "stop") {
     try { portal.stop(); } catch (error) { return errorResponse(error); }
     return reply({ accepted: true }, 202);
   }
+  if (action === "invite" && throughPortal) return fail("owner_only", "A visitor signed in through Portal cannot issue links. Use the access token or a paired device.", 403);
   let body: unknown = null;
   try { body = await request.json(); } catch { /* checked below */ }
+  if (action === "invite") {
+    const fields = isJsonObject(body) ? body : {};
+    const name = checkEntry("credential", typeof fields["name"] === "string" ? fields["name"] : "");
+    if ("problem" in name) return fail("invalid_invite", PORTAL_AUTH_PROBLEMS[name.problem], 400);
+    const days = PORTAL_INVITE_DAYS.find((choice) => choice === fields["days"]);
+    if (days === undefined) return fail("invalid_invite", `Choose ${PORTAL_INVITE_DAYS.join(", ")} days.`, 400);
+    const issued = await portal.invite(name.entry, days);
+    if ("refused" in issued) {
+      return issued.refused === "unavailable"
+        ? fail("portal_not_credential", "Private links need Portal running with the private-link sign-in.", 409)
+        : fail("invite_name_not_listed", "That name is not on the list of allowed link names.", 400);
+    }
+    if ("failed" in issued) return fail("portal_invite_failed", issued.failed, 502);
+    return reply(issued);
+  }
   const relay = relayOrigin(isJsonObject(body) ? body["relay"] : undefined);
   if (relay === null) return fail("invalid_relay", "Give the relay as an https address, such as https://relay.example.com.", 400);
   const auth = checkPortalAuth(isJsonObject(body) ? body["auth"] : undefined);

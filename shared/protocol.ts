@@ -119,6 +119,10 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         invalid_portal_auth, 409 token_required / serve_only / portal_busy / portal_state_in_use /
  *         portal_unsupported
  *  POST   /api/portal/stop               -> 202 { accepted: true }; 409 portal_unsupported
+ *  POST   /api/portal/invite             -> PortalInvite, no-store; body { name, days }: a private link for `name`
+ *         that lasts 1, 7, 30 or 90 days, issued while Portal runs with the private-link sign-in. 400
+ *         invalid_invite / invite_name_not_listed, 403 owner_only (a visitor signed in through Portal itself may
+ *         not issue links), 409 portal_not_credential, 502 portal_invite_failed
  *         Portal POSTs require X-Herdr-Update: 1 and same-origin, like the update POSTs:
  *         403 invalid_portal_request (or invalid_origin from the outer origin gate).
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
@@ -418,7 +422,7 @@ export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, Bin
  */
 export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
-export type { PortalAuth, PortalAuthMethod, PortalSignIn, PortalStatus } from "./portal.ts";
+export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
 
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
