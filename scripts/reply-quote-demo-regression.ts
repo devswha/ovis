@@ -527,15 +527,15 @@ async function captureAll(browser: Browser, dir: string): Promise<void> {
     const quoteButton = page.locator(".chat-quote");
     const composer = page.locator(".composer-text");
     // the selection where a reader made it: in the middle of the view, not under the end the chat opened at
+    // the virtual list re-measures rows as they come in, so each poll scrolls the selection in again
     const reveal = async () => {
-      await page.evaluate(() => {
+      await page.waitForFunction(() => {
         const range = getSelection()!.getRangeAt(0);
+        const box = range.getClientRects()[0];
+        if (box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight) return true;
         const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement!;
         start.scrollIntoView({ block: "center", behavior: "instant" });
-      });
-      await page.waitForFunction(() => {
-        const box = getSelection()!.getRangeAt(0).getClientRects()[0];
-        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight;
+        return false;
       });
     };
     const reset = async () => {
