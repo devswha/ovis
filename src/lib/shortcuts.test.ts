@@ -211,7 +211,7 @@ it("pages the selected pane with fixed Mod+Shift bindings, remapping and disabli
 
 describe("new tab and split pane", () => {
   it("have no key until one is chosen in Settings, and then work like any other binding", () => {
-    for (const id of ["new-tab", "split-right", "split-down"] as const) {
+    for (const id of ["new-tab", "rename-tab", "split-right", "split-down"] as const) {
       expect(shortcutKeys(id, {})).toEqual([]);
       expect(shortcutDisplayKeys(id, {})).toEqual([]);
     }
@@ -224,6 +224,14 @@ describe("new tab and split pane", () => {
     expect(shortcutDisplayKeys("new-tab", overrides)).toEqual(["Mod", "Shift", "Y"]);
     expect(shortcutConflict("split-down", ["y"], overrides)).toBe(true);
     expect(shortcutConflict("new-tab", ["k"], {})).toBe(true);
+  });
+
+  it("binds Rename tab to a chosen key", () => {
+    const overrides = sanitizeShortcutOverrides({ "rename-tab": "r" });
+    expect(overrides).toEqual({ "rename-tab": "r" });
+    expect(matchShortcut(keyEvent("R", { ctrlKey: true }), false, overrides)).toBe("rename-tab");
+    expect(shortcutDisplayKeys("rename-tab", overrides)).toEqual(["Mod", "Shift", "R"]);
+    expect(shortcutConflict("rename-tab", ["r"], { "new-tab": "r" })).toBe(true);
   });
 });
 

@@ -187,6 +187,8 @@ export function App() {
   const { paletteOpen, paletteQuery, openPalette, setPaletteOpen } = useCommandPalette();
   const paneControls = useRef<PaneControls | null>(null);
   const [findRequest, setFindRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
+  // the Rename tab shortcut and palette action: the tab strip of the selected pane opens its name field
+  const [renameRequest, setRenameRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
   // the header's More menu: its button
   const [more, setMore] = useState<{ anchor: HTMLElement } | null>(null);
   const closeMore = useCallback(() => setMore(null), []);
@@ -384,6 +386,11 @@ export function App() {
         setNewSessionMachineId(machineId);
         setNewTab({ workspaceId: workspace.workspace_id, workspaceLabel: workspace.label, cwd, number: workspace.tab_count + 1 });
         setNewSessionOpen(true);
+      },
+      renameTab: () => {
+        if (selectedPaneId === null) return;
+        setDrawerOpen(false);
+        setRenameRequest((request) => ({ paneId: selectedPaneId, serial: request.serial + 1 }));
       },
       openTerminalTab: async (target) => {
         const found = newTabTarget(target);
@@ -790,6 +797,7 @@ export function App() {
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {slotSnapshot && pane && workspace && (
                   <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd}
+                    renameRequest={active && renameRequest.paneId === pane.pane_id ? renameRequest.serial : 0}
                     onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
                     onNewTerminal={() => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}

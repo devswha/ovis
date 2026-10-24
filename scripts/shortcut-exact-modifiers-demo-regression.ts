@@ -122,6 +122,36 @@ try {
         await page.locator(".settings-dialog").waitFor();
         await page.getByRole("button", { name: "Close settings", exact: true }).click();
 
+        // Rename tab has no default key: a recorded chord opens the open tab's name field, Escape cancels, Enter renames
+        await hungarianE();
+        await page.locator(".settings-dialog").waitFor();
+        await record(page, "Rename tab", "Meta+Alt+KeyR");
+        assert.equal((await stored(page))["rename-tab"], "alt+meta+r");
+        await page.getByRole("button", { name: "Close settings", exact: true }).click();
+        const tabName = page.locator(".tab-strip-item.is-active .tab-strip-rename");
+        const tabLabel = (await page.locator('.tab-strip-item.is-active [role="tab"]').textContent()) ?? "";
+        await page.keyboard.press("Meta+Alt+KeyR");
+        await tabName.waitFor();
+        assert.equal(await tabName.evaluate((input) => input === document.activeElement), true, "the name field has the focus");
+        if (screenshotDir) await page.screenshot({ path: join(screenshotDir, "rename-tab-shortcut.png") });
+        await page.keyboard.press("Escape");
+        await tabName.waitFor({ state: "detached" });
+        assert.equal(await page.locator('.tab-strip-item.is-active [role="tab"]').textContent(), tabLabel, "Escape keeps the name");
+        await page.keyboard.press("Meta+Alt+KeyR");
+        await tabName.waitFor();
+        await page.keyboard.type("Renamed by shortcut");
+        await page.keyboard.press("Enter");
+        await tabName.waitFor({ state: "detached" });
+        assert.match((await page.locator('.tab-strip-item.is-active [role="tab"]').textContent()) ?? "", /Renamed by shortcut/, "Enter renames the tab");
+        // the palette offers the same action
+        await page.keyboard.press("Control+KeyK");
+        await palette.waitFor();
+        await page.keyboard.type("rename tab");
+        await page.getByRole("option", { name: /Rename tab/ }).first().click();
+        await tabName.waitFor();
+        assert.equal(await tabName.evaluate((input) => input === document.activeElement), true, "the palette action focuses the name field");
+        await page.keyboard.press("Escape");
+
         // a binding on End gives way to a message box that has text, as the arrows do; an empty box lets it run
         const composer = page.locator(".composer-text").first();
         await composer.fill("draft");

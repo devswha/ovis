@@ -55,11 +55,13 @@ export interface TabStripProps {
   panelId?: string;
   /** a tab dragged out of the strip may open its pane in half of the pane area (lib/paneDrag.ts) */
   splitDrag?: boolean;
+  /** a counter the app raises to open the open tab's name field, as the menu's Rename does (0: none asked) */
+  renameRequest?: number;
   /** drawn at the row's far end, outside the scrolling tabs: a split view half's close (App) */
   end?: ReactNode;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, end }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = 0, end }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
@@ -211,6 +213,19 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (row) scroll.current = stripScrolled(scroll.current, row.scrollLeft, row.scrollWidth - row.clientWidth);
   };
 
+  const beginRename = (tab: HerdrTab): void => {
+    setError(null);
+    setEditing({ tabId: tab.tab_id, value: sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "" });
+  };
+  // a request from the app (shortcut, palette) opens the open tab's field once; a strip that is not drawn ignores it
+  const lastRenameRequest = useRef(renameRequest);
+  useLayoutEffect(() => {
+    if (renameRequest === lastRenameRequest.current) return;
+    lastRenameRequest.current = renameRequest;
+    const tab = tabs.find((candidate) => candidate.tab_id === selectedPane.tab_id);
+    if (renameRequest > 0 && tab && shown && !(cramped && tabs.length === 1)) beginRename(tab);
+  }, [renameRequest]);
+
   if (!shown || (cramped && tabs.length === 1)) return null;
 
   const panesOf = (tab: HerdrTab): PaneInfo[] => panes.filter((pane) => pane.tab_id === tab.tab_id);
@@ -227,10 +242,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     window.requestAnimationFrame(() => strip.current?.querySelector<HTMLElement>(`[role="tab"][data-tab-id="${CSS.escape(tabId)}"]`)?.focus());
   };
 
-  const beginRename = (tab: HerdrTab): void => {
-    setError(null);
-    setEditing({ tabId: tab.tab_id, value: sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "" });
-  };
   // an empty name is not sent: herdr would keep it, and its own tab row would show nothing
   const saveRename = (tab: HerdrTab): void => {
     const label = editing?.value.trim() ?? "";
