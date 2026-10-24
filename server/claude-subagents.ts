@@ -627,11 +627,17 @@ export const validDetailId = (id: string): boolean => id.length > 0 && id.length
 
 type DetailEvent = PaneBackgroundAgentDetail["events"][number];
 
+/**
+ * A file's identity as the swap checks compare it, read as BigInt: an NTFS file ID can pass Number.MAX_SAFE_INTEGER, and
+ * as a plain number two files made close together in one folder could read as the same file.
+ */
+const identity = (stat: { dev: bigint; ino: bigint }): string => `${stat.dev}:${stat.ino}`;
+
 /** A folder's identity: a folder that is no link, or null (a link, a file, nothing). */
 function folderId(path: string): string | null {
   try {
-    const stat = lstatSync(path);
-    return stat.isDirectory() && !stat.isSymbolicLink() ? `${stat.dev}:${stat.ino}` : null;
+    const stat = lstatSync(path, { bigint: true });
+    return stat.isDirectory() && !stat.isSymbolicLink() ? identity(stat) : null;
   } catch { return null; }
 }
 
@@ -644,10 +650,10 @@ const absent = (error: unknown): boolean => {
 /** What is at `path`, not followed: a plain folder or file with its identity, nothing, something else, or an error that is no answer. */
 function look(path: string): { kind: "folder" | "file"; id: string; size: number } | "missing" | "other" | "error" {
   try {
-    const stat = lstatSync(path);
+    const stat = lstatSync(path, { bigint: true });
     if (stat.isSymbolicLink()) return "other";
-    if (stat.isDirectory()) return { kind: "folder", id: `${stat.dev}:${stat.ino}`, size: stat.size };
-    return stat.isFile() ? { kind: "file", id: `${stat.dev}:${stat.ino}`, size: stat.size } : "other";
+    if (stat.isDirectory()) return { kind: "folder", id: identity(stat), size: Number(stat.size) };
+    return stat.isFile() ? { kind: "file", id: identity(stat), size: Number(stat.size) } : "other";
   } catch (error) { return absent(error) ? "missing" : "error"; }
 }
 
@@ -674,8 +680,8 @@ function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
   let fd: number;
   try { fd = detailIo.openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); } catch { return "unavailable"; }
   try {
-    const opened = fstatSync(fd);
-    if (opened.isDirectory() && `${opened.dev}:${opened.ino}` === chain.at(-1)!.id && fdPath(fd) === path) return { path, fd, chain };
+    const opened = fstatSync(fd, { bigint: true });
+    if (opened.isDirectory() && identity(opened) === chain.at(-1)!.id && fdPath(fd) === path) return { path, fd, chain };
   } catch { /* refused below */ }
   closeSync(fd);
   return "unavailable";
@@ -704,8 +710,9 @@ function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRe
   // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it
   try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return "unavailable"; }
   try {
-    const opened = fstatSync(fd);
-    if (opened.isFile() && `${opened.dev}:${opened.ino}` === looked.id && opened.size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size: opened.size, id: looked.id, path, where };
+    const opened = fstatSync(fd, { bigint: true });
+    const size = Number(opened.size);
+    if (opened.isFile() && identity(opened) === looked.id && size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size, id: looked.id, path, where };
   } catch { /* refused below */ }
   closeSync(fd);
   return "unavailable";
@@ -722,7 +729,7 @@ interface Opened { fd: number; size: number; id: string; path: string; where: st
 function stillThere(file: Opened): boolean {
   const seen = look(file.where);
   if (typeof seen === "string" || seen.kind !== "file" || seen.id !== file.id) return false;
-  try { const opened = fstatSync(file.fd); if (`${opened.dev}:${opened.ino}` !== file.id) return false; } catch { return false; }
+  try { if (identity(fstatSync(file.fd, { bigint: true })) !== file.id) return false; } catch { return false; }
   return !fdPaths || fdPath(file.fd) === file.path;
 }
 
