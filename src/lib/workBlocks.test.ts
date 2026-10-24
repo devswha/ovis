@@ -241,6 +241,13 @@ describe("todoGroups", () => {
     expect(group.attempts.some((attempt) => attempt.state === "ok")).toBe(false);
   });
 
+  it("never takes a failed call without a recorded state for the list", () => {
+    const earlier = write(undefined, undefined, [{ content: "Kept", status: "pending" }]);
+    const group = only([earlier, { ...write(undefined, undefined, "{not json"), error: true }]);
+    expect(group.current?.part).toBe(earlier);
+    expect(group.failed).toBe(1);
+  });
+
   it("invents no list from pending and failed calls alone", () => {
     const group = only([write("a", "pending"), write("b", "error")]);
     expect(group.current).toBeNull();

@@ -166,7 +166,8 @@ export function todoGroups(parts: readonly ConversationPart[], rowKey: string): 
       const first = run.parts[0]!;
       const attempts = run.parts.map(attemptOf);
       let current: TodoAttempt | null = null;
-      for (const attempt of attempts) if (attempt.state === "ok" || attempt.state === "unknown") current = attempt;
+      // a call flagged failed never stands for the list, whatever state it carries
+      for (const attempt of attempts) if ((attempt.state === "ok" || attempt.state === "unknown") && attempt.part.error !== true) current = attempt;
       groups.set(first, {
         id: JSON.stringify([rowKey, first.call_id ?? `#${run.start}`]),
         attempts,
