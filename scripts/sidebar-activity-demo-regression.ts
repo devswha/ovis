@@ -231,6 +231,13 @@ const AGENTS_HERDR_ORDER = [API, WEB, "Fix the flaky retry test", INFRA, "Ship t
 const agents = (page: Page) => page.locator(".agents-sidebar .agent-item");
 const agentTitles = (page: Page) => agents(page).locator(".agent-title").allTextContents();
 const agent = (page: Page, title: string) => agents(page).filter({ has: page.locator(".agent-title", { hasText: title }) });
+/** waits until xterm has parsed the text and nothing is queued or in flight, so a later check cannot pass by timing */
+const outputParsed = (page: Page, text: string) => page.waitForFunction((expected) => {
+  const host = document.querySelector(".pane-frame.is-current .pane-terminal");
+  if (!host || !("outputProbe" in host) || typeof host.outputProbe !== "function") return false;
+  const probe = host.outputProbe();
+  return probe.written.includes(expected) && probe.inFlight === 0 && probe.queued === 0;
+}, text);
 const waitStatus = (page: Page, title: string, status: string) => agent(page, title).locator(`.sidebar-status[data-status="${status}"]`).waitFor({ timeout: 10_000 });
 const waitAgentAt = (page: Page, index: number, title: string) => page.waitForFunction(([at, name]) =>
   [...document.querySelectorAll(".agents-sidebar .agent-item .agent-title")][at as number]?.textContent === name, [index, title] as const, { timeout: 5_000 });
@@ -362,7 +369,7 @@ try {
           await waitStatus(page, INFRA, "done");
           assert.equal(await content.count(), 0, "attachment loss revokes the old screen's presentation");
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "old attachment tail\r\n" }), panes.omp);
-          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+          await outputParsed(page, "old attachment tail\r\n");
           assert.equal(await content.count(), 0, "output before recovery cannot re-arm presentation");
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "input-ready", pane_id: id }), panes.omp);
           assert.equal(await content.count(), 0, "recovery alone must wait for new output");
@@ -375,7 +382,7 @@ try {
             window.sidebarFixture.frame({ type: "input-ready", pane_id: id });
             await window.sidebarFixture.finish(id, "done", 102);
           }, panes.omp);
-          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+          await outputParsed(page, "queued before loss\r\n");
           await waitStatus(page, INFRA, "done");
           assert.equal(await content.count(), 0, "a pre-loss parse callback cannot re-arm a recovered attachment");
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "fresh after queued parse\r\n" }), panes.omp);
