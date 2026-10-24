@@ -72,7 +72,8 @@ export function useSplitState() {
     setDropAt(side);
   }, []);
   // the pane being dragged, read at dragstart (a dragover cannot read the drag's data), and the
-  // title it would trade places with if dropped now
+  // title it would trade places with if dropped now. Only a drag from the pane's own title swaps:
+  // a sidebar row, a tab or a half's bar dropped on a title still opens a half
   const draggedPaneRef = useRef<SplitTarget | null>(null);
   const swapHeadRef = useRef<HTMLElement | null>(null);
   const markSwap = useCallback((head: HTMLElement | null): void => {
@@ -288,7 +289,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     if (!splitDragOn) { clearDropPreview(); return; }
     const start = (event: globalThis.DragEvent): void => {
       if (event.dataTransfer?.types.includes(PANE_DRAG_TYPE)) {
-        draggedPaneRef.current = draggedPane(event.dataTransfer.getData(PANE_DRAG_TYPE));
+        const fromTitle = event.target instanceof Element && event.target.closest(".pane-frame-head") !== null;
+        draggedPaneRef.current = fromTitle ? draggedPane(event.dataTransfer.getData(PANE_DRAG_TYPE)) : null;
         showDropTarget(null);
         setPaneDragging(true);
       }
