@@ -50,6 +50,16 @@ it("finds what runs under a pane's shell in the process table", () => {
   expect(under.some(isGjcProcess)).toBe(true);
   // the same walk, with each process's number
   expect(descendantProcesses(table, 41948).map((entry) => entry.pid)).toEqual([12156, 700]);
+  // Windows keeps a dead parent's number on its children: one that started before the process now
+  // holding that number is not its child, and nor is anything below it
+  const reused = [
+    { pid: 50, parent: 0, path: null, commandLine: "shell", started: 1000 },
+    { pid: 51, parent: 50, path: null, commandLine: "child", started: 1001 },
+    { pid: 52, parent: 50, path: null, commandLine: "stray", started: 10 },
+    { pid: 53, parent: 52, path: null, commandLine: "under stray", started: 20 },
+    { pid: 54, parent: 50, path: null, commandLine: "no start" },
+  ];
+  expect(descendantProcesses(reused, 50).map((entry) => entry.pid)).toEqual([51, 54]);
   // another pane's shell has no gjc under it, though one runs elsewhere on the PC
   expect(descendantArgv(table, 26540).length).toBe(3);
   expect(descendantArgv(table, 4242)).toEqual([]);
