@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { defaultRustSidecar, installedHostVouched, probeRustHost, resetPtyHostForTests, RUST_SIDECAR_BUILD, rustSidecar, rustSidecarPath } from "./host.ts";
@@ -69,6 +69,29 @@ describe("rustSidecar", () => {
       writeFileSync(installed, "host");
       expect(installedHostVouched(installed)).toBe(true);
       expect(defaultRustSidecar(installed)).toBe(installed);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("reads a record rewritten within one tick of the file clock, not a cached verdict", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-pty-installed-"));
+    try {
+      mkdirSync(join(dir, "bin"));
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "9.9.9" }));
+      const installed = join(dir, "bin", "ovis-pty-sidecar");
+      writeFileSync(installed, "host");
+      const digest = createHash("sha256").update("host").digest("hex");
+      // a whole second, so both writes carry exactly the same mtime, as on a coarse file clock
+      const tick = 1_700_000_000;
+      writeFileSync(`${installed}.json`, JSON.stringify({ sha256: digest, version: "0.0.1" }));
+      utimesSync(`${installed}.json`, tick, tick);
+      expect(installedHostVouched(installed)).toBe(false);
+      writeFileSync(`${installed}.json`, JSON.stringify({ sha256: digest, version: "9.9.9" }));
+      utimesSync(`${installed}.json`, tick, tick);
+      expect(statSync(`${installed}.json`).mtimeMs).toBe(tick * 1000);
+      expect(installedHostVouched(installed)).toBe(true);
+      // a server of another version, after a verdict for this one
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "9.9.10" }));
+      expect(installedHostVouched(installed)).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

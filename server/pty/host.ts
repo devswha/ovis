@@ -9,26 +9,32 @@ export const RUST_SIDECAR_BUILD = join(import.meta.dir, "..", "..", "crates", "p
 /** Where a release's host is installed beside the server (scripts/pty-sidecar.ts install, a remote PC bundle's bin/). */
 export const RUST_SIDECAR_INSTALLED = join(import.meta.dir, "..", "..", "bin", "ovis-pty-sidecar");
 
-const vouched = new Map<string, boolean>();
+/** each installed binary's SHA-256, one entry per path, kept while its file state stays the same */
+const digests = new Map<string, { state: string; sha256: string }>();
+
+/** the binary's SHA-256, hashed again only when its mtime, size or inode moved (the installers replace it by rename, never in place) */
+function binaryDigest(installed: string): string {
+  const stat = statSync(installed);
+  const state = `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  const known = digests.get(installed);
+  if (known?.state === state) return known.sha256;
+  const sha256 = createHash("sha256").update(readFileSync(installed)).digest("hex");
+  digests.set(installed, { state, sha256 });
+  return sha256;
+}
 
 /**
  * Whether the installed host is the one its record (`<binary>.json`, written by scripts/pty-sidecar.ts
  * install or the remote bundle's builder) vouches for: the same SHA-256, for the version in the
- * package.json beside the server. Taken once per file state, so attaches do not hash it again.
+ * package.json beside the server. The record and the version are read on every call (both are small),
+ * so a rewrite of either within one tick of the file clock still counts; only the binary's hash is
+ * cached, so attaches do not hash it again.
  */
 export function installedHostVouched(installed: string, packageJson = join(dirname(installed), "..", "package.json")): boolean {
   try {
-    const stat = statSync(installed);
-    const recordStat = statSync(`${installed}.json`);
-    const key = `${installed}:${stat.mtimeMs}:${stat.size}:${stat.ino}:${recordStat.mtimeMs}:${recordStat.size}`;
-    const known = vouched.get(key);
-    if (known !== undefined) return known;
     const record = JSON.parse(readFileSync(`${installed}.json`, "utf8")) as { sha256?: unknown; version?: unknown };
     const version = (JSON.parse(readFileSync(packageJson, "utf8")) as { version?: unknown }).version;
-    const ok = typeof record.sha256 === "string" && record.version === version
-      && createHash("sha256").update(readFileSync(installed)).digest("hex") === record.sha256;
-    vouched.set(key, ok);
-    return ok;
+    return typeof record.sha256 === "string" && record.version === version && binaryDigest(installed) === record.sha256;
   } catch {
     return false;
   }
