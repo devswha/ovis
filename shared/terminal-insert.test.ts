@@ -4,9 +4,13 @@ import { INSERT_MAX_BYTES, INSERT_MAX_UNITS, insertTextProblem } from "./termina
 const paste = (text: string) => `\x1b[200~${text}\x1b[201~`;
 
 describe("insertTextProblem", () => {
-  it("takes one line as written, tabs and non-ASCII included", () => {
+  it("takes one line as written, non-ASCII included", () => {
     expect(insertTextProblem("git status")).toBeNull();
-    expect(insertTextProblem("a\tb 한글 😀")).toBeNull();
+    expect(insertTextProblem("a b 한글 😀")).toBeNull();
+  });
+
+  it("refuses a tab: a shell would complete on it, so the prompt would not show the line as written", () => {
+    expect(insertTextProblem("a\tb")).toMatchObject({ code: "invalid_insert_text" });
   });
 
   it("refuses what is not a string, and nothing", () => {

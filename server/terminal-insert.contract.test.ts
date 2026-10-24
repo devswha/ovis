@@ -235,13 +235,13 @@ describe("WebSocket insert", () => {
       socket.send({ type: "insert", id: request, pane_id: shell.pane, text: "git status" });
       expect(await socket.result(request)).toEqual({ type: "insert-result", id: request, pane_id: shell.pane, ok: true });
       expect(await recorded(shell, from, (text) => text.includes("git status"))).toBe("git status");
-      // the tab, a quote and non-ASCII go as typed; still no CR, LF, ESC or key after them
+      // a quote and non-ASCII go as typed; still no CR, LF, ESC or key after them
       await barrier(socket, shell, from, "git status");
       const after = chunks(shell).length;
       const second = id();
-      socket.send({ type: "insert", id: second, pane_id: shell.pane, text: "echo\t'한글 😀'" });
+      socket.send({ type: "insert", id: second, pane_id: shell.pane, text: "echo '한글 😀'" });
       expect(await socket.result(second)).toMatchObject({ ok: true });
-      expect(await recorded(shell, after, (text) => text.endsWith("😀'"))).toBe("echo\t'한글 😀'");
+      expect(await recorded(shell, after, (text) => text.endsWith("😀'"))).toBe("echo '한글 😀'");
       expect(typed(shell, from)).not.toMatch(/[\r\n\u001b]/);
       expect(socket.answers(request)).toHaveLength(1);
     } finally { socket.close(); }
@@ -263,6 +263,10 @@ describe("WebSocket insert", () => {
       const marked = id();
       socket.send({ type: "insert", id: marked, pane_id: shell.pane, text: `one${paste("two")}` });
       expect(await socket.result(marked)).toMatchObject({ ok: false, code: "invalid_insert_text" });
+      // a tab would be taken by a shell as completion: refused like the other controls
+      const tabbed = id();
+      socket.send({ type: "insert", id: tabbed, pane_id: shell.pane, text: "git\tstatus" });
+      expect(await socket.result(tabbed)).toMatchObject({ ok: false, code: "invalid_insert_text" });
       await barrier(socket, shell, from, "");
     } finally { socket.close(); }
   }, 30_000);

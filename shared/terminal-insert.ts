@@ -20,8 +20,8 @@ export const INSERT_MAX_BYTES = 131_072;
 /** Why an insert is refused, as the insert-result says it. */
 export interface InsertRefusal { code: string; message: string }
 
-/** Tab is typed as a key would; ESC (a paste marker or a key sequence) and every other control is not. A lone surrogate would reach the pty as U+FFFD. */
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+/** Every control is refused, Tab included: a shell takes Tab as completion, so the prompt would not show the line as written; ESC is a paste marker or a key sequence. A lone surrogate would reach the pty as U+FFFD. */
+const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const LINE_BREAK = /[\r\n]/;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
