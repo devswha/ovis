@@ -352,7 +352,7 @@ describe.skipIf(process.platform === "win32")("fetches without a persisted check
       expect(f.git(checkout, "rev-parse", "refs/tags/v1.0.0^{commit}")).toBe(f.first);
       expect(f.git(checkout, "rev-parse", "origin/main")).toBe(f.git(f.seed, "rev-parse", "HEAD"));
       expect(f.calls()).toEqual([
-        `gh release create v1.1.0 --target ${f.validated} --title Ovis v1.1.0 --notes-file ${f.dir}/release-notes.md token=set`,
+        `gh release create v1.1.0 --target ${f.validated} --title Ovis v1.1.0 --notes-file ${f.dir}/release-notes.md --latest=false token=set`,
       ]);
       expect(credentialLeaks(f.git, checkout, token, result.stdout + result.stderr)).toEqual([]);
     } finally {
