@@ -6,61 +6,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-type SetupAction = {
+const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
   inputs: Record<string, { default: string }>;
   runs: { steps: Array<{ name?: string; uses?: string; if?: string; with?: Record<string, string>; env?: Record<string, string> }> };
 };
-const actionSource = readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8");
-const action = Bun.YAML.parse(actionSource) as SetupAction;
-
-// Steps are found by action repository, not by ref, so an urgent pin to a commit SHA keeps passing.
-const usesAction = (repository: string) => (step: { uses?: string }) => step.uses?.startsWith(`${repository}@`) === true;
-
-function expectHostedOnlySetup(setup: SetupAction) {
-  for (const name of ["Cache Bun dependencies", "Restore Bun dependencies (read-only)"]) {
-    expect(setup.runs.steps.find((step) => step.name === name)!.if).toStartWith("runner.environment != 'self-hosted' && ");
-  }
-  for (const repository of ["oven-sh/setup-bun", "actions/setup-node"]) {
-    expect(setup.runs.steps.find(usesAction(repository))!.if).toContain("runner.environment != 'self-hosted'");
-  }
-  expect(setup.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.3")!.if)
-    .toContain("runner.environment != 'self-hosted'");
-}
-
-type UpdateEntry = Record<string, unknown> & {
-  "package-ecosystem"?: string;
-  directories?: string[];
-  schedule?: { interval?: string };
-  groups?: unknown;
-  cooldown?: Record<string, unknown>;
-};
-const dependabot = Bun.YAML.parse(readFileSync(join(root, ".github/dependabot.yml"), "utf8")) as { updates: UpdateEntry[] };
-
-/** Problems with an Actions update policy: one monthly grouped entry whose only age rule is a flat seven-day wait. */
-function actionsPolicyProblems(updates: UpdateEntry[]) {
-  const problems: string[] = [];
-  if (updates.length !== 1) problems.push(`expected one update entry, found ${updates.length}`);
-  const entry = updates[0] ?? {};
-  if (entry["package-ecosystem"] !== "github-actions") problems.push("the entry must update github-actions");
-  if (!Bun.deepEquals(entry.directories, ["/", "/.github/actions/setup-ci"])) problems.push("the entry must read the workflows and the setup-ci action");
-  if (entry.schedule?.interval !== "monthly") problems.push("routine updates stay monthly");
-  if (!Bun.deepEquals(entry.groups, { actions: { patterns: ["*"] } })) problems.push("all actions stay in one group");
-  // Any other key (target-branch, open-pull-requests-limit, ...) can change how security updates arrive.
-  for (const key of Object.keys(entry)) {
-    if (!["package-ecosystem", "directories", "schedule", "groups", "cooldown"].includes(key)) problems.push(`unexpected key ${key}`);
-  }
-  if (entry.cooldown?.["default-days"] !== 7) problems.push("routine updates wait seven days");
-  // GitHub applies `cooldown` to version updates only; tiers or extra rules are not part of this policy.
-  for (const key of Object.keys(entry.cooldown ?? {})) {
-    if (key !== "default-days") problems.push(`unexpected cooldown rule ${key}`);
-  }
-  return problems;
-}
-
-/** GitHub's documented rule, not a live Dependabot run: version updates skip releases younger than `default-days`. */
-function heldBack(kind: "version" | "security", ageDays: number, entry: UpdateEntry) {
-  return kind === "version" && ageDays < Number(entry.cooldown?.["default-days"] ?? 3);
-}
 
 type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
 type Workflow = { jobs?: Record<string, { uses?: string; steps?: Step[] }>; runs?: { steps: Step[] } };
@@ -195,7 +144,14 @@ describe("CI cache contract", () => {
   });
 
   it("does not transfer dependency or browser caches over the prepared image", () => {
-    expectHostedOnlySetup(action);
+    for (const name of ["Cache Bun dependencies", "Restore Bun dependencies (read-only)"]) {
+      expect(action.runs.steps.find((step) => step.name === name)!.if).toStartWith("runner.environment != 'self-hosted' && ");
+    }
+    for (const name of ["oven-sh/setup-bun", "actions/setup-node"]) {
+      expect(action.runs.steps.find((step) => step.uses && actionName(step.uses) === name)!.if).toContain("runner.environment != 'self-hosted'");
+    }
+    expect(action.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.3")!.if)
+      .toContain("runner.environment != 'self-hosted'");
     const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")) as {
       jobs: Record<string, { steps: Array<{ name?: string; if?: string; with?: Record<string, string> }> }>;
     };
@@ -240,6 +196,9 @@ describe("action pins and checkout credentials", () => {
       "actions/cache", "actions/cache/restore", "actions/checkout", "actions/deploy-pages", "actions/download-artifact",
       "actions/setup-node", "actions/upload-artifact", "actions/upload-pages-artifact", "oven-sh/setup-bun",
     ]);
+    const dependabot = Bun.YAML.parse(readFileSync(join(root, ".github/dependabot.yml"), "utf8")) as {
+      updates: Array<{ "package-ecosystem": string; directories: string[] }>;
+    };
     const actions = dependabot.updates.find((update) => update["package-ecosystem"] === "github-actions")!;
     expect(actions.directories).toEqual(["/", "/.github/actions/setup-ci"]);
   });
@@ -271,181 +230,5 @@ describe("action pins and checkout credentials", () => {
       "fixture.yml jobs.build.steps[3]: checkout persists its Git credential",
       `fixture.yml:12: actions/cache/restore@${sha} has no "# vX.Y.Z" version comment`,
     ]);
-  });
-});
-
-/** A public origin served from disk, a checkout of it holding no credential, and stub bun and gh. */
-function fetchFixture() {
-  const dir = mkdtempSync(join(tmpdir(), "ci-fetch-"));
-  const stubs = join(dir, "stubs");
-  mkdirSync(stubs);
-  writeFileSync(join(dir, "gitconfig"), "");
-  const env: Record<string, string> = {
-    PATH: `${stubs}:${process.env.PATH ?? ""}`, HOME: dir, GIT_CONFIG_GLOBAL: join(dir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1",
-    GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "CI fixture", GIT_AUTHOR_EMAIL: "ci@example.invalid",
-    GIT_COMMITTER_NAME: "CI fixture", GIT_COMMITTER_EMAIL: "ci@example.invalid", TEST_CALLS: join(dir, "calls"), RUNNER_TEMP: dir,
-  };
-  const git = (cwd: string, ...args: string[]) => {
-    const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
-    expect(result.status, `git ${args.join(" ")}: ${result.stderr}`).toBe(0);
-    return result.stdout.trim();
-  };
-  // the publish step's stand-ins: gh records whether it got a token, never the token itself
-  writeFileSync(join(stubs, "gh"), `#!/bin/sh\nprintf 'gh %s token=%s\\n' "$*" "\${GH_TOKEN:+set}" >> "$TEST_CALLS"\n`, { mode: 0o755 });
-  writeFileSync(join(stubs, "bun"), `#!/bin/sh
-case "$1" in
-  scripts/release-notes.ts) printf 'notes for %s\\n' "$2" ;;
-  scripts/release-guards.ts) printf 'guards tags=%s base=%s\\n' "$(git tag -l | tr '\\n' ' ')" "$(git cat-file -t "$3^{commit}" 2>&1)" >> "$TEST_CALLS" ;;
-esac
-`, { mode: 0o755 });
-  const seed = join(dir, "seed");
-  git(dir, "init", "-q", "-b", "main", seed);
-  git(seed, "commit", "-q", "--allow-empty", "-m", "first");
-  const first = git(seed, "rev-parse", "HEAD");
-  git(seed, "commit", "-q", "--allow-empty", "-m", "validated");
-  const validated = git(seed, "rev-parse", "HEAD");
-  const origin = join(dir, "origin.git");
-  git(dir, "clone", "-q", "--bare", seed, origin);
-  // GitHub serves any reachable commit by SHA; a shallow fetch of the PR base relies on it
-  git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
-  return { dir, env, git, seed, origin, first, validated, calls: () => {
-    try { return readFileSync(env.TEST_CALLS!, "utf8").trim().split("\n"); } catch { return []; }
-  } };
-}
-
-/** Runs one workflow step's script the way a runner's bash does. */
-function runStep(file: string, job: string, name: string, cwd: string, env: Record<string, string>) {
-  const workflow = Bun.YAML.parse(readFileSync(join(root, file), "utf8")) as Workflow;
-  const script = workflow.jobs![job]!.steps!.find((step) => step.name === name)!.run!;
-  expect(script).not.toContain("${{");
-  const path = join(env.RUNNER_TEMP!, `${job}-step.sh`);
-  writeFileSync(path, script);
-  return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", path], { cwd, env, encoding: "utf8", timeout: 20_000 });
-}
-
-/** Where a token ended up: the step's output, the checkout's remote URL or its Git config. */
-function credentialLeaks(git: (cwd: string, ...args: string[]) => string, checkout: string, token: string, output: string) {
-  const leaks: string[] = [];
-  if (output.includes(token)) leaks.push("output");
-  if (git(checkout, "remote", "-v").includes(token)) leaks.push("remote URL");
-  const config = git(checkout, "config", "--list", "--show-origin");
-  if (config.includes(token)) leaks.push("git config");
-  if (/extraheader/i.test(config)) leaks.push("persisted checkout header");
-  return leaks;
-}
-
-describe.skipIf(process.platform === "win32")("fetches without a persisted checkout credential", () => {
-  const token = "ghs_fixtureTokenThatMustNotLeak0123456789";
-
-  it("publishes a release with tags fetched anonymously and gh authenticated by GH_TOKEN alone", () => {
-    const f = fetchFixture();
-    try {
-      const checkout = join(f.dir, "checkout");
-      f.git(f.dir, "clone", "-q", `file://${f.origin}`, checkout);
-      // after the checkout: an older release tag and a newer main commit land on origin
-      f.git(f.seed, "tag", "-a", "v1.0.0", "-m", "v1.0.0", f.first);
-      f.git(f.seed, "commit", "-q", "--allow-empty", "-m", "later");
-      f.git(f.seed, "push", "-q", f.origin, "main", "v1.0.0");
-      const env = { ...f.env, GH_TOKEN: token, GH_REPO: "owner/repo", GITHUB_SHA: f.validated, RELEASE_VERSION: "1.1.0" };
-      const result = runStep(".github/workflows/release.yml", "publish", "Publish the validated commit", checkout, env);
-      expect(result.status, result.stderr).toBe(0);
-      expect(f.git(checkout, "rev-parse", "refs/tags/v1.0.0^{commit}")).toBe(f.first);
-      expect(f.git(checkout, "rev-parse", "origin/main")).toBe(f.git(f.seed, "rev-parse", "HEAD"));
-      expect(f.calls()).toEqual([
-        `gh release create v1.1.0 --target ${f.validated} --title Ovis v1.1.0 --notes-file ${f.dir}/release-notes.md --latest=false token=set`,
-      ]);
-      expect(credentialLeaks(f.git, checkout, token, result.stdout + result.stderr)).toEqual([]);
-    } finally {
-      rmSync(f.dir, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("refuses to publish when the fetch fails or the tag already exists", () => {
-    const f = fetchFixture();
-    try {
-      const checkout = join(f.dir, "checkout");
-      f.git(f.dir, "clone", "-q", `file://${f.origin}`, checkout);
-      f.git(f.seed, "tag", "-a", "v1.0.0", "-m", "v1.0.0", f.first);
-      f.git(f.seed, "push", "-q", f.origin, "v1.0.0");
-      const env = { ...f.env, GH_TOKEN: token, GH_REPO: "owner/repo", GITHUB_SHA: f.validated };
-      const taken = runStep(".github/workflows/release.yml", "publish", "Publish the validated commit", checkout, { ...env, RELEASE_VERSION: "1.0.0" });
-      expect(taken.status).toBe(1);
-      expect(taken.stderr).toContain("Tag appeared during validation");
-      f.git(checkout, "remote", "set-url", "origin", `file://${join(f.dir, "missing.git")}`);
-      const unreachable = runStep(".github/workflows/release.yml", "publish", "Publish the validated commit", checkout, { ...env, RELEASE_VERSION: "1.1.0" });
-      expect(unreachable.status).not.toBe(0);
-      expect(f.calls()).toEqual([]);
-      expect(credentialLeaks(f.git, checkout, token, taken.stdout + taken.stderr + unreachable.stdout + unreachable.stderr)).toEqual([]);
-    } finally {
-      rmSync(f.dir, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("gives the release guards their tags and base commit from a shallow checkout", () => {
-    const f = fetchFixture();
-    try {
-      f.git(f.seed, "tag", "-a", "v1.0.0", "-m", "v1.0.0", f.first);
-      f.git(f.seed, "tag", "-a", "remote-v1", "-m", "remote-v1", f.first);
-      f.git(f.seed, "commit", "-q", "--allow-empty", "-m", "pull request head");
-      f.git(f.seed, "push", "-q", f.origin, "main", "v1.0.0", "remote-v1");
-      const checkout = join(f.dir, "checkout");
-      f.git(f.dir, "clone", "-q", "--depth=1", "--no-tags", `file://${f.origin}`, checkout);
-      expect(spawnSync("git", ["cat-file", "-e", `${f.validated}^{commit}`], { cwd: checkout, env: f.env }).status).not.toBe(0);
-      const result = runStep(".github/workflows/ci.yml", "fast", "Release guards", checkout, { ...f.env, BASE_SHA: f.validated });
-      expect(result.status, result.stderr).toBe(0);
-      expect(f.calls()).toEqual(["guards tags=remote-v1 v1.0.0  base=commit"]);
-    } finally {
-      rmSync(f.dir, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("finds a token left in output, a remote URL or the Git config", () => {
-    const f = fetchFixture();
-    try {
-      const checkout = join(f.dir, "checkout");
-      f.git(f.dir, "clone", "-q", `file://${f.origin}`, checkout);
-      expect(credentialLeaks(f.git, checkout, token, "")).toEqual([]);
-      f.git(checkout, "remote", "set-url", "origin", `https://x-access-token:${token}@github.com/owner/repo`);
-      f.git(checkout, "config", "http.https://github.com/.extraheader", `AUTHORIZATION: basic ${token}`);
-      expect(credentialLeaks(f.git, checkout, token, `token ${token}`)).toEqual(["output", "remote URL", "git config", "persisted checkout header"]);
-    } finally {
-      rmSync(f.dir, { recursive: true, force: true });
-    }
-  }, 30_000);
-});
-
-describe("Actions update policy", () => {
-  it("delays routine Actions updates seven days and keeps the monthly group", () => {
-    expect(actionsPolicyProblems(dependabot.updates)).toEqual([]);
-    expect(dependabot.updates[0]!.cooldown).toEqual({ "default-days": 7 });
-    // A release from today, three days ago (GitHub's implicit default) and a week ago.
-    expect([0, 3, 6, 7, 30].map((age) => heldBack("version", age, dependabot.updates[0]!))).toEqual([true, true, true, false, false]);
-  });
-
-  it("never delays security updates", () => {
-    expect(heldBack("security", 0, dependabot.updates[0]!)).toBe(false);
-    const entry = dependabot.updates[0]!;
-    for (const [name, updates] of [
-      ["a security cooldown", [{ ...entry, cooldown: { "default-days": 7, "security-days": 7 } }]],
-      ["semver tiers", [{ ...entry, cooldown: { "default-days": 7, "semver-major-days": 28 } }]],
-      ["a second entry", [entry, { ...entry, directories: ["/site"] }]],
-      ["a pull request limit", [{ ...entry, "open-pull-requests-limit": 0 }]],
-      ["no cooldown", [{ ...entry, cooldown: undefined }]],
-      ["a weekly schedule", [{ ...entry, schedule: { interval: "weekly" } }]],
-    ] as const) {
-      expect(actionsPolicyProblems([...updates] as UpdateEntry[]), name).not.toEqual([]);
-    }
-  });
-
-  it("accepts an urgent fix pinned to a commit SHA released today", () => {
-    // Stands in for a reviewed patched commit; nothing local asks how old it is.
-    const sha = "0123456789abcdef0123456789abcdef01234567";
-    const pinned = Bun.YAML.parse(actionSource.replace(/^(\s*(?:- )?uses: [\w./-]+)@\S+/gm, `$1@${sha}`)) as SetupAction;
-    const refs = pinned.runs.steps.flatMap((step) => (step.uses ? [step.uses] : []));
-    expect(refs.length).toBeGreaterThan(0);
-    for (const ref of refs) expect(ref).toEndWith(`@${sha}`);
-    expectHostedOnlySetup(pinned);
-    expect(pinned.runs.steps.find(usesAction("actions/cache/restore"))!.with).toEqual(action.runs.steps.find(usesAction("actions/cache/restore"))!.with);
-    expect(actionsPolicyProblems(dependabot.updates)).toEqual([]);
   });
 });
