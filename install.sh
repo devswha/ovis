@@ -183,12 +183,38 @@ open_app() {
   fi
 }
 
-# the server's own check of the Rust PTY host (server/pty/host.ts): its usage line with exit 2, then a pty
+# runs "$@" for at most $1 seconds: past that it is killed (and fails), so a command that hangs
+# cannot hold the install. The watcher looks once a second, as gh_api's does.
+bounded() {
+  bounded_limit=$1
+  shift
+  "$@" &
+  bounded_pid=$!
+  (
+    waited=0
+    while [ "$waited" -lt "$bounded_limit" ]; do sleep 1; kill -0 "$bounded_pid" 2>/dev/null || exit 0; waited=$((waited + 1)); done
+    kill -KILL "$bounded_pid" 2>/dev/null || true
+  ) >/dev/null 2>&1 &
+  bounded_watch=$!
+  bounded_status=0
+  wait "$bounded_pid" || bounded_status=$?
+  kill "$bounded_watch" 2>/dev/null || true
+  wait "$bounded_watch" 2>/dev/null || true
+  return "$bounded_status"
+}
+
+# the server's own check of the Rust PTY host (server/pty/host.ts), with its deadlines: its usage
+# line with exit 2, then a pty; a host that hangs on either counts as one that does not run here
 rust_host_runs() {
   [ -x "$1" ] || return 1
-  usage=$("$1" 2>&1 >/dev/null </dev/null; printf 'exit=%s' "$?") || true
-  case "$usage" in "pty-sidecar: usage:"*"exit=2") ;; *) return 1 ;; esac
-  "$1" 1 1 true >/dev/null 2>&1 </dev/null
+  probe_err=$(mktemp) || return 1
+  probe_status=0
+  bounded 3 "$1" </dev/null >/dev/null 2>"$probe_err" || probe_status=$?
+  probe_first=$(sed -n 1p "$probe_err" 2>/dev/null)
+  rm -f "$probe_err"
+  [ "$probe_status" = 2 ] || return 1
+  case "$probe_first" in "pty-sidecar: usage:"*) ;; *) return 1 ;; esac
+  bounded 3 "$1" 1 1 true </dev/null >/dev/null 2>&1
 }
 
 install_node() {
@@ -199,16 +225,17 @@ install_node() {
     darwin-arm64) node_sha=61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6 ;;
   esac
   say "installing Node $NODE_VERSION into $NODE_DIR"
-  tmp=$(mktemp -d)
+  # it runs as a condition, where set -e does nothing: each step says itself when it fails
+  tmp=$(mktemp -d) || return 1
   archive="$tmp/node.tar.gz"
-  curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive"
-  [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; fail "the Node download does not match its published SHA-256; nothing was installed"; }
-  rm -rf "$NODE_DIR"
-  mkdir -p "$NODE_DIR" "$BIN_DIR"
-  tar -xzf "$archive" -C "$NODE_DIR" --strip-components=1
+  curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive" || { rm -rf "$tmp"; return 1; }
+  [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; say "the Node download does not match its published SHA-256; nothing was installed"; return 1; }
+  rm -rf "$NODE_DIR" || { rm -rf "$tmp"; return 1; }
+  mkdir -p "$NODE_DIR" "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$archive" -C "$NODE_DIR" --strip-components=1 || { rm -rf "$tmp" "$NODE_DIR"; return 1; }
   rm -rf "$tmp"
   # an older node elsewhere on the PATH would still win in a new shell, so this one goes first in ours
-  [ -e "$BIN_DIR/node" ] || ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node"
+  [ -e "$BIN_DIR/node" ] || ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node" || return 1
 }
 
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
