@@ -185,6 +185,9 @@ try {
   await startHerdr();
   for (const pane of [one, two]) await reportAgent(pane);
 
+  // the page has seen the new herdr once its pane state names another lifetime (a roster away, 5 s apart)
+  await page.waitForFunction((was) => { const now = localStorage.getItem("ovis:pane-lifetime:local"); return now !== null && now !== was; },
+    before["ovis:pane-lifetime:local"] ?? null, { timeout: 60_000 });
   // Then the page shows each pane as the new herdr has it: its default lens, and an empty box.
   await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true,
     undefined, { timeout: 20_000 }).catch(async (error: unknown) => {
