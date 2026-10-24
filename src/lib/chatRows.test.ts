@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
-import { appendChatRowSlots, createChatRowSlots, insertChatRowSlots, prependChatRowSlots } from "./chatRows.ts";
+import type { ConversationTurn } from "../../shared/protocol.ts";
+import { appendChatRowSlots, continuesHistory, createChatRowSlots, insertChatRowSlots, prependChatRowSlots } from "./chatRows.ts";
 
 const scope = { machineId: "local", paneId: "pane-a", historyId: "history-a", incarnation: 0 };
 const keys = (rows: readonly { readonly key: string }[]) => rows.map((row) => row.key);
@@ -60,5 +61,32 @@ describe("chat row slots", () => {
     expect(local).not.toEqual(remote);
     expect(local).not.toEqual(otherPane);
     expect(local).not.toEqual(otherHistory);
+  });
+});
+
+describe("continuesHistory", () => {
+  const turn = (role: ConversationTurn["role"], ts: string | null, text: string = role): ConversationTurn => ({ role, ts, parts: [{ kind: "text", text }] });
+  const page = (turns: ConversationTurn[], source: "gjc-transcript" | "claude-transcript" | "scrollback" = "gjc-transcript") => ({ source, turns });
+  const shown = page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:02Z")]);
+
+  it("continues a rewrite that holds every shown turn, changed or followed by more", () => {
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:02Z", "output trimmed"), turn("user", "2026-10-24T00:00:09Z")]))).toBeTrue();
+    expect(continuesHistory(shown, shown)).toBeTrue();
+  });
+
+  it("starts over when a shown turn is gone, moved or has another start", () => {
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z")]))).toBeFalse();
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:05Z")]))).toBeFalse();
+    expect(continuesHistory(shown, page([turn("assistant", "2026-10-24T00:00:02Z"), turn("user", "2026-10-24T00:00:09Z")]))).toBeFalse();
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("user", "2026-10-24T00:00:02Z")]))).toBeFalse();
+  });
+
+  it("starts over for another source, a scrollback, nothing shown or turns without a start", () => {
+    expect(continuesHistory(shown, page(shown.turns, "claude-transcript"))).toBeFalse();
+    expect(continuesHistory(page(shown.turns, "scrollback"), page(shown.turns, "scrollback"))).toBeFalse();
+    expect(continuesHistory(null, shown)).toBeFalse();
+    expect(continuesHistory(page([]), shown)).toBeFalse();
+    const untimed = page([turn("user", null), turn("assistant", null)]);
+    expect(continuesHistory(untimed, untimed)).toBeFalse();
   });
 });

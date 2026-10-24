@@ -24,11 +24,13 @@ export interface ChatTimelineProps<Row extends ChatTimelineRow> {
   footer: ReactNode;
   label: string;
   onScroll: () => void;
+  /** The reader opened something in a row (a tool, a folded block, a whole output): they read there. */
+  onOpen: () => void;
   renderRow: (row: Row, index: number) => ReactNode;
 }
 
 /** One scroll owner; selected and focused rows stay real DOM nodes outside its window. */
-export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source, scroller, listRef, following, smoothFollow, memories, header, footer, label, onScroll, renderRow }: ChatTimelineProps<Row>) {
+export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source, scroller, listRef, following, smoothFollow, memories, header, footer, label, onScroll, onOpen, renderRow }: ChatTimelineProps<Row>) {
   const [selectionKeys, setSelectionKeys] = useState<string[]>([]);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -77,8 +79,13 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     const focusChanged = () => setFocusKey(rowFor(document.activeElement));
     const focusOut = () => queueMicrotask(focusChanged);
     const interaction = (event: Event) => {
+      const control = event.target instanceof Element ? event.target.closest("summary, .work-block-head, .work-row-head, .chat-tool-more") : null;
       // a pending work block's head opens nothing
-      if (event.target instanceof Element && event.target.closest("summary, .work-block-head, .work-row-head, .chat-tool-more") && !event.target.closest(".work-block.is-pending")) manualLayout.current = true;
+      if (control === null || control.closest(".work-block.is-pending")) return;
+      manualLayout.current = true;
+      // captured before the row's own handler: what it shows now is what the click changes
+      const details = control.matches("summary") ? control.parentElement : null;
+      if (control.matches(".chat-tool-more") || control.getAttribute("aria-expanded") === "false" || (details instanceof HTMLDetailsElement && !details.open)) onOpen();
     };
     document.addEventListener("selectionchange", selectionChanged);
     node.addEventListener("focusin", focusChanged);
@@ -101,7 +108,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       node.removeEventListener("click", interaction, true);
       node.removeEventListener("copy", copy);
     };
-  }, [scroller, positions, rowKeys]);
+  }, [scroller, positions, rowKeys, onOpen]);
 
   // A glide aims at the end it saw; content that grew meanwhile leaves it short. Where it stops, a
   // reader still following is put at the end at once.

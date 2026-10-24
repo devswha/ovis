@@ -1,3 +1,5 @@
+import type { ConversationResponse } from "../../shared/protocol.ts";
+
 /**
  * One browser-local identity for one native conversation lifetime. `incarnation`
  * increments when a history without an ID is replaced in the same pane.
@@ -52,4 +54,17 @@ export function prependChatRowSlots(slots: ChatRowSlots, count: number): ChatRow
 
 export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowSlots {
   return insertChatRowSlots(slots, slots.rows.length, count);
+}
+
+/**
+ * Whether an answer under a new history ID goes on with the turns shown. gjc writes its whole session
+ * anew and renames it over the old file when it compacts or trims old tool outputs, so the server
+ * names it as another history. When the newest page still opens with every turn shown, each with its
+ * role and start time, the rows keep their identity. A new session, a cleared context, a rewind or a
+ * moved branch changes or drops one of them, and the chat starts over.
+ */
+export function continuesHistory(shown: Pick<ConversationResponse, "source" | "turns"> | null, next: Pick<ConversationResponse, "source" | "turns">): boolean {
+  if (shown === null || shown.source === "scrollback" || next.source !== shown.source) return false;
+  if (shown.turns.length === 0 || next.turns.length < shown.turns.length) return false;
+  return shown.turns.every((turn, index) => turn.ts !== null && next.turns[index]!.role === turn.role && next.turns[index]!.ts === turn.ts);
 }
