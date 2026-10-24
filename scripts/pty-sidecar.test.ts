@@ -119,6 +119,51 @@ describe("install", () => {
   });
 });
 
+describe("pty-sidecar-attach.sh", () => {
+  const ATTACH = join(import.meta.dir, "pty-sidecar-attach.sh");
+  /** runs the attach script against a fake gh whose `release view` answers `view` (an asset list) or fails; returns what gh was asked to upload */
+  function attach(view: string | null): { code: number; uploads: string[]; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-pty-attach-"));
+    try {
+      const set = join(dir, "set");
+      mkdirSync(set);
+      writeFileSync(join(set, "ovis-pty-sidecar.json"), JSON.stringify({ version }));
+      for (const name of ["ovis-pty-sidecar-linux-x64", "SHA256SUMS"]) writeFileSync(join(set, name), "x");
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const log = join(dir, "gh.log");
+      const assets = join(dir, "assets.txt");
+      if (view !== null) writeFileSync(assets, `${view}\n`);
+      const answer = view === null ? `echo "HTTP 502: Bad Gateway" >&2; exit 1` : `cat "${assets}"`;
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$*" >> "${log}"\ncase "$2" in view) ${answer} ;; upload) exit 0 ;; esac\n`, { mode: 0o755 });
+      const run = Bun.spawnSync(["bash", ATTACH, `v${version}`, set], { env: { ...process.env, PATH: `${bin}:${process.env["PATH"]}` }, stdout: "pipe", stderr: "pipe" });
+      const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+      return { code: run.exitCode, uploads: calls.filter((call) => call.startsWith("release upload")), stderr: run.stderr.toString() };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it("uploads nothing when the release lookup fails, so a complete set is never half replaced", () => {
+    const result = attach(null);
+    expect(result.code).toBe(1);
+    expect(result.uploads).toEqual([]);
+    expect(result.stderr).toContain("nothing was uploaded");
+  });
+
+  it("uploads nothing to a release that already has the host", () => {
+    const result = attach("ovis-pty-sidecar-linux-x64\novis-pty-sidecar.json");
+    expect(result.code).toBe(1);
+    expect(result.uploads).toEqual([]);
+  });
+
+  it("uploads the binaries before the manifest to a release without the host", () => {
+    const result = attach("Ovis.dmg");
+    expect(result.code).toBe(0);
+    expect(result.uploads).toHaveLength(2);
+    expect(result.uploads[0]).toContain("--clobber");
+    expect(result.uploads[1]).toMatch(/ovis-pty-sidecar\.json$/);
+  });
+});
+
 describe("crateTree", () => {
   it("refuses crate sources that differ from HEAD", () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-pty-sidecar-git-"));
