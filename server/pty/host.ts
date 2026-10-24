@@ -94,14 +94,15 @@ export function probeRustHost(binary: string, env: Record<string, string | undef
 }
 
 /**
- * The Rust PTY host to run, when OVIS_PTY_SIDECAR=rust asks for it (OVIS_PTY_SIDECAR_BIN, else the release
- * build): it takes pty-host.mjs's arguments and frames. Node is the default and the fallback.
+ * The Rust PTY host to run (OVIS_PTY_SIDECAR_BIN, else the installed release's, else a local build): it
+ * takes pty-host.mjs's arguments and frames. It is the default on Linux and macOS once it passes its
+ * check; OVIS_PTY_SIDECAR=node asks for the Node sidecar, which is also the fallback.
  */
 export function rustSidecar(env: Record<string, string | undefined> = process.env): string | null {
   if (process.platform === "win32") return null;
   const choice = env["OVIS_PTY_SIDECAR"];
-  if (!choice || choice === "node") return null;
-  if (choice !== "rust") {
+  if (choice === "node") return null;
+  if (choice && choice !== "rust") {
     once(`OVIS_PTY_SIDECAR=${choice}: expected "node" or "rust"; using the Node PTY sidecar`);
     return null;
   }
@@ -113,6 +114,11 @@ export function rustSidecar(env: Record<string, string | undefined> = process.en
     verdicts.set(binary, verdict);
   }
   if (!verdict.ok) {
+    // a checkout nobody installed a release's host into (a fork, a branch, an offline install) says it once, quietly
+    if (!choice) {
+      once(`Rust PTY host unavailable (${binary}: ${verdict.reason})`, console.log);
+      return null;
+    }
     once(`OVIS_PTY_SIDECAR=rust: ${binary}: ${verdict.reason}; using the Node PTY sidecar (run bun scripts/pty-sidecar.ts install for the release's host in bin/, build it with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml, or set OVIS_PTY_SIDECAR_BIN to a built binary's absolute path)`);
     return null;
   }
@@ -124,7 +130,7 @@ export function rustSidecar(env: Record<string, string | undefined> = process.en
 export function disableRustHost(reason: string): void {
   if (disabled) return;
   disabled = true;
-  once(`OVIS_PTY_SIDECAR=rust: ${reason}; using the Node PTY sidecar until this server restarts`);
+  once(`Rust PTY host: ${reason}; using the Node PTY sidecar until this server restarts`);
 }
 
 /** Forgets cached verdicts, the disable and what was said. Tests only. */

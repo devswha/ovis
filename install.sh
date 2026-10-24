@@ -4,8 +4,9 @@
 #   curl -fsSL https://ovis.sh/install.sh | sh
 #
 # 1. Installs what is missing, for this user only and without sudo: herdr (its own installer, into
-#    ~/.local/bin), Bun (its own installer, into ~/.bun) and Node 22 (the official build, checked
-#    against its published SHA-256, into ~/.local/share/ovis/node).
+#    ~/.local/bin) and Bun (its own installer, into ~/.bun). Terminals run on the release's Rust PTY
+#    host, checked against its SHA-256; only when that cannot be installed, Node 22 (the official
+#    build, checked against its published SHA-256, into ~/.local/share/ovis/node) runs them instead.
 # 2. Installs Ovis as a herdr plugin, so it starts with herdr and Settings → Updates keeps it
 #    current, and starts it now when herdr is running.
 # 3. When Tailscale runs on this PC, serves the app to your tailnet (`tailscale serve`, on the first
@@ -182,6 +183,14 @@ open_app() {
   fi
 }
 
+# the server's own check of the Rust PTY host (server/pty/host.ts): its usage line with exit 2, then a pty
+rust_host_runs() {
+  [ -x "$1" ] || return 1
+  usage=$("$1" 2>&1 >/dev/null </dev/null; printf 'exit=%s' "$?") || true
+  case "$usage" in "pty-sidecar: usage:"*"exit=2") ;; *) return 1 ;; esac
+  "$1" 1 1 true >/dev/null 2>&1 </dev/null
+}
+
 install_node() {
   case "$platform" in
     linux-x64) node_sha=b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a ;;
@@ -200,7 +209,6 @@ install_node() {
   rm -rf "$tmp"
   # an older node elsewhere on the PATH would still win in a new shell, so this one goes first in ours
   [ -e "$BIN_DIR/node" ] || ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node"
-  installed_here="$installed_here node"
 }
 
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
@@ -286,9 +294,6 @@ main() {
     installed_here="$installed_here bun"
   fi
 
-  node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
-  [ "${node_major:-0}" -ge 18 ] || install_node
-
   # The ref to install is settled before anything moves: a release from before the rename still
   # names the plugin by its old id, and installing it cannot move an install to the new one
   ref=""
@@ -326,7 +331,15 @@ main() {
     say "installing the herdr plugin at $ref (herdr clones and builds it: about a minute)"
     # herdr previews the whole manifest first; on success its last word is enough, on failure all of it
     log=$(mktemp)
+    installed=0
     if herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1; then
+      installed=1
+    elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
+      # a release from before the Rust PTY host was the default still asks for Node in its first build step
+      installed_here="$installed_here node"
+      herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
+    fi
+    if [ "$installed" = 1 ]; then
       grep '^Installed ' "$log" || true
       rm -f "$log"
       new_install=1
@@ -352,9 +365,22 @@ main() {
 
   # the Rust PTY host of the release that runs, checked against its SHA-256: herdr's build step and
   # Settings → Updates fetch it too, so this is for an install from before it shipped, or one whose
-  # download failed. Without it, terminals use the Node sidecar.
+  # download failed. Without it, terminals use the Node sidecar where there is Node, or a mirror.
   code=$(running_code "$root")
   [ ! -f "$code/scripts/pty-sidecar.ts" ] || (cd "$code" && bun scripts/pty-sidecar.ts install </dev/null) || true
+  # Node only where terminals would otherwise have no PTY host: a release without the Rust host (one
+  # from before it, or a branch), or one whose host failed its checks here
+  if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
+    node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
+    # optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
+    if [ "${node_major:-0}" -lt 18 ]; then
+      if ( install_node ); then
+        installed_here="$installed_here node"
+      else
+        say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
+      fi
+    fi
+  fi
 
   if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
     # the action only queues the start (its output goes to herdr's plugin log), so wait for it here
