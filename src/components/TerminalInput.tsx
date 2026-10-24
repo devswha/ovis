@@ -276,8 +276,10 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       const cut = next.length - written.length;
       setNote(cut > 0 ? t("Pasted up to the line's limit: {n} characters were left out.", { n: cut }) : null);
       const caret = Math.min(start + text.length, written.length);
+      const pasted = terminalDraftVersion(owner);
       requestAnimationFrame(() => {
-        if (box.current !== element) return;
+        // another pane picked, or the line written again, before the frame: its focus is not taken back
+        if (box.current !== element || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== pasted) return;
         element.focus({ preventScroll: true });
         element.setSelectionRange(caret, caret);
       });
