@@ -886,6 +886,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const retireOutput = (): void => {
         outputOwner++;
         outputFrames.length = 0;
+        // a pane switch starts a new stream: the old pane's recovery mark is not the new pane's
+        outputRecovering = false;
         frameGateRef.current.reset();
         if (!writingOutput) replayOscOpen = oscMayCopy();
       };
