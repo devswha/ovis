@@ -195,6 +195,19 @@ describe("shared preferences", () => {
     expect(new PreferenceStore(dir).get()).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [] });
   });
 
+  it("a save that fails at the mute list keeps none of its settings or pins on disk", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    await put(store, JSON.stringify({ settings: { theme: "light" } }));
+    const blocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    expect((await put(store, JSON.stringify({ settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }))).status).toBe(500);
+    expect(store.get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: [] });
+    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 1, settings: { theme: "light" } });
+    rmSync(blocker, { recursive: true });
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: [] });
+  });
+
   it("absent field does not clear mutes", async () => {
     const store = new PreferenceStore(root());
     await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }));

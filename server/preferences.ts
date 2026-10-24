@@ -93,15 +93,22 @@ export class PreferenceStore {
     const muted = change.muted_panes ?? base.muted_panes ?? [];
     const next: SharedPreferences = { revision: base.revision + 1, settings: { ...base.settings, ...change.settings }, ...(pins === undefined ? {} : { pins }), muted_panes: muted };
     if (byteLength(JSON.stringify(next)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
-    // the revision first: a save that fails there leaves the mutes as they were, so nothing reaches
-    // the disk that was never told; one that fails at the list leaves a revision with the old list,
-    // which is what every browser still holds
+    // the revision first: a save that fails there leaves the mutes as they were. One that fails at the
+    // list puts the previous preferences.json back, so a refused save leaves nothing on disk that no
+    // browser was told of
     const keepDamagedMutes = change.muted_panes !== undefined && this.mutesUnsettled && this.readMutes() === null;
     const { muted_panes: _stored, ...shared } = next;
     writeStateDocument(this.path, `${JSON.stringify(shared, null, 2)}\n`, keepDamaged);
     this.unsettled = false;
     if (change.muted_panes !== undefined) {
-      writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
+      try {
+        writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
+      } catch (error) {
+        const { muted_panes: _held, ...before } = base;
+        try { writeStateDocument(this.path, `${JSON.stringify(before, null, 2)}\n`, false); }
+        catch (restore) { console.error(`Cannot put ${this.path} back after a failed save of ${this.mutesPath}: ${restore instanceof Error ? restore.message : String(restore)}`); }
+        throw error;
+      }
       this.mutesUnsettled = false;
     }
     this.current = next;
