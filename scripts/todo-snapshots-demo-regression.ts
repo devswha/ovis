@@ -305,8 +305,8 @@ try {
           : { viewport: { width: 1440, height: 900 }, locale: "en-US" });
         try {
           await context.addInitScript(([value, ids]) => {
-            localStorage.setItem("herdr-web-ui:settings", value);
-            for (const id of ids) localStorage.setItem(`herdr-web-ui:view:${id}`, "chat");
+            localStorage.setItem("ovis:settings", value);
+            for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
           }, [settings(config.theme, config.language), [panes.flaky, panes.web, panes.omp, panes.api]] as const);
           const label = `${config.width} ${config.theme}${en ? "" : " ko"}`;
 
