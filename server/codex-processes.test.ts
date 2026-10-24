@@ -384,6 +384,392 @@ describe("the thread id a Codex pane's terminal title shows, from another folder
   });
 });
 
+/**
+ * Codex's writer locks, as the app-server daemon holds them while threads are loaded
+ * (codex-rs rollout/src/writer_lock.rs): one process with each `thread-writer-locks/<id>.lock` open and
+ * an exclusive flock on it, through Python's fcntl.flock (flock(2) on Linux and macOS alike).
+ */
+async function loaded(...ids: string[]): Promise<ReturnType<typeof Bun.spawn>> {
+  return holding(ids, "readable");
+}
+
+/** As loaded, by a process whose open files no other process may list (not dumpable), as another user's. */
+const loadedUnreadably = (...ids: string[]) => holding(ids, "unreadable");
+
+async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<ReturnType<typeof Bun.spawn>> {
+  const folder = join(home, "thread-writer-locks");
+  mkdirSync(folder, { recursive: true });
+  const child = Bun.spawn(["python3", "-c", [
+    "import ctypes, fcntl, sys",
+    "files = [open(path, 'a+') for path in sys.argv[2:]]",
+    "for file in files: fcntl.flock(file, fcntl.LOCK_EX)",
+    // PR_SET_DUMPABLE 0: /proc/<pid>/fd then answers EACCES to anyone but root
+    "if sys.argv[1] == 'unreadable': ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)",
+    "print('READY', flush=True)",
+    "sys.stdin.read()",
+  ].join("\n"), kind, ...ids.map((id) => join(folder, `${id}.lock`))], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  children.push(child);
+  const reader = child.stdout.getReader();
+  const ready = await reader.read();
+  reader.releaseLock();
+  expect(new TextDecoder().decode(ready.value)).toBe("READY\n");
+  return child;
+}
+
+/** A thread of another folder with these records (answers, as text), as otherFolderThread, under its own id. */
+function elsewhereThread(id: string, records: (string | { type: string; payload: Record<string, unknown> })[], source = "cli"): string {
+  const folder = join(root, `elsewhere-${id.slice(-4)}`);
+  mkdirSync(folder, { recursive: true });
+  const rollout = join(home, "sessions", `rollout-${id}.jsonl`);
+  writeFileSync(rollout, [
+    { type: "session_meta", payload: { id, cwd: folder, source } },
+    ...records.map((entry) => typeof entry === "string" ? { type: "event_msg", payload: { type: "agent_message", message: entry } } : entry),
+  ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads (id, rollout_path, cwd, archived, agent_role, created_at, updated_at, source) VALUES (?, ?, ?, 0, NULL, 2, 2, ?)").run(id, rollout, folder, source);
+  db.close();
+  return rollout;
+}
+
+/** This folder's own conversation (the fixture's thread), with these records instead. */
+function ownThread(records: { type: string; payload: Record<string, unknown> }[]): void {
+  writeFileSync(path, [{ type: "session_meta", payload: { id: thread, cwd: root } }, ...records].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
+const said = (type: "user_message" | "agent_message", message: string) => ({ type: "event_msg", payload: { type, message } });
+
+/** Real locks and stores, several of them: a budget for a busy machine, not a wait. */
+const heldIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(name, test, 20_000);
+
+describe("a thread of another folder Codex has loaded, as a resume through the picker leaves it (#896)", () => {
+  heldIt("is matched on screen while its answer shows there, with Codex's default title, and never remembered", async () => {
+    const rollout = otherFolderThread();
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    // a lock file nobody holds is a thread Codex unloaded (or a crash left behind)
+    mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+    writeFileSync(join(home, "thread-writer-locks", `${other}.lock`), "");
+    expect(await resolve()).toBeNull();
+    await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    // an answer with a time in parentheses is no status row
+    screen = `• ${otherAnswer} All tests passed (38s).`;
+    expect(await resolve()).toBe(rollout);
+    // nothing binds: a background reader is not told, and the screen is asked again each time,
+    // as after /resume of another, older conversation in the same TUI (the old one stays loaded)
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+    screen = `• ${otherAnswer}\nOpenAI Codex (v0.164.0)\n\n› hello\n\n• Ready.\n\n› `;
+    expect(await resolve()).toBeNull();
+    screen = "";
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing while a loaded thread cannot be weighed: no row, no rollout, or a non-interactive one with the same answer", async () => {
+    const rollout = otherFolderThread();
+    const ghost = "01a16b22-7e1f-7072-8897-999999999999";
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, ghost);
+    expect(await resolve()).toBeNull();
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads (id, rollout_path, cwd, archived, agent_role, created_at, updated_at, source) VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(ghost, join(home, "sessions", "missing.jsonl"), root);
+    db.close();
+    expect(await resolve()).toBeNull();
+    // a codex exec run is never what a pane shows, but what it said still counts against the others
+    const deleted = new Database(join(home, "state_5.sqlite"));
+    deleted.query("DELETE FROM threads WHERE id = ?").run(ghost);
+    deleted.close();
+    const exec = elsewhereThread(ghost, [otherAnswer], "exec");
+    expect(await resolve()).toBeNull();
+    writeFileSync(exec, `${JSON.stringify({ type: "session_meta", payload: { id: ghost, cwd: root, source: "exec" } })}\n`);
+    expect(await resolve()).toBe(rollout);
+  });
+
+  it.skipIf(process.platform !== "linux")("offers nothing while a process holding a thread's lock cannot be read", async () => {
+    otherFolderThread();
+    // a conversation that gave the same answer, loaded by a process whose open files cannot be listed
+    // (as root they can: then only that answer counting against the other is tested)
+    const peer = "01a16b22-7e1f-7072-8897-eeeeeeeeeeee";
+    elsewhereThread(peer, [otherAnswer]);
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other);
+    await loadedUnreadably(peer);
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  heldIt("offers nothing while a loaded conversation continues an earlier rollout that is gone", async () => {
+    const rollout = otherFolderThread();
+    // a fork whose parent's rollout is gone: what it said before the fork cannot be weighed
+    const fork = "01a16b22-7e1f-7072-8897-bbbbbbbbbbbb";
+    const forked = elsewhereThread(fork, []);
+    writeFileSync(forked, [
+      { type: "session_meta", payload: { id: fork, cwd: join(root, "elsewhere-bbbb"), source: "cli", history_base: { thread_id: "01a16b22-7e1f-7072-8897-cccccccccccd", end_ordinal_exclusive: 3, end_byte_offset: 400 } } },
+      said("agent_message", "Something the fork said after it was made."),
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    const both = await loaded(other, fork);
+    expect(await resolve()).toBeNull();
+    both.kill();
+    await both.exited;
+    await loaded(other);
+    expect(await resolve()).toBe(rollout);
+  });
+
+  heldIt("takes no answer another loaded conversation gave, however long ago", async () => {
+    otherFolderThread();
+    elsewhereThread("01a16b22-7e1f-7072-8897-aaaaaaaaaaaa", [otherAnswer, ...Array.from({ length: 20 }, (_, index) => `Later answer number ${index}.`)]);
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, "01a16b22-7e1f-7072-8897-aaaaaaaaaaaa");
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("takes no tool output from the screen, however far back another loaded conversation wrote it", async () => {
+    otherFolderThread();
+    // the pane shows this one: its output of the other's answer is now past a later, larger one
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [
+      { type: "response_item", payload: { type: "function_call_output", call_id: "first", output: `${"x".repeat(5000)}\n${otherAnswer}` } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "second", output: "y".repeat(1_100_000) } },
+    ]);
+    foreground = picker;
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Ran cat diagnostic.log\n  └ ${otherAnswer}\n\n• Ran cat big.log\n  └ yyyyyyyy\n    … +1 lines\n\n› `;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs what another loaded conversation's tool calls hold, a command over several lines long ago too", async () => {
+    otherFolderThread();
+    // the pane shows this one, which ran a command that holds the other's answer, cut into lines,
+    // and whose output then pushed it past the last 1 MiB
+    const half = otherAnswer.indexOf(" ", otherAnswer.length / 2);
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [
+      { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "call",
+        arguments: JSON.stringify({ cmd: `cat <<'EOF'\n${otherAnswer.slice(0, half)}\n${otherAnswer.slice(half + 1)}\nEOF` }) } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "call", output: "y".repeat(1_100_000) } },
+    ]);
+    foreground = picker;
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Ran cat <<'EOF'\n  │ ${otherAnswer.slice(0, half)}\n  │ ${otherAnswer.slice(half + 1)}\n  │ EOF\n\n› `;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs the command another loaded conversation ran in code mode, long ago too", async () => {
+    otherFolderThread();
+    // code mode keeps the command it ran only in the completed item; the call holds the script
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [
+      { type: "response_item", payload: { type: "custom_tool_call", name: "exec", call_id: "call", input: "await run(atob(\"cHJpbnRm\"))" } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "call", command: `printf '%s' '${otherAnswer}'`, aggregated_output: "done" } } },
+      { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call", output: "y".repeat(1_100_000) } },
+    ]);
+    foreground = picker;
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Ran printf '%s' '${otherAnswer}'\n  └ done\n\n› `;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs what another loaded conversation reasoned, long ago too", async () => {
+    otherFolderThread();
+    // the pane shows this one's summary of its reasoning, since pushed past the last 1 MiB
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [
+      { type: "response_item", payload: { type: "reasoning", summary: [{ type: "summary_text", text: otherAnswer }], encrypted_content: "gAAAA" } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "call", output: "y".repeat(1_100_000) } },
+    ]);
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs every record of another loaded conversation's last 1 MiB, of a kind its history is not read for", async () => {
+    otherFolderThread();
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [{ type: "response_item", payload: { type: "summary_card", text: otherAnswer } }]);
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs a link another loaded conversation answered with by its target, as the screen shows it", async () => {
+    // this one answered with a path; another, with a link to that path in its own folder
+    const target = "docs/investigations/codex-resume-picker-cross-folder-session-identification-verification-results-896.md";
+    otherFolderThread([{ type: "agent_message", message: target }]);
+    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
+    elsewhereThread(peer, [`[Verification results](${join(root, "elsewhere-dddd", target)})`]);
+    foreground = picker;
+    // Codex shows a link as its label and its target relative to the folder: the other one's screen
+    screen = `• Verification results (${target})`;
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+    // also when this one's answer was that label and path, as plain text
+    writeFileSync(join(home, "sessions", `rollout-${other}.jsonl`), [
+      { type: "session_meta", payload: { id: other, cwd: join(root, "elsewhere") } },
+      { type: "event_msg", payload: { type: "agent_message", message: `Verification results (${target})` } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs a loaded conversation's whole history, past the last 1 MiB of it", async () => {
+    // the pane really shows this folder's conversation; its answer is now 1.1 MB of tool output back
+    otherFolderThread();
+    ownThread([said("agent_message", otherAnswer), { type: "response_item", payload: { type: "function_call_output", call_id: "call", output: "x".repeat(1_100_000) } }]);
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, thread);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("leaves a match among this folder's threads as it was, whatever else is loaded", async () => {
+    // a fork elsewhere shares the answer this folder's conversation shows: this folder's match comes
+    // first, and the loaded threads are not read at all
+    otherFolderThread([{ type: "agent_message", message: answer }]);
+    foreground = picker;
+    screen = answer;
+    await loaded(other, thread);
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("leaves this folder's conversations to this folder's lookup, loaded or not", async () => {
+    // two of this folder's conversations gave the answer on screen; only one of them is loaded
+    const twin = join(home, "sessions", "rollout-01a0c7a1-56d9-7e20-9f08-f7a2d973bc03.jsonl");
+    writeFileSync(twin, [
+      { type: "session_meta", payload: { id: "01a0c7a1-56d9-7e20-9f08-f7a2d973bc03", cwd: root } },
+      said("agent_message", answer),
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli')").run("01a0c7a1-56d9-7e20-9f08-f7a2d973bc03", twin, root);
+    db.close();
+    // beside another folder's conversation, which says something else
+    otherFolderThread();
+    foreground = picker;
+    screen = `• ${answer}`;
+    await loaded(thread, other);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("leaves this folder's short answers first, below a prompt that quotes another conversation", async () => {
+    otherFolderThread();
+    const quote = `Quote: ${otherAnswer}`;
+    const first = "The fixture is ready for careful inspection.";
+    const second = "All requested configuration checks have completed.";
+    ownThread([said("user_message", quote), said("agent_message", first), said("user_message", "next"), said("agent_message", second)]);
+    foreground = picker;
+    screen = `OpenAI Codex (v1.0)\n\n› ${quote}\n\n• ${first}\n\n› next\n\n• ${second}\n\n› `;
+    await loaded(other, thread);
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("takes no answer the pane's own conversation quoted, or its input box holds", async () => {
+    otherFolderThread();
+    const quote = `Quote: ${otherAnswer}`;
+    ownThread([said("user_message", quote)]);
+    foreground = picker;
+    screen = `OpenAI Codex (v1.0)\n\n› ${quote}\n\n› `;
+    await loaded(other, thread);
+    expect(await resolve()).toBeNull();
+    // the other conversation's answer pasted into the input box, not sent
+    ownThread([said("user_message", "hi"), said("agent_message", "Hello.")]);
+    screen = `OpenAI Codex (v1.0)\n\n› hi\n\n• Hello.\n\n› ${otherAnswer}`;
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("takes nothing but answers from the screen: no picker row, no prompt of a conversation not saved yet, no queued message or status", async () => {
+    otherFolderThread();
+    foreground = picker;
+    await loaded(other);
+    // the picker lists conversations by their first prompt, one of which quotes the loaded one
+    screen = `  Resume a previous session\n\n  Updated     Branch  Conversation\n> 2 minutes  main    Quote: ${otherAnswer}\n  3 days      main    Something else`;
+    expect(await resolve()).toBeNull();
+    // a fresh TUI's first prompt quotes it before its own thread is loaded or stored
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n› Quote: ${otherAnswer}\n\n• Working (2s • esc to interrupt)\n\n› `;
+    expect(await resolve()).toBeNull();
+    // a message queued while a turn runs, which no rollout holds until it is sent
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n› hi\n\n• Working (2s • esc to interrupt)\n\n• Queued follow-up inputs\n  ↳ Quote: ${otherAnswer}\n    ⇧← edit last queued message\n\n› `;
+    expect(await resolve()).toBeNull();
+    // the status row's headline, a summary of reasoning no rollout holds yet, however the row ends
+    for (const row of [`${otherAnswer} (1m 05s • esc to interrupt)`, `${otherAnswer} (0s) · Reconnecting`, `${otherAnswer} and the rest of a long headl…  `]) {
+      screen = `  >_ OpenAI Codex (v0.164.0)\n\n› Inspect the repository.\n\n• ${row}\n\n› `;
+      expect(await resolve()).toBeNull();
+    }
+    // a tool's output whose first row is empty (herdr trims the marker's trailing space)
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Running python3 emit-log.py\n  └\n    ${otherAnswer}\n\n› `;
+    expect(await resolve()).toBeNull();
+    // what the user answered a question with
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Questions 1/1 answered\n  • Which text?\n    answer: ${otherAnswer}\n\n› `;
+    expect(await resolve()).toBeNull();
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Questions 1/1 answered\n  • Which text?\n    note: ${otherAnswer}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing while another loaded conversation may show an answer it has not written", async () => {
+    const rollout = otherFolderThread();
+    // Codex writes an answer once it is complete: this one's turn may be streaming on this screen
+    const peer = "01a16b22-7e1f-7072-8897-ffffffffffff";
+    const event = (payload: Record<string, unknown>, timestamp = new Date().toISOString()) => `${JSON.stringify({ timestamp, type: "event_msg", payload })}\n`;
+    const prompt = { type: "item_completed", item: { type: "UserMessage", id: "prompt", content: [{ type: "text", text: "go" }] } };
+    const running = elsewhereThread(peer, []);
+    // interrupted before it was loaded: what it streamed then is on no screen
+    appendFileSync(running, event({ type: "task_started" }, "2026-01-01T00:00:00Z") + event(prompt, "2026-01-01T00:00:01Z") + event({ type: "turn_aborted" }, "2026-01-01T00:00:02Z"));
+    foreground = picker;
+    screen = `  >_ OpenAI Codex (v0.164.0)\n\n› go\n\n• ${otherAnswer}\n\n› `;
+    await loaded(other, peer);
+    expect(await resolve()).toBe(rollout);
+    appendFileSync(running, event({ type: "task_started" }) + event(prompt));
+    expect(await resolve()).toBeNull();
+    // once the turn is complete, what it answered is written
+    appendFileSync(running, event({ type: "task_complete" }));
+    expect(await resolve()).toBe(rollout);
+    // one interrupted while it streamed never writes it, though its screen keeps it, after later turns too
+    appendFileSync(running, event({ type: "task_started" }) + event(prompt) + event({ type: "turn_aborted" }));
+    expect(await resolve()).toBeNull();
+    appendFileSync(running, event({ type: "task_started" }) + event(prompt) + event({ type: "agent_message", message: "Understood." }) + event({ type: "task_complete" }));
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("leaves a codex exec run's turn out of it, as it shows an answer only once written", async () => {
+    const rollout = otherFolderThread();
+    const exec = "01a16b22-7e1f-7072-8897-ffffffffffff";
+    elsewhereThread(exec, [{ type: "event_msg", payload: { type: "task_started" } }], "exec");
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, exec);
+    expect(await resolve()).toBe(rollout);
+  });
+
+  heldIt("offers nothing to a TUI of a remote app server, or without a Codex process", async () => {
+    otherFolderThread();
+    screen = `• ${otherAnswer}`;
+    await loaded(other);
+    foreground = [{ pid: 2147483647, argv: ["codex", "resume", "--remote", "ws://host:4500"] }];
+    expect(await resolve()).toBeNull();
+    foreground = [];
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers none of them past 32 loaded threads", async () => {
+    otherFolderThread();
+    screen = `• ${otherAnswer}`;
+    foreground = picker;
+    const many = Array.from({ length: 32 }, (_, index) => `01a16b22-7e1f-7072-8897-${String(index).padStart(12, "0")}`);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.transaction(() => {
+      for (const id of many) {
+        const rollout = join(home, "sessions", `rollout-${id}.jsonl`);
+        writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: { id, cwd: join(root, "elsewhere") } })}\n`);
+        db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(id, rollout, join(root, "elsewhere"));
+      }
+    })();
+    db.close();
+    await loaded(other, ...many);
+    expect(await resolve()).toBeNull();
+  });
+});
+
 it("does not guess a session when argv and proc data are unavailable", async () => {
   foreground = [{ pid: 2147483647, name: "codex" }];
   expect(await resolve()).toBeNull();
