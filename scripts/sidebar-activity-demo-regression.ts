@@ -403,12 +403,7 @@ try {
           await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
           const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
           await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
-          await page.waitForFunction(() => {
-            const host = document.querySelector(".pane-frame.is-current .pane-terminal");
-            if (!host || !("outputProbe" in host) || typeof host.outputProbe !== "function") return false;
-            const probe = host.outputProbe();
-            return probe.written.includes("previous answer\r\n") && probe.inFlight === 0 && probe.queued === 0;
-          });
+          await outputParsed(page, "previous answer\r\n");
           assert.equal(await content.count(), 0, "a recovering joiner's replay is not the current screen");
           await waitStatus(page, INFRA, "done");
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "input-ready", pane_id: id }), panes.omp);
@@ -418,6 +413,26 @@ try {
           await content.waitFor();
         });
         console.log("PASS a page joining a recovering attachment acknowledges only output after recovery");
+      }
+      if (!finishCase || finishCase === "recovering-switch") {
+        await withPage(browser, {}, async (page) => {
+          // the recovery wait is the recovering pane's: the next pane opened in the same terminal shows its own screen
+          await page.evaluate((id) => {
+            window.sidebarFixture.recoveringReplay(id, "previous answer\r\n");
+            window.sidebarFixture.block(id, "loading");
+          }, panes.omp);
+          await agent(page, INFRA).locator(".agent-select").click();
+          await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+          const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
+          await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
+          await outputParsed(page, "previous answer\r\n");
+          assert.equal(await content.count(), 0, "the recovering pane's replay is not its current screen");
+          await agent(page, API).locator(".agent-select").click();
+          await page.evaluate((id) => window.sidebarFixture.frame({ type: "input-ready", pane_id: id }), panes.api);
+          await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "next pane screen\r\n" }), panes.api);
+          await content.waitFor({ timeout: 10_000 });
+        });
+        console.log("PASS the next pane opened after a recovering one shows its own screen");
       }
       if (!finishCase || finishCase === "transcript-finish") {
         for (const source of ["claude-transcript", "codex-transcript"] as const) await withPage(browser, {}, async (page) => {

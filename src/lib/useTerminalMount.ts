@@ -886,8 +886,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const retireOutput = (): void => {
         outputOwner++;
         outputFrames.length = 0;
-        // a pane switch starts a new stream: the old pane's recovery mark is not the new pane's
-        outputRecovering = false;
         frameGateRef.current.reset();
         if (!writingOutput) replayOscOpen = oscMayCopy();
       };
@@ -956,7 +954,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // Bumped by readiness receipts: revokes only the proof that queued output is current, never
       // the parse itself (a masked prompt must still keep typing out of every draft).
       let outputLifetime = 0;
-      let outputRecovering = false;
+      // the pane whose attachment is recovering, as this client joined it: its replay is the screen from
+      // before. Kept by pane, so the next pane's output is its own, while the same pane's (a replaced
+      // terminal re-attaching) still waits for the attach to take
+      let recoveringPane: string | null = null;
       let deferredAttach = false;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
@@ -1021,14 +1022,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (message.type === "input-ready" || message.type === "output-recovering") {
           // output-recovering: this client joined after the stream ended, so the replay is the screen from before
           if (message.type === "output-recovering" || message.ready === false) {
-            outputRecovering = true;
+            recoveringPane = message.pane_id;
             outputLifetime++;
             setOutputReady(false);
             setParsedTarget(undefined);
-          } else if (outputRecovering) {
+          } else if (recoveringPane === message.pane_id) {
             // Recovery revokes parses queued before this receipt too. The new stream, not
             // input permission (which observers never have), proves the screen is current.
-            outputRecovering = false;
+            recoveringPane = null;
             outputLifetime++;
           }
         }
@@ -1058,7 +1059,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               modifyOtherKeysRef.current = 0;
               return;
             }
-            if (lifetime === outputLifetime && !outputRecovering) {
+            if (lifetime === outputLifetime && recoveringPane !== owner) {
               setOutputReady(true);
               setParsedTarget(target);
             }
@@ -1079,7 +1080,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             term.options.disableStdin = observeRef.current || heldRef.current;
             setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
-            if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && !outputRecovering && gridMatches())) onInputRowFrameRef.current();
+            if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
           });
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
@@ -1215,7 +1216,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         pendingScopeRef.current = session.scope;
         pendingEpochRef.current = session.epoch;
         outputGeneration++;
-        outputRecovering = false;
+        recoveringPane = null;
         retireOutputRef.current();
         setOutputReady(false);
         inputWasReady = false;
@@ -1834,7 +1835,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const generation = ++outputGeneration;
         // A new attach owns a new output lifetime. A recovering attachment sends output-recovering
         // before its replay, so it revokes this again before any retained bytes.
-        outputRecovering = false;
+        recoveringPane = null;
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
         // A frame the old stream left open is not the new one's
         frameGateRef.current.reset();

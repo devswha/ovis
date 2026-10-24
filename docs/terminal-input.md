@@ -117,9 +117,11 @@ compatibility signal. A screen frame alone does not establish readiness on a new
 A client that joins an attachment whose stream ended after it was ready (the replacement attach has
 not taken yet) first gets `{type:"output-recovering", pane_id}`, then the retained replay, and no
 `input-ready`. The client treats that replay as the screen from before: it does not present it as
-current or acknowledge it, until the next attach takes (`input-ready`) and new output arrives.
-Switching panes or reconnecting drops that wait. It is presentation only; queued input still waits
-for `input-ready`.
+the pane's current screen (so it does not count as reading the agent's finish) or read the agent's
+input row from it, until the next attach takes (`input-ready`) and new output arrives. The replay's
+output credit is still acknowledged as usual. The wait belongs to that pane: another pane's output
+is its own, a reconnect drops it, and a replaced terminal of the same pane keeps it until its attach
+takes. Queued input still waits for `input-ready`.
 
 `input_not_ready` reports a rejected PTY input. `input_failed` reports an RPC or local sidecar
 write failure; the UI displays it outside the terminal stream. These are not acknowledgements
