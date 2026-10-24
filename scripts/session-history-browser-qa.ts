@@ -287,6 +287,40 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   console.log("PASS an open agent list takes Escape alone with the focus off its button; the next Escape closes the dialog");
+  // an overlay opened over the dialog keeps its own Escape while the agent list stays open under it:
+  // a native modal (Add PC from the palette), and an overlay holding the focus outside the dialog
+  await openHistory("w1");
+  await picker.click();
+  await agentList.waitFor();
+  await page.evaluate(() => {
+    const modal = document.createElement("dialog");
+    modal.id = "qa-native-modal";
+    modal.innerHTML = '<button type="button">Add PC</button>';
+    document.body.append(modal);
+    modal.showModal();
+    modal.querySelector("button")!.focus();
+  });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !(document.getElementById("qa-native-modal") as HTMLDialogElement).open);
+  assert.equal(await agentList.isVisible(), true, "Escape in a native modal over the dialog closes that modal, not the agent list under it");
+  await page.evaluate(() => document.getElementById("qa-native-modal")!.remove());
+  const outside = await page.evaluate(() => {
+    const field = document.createElement("input");
+    field.setAttribute("aria-label", "qa overlay field");
+    document.body.append(field);
+    field.focus();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    field.dispatchEvent(escape);
+    field.remove();
+    return escape.defaultPrevented;
+  });
+  assert.equal(outside, false, "an Escape from an overlay outside the dialog is left to that overlay");
+  assert.equal(await agentList.isVisible(), true, "the agent list under that overlay stays open");
+  console.log("PASS an overlay over the dialog keeps its own Escape while the agent list stays open under it");
+  await picker.click();
+  await agentList.waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
   // Claude: the list is asked for from a pane of the workspace (its store's), and the same UUID reported by a
   // pane on another store is not that row's session: Resume, not Open
   await openHistory("w3");
