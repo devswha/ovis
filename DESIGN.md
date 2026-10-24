@@ -2472,6 +2472,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   paging is disabled until that search ends, so an older page cannot overwrite its result.
 - xterm has `scrollback: 0`; wheel/touch gestures reach herdr's alternate-screen scrollback. The
   mount hides the unused xterm scrollbar.
+- An attached touch swipe sends its wheel reports from animation frames, at most 6 per frame and in
+  order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
+  them over the next few, and a two-screen swipe has drained within 300 ms of the lift. Every step
+  the swipe derives (`wheelSteps`, then `finalStep` at the lift) still arrives; only travel beyond
+  64 waiting reports is dropped, and the terminal counts it in `data-touch-wheel-dropped`. A new
+  touch (a second finger anywhere on the page too), a key typed in the terminal, the key bar or the
+  input line, a disconnect, another pane, a role acknowledgement, an attach held or released and
+  unmount all drop what is left of the swipe, queued reports and unsent travel alike, and each
+  report re-checks its pane, attach, role and input readiness before it goes: nothing of an old swipe reaches the pane after any of them, and a
+  reconnect never drains one. Mirrored panes and OMP/OmO questions keep their direct `lineScroll`,
+  and desktop wheels are not paced. This differs from Zed's locally resized terminal, which scrolls
+  a grid it owns: here the grid is herdr's, shared by every attached client, so a report is input
+  to a pane other people may be using. No app interaction precedent is claimed for the pacing.
 - The screen a new attach is handed (`pty-data` with `replay: true`: a second tab, a phone, a
   reconnect) is presentation history: xterm draws it byte for byte, and an OSC 52 copy request in
   it is not run again. Output reaches xterm one frame at a time, so the frame being parsed is
