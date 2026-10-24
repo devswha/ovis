@@ -1774,7 +1774,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   reports as an absolute path counts; a file outside it, in a sibling (`/work/app-2`), a relative
   or Windows path, or a pane with no folder known reads as written. The label alone is shorter:
   its title (`Open /work/app/src/a.ts`, or the bare path where nothing can open it), the file the
-  viewer opens and every copy keep the path as written: selecting the whole label copies
+  viewer opens and a copy's text keep the path as written: selecting the whole label copies
   `/work/app/src/a.ts` (`data-raw-path`), a part of it copies that part. On a touch screen the
   link grows to `--touch-target` both ways, so the files of a patch never share a hit area.
   Follows T3 Code's workspace-relative paths (`formatWorkspaceRelativePath`), already credited
