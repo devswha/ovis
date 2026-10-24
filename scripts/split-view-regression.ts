@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Route, WebSocket } from "playwright-core";
-import { herdrRpc, paneRead, paneSplit, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { herdrRpc, paneRead, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 
 /**
  * The split view's edges (lib/split.ts), each on a browser context of its own: the other half's
@@ -416,6 +416,39 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
         "the destination half selects the pane dragged by its title");
       assert.deepEqual(errors, []);
       console.log("PASS a real mouse drag from a two-pane tab's title opens that pane in the other half");
+    }
+
+    // A title dropped on another pane's title of its tab: the two trade places (herdr's pane.swap),
+    // with that title marked while over it, no half chosen, and no split view opened.
+    {
+      const [first] = await panesFor("title-swap") as [string];
+      const beside = (await paneSplit(first, "right", false)).pane_id;
+      const { page, errors } = await open([first, beside], "terminal");
+      const head = (pane: string) => page.locator(`[data-layout-pane="${pane}"] > .pane-frame-head`);
+      await head(beside).waitFor();
+      const left = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".pane-frame:not(.is-hidden)")]
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0]?.getAttribute("data-layout-pane"));
+      assert.equal(await left(), first);
+      const from = (await head(first).boundingBox())!;
+      const to = (await head(beside).boundingBox())!;
+      await page.mouse.move(from.x + 30, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(from.x + 38, from.y + from.height / 2 + 4, { steps: 2 });
+      await page.mouse.move(to.x + 60, to.y + to.height / 2, { steps: 8 });
+      await page.mouse.move(to.x + 61, to.y + to.height / 2);
+      await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] > .pane-frame-head`)?.classList.contains("is-swap-target") === true, beside);
+      assert.equal(await page.locator(".split-drop.is-visible").count(), 0, "no half is offered over a title it would swap with");
+      await page.mouse.up();
+      await page.waitForFunction((pane) => {
+        const frames = [...document.querySelectorAll<HTMLElement>(".pane-frame:not(.is-hidden)")].sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        return frames[0]?.getAttribute("data-layout-pane") === pane;
+      }, beside);
+      const x = (await sessionSnapshot()).layouts.flatMap((layout) => layout.panes);
+      assert.ok(x.find((pane) => pane.pane_id === beside)!.rect.x < x.find((pane) => pane.pane_id === first)!.rect.x, "herdr swapped the two");
+      assert.equal(await page.locator(".is-swap-target").count(), 0, "the mark is cleared");
+      assert.equal(await page.locator(".pane-slot").count(), 1, "a swap opens no split view");
+      assert.deepEqual(errors, []);
+      console.log("PASS a title dropped on another title of its tab trades the two panes' places");
     }
 
     // 6b. A narrow window shows the active half alone; picking the hidden half's pane opens it in the
