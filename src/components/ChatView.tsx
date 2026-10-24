@@ -1555,6 +1555,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         else if (node !== null && dragged && press.movedUp && stickToBottom.current && node.scrollHeight - node.clientHeight - node.scrollTop > READER_ALLOWANCE_PX) {
           pagingAway.current = true;
           dropPendingListScroll(timeline.current);
+          // the reader dragged the thumb away: a local send already on its way no longer takes them to the end
+          navigated();
           onScrollRef.current();
         }
         pointer = null; pointerDragAt.current = -Infinity; scrollbarPress.current = null; return;
