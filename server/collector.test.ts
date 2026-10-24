@@ -68,6 +68,33 @@ describe("parseFocusFrame", () => {
 });
 
 describe("lifecycle invalidations", () => {
+  it("tells when the lifecycle subscription is live, also when only a reopened one starts", async () => {
+    // a structure change before this is not heard of: a caller that creates a workspace waits for it
+    const herdr = fakeHerdr([]);
+    const collector = startStatusCollector(recorder().handlers, herdr.deps);
+    let live = false;
+    void collector.structureReady.then(() => { live = true; });
+    try {
+      await collector.ready;
+      await tick();
+      expect(live).toBe(false);
+      herdr.lifecycle().start();
+      await collector.structureReady;
+    } finally { collector.stop(); }
+    // the first connection closed before it started: the reopened one's start is what counts
+    const reopened = fakeHerdr([]);
+    const again = startStatusCollector(recorder().handlers, reopened.deps);
+    let reopenedLive = false;
+    void again.structureReady.then(() => { reopenedLive = true; });
+    try {
+      reopened.lifecycle().drop();
+      await until(() => reopened.lifecycles().length === 2, "the reopened lifecycle subscription");
+      expect(reopenedLive).toBe(false);
+      reopened.lifecycle().start();
+      await again.structureReady;
+    } finally { again.stop(); }
+  });
+
   it("reports a tracked pane missing when the first lifecycle subscription starts", async () => {
     // Given: the pane exists when tracked, but the lifecycle stream has not started.
     const herdr = fakeHerdr([]);
