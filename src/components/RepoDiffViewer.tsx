@@ -12,7 +12,7 @@ import { pathParts } from "../lib/filePaths.ts";
 import { canHighlight, languageForPath } from "../lib/highlight.ts";
 import { useT } from "../lib/i18n.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
-import { comparisonWord, diffColorable, diffErrorMessage, diffStyleFor, repositoryFilePath, statusWord, unavailableMessage, type RepoDiffTarget } from "../lib/repoDiff.ts";
+import { comparisonChangedWord, comparisonWord, diffColorable, diffErrorMessage, diffStyleFor, repositoryFilePath, sameComparison, statusWord, unavailableMessage, type RepoDiffTarget } from "../lib/repoDiff.ts";
 import { useSettings } from "../lib/settings.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { skeletonRows } from "../lib/skeleton.ts";
@@ -30,7 +30,8 @@ export interface RepoDiffViewerProps {
   keyboardActive?: boolean;
 }
 
-type Load = { status: "pending" } | { status: "failed"; error: unknown } | { status: "ready"; answer: RepoDiffFilePatch };
+/** `stale`: a branch patch answered for another identity than the list's, which is never drawn as this one */
+type Load = { status: "pending" } | { status: "failed"; error: unknown } | { status: "stale" } | { status: "ready"; answer: RepoDiffFilePatch };
 const PENDING: Load = { status: "pending" };
 
 /** the text shown as one selected box when the clipboard is out of reach: the patch, or the file's path */
@@ -87,17 +88,18 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   const textRef = useRef<HTMLTextAreaElement>(null);
   useSheetSwipe(surface, onClose);
 
-  const { paneId, directory, scope, base, head, path, oldPath } = target;
+  const { paneId, directory, scope, base, head, comparison, path, oldPath } = target;
   useEffect(() => {
     let live = true;
     setLoad(PENDING);
     setShown(null);
-    fetchRepoDiffFile({ paneId, directory, scope, base, head }, path, oldPath).then(
-      (answer) => { if (live) setLoad({ status: "ready", answer }); },
+    fetchRepoDiffFile({ paneId, directory, scope, base, head, comparison }, path, oldPath).then(
+      // a branch patch is the list's comparison or nothing: one answered for another identity is not drawn
+      (answer) => { if (live) setLoad(sameComparison(answer.comparison ?? null, comparison) ? { status: "ready", answer } : { status: "stale" }); },
       (error: unknown) => { if (live) setLoad({ status: "failed", error }); },
     );
     return () => { live = false; };
-  }, [fetchRepoDiffFile, paneId, directory, scope, base, head, path, oldPath]);
+  }, [fetchRepoDiffFile, paneId, directory, scope, base, head, comparison, path, oldPath]);
 
   useEffect(() => {
     if (!keyboardActive) return;
@@ -129,6 +131,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   const body = (() => {
     if (shown !== null) return <textarea ref={textRef} className="repo-diff-select-source" readOnly value={shown.text} aria-label={shown.kind === "patch" ? t("Patch") : t("Path")} spellCheck={false} />;
     if (load.status === "pending") return <DiffSkeleton label={t("Opening…")} />;
+    if (load.status === "stale") return <p className="repo-diff-note" role="alert">{comparisonChangedWord(t)}</p>;
     if (load.status === "failed") {
       const stale = load.error instanceof ApiError && load.error.status === 404 && load.error.code === "not_found";
       return <p className="repo-diff-note" role="alert">{stale ? t("This file has no changes here any more; the list is out of date.") : diffErrorMessage(t, load.error)}</p>;

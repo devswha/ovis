@@ -1466,8 +1466,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Changes list and diff viewer (`.repo-changes`, `.repo-diff*`)
 - Files has two faces, **Browse** | **Changes** (`.segmented` in its header). **Changes** lists
   what a comparison changed in the repository the pane sits in: the working tree against the
-  index, the index against HEAD, or two commits named by hand (**From commit**, **To commit**,
-  **Compare**); a Refresh button re-reads it, nothing polls. Under the controls, the branch
+  index, the index against HEAD, two commits named by hand (**From commit**, **To commit**,
+  **Compare**), or the branch against a base (**Branch**, below); a Refresh button re-reads it,
+  nothing polls. On a phone the four scopes share the bar's whole width and the fold-all and
+  Refresh buttons take the row under them: side by side they would run past the card. Under the
+  controls, the branch
   (`Detached HEAD`, `No commits yet`) beside a `GitBranch` glyph and the repository's root, mono,
   cut from its start. The files sit under the folders they are in (lib/changeTree.ts): a
   `.repo-change-folder` button row (caret, `--accent` folder glyph, name, and the count of files
@@ -1516,6 +1519,43 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   patch cap (with the cap in bytes), a merge conflict, a path that is not a regular file, a pure
   rename or mode change (`No lines changed.`), a file that no longer differs, and every refusal of
   the routes in the app's words.
+- **Branch** is the Codex app's review-pane scope of that name (its review pane offers Unstaged,
+  Staged, Commit and Branch, the last "the diff against your base branch", and `/review` asks
+  "Review against a base branch"), adapted to herdr's per-pane target: the base is chosen for this
+  PC, pane and folder alone and remembered nowhere, never guessed from the remote's HEAD or a
+  branch named `main`, and nothing is compared until **Compare**. One `.field`, **Base branch**,
+  holds an editable combobox (`.input`, `role=combobox`) with a `ChevronDown` icon button at its
+  end (**Choose a branch**, the touch target on a phone) and **Compare** beside it (`.btn-primary`,
+  disabled while the field is empty; beside the field on a phone too, and the field as tall as it
+  there). Before the first Compare the list says `Choose a base, then Compare.` and the field's
+  placeholder `Branch or commit`; nothing is shown as loading. Opening the list reads the
+  repository's local and remote branches (`GET /api/workspace/diff/refs`, nothing fetched) into a
+  `.menu` listbox in the form's own flow, under the field and **Compare** and as wide as both, at
+  every width: it pushes the files down instead of floating, so it never covers **Compare**, the
+  scopes or the sheet's header, and a phone gets no popover over its sheet. A click elsewhere
+  closes it once the click is done, so nothing moves under a press: one `.menu-item` per branch with a
+  `GitBranch` glyph, its short name (`main`, `origin/main`) in mono and its commit's seven
+  characters as the hint (both mono `--fs-md`, and on a phone the name `--fs-xl`, the hint and
+  the list's notes `--fs-lg`: they are read and picked, not captions), the remote's symbolic HEAD
+  left out, the typed text filtering the rows,
+  the arrow keys walking them and Enter taking one (which compares against that branch by its
+  full refname, so a tag of the same name is never meant). What the list has to say takes a
+  `.repo-changes-refs-note` in its own words: on its way, no branches yet (a commit can still be
+  typed), none matching (Compare takes the name as typed), cut at 200 (another can be typed by
+  name), and every refusal (a watching device, a bridge too old for the route). The branch is
+  compared from its merge base with the base, untracked files included, so the base's own later
+  changes stay out; a second mono line under the repository line (`.repo-changes-identity`, a
+  `GitMerge` glyph, wrapping on a phone) says so: `Compared from 3f1c2aa, the merge base with
+  origin/main`. That identity (repository, HEAD, base and merge base) is what each file's patch
+  is read from, and the diff header names it `Since origin/main`: a base that moves on changes
+  nothing until Refresh, while a moved HEAD or another repository makes a patch say `HEAD or the
+  repository changed since the list was read; refresh the list.` instead of drawing another
+  comparison. A base that names no commit, a repository with no commit yet and a base sharing no
+  history with HEAD are each refused in the list's own words, with nothing compared in their
+  place; `Nothing changed since the base` is the empty state. The browser demo offers fictional
+  refs and one fictional branch comparison against `main`. Another PC, pane or folder starts the
+  scope over: the base is cleared, nothing is compared there until **Compare**, and a list still
+  on its way for the target left behind is dropped.
 
 ### Header context and connection
 - A selected pane shows agent mark + title (`--fs-md`), then on the same line the crumb

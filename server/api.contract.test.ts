@@ -24,7 +24,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import type { RepoDiffFileList, RepoDiffFilePatch, SessionHistoryResponse, SessionResumeResponse } from "../shared/protocol.ts";
+import type { RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, SessionHistoryResponse, SessionResumeResponse } from "../shared/protocol.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { testShellEnv } from "../scripts/test-shell.ts";
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
@@ -4084,6 +4084,59 @@ describe("repository diff of a pane's folder", () => {
     const posted = await fetch(`${base()}/api/workspace/diff/files?${pane}`, { method: "POST", headers: { "x-herdr-machine": "1" } });
     expect(posted.status).toBe(400);
     expect(((await posted.json()) as ApiError).error.code).toBe("method_not_allowed");
+
+    // the branch against a base: the refs for the picker, the list from the merge base, each patch from the list's identity
+    git("add", ".");
+    git("commit", "-q", "-m", "on main");
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(root, "b.txt"), "branch\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "branch work");
+    git("update-ref", "refs/remotes/origin/main", "main");
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    writeFileSync(join(root, "untracked.txt"), "new\n");
+    const mainOid = Bun.spawnSync(["git", "-C", root, "rev-parse", "main"], { stdout: "pipe" }).stdout.toString().trim();
+    const headOid = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" }).stdout.toString().trim();
+    for (const prefix of ["", "machines/local/"]) {
+      const refs = await fetch(`${base()}/api/${prefix}workspace/diff/refs?${pane}`);
+      expect([prefix, refs.status]).toEqual([prefix, 200]);
+      const listed = (await refs.json()) as RepoDiffRefs;
+      expect(listed.refs).toEqual([{ name: "refs/heads/feature", oid: headOid }, { name: "refs/heads/main", oid: mainOid }, { name: "refs/remotes/origin/main", oid: mainOid }]);
+      expect(listed).toMatchObject({ truncated: false, limits: { max_refs: 200 } });
+      const branch = await fetch(`${base()}/api/${prefix}workspace/diff/files?${pane}&scope=branch&base=refs%2Fremotes%2Forigin%2Fmain`);
+      expect([prefix, branch.status]).toEqual([prefix, 200]);
+      const compared = (await branch.json()) as RepoDiffFileList;
+      expect(compared).toMatchObject({ scope: "branch", base: mainOid, head: headOid, comparison: { repository_root: root, head_oid: headOid, base_oid: mainOid, merge_base_oid: mainOid } });
+      expect(compared.files.map((file) => [file.path, file.status])).toEqual([["b.txt", "added"], ["untracked.txt", "untracked"]]);
+      const comparison = encodeURIComponent(JSON.stringify(compared.comparison));
+      const patch = await fetch(`${base()}/api/${prefix}workspace/diff/file?${pane}&scope=branch&path=untracked.txt&comparison=${comparison}`);
+      expect([prefix, patch.status]).toEqual([prefix, 200]);
+      const read = (await patch.json()) as RepoDiffFilePatch;
+      expect(read).toMatchObject({ scope: "branch", comparison: compared.comparison, file: { path: "untracked.txt", status: "untracked", binary: false }, unavailable: null });
+      expect(read.patch).toStartWith("diff --git a/untracked.txt b/untracked.txt\n");
+      // a malformed identity, one of another HEAD, and a patch asked by the base's name instead of the identity
+      for (const [search, status, code] of [
+        [`scope=branch&path=b.txt&comparison=${encodeURIComponent("{\"head_oid\":1}")}`, 400, "invalid_comparison"],
+        // a full git id is 40 or 64 hex digits: 41 is a malformed shape, not a moved HEAD or a missing commit
+        ...(["head_oid", "base_oid", "merge_base_oid"] as const).map((key) => [`scope=branch&path=b.txt&comparison=${encodeURIComponent(JSON.stringify({ ...compared.comparison, [key]: "a".repeat(41) }))}`, 400, "invalid_comparison"] as const),
+        [`scope=branch&path=b.txt&comparison=${encodeURIComponent(JSON.stringify({ ...compared.comparison, head_oid: "0".repeat(40) }))}`, 409, "comparison_changed"],
+        ["scope=branch&path=b.txt&base=main", 400, "invalid_comparison"],
+      ] as const) {
+        const refused = await fetch(`${base()}/api/${prefix}workspace/diff/file?${pane}&${search}`);
+        expect([prefix, search, refused.status]).toEqual([prefix, search, status]);
+        expect(((await refused.json()) as ApiError).error.code).toBe(code);
+      }
+      // a base that names no commit, and one that shares no history
+      const unknown = await fetch(`${base()}/api/${prefix}workspace/diff/files?${pane}&scope=branch&base=no-such-branch`);
+      expect(unknown.status).toBe(404);
+      expect(((await unknown.json()) as ApiError).error.code).toBe("revision_not_found");
+    }
+    // another site's page reads none of it
+    for (const route of ["refs", "files?scope=branch&base=main"]) {
+      const crossSite = await fetch(`${base()}/api/workspace/diff/${route.includes("?") ? route.replace("?", `?${pane}&`) : `${route}?${pane}`}`, { headers: { "sec-fetch-site": "cross-site" } });
+      expect([route, crossSite.status]).toEqual([route, 403]);
+      expect(((await crossSite.json()) as ApiError).error.code).toBe("cross_site");
+    }
   });
 });
 

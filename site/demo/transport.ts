@@ -15,7 +15,7 @@
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
-import type { RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
+import type { RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
@@ -894,6 +894,45 @@ const DEMO_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
   ].join("\n") },
 ];
 
+/**
+ * The demo repository's HEAD, and the branches a base picker is offered (GET /api/workspace/diff/refs):
+ * only the bases its branch comparison below answers, so no offered branch is refused on Compare.
+ */
+const DEMO_HEAD = "4f2a9c1d7e3b5a8c6d0e1f2a3b4c5d6e7f8a9b0c";
+const DEMO_MAIN = "7a3e5c19b2d84f06a1c3e5b7d9f1a3c5e7b9d1f3";
+const DEMO_REFS: RepoDiffRefs["refs"] = [
+  { name: "refs/heads/main", oid: DEMO_MAIN },
+  { name: "refs/remotes/origin/main", oid: DEMO_MAIN },
+];
+
+/**
+ * What the demo's branch changed against `main` or `origin/main` (both at the same commit): the
+ * uncommitted work above, plus the branch's own committed file. Any other base is one the demo
+ * repository does not know. The merge base is pinned in the comparison the list answers with, as
+ * the server pins it.
+ */
+const DEMO_BRANCH_COMPARISON: RepoBranchComparison = { repository_root: "", head_oid: DEMO_HEAD, base_oid: DEMO_MAIN, merge_base_oid: "e5b7d9f1a3c5e7b9d1f37a3e5c19b2d84f06a1c3" };
+const DEMO_BRANCH_FILE: RepoDiffFile = { path: "src/routes/payments.ts", old_path: null, status: "modified", additions: 3, deletions: 1, binary: false };
+const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
+  ...DEMO_DIFF,
+  { file: DEMO_BRANCH_FILE, patch: [
+    "diff --git a/src/routes/payments.ts b/src/routes/payments.ts",
+    "index 1a2b3c4..5d6e7f8 100644",
+    "--- a/src/routes/payments.ts",
+    "+++ b/src/routes/payments.ts",
+    "@@ -12,5 +12,7 @@ export async function createPayment(request: PaymentRequest): Promise<Payment> {",
+    "   const key = request.headers.get(\"idempotency-key\");",
+    "-  return charge(request.body);",
+    "+  if (key === null) return charge(request.body);",
+    "+  const earlier = await lookup(key);",
+    "+  return earlier ?? remember(key, await charge(request.body));",
+    " }",
+    " ",
+    " export async function refund(id: string): Promise<void> {",
+    "",
+  ].join("\n") },
+].sort((left, right) => (left.file.path < right.file.path ? -1 : 1));
+
 /** Settings → Subscription usage on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
 function usageReport(): UsageReport {
   const now = Date.now();
@@ -1551,19 +1590,39 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/voice") return json({ configured: false, source: null, ...VOICE_DEFAULTS } satisfies VoiceStatus, 200, { "cache-control": "no-store" });
   if (path === "/api/voice/config") return error("demo", "the demo saves no OpenAI key", 409);
   if (path === "/api/voice/transcribe") return error("voice_not_configured", "transcription is unavailable in the demo", 409);
-  if (path === "/api/workspace/diff/files" || path === "/api/workspace/diff/file") {
-    const scope = query.get("scope") || "workspace";
-    if (scope !== "workspace" && scope !== "staged" && scope !== "commit") return error("invalid_scope", "scope must be workspace, staged or commit", 400);
-    // the demo keeps no history to name commits in
-    if (scope === "commit") return error("revision_not_found", "the demo repository has no commits to compare", 404);
+  if (path === "/api/workspace/diff/files" || path === "/api/workspace/diff/file" || path === "/api/workspace/diff/refs") {
     const root = snapshot().panes.find((pane) => pane.pane_id === paneId)?.cwd ?? query.get("directory") ?? "/home/demo/checkout-api";
     // a worktree's checkout is on its own branch, as the sidebar and the footer say
     const branch = [...repositories.values()].flatMap((repo) => repo.checkouts).find((checkout) => checkout.path === root)?.branch ?? "main";
-    const repository: RepoDiffRepository = { root, branch, head: "4f2a9c1d7e3b5a8c6d0e1f2a3b4c5d6e7f8a9b0c", detached: false, unborn: false };
-    // everything in the demo is unstaged work
-    const changed = scope === "workspace" ? DEMO_DIFF : [];
+    const repository: RepoDiffRepository = { root, branch, head: DEMO_HEAD, detached: false, unborn: false };
+    if (path === "/api/workspace/diff/refs") return json({ repository, refs: DEMO_REFS, truncated: false, limits: { max_refs: 200, max_list_bytes: DEMO_DIFF_LIMITS.max_list_bytes } } satisfies RepoDiffRefs);
+    const scope = query.get("scope") || "workspace";
+    if (scope !== "workspace" && scope !== "staged" && scope !== "commit" && scope !== "branch") return error("invalid_scope", "scope must be workspace, staged, commit or branch", 400);
+    // the demo keeps no history to name commits in
+    if (scope === "commit") return error("revision_not_found", "the demo repository has no commits to compare", 404);
+    let comparison: RepoBranchComparison | null = null;
+    if (scope === "branch") {
+      const pinned = query.get("comparison");
+      if (pinned !== null) {
+        // a patch read carries the list's identity back: the demo's one branch comparison, or nothing
+        let parsed: unknown;
+        try { parsed = JSON.parse(pinned); } catch { return error("invalid_comparison", "comparison must be the identity a branch list answered with", 400); }
+        const identity = parsed as Partial<RepoBranchComparison> | null;
+        if (identity === null || typeof identity !== "object" || identity.head_oid !== DEMO_HEAD || identity.base_oid !== DEMO_MAIN || identity.merge_base_oid !== DEMO_BRANCH_COMPARISON.merge_base_oid) return error("comparison_changed", "the repository or its HEAD is no longer the one this comparison was made on; refresh the list", 409);
+        if (identity.repository_root !== root) return error("comparison_changed", "the repository or its HEAD is no longer the one this comparison was made on; refresh the list", 409);
+      } else {
+        const base = query.get("base") ?? "";
+        if (path === "/api/workspace/diff/file") return error("invalid_comparison", "a branch patch needs the comparison its list answered with", 400);
+        if (base === "") return error("invalid_revision", "scope=branch needs a base branch or commit", 400);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._/~^@{}-]{0,199}$/.test(base) || base.includes("..")) return error("invalid_revision", "base must name one commit", 400);
+        if (!["main", "origin/main", "refs/heads/main", "refs/remotes/origin/main", DEMO_MAIN].includes(base)) return error("revision_not_found", "base names no commit in this repository", 404);
+      }
+      comparison = { ...DEMO_BRANCH_COMPARISON, repository_root: root };
+    }
+    // everything in the demo is unstaged work; the branch adds its one committed file
+    const changed = scope === "workspace" ? DEMO_DIFF : scope === "branch" ? DEMO_BRANCH_DIFF : [];
     const compared: RepoDiffScope = scope;
-    const shared = { repository, scope: compared, base: null, head: null };
+    const shared = { repository, scope: compared, base: comparison?.base_oid ?? null, head: comparison?.head_oid ?? null, comparison };
     if (path === "/api/workspace/diff/files") {
       return json({ ...shared, files: changed.map((entry) => entry.file), total: changed.length, truncated: false, limits: { max_files: DEMO_DIFF_LIMITS.max_files, max_list_bytes: DEMO_DIFF_LIMITS.max_list_bytes } } satisfies RepoDiffFileList);
     }

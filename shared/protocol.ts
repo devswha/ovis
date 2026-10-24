@@ -245,16 +245,28 @@ export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupR
  *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
  *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
- *         working tree against the index, plus untracked files), staged (index against HEAD) or
- *         commit (`base` against `head`, HEAD when absent; each one commit). The list is capped
- *         (`limits`), and `truncated` says when it was. 400 invalid_scope / invalid_revision /
- *         invalid_cwd / missing_directory, 404 revision_not_found, 409 not_a_repository,
- *         503 git_unavailable, 504 git_timeout; 403 read_only for a watching device, as a file read)
- *  GET    /api/workspace/diff/file?pane_id=&directory=&scope=&base=&head=&path=&old_path=
+ *         working tree against the index, plus untracked files), staged (index against HEAD),
+ *         commit (`base` against `head`, HEAD when absent; each one commit) or branch (the working
+ *         tree, untracked files included, against the merge base of `base` and HEAD: what this
+ *         branch changed, never what `base` went on to change; `base` is required, `head` is not
+ *         taken). The list is capped (`limits`), and `truncated` says when it was. 400
+ *         invalid_scope / invalid_revision / invalid_cwd / missing_directory, 404
+ *         revision_not_found, 409 not_a_repository / unborn_head (branch: no commit to compare
+ *         from) / no_common_ancestor (branch: `base` and HEAD share no history; nothing is
+ *         compared in its place), 503 git_unavailable, 504 git_timeout; 403 read_only for a
+ *         watching device, as a file read)
+ *  GET    /api/workspace/diff/file?pane_id=&directory=&scope=&base=&head=&comparison=&path=&old_path=
  *         -> RepoDiffFilePatch (one file of that comparison as a standard `diff --git` unified
  *         patch; `path` and, for a rename, `old_path` are the list's own, relative to the
  *         repository root. The patch is whole or null: `unavailable` says why it is null, and no
- *         cut hunk is ever sent. 400 invalid_path, 404 not_found when nothing changed there)
+ *         cut hunk is ever sent. 400 invalid_path, 404 not_found when nothing changed there. In
+ *         the branch scope `comparison` carries the list's RepoBranchComparison as JSON instead of
+ *         `base`: the patch is read from its pinned merge base, so a base branch that moved on
+ *         changes nothing, and 409 comparison_changed says the repository or HEAD is no longer
+ *         the one listed (refresh the list); 400 invalid_comparison for one of another shape)
+ *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
+ *         branches of that repository, as full refnames with their commits, for choosing a base:
+ *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
  *  GET    /api/pane/prompt?pane_id=     -> PanePromptResponse
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and
@@ -468,7 +480,7 @@ export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from 
 
 export type { FileKind, FileInfo, ProjectFavicon } from "./files.ts";
 
-export type { RepoDiffScope, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
+export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
 
 export type { AgentKind } from "./agents.ts";
 

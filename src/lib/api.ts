@@ -32,8 +32,10 @@ import type {
   PanePromptResponse,
   PaneReadResult,
   PaneResized,
+  RepoBranchComparison,
   RepoDiffFileList,
   RepoDiffFilePatch,
+  RepoDiffRefs,
   RepoDiffScope,
   PaneSplit,
   PaneSwapped,
@@ -656,25 +658,36 @@ export function fileUrl(path: string, paneId: string | null, machineId = "local"
 
 /**
  * Which repository and which two of its states: the pane's folder (or `directory`, read when the
- * pane is gone), and the working tree against the index, the index against HEAD, or two commits.
+ * pane is gone), and the working tree against the index, the index against HEAD, two commits, or
+ * the working tree against the merge base of a chosen base and HEAD.
  */
 export interface RepoDiffQuery {
   paneId: string | null;
   directory: string | null;
   scope: RepoDiffScope;
-  /** `commit` only: the list's hashes, so a file is read from the same comparison */
+  /** `commit`: the list's hashes, so a file is read from the same comparison; `branch`: the base to list from */
   base: string | null;
   head: string | null;
+  /** `branch` only: the identity the list answered with, which a patch is read from instead of the base's name */
+  comparison: RepoBranchComparison | null;
 }
 
 function repoDiffQuery(query: RepoDiffQuery): URLSearchParams {
+  const pinned = query.scope === "branch" && query.comparison !== null;
   return new URLSearchParams({
     ...(query.paneId ? { pane_id: query.paneId } : {}),
     ...(query.directory ? { directory: query.directory } : {}),
     scope: query.scope,
-    ...(query.scope === "commit" && query.base ? { base: query.base } : {}),
+    ...((query.scope === "commit" || query.scope === "branch") && !pinned && query.base ? { base: query.base } : {}),
     ...(query.scope === "commit" && query.head ? { head: query.head } : {}),
+    ...(pinned ? { comparison: JSON.stringify(query.comparison) } : {}),
   });
+}
+
+/** GET /api/workspace/diff/refs: the repository's branches, for choosing a base; nothing is fetched. */
+export async function fetchRepoDiffRefs(query: Pick<RepoDiffQuery, "paneId" | "directory">, machineId = "local"): Promise<RepoDiffRefs> {
+  const params = new URLSearchParams({ ...(query.paneId ? { pane_id: query.paneId } : {}), ...(query.directory ? { directory: query.directory } : {}) });
+  return getJson<RepoDiffRefs>(machinePath(machineId, `workspace/diff/refs?${params.toString()}`));
 }
 
 /** GET /api/workspace/diff/files: the files a comparison changed, with their status and counts. */

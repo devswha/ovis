@@ -53,6 +53,7 @@ export function useMachineApi() {
     fileUrl: (path: string, pane: string | null, download = false) => api.fileUrl(path, pane, id, download),
     fetchRepoDiffFiles: (query: api.RepoDiffQuery) => api.fetchRepoDiffFiles(query, id),
     fetchRepoDiffFile: (query: api.RepoDiffQuery, path: string, oldPath: string | null) => api.fetchRepoDiffFile(query, path, oldPath, id),
+    fetchRepoDiffRefs: (query: Pick<api.RepoDiffQuery, "paneId" | "directory">) => api.fetchRepoDiffRefs(query, id),
     createWorkspace: (request: api.CreateWorkspaceRequest) => api.createWorkspace(request, id),
     createTab: (request: api.CreateTabRequest) => api.createTab(request, id),
     fetchSessionHistory: (workspace: string, agent: SessionHistoryAgent, pane: string | null = null) => api.fetchSessionHistory(workspace, agent, id, pane),
