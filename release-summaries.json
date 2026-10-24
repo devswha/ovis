@@ -15,7 +15,6 @@
         "The connect screen warns before sending a pairing code over plain http on the internet.",
         "Turn off herdr's copy_on_select and dragging in the terminal only selects until you copy.",
         "Following herdr's focus no longer takes your view while you're typing or have a draft.",
-        "The Android keyboard stops offering word suggestions in the terminal.",
         "Each plugin start begins a fresh server.log instead of growing one file forever."
       ],
       "fixed": [
@@ -44,7 +43,6 @@
         "인터넷에서 평문 http로 페어링 코드를 보내기 전에 연결 화면이 경고합니다.",
         "herdr의 copy_on_select를 끄면 터미널에서 드래그는 복사할 때까지 선택만 합니다.",
         "herdr 포커스 따라가기가 입력 중이거나 초안이 있을 때 화면을 가져가지 않습니다.",
-        "Android 키보드가 터미널에서 단어 추천을 띄우지 않습니다.",
         "플러그인이 시작할 때마다 server.log를 새로 시작해 파일이 끝없이 커지지 않습니다."
       ],
       "fixed": [
@@ -73,7 +71,6 @@
         "インターネット越しに平文の http でペアリングコードを送る前に、接続画面が警告します。",
         "herdr の copy_on_select をオフにすると、ドラッグはコピーするまで選択だけになります。",
         "herdr のフォーカス追従が、入力中や下書きがあるときに表示を奪わなくなりました。",
-        "Android のキーボードがターミナルで単語の候補を出さなくなりました。",
         "プラグインは起動ごとに新しい server.log を始め、ファイルが際限なく大きくなりません。"
       ],
       "fixed": [
@@ -102,7 +99,6 @@
         "在互联网上用明文 http 发送配对码之前，连接界面会发出警告。",
         "关闭 herdr 的 copy_on_select 后，在终端拖动只会选中，直到你复制。",
         "跟随 herdr 焦点时，正在输入或有草稿的界面不会被切走。",
-        "Android 键盘在终端中不再显示联想词。",
         "插件每次启动都会新建 server.log，日志文件不再无限增长。"
       ],
       "fixed": [

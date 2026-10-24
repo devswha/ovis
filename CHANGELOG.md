@@ -36,7 +36,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   SHA-256 manifest. Installing the plugin, an update installed from the app and `install.sh` put the
   matching binary in `bin/ovis-pty-sidecar` after checking its checksum and that it runs, and the
   server uses it when `OVIS_PTY_SIDECAR=rust` asks for the Rust host. Remote PC bundles carry it
-  too. The Node sidecar stays the default.
+  too. (Later in this release, #1908 makes the Rust host the default; see Changed.)
   ([#1859](https://github.com/devswha/ovis/pull/1859))
 - Ovis for Windows: download `Ovis.exe` from ovis.sh, click Install, and it sets up herdr, Bun and the
   Ovis server for your user, starts herdr when you sign in to Windows, and shows the QR code for the
@@ -123,7 +123,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   the server checks the binary once before using it and stays on the Node sidecar when it is
   missing, cannot run or cannot open a terminal, starts an attach on Node when the binary has gone
   since, and uses Node until a restart after the host crashes. `~/` in `OVIS_PTY_SIDECAR_BIN` is
-  expanded, so the plugin's `env` file can name the binary. The Node sidecar stays the default.
+  expanded, so the plugin's `env` file can name the binary. (Later in this release, #1908 makes the
+  Rust host the default; see above.)
   ([#1829](https://github.com/devswha/ovis/pull/1829))
 
 ### Fixed
@@ -425,7 +426,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   publishes.
   ([#1859](https://github.com/devswha/ovis/pull/1859))
 - An experimental Rust PTY host (`crates/pty-sidecar`) speaks the Node sidecar's protocol; the
-  server runs it in place of the Node sidecar only with `OVIS_PTY_SIDECAR=rust` and a built binary.
+  server first ran it in place of the Node sidecar only with `OVIS_PTY_SIDECAR=rust` and a built
+  binary; by this release it is the default (see Changed).
   ([#1785](https://github.com/devswha/ovis/pull/1785))
 
 ## [0.4.13] - 2026-10-22
