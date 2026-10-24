@@ -215,6 +215,17 @@ describe("preparePasteDirectory", () => {
     expect(existsSync(join(outside, "missing"))).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")("writes no ignore file through a .ovis that is a link to another folder", () => {
+    delete process.env["OVIS_PASTE_DIR"];
+    const outside = temp();
+    writeFileSync(join(outside, "user-file"), "theirs\n");
+    const cwd = temp();
+    symlinkSync(outside, join(cwd, ".ovis"));
+    expect(preparePasteDirectory(cwd)).toBe(join(cwd, ".ovis"));
+    // the link's target, another repository's root for example, is left as it was
+    expect(readdirSync(outside)).toEqual(["user-file"]);
+  });
+
   it("never creates an ignore in a trimmed nonempty override", () => {
     const cwd = temp();
     const override = join(temp(), "pastes");

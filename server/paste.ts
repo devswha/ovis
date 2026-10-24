@@ -13,7 +13,7 @@
  * one directory instead, for those who would rather keep them out of the working tree.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { imageType } from "./codex-images.ts";
@@ -97,12 +97,13 @@ function pasteDirectoryOverride(): string {
 /**
  * Creates the attachment directory and returns it. The default one also gets a `.gitignore`
  * of `*`, created exclusively so an ignore file (or link) already there is never followed or
- * replaced; a directory the user named in `OVIS_PASTE_DIR` is theirs and gets none.
+ * replaced; a directory the user named in `OVIS_PASTE_DIR` is theirs and gets none. Nor does a `.ovis` that is a
+ * link: the ignore file would land in the link's target, another folder or repository, and hide files it never wrote.
  */
 export function preparePasteDirectory(cwd: string | null | undefined): string {
   const directory = pasteDirectory(cwd);
   mkdirSync(directory, { recursive: true });
-  if (pasteDirectoryOverride() === "") {
+  if (pasteDirectoryOverride() === "" && !lstatSync(directory).isSymbolicLink()) {
     try {
       writeFileSync(join(directory, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 });
     } catch (error) {
