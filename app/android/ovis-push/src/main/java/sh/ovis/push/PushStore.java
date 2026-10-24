@@ -41,6 +41,11 @@ final class PushStore {
         return keys;
     }
 
+    /** The keys as stored, or null when there are none; never creates or replaces them. */
+    static synchronized PushKeys stored(Context context) throws GeneralSecurityException {
+        return read(prefs(context));
+    }
+
     static PushKeys read(SharedPreferences prefs) throws GeneralSecurityException {
         try {
             return PushKeys.decode(prefs.getString("private", null), prefs.getString("public", null),

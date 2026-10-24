@@ -52,7 +52,11 @@ public class OvisPushPlugin extends Plugin {
             if (saved == null) result.put("subscription", JSONObject.NULL);
             else if (call.getBoolean("endpointOnly", false)) {
                 result.put("subscription", new JSObject().put("endpoint", saved.endpoint));
-            } else result.put("subscription", subscription(saved.endpoint, PushStore.read(getContext())));
+            } else {
+                // an endpoint whose keys are gone (a failed save) is no subscription, as on iOS
+                PushKeys keys = PushStore.stored(getContext());
+                result.put("subscription", keys == null ? JSONObject.NULL : subscription(saved.endpoint, keys));
+            }
             call.resolve(result);
         } catch (PushKeys.Damaged damaged) {
             JSObject result = new JSObject();
