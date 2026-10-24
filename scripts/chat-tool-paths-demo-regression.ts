@@ -153,6 +153,18 @@ async function prepareDemo(): Promise<string> {
     Socket.prototype = DemoSocket.prototype;
     Object.setPrototypeOf(Socket, DemoSocket);
     window.WebSocket = Socket;
+    // the PC roster (its pane snapshot included) arrives on /api/machines/events too
+    const DemoEventSource = window.EventSource;
+    window.EventSource = function (...args) {
+      const source = new DemoEventSource(...args);
+      let handler = null;
+      Object.defineProperty(source, "onmessage", {
+        configurable: true,
+        get: () => handler === null ? null : (event) => handler(new MessageEvent("message", { data: JSON.stringify(rewrite(JSON.parse(event.data))) })),
+        set: (next) => { handler = next; },
+      });
+      return source;
+    };
     const json = (body, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
     window.fetch = (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
@@ -336,8 +348,8 @@ async function demoContext(browser: Browser, width: number, theme: string, langu
     ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] }
     : { viewport: { width: 1440, height: 900 }, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] });
   await context.addInitScript(([settings, ids]) => {
-    localStorage.setItem("herdr-web-ui:settings", settings);
-    for (const id of ids) localStorage.setItem(`herdr-web-ui:view:${id}`, "chat");
+    localStorage.setItem("ovis:settings", settings);
+    for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
   }, [settingsOf(theme, language), Object.keys(CWD)] as const);
   return context;
 }
@@ -446,7 +458,7 @@ async function mobileChecks(browser: Browser, base: string): Promise<void> {
 async function bareChecks(browser: Browser, base: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] });
   try {
-    await context.addInitScript((settings) => localStorage.setItem("herdr-web-ui:settings", settings), settingsOf("dark", "en"));
+    await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), settingsOf("dark", "en"));
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
