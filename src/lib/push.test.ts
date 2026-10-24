@@ -6,7 +6,7 @@ import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
 import { ensurePushSubscription, pushSupported, removePushSubscription, testDevicePush } from "./push.ts";
 import { ApiError } from "./api.ts";
 import { notificationState, refreshNotificationState, requestNotificationPermission } from "./notifications.ts";
-import { useNotificationSwitch } from "./useAlerts.ts";
+import { useNotificationSwitch } from "./useNotifications.ts";
 
 /**
  * The device-side subscription flow against a stand-in browser whose PushManager, like

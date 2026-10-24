@@ -70,7 +70,10 @@ import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionC
 import { selectionStill } from "./lib/selectionMark.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
 import { useSidebarLayout } from "./lib/useSidebarLayout.ts";
-import { alertsBell, useAlertPrefs, useAlertRefs, useAlertSignals, useNotificationState, useNotificationSwitch } from "./lib/useAlerts.ts";
+import { useAlertPrefs, useAlertRefs } from "./lib/useAlerts.ts";
+import { useAlertSignals } from "./lib/useAlertSignals.ts";
+import { useNotificationState, useNotificationSwitch } from "./lib/useNotifications.ts";
+import { alertsBell } from "./lib/alertsBell.ts";
 import { Droplet } from "./components/Droplet.tsx";
 import { paneDragData, PANE_DRAG_TYPE, slotSide, type SplitSlot } from "./lib/split.ts";
 import { useLayoutNotice, useLayoutRefused } from "./lib/useLayoutNotice.ts";

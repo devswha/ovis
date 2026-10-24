@@ -164,7 +164,7 @@ async function unsubscribeDevice(): Promise<void> {
     if (!subscription) return;
     // the app forgets its endpoint only once the PC has: unlike a browser's, an endpoint the app
     // drops stays live at the relay, so the phone would go on getting this PC's alerts with nothing
-    // left here to remove them by. A removal the PC did not take is tried again (lib/useAlerts.ts).
+    // left here to remove them by. A removal the PC did not take is tried again (lib/useNotifications.ts).
     await unregisterPushSubscription(subscription.endpoint);
     await callNative(PUSH_PLUGIN, "unsubscribe");
     return;
