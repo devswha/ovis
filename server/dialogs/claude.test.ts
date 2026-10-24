@@ -67,6 +67,11 @@ describe("Claude Code's bare /goal", () => {
     expect(parseInteractivePrompt("claude", later)?.id).toBe(parseInteractivePrompt("claude", shown)?.id);
   });
 
+  test("keeps the id an earlier bridge gave the card, so an answer to a card read before an update still lands (#1482)", () => {
+    // the id main's bridge gave this card before its words went as keys (own_text is not part of it)
+    expect(parseInteractivePrompt("claude", fixture("none", 120))?.id).toBe("d4c74b031221");
+  });
+
   test("a different goal is a different card", () => {
     const shown = fixture("active", 120);
     expect(parseInteractivePrompt("claude", shown.replaceAll("hello.txt", "other.txt"))?.id).not.toBe(parseInteractivePrompt("claude", shown)?.id);

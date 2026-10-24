@@ -4,7 +4,7 @@ import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 /** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */
 export function cardText(card: CardText, t: Translate = inCurrentLanguage): string {
   const vars = card.vars === undefined ? undefined
-    : Object.fromEntries(Object.entries(card.vars).map(([name, value]) => [name, typeof value === "object" ? cardText(value, t) : value]));
+    : Object.fromEntries(Object.entries(card.vars).map(([name, value]) => [name, value !== null && typeof value === "object" ? cardText(value, t) : value]));
   return t(card.key, vars);
 }
 
