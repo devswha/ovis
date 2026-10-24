@@ -64,6 +64,7 @@ Copy-Item 'bin\Release\net48\Ovis.exe' (Join-Path $build 'Ovis.exe')
 $layout = Join-Path $build 'msix'
 New-Item -ItemType Directory -Force -Path (Join-Path $layout 'Assets') | Out-Null
 Copy-Item 'bin\Release\net48\Ovis.exe' $layout
+Copy-Item 'NOTICE.txt' $layout
 Save-Png 44 (Join-Path $layout 'Assets\Square44x44Logo.png')
 Save-Png 150 (Join-Path $layout 'Assets\Square150x150Logo.png')
 Save-Png 50 (Join-Path $layout 'Assets\StoreLogo.png')

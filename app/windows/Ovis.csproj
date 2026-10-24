@@ -21,6 +21,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="src\*.cs" />
+    <!-- the licence notices travel inside Ovis.exe, shown from its Licences link -->
+    <EmbeddedResource Include="NOTICE.txt" LogicalName="NOTICE.txt" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="System.Drawing" />

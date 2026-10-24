@@ -21,6 +21,10 @@ apart.
 
 Releases up to 0.4.13 install the plugin as `devswha.herdr-web-ui`; the app finds it under either id.
 
+Every program it runs has a time limit (two minutes; the installer 45, winget 30, the phone step 5). Past it,
+the program and what it started are ended, except herdr and anything under it. The QR encoder's MIT notice
+(`NOTICE.txt`) is embedded in `Ovis.exe`, shown from its **Licences** link, and shipped in the MSIX.
+
 ## Starting at sign-in
 
 herdr runs the app from its startup hook, and a headless `herdr server` runs startup hooks like the
@@ -81,13 +85,18 @@ After the Release workflow publishes `vX.Y.Z`, its `windows-app` job runs
 out the tag, runs `build.ps1` with the version `X.Y.Z`, and attaches `Ovis.exe` (and `Ovis.msix`, below)
 to the release. A pull request that changes the app builds both and keeps them as the run's artifact.
 
-The site's Windows download button, `https://ovis.sh/Ovis.exe`, redirects to
+`https://ovis.sh/Ovis.exe` redirects to
 `https://github.com/devswha/ovis/releases/latest/download/Ovis.exe`. Release publishes without marking
 the release latest; the Windows and Mac jobs each mark it latest once it has both `Ovis.exe` and
 `Ovis.dmg` (only when its tag is the newest `v*` tag), so neither download lands on a release without
-its file. To give a release its files later, run **Actions → Windows app → Run workflow** on `main` with
-the tag, or `gh workflow run windows-app.yml --ref main -f tag=vX.Y.Z`; a tag from before app/windows
-gets main's app with that version. It replaces files already there.
+its file. Each file uploads under a temporary name and replaces the release's old one only once it is
+there, so a failed upload leaves the release with the file it had. The files' label on the release names
+the commit they were built from.
+
+To give a release its files later, run **Actions → Windows app → Run workflow** on `main` with the tag,
+or `gh workflow run windows-app.yml --ref main -f tag=vX.Y.Z`. A release ships what its tag holds, so a
+tag from before app/windows gets nothing and the run says so. Only as a maintainer's exception, the
+`app_ref` input names a full commit on main to build the app from, and the files' label records it.
 
 `Ovis.exe` is not signed, so the first time it is opened from a download Windows shows Microsoft
 Defender SmartScreen's **Windows protected your PC** (*Microsoft Defender SmartScreen prevented an

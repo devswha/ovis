@@ -89,7 +89,7 @@ namespace Ovis
             }
             Set(Phase.Working, Lang.L("Installing herdr, Bun and the Ovis server…", "herdr, Bun, Ovis 서버를 설치하는 중…"));
             Environment.SetEnvironmentVariable("OVIS_NO_OPEN", "1");
-            var result = await Run.Program("powershell", PowerShell(Links.InstallCommand), Append);
+            var result = await Run.Program("powershell", PowerShell(Links.InstallCommand), Append, true, 45 * 60);
             if (result.Status != 0)
             {
                 Fail(Lang.L("The installer stopped with an error.", "설치 중 오류가 났습니다."));
@@ -117,7 +117,7 @@ namespace Ovis
             Retry = InstallGit;
             ClearLog();
             Set(Phase.Working, Lang.L("Installing Git for Windows…", "Git for Windows를 설치하는 중…"));
-            var result = await Run.Program("winget", new[] { "install", "--id", "Git.Git", "--exact", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements" }, Append);
+            var result = await Run.Program("winget", new[] { "install", "--id", "Git.Git", "--exact", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements" }, Append, true, 30 * 60);
             Paths.RefreshPath();
             if (Paths.Which("git") == null)
             {
@@ -174,7 +174,7 @@ namespace Ovis
             Retry = MakePhoneAddress;
             ClearLog();
             Set(Phase.Working, Lang.L("Making the phone address…", "휴대폰 주소를 만드는 중…"));
-            await Run.Program("bun", new[] { PluginScript(plugin), "phone" }, Append);
+            await Run.Program("bun", new[] { PluginScript(plugin), "phone" }, Append, true, 5 * 60);
             await Refresh();
         }
 
@@ -197,7 +197,7 @@ namespace Ovis
                     Fail(Lang.L("Could not stop the Ovis server, so nothing was removed.", "Ovis 서버를 멈추지 못해 아무것도 제거하지 않았습니다."));
                     return;
                 }
-                if ((await Run.Program("herdr", new[] { "plugin", "uninstall", plugin.Id }, Append)).Status != 0)
+                if ((await Run.Program("herdr", new[] { "plugin", "uninstall", plugin.Id }, Append, true, 5 * 60)).Status != 0)
                 {
                     Fail(Lang.L("herdr could not remove the Ovis server.", "herdr가 Ovis 서버를 제거하지 못했습니다."));
                     return;

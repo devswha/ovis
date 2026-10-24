@@ -40,6 +40,9 @@ namespace Ovis
             root.Controls.Add(new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = ContentWidth, Margin = new Padding(0, 14, 0, 14) });
             body = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = Padding.Empty, MinimumSize = new Size(ContentWidth, 160) };
             root.Controls.Add(body);
+            var licences = new LinkLabel { Text = Lang.L("Licences", "라이선스"), AutoSize = true, Margin = new Padding(0, 16, 0, 0), LinkColor = SystemColors.GrayText };
+            licences.LinkClicked += (sender, args) => ShowLicences();
+            root.Controls.Add(licences);
             Controls.Add(root);
 
             logBox = new TextBox
@@ -209,6 +212,21 @@ namespace Ovis
                     ? Lang.L("Tailscale is installed but not signed in. Sign in to it, then check again.", "Tailscale이 설치돼 있지만 로그인되지 않았습니다. 로그인한 뒤 다시 확인해 주세요.")
                     : Lang.L("Install Tailscale on this PC and on your phone, sign in to both with the same account, then check again.", "이 PC와 휴대폰에 Tailscale을 설치하고 같은 계정으로 로그인한 뒤 다시 확인해 주세요.")));
                 if (status.Tailscale != "stopped") body.Controls.Add(Buttons(Button(Lang.L("Get Tailscale", "Tailscale 받기"), () => Open(Links.TailscaleDownload))));
+            }
+        }
+
+        private void ShowLicences()
+        {
+            string notice;
+            using (var stream = typeof(MainForm).Assembly.GetManifestResourceStream("NOTICE.txt"))
+            using (var reader = new System.IO.StreamReader(stream))
+            {
+                notice = reader.ReadToEnd().Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+            }
+            using (var dialog = new Form { Text = Lang.L("Licences", "라이선스"), StartPosition = FormStartPosition.CenterParent, Size = new Size(620, 460), MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, Icon = Icon })
+            {
+                dialog.Controls.Add(new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = MonoFont, Text = notice });
+                dialog.ShowDialog(this);
             }
         }
 
