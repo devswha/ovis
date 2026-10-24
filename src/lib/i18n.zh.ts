@@ -230,6 +230,7 @@ const BASE: Record<string, string> = {
   "Quick replies": "快捷回复",
   "Skills": "Skill",
   "Not sent: send or discard the held input first.": "未发送：请先发送或丢弃保留的输入。",
+  "Enter": "Enter",
   "Queue could not be saved. Keep this tab open or copy the messages before reloading.": "无法保存队列。请保持此标签页打开，或在重新加载前复制这些消息。",
   "Queued messages": "排队的消息",
   "Not confirmed. Check the terminal before sending again.": "未确认。重新发送前请检查终端。",

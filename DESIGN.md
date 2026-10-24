@@ -2619,6 +2619,36 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `^C` → Control C, ⌫ → Backspace, Ctrl → Control, the arrows and page keys), translated with the
   UI; a cap that is a word (Tab, Enter, Home, End) is its own name.
 - The mobile drawer slides over a scrim. Closed visibility removes its controls from the tab order.
+- The terminal's input line carries its name in view (`.terminal-input-label`, "Input line", the
+  key bar toggle's own words, `--fs-chat` in `--text-dim`) above the draft, whose text is
+  `max(--fs-input, --fs-xl)`. It has **Insert** (`.terminal-input-insert`, named "Insert text without
+  Enter") left of Send. Each action is one button: its words above (`.terminal-input-caption`,
+  `--fs-chat`: "Insert text"; "Send", or "Enter" on an empty line) and its `--touch-target` round
+  face below. Send's face is the filled accent; Insert's is outlined on `--bg-elevated` in
+  `--text-dim`, which holds 3:1 against the panel where the `--border` hairline does not; its glyph
+  is lucide's text-cursor-input, Send keeps its arrow. Off (an empty line, disconnected, a send or
+  insert on its way) a face turns to a dashed `--text-dim` outline with dim words, never a fade. A
+  composition says "Finish the word, then insert." instead of sending the preedit. The text goes as
+  the keyboard would type it, with no Enter after it (`insert`, feature `terminal-insert`), and no
+  resize, focus or take-over goes with it. It types one line: herdr reports no paste mode of the
+  program (its attach opens with its own ESC[?2004h whatever the program set), so several lines
+  are never sent as a guessed bracketed paste; the line says "Insert takes one line. Send several
+  lines, or insert them one at a time." and nothing goes. The line clears only on the bridge's
+  `insert-result`, and only the text that was sent; a refusal, a drop or an older PC keeps the
+  text with the note under the line (`.terminal-input-note`, `--fs-chat`), and a clipboard read
+  still waiting says so in the note's dim `.is-pending` form. Korean notes keep each clause whole
+  (no-break spaces inside it, keep-all between). On a touch screen the key bar's **Paste**
+  (`[data-key="paste"]`, lucide clipboard-paste, "Paste into the input line") stands beside the
+  Input line toggle, `--space-1` further from its neighbours than other keys: a tap, never a hold,
+  read from that tap alone and dropped when the line, its caret, a composition, the pane, mode,
+  role, input lease or connection changed before the clipboard answered, even and back again. With
+  the line put away (direct typing) it changes no mode and says "Tap Input line to paste." in the
+  bar's own row (`.key-bar-note`, in place of the other keys for a few seconds, gone on a tap),
+  beside the key it names and never over the terminal's output. No widely used coding-agent app (the
+  Codex and Claude apps, Paseo, T3 Code) was found to establish a precedent for a phone terminal
+  draft with a separate no-Enter insert; agent-of-empires' compose sheet has Insert beside Send but
+  clears its draft on a synchronous boolean, which this design rejects: the draft is cleared on the
+  bridge's acknowledgement, as Send's is, and nothing typed is queued across a disconnect.
 
 ### In-app alert
 - While the app is on screen, a pane that needs input, finishes a turn (by the device's Finished

@@ -32,6 +32,21 @@ export function composerPayload(text: string, bracketedPaste: boolean): string {
   return bracketedPaste ? PASTE_START + body + PASTE_END : body;
 }
 
+/** Why an Insert did not go (SubmitResult's code): the draft stays in the line and says this. */
+export function insertNote(code: string, message: string): string {
+  if (code === "unsupported") return t("Update this PC to insert without Enter. Nothing was sent.");
+  if (code === "read_only") return t("Not inserted: this view only watches the pane.");
+  if (code === "unsafe_multiline") return t("Insert takes one line. Send several lines, or insert them one at a time.");
+  if (code === "insert_too_long") return t("Not inserted: the text is too long for the terminal.");
+  if (code === "secret_prompt") return t("Not inserted: the terminal is asking for a password. Nothing was typed.");
+  if (code === "held_input") return t("Not sent: send or discard the held input first.");
+  if (code === "not_transmitted") return t("Not inserted: the connection dropped before the text left. Try again.");
+  if (code === "insert_timeout") return t("Not inserted: it waited too long behind earlier input, and nothing was typed. Try again.");
+  if (["input_not_ready", "not_attached", "attach_held", "pane_read_failed", "invalid_insert_text"].includes(code)) return t("Not inserted: the terminal is not ready. Nothing was typed.");
+  if (code === "disconnected" || code === "timeout" || code === "insert_failed") return t("Not confirmed: the terminal did not confirm the text. Check it before inserting again.");
+  return t("Not inserted: {message}", { message });
+}
+
 /** Why a composer message did not go (SubmitResult's code): the composer keeps the text and says this. */
 /** The server refused the message before any of it reached the pane: nothing was typed. */
 export function submitNotTyped(code: string): boolean {

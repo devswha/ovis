@@ -658,9 +658,10 @@ export interface PromptAnswer {
  *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | release-size {pane_id} | role {mode}
  *    | pty-ack {pane_id, stream_id, offset} | secret {id, pane_id, prompt, secret}
  *    | watch {pane_id, cols, rows} | unwatch {pane_id} | conversation-watch {pane_id, enabled}
+ *    | insert {id, pane_id, text}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
  *    | pane-status | pane-exited | session-changed | conversation-changed | secret-result
- *    | watch-data | watch-end | error
+ *    | insert-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
  *  pty-data.flow carries a stream_id and cumulative UTF-8 payload offset;
@@ -737,6 +738,17 @@ export type ClientMessage =
    * Older peers ignore it. */
   | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number }
   | { type: "pending-action"; id: number; pane_id: string; pending_id: string; action: "steer" | "discard"; resend_generation?: number }
+  /** the terminal's input line typed into the pane without Enter (feature "terminal-insert"), answered
+   * with an insert-result of the same id once herdr has the bytes. `text` is one line of the draft,
+   * as written: a line break is refused (`unsafe_multiline`), since nothing reports whether the pane's
+   * program takes several lines as one bracketed paste (herdr's attach always opens with its own
+   * ESC[?2004h) and a shell would run each, and an escape (a paste marker included) is refused with
+   * every control byte. The bridge never adds a terminator, a key, a focus, a resize or a take-over
+   * for it. Requires a live interact attachment
+   * the sender is in, and refuses observe, a held or unready pane and a password prompt on screen.
+   * At most 32,768 UTF-16 code units and 128 KiB of UTF-8 (shared/terminal-insert.ts). Never queued
+   * or replayed: a connection that drops settles it as not confirmed, and the draft stays. */
+  | { type: "insert"; id: number; pane_id: string; text: string }
   /** Masked input: revalidate the visible prompt, type literal bytes + Enter immediately.
    * Never queued, retried, sent through agent.prompt, or echoed in a result. */
   | { type: "secret"; id: number; pane_id: string; prompt: string; secret: string }
@@ -793,7 +805,7 @@ export interface ClientConnectionTrace {
 }
 
 /** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert";
 
 export type ServerMessage =
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
@@ -825,6 +837,10 @@ export type ServerMessage =
    * deadline then expired before the message was sent; never a nothing-typed receipt. */
   | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
+  /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
+   * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
+   * may or may not have arrived. Older bridges never send it. */
+  | { type: "insert-result"; id: number; pane_id: string; ok: boolean; code?: string; message?: string }
   /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message. */
   | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: Array<{ id: string; outcome: "sent" | "discarded" }> }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }

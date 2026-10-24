@@ -228,6 +228,7 @@ const BASE: Record<string, string> = {
   "Quick replies": "クイック返信",
   "Skills": "スキル",
   "Not sent: send or discard the held input first.": "未送信: 先に保持した入力を送信するか破棄してください。",
+  "Enter": "Enter",
   "Queue could not be saved. Keep this tab open or copy the messages before reloading.": "キューを保存できませんでした。このタブを開いたままにするか、再読み込みする前にメッセージをコピーしてください。",
   "Queued messages": "キュー内のメッセージ",
   "Not confirmed. Check the terminal before sending again.": "送信を確認できませんでした。再送信する前にターミナルを確認してください。",

@@ -20,6 +20,7 @@ import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { firstMessageFault } from "../../shared/launch-rules.ts";
+import { insertTextProblem } from "../../shared/terminal-insert.ts";
 import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
@@ -1694,7 +1695,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping"], connection: this.connection });
+      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert"], connection: this.connection });
     }, 20);
     this.timers.add(opening);
   }
@@ -1825,6 +1826,24 @@ class DemoSocket extends EventTarget {
       case "secret":
         if (message.id !== undefined && message.pane_id) this.push({ type: "secret-result", id: message.id, pane_id: message.pane_id, ok: false, code: "prompt_changed" });
         break;
+      // the input line typed without Enter: the pretend shell takes it at its prompt and runs nothing
+      // until an Enter is typed; refused as the server refuses, and answered only once it holds the text
+      case "insert": {
+        if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id) {
+          this.push({ type: "error", code: "invalid_insert", message: "id must be an integer and pane_id a string" });
+          break;
+        }
+        const answer = (ok: boolean, code?: string, text?: string) => this.push({ type: "insert-result", id: message.id!, pane_id: message.pane_id!, ok, ...(code ? { code, message: text } : {}) });
+        const problem = insertTextProblem(message.text);
+        if (problem) { answer(false, problem.code, problem.message); break; }
+        if (this.mode === "observe") { answer(false, "read_only", "this connection is in observe mode"); break; }
+        if (!this.attached.has(message.pane_id)) { answer(false, "not_attached", "This connection has no terminal attached for the pane; nothing was typed"); break; }
+        const target = paneOf(message.pane_id);
+        if (!target || target.agent || chats.has(message.pane_id)) { answer(false, "input_not_ready", "The demo agent's terminal takes no inserted text; nothing was typed"); break; }
+        this.typed(message.pane_id, message.text!);
+        answer(true);
+        break;
+      }
       case "submit":
         if (!Number.isSafeInteger(message.id) || !message.pane_id || typeof message.text !== "string" || typeof message.payload !== "string") {
           this.push({ type: "error", code: "invalid_submit", message: "id, pane_id, text and payload are required." });

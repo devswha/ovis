@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type Set
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import type { MachineSession } from "./machineSession.ts";
 import { EMPTY_DRAFT } from "./draft.ts";
-import { composerMessage, composerPayload, submitNote, submitNotTyped } from "./compose.ts";
+import { composerMessage, composerPayload, insertNote, submitNote, submitNotTyped } from "./compose.ts";
 import { afterSend, afterSettled, greetingMemory, rememberGreeting } from "./greeting.ts";
 import { hasModifiers, terminalChord, type StickyModifiers } from "./keys.ts";
 import type { InputRowState } from "./inputRow.ts";
@@ -164,6 +164,26 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     });
   }, [submitRetention]);
 
+  // the input line's Insert: one line typed like the keyboard would, with no Enter after it, and
+  // answered once herdr has it (HerdrSocket.insert). Nothing but the insert frame goes: unlike Send,
+  // it takes no grid back from another device (no resize), and moves no focus
+  const insertTerminalText = useCallback((text: string): false | Promise<true | string> => {
+    const term = termRef.current;
+    const socket = socketRef.current;
+    const pane = paneRef.current;
+    if (!term || !socket || pane === null || secretRef.current !== null) return false;
+    // its text would land beside the held draft: Send or Discard that first
+    if (draftHeldForRef.current === pane) return Promise.resolve(insertNote("held_input", ""));
+    const sent = socket.insert(pane, text);
+    if (sent === null) return false;
+    const releaseInsert = submitRetention?.retain(pane);
+    term.scrollToBottom();
+    return sent.then((result) => (result.ok ? true : insertNote(result.code, result.message))).finally(() => {
+      releaseInsert?.();
+      if (paneRef.current === pane && socketRef.current === socket) releaseRef.current();
+    });
+  }, [submitRetention]);
+
   // a tap into the input line is the user here: the grid is theirs again before they type
   const reassertGrid = useCallback(() => { reassertIfStaleRef.current(); }, []);
 
@@ -204,5 +224,5 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     }
   }, [inputLine, coarse, chatView, directTyping, paneId]);
 
-  return { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, reassertGrid, pressEnter, toggleDirect };
+  return { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect };
 }

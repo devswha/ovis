@@ -89,6 +89,7 @@ export function createCore({ options, devices, usage, usageLogin, TYPED_SETTLE_M
       input: inputFrames.input,
       keys: inputFrames.keys,
       secret: inputFrames.secret,
+      insert: inputFrames.insert,
       submit: pendingFrames.submit,
       "pending-action": pendingFrames["pending-action"],
     },

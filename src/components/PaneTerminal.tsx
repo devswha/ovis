@@ -30,7 +30,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { KeyBar } from "./KeyBar.tsx";
-import { TerminalInput } from "./TerminalInput.tsx";
+import { TerminalInput, type TerminalInputHandle } from "./TerminalInput.tsx";
 import { FindBar } from "./FindBar.tsx";
 import { TerminalViewportTools, type TerminalSearchState } from "./TerminalViewportTools.tsx";
 import { SecretInput } from "./SecretInput.tsx";
@@ -62,6 +62,9 @@ import { useComposerSends } from "../lib/useComposerSends.ts";
 import { usePeekReturn } from "../lib/usePeekReturn.ts";
 import { useChatCallbacks } from "../lib/useChatCallbacks.ts";
 import { useTypedKeys } from "../lib/useTypedKeys.ts";
+
+/** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
+const PASTE_GUIDANCE_MS = 6000;
 
 export interface PaneTerminalProps {
   /** App's content lifetime, including the current finish identity. */
@@ -313,6 +316,9 @@ export function PaneTerminal({
   const lineComposingRef = useRef(false);
   const [lineComposing, setLineComposingState] = useState(false);
   const setLineComposing = useCallback((active: boolean) => { lineComposingRef.current = active; setLineComposingState(active); }, []);
+  // the input line, for the key bar's Paste; and whether a paste of its still waits on the clipboard
+  const lineRef = useRef<TerminalInputHandle | null>(null);
+  const [linePasting, setLinePasting] = useState(false);
   const compositionCommitPendingRef = useRef(false);
   const barKeyRef = useRef<{ key: string; chord: string | null } | null>(null);
   /** set while the composer's Stop types its ESC, so it goes out as a Stop (ClientMessage `input.stop`) */
@@ -624,9 +630,43 @@ export function PaneTerminal({
     socketRef.current?.setMode(role);
   }, [role]);
 
-  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
+  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
 
   const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, paneId, reassertIfStaleRef, setInputError, setModifiers, socketRef, stopKeyRef, tRef, termRef });
+
+  // what a paste into the line is for: this PC's pane on this connection, while it can type there.
+  // Read at the tap and once the clipboard answers (TerminalInput.tsx): any difference drops the paste
+  const pasteTarget = useCallback((): string | null => {
+    const socket = socketRef.current;
+    const pane = paneRef.current;
+    if (!socket || pane === null || !socket.connected || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || !inputLineRef.current) return null;
+    return `${paneStorageId(machineId, pane)}:${socket.inputLease(pane)}`;
+  }, [machineId]);
+
+  // the key bar's Paste goes into the input line, never into the grid: with the line put away
+  // (direct typing), the bar says so beside the Input line key it names, in its own row (never over
+  // the grid's output), and changes nothing, the mode included
+  const [pasteGuidance, setPasteGuidance] = useState(false);
+  const pasteGuidanceTimerRef = useRef<number | null>(null);
+  const dismissPasteGuidance = useCallback(() => {
+    if (pasteGuidanceTimerRef.current !== null) window.clearTimeout(pasteGuidanceTimerRef.current);
+    pasteGuidanceTimerRef.current = null;
+    setPasteGuidance(false);
+  }, []);
+  // the line back, or another pane: the word has nothing left to say
+  useEffect(() => dismissPasteGuidance, [inputLine, paneId, dismissPasteGuidance]);
+  const pasteIntoLine = useCallback(() => {
+    if (!inputLineRef.current) {
+      if (pasteGuidanceTimerRef.current !== null) window.clearTimeout(pasteGuidanceTimerRef.current);
+      setPasteGuidance(true);
+      pasteGuidanceTimerRef.current = window.setTimeout(() => {
+        pasteGuidanceTimerRef.current = null;
+        setPasteGuidance(false);
+      }, PASTE_GUIDANCE_MS);
+      return;
+    }
+    lineRef.current?.paste();
+  }, []);
 
   // While the agent runs, append to its held messages. Each requires an explicit send.
   // a question in Codex's queue leaves the composer alone: Codex keeps working, and a
@@ -1235,12 +1275,13 @@ export function PaneTerminal({
           slot in the chat lens too (a box-less slot there, TerminalInput.css), so switching lenses
           keeps it mounted: a remount would drop what was typed and a send still on its way */}
       {((!chatView && lineSlot) || secretInput) && <div ref={setInputSlot} className={`terminal-input-slot${!chatView && lineSlot ? "" : " is-empty"}`}>
-        {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onFocus={reassertGrid} />)}
+        {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} ref={lineRef} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onInsert={insertTerminalText} pasteTarget={pasteTarget} onPasting={setLinePasting} onFocus={reassertGrid} />)}
       </div>}
       {presented && paneId !== null && !secretActive && !observing && !chatView && <KeyBar disabled={composing || !connected || !inputReady || held || ended} onKey={pressKey}
         holdScope={`${paneStorageId(machineId, paneId)}:${view}`}
         modifiers={modifiers} onToggleModifier={toggleModifier} items={settings.keyBarItems}
-        {...(coarse ? { directTyping, onToggleDirect: toggleDirect, directDisabled: lineComposing } : {})} />}
+        {...(coarse ? { directTyping, onToggleDirect: toggleDirect, directDisabled: lineComposing, onPaste: pasteIntoLine, pasteDisabled: linePasting,
+          note: pasteGuidance ? t("Tap Input line to paste.") : null, onNoteDismiss: dismissPasteGuidance } : {})} />}
     </div>
   );
 }

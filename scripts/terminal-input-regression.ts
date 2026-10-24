@@ -17,6 +17,8 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
   const resizes: any[] = [];
   let acknowledge: (() => void) | undefined;
   let refuse: (() => void) | undefined;
+  // an Insert held here like a submit: the bridge's insert-result goes to the page only when the test says
+  let acknowledgeInsert: (() => void) | undefined;
   let ready: (() => void) | undefined;
   let delayReady = false;
   let refuseConnections = false;
@@ -47,6 +49,9 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
         sent.push(frame);
         acknowledge = () => socket.send(JSON.stringify({ type: "submit-result", id: frame.id, pane_id: frame.pane_id, ok: true }));
         refuse = () => socket.send(JSON.stringify({ type: "submit-result", id: frame.id, pane_id: frame.pane_id, ok: false, code: "agent_blocked", message: "" }));
+      } else if (frame.type === "insert") {
+        sent.push(frame);
+        acknowledgeInsert = () => socket.send(JSON.stringify({ type: "insert-result", id: frame.id, pane_id: frame.pane_id, ok: true }));
       } else if (frame.type === "input") sent.push(frame);
       else if (frame.type === "ping" && holdPings) heldPings.push(String(raw));
       else {
@@ -354,6 +359,33 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await until(async () => !(await page.getByRole("button", { name: "Send to the terminal", exact: true }).isDisabled()));
     assert.equal(await line.inputValue(), "draft 한글 😀", "late ack cannot erase replacement text");
     assert.equal(sent.length, 3);
+
+    // Insert beside Send: the line typed with no Enter, in its own frame, and cleared only on the
+    // bridge's answer; what replaced it meanwhile stays, as after Send
+    const insertButton = page.getByRole("button", { name: "Insert text without Enter", exact: true });
+    assert.equal(await insertButton.isDisabled(), false, "Insert is on with text in the line");
+    await line.fill("");
+    await until(() => insertButton.isDisabled());
+    await line.fill("cd src/lib");
+    sent.length = 0;
+    acknowledgeInsert = undefined;
+    const resizesBeforeInsert = resizes.length;
+    await insertButton.click();
+    await until(() => sent.length === 1 && !!acknowledgeInsert);
+    assert.deepEqual([sent[0].type, sent[0].text, sent[0].pane_id], ["insert", "cd src/lib", sentPane], "Insert sends the line as one insert frame, no Enter");
+    assert.equal(await insertButton.isDisabled(), true, "Insert waits for the answer");
+    assert.equal(await sendButton.isDisabled(), true, "so does Send");
+    assert.equal(await line.inputValue(), "cd src/lib", "the line keeps its text until the bridge answers");
+    await line.fill("");
+    await line.fill("cd src/components");
+    acknowledgeInsert!();
+    await until(async () => !(await insertButton.isDisabled()));
+    assert.equal(await line.inputValue(), "cd src/components", "a late insert acknowledgement cannot erase replacement text");
+    assert.equal(sent.length, 1, "nothing but the insert frame went: no input, no submit, no Enter");
+    assert.equal(resizes.length, resizesBeforeInsert, "Insert takes no grid back: no resize went with it");
+    await line.fill("");
+    sent.length = 0;
+    acknowledgeInsert = undefined;
 
     await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Shortcuts");
