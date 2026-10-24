@@ -1551,13 +1551,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         // transcript. A scroll still on its way counts from now; one already shown stops following now.
         const press = scrollbarPress.current;
         const dragged = press !== null && event.type === "pointerup" && event.clientY !== press.y;
-        if (node !== null && node.scrollTop < lastScrollTop.current) scrollInputAt.current = Math.max(scrollInputAt.current, dragged ? performance.now() : pointerDragAt.current);
-        else if (node !== null && dragged && press.movedUp && stickToBottom.current && node.scrollHeight - node.clientHeight - node.scrollTop > READER_ALLOWANCE_PX) {
-          pagingAway.current = true;
-          dropPendingListScroll(timeline.current);
+        if (node !== null && node.scrollTop < lastScrollTop.current) {
+          scrollInputAt.current = Math.max(scrollInputAt.current, dragged ? performance.now() : pointerDragAt.current);
           // the reader dragged the thumb away: a local send already on its way no longer takes them to the end
+          if (dragged) navigated();
+        } else if (node !== null && dragged && press.movedUp && node.scrollHeight - node.clientHeight - node.scrollTop > READER_ALLOWANCE_PX) {
+          // however far the drag went, and whether or not the layout allowance already stopped following
           navigated();
-          onScrollRef.current();
+          if (stickToBottom.current) {
+            pagingAway.current = true;
+            dropPendingListScroll(timeline.current);
+            onScrollRef.current();
+          }
         }
         pointer = null; pointerDragAt.current = -Infinity; scrollbarPress.current = null; return;
       }
