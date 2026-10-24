@@ -42,10 +42,12 @@ jobs:
         name: Choose the Linux runner
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
           CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
+          MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
       - id: filter
         env:

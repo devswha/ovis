@@ -81,14 +81,17 @@ final class Model: ObservableObject {
 
     func restart() async {
         retryRestarts = true
+        log = []
         phase = .working(L("Restarting…", "다시 시작하는 중…"))
-        if await herdrRunning() {
-            // the actions' output is in the log already: a failure only names which one stopped
-            guard await run(Paths.herdr, ["plugin", "action", "invoke", "\(pluginID).stop"], timeout: 30, onLine: appendLine).status == 0 else {
+        if await herdrRunning(), let root = pluginRoot {
+            // `herdr plugin action invoke` only queues the action, so a start invoked right after a stop
+            // finds the old server still up and fails: run them here and wait for each, with the locale
+            // the login item gives herdr. The output is in the log: a failure only names which one stopped.
+            guard await run(Paths.bun, ["\(root)/scripts/plugin.ts", "stop"], env: ["LC_CTYPE": "UTF-8"], timeout: 60, onLine: appendLine).status == 0 else {
                 fail(L("Could not stop the Ovis server.", "Ovis 서버를 멈추지 못했습니다."))
                 return
             }
-            guard await run(Paths.herdr, ["plugin", "action", "invoke", "\(pluginID).start"], timeout: 30, onLine: appendLine).status == 0 else {
+            guard await run(Paths.bun, ["\(root)/scripts/plugin.ts", "start"], env: ["LC_CTYPE": "UTF-8"], timeout: 60, onLine: appendLine).status == 0 else {
                 fail(L("Could not start the Ovis server.", "Ovis 서버를 시작하지 못했습니다."))
                 return
             }
@@ -119,7 +122,10 @@ final class Model: ObservableObject {
         log = []
         phase = .working(L("Removing…", "제거하는 중…"))
         let phoneURL = status?.phoneURL
-        _ = await run(Paths.herdr, ["plugin", "action", "invoke", "\(pluginID).stop"], onLine: appendLine)
+        // the stop has to end before the uninstall removes the plugin's files: run it here, not as a queued action
+        if let root = pluginRoot {
+            _ = await run(Paths.bun, ["\(root)/scripts/plugin.ts", "stop"], env: ["LC_CTYPE": "UTF-8"], timeout: 60, onLine: appendLine)
+        }
         _ = await run(Paths.herdr, ["plugin", "uninstall", pluginID], onLine: appendLine)
         if let phoneURL, let tailscale = Paths.tailscale {
             _ = await run(tailscale, ["serve", "--https=\(phoneURL.port ?? 443)", "off"], onLine: appendLine)

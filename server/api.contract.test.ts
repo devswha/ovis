@@ -41,8 +41,11 @@ import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-
 let server: { port: number; stop: () => void };
 const stateDir = mkdtempSync(join(tmpdir(), "ovis-contract-"));
 
-beforeAll(() => {
-  server = createServer({ port: 0, stateDir, alertTiming: { short: 0, long: 0, longTurn: 0 }, pushLoopbackHttp: true });
+beforeAll(async () => {
+  const started = createServer({ port: 0, stateDir, alertTiming: { short: 0, long: 0, longTurn: 0 }, pushLoopbackHttp: true });
+  server = started;
+  // herdr's events are heard from here on: a workspace a test creates is pushed as session-changed
+  await started.statusReady;
 });
 
 afterAll(() => {
@@ -1591,9 +1594,12 @@ describe("workspace and discovery endpoints", () => {
   }, 20_000);
 
   it("pushes session-changed when POST /api/workspace/close answers, not after the collector's debounce", async () => {
-    const closing = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-close-push" });
+    // connected before the creation: its frame comes from the collector, debounced, and on a busy PC
+    // it could go out before a socket connected afterwards subscribed, which then waited in vain
     const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
+    let closing: Awaited<ReturnType<typeof workspaceCreate>> | null = null;
     try {
+      closing = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-close-push" });
       // the creation's own frame, debounced, is not the close's
       await socket.waitFor((frame) => frame.type === "session-changed", "session-changed after create", 5_000);
       const before = new Set(socket.seen);
@@ -1608,7 +1614,7 @@ describe("workspace and discovery endpoints", () => {
       expect(await changed - answered).toBeLessThan(250);
     } finally {
       socket.close();
-      await herdrRpc("workspace.close", { workspace_id: closing.workspace.workspace_id }).catch(() => undefined);
+      if (closing) await herdrRpc("workspace.close", { workspace_id: closing.workspace.workspace_id }).catch(() => undefined);
     }
   }, 20_000);
 

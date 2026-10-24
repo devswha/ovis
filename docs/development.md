@@ -542,9 +542,10 @@ scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed fro
 tree matches the checkout and the SHA-256 matches; otherwise that install runs the Node sidecar.
 A release without them gets them from **Actions → Attach the Rust PTY host** with its tag. Then it
 attaches the signed Ovis for Mac `Ovis.dmg` to the release, or skips that with a notice while the
-signing secrets are unset ([app/mac/README.md](../app/mac/README.md#releases)); the release becomes
-GitHub's latest only once it has that DMG. A red `mac-dmg` job leaves the release published: run
-**Actions → Mac app** for its tag instead of releasing again.
+signing secrets are unset ([app/mac/README.md](../app/mac/README.md#releases)), and Ovis for Windows'
+`Ovis.exe` ([app/windows/README.md](../app/windows/README.md#releases)); the release becomes GitHub's
+latest only once it has both. A red `mac-dmg` or `windows-app` job leaves the release published: run
+**Actions → Mac app** or **Actions → Windows app** for its tag instead of releasing again.
 Do not push release tags by hand: installed updaters read Git tags directly, so a tag is
 visible to them even without a GitHub release. Existing tags cannot be reused; fix a
 published version with a new patch release. If publishing fails after a tag was created,
@@ -612,6 +613,59 @@ dependencies. Keep each PR focused on one change. Squash merge it after required
 delete its remote branch after merging only when dependent work is preserved. There is no permanent
 `develop` branch. Release metadata changes also go through a PR.
 
+### Stored-format changes
+
+These rules bind the next PR that changes the structure of a store this app owns: a browser record
+(an `ovis:` key in `localStorage`, such as `ovis:settings` or `ovis:themes`) or a bridge document in the
+state directory (`preferences.json`, `devices.json` and the others beside them). Renaming, moving,
+splitting or re-encoding a field, or changing what a stored value means, is structural. So is adding a field to a record an older
+writer rewrites whole: an old tab's next unrelated save writes the record back without the field
+it does not know, and erases it. Only an addition an older writer cannot erase, such as a value
+kept in its own key or document, is not structural and needs none of this.
+
+Most stores carry no schema version today. What follows is what the format-changing PR has to
+bring, not a description of what every store already does. The `revision` in `preferences.json`
+orders writes; it is not a schema version and says nothing about whether a reader understands
+the document. The layout check in [`server/session-history.ts`](../server/session-history.ts)
+validates a native agent transcript the bridge only reads; it is not a bridge-store migration and
+no precedent for one.
+
+The PR description names the store's owner (the key or file, and the module that writes it), the
+old and the new shape, which releases read and which write each shape (and what the oldest reader
+still running does with the new one), and the HTTP or WebSocket contract that carries the store,
+or that none does. Then the change keeps these rules:
+
+- **Tabs already open keep their old code.** An old tab that saves an unrelated setting after the
+  new code wrote must not erase the new shape. Already in place for the theme pair: it lives in
+  its own key, and the main record keeps the legacy mirrors an old sanitizer reads (`saveSettings`
+  in [`src/lib/settings.ts`](../src/lib/settings.ts), old code pinned in
+  [`settings.legacy-fixture.ts`](../src/lib/settings.legacy-fixture.ts)).
+- **Migrate passively.** A browser that reads an old shared document derives the new shape into
+  its own state and advances its baseline to it. It never sends a corrective PUT that writes its
+  interpretation back, and a value it cannot read stays the other browsers'. Already in place for
+  the theme sides (`takePreferences` in [`src/lib/preferencesSync.ts`](../src/lib/preferencesSync.ts)).
+- **Never write over data too new to read.** A reader that finds a structural version it does not
+  know keeps the bytes as they are and refuses to write that store. It does not treat the unknown
+  version as absent, and does not sanitize the document to defaults and save them over it.
+- **Devices fail closed.** A `devices.json` that is damaged or too new keeps the gate closed and
+  the registry unwritable. It is never a first installation or an empty registry, and nothing
+  reopens pairing. [`server/devices.ts`](../server/devices.ts) already does this for a damaged
+  file (`error`, `gated`, `assertWritable`); a too-new version must take the same path.
+- **Rollback restores code, not data.** The update supervisor restores the previous release when
+  a candidate bridge fails its startup health check
+  ([`server/supervisor.ts`](../server/supervisor.ts), [app updates](app-updates.md#boundaries)).
+  Both releases share one state directory, so this does not undo a rewrite the candidate already
+  made, and a later manual downgrade meets the new shape too. Make old readers safe before the new
+  shape is written: ship the reading side or the too-new refusal in a release before the one that
+  writes, or keep writing a shape the previous release reads.
+
+The PR's tests, on `mkdtempSync` state directories or a stand-in `localStorage` and event-driven,
+cover: an old-shape fixture loading into the new shape; an old tab's unrelated save after the new
+code wrote; old and new readers and writers side by side, each keeping the other's values with no
+corrective write; a too-new document read without being written (its bytes unchanged after a
+write is refused, and for devices the gate still closed); and a failed activation, where the
+previous release serves again and reads, or refuses, what the candidate left on disk.
+
 ### Coordinated work
 
 For coordinated work, record one small task entry in the existing PR/issue or another single,
@@ -671,7 +725,11 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   `scripts/ci-browser.sh` (`BROWSER_SCRIPTS` picks from it, `BROWSER_EXCLUDE` leaves scripts out,
   and a name the list does not hold is an error). `scripts/pages-gate.test.ts` fails if the two
   jobs together do not run that list exactly once. A new browser script therefore only needs its
-  `run_script` line in `scripts/ci-browser.sh`.
+  `run_script` line in `scripts/ci-browser.sh`. `scripts/ci-browser.test.ts` fails if a
+  `*-regression.ts` or `*-browser-qa.ts` script is neither run by that list (itself, or through a
+  script that imports or spawns it) nor named in its list of scripts CI does not run, and if the
+  list names a script that does not exist; it pins no count, so PRs that add scripts do not
+  conflict on it.
 
 `bun run check browser` and `bun run check full` still run the serial lane, `scripts/ci-browser.sh`
 (`BROWSER_PARALLEL=1` hands it to the parallel runner).
@@ -726,6 +784,13 @@ and `release.yml` stay on `ubuntu-24.04` unless the variable holds labels. The v
 - in `pages.yml`: the site build and the deploy after successful same-repository main push CI,
   or on a manual dispatch with reusable CI validation;
 - in `release.yml`: the preflight and publish jobs.
+
+A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over
+`CI_SELF_HOSTED_LABELS` when it is set: `["self-hosted","self-hosted-ovis-main"]` sends main's Linux
+jobs to the runners `run.sh --reserved` keeps for them, so a merge's CI does not queue behind pull
+request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTED_LABELS` set to
+`"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
+or main's jobs wait for one.
 
 Detect changes, the Integration and browser summary, the Windows and macOS jobs,
 `remote-bundles.yml` and `windows-install.yml` always stay GitHub-hosted.

@@ -573,7 +573,8 @@ export function createServer(
   return {
     port: server.port ?? 0,
     hostname,
-    statusReady: collector.ready,
+    // both subscriptions live: a test may create a workspace and wait for its session-changed
+    statusReady: Promise.all([collector.ready, collector.structureReady]).then(() => undefined),
     /** a create request's first message for a pane's agent, as the create routes queue it (server/core/pending.ts); for tests that run no agent */
     queueFirstMessage,
     alertsSettled: () => push.settled(),

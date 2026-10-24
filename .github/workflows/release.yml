@@ -76,6 +76,13 @@ jobs:
           # shellcheck disable=SC2016 # JavaScript, not shell
           test "$(bun -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$RUNNER_TEMP/pty-sidecar/ovis-pty-sidecar.json")" = "$RELEASE_VERSION"
           gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP"/pty-sidecar/* --target "$GITHUB_SHA" --title "Ovis v$RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
+  windows-app:
+    needs: publish
+    uses: ./.github/workflows/windows-app.yml
+    with:
+      tag: v${{ inputs.version }}
+    permissions:
+      contents: write
   mac-dmg:
     needs: publish
     uses: ./.github/workflows/mac-dmg.yml

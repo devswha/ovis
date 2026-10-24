@@ -198,8 +198,13 @@ What is there:
   built from this checkout's client, into `app/www` for Capacitor to copy.
 - `app/ios/App/App/HerdrBridgeViewController.swift`: a Capacitor view controller that opens the
   chosen PC as the WebView's first page (`instanceDescriptor().serverURL`). It also lets the
-  PC's whole host stay in the app and shows `error.html` when the first load fails. The
-  `HerdrShell` plugin (`HerdrShellPlugin.swift`) opens, forgets and leaves PCs. Opening or
+  PC's whole host stay in the app and shows `error.html` when the first load fails. Until the
+  PC answers, a native cover says which PC is opening and offers Change PC; when a PC
+  sends no answer within 20 seconds, the cover itself says so, with Try again and Change PC, and
+  for a Tailscale address that Tailscale may be off on the phone (WebKit alone waits a minute or
+  more, which is what a phone with Tailscale off sees for a `.ts.net` address, and while that
+  connection hangs it did not paint the error page either). When a Tailscale address fails to
+  load, `error.html` (on Android too) adds the same note. The `HerdrShell` plugin (`HerdrShellPlugin.swift`) opens, forgets and leaves PCs. Opening or
   leaving one builds a fresh view controller, so the next page is again a first load, and the old
   one goes with its web view. `@capacitor/barcode-scanner` kept every old one alive (its scanner
   manager holds the view controller, which holds the bridge and the plugin), so
