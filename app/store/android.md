@@ -57,7 +57,8 @@ test build has backups off and the error page reasons):
 git switch main && git pull
 bun install && (cd app && bun install)
 cd app && bun run build:web && bunx cap sync android
-cd android && OVIS_UPLOAD_PROPERTIES=~/.config/ovis-android/upload.properties ./gradlew bundleRelease
+cd android && OVIS_GOOGLE_SERVICES=~/.config/ovis-push/google-services.json \
+  OVIS_UPLOAD_PROPERTIES=~/.config/ovis-android/upload.properties ./gradlew bundleRelease   # without OVIS_GOOGLE_SERVICES the bundle has no push
 # app/android/app/build/outputs/bundle/release/app-release.aab
 keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   # shows your upload key
 ```
