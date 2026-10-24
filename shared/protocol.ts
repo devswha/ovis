@@ -412,7 +412,7 @@ export interface ConversationMetadata {
   context?: { used: number; window: number | null };
 }
 
-export type { OmoTask, OmoRunNode, OmoRun, OmoActivity } from "./tasks.ts";
+export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
 
 export type { PlanStep, PanePlan } from "./plans.ts";
 

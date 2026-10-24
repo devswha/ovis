@@ -23,6 +23,7 @@ import type {
   MoveTabRequest,
   TabMoved,
   OmoActivity,
+  PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
   PairedDevice,
   PairingCode,
@@ -813,6 +814,17 @@ export async function fetchPaneOmoActivity(paneId: string, machineId = "local"):
   const activity = await getJson<Partial<OmoActivity>>(machinePath(machineId, `pane/omo-tasks?pane_id=${encodeURIComponent(paneId)}`));
   // a bridge from before workflows answers tasks only
   return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null };
+}
+
+/**
+ * GET /api/pane/background-agent: what a running Claude Code subagent's own transcript holds now,
+ * read-only and bounded (its dispatch prompt, its prose and the tools it called), for the
+ * background-task list's detail sheet. The PC resolves the session and the files: the caller
+ * names a pane and the agent id the list gave it, nothing else.
+ */
+export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
+  const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
+  return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */

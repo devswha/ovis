@@ -1780,6 +1780,40 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   line; a waiting step's name is dim), then a **Background tasks** heading over the tasks list when
   the pane has tasks to show. The steps are read again every few seconds while the list is open.
 
+### Running background task detail (`.bg-task-open`, `.bg-agent-detail`)
+- In the composer's background-task list, a running task's row is a disclosure button (the row's
+  padding and hover tint, a dim caret at its end, `aria-haspopup="dialog"`, `aria-expanded` while
+  its detail is open; `--touch-target` tall under a finger). Ended rows stay plain: what ended has
+  the chat's task card.
+- It opens one `.modal` (a sheet on a phone, 640px on a desktop) over the list, which stays open
+  under the scrim: the working-tint status glyph, the task's title over its dim `agent · model`
+  line (selectable, a phone's sheet header included), **Refresh** and **Close** as icon buttons.
+  The sheet is as tall as `.modal`'s cap from the first frame, so loading, a note and the
+  transcript fill the same frame and the title and buttons never move as a read lands. The body
+  alone scrolls: a **Prompt** heading over the dispatch text, then **Work so far**, the agent's
+  prose as it wrote it (`pre-wrap`, in a `52ch` measure) and each tool call as a mono name chip
+  (`--chip-h` pill, hairline) with its arguments in dim mono after it, wrapping anywhere. Text
+  only: nothing of the transcript renders as Markdown, loads an image or links out.
+- It is read at length, so its type is at reading floors above the app's list scale: on a desktop
+  the prose at `--fs-chat` and every other line at `--fs-md` or more; on a phone the prose and
+  title at `--fs-xl` and every other line at `--fs-chat`.
+- Read when opened and on Refresh, never polled; Refresh rests while a read is out, and the
+  content it had stays. Each note says what happened and then, on a line of its own, what to do
+  about it, never an empty transcript: loading, nothing recorded yet, the middle left out (over the
+  read budget), records left out (torn or oversized), a read that failed (its own words in the
+  blocked tint and `--danger-tint`, with the content as it last read under it when the failure
+  passes), the agent gone from the session, the pane moved to another session, the PC
+  disconnected. The sheet keeps to the Claude session its first read named: a read that finds the
+  agent gone, the pane on another session, or an answer of another session clears what it showed.
+  A Claude background command, an OmO task and a PC whose bridge is from before the route open the
+  same sheet with the note that says so, and ask the PC for nothing.
+- Escape, the scrim and a phone's Back close it, and the focus goes back to the row. An answer to a
+  read of a sheet since closed, or of a pane since left, is dropped. The design keeps the
+  app's own task disclosure (the chat's ended-task card and this list) rather than copying a
+  coding-agent app's live view: none of the Codex, Claude, Paseo or T3 Code apps shows a running
+  subagent's transcript; agent-of-empires's background-agents panel (MIT) suggested the
+  interaction of opening prompt, tool and result from the row, and nothing of it is copied.
+
 ### Background tasks ended (`.chat-task-results`)
 - Where OmO reports background tasks that ended, or a Claude Code subagent ends (its
   `<task-notification>`, drawn once however many records carry it), the transcript shows one `--bg-elevated` card

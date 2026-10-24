@@ -14,7 +14,7 @@
  * a chat gets a demo answer.
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
@@ -236,6 +236,35 @@ function layOutRoster(): void {
 }
 layOutRoster();
 for (const pane of snapshot().panes) if (keyOfPane.get(pane.pane_id) === "api") Object.assign(pane, { plan: { done: 1, total: planSteps.length, current: "Adding the replay metric" } });
+
+/**
+ * The flaky-retry pane's background work (GET /api/pane/omo-tasks): a Claude subagent still
+ * reviewing, a background command, and a subagent that ended. The subagent's own transcript
+ * (GET /api/pane/background-agent) grows by one fictional record each time it is read, so Refresh
+ * has something new to show; the command has no transcript to open, as on a real PC.
+ */
+const minutesAgo = (minutes: number, seconds = 0): string => new Date(Date.now() - minutes * 60_000 - seconds * 1000).toISOString();
+const BACKGROUND_TASKS: OmoTask[] = [
+  { id: "demo-review", title: "Review the retry test for timing assumptions", category: "reviewer", model: "claude-opus-5-5", status: "running", started_at: minutesAgo(4), ended_at: null, turns: 3, tool_calls: 4, tokens: 48_120, detail_kind: "claude-subagent" },
+  { id: "demo-flaky-run", title: "Run the retry test twenty times", category: "shell", model: null, status: "running", started_at: minutesAgo(1, 30), ended_at: null, turns: null, tool_calls: null, tokens: null, detail_kind: null },
+  { id: "demo-lexer", title: "Check the lexer for the same race", category: "explorer", model: "claude-opus-5-5", status: "completed", started_at: minutesAgo(25), ended_at: minutesAgo(20), turns: 2, tool_calls: 3, tokens: 21_400, detail_kind: "claude-subagent" },
+];
+for (const pane of snapshot().panes) if (keyOfPane.get(pane.pane_id) === "flaky") Object.assign(pane, { background_tasks: 2 });
+const BACKGROUND_PROMPT = "Review test/retry.test.ts for assumptions about timing: the test fails one run in ten on CI. Report what races, and propose the smallest change that makes it deterministic.";
+const BACKGROUND_EVENTS: PaneBackgroundAgentDetail["events"] = [
+  { kind: "text", text: "Reading the test and the retry helper it exercises first.", at: minutesAgo(3, 55) },
+  { kind: "tool", text: 'Read {"file_path":"test/retry.test.ts"}', at: minutesAgo(3, 54) },
+  { kind: "tool", text: 'Read {"file_path":"src/retry.ts"}', at: minutesAgo(3, 51) },
+  { kind: "text", text: "The test waits 50 ms for the second attempt, but the backoff is 40 ms plus jitter of up to 20 ms: one run in ten the retry lands after the assertion.\n\nChecking whether the jitter can be injected.", at: minutesAgo(3, 30) },
+  { kind: "tool", text: 'Grep {"pattern":"jitter","path":"src","output_mode":"content"}', at: minutesAgo(3, 29) },
+];
+const BACKGROUND_MORE: PaneBackgroundAgentDetail["events"] = [
+  { kind: "text", text: "The jitter comes from Math.random inside backoff(): injecting a clock and a random source makes the test deterministic without touching the retry policy.", at: minutesAgo(3, 10) },
+  { kind: "tool", text: 'Edit {"file_path":"src/retry.ts","old_string":"const jitter = Math.random() * 20;","new_string":"const jitter = random() * 20;"}', at: minutesAgo(3, 5) },
+  { kind: "tool", text: 'Bash {"command":"bun test test/retry.test.ts","description":"Run the retry test once"}', at: minutesAgo(2, 50) },
+  { kind: "text", text: "Passing with the injected source. Running it twenty times in the background to be sure.", at: minutesAgo(2, 40) },
+];
+let backgroundReads = 0;
 
 // The last workspace can be closed in a demo, so creation keeps templates independent of it.
 const newPaneTemplate = structuredClone(snapshot().panes[0]!);
@@ -1191,7 +1220,26 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (request.jump !== false && result.match) redrawHistory(target);
     return json(result);
   }
-  if (path === "/api/pane/omo-tasks") return json({ tasks: [], runs: [] });
+  if (path === "/api/pane/omo-tasks") return json({ tasks: keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS : [], runs: [], server_time: new Date().toISOString() } satisfies OmoActivity);
+  if (path === "/api/pane/background-agent") {
+    if (method !== "GET") return error("method_not_allowed", "use GET", 400);
+    if (!paneId) return error("missing_pane_id", "pane_id query parameter is required", 400);
+    const agentId = query.get("agent_id") ?? "";
+    if (agentId === "") return error("missing_agent_id", "agent_id query parameter is required", 400);
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(agentId)) return error("invalid_agent_id", "agent_id must be a word of letters, digits, - and _, at most 128 characters", 400);
+    if (!paneOf(paneId)) return error("pane_not_found", "pane not found", 404);
+    if (agentOf(paneId) !== "claude") return error("background_detail_unsupported", "details can be read for a Claude Code subagent only", 501);
+    const task = keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS.find((candidate) => candidate.id === agentId) : undefined;
+    if (task === undefined) return error("background_agent_not_found", "no such subagent in the pane's session", 404);
+    if (task.detail_kind === null) return error("background_detail_unsupported", "a background command's output is not read", 501);
+    // the agent writes on between reads: each read finds one more record, up to what it has
+    backgroundReads += 1;
+    const events = [...BACKGROUND_EVENTS, ...BACKGROUND_MORE.slice(0, Math.min(backgroundReads - 1, BACKGROUND_MORE.length))];
+    return json({
+      agent_id: task.id, session_id: "demo-session-flaky", title: task.title, agent: task.category, prompt: BACKGROUND_PROMPT, events,
+      truncated: false, incomplete: false, limits: { max_read_bytes: 256 * 1024, max_output_bytes: 128 * 1024, max_events: 128 }, server_time: new Date().toISOString(),
+    } satisfies PaneBackgroundAgentDetail);
+  }
   if (path === "/api/pane/files") {
     const q = (query.get("q") ?? "").toLowerCase();
     return json({ files: DEMO_FILES.filter((file) => file.toLowerCase().includes(q)).slice(0, Number(query.get("limit") ?? 20)) });
