@@ -1,3 +1,5 @@
+import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
+
 /** Drafts and in-flight sends belong to their pane, even while its composer is unmounted. */
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 interface Draft { text: string; sending: boolean }
@@ -21,7 +23,8 @@ export class ComposerDraftStore {
   /** one wake-up per draft at the end of another tab's lease: an abandoned lease ends silently */
   private expiries = new Map<string, unknown>();
   constructor(
-    private storage: () => DraftStorage = () => window.localStorage,
+    // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
+    private storage: () => DraftStorage = () => paneLifetimes.paneStorage,
     private schedule: (run: () => void, ms: number) => unknown = (run, ms) => setTimeout(run, ms),
   ) {}
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -121,6 +124,16 @@ export class ComposerDraftStore {
     this.set(to, text);
     this.set(from, "");
   }
+  /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
+  forget(machineId: string): void {
+    for (const key of [...this.drafts.keys()]) {
+      if (paneStateKey(key)?.machineId !== machineId) continue;
+      this.drafts.delete(key);
+      this.saved.delete(key);
+      this.unsaved.delete(key);
+    }
+    this.notify();
+  }
   /** Remove only the acknowledged prefix; edits within the sent text stay unsent. */
   settle(key: string, sent: string): { text: string; edited: boolean } {
     this.refresh(key);
@@ -134,6 +147,7 @@ export class ComposerDraftStore {
   }
 }
 export const composerDrafts = new ComposerDraftStore();
+paneLifetimes.onRetire((machineId) => composerDrafts.forget(machineId));
 /**
  * The draft a `storage` event from another tab concerns, or null. A send is begun and ended as
  * well as edited, so both keys reconcile the one draft: a sending key names it after its prefix,
