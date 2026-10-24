@@ -45,6 +45,8 @@ describe("Claude Code's bare /goal", () => {
       expect(prompt?.body).toMatch(/^running \d+s · 0 tokens$/);
       expect(prompt?.options.map((option) => option.label)).toEqual(["Close"]);
       expect(answerKeys(prompt!, { option_index: 0 })).toEqual([{ keys: ["esc"] }]);
+      // the bridge's own words go as keys the client translates (#1482); the goal and its status are Claude's
+      expect(prompt?.own_text).toEqual({ title: { key: "Goal active" }, labels: { 0: { key: "Close" } } });
     });
 
     test(`reads the goal dialog without a goal at ${width} columns`, () => {
@@ -54,6 +56,7 @@ describe("Claude Code's bare /goal", () => {
       expect(prompt?.body).toBeNull();
       expect(prompt?.options.map((option) => option.label)).toEqual(["Close"]);
       expect(answerKeys(prompt!, { option_index: 0 })).toEqual([{ keys: ["esc"] }]);
+      expect(prompt?.own_text).toEqual({ title: { key: "Goal" }, question: { key: "No goal set" }, labels: { 0: { key: "Close" } } });
     });
   }
 

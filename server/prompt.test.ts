@@ -2715,6 +2715,8 @@ Which approach?
     const prompt = parseFallbackPrompt("gjc", " config.json already exists.\n Overwrite it? (y/n)\n Press Enter to keep it, or Esc to abort\n");
     expect(prompt.question).toBe("Overwrite it? (y/n)");
     expect(labels(prompt)).toEqual(["Yes (y)", "No (n)", "Enter", "Esc"]);
+    // the card's title, Yes and No are the bridge's own words, as keys (#1482); the question is the screen's, and key names stay
+    expect(prompt.own_text).toEqual({ title: { key: "Waiting for input" }, labels: { 0: { key: "Yes (y)" }, 1: { key: "No (n)" } } });
     expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ text: "y" }]);
     expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ text: "n" }]);
     expect(labels(parseFallbackPrompt("gjc", "Delete the branch? [Y/n] "))).toEqual(["Yes (y)", "No (n)", "Enter", "Esc"]);
