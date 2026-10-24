@@ -200,6 +200,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "{question}. More levels are listed in the terminal.": "{question}。ターミナルにはほかにもレベルがあります。",
   "{answered}/{total} answered": "{answered}/{total} 回答済み",
   "Comment: {comment}": "コメント: {comment}",
+  "{notice}\nComment: {comment}": "{notice}\nコメント: {comment}",
   "Type your answer": "回答を入力",
   "Type your own answer": "回答を直接入力",
   "Yes (y)": "はい (y)",

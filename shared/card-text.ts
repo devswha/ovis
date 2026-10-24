@@ -46,6 +46,7 @@ const CARD_TEXT = [
   "{question}. More levels are listed in the terminal.",
   "{answered}/{total} answered",
   "Comment: {comment}",
+  "{notice}\nComment: {comment}",
   "Type your answer",
   "Type your own answer",
   "Submit",

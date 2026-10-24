@@ -1836,6 +1836,15 @@ ${rows}
     expect(answerKeys(onRow!, { option_index: 0 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
     expect(answerKeys(onRow!, { option_index: 1 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
     expect(answerKeys(onRow!, { custom_text: "급해요" })).toEqual([{ keys: ["down"] }, { text: "급해요" }, { keys: ["enter"] }]);
+
+    // the label before a typed comment is the bridge's, as a key (#1482); the comment and omo's notice are not
+    const typed = (field: string) => parseInteractivePrompt("pi", review("   표시 위치: 설정 > 음성 입력 (추천)\n   월 한도: 월 $5 한도", "enter submit  ↑ review answers  shift+tab back  tab next question  esc back").replace(">\n Submit", field));
+    const commented = typed("> 급해요\n Submit");
+    expect(commented?.body).toBe("Comment: 급해요");
+    expect(commented?.own_text?.body).toEqual({ key: "Comment: {comment}", vars: { comment: "급해요" } });
+    const noticed = typed("> 급해요\n ! 1 answer was changed\n Submit");
+    expect(noticed?.body).toBe("1 answer was changed\nComment: 급해요");
+    expect(noticed?.own_text?.body).toEqual({ key: "{notice}\nComment: {comment}", vars: { notice: "1 answer was changed", comment: "급해요" } });
   });
 
   test("joins what a narrow pane wraps, the tab bar, the hint and words cut at the edge", () => {

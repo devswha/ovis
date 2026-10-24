@@ -384,8 +384,8 @@ function parseOmoReview(screen: string, ask: OmoAsk | null, trusted: boolean): P
   return finishPrompt("omo", {
     // a menu: a number typed in the chat submits the whole form, so it waits for Confirm
     kind: "menu", title: own("Review your answers"), question: submitAt < 0 ? own("Submit your answers?") : after.slice(submitAt),
-    // the notice is omo's own words: with one, the comment's line stays as the bridge wrote it
-    body: comment ? (notice ? `${notice}\nComment: ${comment}` : own("Comment: {comment}", { comment })) : notice || null,
+    // the notice and the comment are omo's and the user's own words, the label before the comment the bridge's
+    body: comment ? (notice ? own("{notice}\nComment: {comment}", { notice, comment }) : own("Comment: {comment}", { comment })) : notice || null,
     options: [...choices.map(({ label }) => ({ label, description: null })), { label: commentLabel, description: null }],
     multi_select: false, custom_option_index: choices.length, steps: omoSteps(tabs, known),
   }, {

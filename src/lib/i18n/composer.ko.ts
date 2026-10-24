@@ -200,6 +200,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "{question}. More levels are listed in the terminal.": "{question}. 터미널에 수준이 더 있습니다.",
   "{answered}/{total} answered": "{answered}/{total} 답함",
   "Comment: {comment}": "코멘트: {comment}",
+  "{notice}\nComment: {comment}": "{notice}\n코멘트: {comment}",
   "Type your answer": "답 입력",
   "Type your own answer": "직접 답 입력",
   "Yes (y)": "예 (y)",

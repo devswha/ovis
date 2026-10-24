@@ -76,7 +76,7 @@ function labelMapUses(): [key: string, file: string][] {
     ...grab("lib/usage.ts", "WINDOW_LABEL", value),
     ...grab("lib/toolVerbs.ts", "VERB_LABEL", value),
     // the card text the bridge writes itself, which PromptCard shows by its key (lib/promptText.ts)
-    ...grab("../shared/card-text.ts", "CARD_TEXT", /^\s+"([^"]+)",$/gm),
+    ...grab("../shared/card-text.ts", "CARD_TEXT", /^\s+"([^"]+)",$/gm).map(([key, file]): [string, string] => [key.replaceAll("\\n", "\n"), file]),
   ];
 }
 

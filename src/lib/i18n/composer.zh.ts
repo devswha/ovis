@@ -200,6 +200,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "{question}. More levels are listed in the terminal.": "{question}。终端中还列出了更多级别。",
   "{answered}/{total} answered": "已回答 {answered}/{total}",
   "Comment: {comment}": "备注：{comment}",
+  "{notice}\nComment: {comment}": "{notice}\n备注：{comment}",
   "Type your answer": "输入你的回答",
   "Type your own answer": "输入你自己的回答",
   "Yes (y)": "是 (y)",
