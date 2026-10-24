@@ -739,16 +739,16 @@ describe("page files read through the descriptor that was validated", () => {
     }
   });
 
-  it.skipIf(windows)("does not draw a page that is itself a link", async () => {
+  it.skipIf(windows)("draws a page that is itself a link, taking its files from the folder it leads to", async () => {
     const { root, site } = layout();
-    mkdirSync(join(root, "pages"));
+    mkdirSync(join(root, "pages", "sub"), { recursive: true });
     writeFileSync(join(root, "pages", "real.html"), `<img id="pic" src="sub/f.png">`);
+    writeFileSync(join(root, "pages", "sub", "f.png"), png("BESIDE-THE-TARGET"));
     const linked = join(site, "linked.html");
     symlinkSync(join(root, "pages", "real.html"), linked);
-    // its source still opens as text; drawn as a page, the file read could not be told from a swapped one
     const response = fileResponse(fileInfo(linked)!, false, true, null);
-    expect(response.status).toBe(404);
-    expect(await fileResponse(fileInfo(linked)!, false, false, null).text()).toBe(`<img id="pic" src="sub/f.png">`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`src="data:image/png;base64,${png("BESIDE-THE-TARGET").toString("base64")}"`);
   });
 
   it.skipIf(windows)("never draws the asked page with the files of a folder it was not read from", async () => {

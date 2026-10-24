@@ -437,12 +437,13 @@ blocks of `src/styles.css`.
   scripts and stylesheets it takes from its folder, and the videos it plays from this server, are
   read only from a descriptor whose opened file was shown to lie in the page's folder (or a folder
   in `OVIS_MEDIA_ROOTS`) with no hidden name on the way (`openAuthorized` in
-  `server/file-view.ts`). The page's folder is resolved once, before the page is opened, and the
-  page is opened as the file of its name in that folder and proven from its descriptor, never by a
-  second lookup of its path: on Linux the kernel's path of the descriptor must be that path; elsewhere
-  that name must be a file with the descriptor's device and inode that still resolves to itself (a
-  sample). A page that is itself a link is not drawn as a page (its source still opens). A folder
-  swapped for a link at any point serves no other folder's page or files, but someone allowed to
+  `server/file-view.ts`). The page's path is resolved once, before the page is opened (a page that
+  is itself a link, to the file it leads to), and that file is opened and proven from its descriptor,
+  never by a second lookup of a path: on Linux the kernel's path of the descriptor must be that path;
+  elsewhere that path must be a file with the descriptor's device and inode that still resolves to
+  itself (a sample). The page's files come from that file's folder, so a linked page takes them from
+  the folder it leads to. A folder swapped for a link at any point serves no other folder's page or
+  files, but someone allowed to
   rename folders in its parent could move another real folder into its place while the page's
   files are looked up. Each file's path is resolved and checked again after the open and must still
   name the opened file, but a sample of a path is not a proof, so each platform adds its own:

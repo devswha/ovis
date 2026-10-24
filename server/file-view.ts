@@ -531,12 +531,11 @@ function openedWithin(fd: number, file: string, root: string, roots: readonly st
 }
 
 /**
- * Whether the page open at `fd` (whose identity is `opened`) is `file`, the file of its name in the
- * folder resolved before it was opened: on Linux the kernel's path of the descriptor is that path (one
- * that cannot be read, or was deleted, is not); elsewhere that name is a file, not a link, with the
- * descriptor's device and inode, and still resolves to itself (no folder on the way became a link):
- * samples, like the other platforms' checks (`openAuthorized`). A page that is itself a link is not
- * drawn as a page.
+ * Whether the page open at `fd` (whose identity is `opened`) is `file`, its path resolved once before
+ * it was opened: on Linux the kernel's path of the descriptor is that path (one that cannot be read, or
+ * was deleted, is not); elsewhere that path is a file, not a link, with the descriptor's device and
+ * inode, and still resolves to itself (no folder on the way became a link): samples, like the other
+ * platforms' checks (`openAuthorized`).
  */
 function pageOpenedAs(fd: number, file: string, opened: BigIntStats): boolean {
   if ((pageFileHooks.platform ?? process.platform) === "linux") {
@@ -633,14 +632,14 @@ interface PageAsset { target: string; mime: string; size: number; data: string |
  * page. Null when the page is not a file of at most `EMBED_PAGE_BYTES`, or changed while it was read.
  */
 export function pageWithLocalFiles(path: string, media: PageMedia | null = null): string | null {
-  // the page's folder is resolved once, before the page is opened, and the page read must be the file
-  // of its name in that folder, proven from its descriptor (`pageOpenedAs`), not by looking its path up
-  // again: a folder swapped for a link between any two lookups would otherwise serve another folder's
-  // page, or make it the folder the page's files come from
-  let folder: string;
-  try { folder = realpathSync(dirname(path)); } catch { return null; }
+  // the page's path is resolved once, before the page is opened (a page that is a link, to the file it
+  // leads to), and the page read must be that file, proven from its descriptor (`pageOpenedAs`), never by
+  // looking a path up again; its files come from that file's folder: a folder swapped for a link between
+  // two lookups would otherwise serve another folder's page, or make it the folder the page's files come from
+  let file: string;
+  try { file = realpathSync(path); } catch { return null; }
+  const folder = dirname(file);
   pageFileHooks.pageFolder?.(folder);
-  const file = join(folder, basename(path));
   let html: string;
   let fd: number;
   try { fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
