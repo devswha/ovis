@@ -31,15 +31,20 @@ rename() {
 }
 delete() { gh api -X DELETE "repos/$GH_REPO/releases/assets/$1"; }
 
-# Leaves the release with one build's files, whatever build runs it. The marker asset is uploaded only once every
-# replaced file has been swapped, and before a file new to the release takes its name or any .previous is deleted.
-# With the marker, the swap is finished: a staged file whose name is still free takes it. Without it, every
-# .previous is put back and every staged file is dropped, so a file new to the release never stays.
+# Every file this release can carry. Recovery always looks at all of them, whatever this run uploads, and a run
+# that uploads only some of them takes the others out in the same swap, so the release never mixes builds.
+known=(Ovis.exe Ovis.msix)
 marker=ovis-windows-swap.committed
+
+# Leaves the release with one build's files, whatever build runs it and whatever it uploads. The marker asset is
+# uploaded only once every replaced file has been swapped (and every file this run does not carry has been set
+# aside), and before a file new to the release takes its name or any .previous is deleted. With the marker, the
+# swap is finished: a staged file whose name is free takes it, and every .previous goes. Without it, every
+# .previous is put back and every staged file is dropped.
 recover() {
   local name current previous staged committed
   committed=$(asset "$marker")
-  for name in "${files[@]}"; do
+  for name in "${known[@]}"; do
     current=$(asset "$name")
     previous=$(asset "$name.previous")
     staged=$(asset "$name.uploading")
@@ -48,15 +53,14 @@ recover() {
         if [ -z "$current" ]; then
           rename "$(cut -f1 <<<"$staged")" "$name" "$(cut -f2 <<<"$staged")" ||
             { echo "::error::$name.uploading on $RELEASE_TAG could not be renamed to $name; rename it by hand." >&2; return 1; }
-          current=$staged
         else
           delete "$(cut -f1 <<<"$staged")"
         fi
       fi
-      if [ -n "$previous" ] && [ -n "$current" ]; then delete "$(cut -f1 <<<"$previous")"; continue; fi
-    else
-      [ -z "$staged" ] || delete "$(cut -f1 <<<"$staged")"
+      [ -z "$previous" ] || delete "$(cut -f1 <<<"$previous")"
+      continue
     fi
+    [ -z "$staged" ] || delete "$(cut -f1 <<<"$staged")"
     [ -n "$previous" ] || continue
     # undo: the old file takes its name back, with its own label
     [ -z "$current" ] || delete "$(cut -f1 <<<"$current")"
@@ -67,20 +71,30 @@ recover() {
   [ -z "$committed" ] || delete "$(cut -f1 <<<"$committed")"
 }
 
+carried() { local f; for f in "${files[@]}"; do [ "$f" = "$1" ] && return 0; done; return 1; }
+
 attach() {
-  local name entry new_id old old_id old_label new_names=()
-  # an earlier run that died mid-swap: one consistent build first
+  local name entry staged new_id old old_id old_label mark new_names=()
+  # an earlier run that died mid-swap: one consistent build first, across every known file
   recover
   # 1. every new file goes up under its staging name; nothing the release serves changes yet
   for name in "${files[@]}"; do
     cp "$dir/$name" "$dir/$name.uploading"
     gh release upload "$RELEASE_TAG" "$dir/$name.uploading#$label" || { echo "::error::$name could not be uploaded to $RELEASE_TAG; nothing was changed." >&2; recover; return 1; }
-    [ -n "$(asset "$name.uploading")" ] || { echo "::error::$name.uploading was uploaded but is not listed on $RELEASE_TAG." >&2; recover; return 1; }
+    staged=$(asset "$name.uploading")
+    [ -n "$staged" ] || { echo "::error::$name.uploading was uploaded but is not listed on $RELEASE_TAG." >&2; recover; return 1; }
   done
   # 2. each file that replaces an old one is swapped in: the old one steps aside, the new one takes its name.
-  # A file new to the release waits as NAME.uploading until the marker is up. Any failure undoes every swap.
-  for name in "${files[@]}"; do
+  # A file this run does not carry steps aside too, so it leaves with the swap. A file new to the release waits
+  # as NAME.uploading until the marker is up. Any failure undoes every swap.
+  for name in "${known[@]}"; do
     old=$(asset "$name")
+    if ! carried "$name"; then
+      [ -n "$old" ] || continue
+      rename "$(cut -f1 <<<"$old")" "$name.previous" "$(cut -f2 <<<"$old")" ||
+        { echo "::error::$name on $RELEASE_TAG could not be moved aside; undoing this run's swaps." >&2; recover; return 1; }
+      continue
+    fi
     if [ -z "$old" ]; then new_names+=("$name"); continue; fi
     old_id=$(cut -f1 <<<"$old")
     old_label=$(cut -f2 <<<"$old")
@@ -98,7 +112,7 @@ attach() {
     fi
   done
   # 3. mark the swap done; from here recover finishes it. Then files new to the release take their names, the
-  # old files go, and the mark goes.
+  # old files go, and the mark goes. A failure from here on is finished by the cleanup step's recover.
   : > "$dir/$marker"
   gh release upload "$RELEASE_TAG" "$dir/$marker#$label" || { echo "::error::the commit mark could not be uploaded; undoing this run's swaps." >&2; recover; return 1; }
   for name in "${new_names[@]}"; do
@@ -106,11 +120,12 @@ attach() {
     rename "$(cut -f1 <<<"$entry")" "$name" "$label" ||
       { echo "::error::$name.uploading on $RELEASE_TAG could not be renamed to $name; finishing in the cleanup step." >&2; return 1; }
   done
-  for name in "${files[@]}"; do
+  for name in "${known[@]}"; do
     old=$(asset "$name.previous")
     [ -z "$old" ] || delete "$(cut -f1 <<<"$old")"
   done
-  delete "$(cut -f1 <<<"$(asset "$marker")")"
+  mark=$(asset "$marker")
+  [ -z "$mark" ] || delete "$(cut -f1 <<<"$mark")"
 }
 
 case "$mode" in
