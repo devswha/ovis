@@ -428,6 +428,9 @@ try {
           await outputParsed(page, "previous answer\r\n");
           assert.equal(await content.count(), 0, "the recovering pane's replay is not its current screen");
           await agent(page, API).locator(".agent-select").click();
+          // the next pane in the same terminal lens: its own output is its current screen
+          await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+          await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "input-ready", pane_id: id }), panes.api);
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "next pane screen\r\n" }), panes.api);
           await content.waitFor({ timeout: 10_000 });
