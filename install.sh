@@ -183,8 +183,16 @@ open_app() {
   fi
 }
 
-# runs "$@" for at most $1 seconds: past that it is killed (and fails), so a command that hangs
-# cannot hold the install. The watcher looks once a second, as gh_api's does.
+# kills a process and everything it started (ps -A -o pid= -o ppid= reads the same on Linux and macOS)
+kill_tree() {
+  for kill_child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v parent="$1" '$2 == parent { print $1 }'); do
+    kill_tree "$kill_child"
+  done
+  kill -KILL "$1" 2>/dev/null || true
+}
+
+# runs "$@" for at most $1 seconds: past that it is killed with all it started (and fails), so a
+# command that hangs cannot hold the install. The watcher looks once a second, as gh_api's does.
 bounded() {
   bounded_limit=$1
   shift
@@ -193,7 +201,7 @@ bounded() {
   (
     waited=0
     while [ "$waited" -lt "$bounded_limit" ]; do sleep 1; kill -0 "$bounded_pid" 2>/dev/null || exit 0; waited=$((waited + 1)); done
-    kill -KILL "$bounded_pid" 2>/dev/null || true
+    kill_tree "$bounded_pid"
   ) >/dev/null 2>&1 &
   bounded_watch=$!
   bounded_status=0
@@ -230,10 +238,16 @@ install_node() {
   archive="$tmp/node.tar.gz"
   curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive" || { rm -rf "$tmp"; return 1; }
   [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; say "the Node download does not match its published SHA-256; nothing was installed"; return 1; }
-  rm -rf "$NODE_DIR" || { rm -rf "$tmp"; return 1; }
-  mkdir -p "$NODE_DIR" "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
-  tar -xzf "$archive" -C "$NODE_DIR" --strip-components=1 || { rm -rf "$tmp" "$NODE_DIR"; return 1; }
-  rm -rf "$tmp"
+  # unpacked beside the old one and swapped in only once it holds a node: a failed unpack leaves an
+  # existing install (and the link to it) as it was
+  mkdir -p "$tmp/node" "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$archive" -C "$tmp/node" --strip-components=1 || { rm -rf "$tmp"; return 1; }
+  [ -x "$tmp/node/bin/node" ] || { rm -rf "$tmp"; say "the Node download holds no bin/node; nothing was installed"; return 1; }
+  mkdir -p "$(dirname "$NODE_DIR")" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$NODE_DIR.old"
+  if [ -e "$NODE_DIR" ]; then mv "$NODE_DIR" "$NODE_DIR.old" || { rm -rf "$tmp"; return 1; }; fi
+  mv "$tmp/node" "$NODE_DIR" || { [ ! -e "$NODE_DIR.old" ] || mv "$NODE_DIR.old" "$NODE_DIR"; rm -rf "$tmp"; return 1; }
+  rm -rf "$NODE_DIR.old" "$tmp"
   # an older node elsewhere on the PATH would still win in a new shell, so this one goes first in ours
   [ -e "$BIN_DIR/node" ] || ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node" || return 1
 }

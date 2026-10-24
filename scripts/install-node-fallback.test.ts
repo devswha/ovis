@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,7 +16,7 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const FUNCTIONS = ["say", "sha256", "bounded", "rust_host_runs", "install_node"].map(fn).join("\n");
+const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-node-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -53,6 +53,17 @@ describe("rust_host_runs", () => {
     expect(hung.ms).toBeLessThan(10_000);
   });
 
+  it("kills what a hung host started, not only the host", () => {
+    const tag = `ovis-probe-child-${crypto.randomUUID()}`;
+    // no exec: the child's own command line (its path, with the tag) stays visible to pgrep while it lives
+    const child = script(tag, "sleep 60");
+    const forking = script("forks", `${USAGE}\n${child} & wait`);
+    const hung = sh(`if rust_host_runs ${forking}; then echo RUNS; else echo REFUSED; fi`);
+    expect(hung.out).toContain("REFUSED");
+    // the watcher kills the tree before rust_host_runs returns
+    expect(Bun.spawnSync(["pgrep", "-f", tag]).stdout.toString().trim()).toBe("");
+  });
+
   it("refuses another program and a missing file", () => {
     expect(sh(`rust_host_runs ${script("other", "exit 0")} || echo REFUSED`).out).toContain("REFUSED");
     expect(sh(`rust_host_runs ${join(dir, "absent")} || echo REFUSED`).out).toContain("REFUSED");
@@ -82,8 +93,19 @@ describe("install_node", () => {
     expect(existsSync(env["NODE_DIR"]!)).toBe(false);
   });
 
+  it("keeps an existing install and its link when the new unpack fails", () => {
+    const env = { ...pc(download("x"), `mkdir -p "$4/bin" && : > "$4/bin/node"; exit 42`), platform: "fixture", node_sha: new Bun.CryptoHasher("sha256").update("x").digest("hex") };
+    const nodeDir = env["NODE_DIR"]!;
+    mkdirSync(join(nodeDir, "bin"), { recursive: true });
+    writeFileSync(join(nodeDir, "bin", "node"), "old node");
+    mkdirSync(env["BIN_DIR"]!, { recursive: true });
+    symlinkSync(join(nodeDir, "bin", "node"), join(env["BIN_DIR"]!, "node"));
+    expect(attempt(env).out).toContain("FAILED");
+    expect(readFileSync(join(env["BIN_DIR"]!, "node"), "utf8")).toBe("old node");
+  });
+
   it("installs when every step succeeds", () => {
-    const env = { ...pc(download("x"), `mkdir -p "$NODE_DIR/bin" && : > "$NODE_DIR/bin/node"`), platform: "fixture", node_sha: new Bun.CryptoHasher("sha256").update("x").digest("hex") };
+    const env = { ...pc(download("x"), `mkdir -p "$4/bin" && : > "$4/bin/node" && chmod +x "$4/bin/node"`), platform: "fixture", node_sha: new Bun.CryptoHasher("sha256").update("x").digest("hex") };
     expect(attempt(env).out).toContain("INSTALLED");
   });
 
