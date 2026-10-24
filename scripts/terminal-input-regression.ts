@@ -369,6 +369,10 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await line.fill("cd src/lib");
     sent.length = 0;
     acknowledgeInsert = undefined;
+    // the lens switches above refit the grid, and its resize follows after the refit settles: the count
+    // starts once the last resize sent is the grid drawn, so a late refit is not taken for Insert's
+    const drawnRows = () => page.locator(".pane-terminal .xterm-rows > div").count();
+    await until(async () => resizes.length > 0 && resizes.at(-1).rows === await drawnRows());
     const resizesBeforeInsert = resizes.length;
     await insertButton.click();
     await until(() => sent.length === 1 && !!acknowledgeInsert);
