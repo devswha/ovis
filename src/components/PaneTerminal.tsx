@@ -639,7 +639,8 @@ export function PaneTerminal({
   const pasteTarget = useCallback((): string | null => {
     const socket = socketRef.current;
     const pane = paneRef.current;
-    if (!socket || pane === null || !socket.connected || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || !inputLineRef.current) return null;
+    // a pane put out of sight (another pane picked in the split) is no longer where the user pastes
+    if (!socket || pane === null || !socket.connected || !activeRef.current || !presentedRef.current || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || !inputLineRef.current) return null;
     return `${paneStorageId(machineId, pane)}:${socket.inputLease(pane)}`;
   }, [machineId]);
 

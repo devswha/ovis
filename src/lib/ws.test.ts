@@ -69,6 +69,11 @@ it("sends nothing when the bridge has not said what it supports by the end of th
     // not a dropped connection: the socket is open, only its snapshot is late (#1806)
     expect(await result).toMatchObject({ ok: false, code: "capabilities_unknown" });
     expect(submissions(socket)).toEqual([]);
+    // an Insert behind the same late snapshot is not told to update the PC: its bridge is unknown, not old
+    const inserted = client.insert("w1:p1", "one line");
+    jest.advanceTimersByTime(2_000);
+    expect(await inserted).toMatchObject({ ok: false, code: "capabilities_unknown" });
+    expect(socket.sent.filter((frame) => frame.type === "insert")).toEqual([]);
   } finally {
     client.close();
     jest.useRealTimers();
@@ -2010,6 +2015,26 @@ it("disconnect never replays insert", async () => {
     // disconnected, an insert goes nowhere at all: null, like a submit
     next.disconnect();
     expect(client.insert("w1:p1", "again")).toBeNull();
+  } finally { client.close(); }
+});
+
+it("an insert waiting on a probe is dropped when the pane's input changed meanwhile", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert", "ping"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    client.wake();
+    const result = client.insert("w1:p1", "rm -rf build")!;
+    // the pane loses its input and gets it back (a detach and reattach) before the pong comes back
+    socket.receive({ type: "input-ready", pane_id: "w1:p1", ready: false });
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    socket.receive({ type: "pong", id: pings(socket).at(-1)!.id });
+    expect(await result).toMatchObject({ ok: false, code: "input_not_ready" });
+    expect(socket.sent.filter((frame) => frame.type === "insert")).toEqual([]);
   } finally { client.close(); }
 });
 

@@ -42,7 +42,10 @@ export function insertNote(code: string, message: string): string {
   if (code === "held_input") return t("Not sent: send or discard the held input first.");
   if (code === "not_transmitted") return t("Not inserted: the connection dropped before the text left. Try again.");
   if (code === "insert_timeout") return t("Not inserted: it waited too long behind earlier input, and nothing was typed. Try again.");
-  if (["input_not_ready", "not_attached", "attach_held", "pane_read_failed", "invalid_insert_text"].includes(code)) return t("Not inserted: the terminal is not ready. Nothing was typed.");
+  if (code === "capabilities_unknown") return t("Not inserted: this PC has not said yet what it supports. Insert it again.");
+  // a control character (an escape copied with coloured output) or half a character: the same text is refused every time
+  if (code === "invalid_insert_text") return t("Not inserted: the line holds a control character. Remove it, then insert again.");
+  if (["input_not_ready", "not_attached", "attach_held", "pane_read_failed"].includes(code)) return t("Not inserted: the terminal is not ready. Nothing was typed.");
   if (code === "disconnected" || code === "timeout" || code === "insert_failed") return t("Not confirmed: the terminal did not confirm the text. Check it before inserting again.");
   return t("Not inserted: {message}", { message });
 }

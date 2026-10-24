@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
-import { agentDisplayLabel, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain } from "./compose.ts";
+import { agentDisplayLabel, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -148,6 +148,9 @@ describe("composerMessage and submitNote", () => {
     // a send whose wait ended before the PC said what it supports typed nothing, and the note names that, not a drop (#1806)
     expect(submitNotTyped("capabilities_unknown")).toBe(true);
     expect(submitNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not sent: this PC has not said yet what it supports. Send it again.");
+    // an Insert refused for a control character says so, not that the terminal is not ready: a retry would be refused the same
+    expect(insertNote("invalid_insert_text", "the text holds a control character")).toBe("Not inserted: the line holds a control character. Remove it, then insert again.");
+    expect(insertNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not inserted: this PC has not said yet what it supports. Insert it again.");
     // a Send now that never left proves a held row unsent, not a queued one its turn's end may still type
     expect(pendingActionUncertain("not_transmitted", "held")).toBe(false);
     expect(pendingActionUncertain("not_transmitted", "queued")).toBe(true);

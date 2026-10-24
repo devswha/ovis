@@ -226,7 +226,6 @@ const BASE: Record<string, string> = {
   "Quick replies": "빠른 답장",
   "Skills": "스킬",
   "Not sent: send or discard the held input first.": "보내지 못했습니다: 보관한 입력을 먼저 보내거나 버리세요.",
-  "Enter": "Enter",
   "Queue could not be saved. Keep this tab open or copy the messages before reloading.": "대기 메시지를 저장하지 못했습니다. 이 탭을 유지하거나 새로고침 전에 메시지를 복사하세요.",
   "Queued messages": "대기 메시지",
   "Not confirmed. Check the terminal before sending again.": "전송 여부를 확인하지 못했습니다. 다시 보내기 전에 터미널을 확인하세요.",

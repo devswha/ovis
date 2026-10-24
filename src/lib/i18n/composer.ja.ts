@@ -156,4 +156,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Not inserted: it waited too long behind earlier input, and nothing was typed. Try again.": "未挿入: 先行する入力の後ろで待ちすぎたため、何も入力されていません。もう一度お試しください。",
   "Not inserted: the terminal is not ready. Nothing was typed.": "未挿入: ターミナルの準備ができていません。何も入力されていません。",
   "Not inserted: {message}": "未挿入: {message}",
+  "Enter": "Enter",
+  "Not inserted: this PC has not said yet what it supports. Insert it again.": "未挿入: この PC が対応する機能をまだ知らせていません。もう一度挿入してください。",
+  "Not inserted: the line holds a control character. Remove it, then insert again.": "未挿入: 入力欄に制御文字があります。削除してからもう一度挿入してください。",
 };

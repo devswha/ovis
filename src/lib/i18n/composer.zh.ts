@@ -156,4 +156,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Not inserted: it waited too long behind earlier input, and nothing was typed. Try again.": "未插入：在先前输入之后等待过久，未输入任何内容。请重试。",
   "Not inserted: the terminal is not ready. Nothing was typed.": "未插入：终端尚未就绪。未输入任何内容。",
   "Not inserted: {message}": "未插入：{message}",
+  "Enter": "Enter",
+  "Not inserted: this PC has not said yet what it supports. Insert it again.": "未插入：这台电脑尚未告知它支持的功能。请重新插入。",
+  "Not inserted: the line holds a control character. Remove it, then insert again.": "未插入：输入框中有控制字符。删除后请重新插入。",
 };

@@ -929,10 +929,16 @@ export class HerdrSocket {
   insert(paneId: string, text: string): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
+    // the pane's input as it was when the user tapped Insert: a detach and reattach (or a role change and
+    // back) during the waits below would carry this draft into an attachment it was not meant for
+    const lease = this.inputLease(paneId);
     return (async (): Promise<SubmitResult> => {
       await Promise.race([this.snapshotSeen, new Promise((resolve) => window.setTimeout(resolve, SNAPSHOT_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) return NOT_TRANSMITTED;
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot type into the pane." };
+      if (this.inputLease(paneId) !== lease) return { ok: false, code: "input_not_ready", message: "Terminal input changed before the text left. Nothing was sent." };
+      // the wait ended before the snapshot said what this bridge takes: "Update this PC" would be wrong advice
+      if (!this.snapshotKnown) return CAPABILITIES_UNKNOWN;
       if (!this.features.has("terminal-insert")) return { ok: false, code: "unsupported", message: "Update this PC to insert text without Enter. Nothing was sent." };
       if (!this.inputReady.has(paneId)) return { ok: false, code: "input_not_ready", message: "Terminal input is not ready. Nothing was sent." };
       return this.submitRequest({ type: "insert", id: this.nextSubmit++, pane_id: paneId, text });
