@@ -23,7 +23,8 @@
  *
  * A few herdr-backed runs at a time on this PC (CHECK_MAX_RUNS, see maxRuns): contract and browser
  * tests are bound by timing, so too many side by side fail each other. Each run holds a slot, a
- * loopback port it listens on (CHECK_LOCK_PORT, default 41737, and the ports after it), so a run
+ * loopback port it listens on (CHECK_LOCK_PORT, default 41737, and the ports after it: the slots,
+ * the admission port and the queue's ticket ports, MAX_RUNS_LIMIT + 1 + QUEUE_TICKETS in all), so a run
  * that died holds nothing.
  * A run that finds every slot taken names the holders and exits, and so does a second run in the
  * same checkout, which would share its dist/ and generated types.
@@ -248,8 +249,13 @@ export function lockPort(env: Record<string, string | undefined>): number {
 }
 /** The most slots CHECK_MAX_RUNS may ask for; every run looks at all of them for its own checkout. */
 export const MAX_RUNS_LIMIT = 8;
-/** The highest lock base: acquire() listens on the slots and on the admission port above them, up to base + MAX_RUNS_LIMIT. */
-export const MAX_LOCK_PORT = 65535 - MAX_RUNS_LIMIT;
+/** How many runs can hold a place in the queue for a slot at once (ticket ports above the admission port). */
+export const QUEUE_TICKETS = 24;
+/**
+ * The highest lock base: acquire() listens on the slots and on the admission port above them, up to
+ * base + MAX_RUNS_LIMIT, and a waiting run on a ticket port above that, up to QUEUE_TICKETS more.
+ */
+export const MAX_LOCK_PORT = 65535 - MAX_RUNS_LIMIT - QUEUE_TICKETS;
 
 /**
  * How many herdr-backed runs may share this PC: CHECK_MAX_RUNS (1 to 8), else one per eight cores,
@@ -364,8 +370,65 @@ export function lock(port = DEFAULT_LOCK_PORT, pid = process.pid, checkout?: str
   });
 }
 
-export type SlotHolder = Holder & { port: number };
+/** A slot's holder, or a run waiting ahead in the queue (`queuedAt`, ms since 1970: when it first found the PC busy). */
+export type SlotHolder = Holder & { port: number; queuedAt?: number };
 type MarkerOwner = { pid: number; checkout: string };
+
+/** A waiting run's place in the queue: when it first found the PC busy, and the ticket port it holds. */
+export type Ticket = { at: number; port: number };
+
+/** The ticket ports, just above the admission port: the same for every run of a base whatever its slot count. */
+export function ticketPorts(base: number, slots: number, scan: number): number[] {
+  const first = base + Math.max(slots, scan) + 1;
+  return Array.from({ length: QUEUE_TICKETS }, (_, index) => first + index);
+}
+
+/** Who waits on a ticket port: null when nothing listens there, or when what listens is no ticket. */
+function askTicket(port: number): Promise<(SlotHolder & { queuedAt: number }) | null> {
+  return new Promise((resolve) => {
+    let said = "";
+    const client = connect(port, "127.0.0.1");
+    client.setTimeout(2_000, () => client.destroy());
+    client.on("data", (chunk) => { said += chunk.toString(); });
+    client.on("error", () => undefined);
+    client.on("close", () => {
+      const match = /^ticket\n(\d+)\n(\d+)\n([^]+)$/.exec(said);
+      resolve(match ? { port, queuedAt: Number(match[1]), heldBy: Number(match[2]), checkout: match[3]! } : null);
+    });
+  });
+}
+
+/**
+ * Takes a place in the queue: the first free ticket port, listened on for as long as the run waits,
+ * so a run that dies leaves no place behind. Null when every ticket port is taken; the run then waits
+ * without one, behind every run that holds one, and tries again on its next round.
+ */
+export async function takeTicket(
+  { base, slots, scan = MAX_RUNS_LIMIT, at, pid = process.pid, checkout }: { base: number; slots: number; scan?: number; at: number; pid?: number; checkout: string },
+): Promise<{ ticket: Ticket; release: () => void } | null> {
+  for (const port of ticketPorts(base, slots, scan)) {
+    const taken = await new Promise<{ release: () => void } | null>((resolve, reject) => {
+      const answer = `ticket\n${at}\n${pid}\n${checkout}`;
+      const server = createServer((socket) => { socket.on("error", () => undefined); socket.end(answer); });
+      server.once("error", (error: NodeJS.ErrnoException) => { if (error.code === "EADDRINUSE") resolve(null); else reject(error); });
+      server.listen(port, "127.0.0.1", () => { server.unref(); resolve({ release: () => { server.close(); } }); });
+    });
+    if (taken) return { ticket: { at, port }, release: taken.release };
+  }
+  return null;
+}
+
+/** Whether queue place `a` comes before `b`: the earlier first refusal, then the lower ticket port. */
+const ahead = (a: Ticket, b: Ticket): boolean => a.at < b.at || (a.at === b.at && a.port < b.port);
+
+/** The runs waiting ahead of `ticket` (every waiting run, for a run without one), oldest first. */
+async function queuedAhead(base: number, slots: number, scan: number, ticket: Ticket | undefined): Promise<SlotHolder[]> {
+  const mine = ticket ?? { at: Number.POSITIVE_INFINITY, port: Number.POSITIVE_INFINITY };
+  const waiting = await Promise.all(ticketPorts(base, slots, scan).filter((port) => port !== ticket?.port).map(askTicket));
+  return waiting
+    .filter((run): run is SlotHolder & { queuedAt: number } => run !== null && ahead({ at: run.queuedAt, port: run.port }, mine))
+    .sort((a, b) => a.queuedAt - b.queuedAt || a.port - b.port);
+}
 
 /**
  * Claims `marker` for this run, or names the live run that holds it. A marker a dead run left, or one
@@ -439,9 +502,17 @@ function claimMarker(marker: string, pid: number, checkout: string, alive: (pid:
  * runs on other CHECK_LOCK_PORT bases do not share it. A busy admission port refuses rather than waits.
  */
 export async function acquire(
-  { slots, checkout, base = DEFAULT_LOCK_PORT, pid = process.pid, scan = MAX_RUNS_LIMIT, resources = [], reports = [], checkoutLock }: { slots: number; checkout: string; base?: number; pid?: number; scan?: number; resources?: readonly string[]; reports?: readonly string[]; checkoutLock?: string },
+  { slots, checkout, base = DEFAULT_LOCK_PORT, pid = process.pid, scan = MAX_RUNS_LIMIT, resources = [], reports = [], checkoutLock, ticket, retry = false }: { slots: number; checkout: string; base?: number; pid?: number; scan?: number; resources?: readonly string[]; reports?: readonly string[]; checkoutLock?: string; ticket?: Ticket; retry?: boolean },
 ): Promise<{ release: () => void; port: number | null } | { refused: "busy" | "same-checkout" | "resource"; holders: SlotHolder[]; resource?: string }> {
   const admissionPort = base + Math.max(slots, scan);
+  // A waiting run (`retry`, with a ticket or without one when every ticket was held) with an older
+  // run ahead of it does not take the admission port at all: holding it only to find the queue would
+  // keep the head of the queue out of it, round after round. A run's first try meets its checkout
+  // and resource claims first, so a second run in this checkout is told so at once.
+  if (slots > 0 && (retry || ticket !== undefined)) {
+    const queued = await queuedAhead(base, slots, scan, ticket);
+    if (queued.length > 0) return { refused: "busy", holders: queued };
+  }
   const admission = await lock(admissionPort, pid, checkout);
   if (!("release" in admission)) return { refused: "busy", holders: [{ ...admission, port: admissionPort }] };
   let taken: { release: () => void; port: number } | null = null;
@@ -476,6 +547,16 @@ export async function acquire(
       }
       markers.push(marker);
     }
+    // First come, first served: a run waiting longer than this one gets the next free slot. A run
+    // with no ticket comes after every run that holds one, so a newer run cannot take the slot a
+    // waiting one is about to. Asked again under the admission port, like the slots below: a run
+    // may have started waiting since the look above. Runs asking for different slot counts (only
+    // while hosts change their CHECK_HOST_MAX_RUNS) still queue in one line: a head that does not
+    // fit yet holds back a later run that would.
+    if (slots > 0) {
+      const queued = await queuedAhead(base, slots, scan, ticket);
+      if (queued.length > 0) return { refused: "busy", holders: queued };
+    }
     for (let index = 0; index < slots; index++) {
       const port = base + index;
       const result = await lock(port, pid, checkout);
@@ -506,27 +587,41 @@ export async function acquire(
 /**
  * acquire, asked again every `pollMs` while the only refusal is a busy PC, until `waitMs` has
  * passed. `onWait` hears the first busy refusal, so a waiting run says once whom it waits for.
+ * From that refusal on the run holds a ticket (takeTicket), its place in the queue: runs that
+ * arrive later wait behind it, so a long wait cannot be lost round after round to newer runs. The
+ * ticket goes when the run is admitted, refused for good or out of time. `now` and `sleep` are the
+ * clock and the wait between rounds, for tests to drive.
  */
 export async function acquireWaiting(
   options: Parameters<typeof acquire>[0],
-  { waitMs, pollMs = 2_000, onWait }: { waitMs: number; pollMs?: number; onWait?: (holders: SlotHolder[]) => void },
+  // fixed wait: the pause between rounds of a wait bounded by waitMs; other runs hold the slots, so there is no event to wait on
+  { waitMs, pollMs = 2_000, onWait, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }: {
+    waitMs: number; pollMs?: number; onWait?: (holders: SlotHolder[]) => void; now?: () => number; sleep?: (ms: number) => Promise<unknown>;
+  },
 ): ReturnType<typeof acquire> {
-  const deadline = Date.now() + waitMs;
+  const deadline = now() + waitMs;
   let held = await acquire(options);
-  let told = false;
-  while ("refused" in held && held.refused === "busy" && Date.now() < deadline) {
-    if (!told) { onWait?.(held.holders); told = true; }
-    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
-    held = await acquire(options);
+  let queued: { ticket: Ticket; release: () => void } | null = null;
+  let queuedAt: number | null = null;
+  try {
+    while ("refused" in held && held.refused === "busy" && now() < deadline) {
+      if (queuedAt === null) { queuedAt = now(); onWait?.(held.holders); }
+      // a place taken late (every ticket was held) keeps the time the run first found the PC busy
+      queued ??= await takeTicket({ base: options.base ?? DEFAULT_LOCK_PORT, slots: options.slots, ...(options.scan === undefined ? {} : { scan: options.scan }), at: queuedAt, ...(options.pid === undefined ? {} : { pid: options.pid }), checkout: options.checkout });
+      await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
+      held = await acquire(queued ? { ...options, retry: true, ticket: queued.ticket } : { ...options, retry: true });
+    }
+    return held;
+  } finally {
+    queued?.release();
   }
-  return held;
 }
 
 /** One line per holder for a refusal. */
 export function describeHolders(holders: readonly SlotHolder[]): string {
   return holders.map((holder) => Number.isNaN(holder.heldBy)
     ? `port ${holder.port}: something that is no check run`
-    : `port ${holder.port}: pid ${holder.heldBy}${holder.checkout ? ` in ${holder.checkout}` : ""}`).join("; ");
+    : `port ${holder.port}: pid ${holder.heldBy}${holder.checkout ? ` in ${holder.checkout}` : ""}${holder.queuedAt === undefined ? "" : `, waiting since ${new Date(holder.queuedAt).toISOString()}`}`).join("; ");
 }
 
 export async function main(groupSeams: GroupSeams & {
@@ -588,7 +683,8 @@ export async function main(groupSeams: GroupSeams & {
         waitMs: wait * 1000,
         onWait: (holders) => {
           waited = true;
-          console.error(`check: the ${slots}-run limit is reached (${describeHolders(holders)}); waiting up to ${wait}s for a slot`);
+          const queued = holders.some((holder) => holder.queuedAt !== undefined);
+          console.error(`check: ${queued ? `runs that came first are waiting for a slot (${describeHolders(holders)}); waiting in line` : `the ${slots}-run limit is reached (${describeHolders(holders)}); waiting`} up to ${wait}s for a slot`);
         },
       });
       if (waited && !("refused" in held)) console.error(`check: took a slot after ${Math.round((Date.now() - waitStarted) / 1000)}s`);
@@ -597,7 +693,11 @@ export async function main(groupSeams: GroupSeams & {
           ? `another herdr-backed \`bun run check\` is running in this checkout, and the two would share dist/ and the generated types (${describeHolders(held.holders)}); wait for it to end or use another worktree`
           : held.refused === "resource"
             ? `check resource ${held.resource} is already held (${describeHolders(held.holders)}); use a different CHECK_DIR / CHECK_REPORT or wait for the holder`
-            : `herdr-backed check admission is busy or the ${slots}-run limit is reached (${describeHolders(held.holders)}); wait for one to end, or set CHECK_MAX_RUNS (1 to ${MAX_RUNS_LIMIT})`;
+            : held.holders.some((holder) => holder.queuedAt !== undefined)
+              ? wait > 0
+                ? `runs that came first were still waiting for a slot after ${wait}s (${describeHolders(held.holders)}); try again later, or wait longer with CHECK_WAIT_SECONDS`
+                : `runs that came first are waiting for a slot (${describeHolders(held.holders)}); wait your turn with CHECK_WAIT_SECONDS`
+              : `herdr-backed check admission is busy or the ${slots}-run limit is reached (${describeHolders(held.holders)}); wait for one to end, or set CHECK_MAX_RUNS (1 to ${MAX_RUNS_LIMIT})`;
         console.error(`check: ${message}`);
         process.exit(1);
       }
