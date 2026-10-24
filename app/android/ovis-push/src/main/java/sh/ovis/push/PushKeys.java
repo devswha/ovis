@@ -9,6 +9,7 @@ import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.Signature;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -17,6 +18,7 @@ import java.security.spec.ECPoint;
 import java.security.spec.ECPrivateKeySpec;
 import java.security.spec.ECPublicKeySpec;
 import java.util.Arrays;
+import java.util.Base64;
 
 /**
  * This phone's push keys, as a browser makes them for a subscription (RFC 8291 section 2): a
@@ -25,6 +27,10 @@ import java.util.Arrays;
  * relay pins its VAPID key), and only this phone holds the private half.
  */
 final class PushKeys {
+    static final class Damaged extends GeneralSecurityException {
+        Damaged() { super("damaged push keys"); }
+    }
+
     final byte[] privateScalar;
     /** the uncompressed point, 65 bytes: what a PC gets as p256dh */
     final byte[] publicPoint;
@@ -35,6 +41,29 @@ final class PushKeys {
         this.privateScalar = privateScalar;
         this.publicPoint = publicPoint;
         this.auth = auth;
+    }
+
+    static PushKeys decode(String scalar, String point, String auth) throws GeneralSecurityException {
+        if (scalar == null && point == null && auth == null) return null;
+        if (scalar == null || point == null || auth == null) throw new Damaged();
+        try {
+            Base64.Decoder decoder = Base64.getDecoder();
+            PushKeys keys = new PushKeys(decoder.decode(scalar), decoder.decode(point), decoder.decode(auth));
+            if (keys.privateScalar.length != 32 || keys.publicPoint.length != 65 || keys.auth.length != 16) throw new Damaged();
+            BigInteger value = new BigInteger(1, keys.privateScalar);
+            if (value.signum() == 0 || value.compareTo(p256().getOrder()) >= 0) throw new Damaged();
+            // Verify that the stored halves belong together, not merely that each parses.
+            Signature proof = Signature.getInstance("SHA256withECDSA");
+            proof.initSign(keys.privateKey());
+            proof.update(new byte[] { 0 });
+            byte[] signature = proof.sign();
+            proof.initVerify(publicKey(keys.publicPoint));
+            proof.update(new byte[] { 0 });
+            if (!proof.verify(signature)) throw new Damaged();
+            return keys;
+        } catch (IllegalArgumentException | GeneralSecurityException damaged) {
+            throw new Damaged();
+        }
     }
 
     static PushKeys generate() throws GeneralSecurityException {

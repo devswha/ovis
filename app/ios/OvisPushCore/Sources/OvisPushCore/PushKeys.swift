@@ -50,15 +50,41 @@ public struct PushKeyStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw Failure.keychain(status) }
-        guard let data = result as? Data, data.count == 48 else { throw Failure.damaged }
-        return PushKeys(
-            privateKey: try P256.KeyAgreement.PrivateKey(rawRepresentation: data.prefix(32)),
-            auth: Data(data.suffix(16))
-        )
+        guard let data = result as? Data else { throw Failure.damaged }
+        return try Self.decode(data)
     }
 
+    static func decode(_ data: Data) throws -> PushKeys {
+        guard data.count == 48 else { throw Failure.damaged }
+        do {
+            return PushKeys(
+                privateKey: try P256.KeyAgreement.PrivateKey(rawRepresentation: data.prefix(32)),
+                auth: Data(data.suffix(16))
+            )
+        } catch { throw Failure.damaged }
+    }
+
+    /// Only the app calls this; read() in the extension never repairs or rotates keys.
     public func getOrCreate() throws -> PushKeys {
-        if let keys = try read() { return keys }
+        try Self.getOrCreate(read: read, remove: remove, create: create)
+    }
+
+    static func getOrCreate(read: () throws -> PushKeys?, remove: () throws -> Void,
+                            create: () throws -> PushKeys) throws -> PushKeys {
+        do {
+            if let keys = try read() { return keys }
+        } catch Failure.damaged {
+            try remove()
+        }
+        return try create()
+    }
+
+    private func remove() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure.keychain(status) }
+    }
+
+    private func create() throws -> PushKeys {
         let keys = try PushKeys.generate()
         var query = query
         query[kSecValueData as String] = keys.privateKey.rawRepresentation + keys.auth
