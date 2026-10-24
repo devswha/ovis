@@ -15,6 +15,7 @@ import type { TranscriptParser } from "./transcript-records.ts";
 import type { AgentInfo } from "../shared/herdr-api.generated.ts";
 import { agentGet, paneProcessInfo, paneRead, sessionSnapshot } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
+import { codexStartScreenUnused } from "./start-screen.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -1329,6 +1330,62 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
     "SELECT rollout_path FROM threads WHERE id >= ? AND id < ? AND archived = 0 LIMIT 2",
   ).all(id, `${id}g`);
   return rows.length === 1 ? codexRolloutPath(rows[0]!.rollout_path, home) : null;
+}
+
+/**
+ * The history id of the conversation a Codex started in a terminal has not begun, or null unless
+ * every fact says it has begun none (#1191). This server did not start it (launched-agents.ts),
+ * herdr reports no session for it, and nothing was matched to it; what tells instead:
+ *
+ * - its screen is its start screen with nothing said yet (codexStartScreenUnused);
+ * - its processes were started on no conversation: no `resume` or `fork` on their command lines,
+ *   since the picker either opens shows a conversation that exists;
+ * - its store holds no interactive thread of its folder with a first message, begun or written
+ *   since it started (no later than its start: processStartLowerBound), so no first message of
+ *   its own and no conversation it resumed and wrote to. One another pane began there since
+ *   counts too: which pane's it is cannot be told here. A thread with no message yet holds no
+ *   conversation, whoever made it.
+ *
+ * A start time or a store that cannot be read says nothing, and then neither does this. The id
+ * names the pane and its processes, never a time: a start read on macOS moves between reads.
+ */
+export async function codexFreshSession(paneId: string, cwds: readonly string[], home: string, screen: string): Promise<string | null> {
+  if (!codexStartScreenUnused(screen)) return null;
+  const { list, key } = await codexProcessesOf(paneId).catch(() => ({ list: [], key: "" }));
+  if (list.length === 0 || list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
+  // a CODEX_HOME the pane's Codex names but paneCodexHome cannot use (a relative one) leaves the store unknown
+  if (process.platform === "linux" && list.some((codex) => {
+    let named: string | undefined;
+    try { named = readFileSync(`/proc/${codex.pid}/environ`, "utf8").split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11); }
+    catch { return true; }
+    return named !== undefined && named !== "" && !isAbsolute(named);
+  })) return null;
+  const starts = list.map((codex) => processStartLowerBound(codex.pid));
+  if (starts.some((started) => started === null)) return null;
+  // whole seconds, and one more: a start read anew may land in the second before
+  const since = Math.floor(Math.min(...(starts as number[])) / 1000) - 1;
+  const store = join(home, "state_5.sqlite");
+  let db: Database | undefined;
+  try {
+    // a store Codex has not made yet holds no thread
+    if (statSync(store, { throwIfNoEntry: false }) !== undefined) {
+      db = new Database(store, { readonly: true, create: false });
+      // each folder the pane names (its shell's, its foreground process's), as given and as it
+      // resolves: Codex may have stored any of them
+      const named = cwds.filter((cwd) => cwd.length > 0);
+      if (named.length === 0) return null;
+      const folders = [...new Set(named.flatMap((cwd) => {
+        try { return [cwd, realpathSync(cwd)]; } catch { return [cwd]; }
+      }))].map((folder) => storedCwdCondition(folder));
+      const said = db.query("SELECT 1 FROM pragma_table_info('threads') WHERE name = 'first_user_message'").get() !== null ? " AND COALESCE(first_user_message, '') <> ''" : "";
+      const begun = db.query<unknown, (string | number)[]>(
+        `SELECT 1 FROM threads WHERE (${folders.map((folder) => folder.where).join(" OR ")}) AND archived = 0 AND agent_role IS NULL${interactive(db)}${said} AND max(COALESCE(created_at, 0), COALESCE(updated_at, 0)) >= ? LIMIT 1`,
+      ).get(...folders.flatMap((folder) => folder.params), since);
+      if (begun !== null) return null;
+    }
+  } catch { return null; }
+  finally { db?.close(); }
+  return `unwritten:codex:${paneId}:${key}`;
 }
 
 /** `codex resume <thread>`: the thread a TUI was started on, straight from its command line. */
