@@ -122,7 +122,7 @@ const lineValue = (page: Page, expected: string) => page.waitForFunction((value)
 const noteText = (page: Page, expected: string) => page.waitForFunction((value) => document.querySelector(".pane-frame.is-current .terminal-input-note")?.textContent === value, expected, { timeout: 10_000 });
 const screenShows = (page: Page, text: string) => page.waitForFunction((value) => document.querySelector(".pane-frame.is-current .pane-terminal .xterm-rows")?.textContent?.includes(value) === true, text, { timeout: 10_000 });
 const screenText = (page: Page) => page.locator(".pane-frame.is-current .pane-terminal .xterm-rows").evaluate((rows) => rows.textContent ?? "");
-const drafts = (page: Page) => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("herdr-web-ui:terminal-line:")).map((key) => [key, localStorage.getItem(key)])));
+const drafts = (page: Page) => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ovis:terminal-line:")).map((key) => [key, localStorage.getItem(key)])));
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
 async function openShell(browser: Browser, origin: string, variant: Variant) {
@@ -132,8 +132,8 @@ async function openShell(browser: Browser, origin: string, variant: Variant) {
     : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: "en-US" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(origin).origin });
   await context.addInitScript(([theme, language, paneId]) => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language, theme, terminalInputMode: "line", alertsOn: false, shortcutOverrides: { "previous-pane": "1", "next-pane": "2" } }));
-    localStorage.setItem(`herdr-web-ui:view:${paneId}`, "terminal");
+    localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, terminalInputMode: "line", alertsOn: false, shortcutOverrides: { "previous-pane": "1", "next-pane": "2" } }));
+    localStorage.setItem(`ovis:view:${paneId}`, "terminal");
   }, [variant.theme, variant.language, panes.shell] as const);
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
@@ -382,7 +382,7 @@ async function checkClipboardTargetChanged(page: Page): Promise<void> {
   await paste.tap();
   const guidance = page.locator(".pane-frame.is-current .key-bar .key-bar-note", { hasText: "Tap Input line to paste." });
   await guidance.waitFor();
-  check("Paste in direct typing leaves the mode alone", await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).terminalInputMode) === "direct", "direct");
+  check("Paste in direct typing leaves the mode alone", await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).terminalInputMode) === "direct", "direct");
   // said in the bar's own row, beside the Input line key it names: nothing painted over the terminal
   const placed = await page.evaluate(() => {
     const note = document.querySelector(".pane-frame.is-current .key-bar .key-bar-note")!.getBoundingClientRect();
