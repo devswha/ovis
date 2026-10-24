@@ -186,7 +186,8 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     switching = false;
     started.resolve();
     updater.start();
-    if (active && active.directory !== root) rustHostTry = installMissingRustHost(active.directory, rustHostInstall.signal);
+    // a stop that came during the start already waited for no try: none starts after it
+    if (active && active.directory !== root && !stopping) rustHostTry = installMissingRustHost(active.directory, rustHostInstall.signal);
     process.send?.({ type: "supervisor-ready" });
     console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
   } catch (error) {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { closeSync, constants, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptLegacyEnv, mergeEnvLayers, ovisName, withLegacyNames } from "./legacy-env.ts";
@@ -245,21 +245,23 @@ describe("a supervisor started by the launcher of an install from before the ren
     // both hold the write end of this FIFO: its reader sees the end only once both are gone
     const fifo = join(directory, "install-alive");
     expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    const reader = createReadStream(fifo);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const gone = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("the install or its child outlived the supervisor")), 15_000);
-      const reader = createReadStream(fifo);
+      timer = setTimeout(() => reject(new Error("the install or its child outlived the supervisor")), 15_000);
       reader.on("data", () => undefined);
       reader.on("end", () => { clearTimeout(timer); resolve(); });
       reader.on("error", (error) => { clearTimeout(timer); reject(error); });
     });
+    gone.catch(() => undefined); // awaited below; a run that fails before then must not leave it unhandled
     standInInstall(directory, release, `
       const { openSync } = await import("node:fs");
       const { spawn } = await import("node:child_process");
       process.on("SIGTERM", () => {});
       const alive = openSync(${JSON.stringify(fifo)}, "w");
-      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 60_000);"], { stdio: ["ignore", "ignore", "ignore", alive] });
+      // the child says it started only once it ignores SIGTERM itself, so the stop meets both handlers
+      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], ''); setInterval(() => {}, 60_000);", ${JSON.stringify(started)}], { stdio: ["ignore", "ignore", "ignore", alive] });
       writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, child.pid]));
-      writeFileSync(${JSON.stringify(started)}, "");
       setInterval(() => {}, 60_000);
     `);
     try {
@@ -278,6 +280,10 @@ describe("a supervisor started by the launcher of an install from before the ren
     } finally {
       // a failing run must not leave them behind
       if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+      clearTimeout(timer);
+      // a reader still waiting for its first writer is let go by a writer that opens and leaves at once
+      try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); } catch { /* no reader waits */ }
+      reader.destroy();
     }
   }, 40_000);
 
