@@ -6,6 +6,8 @@ import { join, win32 } from "node:path";
 import * as fs from "node:fs";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
+import { turnStarts } from "./transcript-turns.ts";
+import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { parseAgyTranscript } from "./agy.ts";
@@ -15,7 +17,7 @@ import * as herdr from "./herdr/client.ts";
 import { forgetHistoryChains } from "./codex.ts";
 import { DevinHistoryChanged } from "./devin.ts";
 import * as omo from "./omo.ts";
-import { ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -843,6 +845,53 @@ describe("parseClaudeTranscript", () => {
       expect(prompts(warm.turns)).toEqual(["cherry"]);
       forgetTranscriptState();
       expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
+    });
+
+    // the same restore, with a screenshot sent in place of "cherry": a prompt all the same, also
+    // when the picture makes its record longer than the branch reader parses whole
+    for (const size of [16, 900 * 1024]) it(`hides the turns a restore left behind when the next prompt is only a picture of ${size} bytes`, () => {
+      const path = file();
+      const png = Buffer.alloc(size);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } };
+      const entries = lines.map((line) => JSON.parse(line) as { message?: { content?: unknown } });
+      const fork = entries.findIndex((entry) => entry.message?.content === "cherry");
+      const write = (from: number, to: number) => appendFileSync(path, `${entries.slice(from, to).map((entry) => JSON.stringify(entry.message?.content === "cherry" ? { ...entry, message: { ...entry.message, content: [picture] } } : entry)).join("\n")}\n`);
+      write(0, fork);
+      expect(prompts(transcriptPage("claude-transcript", path).turns)).toEqual(["apple", "banana"]);
+      write(fork, entries.length);
+      const warm = transcriptPage("claude-transcript", path).turns;
+      expect(prompts(warm)).toEqual([]);
+      expect(warm[0]?.parts.map((part) => part.kind)).toEqual(["image"]);
+      forgetTranscriptState();
+      expect(transcriptPage("claude-transcript", path).turns).toEqual(warm);
+    });
+
+    it("hides the turns a restore left behind when a screenshot prompt crosses a cold read's window", () => {
+      // a long session read cold: the picture's record starts in the first 16 MiB and ends past them
+      const path = file();
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const rows = [JSON.stringify({ type: "user", uuid: id(0), parentUuid: null, message: { role: "user", content: "apple" } })];
+      let size = rows[0]!.length + 1;
+      let n = 1;
+      for (; size < TRANSCRIPT_WINDOW_BYTES - 512 * 1024; n++) {
+        rows.push(JSON.stringify({ type: "assistant", uuid: id(n), parentUuid: id(n - 1), message: { content: [{ type: "text", text: "x".repeat(200_000) }] } }));
+        size += rows.at(-1)!.length + 1;
+      }
+      // the turn the restore goes back over, on the newest page
+      rows.push(JSON.stringify({ type: "user", uuid: id(800), parentUuid: id(n - 1), message: { role: "user", content: "banana" } }));
+      rows.push(JSON.stringify({ type: "assistant", uuid: id(801), parentUuid: id(800), message: { content: [{ type: "text", text: "banana answered" }], stop_reason: "end_turn" } }));
+      size += rows.at(-2)!.length + rows.at(-1)!.length + 2;
+      const png = Buffer.alloc(2 * 1024 * 1024);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      rows.push(JSON.stringify({ type: "user", uuid: id(900), parentUuid: null, message: { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] } }));
+      expect(size + rows.at(-1)!.length).toBeGreaterThan(TRANSCRIPT_WINDOW_BYTES);
+      rows.push(JSON.stringify({ type: "assistant", uuid: id(901), parentUuid: id(900), message: { content: [{ type: "text", text: "cherry answered" }], stop_reason: "end_turn" } }));
+      writeFileSync(path, `${rows.join("\n")}\n`);
+      forgetTranscriptState();
+      const turns = transcriptPage("claude-transcript", path).turns;
+      expect(prompts(turns)).toEqual([]);
+      expect(turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text : part.kind))).toEqual([["image"], ["cherry answered"]]);
     });
 
     it("keeps the turns before a message rewound to in the middle", () => {
@@ -1788,6 +1837,62 @@ describe("images and compactions in a Claude transcript", () => {
     expect(JSON.stringify(turns)).not.toContain("iVBOR");
   });
 
+  it("names a picture a tool returned by its entry, its result and its place there, and never carries its data", () => {
+    const png = "iVBORw0KGgoAAAANSUhEUg==";
+    const turns = parseClaudeTranscript(lines(
+      { type: "user", uuid: "00000000-2222-3333-4444-555555555555", message: { content: "open both shots" } },
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.txt" } }, { type: "tool_use", id: "toolu_b", name: "Read", input: { file_path: "b.png" } }], stop_reason: "tool_use" } },
+      { type: "user", uuid: "77777777-2222-3333-4444-555555555555", message: { content: [
+        { type: "tool_result", tool_use_id: "toolu_a", content: "plain text" },
+        { type: "tool_result", tool_use_id: "toolu_b", content: [
+          { type: "text", text: "read b.png" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+          // a type the chat never shows, and bytes that are no picture under a type it does
+          { type: "image", source: { type: "base64", media_type: "image/svg+xml", data: "PHN2Zz4=" } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "PHN2Zz4=" } },
+        ] },
+      ] } },
+    ));
+    const tools = turns.flatMap((turn) => turn.parts).filter((part) => part.kind === "tool");
+    expect(tools.map((tool) => [tool.output, tool.images])).toEqual([
+      ["plain text", undefined],
+      ["read b.png", [{ media_type: "image/png", ref: "77777777-2222-3333-4444-555555555555:1:1" }]],
+    ]);
+    expect(JSON.stringify(turns)).not.toContain(png);
+  });
+
+  it("opens a turn at a prompt that is only a picture, as at a text one", () => {
+    const picture = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+    const records = [
+      { type: "user", uuid: "11111111-2222-3333-4444-555555555555", message: { content: "first" } },
+      { type: "assistant", message: { content: [{ type: "text", text: "one" }], stop_reason: "end_turn" } },
+      { type: "user", uuid: "22222222-2222-3333-4444-555555555555", message: { content: [picture("iVBORw0KGgoAAAANSUhEUg==")] } },
+      { type: "assistant", message: { content: [{ type: "text", text: "two" }], stop_reason: "end_turn" } },
+      // what the parser draws no picture for opens nothing either
+      { type: "user", uuid: "33333333-2222-3333-4444-555555555555", message: { content: [picture("PHN2Zz4=")] } },
+    ].map((record) => JSON.stringify(record));
+    const bytes = Buffer.from(records.join("\n"));
+    expect(turnStarts(bytes, "claude-transcript")).toEqual([0, records[0]!.length + records[1]!.length + 2]);
+  });
+
+  it("keeps a tool's result on the page of its call when a picture shares the result's record", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
+      const text = lines(
+        { type: "user", uuid: "11111111-2222-3333-4444-555555555555", message: { content: "read it" } },
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_r", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: "22222222-2222-3333-4444-555555555555", message: { content: [{ type: "tool_result", tool_use_id: "toolu_r", content: [{ type: "text", text: "Read output" }, picture] }, picture] } },
+        { type: "assistant", message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
+      );
+      writeFileSync(path, `${text}\n`);
+      const page = transcriptPage("claude-transcript", path).turns;
+      expect(page).toEqual(parseClaudeTranscript(text));
+      expect(page.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")).toMatchObject({ output: "Read output", images: [{ media_type: "image/png", ref: "22222222-2222-3333-4444-555555555555:0:1" }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
   it("marks where a compaction folded the conversation, with its summary", () => {
     const turns = parseClaudeTranscript(lines(
       { type: "user", timestamp: "2026-09-27T00:00:00Z", message: { content: "before" } },
@@ -1803,7 +1908,7 @@ describe("transcriptImage", () => {
     try {
       const path = join(dir, "session.jsonl");
       const uuid = "11111111-2222-3333-4444-555555555555";
-      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       writeFileSync(path, [
         { type: "user", uuid: "99999999-2222-3333-4444-555555555555", message: { content: [{ type: "text", text: "x" }] } },
         { type: "user", uuid, message: { content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }, { type: "text", text: "what?" }, { type: "image", source: { type: "base64", media_type: "image/svg+xml", data: "PHN2Zz4=" } }] } },
@@ -1818,6 +1923,77 @@ describe("transcriptImage", () => {
       expect(transcriptImage(path, "../../etc/passwd:0")).toBeNull();
       expect(transcriptImage(join(dir, "missing.jsonl"), `${uuid}:0`)).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("decodes a tool's picture by its place in the result, and only a picture the page would name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const uuid = "77777777-2222-3333-4444-555555555555";
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+      const image = (media_type: string, data: string) => ({ type: "image", source: { type: "base64", media_type, data } });
+      // just past the endpoint's 8 MiB, behind a real PNG signature
+      const huge = png.toString("base64") + "A".repeat(Math.ceil(8 * 1024 * 1024 * 4 / 3));
+      const records = [
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_b", name: "Read", input: { file_path: "b.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid, message: { content: [
+          { type: "tool_result", tool_use_id: "toolu_a", content: "plain text" },
+          { type: "tool_result", tool_use_id: "toolu_b", content: [{ type: "text", text: "read b.png" }, image("image/png", png.toString("base64")), image("image/png", "PHN2Zz4="), image("image/png", huge)] },
+        ] } },
+      ];
+      writeFileSync(path, records.map((entry) => JSON.stringify(entry)).join("\n"));
+      const read = transcriptImage(path, `${uuid}:1:1`);
+      expect(read?.mediaType).toBe("image/png");
+      expect(Buffer.from(read!.bytes).equals(png)).toBe(true);
+      // the page names the same one picture the endpoint serves
+      const tool = parseClaudeTranscript(readFileSync(path, "utf8")).flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+      expect(tool?.kind === "tool" ? tool.images : null).toEqual([{ media_type: "image/png", ref: `${uuid}:1:1` }]);
+      // the result's text, no picture at that place, a result named as if it were the picture,
+      // bytes that are no picture, a picture past the endpoint's size, a ref that is no ref
+      for (const ref of [`${uuid}:1:0`, `${uuid}:0:0`, `${uuid}:1:9`, `${uuid}:1`, `${uuid}:1:2`, `${uuid}:1:3`, `${uuid}:1:1:0`, `${uuid}:1:x`]) expect(transcriptImage(path, ref)).toBeNull();
+      // a /clear puts the pictures before it out of reach, as it does their page
+      appendFileSync(path, `\n${JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })}\n`);
+      expect(transcriptImage(path, `${uuid}:1:1`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("serves only the pictures of the branch the page shows, from the entry it draws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const picture = (data: string) => ({ type: "image", source: { type: "base64", media_type: data.startsWith("R0lG") ? "image/gif" : "image/png", data } });
+      const png = "iVBORw0KGgoAAAANSUhEUg==";
+      const gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+      const read = (n: number, parent: number) => ({ type: "assistant", uuid: id(n), parentUuid: id(parent), message: { content: [{ type: "tool_use", id: `toolu_${n}`, name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } });
+      const result = (n: number, parent: number, call: number, data: string, extra = {}) => ({ type: "user", uuid: id(n), parentUuid: id(parent), ...extra, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${call}`, content: [{ type: "text", text: "Read output" }, picture(data)] }] } });
+      const answer = (n: number, parent: number) => ({ type: "assistant", uuid: id(n), parentUuid: id(parent), message: { content: [{ type: "text", text: `answer ${n}` }], stop_reason: "end_turn" } });
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), parentUuid: null, message: { role: "user", content: "look at the old shot" } },
+        read(2, 1), result(3, 2, 2, png), answer(4, 3),
+        // a rewind back to the start, and a prompt that is only a picture
+        { type: "user", uuid: id(5), parentUuid: null, message: { role: "user", content: [picture(png)] } },
+        read(6, 5),
+        // a record the parser hides, under the id of the result it draws
+        result(7, 6, 6, gif, { isMeta: true }), result(7, 6, 6, png), answer(8, 7),
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(5)}:0`, `${id(7)}:0:1`]);
+      expect(transcriptImage(path, `${id(5)}:0`)?.mediaType).toBe("image/png");
+      expect(transcriptImage(path, `${id(7)}:0:1`)?.mediaType).toBe("image/png");
+      // the Read the rewind left behind is no picture of this conversation's
+      expect(transcriptImage(path, `${id(3)}:0:1`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("takes a picture up to the endpoint's size exactly, its padding left out", () => {
+    const png = (size: number) => {
+      const bytes = Buffer.alloc(size);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+      return { type: "image", source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") } };
+    };
+    expect(claudeImageType(png(8 * 1024 * 1024))).toBe("image/png");
+    expect(claudeImageType(png(8 * 1024 * 1024 + 1))).toBeNull();
   });
 });
 

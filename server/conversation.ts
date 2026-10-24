@@ -42,7 +42,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, codexTranscriptImage } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, codexTranscriptImage, MAX_IMAGE_BYTES } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -63,7 +63,7 @@ import { answerVersion, ConversationNotStarted, ConversationUnavailable, type Co
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, parseOmpTranscript, piImageBlock, piMessage, piResults, type TranscriptParser } from "./transcript-records.ts";
-import { claudeResultText, createClaudeTranscriptParser, IMAGE_TYPES, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
+import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
@@ -207,6 +207,8 @@ function readStream(stream: TranscriptStream, from: number, to: number): Buffer 
  * is otherwise never read, and the chat showed the level the session started at. */
 const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
 const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<"model_change" | "thinking_level_change", { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
+/** a Claude record that holds a picture, up to the largest one the chat shows, is followed whole when it crosses a window */
+const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript") return;
   let scan = clearScans.get(path);
@@ -244,8 +246,9 @@ function applyHistoryBoundary(path: string, stream: TranscriptStream, source: Re
       scan.scanned = base + offset;
     }
     carry = bytes.subarray(offset);
-    // An oversized data record cannot be a native clear control envelope.
-    if (carry.length > METADATA_HEAD_BYTES) { carry = Buffer.alloc(0); skipping = true; }
+    // An oversized data record cannot be a native clear control envelope; a Claude prompt that is a
+    // screenshot can still be where the session's branch forks
+    if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) { carry = Buffer.alloc(0); skipping = true; }
     position = end;
   }
   scan.tail = bytesBefore(stream, scan.scanned);
@@ -1382,13 +1385,14 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
 }
 
 /**
- * One image a user pasted into a Claude prompt, by the ref its image part carries
- * (`<entry uuid>:<block index>`): the transcript holds it as base64, so it is decoded
- * here rather than sent with every poll of the conversation. Null when there is no such
+ * One image in a pane's conversation, by the ref its part carries: for Claude a picture pasted
+ * into a prompt (`<entry uuid>:<block index>`) or one a tool returned
+ * (`<entry uuid>:<block index>:<index in the result>`). The transcript holds it as base64, so it
+ * is decoded here rather than sent with every poll of the conversation. Null when there is no such
  * image. Codex uses a hash of the native attachment and searches only the bound history.
  */
 export async function conversationImage(paneId: string, ref: string, codexHome?: string, opencodeDb?: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  if (!IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
+  if (!CLAUDE_IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
@@ -1403,27 +1407,35 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 
-const IMAGE_REF = /^([0-9a-f-]{8,64}):(\d{1,3})$/i;
-
-/** The image an image part's ref names in a Claude transcript file, decoded; null when there is none. */
+/**
+ * The image an image part's ref names in a Claude transcript file, decoded; null when there is none,
+ * or when it is no picture the page would name (claudeImageType: the same check, so they agree). It
+ * is read as the page is: after the last /clear, and on the branch a rewind left the session on.
+ */
 export function transcriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
-  const match = IMAGE_REF.exec(ref);
+  const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
-  const [, uuid, index] = match;
+  const [, uuid, index, nested] = match;
   let text: string;
-  try { text = readFileSync(path, "utf8"); } catch { return null; }
-  text = activeHistoryText(text, "claude-transcript");
+  try {
+    const stream = transcriptStream("claude-transcript", path, statSync(path), defaultCodexHome());
+    applyHistoryBoundary(path, stream, "claude-transcript");
+    text = readStream(stream, stream.floor, stream.length).toString("utf8");
+  } catch { return null; }
   const needle = JSON.stringify(uuid);
   for (const line of text.split("\n")) {
     if (!line.includes(needle)) continue;
     let entry: TranscriptEntry;
     try { entry = JSON.parse(line) as TranscriptEntry; } catch { continue; }
-    if (entry.uuid !== uuid || !Array.isArray(entry.message?.content)) continue;
-    const block = entry.message.content[Number(index)] as { type?: unknown; source?: { type?: unknown; media_type?: unknown; data?: unknown } } | undefined;
-    if (block?.type !== "image" || block.source?.type !== "base64" || typeof block.source.data !== "string") return null;
-    const mediaType = String(block.source.media_type);
-    if (!IMAGE_TYPES.has(mediaType)) return null;
-    return { mediaType, bytes: new Uint8Array(Buffer.from(block.source.data, "base64")) };
+    // only an entry the parser draws: a hidden one can carry the same id
+    if (entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+    const block = entry.message.content[Number(index)] as { type?: unknown; content?: unknown } | undefined;
+    // a tool's picture sits inside the result it returned
+    const image = (nested === undefined ? block
+      : block?.type === "tool_result" && Array.isArray(block.content) ? block.content[Number(nested)] : undefined) as { source?: { data?: unknown } } | undefined;
+    const mediaType = claudeImageType(image);
+    if (mediaType === null) return null;
+    return { mediaType, bytes: new Uint8Array(Buffer.from(String(image?.source?.data), "base64")) };
   }
   return null;
 }

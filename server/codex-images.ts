@@ -10,7 +10,8 @@ type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" ? value as RecordValue : {};
 const TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 const DATA_IMAGE = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]*={0,2})$/;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** The largest picture the image endpoint serves, from any agent's transcript. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const CODEX_IMAGE_REF = /^codex-[a-f0-9]{64}$/;
 
 /** Only native user records name attachments; tool output and remote URLs never do. */
