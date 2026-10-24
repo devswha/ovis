@@ -120,6 +120,8 @@ describe("Muse session binding", () => {
   const END = '{"payload_type":"session.end","payload":{"kind":"session_end"}}\n';
   const ended = `${fixture}${END}`;
   const owner = [{ pid: 4242, startedAt: start }];
+  // a scan that bound nothing stands for 2 s: a test that scans again moves the clock past it
+  const later = () => Date.now() + 2000;
 
   test("binds the one live session whose lock names the process", () => {
     const live = session("22", id(1), "pid=4242\nhost=fiction\n");
@@ -136,7 +138,7 @@ describe("Muse session binding", () => {
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
     // after an in-TUI switch, the session left behind ends and the one switched to is live
     const live = session("22", id(4), "pid=4242\nhost=fiction\n");
-    expect(museSessionFor(root, owner, "fiction")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction", later())).toBe(live);
   });
 
   test("a host name matches by its first label", () => {
@@ -149,7 +151,7 @@ describe("Muse session binding", () => {
     const other = session("22", id(2), "pid=4242\nhost=fiction\n");
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
     appendFileSync(other, END);
-    expect(museSessionFor(root, owner, "fiction")).toBe(old);
+    expect(museSessionFor(root, owner, "fiction", later())).toBe(old);
   });
 
   test("keeps a binding while its lock and log hold, and scans again once the log ends", () => {
@@ -170,12 +172,26 @@ describe("Muse session binding", () => {
     expect(museSessionFor(root, [{ pid: 4241, startedAt: start }, ...owner], "fiction")).toBe(live);
   });
 
+  test("a scan that binds nothing is not repeated for 2 s, except for other processes", () => {
+    const now = Date.now();
+    expect(museSessionFor(root, owner, "fiction", now)).toBeNull();
+    // a fresh Muse writes its session after the pane is first resolved
+    const live = session("22", id(1), "pid=4242\nhost=fiction\n");
+    expect(museSessionFor(root, owner, "fiction", now + 1999)).toBeNull();
+    expect(museSessionFor(root, owner, "fiction", now + 2000)).toBe(live);
+    // the miss is kept per set of processes: a launcher beside the child is scanned at once
+    const child = [{ pid: 4343, startedAt: start }];
+    expect(museSessionFor(root, child, "fiction", now)).toBeNull();
+    const other = session("22", id(2), "pid=4343\nhost=fiction\n");
+    expect(museSessionFor(root, [{ pid: 4342, startedAt: start }, ...child], "fiction", now)).toBe(other);
+  });
+
   test("a store of more than 4096 sessions is not scanned", () => {
     const live = session("22", id(1), "pid=4242\nhost=fiction\n");
     for (let n = 2; n <= 4097; n++) mkdirSync(join(root, "sessions", "2026", "10", "23", id(n)), { recursive: true });
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
     rmSync(join(root, "sessions", "2026", "10", "23", id(4097)), { recursive: true });
-    expect(museSessionFor(root, owner, "fiction")).toBe(live);
+    expect(museSessionFor(root, owner, "fiction", later())).toBe(live);
   });
 
   test("a subagent's nested session is never a candidate", () => {

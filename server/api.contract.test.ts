@@ -267,7 +267,13 @@ describe("Muse conversation API", () => {
       writeFileSync(join(first, ".session.lock"), `pid=${pid! + 1}\nhost=${hostname()}\n`);
       expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
       writeFileSync(join(first, ".session.lock"), `pid=${pid}\nhost=${hostname()}\n`);
-      const response = await fetch(url), body = await response.json();
+      // the scan that found nothing stands for 2 s, as for a fresh Muse that has written no log yet
+      let response: Response, body;
+      for (const deadline = Date.now() + 5000;;) {
+        response = await fetch(url); body = await response.json();
+        if (body.source === "muse-transcript" || Date.now() > deadline) break;
+        await Bun.sleep(100);
+      }
       expect(body.source).toBe("muse-transcript");
       expect(body.turns.map((turn: { role: string }) => turn.role)).toEqual(["user", "assistant", "user", "user", "assistant"]);
       expect(body.metadata.model).toBe("muse-fiction-2");
