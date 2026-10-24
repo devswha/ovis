@@ -23,7 +23,8 @@ interface Props {
   machines: readonly Machine[];
   /** the pane has a message box (an agent's): Put in message box is offered */
   canRecover: boolean;
-  onRecover: (text: string) => void;
+  /** false: the box took the text but could not save it, so the record stays here too */
+  onRecover: (text: string) => boolean;
   onClose: () => void;
 }
 
@@ -65,14 +66,14 @@ export function UnsentTextDialog({ machines, canRecover, onRecover, onClose }: P
                 <p className="unsent-meta">
                   <span>{pcName(item)}</span>
                   <span>{item.pane_title ?? item.pane_id}</span>
-                  <span>{item.kind === "message" ? t("Message box") : item.kind === "line" ? t("Terminal line") : t("Held input")}</span>
+                  <span>{item.kind === "message" ? t("Message box") : item.kind === "line" ? t("Terminal line") : item.kind === "held" ? t("Held input") : t("Held message")}</span>
                   <time dateTime={new Date(item.at).toISOString()}>{when(item.at)}</time>
                 </p>
                 <pre className="unsent-text">{item.text}</pre>
                 <div className="unsent-actions">
                   {canRecover && (
                     <button type="button" className="btn btn-primary" title={t("Adds the text to this pane's message box. Nothing is sent.")}
-                      onClick={() => { onRecover(item.text); paneLifetimes.discard(item.id); onClose(); }}>{t("Put in message box")}</button>
+                      onClick={() => { if (onRecover(item.text)) paneLifetimes.discard(item.id); onClose(); }}>{t("Put in message box")}</button>
                   )}
                   <button type="button" className="btn" onClick={() => {
                     void copyText(item.text).then((done) => { if (done) setCopied(item.id); });

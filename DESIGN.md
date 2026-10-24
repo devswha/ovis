@@ -1609,13 +1609,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 
 ### Unsent text (`.unsent-modal`)
 - herdr gives pane IDs out again once it is replaced, so a pane's drafts (message box, terminal
-  line, held input) and its lens belong to the herdr they were made under (`herdr_lifetime` in the
+  line, held input, held or unconfirmed chat messages) and its lens belong to the herdr they were made under (`herdr_lifetime` in the
   snapshot, src/lib/paneLifetime.ts). When a PC's snapshot names another herdr, its panes open with
   an empty box and their default lens in that same render, and the earlier text waits here instead
   of in a pane it was not written for. Nothing is deleted or sent on its own.
 - Opened only by the user, from a pane's menu (**Recover unsent text**, lucide `ArchiveRestore`,
   listed only while there is some). A `.modal` of 560px, a bottom sheet on a phone: a lead sentence,
-  then one row per text, each with its PC, pane, kind (Message box, Terminal line, Held input) and
+  then one row per text, each with its PC, pane, kind (Message box, Terminal line, Held input, Held message) and
   time on one `--text-dim` line, the text in mono on `--bg-elevated` (whole, wrapped, scrolled past
   ten lines), and **Put in message box** (agent panes only: added after what the box of the pane it
   was opened from holds, and that pane shows its chat), **Copy** and **Discard**. Nothing here sends;

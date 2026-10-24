@@ -15,6 +15,8 @@ const memory = new Map<string, string>();
 /** how many times each owner's draft was written: a paste that waited on the clipboard compares it (TerminalInput.tsx) */
 const versions = new Map<string, number>();
 export function terminalDraftVersion(owner: string): number { return versions.get(owner) ?? 0; }
+/** lines storage refused: they live in `memory` alone */
+const unsaved = new Set<string>();
 const PREFIX = "ovis:terminal-line:";
 export const TERMINAL_LINE_LIMIT = 32_768;
 export function readTerminalDraft(owner: string): string {
@@ -30,13 +32,20 @@ export function writeTerminalDraft(owner: string, text: string): void {
   try {
     if (value) paneLifetimes.paneStorage.setItem(PREFIX + owner, value);
     else paneLifetimes.paneStorage.removeItem(PREFIX + owner);
-  } catch { /* private mode: preserve across view changes in memory */ }
+    unsaved.delete(owner);
+  } catch { unsaved.add(owner); /* private mode: preserve across view changes in memory */ }
   notify();
 }
 
 // another herdr took the PC's pane IDs: its lines are read again from where they now are
 paneLifetimes.onRetire((machineId) => {
-  for (const owner of [...memory.keys()]) if (paneStateKey(PREFIX + owner)?.machineId === machineId) memory.delete(owner);
+  for (const [owner, line] of [...memory]) {
+    const pane = paneStateKey(PREFIX + owner);
+    if (pane?.machineId !== machineId) continue;
+    // a line storage refused lives only here: it goes to recovery, not away
+    if (unsaved.delete(owner)) paneLifetimes.keep(machineId, pane.paneId, "line", line);
+    memory.delete(owner);
+  }
   notify();
 });
 

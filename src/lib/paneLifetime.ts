@@ -15,13 +15,20 @@ import { restoreDraft } from "./draft.ts";
  * it survives reconnects, never reaches storage, and reads none of it. So does a PC whose stored
  * state another tab already gave to a herdr this page has not seen yet.
  */
-export type UnsentKind = "message" | "line" | "held";
+export type UnsentKind = "message" | "line" | "held" | "pending";
 export interface UnsentText { id: string; machine_id: string; pane_id: string; pane_title?: string; kind: UnsentKind; text: string; at: number }
 
-const KINDS: readonly (readonly [string, UnsentKind])[] = [["ovis:composer-draft:", "message"], ["ovis:terminal-line:", "line"], ["ovis:terminal-draft:", "held"]];
+const KINDS: readonly (readonly [string, UnsentKind])[] = [
+  ["ovis:composer-draft:", "message"], ["ovis:terminal-line:", "line"], ["ovis:terminal-draft:", "held"],
+  // messages held for a pane, or not confirmed (lib/pendingMessages.ts, and the older lib/messageQueue.ts)
+  ["ovis:pending:", "pending"], ["ovis:queue:", "pending"],
+];
 const LEASE_PREFIX = "ovis:composer-sending:";
 const VIEW_PREFIX = "ovis:view:";
 const RECORD_PREFIX = "ovis:pane-lifetime:";
+/** each PC's lifetimes the record held before: a snapshot naming one of them is older than the record */
+const RETIRED_PREFIX = "ovis:pane-lifetimes-retired:";
+const RETIRED_KEPT = 16;
 export const UNSENT_PREFIX = "ovis:unsent:";
 type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -47,9 +54,21 @@ function parseUnsent(id: string, raw: string | null): UnsentText | null {
     if (typeof value !== "object" || value === null) return null;
     const { machine_id, pane_id, pane_title, kind, text, at } = value as Partial<UnsentText>;
     if (typeof machine_id !== "string" || typeof pane_id !== "string" || typeof text !== "string" || typeof at !== "number"
-      || (kind !== "message" && kind !== "line" && kind !== "held")) return null;
+      || (kind !== "message" && kind !== "line" && kind !== "held" && kind !== "pending")) return null;
     return { id, machine_id, pane_id, ...(typeof pane_title === "string" && pane_title ? { pane_title } : {}), kind, text, at };
   } catch { return null; }
+}
+
+/** The text a stored pane-state value holds: held input keeps only its printable text, a message list each message's. */
+function texts(kind: UnsentKind, value: string | null, now: number): string[] {
+  if (kind === "held") return [restoreDraft(value, now).text];
+  if (kind !== "pending") return [value ?? ""];
+  try {
+    const data: unknown = JSON.parse(value ?? "null");
+    const messages = typeof data === "object" && data !== null && "messages" in data && Array.isArray(data.messages) ? data.messages as unknown[] : null;
+    if (messages === null) return [value ?? ""];
+    return messages.flatMap((message) => typeof message === "object" && message !== null && "text" in message && typeof message.text === "string" ? [message.text] : []);
+  } catch { return [value ?? ""]; }
 }
 
 export class PaneLifetimes {
@@ -61,6 +80,8 @@ export class PaneLifetimes {
   private readonly titles = new Map<string, Map<string, string>>();
   /** the pane state of PCs this page keeps out of storage */
   private readonly memory = new Map<string, string>();
+  /** text that storage refused to keep for recovery: offered from this page while it is open */
+  private pageUnsent: UnsentText[] = [];
   private readonly retired = new Set<(machineId: string) => void>();
   private readonly listeners = new Set<() => void>();
   private unsentCache: { raw: string; list: readonly UnsentText[] } | null = null;
@@ -109,13 +130,24 @@ export class PaneLifetimes {
     const changed: string[] = [];
     for (const machine of machines) {
       if (!machine.snapshot) continue;
-      const next = machine.snapshot.herdr_lifetime ?? null;
       const titles = this.titles.get(machine.id) ?? new Map<string, string>();
+      // once a PC proved its herdr, a snapshot naming none (a read that could not prove one) is no news
+      const named = machine.snapshot.herdr_lifetime;
+      if (named === undefined && this.proven.has(machine.id)) continue;
+      const next = named ?? null;
       if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {
         this.retireMemory(machine.id, titles);
         this.generations.set(machine.id, next);
         if (next !== null) this.settle(machine.id, next, titles);
         changed.push(machine.id);
+      } else if (next !== null && !this.stored(machine.id)) {
+        // behind another tab, or refused by storage: tried again with each roster
+        this.settle(machine.id, next, titles);
+        if (this.stored(machine.id)) {
+          // what was typed meanwhile in this page alone is not what storage now holds for the panes
+          this.retireMemory(machine.id, titles);
+          changed.push(machine.id);
+        }
       }
       if (next !== null) this.proven.set(machine.id, next);
       this.titles.set(machine.id, new Map(machine.snapshot.panes.map((pane) => [pane.pane_id, title(pane)])));
@@ -129,10 +161,15 @@ export class PaneLifetimes {
       const storage = this.storage();
       const record = storage.getItem(RECORD_PREFIX + machineId);
       if (record === next) return;
-      const last = this.proven.get(machineId);
-      if (record !== null && last !== undefined && last !== record) return;
+      let retired: string[] = [];
+      try { const list: unknown = JSON.parse(storage.getItem(RETIRED_PREFIX + machineId) ?? "[]"); if (Array.isArray(list)) retired = list.filter((item): item is string => typeof item === "string"); } catch { /* unreadable: no history */ }
+      // a herdr the stored state already outlived: this page is behind another tab, and leaves that state alone
+      if (retired.includes(next)) return;
       // no record: what is stored was written before lifetimes were (or on a fresh page), and stays the pane's
-      if (record !== null) this.retireStored(storage, machineId, titles);
+      if (record !== null) {
+        this.retireStored(storage, machineId, titles);
+        storage.setItem(RETIRED_PREFIX + machineId, JSON.stringify([...retired.filter((item) => item !== record), record].slice(-RETIRED_KEPT)));
+      }
       storage.setItem(RECORD_PREFIX + machineId, next);
     } catch { /* storage refused: the PC's state stays in this page */ }
   }
@@ -146,29 +183,47 @@ export class PaneLifetimes {
     for (const key of keys) {
       const pane = paneStateKey(key);
       if (pane?.machineId !== machineId) continue;
-      if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, storage.getItem(key), titles);
+      if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, storage.getItem(key), this.now()), titles);
       storage.removeItem(key);
     }
   }
 
   private retireMemory(machineId: string, titles: ReadonlyMap<string, string>): void {
     let storage: Storage | null = null;
-    try { storage = this.storage(); } catch { /* no storage: page-only text has nowhere else to go */ }
+    try { storage = this.storage(); } catch { /* no storage: the text is kept in this page */ }
     for (const [key, value] of [...this.memory]) {
       const pane = paneStateKey(key);
       if (pane?.machineId !== machineId) continue;
       this.memory.delete(key);
-      if (pane.kind !== null && storage !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, value, titles);
+      if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, value, this.now()), titles);
     }
   }
 
-  private archive(storage: Storage, machineId: string, paneId: string, kind: UnsentKind, value: string | null, titles: ReadonlyMap<string, string>): void {
-    // held input is stored with its flags and time; only its printable text is kept
-    const text = kind === "held" ? restoreDraft(value, this.now()).text : value ?? "";
-    if (text.trim() === "") return;
+  /**
+   * Text a store held only in this page for a PC whose herdr was just replaced (an edit storage
+   * refused, input held but not yet saved): kept for recovery with the rest.
+   */
+  keep(machineId: string, paneId: string, kind: UnsentKind, text: string): void {
+    let storage: Storage | null = null;
+    try { storage = this.storage(); } catch { /* no storage: the text is kept in this page */ }
+    this.archive(storage, machineId, paneId, kind, [text], this.titles.get(machineId) ?? new Map());
+    this.notify();
+  }
+
+  private archive(storage: Storage | null, machineId: string, paneId: string, kind: UnsentKind, values: readonly string[], titles: ReadonlyMap<string, string>): void {
     const title = titles.get(paneId);
-    const record = { machine_id: machineId, pane_id: paneId, ...(title && title !== paneId ? { pane_title: title } : {}), kind, text, at: this.now() };
-    try { storage.setItem(UNSENT_PREFIX + this.newId(), JSON.stringify(record)); } catch { /* full or refused: the text cannot be kept */ }
+    for (const text of values) {
+      if (text.trim() === "") continue;
+      // the same text of the same pane is kept once (two tabs, or a store and storage, can both hand it over)
+      if (this.unsent().some((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text)) continue;
+      const record: UnsentText = { id: this.newId(), machine_id: machineId, pane_id: paneId, ...(title && title !== paneId ? { pane_title: title } : {}), kind, text, at: this.now() };
+      const { id, ...stored } = record;
+      try {
+        if (storage === null) throw new Error("no storage");
+        storage.setItem(UNSENT_PREFIX + id, JSON.stringify(stored));
+      } catch { this.pageUnsent = [...this.pageUnsent, record]; }
+      this.unsentCache = null;
+    }
   }
 
   /** The text earlier herdrs' panes left, newest first. */
@@ -182,14 +237,15 @@ export class PaneLifetimes {
       }
     } catch { /* storage refused: there is nothing kept */ }
     found.sort(([a], [b]) => a.localeCompare(b));
-    const raw = JSON.stringify(found);
+    const raw = JSON.stringify([found, this.pageUnsent.map((item) => item.id)]);
     if (this.unsentCache?.raw === raw) return this.unsentCache.list;
-    const list = found.flatMap(([id, value]) => parseUnsent(id, value) ?? []).sort((a, b) => b.at - a.at);
+    const list = [...found.flatMap(([id, value]) => parseUnsent(id, value) ?? []), ...this.pageUnsent].sort((a, b) => b.at - a.at);
     this.unsentCache = { raw, list };
     return list;
   };
 
   discard(id: string): void {
+    this.pageUnsent = this.pageUnsent.filter((item) => item.id !== id);
     try { this.storage().removeItem(UNSENT_PREFIX + id); } catch { /* storage refused */ }
     this.notify();
   }

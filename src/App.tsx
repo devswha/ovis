@@ -955,6 +955,7 @@ export function App() {
         composerDrafts.set(key, (current) => current.trim() === "" ? text : `${current}\n\n${text}`);
         if (unsentFor.machineId === selectedMachineId && unsentFor.pane.pane_id === selectedPaneId) setView("chat");
         else pickView(unsentFor.machineId, unsentFor.pane.pane_id, "chat");
+        return !composerDrafts.isUnsaved(key);
       }} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek

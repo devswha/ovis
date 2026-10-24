@@ -6,10 +6,15 @@ import { PaneLifetimes } from "./paneLifetime.ts";
 
 class MemoryStorage implements Storage {
   readonly data = new Map<string, string>();
+  /** writes to keys with this prefix throw, as a full or blocked storage does */
+  refuse: string | null = null;
   get length(): number { return this.data.size; }
   key(index: number): string | null { return [...this.data.keys()][index] ?? null; }
   getItem(key: string): string | null { return this.data.get(key) ?? null; }
-  setItem(key: string, value: string): void { this.data.set(key, value); }
+  setItem(key: string, value: string): void {
+    if (this.refuse !== null && key.startsWith(this.refuse)) throw new DOMException("full", "QuotaExceededError");
+    this.data.set(key, value);
+  }
   removeItem(key: string): void { this.data.delete(key); }
   clear(): void { this.data.clear(); }
 }
@@ -94,11 +99,68 @@ describe("pane state per herdr lifetime", () => {
     expect(behind.unsent().map(({ text }) => text)).toEqual(["typed while behind"]);
   });
 
+  it("leaves held and unconfirmed chat messages to recovery too, one record per message", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    storage.setItem("ovis:pending:w1:p1", JSON.stringify({ version: 1, messages: [{ id: "1", text: "deploy it" }, { id: "2", text: "and tag it" }] }));
+    storage.setItem("ovis:queue:w1:p1", "an older queued line");
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    expect(storage.getItem("ovis:pending:w1:p1")).toBeNull();
+    expect(storage.getItem("ovis:queue:w1:p1")).toBeNull();
+    expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`).sort()).toEqual(["pending:an older queued line", "pending:and tag it", "pending:deploy it"]);
+  });
+
+  it("never rolls the stored state back to a herdr it outlived, and follows one that came after", () => {
+    const storage = new MemoryStorage();
+    const ahead = page(storage);
+    ahead.observe([pc("local", "herdr-a")], title);
+    ahead.observe([pc("local", "herdr-b")], title);
+    ahead.paneStorage.setItem(DRAFT, "for herdr-b's pane");
+    // a fresh tab handed an older roster: it keeps to the page, herdr-b's text stays where it is
+    const stale = page(storage);
+    stale.observe([pc("local", "herdr-a")], title);
+    expect(storage.getItem(DRAFT)).toBe("for herdr-b's pane");
+    expect(stale.paneStorage.getItem(DRAFT)).toBeNull();
+    // a tab that missed herdr-b, once the tab that saw it is gone, still follows herdr-c
+    stale.observe([pc("local", "herdr-c")], title);
+    expect(stale.stored("local")).toBe(true);
+    expect(stale.unsent().map(({ text }) => text)).toEqual(["for herdr-b's pane"]);
+  });
+
+  it("takes a snapshot without a lifetime from a PC that proved one as no news", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    lifetimes.paneStorage.setItem(DRAFT, "still mine");
+    lifetimes.observe([pc("local", undefined)], title);
+    expect(lifetimes.generation("local")).toBe("herdr-a");
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("still mine");
+    expect(lifetimes.unsent()).toEqual([]);
+  });
+
+  it("keeps text in this page for recovery when storage refuses its record, or refused the edit itself", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    const drafts = new ComposerDraftStore(() => lifetimes.paneStorage);
+    lifetimes.onRetire((machineId) => drafts.forget(machineId, lifetimes));
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    storage.setItem("ovis:terminal-line:w1:p1", "make release");
+    storage.refuse = DRAFT;
+    drafts.set(DRAFT, "an edit storage refused");
+    storage.refuse = "ovis:unsent:";
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    expect(storage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`).sort()).toEqual(["line:make release", "message:an edit storage refused"]);
+    lifetimes.discard(lifetimes.unsent()[0]!.id);
+    expect(lifetimes.unsent()).toHaveLength(1);
+  });
+
   it("empties a draft store's copy in the render that names another herdr, and Discard removes recovered text", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
     const drafts = new ComposerDraftStore(() => lifetimes.paneStorage);
-    lifetimes.onRetire((machineId) => drafts.forget(machineId));
+    lifetimes.onRetire((machineId) => drafts.forget(machineId, lifetimes));
     lifetimes.observe([pc("local", "herdr-a")], title);
     drafts.set(DRAFT, "half a sentence");
     expect(drafts.read(DRAFT).text).toBe("half a sentence");

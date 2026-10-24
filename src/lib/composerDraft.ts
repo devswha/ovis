@@ -1,4 +1,4 @@
-import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
+import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
 /** Drafts and in-flight sends belong to their pane, even while its composer is unmounted. */
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -125,15 +125,20 @@ export class ComposerDraftStore {
     this.set(from, "");
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
-  forget(machineId: string): void {
-    for (const key of [...this.drafts.keys()]) {
-      if (paneStateKey(key)?.machineId !== machineId) continue;
+  forget(machineId: string, lifetimes: Pick<PaneLifetimes, "keep"> = paneLifetimes): void {
+    for (const [key, draft] of [...this.drafts]) {
+      const pane = paneStateKey(key);
+      if (pane?.machineId !== machineId) continue;
+      // an edit storage refused lives only here: it goes to recovery, not away
+      if (this.unsaved.has(key)) lifetimes.keep(machineId, pane.paneId, "message", draft.text);
       this.drafts.delete(key);
       this.saved.delete(key);
       this.unsaved.delete(key);
     }
     this.notify();
   }
+  /** The draft's latest text could not be saved: it is in this page only. */
+  isUnsaved(key: string): boolean { return this.unsaved.has(key); }
   /** Remove only the acknowledged prefix; edits within the sent text stay unsent. */
   settle(key: string, sent: string): { text: string; edited: boolean } {
     this.refresh(key);

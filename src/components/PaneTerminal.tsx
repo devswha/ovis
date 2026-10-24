@@ -516,6 +516,8 @@ export function PaneTerminal({
   useLayoutEffect(() => {
     if (lifetimeRef.current === lifetime) return;
     lifetimeRef.current = lifetime;
+    // input held a moment ago may not be saved yet (the effect above saves it after paint): to recovery with the rest
+    if (paneId && draftState.owner === paneStorageId(machineId, paneId) && draft.text.trim() !== "") paneLifetimes.keep(machineId, paneId, "held", draft.text);
     let saved = EMPTY_DRAFT;
     try { saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT; } catch {}
     setDraft(saved);
