@@ -5,7 +5,7 @@
  * launcher starts the new release's supervisor. `root` is always the source checkout.
  */
 import "./adopt-legacy-env.ts";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
@@ -15,16 +15,36 @@ import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { runCommand, Updater, type Release } from "./updater.ts";
 
+/** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
+const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
+
 /**
  * A release installed by an updater from before the Rust PTY host (0.4.13's) came without it, so its
  * terminals run on the Node sidecar, or are mirrored where the PC has no Node. It is fetched here, in
  * the background, as this updater fetches it for each release it installs: a bridge on the Node
  * sidecar takes it at its next attach, and one with no PTY host at its next start.
+ *
+ * Each try is marked in bin/ before it starts, and the next one waits RUST_HOST_RETRY_MS from it: a PC
+ * that cannot get the host (offline, a release without one, a check that keeps failing) does not
+ * download again at every restart, and a supervisor that starts while an earlier try still runs
+ * leaves `bin/` to that one. `signal` ends the try when this supervisor stops.
  */
-function installMissingRustHost(directory: string): void {
+function installMissingRustHost(directory: string, signal: AbortSignal): void {
+  const bin = join(directory, "bin");
   if (process.platform === "win32" || !existsSync(join(directory, "scripts", "pty-sidecar.ts"))
-    || existsSync(join(directory, "bin", "ovis-pty-sidecar.json"))) return;
-  runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], undefined, 120_000).then(
+    || existsSync(join(bin, "ovis-pty-sidecar.json"))) return;
+  const attempt = join(bin, "ovis-pty-sidecar.attempt");
+  try {
+    if (Date.now() - statSync(attempt).mtimeMs < RUST_HOST_RETRY_MS) return;
+  } catch { /* never tried */ }
+  try {
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(attempt, `${new Date().toISOString()}\n`);
+  } catch (error) {
+    console.error("Rust PTY host install not tried: its attempt could not be marked", error);
+    return;
+  }
+  runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], signal, 120_000).then(
     (output) => console.log(output),
     (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
   );
@@ -137,9 +157,11 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       } finally { switching = false; }
     },
   });
+  // a Rust PTY host install runs in a process group of its own: it stops with this supervisor
+  const rustHostInstall = new AbortController();
   async function shutdown(code: number) {
     if (stopping) return;
-    stopping = true; updater.stop();
+    stopping = true; updater.stop(); rustHostInstall.abort();
     await stopChild();
     lock.release();
     process.exit(code);
@@ -159,7 +181,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     switching = false;
     started.resolve();
     updater.start();
-    if (active && active.directory !== root) installMissingRustHost(active.directory);
+    if (active && active.directory !== root) installMissingRustHost(active.directory, rustHostInstall.signal);
     process.send?.({ type: "supervisor-ready" });
     console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
   } catch (error) {
