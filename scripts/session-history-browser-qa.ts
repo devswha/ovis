@@ -317,7 +317,8 @@ try {
   assert.equal(outside, false, "an Escape from an overlay outside the dialog is left to that overlay");
   assert.equal(await agentList.isVisible(), true, "the agent list under that overlay stays open");
   console.log("PASS an overlay over the dialog keeps its own Escape while the agent list stays open under it");
-  await picker.click();
+  // with the overlay gone the focus is nowhere: the list takes the next Escape, the dialog the one after
+  await page.keyboard.press("Escape");
   await agentList.waitFor({ state: "detached" });
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
