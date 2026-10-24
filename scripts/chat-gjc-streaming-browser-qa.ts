@@ -27,11 +27,11 @@ const lines = (label: string, count: number) => Array.from({ length: count }, (_
 const call = (id: string, path: string) => entry({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id, name: "read", arguments: { path } }] });
 const result = (id: string, label: string, count: number) => entry({ role: "toolResult", toolCallId: id, toolName: "read", isError: false, content: [{ type: "text", text: lines(label, count) }] });
 
-function reset(): void {
+function reset(earlier: number): void {
   seq = 0; parent = null; clock = Date.parse("2026-10-24T00:00:00.000Z");
   forgetTranscriptState();
   let text = `${JSON.stringify({ type: "session", version: 5, id: "synthetic-gjc", timestamp: new Date(clock).toISOString(), cwd: "/tmp/fixture" })}\n`;
-  for (let turn = 1; turn <= 6; turn++) {
+  for (let turn = 1; turn <= earlier; turn++) {
     text += entry({ role: "user", content: [{ type: "text", text: `Earlier question ${turn}` }] });
     text += entry({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: Array.from({ length: 4 }, (_, index) => `Earlier answer ${turn}, paragraph ${index + 1}. ${"Some words to wrap. ".repeat(12)}`).join("\n\n") }] });
   }
@@ -101,7 +101,10 @@ async function step(page: Page, bytes: number, track: Track): Promise<Frame[]> {
 
 const RECORDS = (): Array<[string, string]> => [
   ["result beta", result("c2", "beta", 40)],
-  ["call gamma", call("c3", "src/gamma.ts")],
+  ["call gamma", entry({ role: "assistant", stopReason: "toolUse", content: [
+    { type: "text", text: Array.from({ length: 12 }, (_, index) => `Beta read, note ${index + 1}. ${"The next file decides it. ".repeat(8)}`).join("\n\n") },
+    { type: "toolCall", id: "c3", name: "read", arguments: { path: "src/gamma.ts" } },
+  ] })],
   ["result gamma", result("c3", "gamma", 25)],
   ["call delta", call("c4", "src/delta.ts")],
 ];
@@ -137,10 +140,11 @@ try {
   } });
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   for (const width of [1440, 390] as const) {
-    for (const scenario of ["reading", "following", "scrolled"] as const) {
+    for (const scenario of ["reading", "short", "following", "scrolled"] as const) {
       for (const rewrite of [false, true]) {
         const name = `${width} ${scenario} ${rewrite ? "rewrite" : "append"}`;
-        reset();
+        const opens = scenario === "reading" || scenario === "short";
+        reset(scenario === "short" ? 0 : 6);
         const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 }, locale: "en-US" });
         await context.addInitScript(() => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" }));
@@ -163,7 +167,7 @@ try {
         await page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; });
         await still(page, {});
         let track: Track = {};
-        if (scenario === "reading") {
+        if (opens) {
           track = { head: "beta.ts" };
           await page.locator(".work-row-head", { hasText: "beta.ts" }).click();
         } else if (scenario === "scrolled") {
@@ -190,10 +194,11 @@ try {
           steps.push(summary);
           if (scenario === "following") expect(end.bottom <= 1, `${name} after ${label}: a reader at the end stays at the end (bottom ${end.bottom})`);
           else {
-            expect(summary.missing === 0 && summary.minDy !== null && summary.maxDy !== null && summary.minDy >= -1 && summary.maxDy <= 1, `${name} after ${label}: the reader's ${scenario === "reading" ? "opened tool" : "row"} stays put in every frame (${JSON.stringify(summary)})`);
-            if (scenario === "reading") expect(end.expanded === "true", `${name} after ${label}: the opened tool stays open (${end.expanded})`);
+            expect(summary.missing === 0 && summary.minDy !== null && summary.maxDy !== null && summary.minDy >= -1 && summary.maxDy <= 1, `${name} after ${label}: the reader's ${opens ? "opened tool" : "row"} stays put in every frame (${JSON.stringify(summary)})`);
+            if (opens) expect(end.expanded === "true", `${name} after ${label}: the opened tool stays open (${end.expanded})`);
           }
         }
+        if (scenario === "short") expect(steps.at(-1)!.bottom > 1, `${name}: the records outgrew a chat that fit the screen when the tool was opened (bottom ${steps.at(-1)!.bottom})`);
         let resumed: number | null = null;
         if (scenario !== "following") {
           const jump = page.locator(".chat-virtual-jump");

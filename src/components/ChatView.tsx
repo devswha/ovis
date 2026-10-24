@@ -1111,6 +1111,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const stickToBottom = useRef(true);
   // Explicit paging stays away even inside the ordinary near-bottom tolerance.
   const pagingAway = useRef(false);
+  // The paging away is the reader opening something (readOpened): it holds in a chat still too short to scroll.
+  const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
   // When the reader last used upward scroll input.
   const scrollInputAt = useRef(-Infinity);
@@ -1516,8 +1518,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const node = scroller.current;
     if (!node) return;
     // Every measurement path must respect a pending restore/minimap/page navigation.
-    // Only genuinely short content cannot be moved away from its end.
-    if (pagingAway.current && node.scrollHeight > node.clientHeight) {
+    // Only genuinely short content cannot be moved away from its end, unless the reader opened
+    // something in it: the records that make it longer must not pull that away (readOpened).
+    if (!pagingAway.current) openedAway.current = false;
+    if (pagingAway.current && (node.scrollHeight > node.clientHeight || openedAway.current)) {
       setEndPresentation(null);
       return;
     }
@@ -1740,7 +1744,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const readOpened = useCallback((): void => {
     navigationRef.current += 1;
     if (!stickToBottom.current) return;
-    pagingAway.current = true; stickToBottom.current = false;
+    pagingAway.current = true; stickToBottom.current = false; openedAway.current = true;
     dropPendingListScroll(timeline.current);
     const node = scroller.current;
     if (node !== null) node.scrollTo({ top: node.scrollTop, behavior: "instant" });
