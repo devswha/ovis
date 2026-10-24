@@ -1,6 +1,6 @@
 import type { HerdrPane, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 import { backgroundAgentDetail, backgroundCommand, validDetailId, within, type ClaudeSubagentStatus } from "./claude-subagents.ts";
-import { badRequest, conflictResponse, errorResponse, jsonResponse } from "./http.ts";
+import { badRequest, conflictResponse, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 
 export const BACKGROUND_AGENT_PATH = "/api/pane/background-agent";
 
@@ -30,6 +30,7 @@ type Session = "omo" | "other" | { path: string; live: boolean; startedAt: numbe
  * are, is 503.
  */
 export async function handleBackgroundAgentRequest(request: Request, url: URL, deps: BackgroundAgentDeps): Promise<Response> {
+  setRequestRoute(BACKGROUND_AGENT_PATH);
   if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
   const paneId = url.searchParams.get("pane_id");
   const agentId = url.searchParams.get("agent_id");

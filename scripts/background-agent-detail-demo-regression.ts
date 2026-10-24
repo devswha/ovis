@@ -73,9 +73,11 @@ const patch = `(() => {
     if (!window.bgHold) return respond();
     // held until the script releases it: the answer then lands after the sheet closed or moved on
     window.bgHold = false;
+    // the release exists before the read goes out, so a script that releases as soon as it sees the read out is never lost
+    const released = new Promise((resolve) => { window.bgRelease = resolve; });
     const response = await respond();
     const body = await response.json();
-    await new Promise((resolve) => { window.bgRelease = resolve; });
+    await released;
     if (Array.isArray(body.events)) body.events.push({ kind: "text", text: "stale response", at: null });
     log.delivered += 1;
     return json(body, response.status);
@@ -161,7 +163,7 @@ try {
         const context = await browser.newContext({ viewport: { width: view.width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, colorScheme: view.theme, locale: view.language === "ko" ? "ko-KR" : "en-US" });
         // the demo's other Claude pane finishes a few seconds in: its in-app alert is not this surface's
         await context.addInitScript(({ theme, language, demo }) => {
-          localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language, theme, alertInApp: false }));
+          localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertInApp: false }));
           window.bgCase = demo;
         }, { theme: view.theme, language: view.language ?? "en", demo });
         const page = await context.newPage();

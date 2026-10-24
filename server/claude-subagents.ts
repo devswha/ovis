@@ -673,22 +673,26 @@ function intact(folder: Folder): boolean {
   return folder.chain.every((step) => folderId(step.path) === step.id) && (folder.fd === null || fdPath(folder.fd) === folder.path);
 }
 
-/** `name` in `folder`, opened as the plain file it was looked at as: no link, not replaced since the look, at most `max` bytes. */
-function openIn(folder: Folder, name: string, max = Infinity): { fd: number; size: number } | null {
+/**
+ * `name` in `folder`, opened as the plain file it was looked at as: no link, not replaced since the look, at most `max` bytes.
+ * `not_found` when there is no such plain file; `unavailable` when one is there but cannot be opened as looked at (no
+ * permission, or replaced meanwhile), so a read that fails is never taken for an agent gone from the session.
+ */
+function openIn(folder: Folder, name: string, max = Infinity): { fd: number; size: number } | DetailRefusal {
   const path = join(folder.path, name);
   // inside the open folder itself where the kernel allows: a folder put in its place leads nowhere else
   const where = folder.fd === null ? path : `${FD_DIR}/${folder.fd}/${name}`;
   const looked = plain(where, max);
-  if (looked === null) return null;
+  if (looked === null) return "not_found";
   let fd: number;
   // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it
-  try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+  try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return "unavailable"; }
   try {
     const opened = fstatSync(fd);
     if (opened.isFile() && `${opened.dev}:${opened.ino}` === looked.id && opened.size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size: opened.size };
   } catch { /* refused below */ }
   closeSync(fd);
-  return null;
+  return "unavailable";
 }
 
 function readAt(fd: number, from: number, length: number): Buffer {
@@ -803,13 +807,13 @@ export function backgroundAgentDetail(parentPath: string, agentId: string): { de
   if (typeof folder === "string") return { refusal: folder };
   try {
     const meta = openIn(folder, `agent-${agentId}.meta.json`, MAX_META_BYTES);
-    if (meta === null) return { refusal: "not_found" };
+    if (typeof meta === "string") return { refusal: meta };
     let record: Row | null;
     try { record = row(JSON.parse(readAt(meta.fd, 0, meta.size).toString("utf8"))); } catch { record = null; } finally { closeSync(meta.fd); }
     // a meta file being written says nothing of the agent yet, and one that names no agent type is no subagent's
     if (record === null || text(record["agentType"]) === null) return { refusal: "not_found" };
     const file = openIn(folder, `agent-${agentId}.jsonl`);
-    if (file === null) return { refusal: "not_found" };
+    if (typeof file === "string") return { refusal: file };
     let read: ReturnType<typeof readDetailRecords>;
     try { read = readDetailRecords(file.fd, file.size, sessionId, agentId); } catch { return { refusal: "unavailable" }; } finally { closeSync(file.fd); }
     // a folder on the way replaced while it was read: what was read may be another folder's

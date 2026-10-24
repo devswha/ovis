@@ -184,7 +184,7 @@ beforeAll(async () => {
   const devices = new DeviceStore(stateDir);
   const paired = devices.pair(devices.startPairing().code, "Watch", "watch")!;
   devices.match(paired.token);
-  watch = `herdr_web_device=${paired.token}`;
+  watch = `ovis_device=${paired.token}`;
   const read: BackgroundAgentDeps["read"] = async (path, id) => {
     const answer = backgroundAgentDetail(path, id);
     const held = hold;

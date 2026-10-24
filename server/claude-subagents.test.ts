@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -388,6 +388,11 @@ describe("backgroundAgentDetail", () => {
     symlinkSync(join(dir, "agent-a1.jsonl"), join(dir, "agent-l2.jsonl"));
     expect(backgroundAgentDetail(s.path, "l2")).toEqual({ refusal: "not_found" });
     expect(backgroundAgentDetail(s.path, "gone")).toEqual({ refusal: "not_found" });
+    // a transcript that is there but cannot be opened is a store not readable now, never an agent gone (root opens anything)
+    if (process.getuid?.() !== 0) {
+      chmodSync(join(dir, "agent-a1.jsonl"), 0o000);
+      try { expect(backgroundAgentDetail(s.path, "a1")).toEqual({ refusal: "unavailable" }); } finally { chmodSync(join(dir, "agent-a1.jsonl"), 0o644); }
+    }
     // another session's valid id is not this session's
     const other = session();
     other.agent("b1", { description: "theirs" });
