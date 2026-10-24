@@ -11,6 +11,14 @@ validation approach from
 The MIT license text below applies. Ovis uses independent server IDs,
 bounded private storage and absent-only response defaults.
 
+## Collie Muse record mapping
+
+`server/muse.ts` adapts the choice of Muse Code session records that carry a conversation, and
+the reading of a tool result's JSON envelope and `tool denied:` / `tool failed:` verdicts, from
+[`AltanS/collie`](https://github.com/AltanS/collie), `bridge/journal/muse.ts`, under MIT,
+Copyright (c) 2026 Altan Sarisin. The MIT license text below applies. The session binding in
+`server/muse-store.ts` is Ovis's own.
+
 ## Theme palettes
 
 The CSS theme colors adapt herdr's pinned palettes, with readability adjustments recorded in

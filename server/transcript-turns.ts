@@ -2,6 +2,7 @@ import type { StreamSource } from "./conversation-shared.ts";
 import { claudePeerNotice, piMessage } from "./transcript-records.ts";
 import type { TranscriptEntry } from "./claude-transcript.ts";
 import { isCommandEntry } from "./claude-transcript.ts";
+import { musePrompt } from "./muse.ts";
 
 /**
  * A Claude session's branch, followed as the file is scanned. Claude Code links each record to the
@@ -87,6 +88,7 @@ const PEER_MARK = Buffer.from('"kind":"peer"');
 const TURN_MARK: Record<StreamSource, Buffer> = {
   "grok-transcript": Buffer.from('"user_message_chunk"'),
   "agy-transcript": Buffer.from('"USER_INPUT"'),
+  "muse-transcript": Buffer.from('"payload_type":"runtime.user_intent.accepted"'),
   "codex-transcript": Buffer.from('"task_started"'),
   "claude-transcript": Buffer.from('"user"'),
   "omp-transcript": Buffer.from('"user"'),
@@ -107,6 +109,7 @@ function opensTurn(source: StreamSource, line: string): boolean {
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
   if (source === "codex-transcript") return entry.type === "event_msg" && entry.payload?.type === "task_started";
+  if (source === "muse-transcript") return musePrompt(entry as Record<string, unknown>) !== null;
   if (source !== "claude-transcript") {
     const message = piMessage(entry);
     return message?.role === "user" && (message.content as Record<string, unknown>[]).some((part) => part.type === "text" && typeof part.text === "string" && part.text.length > 0);

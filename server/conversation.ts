@@ -55,6 +55,8 @@ import { forgetGrokState, grokProjection, grokToolOutput, parseGrokTranscript, G
 import { resolveGrokStore } from "./grok-store.ts";
 import { AgyUnavailable, agyCatalog, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
 import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
+import { museToolOutput, parseMuseTranscript } from "./muse.ts";
+import { resolveMuseSession } from "./muse-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
@@ -207,7 +209,7 @@ function readStream(stream: TranscriptStream, from: number, to: number): Buffer 
 const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
 const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<"model_change" | "thinking_level_change", { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
-  if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript") return;
+  if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript" || source === "muse-transcript") return;
   let scan = clearScans.get(path);
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
     scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] } } : {}) };
@@ -435,6 +437,7 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
     }
   }
   if (source === "agy-transcript") return parseAgyTranscript(text, path);
+  if (source === "muse-transcript") return parseMuseTranscript(text);
   return source === "codex-transcript" ? parseCodexTranscript(text, Infinity)
     // only pi keeps a tool's images in the entry as base64; omp, omo and gjc are read the same
     // way but would carry image refs nothing can answer, so the option stays with pi alone
@@ -922,7 +925,7 @@ export type NativeTranscript =
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
@@ -949,6 +952,11 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       const found = await resolveGrokStore(pane, grokHome);
       if (!found) throw new ConversationUnavailable("no_session_path");
       return { source: "grok-transcript", path: found };
+    }
+    if (agent === "muse") {
+      const path = await resolveMuseSession(pane, museData);
+      if (path === null) throw new ConversationUnavailable("no_session_path");
+      return { source: "muse-transcript", path };
     }
     if (agent === "agy") {
       const found = await resolveAgyStore(pane);
@@ -1017,7 +1025,7 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
 }
 
 /** Resolve the native live file or database session without reading conversation turns. */
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string): Promise<NativeTranscript> {
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<NativeTranscript> {
   const panes = (snapshot ?? await sessionSnapshot()).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined) throw new ConversationUnavailable("pane_not_found");
@@ -1042,7 +1050,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome);
+  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData);
 }
 
 /**
@@ -1058,7 +1066,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
  * shows the pages before it. A cursor from another file throws HistoryChanged.
  * `opencodeDb` is OpenCode's store, unset where OpenCode itself would find it.
  */
-export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string): Promise<RecognizedConversation> {
+export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
   const snapshot = await sessionSnapshot();
   let resolved: NativeTranscript;
 
@@ -1090,7 +1098,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   };
 
   try {
-    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome);
+    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
     launchedAgents.forget(paneId);
   } catch (error) {
     if (error instanceof ConversationNotStarted) { launchedAgents.forget(paneId); return await onNotStarted(error); }
@@ -1400,13 +1408,13 @@ const TOOL_REF = /^[A-Za-z0-9_:.-]{1,128}$/;
 const TOOL_OUTPUT_MAX = 2_000_000;
 
 /** The whole output of a tool call whose page output was cut, by its id; null when there is none. */
-export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string): Promise<string | null> {
+export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<string | null> {
   if (!TOOL_REF.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
   let resolved: ResolvedTranscript;
-  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome); }
+  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
   if (resolved.source === "opencode-transcript") {
     const output = opencodeToolOutput(resolved.path, resolved.session, ref);
@@ -1436,6 +1444,10 @@ export function transcriptToolOutput(source: StreamSource, path: string, ref: st
   }
   if (source === "grok-transcript") return grokToolOutput(path, ref);
   if (source === "agy-transcript") return agyToolOutput(path, ref);
+  if (source === "muse-transcript") {
+    const output = museToolOutput(path, ref);
+    return output !== null && output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
+  }
   if (source === "pi-transcript" || source === "cmd-transcript") return piToolOutput(path, ref);
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch { return null; }
