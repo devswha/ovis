@@ -287,6 +287,37 @@ describe("a supervisor started by the launcher of an install from before the ren
     }
   }, 40_000);
 
+  it.skipIf(process.platform === "win32")("exits even when a process of its Rust PTY host install escaped the group and holds its output open", async () => {
+    // a descendant in a group of its own outlives the group's SIGKILL and keeps the install's
+    // stdout open, so the install never closes: the stop is bounded, or the plugin could never
+    // start the supervisor again
+    const { directory, root, config, release } = installedRelease();
+    const started = join(directory, "install-started"), pids = join(directory, "install-pids");
+    standInInstall(directory, release, `
+      const { spawn } = await import("node:child_process");
+      process.on("SIGTERM", () => {});
+      // the escaped child says it started only once it ignores SIGTERM itself
+      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], ''); setInterval(() => {}, 60_000);", ${JSON.stringify(started)}], { detached: true, stdio: ["ignore", "inherit", "ignore"] });
+      writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, child.pid]));
+      setInterval(() => {}, 60_000);
+    `);
+    try {
+      // the supervisor is told to stop once its install runs; startBridge fails a supervisor still there after 15 s
+      await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root }, false, `
+        const { existsSync, watch } = await import("node:fs");
+        await new Promise((resolve) => {
+          const look = () => { if (existsSync(${JSON.stringify(started)})) { watcher.close(); resolve(); } };
+          const watcher = watch(${JSON.stringify(directory)}, look);
+          look();
+        });
+        process.kill(process.pid, "SIGTERM");
+        setInterval(() => {}, 60_000);
+      `);
+    } finally {
+      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }, 40_000);
+
   it("moves the state dir once a launcher of this version starts it", async () => {
     const { directory, root, config } = installedRelease();
     const [bridge] = await startBridge(directory, config, { OVIS_SOURCE_ROOT: root, OVIS_LAUNCHER: "1" });

@@ -17,6 +17,13 @@ import { runCommand, Updater, type Release } from "./updater.ts";
 
 /** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
 const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
+/**
+ * How long a stopping supervisor waits for its Rust PTY host try to end: the try's 2 s SIGTERM grace,
+ * then 5 s after its group's SIGKILL. A descendant that left the group, or one the kernel cannot kill
+ * yet (D state), may keep the try's pipes open for good; the supervisor still exits, or the plugin
+ * could never start it again.
+ */
+const RUST_HOST_STOP_MS = 7_000;
 
 /**
  * A release installed by an updater from before the Rust PTY host (0.4.13's) came without it, so its
@@ -50,6 +57,15 @@ function installMissingRustHost(directory: string, signal: AbortSignal): Promise
     (output) => console.log(output),
     (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
   );
+}
+
+/** Resolves once `try_` ends, or after RUST_HOST_STOP_MS with a warning that something of it may live on. */
+async function boundedStop(try_: Promise<void>, directory: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), RUST_HOST_STOP_MS); });
+  const outcome = await Promise.race([try_.then(() => "ended" as const), late]);
+  clearTimeout(timer);
+  if (outcome === "late") console.warn(`Rust PTY host install in ${directory} did not end ${RUST_HOST_STOP_MS / 1000} s after it was stopped; exiting anyway. A process of it may still run.`);
 }
 
 export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
@@ -161,13 +177,13 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   });
   // a Rust PTY host install runs in a process group of its own: it stops with this supervisor
   const rustHostInstall = new AbortController();
-  let rustHostTry: Promise<void> | null = null;
+  let rustHostTry: { directory: string; done: Promise<void> } | null = null;
   async function shutdown(code: number) {
     if (stopping) return;
     stopping = true; updater.stop(); rustHostInstall.abort();
     // the try's group is gone before this supervisor lets go: one that ignores SIGTERM is killed
-    // past the grace, which an exit now would have dropped with it
-    await Promise.all([stopChild(), rustHostTry]);
+    // past the grace, which an exit now would have dropped with it. The wait is bounded all the same.
+    await Promise.all([stopChild(), rustHostTry && boundedStop(rustHostTry.done, rustHostTry.directory)]);
     lock.release();
     process.exit(code);
   }
@@ -187,7 +203,11 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     started.resolve();
     updater.start();
     // a stop that came during the start already waited for no try: none starts after it
-    if (active && active.directory !== root && !stopping) rustHostTry = installMissingRustHost(active.directory, rustHostInstall.signal);
+    if (active && active.directory !== root && !stopping) {
+      // the try keeps its own release: a handover replaces `active` before this supervisor stops
+      const done = installMissingRustHost(active.directory, rustHostInstall.signal);
+      if (done !== null) rustHostTry = { directory: active.directory, done };
+    }
     process.send?.({ type: "supervisor-ready" });
     console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
   } catch (error) {
