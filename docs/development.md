@@ -716,7 +716,11 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   `scripts/ci-browser.sh` (`BROWSER_SCRIPTS` picks from it, `BROWSER_EXCLUDE` leaves scripts out,
   and a name the list does not hold is an error). `scripts/pages-gate.test.ts` fails if the two
   jobs together do not run that list exactly once. A new browser script therefore only needs its
-  `run_script` line in `scripts/ci-browser.sh`.
+  `run_script` line in `scripts/ci-browser.sh`. `scripts/ci-browser.test.ts` fails if a
+  `*-regression.ts` or `*-browser-qa.ts` script is neither run by that list (itself, or through a
+  script that imports or spawns it) nor named in its list of scripts CI does not run, and if the
+  list names a script that does not exist; it pins no count, so PRs that add scripts do not
+  conflict on it.
 
 `bun run check browser` and `bun run check full` still run the serial lane, `scripts/ci-browser.sh`
 (`BROWSER_PARALLEL=1` hands it to the parallel runner).
