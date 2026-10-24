@@ -1,7 +1,9 @@
 package sh.ovis.app;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,7 +22,7 @@ import org.junit.Test;
 import org.junit.rules.Timeout;
 
 public class PCStoreTest {
-    private static final String OVIS = "{\"ok\":true,\"auth\":{\"required\":true,\"authenticated\":false},\"bridge_protocol\":3}";
+    private static final String OVIS = "{\"ok\":true,\"auth\":{\"required\":true,\"authenticated\":false},\"bridge_protocol\":1}";
 
     /** A probe that never gives up hangs here instead of passing. */
     @Rule
@@ -32,7 +34,10 @@ public class PCStoreTest {
 
     /** A server on 127.0.0.1 answering every request with `status`, `location` and `body`. */
     private String serve(int status, String location, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        return serve(status, location, body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String serve(int status, String location, byte[] bytes) throws IOException {
         String head = "HTTP/1.1 " + status + " Test\r\n" + (location == null ? "" : "Location: " + location + "\r\n")
             + "Content-Length: " + bytes.length + "\r\nConnection: close\r\n\r\n";
         return listen(out -> {
@@ -92,7 +97,7 @@ public class PCStoreTest {
     }
 
     private static String probe(String target) {
-        return PCStore.ovisOrigin(target, PCStore.PROBE_BUDGET_MS);
+        return PCStore.ovisOrigin(target, PCStore.PROBE_BUDGET_MS, new ArrayList<>());
     }
 
     @After
@@ -111,7 +116,9 @@ public class PCStoreTest {
     public void followsRedirectsOfItsQuestionToTheOvisServer() throws IOException {
         String ovis = serve(200, null, OVIS);
         String upgrade = serve(301, ovis + "/api/health?scope=bridge", "");
-        assertEquals(ovis, probe(upgrade + "/"));
+        List<String> path = new ArrayList<>();
+        assertEquals(ovis, PCStore.ovisOrigin(upgrade + "/", PCStore.PROBE_BUDGET_MS, path));
+        assertEquals(java.util.Arrays.asList(upgrade, ovis), path);
     }
 
     @Test
@@ -126,10 +133,70 @@ public class PCStoreTest {
         assertNull(probe(serve(200, null, "<!doctype html><title>Sign in</title>") + "/login"));
         assertNull(probe(serve(200, null, "{\"ok\":true}") + "/"));
         assertNull(probe(serve(200, null, "{\"ok\":true,\"auth\":{}}") + "/"));
-        assertNull(probe(serve(200, null, "{\"ok\":\"true\",\"auth\":{},\"bridge_protocol\":3}") + "/"));
+        assertNull(probe(serve(200, null, "{\"ok\":\"true\",\"auth\":{},\"bridge_protocol\":1}") + "/"));
         assertNull(probe(serve(401, null, OVIS) + "/"));
         String signIn = serve(200, null, "<!doctype html><title>Sign in</title>");
         assertNull(probe(serve(302, signIn + "/login?next=/", "") + "/"));
+    }
+
+    @Test
+    public void onlyABridgeProtocolThisAppKnowsIsOvis() throws IOException {
+        for (String version : new String[] {"-1", "0", "0.5", "1.0", "1e0", "2", "\"1\"", "true", "null", "99999999999999999999"}) {
+            assertNull(version, probe(serve(200, null, "{\"ok\":true,\"auth\":{},\"bridge_protocol\":" + version + "}") + "/"));
+        }
+    }
+
+    @Test
+    public void anAnswerThatIsNotStrictJsonIsNotOvis() throws IOException {
+        assertNull(probe(serve(200, null, "{ok:true,auth:{},bridge_protocol:1}") + "/"));
+        assertNull(probe(serve(200, null, OVIS + "trailing non-JSON") + "/"));
+        assertNull(probe(serve(200, null, OVIS + OVIS) + "/"));
+        assertNull(probe(serve(200, null, "{\"ok\":false,\"ok\":true,\"auth\":{},\"bridge_protocol\":1}") + "/"));
+        assertNull(probe(serve(200, null, "{'ok':true,'auth':{},'bridge_protocol':1}") + "/"));
+        assertNull(probe(serve(200, null, "{\"ok\":true,\"auth\":{},\"bridge_protocol\":1,}") + "/"));
+        // a JSON escape takes ASCII hex digits only, not fullwidth ones
+        assertNull(probe(serve(200, null, "{\"\\u\uFF10\uFF10\uFF16\uFF46\\u\uFF10\uFF10\uFF16\uFF42\":true,\"auth\":{},\"bridge_protocol\":1}") + "/"));
+        String escaped = serve(200, null, "{\"\\u006f\\u006B\":true,\"auth\":{},\"bridge_protocol\":1}");
+        assertEquals(escaped, probe(escaped + "/"));
+        // nested deeper than the stack would take, inside the size limit
+        assertNull(probe(serve(200, null, "[".repeat(60000)) + "/"));
+        // malformed UTF-8, a byte 0xFF inside a string
+        byte[] start = "{\"ok\":true,\"auth\":{},\"bridge_protocol\":1,\"x\":\"".getBytes(StandardCharsets.UTF_8);
+        byte[] malformed = java.util.Arrays.copyOf(start, start.length + 3);
+        malformed[start.length] = (byte) 0xFF;
+        malformed[start.length + 1] = '"';
+        malformed[start.length + 2] = '}';
+        assertNull(probe(serve(200, null, malformed) + "/"));
+        // whitespace around the value is JSON
+        String ovis = serve(200, null, " \n" + OVIS + "\r\n");
+        assertEquals(ovis, probe(ovis + "/"));
+    }
+
+    @Test
+    public void theWayToOvisNeverGoesOverPublicHttpOrFromHttpsToHttp() {
+        // https to http, on the redirect itself or on a later hop of the probe
+        assertEquals("http://pc.example.com", PCStore.insecureHop("https://pc.example.com", Collections.singletonList("http://pc.example.com")));
+        assertEquals("http://100.64.0.2", PCStore.insecureHop("https://pc.tail1234.ts.net", Collections.singletonList("http://100.64.0.2")));
+        assertEquals("http://public.example.com", PCStore.insecureHop("http://100.64.0.1", java.util.Arrays.asList("https://candidate.example.com", "http://public.example.com")));
+        // a public http address, which the connect screen warns before
+        assertEquals("http://203.0.113.5:7421", PCStore.insecureHop("http://100.64.0.1", Collections.singletonList("http://203.0.113.5:7421")));
+        // a tailnet or home address, or https all the way
+        assertNull(PCStore.insecureHop("http://100.64.0.1", Collections.singletonList("http://pc.tail1234.ts.net:7421")));
+        assertNull(PCStore.insecureHop("http://192.168.1.5", Collections.singletonList("http://mypc.local:7421")));
+        assertNull(PCStore.insecureHop("http://10.0.2.2:7491", Collections.singletonList("http://localhost:7492")));
+        assertNull(PCStore.insecureHop("http://100.64.0.1", Collections.singletonList("https://pc.example.com")));
+        assertNull(PCStore.insecureHop("https://a.example.com", java.util.Arrays.asList("https://b.example.com", "https://c.example.com:8443")));
+    }
+
+    @Test
+    public void publicHttpIsWhatTheConnectScreenWarnsAbout() {
+        // a number in any form but a plain dotted quad is some IPv4 address to the web view, never judged private
+        for (String warned : new String[] {"http://8.8.8.8", "http://172.15.0.1", "http://100.128.0.1", "http://[2001:db8::1]", "http://pc.example.com", "http://134744072:7421", "http://010.0.0.1", "http://0x8.8.8.8", "http://10.0.0.256", "http://134217729", "http://0x08000001"}) {
+            assertTrue(warned, PCStore.publicHttp(warned));
+        }
+        for (String quiet : new String[] {"https://8.8.8.8", "http://10.1.2.3", "http://127.0.0.1:7421", "http://172.16.0.1", "http://192.168.0.9", "http://169.254.1.1", "http://100.64.0.1", "http://[::1]", "http://[fd7a:115c:a1e0::1]", "http://[fe80::1]", "http://pc", "http://localhost:7492", "http://pc.tail1234.ts.net", "http://pc.local", "http://pc.lan", "http://pc.home.arpa", "http://pc.internal"}) {
+            assertFalse(quiet, PCStore.publicHttp(quiet));
+        }
     }
 
     @Test
@@ -140,8 +207,8 @@ public class PCStoreTest {
 
     @Test
     public void anAnswerThatNeverEndsIsNotOvisOnceTheBudgetIsSpent() throws IOException {
-        assertNull(PCStore.ovisOrigin(serveSlowly(false) + "/", 300));
-        assertNull(PCStore.ovisOrigin(serveSlowly(true) + "/", 300));
+        assertNull(PCStore.ovisOrigin(serveSlowly(false) + "/", 300, new ArrayList<>()));
+        assertNull(PCStore.ovisOrigin(serveSlowly(true) + "/", 300, new ArrayList<>()));
     }
 
     @Test

@@ -22,9 +22,11 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.WebViewListener;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -146,7 +148,7 @@ public class MainActivity extends BridgeActivity {
                         if (!pageShown && request.isForMainFrame() && request.isRedirect()) {
                             String next = PCStore.origin(url.toString());
                             if (next != null && !next.equals(origin)) {
-                                followRedirect(url.toString());
+                                followRedirect(origin, url.toString());
                                 return true;
                             }
                         }
@@ -273,15 +275,22 @@ public class MainActivity extends BridgeActivity {
      * error page names it: a PC address that leads elsewhere is not a PC. The address's own page would
      * get the bridge too, so the place it leads to gets nothing more. Once the first page shows,
      * Capacitor decides on redirects again: one could then come from a link to a page that is not the
-     * PC's (another port on its host), which must not choose the PC.
+     * PC's (another port on its host), which must not choose the PC. A way that goes over public plain
+     * http, or from https to http, does not switch on its own: the connect screen warns before a
+     * public http address.
      */
-    private void followRedirect(String target) {
+    private void followRedirect(String from, String target) {
         boolean tooMany = PCStore.redirects >= PCStore.MAX_REDIRECTS;
         new Thread(() -> {
-            String ovis = tooMany ? null : PCStore.ovisOrigin(target, PCStore.PROBE_BUDGET_MS);
+            List<String> path = new ArrayList<>();
+            String ovis = tooMany ? null : PCStore.ovisOrigin(target, PCStore.PROBE_BUDGET_MS, path);
+            String insecure = ovis == null ? null : PCStore.insecureHop(from, path);
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                if (ovis != null) {
+                if (insecure != null) {
+                    PCStore.failure = "It redirected over plain http to " + insecure + ", which the app does not follow on its own. If " + ovis + " is your PC, open it itself.";
+                    bridge.getWebView().loadUrl(bridge.getErrorUrl());
+                } else if (ovis != null) {
                     PCStore.redirects++;
                     PCStore.open(this, ovis, PCStore.startOn(ovis, target));
                     reopen();
