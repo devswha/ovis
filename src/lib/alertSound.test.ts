@@ -215,6 +215,24 @@ describe("one chime at a time", () => {
     expect([await b, await c]).toEqual([false, false]);
   });
 
+  it("a question cancelled with a preview waiting behind it does not swallow a later pane's question", async () => {
+    const audio = made.at(-1)!;
+    let muted = false;
+    playAlertSound("done");
+    const b = playAlertSound("blocked", () => !muted);
+    previewAlertSound();
+    audio.currentTime += 0.1;
+    muted = true;
+    recheckAlertSounds();
+    expect(await b).toBe(false);
+    // C asks after B's question was cancelled: it gets a question chime of its own, after the preview
+    audio.currentTime += 0.1;
+    const c = playAlertSound("blocked");
+    expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked, ...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
+    audio.currentTime += 3 * LENGTH;
+    expect(await c).toBe(true);
+  });
+
   it("previews the chime in Settings, after the chime that sounds", () => {
     const now = made.at(-1)!.currentTime;
     previewAlertSound();

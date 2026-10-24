@@ -180,6 +180,21 @@ describe("shared preferences", () => {
     expect(new PreferenceStore(dir).get()).toEqual({ revision: 4, settings: { theme: "dark" }, muted_panes: ["w1:p1"] });
   });
 
+  it("a mute whose save fails is not left on disk for a later revision to bring back", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    await put(store, JSON.stringify({ settings: { theme: "light" } }));
+    // preferences.json cannot be replaced: its temporary file's place is taken
+    const blocker = join(dir, `preferences.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    expect((await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }))).status).toBe(500);
+    expect(store.get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: [] });
+    rmSync(blocker, { recursive: true });
+    // the next save, of something else, and a restart: the failed mute is nowhere
+    expect(await (await put(store, JSON.stringify({ settings: { theme: "dark" } }))).json()).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [] });
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [] });
+  });
+
   it("absent field does not clear mutes", async () => {
     const store = new PreferenceStore(root());
     await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }));

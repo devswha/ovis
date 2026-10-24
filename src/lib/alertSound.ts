@@ -120,8 +120,10 @@ export function previewAlertSound(): void {
 function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { start: number; sound: Scheduled | null } {
   const now = audio.currentTime;
   const current = sounding !== null && sounding.audio === audio && sounding.until > now ? sounding : null;
+  // a question chime cancelled while a preview waited behind it tells nothing any more
+  const question = current !== null && current.question > now && current.questionSound?.cancelled !== true;
   // already told by a chime that sounds or waits its turn: a finish by any, a question by a question's
-  if (current && !preview && (kind === "done" || current.question > now)) {
+  if (current && !preview && (kind === "done" || question)) {
     if (kind === "done" || current.questionStart <= now) return { start: now, sound: null };
     return { start: current.questionStart, sound: current.questionSound };
   }
@@ -157,12 +159,12 @@ function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { st
       if (sounding === mine) sounding = current;
     },
   } : null;
-  const question = kind === "blocked" && !preview;
+  const asks = kind === "blocked" && !preview;
   const mine = {
     audio, until,
-    question: question ? until : current?.question ?? 0,
-    questionStart: question ? start : current?.questionStart ?? 0,
-    questionSound: question ? sound : current?.questionSound ?? null,
+    question: asks ? until : current?.question ?? 0,
+    questionStart: asks ? start : current?.questionStart ?? 0,
+    questionSound: asks ? sound : current?.questionSound ?? null,
   };
   sounding = mine;
   return { start, sound };
