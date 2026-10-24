@@ -441,7 +441,9 @@ blocks of `src/styles.css`.
   is itself a link, to the file it leads to), and that file is opened and proven from its descriptor,
   never by a second lookup of a path: on Linux the kernel's path of the descriptor must be that path;
   elsewhere that path must be a file with the descriptor's device and inode that still resolves to
-  itself (a sample). The page's files come from that file's folder, so a linked page takes them from
+  itself (a sample). After the open the asked path must still resolve to that file, so a folder that
+  was a link only while the path was looked up is refused too. The page's files come from that file's
+  folder, so a linked page takes them from
   the folder it leads to. A folder swapped for a link at any point serves no other folder's page or
   files, but someone allowed to
   rename folders in its parent could move another real folder into its place while the page's

@@ -751,7 +751,33 @@ describe("page files read through the descriptor that was validated", () => {
     expect(await response.text()).toContain(`src="data:image/png;base64,${png("BESIDE-THE-TARGET").toString("base64")}"`);
   });
 
-  it.skipIf(windows)("never draws the asked page with the files of a folder it was not read from", async () => {
+  it.skipIf(windows)("refuses a page opened through a folder that was a link only while it was opened", async () => {
+    // this platform's own proof, and the samples the others take
+    for (const platform of [undefined, "darwin"] as const) {
+      const { root, site, outside, page } = layout();
+      writeFileSync(join(outside, "page.html"), "<p>OUTSIDE-PAGE-SECRET</p>");
+      const found = fileInfo(page)!;
+      if (platform) pageFileHooks.platform = platform;
+      // a link after the path's lookup, so the open goes through it, and the folder put back before any later look
+      const parked = join(root, "parked");
+      pageFileHooks.pageFolder = () => {
+        renameSync(site, parked);
+        symlinkSync(outside, site);
+      };
+      pageFileHooks.pageOpened = () => {
+        unlinkSync(site);
+        renameSync(parked, site);
+      };
+      const response = fileResponse(found, false, true, owner());
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain("OUTSIDE-PAGE-SECRET");
+      delete pageFileHooks.platform;
+      delete pageFileHooks.pageFolder;
+      delete pageFileHooks.pageOpened;
+    }
+  });
+
+  it.skipIf(windows)("refuses a page whose folder was a link only while its path was looked up", async () => {
     const { root, site, page } = layout();
     const hidden = join(root, ".private");
     mkdirSync(join(hidden, "sub"), { recursive: true });
@@ -772,9 +798,10 @@ describe("page files read through the descriptor that was validated", () => {
     };
     const response = fileResponse(found, false, true, owner());
     expect(resolvedTo).toBe(hidden);
-    // the page read is the one in the folder its files come from: the asked page (its own script) is
-    // never drawn with that folder's files
+    // neither that folder's page nor its files, nor the asked page drawn with them
+    expect(response.status).toBe(404);
     const text = await response.text();
+    expect(text).not.toContain("another page");
     expect(text).not.toContain(`id="clip"`);
     expect(drawn(text)).toEqual({ picture: false, tokens: [], outsideBytes: false });
   });

@@ -439,6 +439,7 @@ export const pageFileHooks: {
   platform?: NodeJS.Platform;
   uid?: () => number | undefined;
   pageFolder?: (folder: string) => void;
+  pageOpened?: (fd: number) => void;
   afterResolve?: (file: string) => void;
   afterOpen?: (file: string) => void;
   beforeIdentity?: (file: string) => void;
@@ -643,9 +644,13 @@ export function pageWithLocalFiles(path: string, media: PageMedia | null = null)
   let html: string;
   let fd: number;
   try { fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+  pageFileHooks.pageOpened?.(fd);
   try {
     const page = fstatBig(fd);
     if (!page.isFile() || page.size > BigInt(EMBED_PAGE_BYTES) || !pageOpenedAs(fd, file, page)) return null;
+    // and the asked path still leads there: a folder that was a link only while it was looked up, put
+    // back since, made that lookup another folder's page
+    if (realpathSync(path) !== file) return null;
     const bytes = readWhole(fd, Number(page.size), page.mtimeNs);
     if (bytes === null) return null;
     html = bytes.toString("utf8");
