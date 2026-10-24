@@ -157,6 +157,49 @@ it("keeps a pi branch's identity while its fork slides to the head of the window
   }
 });
 
+it("names a fork made after the pi branch's last entry afresh, though that entry is still on the path", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "outcome-pi-later-fork-"));
+  const path = join(root, "session.jsonl");
+  const line = (entry: object) => JSON.stringify(entry) + "\n";
+  fs.writeFileSync(path, line({ type: "message", id: "root", parentId: null }) + line({ type: "message", id: "a0", parentId: "root" }));
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
+  try {
+    const before = await conversation.readCommandTranscript("later-fork");
+    // between two polls: an answer on a0, then /tree back to a0 and another answer from there
+    fs.appendFileSync(path, line({ type: "message", id: "a1", parentId: "a0" }) + line({ type: "message", id: "b0", parentId: "a0" })
+      + line({ type: "model_change", id: "chosen", parentId: "b0", modelId: "chosen-model" }));
+    const after = await conversation.readCommandTranscript("later-fork");
+    expect(after?.records.map(({ entry }) => entry.id)).toEqual(["root", "a0", "b0", "chosen"]);
+    expect(after?.identity).not.toBe(before?.identity);
+  } finally {
+    binding.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("keeps a pi branch when an append cuts its last entry out of the window", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "outcome-pi-leaf-cut-"));
+  const path = join(root, "session.jsonl");
+  const entry = (index: number) => JSON.stringify({ type: "message", id: `a${index}`, parentId: index ? `a${index - 1}` : null,
+    message: { role: "assistant", content: "x".repeat(1024 * 1024) } }) + "\n";
+  fs.writeFileSync(path, JSON.stringify({ type: "session", id: "session", version: 3 }) + "\n");
+  for (let index = 0; index < 20; index++) fs.appendFileSync(path, entry(index));
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
+  try {
+    const before = await conversation.readCommandTranscript("leaf-cut");
+    expect(before?.records.at(-1)?.entry.id).toBe("a19");
+    for (let index = 20; index < 35; index++) fs.appendFileSync(path, entry(index));
+    const after = await conversation.readCommandTranscript("leaf-cut");
+    expect(after?.records[0]?.entry.id).toBe("a20"); // control: a19 is cut away with the window's start
+    expect(after?.identity).toBe(before?.identity);
+  } finally {
+    binding.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("withholds pi evidence when a missing parent is not explained by a window cutoff", async () => {
   const root = fs.mkdtempSync(join(tmpdir(), "outcome-pi-missing-parent-"));
   const path = join(root, "session.jsonl");

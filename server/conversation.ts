@@ -1222,8 +1222,37 @@ interface CommandTranscript {
   readonly identity: string;
   readonly records: readonly CommandTranscriptRecord[];
 }
+/**
+ * A command transcript's window starts at a multiple of this, and the window read is remembered by a digest of each
+ * such chunk instead of its bytes: the next read checks every byte the two share against them (sameOverlap).
+ */
+const WINDOW_CHUNK_BYTES = 64 * 1024;
+/** Where the window of a transcript of `size` bytes starts: the first chunk boundary it fits after (at most the budget). */
+const windowStart = (size: number): number => size <= TRANSCRIPT_WINDOW_BYTES ? 0
+  : Math.ceil((size - TRANSCRIPT_WINDOW_BYTES) / WINDOW_CHUNK_BYTES) * WINDOW_CHUNK_BYTES;
+/** A digest of each chunk of a window read at a chunk boundary, the last one as far as the read goes. */
+function chunkDigests(bytes: Buffer): BigUint64Array {
+  const digests = new BigUint64Array(Math.ceil(bytes.length / WINDOW_CHUNK_BYTES));
+  for (let index = 0; index < digests.length; index++) {
+    digests[index] = BigInt(Bun.hash.xxHash3(bytes.subarray(index * WINDOW_CHUNK_BYTES, (index + 1) * WINDOW_CHUNK_BYTES)));
+  }
+  return digests;
+}
+/**
+ * Whether the window read now at `start` (`bytes`, `digests`) holds what the one read before held up to its end, byte
+ * for byte as far as the digests tell: each chunk both hold, the earlier read's last one as far as that read went.
+ */
+function sameOverlap(before: { start: number; end: number; digests: BigUint64Array }, start: number, bytes: Buffer, digests: BigUint64Array): boolean {
+  for (let at = start; at < before.end; at += WINDOW_CHUNK_BYTES) {
+    const end = Math.min(at + WINDOW_CHUNK_BYTES, before.end);
+    const now = end - at === WINDOW_CHUNK_BYTES ? digests[(at - start) / WINDOW_CHUNK_BYTES]
+      : BigInt(Bun.hash.xxHash3(bytes.subarray(at - start, end - start)));
+    if (before.digests[(at - before.start) / WINDOW_CHUNK_BYTES] !== now) return false;
+  }
+  return true;
+}
 const commandTranscripts = new Map<string, {
-  signature: string; file: string; start: number; end: number; bytes: Buffer;
+  signature: string; file: string; start: number; end: number; digests: BigUint64Array;
   partialStart: number; records: CommandTranscriptRecord[]; identity: string;
   /** pi: the active branch's name and its last node, which an append that runs on from it keeps */
   branch: string; leaf: string | null; answer: CommandTranscript | null;
@@ -1244,7 +1273,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   // Do not call transcriptStream here: building a cold pi index can read the entire file.
   // The same read supplies validation bytes AND new bytes, so their total stays in budget.
   // Every byte is read over (a short read gives up), so it need not be zeroed first.
-  const start = Math.max(0, stat.size - TRANSCRIPT_WINDOW_BYTES);
+  const start = windowStart(stat.size);
   const bytes = Buffer.allocUnsafe(stat.size - start);
   const fd = openSync(path, "r");
   try {
@@ -1255,10 +1284,11 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
     const newline = bytes.indexOf(0x0a);
     from += newline < 0 ? bytes.length : newline + 1;
   }
-  // an append only when every byte both reads hold is the same: compared, not hashed twice (#1487)
+  // an append only when every byte both reads hold is the same, told by chunk digests: the window's bytes are not
+  // kept between reads (#1487)
+  const digests = chunkDigests(bytes);
   const append = cached?.file === file && stat.size > cached.end && start < cached.end
-    && cached.partialStart >= from
-    && cached.bytes.subarray(start - cached.start).equals(bytes.subarray(0, cached.end - start));
+    && cached.partialStart >= from && sameOverlap(cached, start, bytes, digests);
   const readFrom = append ? cached.partialStart : from;
   const partialStart = Math.max(from, start + bytes.lastIndexOf(0x0a) + 1);
   const records = [
@@ -1274,7 +1304,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
     const nodes = current.filter(record => typeof record.entry.id === "string");
     const byId = new Map(nodes.map((record, index) => [String(record.entry.id), { record, index }]));
     const active: CommandTranscriptRecord[] = [];
-    const forks: string[] = [];
+    const forks: CommandTranscriptRecord[] = [];
     let node = nodes.length ? byId.get(String(nodes[nodes.length - 1]!.entry.id)) : undefined;
     let rooted = false;
     while (node && byId.size === nodes.length) {
@@ -1282,9 +1312,9 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
       active.push(record);
       const parentId = record.entry.parentId;
       if (parentId === null) {
-        forks.push(String(record.entry.id)); rooted = true; break;
+        forks.push(record); rooted = true; break;
       }
-      if (nodes[index - 1]?.entry.id !== parentId) forks.push(String(record.entry.id));
+      if (nodes[index - 1]?.entry.id !== parentId) forks.push(record);
       const parent = typeof parentId === "string" ? byId.get(parentId) : undefined;
       // In append-only pi histories, ancestors beyond a cut window precede its active path.
       if (!parent && typeof parentId === "string" && start > 0) { rooted = true; break; }
@@ -1294,18 +1324,31 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
     // An unexplained missing ancestor or ambiguous index cannot prove branch ownership.
     current = rooted ? active.reverse() : [];
     leaf = rooted && current.length > 0 ? String(current.at(-1)!.entry.id) : null;
-    // An append that runs on from the branch read before (its leaf still on the active path) is that branch: the
-    // forks in the window change as it slides (its first node always looks like one), and the sends bound to the
-    // branch must keep seeing it (#1487). Any other append, a branch switch among them, names its branch afresh.
-    const continued = append && cached.leaf !== null && cached.branch !== "unresolved"
-      && current.some(({ entry }) => entry.id === cached.leaf);
-    branch = !rooted ? "unresolved" : continued ? cached.branch : createHash("sha256").update(forks.join("\0")).digest("hex");
+    // An append that runs on from the branch read before is that branch: the forks in the window change as it
+    // slides (its first node always looks like one), and the sends bound to the branch must keep seeing it (#1487).
+    // Any other append, a branch switch or a fork made since among them, names its branch afresh.
+    const continued = append && cached.leaf !== null && cached.branch !== "unresolved" && rooted
+      && runsOnFrom(cached.leaf, current, forks, nodes[0]);
+    branch = !rooted ? "unresolved" : continued ? cached.branch
+      : createHash("sha256").update(forks.map(({ entry }) => String(entry.id)).join("\0")).digest("hex");
   }
   const cleared = current.reduce((last, { entry }, index) => isContextClear(entry, source) ? index : last, 0);
   const answer = branch === "unresolved" ? null
     : { identity: `${identity}\0${branch}`, records: cleared > 0 ? current.slice(cleared) : current };
-  remember(commandTranscripts, path, { signature, file, start, end: stat.size, bytes, partialStart, records, identity, branch, leaf, answer }, 4);
+  remember(commandTranscripts, path, { signature, file, start, end: stat.size, digests, partialStart, records, identity, branch, leaf, answer }, 4);
   return answer;
+}
+
+/**
+ * Whether a pi path read after an append runs on from `leaf`, the last node of the path read before, with no fork
+ * after it. `leaf` is on the path, or was cut away with the window's start and is the parent of its first node (the
+ * first node read after it, as appends follow it), whose own fork mark only says its predecessor was cut away.
+ */
+function runsOnFrom(leaf: string, path: readonly CommandTranscriptRecord[], forks: readonly CommandTranscriptRecord[], first: CommandTranscriptRecord | undefined): boolean {
+  const kept = path.find(({ entry }) => entry.id === leaf);
+  if (kept) return forks.every((fork) => fork.offset <= kept.offset);
+  const head = path[0];
+  return head !== undefined && head === first && head.entry.parentId === leaf && forks.every((fork) => fork === head);
 }
 
 /**
