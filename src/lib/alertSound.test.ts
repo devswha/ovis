@@ -184,6 +184,37 @@ describe("one chime at a time", () => {
     expect(startedAt.at(-2)).toBeCloseTo(now + LENGTH);
   });
 
+  it("keeps a question chime two panes share for the one still unmuted, and confirms it only to that one", async () => {
+    const audio = made.at(-1)!;
+    const muted = new Set<string>();
+    playAlertSound("done");
+    // B and C each ask while the finish sounds: one question chime tells both
+    const b = playAlertSound("blocked", () => !muted.has("B"));
+    const c = playAlertSound("blocked", () => !muted.has("C"));
+    expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
+    // only B is muted before the question starts: C still wants it, so it is not silenced
+    audio.currentTime += 0.1;
+    muted.add("B");
+    recheckAlertSounds();
+    expect(cut).toEqual([]);
+    expect(disconnected).toBe(0);
+    audio.currentTime += LENGTH;
+    expect([await b, await c]).toEqual([false, true]);
+  });
+
+  it("silences a question chime two panes share once both are muted, and confirms it to neither", async () => {
+    const audio = made.at(-1)!;
+    let muted = false;
+    playAlertSound("done");
+    const b = playAlertSound("blocked", () => !muted);
+    const c = playAlertSound("blocked", () => !muted);
+    audio.currentTime += 0.1;
+    muted = true;
+    recheckAlertSounds();
+    expect(cut).toEqual([...CHIME_NOTES.blocked]);
+    expect([await b, await c]).toEqual([false, false]);
+  });
+
   it("previews the chime in Settings, after the chime that sounds", () => {
     const now = made.at(-1)!.currentTime;
     previewAlertSound();
