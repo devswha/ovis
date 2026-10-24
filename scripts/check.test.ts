@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { CI_NODE_MAJOR, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, isolate, lock, lockPort, maxRuns, needsLock, plan, sanitizeCommand, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
+import { CI_NODE_MAJOR, DESK_WAIT_MS, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, isolate, lock, lockPort, maxRuns, needsLock, plan, sanitizeCommand, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -646,6 +646,23 @@ describe("slots", () => {
     } finally {
       first?.release();
       next?.release();
+    }
+  });
+
+  it("waits for the ticket desk no longer than CHECK_WAIT_SECONDS leaves", async () => {
+    const base = await queueRange();
+    const holder = await lock(base, 111, "/a");
+    const desk = await lock(ticketDesk(base, 1, 3), 501, "/other");
+    let clock = 1_000;
+    try {
+      const started = performance.now();
+      // a wait of 1 ms, far shorter than the desk's own: the desk stays taken, and the run gives up within its wait
+      const held = await acquireWaiting({ slots: 1, scan: 3, base, pid: 222, checkout: "/b" }, { waitMs: 1, now: () => clock, sleep: async (ms) => { clock += ms + 1; } });
+      expect(held).toMatchObject({ refused: "busy" });
+      expect(performance.now() - started).toBeLessThan(DESK_WAIT_MS / 2);
+    } finally {
+      release(desk);
+      release(holder);
     }
   });
 

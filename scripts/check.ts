@@ -392,7 +392,7 @@ export function ticketPorts(base: number, slots: number, scan: number): number[]
 /** How long one ticket lookup may take in all: a run holding the admission port asks every ticket port. */
 const TICKET_LOOKUP_MS = 1_500;
 /** How long a run waits for the ticket desk: a run there holds it for one ticket lookup and a bind. */
-const DESK_WAIT_MS = 2 * TICKET_LOOKUP_MS;
+export const DESK_WAIT_MS = 2 * TICKET_LOOKUP_MS;
 
 /**
  * Who waits on a ticket port: null when nothing listens there, or when what listens is no ticket. A
@@ -682,7 +682,9 @@ export async function acquireWaiting(
     while ("refused" in held && held.refused === "busy" && now() < deadline) {
       if (queuedAt === null) { queuedAt = now(); onWait?.(held.holders); }
       // a place taken late (every ticket was held) ranks after every run already waiting
-      queued ??= await takeTicket({ base: options.base ?? DEFAULT_LOCK_PORT, slots: options.slots, ...(options.scan === undefined ? {} : { scan: options.scan }), at: queuedAt, ...(options.pid === undefined ? {} : { pid: options.pid }), checkout: options.checkout });
+      // the desk is waited for within what is left of this run's own wait, never past it
+      queued ??= await takeTicket({ base: options.base ?? DEFAULT_LOCK_PORT, slots: options.slots, ...(options.scan === undefined ? {} : { scan: options.scan }), at: queuedAt, ...(options.pid === undefined ? {} : { pid: options.pid }), checkout: options.checkout, deskWaitMs: Math.min(DESK_WAIT_MS, Math.max(0, deadline - now())) });
+      if (now() >= deadline) break;
       await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
       held = await acquire(queued ? { ...options, retry: true, ticket: queued.ticket } : { ...options, retry: true });
     }
