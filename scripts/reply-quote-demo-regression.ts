@@ -211,8 +211,8 @@ async function open(browser: Browser, view: Viewport, settings: { language: stri
     ...(view.phone ? { screen: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}),
   });
   await context.addInitScript(([paneId, value]) => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify(value));
-    localStorage.setItem(`herdr-web-ui:view:${paneId}`, "chat");
+    localStorage.setItem("ovis:settings", JSON.stringify(value));
+    localStorage.setItem(`ovis:view:${paneId}`, "chat");
   }, [PANE, settings] as const);
   await before?.(context);
   const page = await context.newPage();

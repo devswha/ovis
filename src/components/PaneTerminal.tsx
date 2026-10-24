@@ -498,7 +498,7 @@ export function PaneTerminal({
   const holdReply = useCallback((on: boolean) => { replyHold.current = on; setReplyHeld(on); }, []);
   const onReplySelection = useCallback((text: string | null) => {
     latestReply.current = text === null || paneId === null ? null
-      : { pane: paneId, draft: `herdr-web-ui:composer-draft:${paneStorageId(machineId, paneId)}`, text };
+      : { pane: paneId, draft: `ovis:composer-draft:${paneStorageId(machineId, paneId)}`, text };
     if (latestReply.current === null && replyHold.current) return;
     setReplyQuote(latestReply.current);
   }, [machineId, paneId]);
