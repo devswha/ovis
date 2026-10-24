@@ -198,14 +198,33 @@ describe("shared preferences", () => {
   it("a save that fails at the mute list keeps none of its settings or pins on disk", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
-    await put(store, JSON.stringify({ settings: { theme: "light" } }));
+    await put(store, JSON.stringify({ settings: { theme: "light" }, muted_panes: ["w1:p0"] }));
+    const bytes = (name: string) => readFileSync(join(dir, name));
+    const before = { preferences: bytes("preferences.json"), mutes: bytes("muted-panes.json") };
+    // the second document cannot be written: its temporary file's place is taken
     const blocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
     mkdirSync(blocker);
     expect((await put(store, JSON.stringify({ settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }))).status).toBe(500);
-    expect(store.get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: [] });
-    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 1, settings: { theme: "light" } });
+    expect(store.get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: ["w1:p0"] });
+    // both documents on disk are byte for byte what they were before the refused save
+    expect(bytes("preferences.json")).toEqual(before.preferences);
+    expect(bytes("muted-panes.json")).toEqual(before.mutes);
     rmSync(blocker, { recursive: true });
-    expect(new PreferenceStore(dir).get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: [] });
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 1, settings: { theme: "light" }, muted_panes: ["w1:p0"] });
+  });
+
+  it("a failed save before the file was ever replaced keeps a manual repair for the next one", async () => {
+    const dir = root();
+    writeFileSync(join(dir, "preferences.json"), "{ not json");
+    const store = new PreferenceStore(dir);
+    // repaired by hand after the start
+    writeFileSync(join(dir, "preferences.json"), JSON.stringify({ revision: 5, settings: { theme: "light" }, pins: ["local:w1:p1"] }));
+    const blocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    expect((await put(store, JSON.stringify({ settings: { showThinking: false }, muted_panes: ["w1:p1"] }))).status).toBe(500);
+    rmSync(blocker, { recursive: true });
+    // the next save is laid over the repair, not over what memory held before it
+    expect(await (await put(store, JSON.stringify({ settings: { agentOrder: "activity" } }))).json()).toEqual({ revision: 6, settings: { theme: "light", agentOrder: "activity" }, pins: ["local:w1:p1"], muted_panes: [] });
   });
 
   it("absent field does not clear mutes", async () => {

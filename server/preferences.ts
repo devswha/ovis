@@ -95,11 +95,13 @@ export class PreferenceStore {
     if (byteLength(JSON.stringify(next)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
     // the revision first: a save that fails there leaves the mutes as they were. One that fails at the
     // list puts the previous preferences.json back, so a refused save leaves nothing on disk that no
-    // browser was told of
+    // browser was told of. Two files cannot be swapped as one, so a window stays open, accepted for
+    // a settings store: when putting preferences.json back fails too, or the process ends between the
+    // two renames, preferences.json keeps the refused change and a restart reads it, although memory
+    // and the client were told it failed. Nothing is lost; at worst a refused change comes back.
     const keepDamagedMutes = change.muted_panes !== undefined && this.mutesUnsettled && this.readMutes() === null;
     const { muted_panes: _stored, ...shared } = next;
     writeStateDocument(this.path, `${JSON.stringify(shared, null, 2)}\n`, keepDamaged);
-    this.unsettled = false;
     if (change.muted_panes !== undefined) {
       try {
         writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
@@ -111,6 +113,8 @@ export class PreferenceStore {
       }
       this.mutesUnsettled = false;
     }
+    // settled only once the whole save is on disk: after a put-back the file is read again first
+    this.unsettled = false;
     this.current = next;
     for (const listener of [...this.listeners]) listener(this.current);
     return this.current;
