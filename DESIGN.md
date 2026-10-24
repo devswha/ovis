@@ -1833,8 +1833,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   records (`call_id` / `state` on the tool part, `shared/protocol.ts`): Claude Code's tool_result
   says ok or error (an empty result is ok); Codex records no outcome, so an answered Codex update,
   like one from any agent that records neither, shows its list with "outcome not recorded" and no
-  success claim, even after an earlier ok one. Output text and its emptiness are never read for an
-  outcome. A later pending or failed update is counted beside the list, never taken for it; when
+  success claim, even after an earlier ok one. Output text and its emptiness never make an update
+  succeed; an update the chat already marks failed (a Codex output that reads as a failure) is
+  counted as failed. A later pending or failed update is counted beside the list, never taken for it; when
   the latest completed list cannot be read the row says so instead of showing an earlier one, and
   with no completed update it shows none.
 - The run is named by its first call's own id in its turn's row (by the row and that call's index
