@@ -635,6 +635,22 @@ function folderId(path: string): string | null {
   } catch { return null; }
 }
 
+/** Whether an error says only that nothing is there (a missing entry, or a missing folder on its way), not that it cannot be read. */
+const absent = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
+/** What is at `path`, not followed: a plain folder or file with its identity, nothing, something else, or an error that is no answer. */
+function look(path: string): { kind: "folder" | "file"; id: string; size: number } | "missing" | "other" | "error" {
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) return "other";
+    if (stat.isDirectory()) return { kind: "folder", id: `${stat.dev}:${stat.ino}`, size: stat.size };
+    return stat.isFile() ? { kind: "file", id: `${stat.dev}:${stat.ino}`, size: stat.size } : "other";
+  } catch (error) { return absent(error) ? "missing" : "error"; }
+}
+
 /** The path the kernel has for an open descriptor, or null where it has none. */
 function fdPath(fd: number): string | null {
   try { return readlinkSync(`${FD_DIR}/${fd}`); } catch { return null; }
@@ -647,10 +663,12 @@ function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
   const path = join(store, sessionId, "subagents");
   const chain: Folder["chain"] = [];
   for (const step of [store, join(store, sessionId), path]) {
-    const id = folderId(step);
-    // a folder that is not there has no agent; one that is a link, or no folder, leads out of the store
-    if (id === null) return plain(step) === null && !linked(step) ? "not_found" : "unavailable";
-    chain.push({ path: step, id });
+    const seen = look(step);
+    // a folder that is not there has no agent; one that is a link or no folder leads out of the store, and one that
+    // cannot be looked at (no permission, an I/O error) is a store not readable now, never an agent gone
+    if (seen === "missing") return "not_found";
+    if (typeof seen === "string" || seen.kind !== "folder") return "unavailable";
+    chain.push({ path: step, id: seen.id });
   }
   if (!fdPaths) return { path, fd: null, chain };
   let fd: number;
@@ -663,11 +681,6 @@ function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
   return "unavailable";
 }
 
-/** whether `path` is a link (to anything, or to nothing) */
-function linked(path: string): boolean {
-  try { return lstatSync(path).isSymbolicLink(); } catch { return false; }
-}
-
 /** Whether the folder is still the one looked at: every folder on the way the same, and the open one where it was. */
 function intact(folder: Folder): boolean {
   return folder.chain.every((step) => folderId(step.path) === step.id) && (folder.fd === null || fdPath(folder.fd) === folder.path);
@@ -678,21 +691,39 @@ function intact(folder: Folder): boolean {
  * `not_found` when there is no such plain file; `unavailable` when one is there but cannot be opened as looked at (no
  * permission, or replaced meanwhile), so a read that fails is never taken for an agent gone from the session.
  */
-function openIn(folder: Folder, name: string, max = Infinity): { fd: number; size: number } | DetailRefusal {
+function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRefusal {
   const path = join(folder.path, name);
   // inside the open folder itself where the kernel allows: a folder put in its place leads nowhere else
   const where = folder.fd === null ? path : `${FD_DIR}/${folder.fd}/${name}`;
-  const looked = plain(where, max);
-  if (looked === null) return "not_found";
+  const looked = look(where);
+  if (looked === "missing") return "not_found";
+  // a link, no plain file, or one over its size is none of this agent's; one that cannot be looked at is a store not readable now
+  if (looked === "error") return "unavailable";
+  if (looked === "other" || looked.kind !== "file" || looked.size > max) return "not_found";
   let fd: number;
   // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it
   try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return "unavailable"; }
   try {
     const opened = fstatSync(fd);
-    if (opened.isFile() && `${opened.dev}:${opened.ino}` === looked.id && opened.size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size: opened.size };
+    if (opened.isFile() && `${opened.dev}:${opened.ino}` === looked.id && opened.size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size: opened.size, id: looked.id, path, where };
   } catch { /* refused below */ }
   closeSync(fd);
   return "unavailable";
+}
+
+/** A file `openIn` opened: its descriptor, its size and identity then, and where it was. */
+interface Opened { fd: number; size: number; id: string; path: string; where: string }
+
+/**
+ * Whether an opened file is still the one looked at, where it was looked at, after its read: the same identity at its
+ * path, and its descriptor still there (where the kernel names a descriptor's file). A file moved out of the session
+ * or its path replaced while it was read may have been read as another file.
+ */
+function stillThere(file: Opened): boolean {
+  const seen = look(file.where);
+  if (typeof seen === "string" || seen.kind !== "file" || seen.id !== file.id) return false;
+  try { const opened = fstatSync(file.fd); if (`${opened.dev}:${opened.ino}` !== file.id) return false; } catch { return false; }
+  return !fdPaths || fdPath(file.fd) === file.path;
 }
 
 function readAt(fd: number, from: number, length: number): Buffer {
@@ -808,14 +839,20 @@ export function backgroundAgentDetail(parentPath: string, agentId: string): { de
   try {
     const meta = openIn(folder, `agent-${agentId}.meta.json`, MAX_META_BYTES);
     if (typeof meta === "string") return { refusal: meta };
+    // a read that fails, or a file moved or replaced while it was read, is a store not readable now; a meta file
+    // being written says nothing of the agent yet, and one that names no agent type is no subagent's
+    let bytes: Buffer;
+    try { bytes = readAt(meta.fd, 0, meta.size); if (!stillThere(meta)) return { refusal: "unavailable" }; } catch { return { refusal: "unavailable" }; } finally { closeSync(meta.fd); }
     let record: Row | null;
-    try { record = row(JSON.parse(readAt(meta.fd, 0, meta.size).toString("utf8"))); } catch { record = null; } finally { closeSync(meta.fd); }
-    // a meta file being written says nothing of the agent yet, and one that names no agent type is no subagent's
+    try { record = row(JSON.parse(bytes.toString("utf8"))); } catch { record = null; }
     if (record === null || text(record["agentType"]) === null) return { refusal: "not_found" };
     const file = openIn(folder, `agent-${agentId}.jsonl`);
     if (typeof file === "string") return { refusal: file };
     let read: ReturnType<typeof readDetailRecords>;
-    try { read = readDetailRecords(file.fd, file.size, sessionId, agentId); } catch { return { refusal: "unavailable" }; } finally { closeSync(file.fd); }
+    try {
+      read = readDetailRecords(file.fd, file.size, sessionId, agentId);
+      if (!stillThere(file)) return { refusal: "unavailable" };
+    } catch { return { refusal: "unavailable" }; } finally { closeSync(file.fd); }
     // a folder on the way replaced while it was read: what was read may be another folder's
     if (!intact(folder)) return { refusal: "unavailable" };
     if (read.foreign) return { refusal: "not_found" };

@@ -520,6 +520,8 @@ export function createServer(
       const tasksResponse = await handleTasksRequest(request, url, pathname, { omo, claudeAgents });
       if (tasksResponse) return tasksResponse;
 
+      // a GET a watching device may make on purpose: a subagent's prose and tool-call arguments (which can carry file
+      // contents) are what the live conversation already shows it of the agents of this pane
       if (pathname === BACKGROUND_AGENT_PATH) {
         return handleBackgroundAgentRequest(request, url, { paneGet, omoPane: (paneId) => omo.sessionOf(paneId) !== null, claudeAgents, read: options.backgroundAgentRead });
       }

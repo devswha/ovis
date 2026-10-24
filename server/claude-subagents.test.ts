@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
@@ -498,6 +498,53 @@ describe("backgroundAgentDetail", () => {
       expect([label, swapped, "refusal" in read]).toEqual([label, true, true]);
       expect(JSON.stringify(read)).not.toContain("outside");
     }
+    expect(detailOf(s.path, "a1").prompt).toBe("inside dispatch");
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a file moved or replaced while it is read, and a read that fails, as unavailable", () => {
+    const s = session();
+    const subagents = join(s.path, "..", SESSION, "subagents");
+    const file = s.agent("a1", { description: "inside", steps: [] });
+    const meta = join(subagents, "agent-a1.meta.json");
+    writeFileSync(file, own({ type: "user", timestamp: at(1), message: { role: "user", content: "inside dispatch" } }));
+    const outside = mkdtempSync(join(tmpdir(), "herdr-subagents-moved-"));
+    roots.push(outside);
+    const { openSync, readSync } = detailIo;
+    /** the detail, with `act` run once at the first read of the file whose name ends in `name` */
+    const during = (name: string, act: () => void) => {
+      const opened = new Map<number, string>();
+      let acted: boolean = false;
+      detailIo.openSync = ((path: string, flags: number) => { const fd = openSync(path, flags); opened.set(fd, path); return fd; }) as typeof openSync;
+      detailIo.readSync = ((fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+        if (!acted && opened.get(fd)?.endsWith(name)) { acted = true; act(); }
+        return readSync(fd, buffer, offset, length, position);
+      }) as typeof readSync;
+      try { const read = backgroundAgentDetail(s.path, "a1"); return [acted, read]; } finally { Object.assign(detailIo, { openSync, readSync }); }
+    };
+    const replaced = (path: string, words: string) => (): void => { renameSync(path, join(outside, `${basename(path)}.${words}`)); writeFileSync(path, own({ type: "user", timestamp: at(1), message: { role: "user", content: words } })); };
+    const restore = (path: string, words: string): void => { renameSync(join(outside, `${basename(path)}.${words}`), path); };
+    // the transcript moved out of the session while it is read, and another file put at its path
+    expect(during("agent-a1.jsonl", replaced(file, "moved"))).toEqual([true, { refusal: "unavailable" }]);
+    restore(file, "moved");
+    // the meta file likewise
+    expect(during("agent-a1.meta.json", () => { renameSync(meta, join(outside, "agent-a1.meta.json.moved")); writeFileSync(meta, JSON.stringify({ agentType: "x" })); })).toEqual([true, { refusal: "unavailable" }]);
+    restore(meta, "moved");
+    // a read the disk fails is a store not readable now, never an agent gone
+    expect(during("agent-a1.meta.json", () => { throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" }); })).toEqual([true, { refusal: "unavailable" }]);
+    expect(during("agent-a1.jsonl", () => { throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" }); })).toEqual([true, { refusal: "unavailable" }]);
+    // a session folder that cannot be looked into, nor its subagents folder opened (root looks into anything)
+    if (process.getuid?.() !== 0) {
+      for (const folder of [join(subagents, ".."), subagents]) {
+        chmodSync(folder, 0o000);
+        try { expect(backgroundAgentDetail(s.path, "a1")).toEqual({ refusal: "unavailable" }); } finally { chmodSync(folder, 0o755); }
+      }
+    }
+    // a file linked in that claims this session and agent is still no file of this agent's
+    const claimed = join(outside, "claimed.jsonl");
+    writeFileSync(claimed, own({ type: "user", timestamp: at(1), message: { role: "user", content: "linked secret" } }));
+    renameSync(file, `${file}.real`);
+    symlinkSync(claimed, file);
+    try { expect(backgroundAgentDetail(s.path, "a1")).toEqual({ refusal: "not_found" }); } finally { rmSync(file); renameSync(`${file}.real`, file); }
     expect(detailOf(s.path, "a1").prompt).toBe("inside dispatch");
   });
 
