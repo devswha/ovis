@@ -4,8 +4,8 @@
  * clicked (the body carries the row's argv), no second Resume in the window before herdr reports the
  * resumed pane's session (App's RecentResume record), a session a pane already shows selected instead of
  * started, a row without a verified resume listed with no button, the keyboard along the rows,
- * the agent picker (each agent with its mark, no Shell, its open list taking Escape alone, disabled
- * while a resume is in flight), a PC whose bridge answers 404 for the route, whose menu has no item, and
+ * the agent picker (each agent with its mark, no Shell, its open list taking Escape alone, also with the
+ * focus off its button and when the sessions arrive while it is open, disabled while a resume is in flight), a PC whose bridge answers 404 for the route, whose menu has no item, and
  * Claude's store-bound Resume: the list asked for from a pane of the workspace, one POST sessions/resume
  * per double click (never tab/create), the same UUID reported by a pane on another store left to Resume, a
  * store that changed read again, and a bridge from before store-bound Resume (rows without a source, no
@@ -41,6 +41,8 @@ const resumeRequests = new EventEmitter();
 let holdResume = false;
 /** true: the next Claude lists wait for a release, as a list read again after a changed store does */
 let holdList = false;
+/** "held" each time a Claude list starts waiting for its release */
+const heldLists = new EventEmitter();
 /** how the bridge answers the next resumes: start it, name a pane already showing it, refuse a changed store or one a new tab would not keep, or have no route */
 let resumeAnswer: "created" | "opened" | "stale" | "unsupported" | "changed" | "missing" = "created";
 const closedSources = new Set<string>();
@@ -67,7 +69,7 @@ try {
       const workspaceId = url.searchParams.get("workspace_id")!;
       if (agent === "claude" && (workspaceId === "w3" || workspaceId === "w4")) {
         claudeLists.push(url.search);
-        if (holdList) await new Promise<void>((resolve) => releases.push(resolve));
+        if (holdList) await new Promise<void>((resolve) => { releases.push(resolve); heldLists.emit("held"); });
         const paneId = url.searchParams.get("pane_id");
         if (paneId && closedSources.has(paneId)) return refusal("stale_source", "source pane no longer exists", 409);
         // w4's bridge is from before store-bound Resume: it ignores pane_id and gives no source
@@ -254,6 +256,37 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   console.log("PASS the agent picker lists the agents with their marks, closes its list alone on Escape and takes the keys; an empty store is said in words");
+  // the sessions arrive while the agent list is open: the list keeps the focus, so its keys and Escape stay
+  // the list's, not the first Resume's and the dialog's
+  holdList = true;
+  const listHeld = once(heldLists, "held", { signal: AbortSignal.timeout(10_000) });
+  await (await openMenu("w3")).getByRole("menuitem", { name: "Earlier sessions…", exact: true }).click();
+  await dialog.waitFor();
+  await listHeld;
+  assert.equal(await dialog.locator(".session-row").count(), 0, "the sessions are still on their way");
+  await picker.click();
+  await agentList.waitFor();
+  holdList = false;
+  releases.splice(0).forEach((release) => release());
+  await dialog.locator(".session-row").first().waitFor();
+  await settled(page);
+  assert.equal(await agentList.isVisible(), true, "the open list stays open when the sessions arrive");
+  assert.equal(await picker.evaluate((node) => node === document.activeElement), true, "the open list keeps the focus when the sessions arrive");
+  await page.keyboard.press("Escape");
+  await agentList.waitFor({ state: "detached" });
+  assert.equal(await dialog.isVisible(), true, "Escape after the sessions arrived closes the list, not the dialog");
+  console.log("PASS sessions arriving while the agent list is open leave it the focus and its Escape");
+  // Safari leaves the focus off a button a click opened: the open list still takes Escape alone
+  await picker.click();
+  await agentList.waitFor();
+  await picker.evaluate((node) => (node as HTMLElement).blur());
+  assert.equal(await page.evaluate(() => document.activeElement === document.body), true, "the focus is off the picker, as Safari leaves it");
+  await page.keyboard.press("Escape");
+  await agentList.waitFor({ state: "detached" });
+  assert.equal(await dialog.isVisible(), true, "Escape with the focus off the open list closes the list, not the dialog");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  console.log("PASS an open agent list takes Escape alone with the focus off its button; the next Escape closes the dialog");
   // Claude: the list is asked for from a pane of the workspace (its store's), and the same UUID reported by a
   // pane on another store is not that row's session: Resume, not Open
   await openHistory("w3");
