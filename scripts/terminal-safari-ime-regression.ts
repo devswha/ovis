@@ -14,6 +14,21 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: "direct" }));
     localStorage.setItem(`ovis:view:${pane}`, "terminal");
+    // a probe still ending (its pong taken, not yet handled) ignores `online`: askUntilPing asks again
+    // on each frame until the page sends a ping, which it then notes in `pinged`
+    const w = window as { pinged?: boolean; askUntilPing?: () => void };
+    w.askUntilPing = () => {
+      w.pinged = false;
+      const ask = (): void => { if (w.pinged) return; window.dispatchEvent(new Event("online")); requestAnimationFrame(ask); };
+      ask();
+    };
+    const Native = window.WebSocket;
+    window.WebSocket = class extends Native {
+      override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+        if (typeof data === "string" && data.startsWith('{"type":"ping"')) w.pinged = true;
+        super.send(data);
+      }
+    };
   }, pane);
   const page = await context.newPage();
   const sent: Array<{ pane_id: string; text: string }> = [];
@@ -385,7 +400,8 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await reset();
     holdPings = true;
     const pinged = signal("ping");
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    // the page asks until it pings (askUntilPing): an `online` that meets a probe still ending is ignored
+    await page.evaluate(() => (window as { askUntilPing?: () => void }).askUntilPing?.());
     await pinged;
     await dictate(hypotheses, false);
     const ponged = signal("pong");
