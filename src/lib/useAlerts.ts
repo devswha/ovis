@@ -14,10 +14,12 @@ import {
   shouldNotifyStatus,
   alertStatus,
   alertsAllow,
+  paneAlertsMuted,
   showPaneEndedNotification,
   showPaneStatusNotification,
   type NotificationState,
 } from "./notifications.ts";
+import { currentPaneMutes } from "./paneMutes.ts";
 import { ensurePushSubscription, pushSupported, removePushSubscription } from "./push.ts";
 import { hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 import type { NotificationTarget } from "./notificationTarget.ts";
@@ -134,7 +136,11 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
   const alertTurns = useRef<ReturnType<typeof createAlertTurnPlayer> | null>(null);
   useEffect(() => {
     const player = createAlertTurnPlayer({
-      play: (kind) => alertsOnRef.current && alertSoundRef.current && playAlertSound(kind),
+      // a chime waits its turn among the tabs: a mute made meanwhile still silences it
+      play: (kind, key) => {
+        const [machineId, paneId] = JSON.parse(key) as [string, string];
+        return alertsOnRef.current && alertSoundRef.current && !paneAlertsMuted(currentPaneMutes(), machineId, paneId) && playAlertSound(kind);
+      },
     });
     alertTurns.current = player;
     return () => { player.dispose(); alertTurns.current = null; };
@@ -167,21 +173,23 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
     const worked = trackTurn(turnStartRef.current, key, previous, status, Date.now());
     if (worked !== null) lastTurnRef.current.set(key, worked);
-    if (pane && shouldNotifyStatus(previous, status) && dropletAllows(alertsRef.current, status, worked)) {
+    // a muted pane (lib/paneMutes.ts) is tracked as every other, and told on no channel
+    const muted = paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id);
+    if (pane && !muted && shouldNotifyStatus(previous, status) && dropletAllows(alertsRef.current, status, worked)) {
       const kind = status === "blocked" ? "blocked" : "done";
       dropIn(machine, pane, kind);
       chime(machine, pane, kind);
     }
-    if (pane && shouldNotifyStatus(previous, status) && alertsOnRef.current && !pushOnRef.current && alertsAllow(alertsRef.current, status)) showPaneStatusNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, status, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
+    if (pane && !muted && shouldNotifyStatus(previous, status) && alertsOnRef.current && !pushOnRef.current && alertsAllow(alertsRef.current, status)) showPaneStatusNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, status, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
   }, []);
   const onPaneExited = useCallback((machine: Machine, message: PaneExitedMessage, takeNotificationTargetRef: TakeNotificationTargetRef) => {
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
     const worked = endedTurn(turnStartRef.current, lastTurnRef.current, paneStorageId(machine.id, message.pane_id), Date.now());
-    if (pane && dropletAllows(alertsRef.current, "done", worked)) {
+    if (pane && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) && dropletAllows(alertsRef.current, "done", worked)) {
       dropIn(machine, pane, "ended");
       chime(machine, pane, "done");
     }
-    if (message.type === "pane-exited" && alertsOnRef.current && !pushOnRef.current && alertsRef.current.done !== "off") {
+    if (message.type === "pane-exited" && alertsOnRef.current && !pushOnRef.current && alertsRef.current.done !== "off" && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id)) {
       const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
       if (pane) showPaneEndedNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
     }

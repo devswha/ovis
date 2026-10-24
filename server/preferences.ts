@@ -15,9 +15,12 @@ export class PreferencesTooLarge extends Error {
  * directory beside devices.json. One document: a browser sends the settings it changed (and the
  * pins when they changed), laid over what is held, last write wins per setting; the others take
  * the whole document from the event. A change is held, and told, only once it is on disk.
+ * The muted panes are always in the document, empty while nothing is muted: a file from before
+ * there were any reads as none muted, without a write or a new revision, so a browser tells a
+ * server that keeps the list from an older one by the list being there.
  */
 export class PreferenceStore {
-  private current: SharedPreferences = { revision: 0, settings: {} };
+  private current: SharedPreferences = { revision: 0, settings: {}, muted_panes: [] };
   private readonly path: string;
   private readonly listeners = new Set<(preferences: SharedPreferences) => void>();
   /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
@@ -45,7 +48,8 @@ export class PreferenceStore {
       return null;
     }
     const revision = isJsonObject(parsed) && Number.isSafeInteger(parsed["revision"]) ? parsed["revision"] as number : 0;
-    return { revision: Math.max(0, revision), settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }) };
+    // a document from before the mute list reads as none muted, with no write and no new revision
+    return { revision: Math.max(0, revision), settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: body.muted_panes ?? [] };
   }
 
   get(): SharedPreferences { return this.current; }
@@ -61,7 +65,9 @@ export class PreferenceStore {
     }
     change = normalizeThemeChange(base.settings, change);
     const pins = change.pins ?? base.pins;
-    const next: SharedPreferences = { revision: base.revision + 1, settings: { ...base.settings, ...change.settings }, ...(pins === undefined ? {} : { pins }) };
+    // a change that names no list leaves the mutes; an empty list is the last one unmuted
+    const muted = change.muted_panes ?? base.muted_panes ?? [];
+    const next: SharedPreferences = { revision: base.revision + 1, settings: { ...base.settings, ...change.settings }, ...(pins === undefined ? {} : { pins }), muted_panes: muted };
     const text = `${JSON.stringify(next, null, 2)}\n`;
     if (byteLength(JSON.stringify(next)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
     writeStateDocument(this.path, text, keepDamaged);
@@ -91,7 +97,7 @@ export async function handlePreferencesRequest(request: Request, store: Preferen
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   const body = sharedPreferencesBody(raw);
-  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[] }");
+  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[] }");
   try { return reply(store.set(body)); }
   catch (error) {
     if (error instanceof PreferencesTooLarge) return tooLarge();
