@@ -17,7 +17,9 @@ web server on port `7317` and never replaces herdr, its sessions or the user's o
 - Never print, log or commit the token. Write it only to the config file named below and tell the
   user where it is.
 - Do not install herdr or Bun yourself unless the user agrees. Say which one is missing and how to
-  install it. Node is optional (below), so never install it only for Ovis.
+  install it. Node is optional (below), so never install it only for Ovis. The one exception is the
+  one-line installer (C): it adds Node 22 when the PC has no Node 18 or newer and the Rust PTY host
+  does not run there. Say so, and get the user's agreement, before recommending C in that case.
 - Do not stop or restart the user's herdr server (`herdr server stop`). Restarting Ovis is fine.
 
 ## 1. Check prerequisites
@@ -45,7 +47,7 @@ git --version
 | --- | --- | --- |
 | **A. herdr plugin** (default) | The user wants it to start with herdr | In-app: Settings → About |
 | **B. Source checkout** | The user wants to develop it, or asks for a clone | In-app, while the checkout stays on a clean `main` |
-| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun) and to let Tailscale serve the app | In-app, like A |
+| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer) and to let Tailscale serve the app | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
 `curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr and Bun for the user only (no sudo)
