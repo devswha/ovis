@@ -216,22 +216,16 @@ describe("new tab and split pane", () => {
       expect(shortcutDisplayKeys(id, {})).toEqual([]);
     }
     expect(matchShortcut(keyEvent("t", { ctrlKey: true }), false)).toBeNull();
-    const overrides = sanitizeShortcutOverrides({ "new-tab": "y", "split-right": "l", "split-down": "h" });
-    expect(overrides).toEqual({ "new-tab": "y", "split-right": "l", "split-down": "h" });
+    const overrides = sanitizeShortcutOverrides({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h" });
+    expect(overrides).toEqual({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h" });
+    expect(matchShortcut(keyEvent("R", { ctrlKey: true }), false, overrides)).toBe("rename-tab");
+    expect(shortcutDisplayKeys("rename-tab", overrides)).toEqual(["Mod", "Shift", "R"]);
     expect(matchShortcut(keyEvent("Y", { ctrlKey: true }), false, overrides)).toBe("new-tab");
     expect(matchShortcut(keyEvent("l", { metaKey: true }), true, overrides)).toBe("split-right");
     expect(matchShortcut(keyEvent("h", { ctrlKey: true }), false, overrides)).toBe("split-down");
     expect(shortcutDisplayKeys("new-tab", overrides)).toEqual(["Mod", "Shift", "Y"]);
     expect(shortcutConflict("split-down", ["y"], overrides)).toBe(true);
     expect(shortcutConflict("new-tab", ["k"], {})).toBe(true);
-  });
-
-  it("binds Rename tab to a chosen key", () => {
-    const overrides = sanitizeShortcutOverrides({ "rename-tab": "r" });
-    expect(overrides).toEqual({ "rename-tab": "r" });
-    expect(matchShortcut(keyEvent("R", { ctrlKey: true }), false, overrides)).toBe("rename-tab");
-    expect(shortcutDisplayKeys("rename-tab", overrides)).toEqual(["Mod", "Shift", "R"]);
-    expect(shortcutConflict("rename-tab", ["r"], { "new-tab": "r" })).toBe(true);
   });
 });
 

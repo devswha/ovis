@@ -124,7 +124,7 @@ try {
 
         // Rename tab has no default key: a recorded chord opens the open tab's name field, Escape cancels, Enter renames
         await hungarianE();
-        await page.locator(".settings-dialog").waitFor();
+        await openSettingsPage(page, "Shortcuts");
         await record(page, "Rename tab", "Meta+Alt+KeyR");
         assert.equal((await stored(page))["rename-tab"], "alt+meta+r");
         await page.getByRole("button", { name: "Close settings", exact: true }).click();
@@ -137,12 +137,22 @@ try {
         await page.keyboard.press("Escape");
         await tabName.waitFor({ state: "detached" });
         assert.equal(await page.locator('.tab-strip-item.is-active [role="tab"]').textContent(), tabLabel, "Escape keeps the name");
+        // the request is one-shot: leaving the pane and coming back does not open the field again
+        const openTab = () => document.querySelector<HTMLElement>('.tab-strip-item.is-active [role="tab"]')?.dataset["tabId"] ?? null;
+        const firstTab = await page.evaluate(openTab);
+        await page.keyboard.press("Meta+Shift+End");
+        await page.waitForFunction((before) => (document.querySelector<HTMLElement>('.tab-strip-item.is-active [role="tab"]')?.dataset["tabId"] ?? null) !== before, firstTab);
+        await page.keyboard.press("Meta+Shift+ArrowUp");
+        await page.waitForFunction((before) => (document.querySelector<HTMLElement>('.tab-strip-item.is-active [role="tab"]')?.dataset["tabId"] ?? null) === before, firstTab);
+        assert.equal(await page.locator(".tab-strip-rename").count(), 0, "coming back to the pane does not reopen the name field");
         await page.keyboard.press("Meta+Alt+KeyR");
         await tabName.waitFor();
         await page.keyboard.type("Renamed by shortcut");
         await page.keyboard.press("Enter");
         await tabName.waitFor({ state: "detached" });
         assert.match((await page.locator('.tab-strip-item.is-active [role="tab"]').textContent()) ?? "", /Renamed by shortcut/, "Enter renames the tab");
+        // the demo's authoritative snapshot carries the name, so herdr was sent the rename
+        await page.waitForFunction(async () => (await (await fetch("/api/session")).json()).snapshot.tabs.some((tab: { label: string }) => tab.label === "Renamed by shortcut"));
         // the palette offers the same action
         await page.keyboard.press("Control+KeyK");
         await palette.waitFor();

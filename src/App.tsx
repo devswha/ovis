@@ -64,6 +64,7 @@ import { useMachinesRef, useRecentFolderMemory, useRefetchTimer, useRosterError,
 import { useMachineDialog } from "./lib/useMachineDialog.ts";
 import { useNewSessionMachine, useNewSessionState, useSessionHistoryList } from "./lib/useNewSessionDialog.ts";
 import { useCommandPalette } from "./lib/useCommandPalette.ts";
+import { useRenameRequest } from "./lib/useRenameRequest.ts";
 import { useFilePanels } from "./lib/useFilePanels.ts";
 import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
@@ -188,7 +189,7 @@ export function App() {
   const paneControls = useRef<PaneControls | null>(null);
   const [findRequest, setFindRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
   // the Rename tab shortcut and palette action: the tab strip of the selected pane opens its name field
-  const [renameRequest, setRenameRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
+  const { renameRequest, requestRename, clearRenameRequest } = useRenameRequest();
   // the header's More menu: its button
   const [more, setMore] = useState<{ anchor: HTMLElement } | null>(null);
   const closeMore = useCallback(() => setMore(null), []);
@@ -390,7 +391,7 @@ export function App() {
       renameTab: () => {
         if (selectedPaneId === null) return;
         setDrawerOpen(false);
-        setRenameRequest((request) => ({ paneId: selectedPaneId, serial: request.serial + 1 }));
+        requestRename(selectedMachineId, selectedPaneId);
       },
       openTerminalTab: async (target) => {
         const found = newTabTarget(target);
@@ -797,7 +798,8 @@ export function App() {
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {slotSnapshot && pane && workspace && (
                   <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd}
-                    renameRequest={active && renameRequest.paneId === pane.pane_id ? renameRequest.serial : 0}
+                    renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
+                    onRenameHandled={clearRenameRequest}
                     onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
                     onNewTerminal={() => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}

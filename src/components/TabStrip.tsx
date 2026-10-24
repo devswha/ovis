@@ -19,10 +19,11 @@ import { ApiError, routeMissing } from "../lib/api.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
 import { useT } from "../lib/i18n.ts";
+import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { customTabLabel, tabLabel } from "../lib/tabName.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
-import { SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
+import { CRAMPED_QUERY, loneTabHidden, SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -55,13 +56,14 @@ export interface TabStripProps {
   panelId?: string;
   /** a tab dragged out of the strip may open its pane in half of the pane area (lib/paneDrag.ts) */
   splitDrag?: boolean;
-  /** a counter the app raises to open the open tab's name field, as the menu's Rename does (0: none asked) */
-  renameRequest?: number;
+  /** the app asks this strip (shortcut, palette) to open the open tab's name field, as the menu's Rename does; `onRenameHandled` clears it */
+  renameRequest?: RenameRequest | null;
+  onRenameHandled?: () => void;
   /** drawn at the row's far end, outside the scrolling tabs: a split view half's close (App) */
   end?: ReactNode;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = 0, end }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
@@ -74,7 +76,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const soloPanes = useMediaQuery(SOLO_PANE_QUERY);
   // a short phone screen (landscape, a small phone) has no height to spare: a lone tab is not
   // drawn there, so an approval card keeps its options in reach; its actions stay in the header
-  const cramped = useMediaQuery("(max-width: 768px) and (max-height: 600px)");
+  const cramped = useMediaQuery(CRAMPED_QUERY);
   const strip = useRef<HTMLDivElement>(null);
   const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true } | null>(null);
   const [editing, setEditing] = useState<{ tabId: string; value: string } | null>(null);
@@ -217,16 +219,16 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     setError(null);
     setEditing({ tabId: tab.tab_id, value: sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "" });
   };
-  // a request from the app (shortcut, palette) opens the open tab's field once; a strip that is not drawn ignores it
-  const lastRenameRequest = useRef(renameRequest);
+  // The request is one-shot (the app clears it once handled), so the effect depends on it alone: a
+  // strip that is not drawn drops it, and a later selection of this pane never replays it.
   useLayoutEffect(() => {
-    if (renameRequest === lastRenameRequest.current) return;
-    lastRenameRequest.current = renameRequest;
+    if (renameRequest === null) return;
     const tab = tabs.find((candidate) => candidate.tab_id === selectedPane.tab_id);
-    if (renameRequest > 0 && tab && shown && !(cramped && tabs.length === 1)) beginRename(tab);
+    if (tab && shown && !loneTabHidden(cramped, tabs.length)) beginRename(tab);
+    onRenameHandled?.();
   }, [renameRequest]);
 
-  if (!shown || (cramped && tabs.length === 1)) return null;
+  if (!shown || loneTabHidden(cramped, tabs.length)) return null;
 
   const panesOf = (tab: HerdrTab): PaneInfo[] => panes.filter((pane) => pane.tab_id === tab.tab_id);
   const paneFor = (tab: HerdrTab): PaneInfo | undefined => {
