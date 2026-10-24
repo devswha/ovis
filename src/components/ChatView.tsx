@@ -71,6 +71,12 @@ import { commandScreenClosed, sentOutcome, type TerminalPeek } from "../lib/term
 
 // How long after scroll input an upward move still counts as the reader's own.
 const SCROLL_INPUT_MS = 500;
+// How far the reader's own upward move may leave the end and still follow: only endpoint rounding.
+const READER_ALLOWANCE_PX = 1;
+// How far an upward move without the reader's input may leave the end and still follow: a composer
+// growing a few lines shrinks the view before the correction to the end lands. A scroll that sends
+// no input this page sees (a screen reader's, a Firefox scrollbar's) leaves the end only past it.
+const LAYOUT_ALLOWANCE_PX = 48;
 /** The pane this chat shows, for what its rows fetch on request (a tool call's whole output). */
 const ChatPaneContext = createContext<string | null>(null);
 const ChatHistoryContext = createContext("");
@@ -1050,6 +1056,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // When the reader last used upward scroll input.
   const scrollInputAt = useRef(-Infinity);
   const pointerDragAt = useRef(-Infinity);
+  // A press on the transcript's scrollbar is held: no pointermove comes while its thumb is dragged.
+  const scrollbarHeld = useRef(false);
   const signature = useRef("");
   // Older pages sit above the newest one. Once any shows, the newest page is
   // polled from its start at that moment, so the two always meet.
@@ -1536,9 +1544,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         return;
       }
       if (event instanceof PointerEvent && (event.type === "pointerup" || event.type === "pointercancel")) {
-        if (node !== null && node.scrollTop < lastScrollTop.current) scrollInputAt.current = Math.max(scrollInputAt.current, pointerDragAt.current);
-        pointer = null; pointerDragAt.current = -Infinity; return;
+        // released before the browser delivered the scroll it made: a held thumb's move is the reader's now
+        if (node !== null && node.scrollTop < lastScrollTop.current) scrollInputAt.current = Math.max(scrollInputAt.current, scrollbarHeld.current ? performance.now() : pointerDragAt.current);
+        pointer = null; pointerDragAt.current = -Infinity; scrollbarHeld.current = false; return;
       }
+      // a press released where this page saw no pointerup has no button down by the next pointer
+      // event, and a new press is a new gesture
+      if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarHeld.current = false;
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
       if (event instanceof WheelEvent && event.deltaY < 0) scrollInputAt.current = performance.now();
       if (event instanceof PointerEvent) {
@@ -1546,7 +1558,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           pointer = { x: event.clientX, y: event.clientY };
           pointerDragAt.current = -Infinity;
           // A scrollbar press may scroll before the browser delivers any pointermove.
-          if (event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) pointerDragAt.current = performance.now();
+          if (event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
+            pointerDragAt.current = performance.now(); scrollbarHeld.current = event.button === 0;
+          }
         }
         else if (pointer !== null && event.buttons !== 0 && (event.clientX !== pointer.x || event.clientY !== pointer.y)) pointerDragAt.current = performance.now();
       }
@@ -1559,7 +1573,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const options = { capture: true, passive: true } as const;
     const types = ["wheel", "touchstart", "touchmove", "pointerdown", "pointermove", "pointerup", "pointercancel", "keydown"] as const;
     for (const type of types) document.addEventListener(type, mark, options);
-    return () => { for (const type of types) document.removeEventListener(type, mark, options); };
+    // a press held while the chat is hidden or left is released where these listeners no longer see it
+    return () => { for (const type of types) document.removeEventListener(type, mark, options); scrollbarHeld.current = false; };
   }, [active, visible]);
   const onScroll = (): void => {
     const node = scroller.current;
@@ -1568,13 +1583,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
     lastScrollTop.current = node.scrollTop;
-    // A pointer press alone is not intent: a drag must also move the transcript up.
-    if (scrollingUp) scrollInputAt.current = Math.max(scrollInputAt.current, pointerDragAt.current);
-    // An upward move right after upward input is reading intent beyond the 1 px rounding tolerance; one
-    // without it (a growing composer shrinking the viewport before the bottom correction) keeps
-    // following within 48 px. The end presentation stays exact in measureEnd.
+    // A pointer press alone is not intent: a drag must also move the transcript up. A held scrollbar
+    // press counts until it is released: its thumb may rest longer than the input window first.
+    if (scrollingUp) scrollInputAt.current = scrollbarHeld.current ? performance.now() : Math.max(scrollInputAt.current, pointerDragAt.current);
+    // An upward move right after upward input is reading intent beyond endpoint rounding; one without
+    // it (a growing composer shrinking the viewport before the bottom correction) keeps following
+    // within the layout allowance. The end presentation stays exact in measureEnd.
     const byReader = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS;
-    const allowance = byReader ? 1 : 48;
+    const allowance = byReader ? READER_ALLOWANCE_PX : LAYOUT_ALLOWANCE_PX;
     if (scrollingUp && byReader) navigated();
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;

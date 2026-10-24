@@ -177,9 +177,10 @@ try {
 
     // Given: a following transcript. A controlled 20 px upward correction stays inside the
     // layout allowance but outside endpoint rounding, distinguishing input from layout.
-    for (const input of ["down-wheel", "horizontal-wheel", "click", "typing", "down-key", "body-composing-up-key", "body-composing-home", "body-229-up-key", "body-229-home", "up-wheel", "body-up-key", "body-page-up", "body-home", "body-shift-space", "drag"] as const) {
-      const upward = ["up-wheel", "body-up-key", "body-page-up", "body-home", "body-shift-space", "drag"].includes(input);
-      // When: input and the correction happen in one task, always inside the input window.
+    for (const input of ["down-wheel", "horizontal-wheel", "click", "typing", "down-key", "body-composing-up-key", "body-composing-home", "body-229-up-key", "body-229-home", "scrollbar-released", "scrollbar-unseen-release", "up-wheel", "body-up-key", "body-page-up", "body-home", "body-shift-space", "drag", "scrollbar-held", "scrollbar-held-released-first"] as const) {
+      const upward = ["up-wheel", "body-up-key", "body-page-up", "body-home", "body-shift-space", "drag", "scrollbar-held", "scrollbar-held-released-first"].includes(input);
+      // When: input and the correction happen in one task, inside the input window, except that a
+      // scrollbar press is followed by a correction past it (a thumb rests, then moves).
       await page.locator(".chat-view").evaluate(async (node, input) => {
         if (!(node instanceof HTMLElement)) throw new Error("Missing chat scroller");
         const text = node.querySelector("p");
@@ -191,14 +192,28 @@ try {
           text.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, buttons: 1, clientY: 100 }));
           if (input === "drag") text.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientY: 110 }));
           if (input === "click") text.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        } else if (input.startsWith("scrollbar-")) {
+          // a press on the scrollbar: the scroller itself, right of its content box
+          const box = node.getBoundingClientRect();
+          node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, buttons: 1, clientX: box.left + node.clientWidth, clientY: box.bottom - 20 }));
+          if (input === "scrollbar-released") node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          // released outside the window: no pointerup, and the next pointer event has no button down
+          if (input === "scrollbar-unseen-release") document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0 }));
         } else {
           const key = input.endsWith("up-key") ? "ArrowUp" : input === "body-page-up" ? "PageUp" : input.endsWith("home") ? "Home" : input === "body-shift-space" ? " " : input === "down-key" ? "ArrowDown" : "a";
           const target = input.startsWith("body-") ? document.body : text;
           target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key, shiftKey: input === "body-shift-space", isComposing: input.includes("composing"), keyCode: input.includes("229") ? 229 : 0 }));
         }
+        // a dragged thumb sends no pointermove: the move comes after the 500 ms input window
+        const now = performance.now.bind(performance);
+        if (input.startsWith("scrollbar-")) Object.defineProperty(performance, "now", { configurable: true, value: () => now() + 600 });
         node.scrollTop -= 20;
+        // the thumb let go before the browser delivered the scroll its drag made
+        if (input === "scrollbar-held-released-first") node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
         node.dispatchEvent(new Event("scroll"));
+        Reflect.deleteProperty(performance, "now");
         if (input === "drag") text.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        if (input === "scrollbar-held") node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }, input);
       // Then: only upward intent leaves follow mode; new output must otherwise reach the end.
