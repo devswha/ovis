@@ -8,8 +8,9 @@
  *   at ~/.claude/projects/<project>/<session>.jsonl (claude-store.ts finds it).
  * - omp: herdr's agent.get hands us the session jsonl path outright under
  *   ~/.omp/agent/sessions/<cwd-slug>/, or ~/.omp/profiles/<name>/agent/sessions/<cwd-slug>/
- *   for `omp --profile <name>` — same shape of truth, one less hop. When herdr names none, the
- *   pane's omp process does (omp.ts).
+ *   for `omp --profile <name>` — same shape of truth, one less hop. The path is held to the store
+ *   the pane's omp process writes to, which its argv and environment may move (omp.ts
+ *   ompStoreLayout); when herdr names none of it, the pane's omp process does.
  * - omo: herdr knows nothing about its store and its label for the pane flips
  *   between `pi` and `claude` as omo spawns model CLIs, so the pane's process
  *   tree routes it and process/session evidence selects a unique transcript
@@ -46,7 +47,7 @@ import { AmbiguousClaudeStore, attachedJob, claudeJobSession, claudeProcessSessi
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processStartedAt } from "./process-start.ts";
-import { ompHeldTranscript } from "./omp.ts";
+import { ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptInStore, piTranscriptPath, unwrittenSession } from "./pi.ts";
 import { cmdTranscriptPath } from "./cmd.ts";
@@ -891,27 +892,35 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
 }
 
 /**
- * omp's transcript: herdr hands over the absolute path, accepted only inside the user's own
- * stores. When herdr names none (or another agent's session), the pane's omp process does.
+ * omp's transcript: herdr hands over the absolute path, accepted only inside the store the pane's
+ * omp processes write to (omp.ts ompPaneRoute, from their own argv and environment), as a session
+ * of the pane's directory; else the pane's omp process names it. Only where herdr shows no omp
+ * process, and on Windows, which shows no process's environment, is herdr's path held to the
+ * user's own default and profile stores instead.
  */
 async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
   // a Windows bridge starts with HOME set to the profile directory (remote-entry.ts)
-  const store = ompSessionStore(path, process.env["HOME"] ?? "");
-  if (path === null || store === null) {
-    const held = await ompHeldTranscript(paneId, cwd);
-    if (held === null) throw new ConversationUnavailable("no_session_path");
-    return held;
+  const home = process.env["HOME"] ?? "";
+  const route = process.platform === "win32" ? null : await ompPaneRoute(paneId);
+  // an omp whose store nothing proves, or two keeping different ones
+  if (route === "unproved") throw new ConversationUnavailable("no_session_path");
+  const store = route === null ? ompSessionStore(path, home) : path === null ? null : ompRouteStore(route, path);
+  if (path !== null && store !== null) {
+    // omp names its session file at start and writes it with the first answer
+    const unwritten = unwrittenSession(path, store);
+    if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
+    // the check above is lexical: a link out of the store is no transcript of this pane
+    const inStore = piTranscriptInStore(path, store);
+    if (inStore !== null && (route === null || ompRouteOwns(route, inStore, cwd))) return inStore;
+    if (route === null) throw new ConversationUnavailable("no_session_path");
   }
-  // omp names its session file at start and writes it with the first answer
-  const unwritten = unwrittenSession(path, store);
-  if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
-  // the check above is lexical: a link out of the store is no transcript of this pane
-  const inStore = piTranscriptInStore(path, store);
-  if (inStore === null) throw new ConversationUnavailable("no_session_path");
-  return inStore;
+  // herdr names no session of this store (or another agent's): the pane's omp process does
+  const held = route === null ? null : ompRouteTranscript(route, cwd);
+  if (held === null) throw new ConversationUnavailable("no_session_path");
+  return held;
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
