@@ -27,24 +27,26 @@ const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
  * Each try is marked in bin/ before it starts, and the next one waits RUST_HOST_RETRY_MS from it: a PC
  * that cannot get the host (offline, a release without one, a check that keeps failing) does not
  * download again at every restart, and a supervisor that starts while an earlier try still runs
- * leaves `bin/` to that one. `signal` ends the try when this supervisor stops.
+ * leaves `bin/` to that one. `signal` ends the try when this supervisor stops; the promise, which never
+ * rejects, settles once the try's whole process group is gone (killed outright past the grace), so a
+ * stopping supervisor can wait for it before it lets go.
  */
-function installMissingRustHost(directory: string, signal: AbortSignal): void {
+function installMissingRustHost(directory: string, signal: AbortSignal): Promise<void> | null {
   const bin = join(directory, "bin");
   if (process.platform === "win32" || !existsSync(join(directory, "scripts", "pty-sidecar.ts"))
-    || existsSync(join(bin, "ovis-pty-sidecar.json"))) return;
+    || existsSync(join(bin, "ovis-pty-sidecar.json"))) return null;
   const attempt = join(bin, "ovis-pty-sidecar.attempt");
   try {
-    if (Date.now() - statSync(attempt).mtimeMs < RUST_HOST_RETRY_MS) return;
+    if (Date.now() - statSync(attempt).mtimeMs < RUST_HOST_RETRY_MS) return null;
   } catch { /* never tried */ }
   try {
     mkdirSync(bin, { recursive: true });
     writeFileSync(attempt, `${new Date().toISOString()}\n`);
   } catch (error) {
     console.error("Rust PTY host install not tried: its attempt could not be marked", error);
-    return;
+    return null;
   }
-  runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], signal, 120_000).then(
+  return runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], signal, 120_000).then(
     (output) => console.log(output),
     (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
   );
@@ -159,10 +161,13 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   });
   // a Rust PTY host install runs in a process group of its own: it stops with this supervisor
   const rustHostInstall = new AbortController();
+  let rustHostTry: Promise<void> | null = null;
   async function shutdown(code: number) {
     if (stopping) return;
     stopping = true; updater.stop(); rustHostInstall.abort();
-    await stopChild();
+    // the try's group is gone before this supervisor lets go: one that ignores SIGTERM is killed
+    // past the grace, which an exit now would have dropped with it
+    await Promise.all([stopChild(), rustHostTry]);
     lock.release();
     process.exit(code);
   }
@@ -181,7 +186,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     switching = false;
     started.resolve();
     updater.start();
-    if (active && active.directory !== root) installMissingRustHost(active.directory, rustHostInstall.signal);
+    if (active && active.directory !== root) rustHostTry = installMissingRustHost(active.directory, rustHostInstall.signal);
     process.send?.({ type: "supervisor-ready" });
     console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
   } catch (error) {

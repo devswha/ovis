@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptLegacyEnv, mergeEnvLayers, ovisName, withLegacyNames } from "./legacy-env.ts";
@@ -236,6 +236,50 @@ describe("a supervisor started by the launcher of an install from before the ren
     `);
     await stop;
   }, 30_000);
+
+  it.skipIf(process.platform === "win32")("kills a Rust PTY host install that ignores SIGTERM, and its children, before the supervisor exits", async () => {
+    // an install and a child of it that ignore SIGTERM must not outlive the supervisor: left alive,
+    // the next supervisor's try after the retry wait would meet them in bin/
+    const { directory, root, config, release } = installedRelease();
+    const started = join(directory, "install-started"), pids = join(directory, "install-pids");
+    // both hold the write end of this FIFO: its reader sees the end only once both are gone
+    const fifo = join(directory, "install-alive");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    const gone = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the install or its child outlived the supervisor")), 15_000);
+      const reader = createReadStream(fifo);
+      reader.on("data", () => undefined);
+      reader.on("end", () => { clearTimeout(timer); resolve(); });
+      reader.on("error", (error) => { clearTimeout(timer); reject(error); });
+    });
+    standInInstall(directory, release, `
+      const { openSync } = await import("node:fs");
+      const { spawn } = await import("node:child_process");
+      process.on("SIGTERM", () => {});
+      const alive = openSync(${JSON.stringify(fifo)}, "w");
+      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 60_000);"], { stdio: ["ignore", "ignore", "ignore", alive] });
+      writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, child.pid]));
+      writeFileSync(${JSON.stringify(started)}, "");
+      setInterval(() => {}, 60_000);
+    `);
+    try {
+      // the supervisor is told to stop once its install runs, as herdr's stop action tells it
+      await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root }, false, `
+        const { existsSync, watch } = await import("node:fs");
+        await new Promise((resolve) => {
+          const look = () => { if (existsSync(${JSON.stringify(started)})) { watcher.close(); resolve(); } };
+          const watcher = watch(${JSON.stringify(directory)}, look);
+          look();
+        });
+        process.kill(process.pid, "SIGTERM");
+        setInterval(() => {}, 60_000);
+      `);
+      await gone;
+    } finally {
+      // a failing run must not leave them behind
+      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }, 40_000);
 
   it("moves the state dir once a launcher of this version starts it", async () => {
     const { directory, root, config } = installedRelease();
