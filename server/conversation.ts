@@ -689,7 +689,7 @@ export async function gjcTranscriptPath(paneId: string, cwd: string, home?: stri
 
 /**
  * herdr's `pane.process_info` answer a caller already read for this pane, handed down so the same look does not
- * ask again: null when that read failed or herdr named no processes (taken as none in front), undefined to ask here.
+ * ask again: null when herdr named no processes (none in front), undefined to ask here (also after a failed read).
  */
 type KnownProcesses = ProcessInfo | null | undefined;
 
@@ -1224,7 +1224,9 @@ interface CommandTranscript {
 }
 const commandTranscripts = new Map<string, {
   signature: string; file: string; start: number; end: number; bytes: Buffer;
-  partialStart: number; records: CommandTranscriptRecord[]; identity: string; answer: CommandTranscript | null;
+  partialStart: number; records: CommandTranscriptRecord[]; identity: string;
+  /** pi: the active branch's name and its last node, which an append that runs on from it keeps */
+  branch: string; leaf: string | null; answer: CommandTranscript | null;
 }>();
 
 /** `look`: the snapshot and herdr's `pane.process_info` the caller's poll already read, so neither is asked again. */
@@ -1267,6 +1269,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   let current = [...records, ...commandTranscriptRecords(bytes.subarray(partialStart - start).toString("utf8"), partialStart)];
   const identity = append ? cached.identity : `${source}\0${path}\0${file}:${stat.size}:${stat.mtimeMs}`;
   let branch = "";
+  let leaf: string | null = null;
   if (source === "pi-transcript") {
     const nodes = current.filter(record => typeof record.entry.id === "string");
     const byId = new Map(nodes.map((record, index) => [String(record.entry.id), { record, index }]));
@@ -1281,9 +1284,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
       if (parentId === null) {
         forks.push(String(record.entry.id)); rooted = true; break;
       }
-      // The first node of a cut window has its predecessor outside it, so whether it forks cannot be told; naming it
-      // would change the branch with every append that slides the window, and orphan the sends bound to it (#1487).
-      if (nodes[index - 1]?.entry.id !== parentId && !(index === 0 && start > 0)) forks.push(String(record.entry.id));
+      if (nodes[index - 1]?.entry.id !== parentId) forks.push(String(record.entry.id));
       const parent = typeof parentId === "string" ? byId.get(parentId) : undefined;
       // In append-only pi histories, ancestors beyond a cut window precede its active path.
       if (!parent && typeof parentId === "string" && start > 0) { rooted = true; break; }
@@ -1292,12 +1293,18 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
     }
     // An unexplained missing ancestor or ambiguous index cannot prove branch ownership.
     current = rooted ? active.reverse() : [];
-    branch = rooted ? createHash("sha256").update(forks.join("\0")).digest("hex") : "unresolved";
+    leaf = rooted && current.length > 0 ? String(current.at(-1)!.entry.id) : null;
+    // An append that runs on from the branch read before (its leaf still on the active path) is that branch: the
+    // forks in the window change as it slides (its first node always looks like one), and the sends bound to the
+    // branch must keep seeing it (#1487). Any other append, a branch switch among them, names its branch afresh.
+    const continued = append && cached.leaf !== null && cached.branch !== "unresolved"
+      && current.some(({ entry }) => entry.id === cached.leaf);
+    branch = !rooted ? "unresolved" : continued ? cached.branch : createHash("sha256").update(forks.join("\0")).digest("hex");
   }
   const cleared = current.reduce((last, { entry }, index) => isContextClear(entry, source) ? index : last, 0);
   const answer = branch === "unresolved" ? null
     : { identity: `${identity}\0${branch}`, records: cleared > 0 ? current.slice(cleared) : current };
-  remember(commandTranscripts, path, { signature, file, start, end: stat.size, bytes, partialStart, records, identity, answer }, 4);
+  remember(commandTranscripts, path, { signature, file, start, end: stat.size, bytes, partialStart, records, identity, branch, leaf, answer }, 4);
   return answer;
 }
 

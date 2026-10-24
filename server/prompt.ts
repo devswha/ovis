@@ -227,8 +227,16 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
   // The transcript can be megabytes; read it only while a send can still change from it.
   const open = commands.some((sent) => sent.outcome?.state !== "result-observed" && sent.form?.interaction !== "terminal"
     && now < sent.at + COMMAND_WINDOW_MS);
-  // one read of the pane's processes serves the binding checks and the transcript's lookup alike
-  const processes = watched.length > 0 || open ? await paneProcessInfo(paneId).catch(() => undefined) : undefined;
+  // one read of the pane's processes serves the binding checks and the transcript's lookup alike; a read that
+  // failed answers neither, and the lookup asks herdr itself (an attach client found there names the job's session)
+  let processes: ProcessInfo | undefined;
+  let processesRead = false;
+  if (watched.length > 0 || open) {
+    try {
+      processes = await paneProcessInfo(paneId);
+      processesRead = true;
+    } catch { /* no answer this poll */ }
+  }
   for (const [index, sent] of commands.entries()) {
     const visibility = sent.visibility;
     if (!visibility || visibility.replaced) continue;
@@ -260,7 +268,9 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
   }
   const sameSession = (sent: PaneCommandSend): boolean => !sent.visibility?.replaced
     && (sent.visibility?.identity ?? sent.identity) === identity;
-  const transcript = open ? await readCommandTranscript(paneId, codexHome, { snapshot, processes: processes ?? null }).catch(() => null) : null;
+  const transcript = open
+    ? await readCommandTranscript(paneId, codexHome, { snapshot, ...processesRead ? { processes: processes ?? null } : {} }).catch(() => null)
+    : null;
   if (transcript) chatSent.get(paneId)?.reservations.observeTranscript(outcomeIdentity(pane), transcript.identity, transcript.records, readSendId);
   const parsed = prompt ? parsedByPublicPrompt.get(prompt) : undefined;
   const readIndex = commands.findIndex((sent) => sent.id === readSendId);
