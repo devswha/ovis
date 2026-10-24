@@ -1837,21 +1837,14 @@ class DemoSocket extends EventTarget {
           }
           const queued = message.delivery === "queue" || message.delivery === "hold";
           for (const [key, receipt] of heldCopyResends) if (Date.now() - receipt.at >= 60_000) heldCopyResends.delete(key);
-          const text = message.text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
-          // an immediate submit's framing, as the bridge checks it (server/core/composer.ts submitFraming):
-          // before a held-copy receipt is replayed or reserved, so a refusal never claims its resend id
-          const body = text.replace(/\n/g, "\r");
-          const framingLimit = message.typed === true ? 32_768 : 20_000;
-          const badFraming = !queued && (text.length > framingLimit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)
-            || (message.payload !== body && message.payload !== `\u001b[200~${body}\u001b[201~`));
           const resendKey = message.resend_id === undefined ? null : JSON.stringify([message.pane_id, message.resend_id, message.resend_generation ?? 0]);
-          const previous = resendKey === null || badFraming ? undefined : heldCopyResends.get(resendKey);
+          const previous = resendKey === null ? undefined : heldCopyResends.get(resendKey);
           if (previous && this.mode !== "observe" && message.clear_draft === undefined) {
-            // the bridge keys a resend on its normalized text, so a CRLF copy of the same message replays
-            this.push(previous.text === text ? { ...previous.reply, id: message.id }
+            this.push(previous.text === message.text ? { ...previous.reply, id: message.id }
               : { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code: "invalid_submit_id", message: "This resend id already belongs to another message." });
             break;
           }
+          const text = queued ? message.text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n") : message.text;
           let code: string | null = null;
           if ((message.delivery !== undefined && message.delivery !== "immediate" && !queued) || (queued && message.typed !== undefined && message.typed !== false)) code = "invalid_delivery";
           else if (message.clear_draft !== undefined && (typeof message.clear_draft !== "string" || !message.clear_draft
@@ -1865,13 +1858,10 @@ class DemoSocket extends EventTarget {
           else if (message.resend_generation !== undefined && (typeof message.resend_generation !== "number" || !Number.isSafeInteger(message.resend_generation) || message.resend_generation < 0 || message.resend_id === undefined)) code = "invalid_delivery";
           else if (resendKey !== null && heldCopyResends.size >= 256) code = "pending_limit";
           else if (queued && (text.trim().length === 0 || text.length > 20_000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text))) code = "invalid_submit_text";
-          else if (badFraming) code = "invalid_submit_text";
           else if (queued) code = this.pendingTargetError(message.pane_id);
           if (code) {
-            const framingRefused = badFraming && code === "invalid_submit_text";
-            const reply: Extract<ServerMessage, { type: "submit-result" }> = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code,
-              message: framingRefused ? `A message must be at most ${framingLimit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed` : "The demo agent cannot take this submission." };
-            if (resendKey !== null && this.mode !== "observe" && code !== "pending_limit" && !framingRefused && !previous) heldCopyResends.set(resendKey, { text, reply, at: Date.now() });
+            const reply: Extract<ServerMessage, { type: "submit-result" }> = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code, message: "The demo agent cannot take this submission." };
+            if (resendKey !== null && this.mode !== "observe" && code !== "pending_limit" && !previous) heldCopyResends.set(resendKey, { text: message.text, reply, at: Date.now() });
             this.completeRequest(reply);
             break;
           }
@@ -1885,7 +1875,7 @@ class DemoSocket extends EventTarget {
           } else {
             submitToChat(message.pane_id, text);
             const reply: Extract<ServerMessage, { type: "submit-result" }> = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: true };
-            if (resendKey !== null) heldCopyResends.set(resendKey, { text, reply, at: Date.now() });
+            if (resendKey !== null) heldCopyResends.set(resendKey, { text: message.text, reply, at: Date.now() });
             this.completeRequest(reply);
           }
         }

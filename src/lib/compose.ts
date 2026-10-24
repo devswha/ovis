@@ -21,20 +21,9 @@ export const MAX_COMPOSER_CHARS = 20_000;
 const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 
-/**
- * A composer message as written: trailing newlines are the composer's, not the text's; CRLF reads as one newline.
- * A whole paste marker pasted into it is dropped (until none is left, so dropping one cannot form another): it would
- * end the paste the message goes in early. Any other escape byte stays, and the bridge refuses the message for it.
- * One pass: each marker goes the moment its last byte arrives, so one that dropping another forms goes too.
- */
+/** A composer message as written: trailing newlines are the composer's, not the text's; CRLF reads as one newline. */
 export function composerMessage(text: string): string {
-  const kept: string[] = [];
-  for (let i = 0; i < text.length; i++) {
-    kept.push(text[i]!);
-    const from = kept.length - PASTE_START.length;
-    if (from >= 0 && kept[from] === "\u001b" && (kept.slice(from).join("") === PASTE_START || kept.slice(from).join("") === PASTE_END)) kept.length = from;
-  }
-  return kept.join("").replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  return text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
 }
 
 /** The text a composer message types, without its submit (HerdrSocket.submit adds the Enter). */
