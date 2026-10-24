@@ -43,10 +43,10 @@ it.skipIf(process.platform !== "linux")("keeps only the variables omp's store lo
   };
   // secrets, look-alike names and the XDG roots omp's store lookup never reads
   const env = { ...routing, PATH: process.env["PATH"] ?? "", SECRET_TOKEN: "SECRET_TOKEN_value", OPENAI_API_KEY: "SECRET_TOKEN_key", PI_CODING_AGENT_DIR_EXTRA: "SECRET_TOKEN_x", HOMEDIR: "SECRET_TOKEN_h", XDG_CONFIG_HOME: "/r/config" };
-  const target = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const { target } = await startedShell([], env);
   try {
     const expected = Object.entries(routing).map(([key, value]) => `${key}=${value}`).sort();
-    const helper = await createOmpProcessProbe()(target.pid, true);
+    const helper = await createOmpProcessProbe({ timeoutMs: READ_MS })(target.pid, true);
     expect([...helper?.environ ?? []].sort()).toEqual(expected);
     const direct = ompRoutingEnviron(processEnviron(target.pid));
     expect([...direct ?? []].sort()).toEqual(expected);

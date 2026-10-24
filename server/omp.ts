@@ -10,8 +10,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
 import { heldTranscript, runsAgent, storeRelative, type StoreRoots, transcriptHeader } from "./gjc-runtime.ts";
-import { processEnviron } from "./omo.ts";
-import { isWsl, ompProcessMemory, ompRoutingEnviron, processStartTicks } from "./omp-process.ts";
+import { ompProcessMemory, ompRoutingEnviron, processStartTicks } from "./omp-process.ts";
 
 const OMP_EXECUTABLE = /(^|[\\/])omp(?:\.exe|\.[cm]?js)?$/i;
 
@@ -218,11 +217,10 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
 }
 
 /**
- * The routing words of a process's environment where the system shows a same-user process's own
- * (procfs on Linux, the kernel's argument area on macOS), or null.
+ * The routing words of a process's environment on macOS, from the kernel's argument area, or null
+ * (Linux reads through the bounded helper in ompPaneRoute; Windows shows none).
  */
 function routingEnviron(pid: number): readonly string[] | null {
-  if (process.platform === "linux") return ompRoutingEnviron(processEnviron(pid));
   if (process.platform === "darwin") return ompRoutingEnviron(darwinProcess.environment(pid)?.split("\0") ?? null);
   return null;
 }
@@ -239,10 +237,10 @@ export interface OmpRoute {
 
 /**
  * Where the pane's omp processes keep their sessions: the one layout their own argv and routing
- * environment give (ompStoreLayout). null when herdr shows no omp process in the pane, or none
- * whose argv could be read; "unproved" when one's store cannot be told, two keep different ones,
- * or a live process whose argv herdr left out could not be read beside one that was, since
- * nothing then says which session the pane shows. omp's helpers count for nothing.
+ * environment give (ompStoreLayout). null when herdr shows no live omp process in the pane;
+ * "unproved" when one's store cannot be told, two keep different ones, or a live process whose
+ * argv herdr left out could not be read, since nothing then says which store, or which session,
+ * the pane shows. omp's helpers count for nothing.
  */
 export async function ompPaneRoute(paneId: string): Promise<OmpRoute | "unproved" | null> {
   const info = await paneProcessInfo(paneId).catch(() => null);
@@ -255,9 +253,10 @@ export async function ompPaneRoute(paneId: string): Promise<OmpRoute | "unproved
     if (typeof foreground.pid !== "number") continue;
     let argv = Array.isArray(foreground.argv) ? foreground.argv.map(String) : [];
     if (argv.length > 0 && (!isOmpProcess(argv) || isOmpHelper(argv))) continue;
-    // Herdr omits a recognized agent's argv (on Linux, WSL included); procfs memory reads may
-    // block on WSL, so these go through the helper. Elsewhere herdr's argv and a direct read hold.
-    const probe = process.platform === "linux" && (argv.length === 0 || isWsl());
+    // Herdr omits a recognized agent's argv (on Linux, WSL included). A procfs memory read blocks
+    // while the process holds its memory map locked (omp does while it pages in, and on WSL while
+    // it exits), so on Linux every read goes through the bounded helper, never the bridge itself.
+    const probe = process.platform === "linux";
     let environ: readonly string[] | null;
     if (probe) {
       const memory = await ompProcessMemory(foreground.pid, argv.length === 0);
@@ -276,8 +275,8 @@ export async function ompPaneRoute(paneId: string): Promise<OmpRoute | "unproved
     launchDirs.add(ompLaunchDir(argv));
     if (environ !== null) environs.set(foreground.pid, environ);
   }
-  if (layout === null) return null;
   if (unread) return "unproved";
+  if (layout === null) return null;
   const [launchDir] = launchDirs;
   return { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
 }

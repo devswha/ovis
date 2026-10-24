@@ -205,6 +205,7 @@ describe("an omp pane's chat", () => {
   let agentSession: unknown;
   let processes: { pid: number; name?: string; argv?: string[] }[] = [];
   let pane: HerdrPane;
+  let readProcess: typeof ompProbe.ompProcessMemory;
   const restores: Array<() => void> = [];
   const transcript = (cwd: string) => [
     JSON.stringify({ type: "title", v: 1, title: "t" }),
@@ -226,7 +227,11 @@ describe("an omp pane's chat", () => {
       if (method === "pane.process_info") return { process_info: { foreground_processes: processes } } as never;
       throw new Error(`unexpected RPC: ${method}`);
     });
-    restores.push(() => snapshot.mockRestore(), () => rpc.mockRestore());
+    // the real helper reads each process, with a deadline no busy PC reaches: it is a bun that can
+    // take over the default second to start there (omp-process.test.ts)
+    readProcess = ompProbe.createOmpProcessProbe({ timeoutMs: 30_000 });
+    const memory = spyOn(ompProbe, "ompProcessMemory").mockImplementation(readProcess);
+    restores.push(() => snapshot.mockRestore(), () => rpc.mockRestore(), () => memory.mockRestore());
   });
   afterEach(() => {
     for (const restore of restores.splice(0)) restore();
@@ -547,25 +552,38 @@ describe("an omp pane's chat", () => {
     }
   });
 
-  it.skipIf(process.platform !== "linux")("on WSL a failed probe with supplied argv never falls back to a synchronous environment read", async () => {
-    const wsl = spyOn(ompProbe, "isWsl").mockReturnValue(true);
+  it.skipIf(process.platform !== "linux")("a failed probe with supplied argv never falls back to a synchronous environment read, and shows no chat", async () => {
     const probe = spyOn(ompProbe, "ompProcessMemory").mockResolvedValue(null);
-    restores.push(() => wsl.mockRestore());
-    const environ = spyOn(omo, "processEnviron").mockImplementation(() => { throw new Error("unsafe synchronous read"); });
-    restores.push(() => probe.mockRestore(), () => environ.mockRestore());
+    restores.push(() => probe.mockRestore());
     processes = [{ pid: process.pid, argv: ["omp"] }];
+    // herdr's path in the user's own default store is no answer for an omp whose store is unproved
+    agentSession = { agent: "omp", kind: "path", value: storeTranscript(pane.cwd!) };
+    await unavailable();
+    const environ = spyOn(omo, "processEnviron").mockImplementation(() => { throw new Error("unsafe synchronous read"); });
+    restores.push(() => environ.mockRestore());
+    probe.mockClear();
     expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
     expect(probe).toHaveBeenCalledWith(process.pid, false);
     expect(environ).not.toHaveBeenCalled();
   });
 
-  it.skipIf(process.platform !== "linux")("a native Linux pane whose argv herdr supplies keeps the direct read and spawns no helper", async () => {
+  it.skipIf(process.platform !== "linux")("a native Linux pane whose argv herdr supplies reads its environment through the bounded helper", async () => {
+    const path = storeTranscript(pane.cwd!);
+    const omp = await standIn([], [path]);
     const wsl = spyOn(ompProbe, "isWsl").mockReturnValue(false);
     const probe = spyOn(ompProbe, "ompProcessMemory");
-    restores.push(() => wsl.mockRestore(), () => probe.mockRestore());
-    processes = [{ pid: process.pid, argv: ["omp"] }];
-    expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
-    expect(probe).not.toHaveBeenCalled();
+    const environ = spyOn(omo, "processEnviron").mockImplementation(() => { throw new Error("unsafe synchronous read"); });
+    const read = fs.readFileSync;
+    const files = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+      if (String(file).endsWith("/environ")) throw new Error(`unsafe synchronous read of ${String(file)}`);
+      return read(file, options as never);
+    }) as typeof fs.readFileSync);
+    restores.push(() => wsl.mockRestore(), () => probe.mockRestore(), () => environ.mockRestore(), () => files.mockRestore());
+    processes = [{ pid: omp.pid, name: "omp", argv: omp.argv }];
+    expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBe(path);
+    expect(probe).toHaveBeenCalledWith(omp.pid, false);
+    expect(environ).not.toHaveBeenCalled();
+    expect(files.mock.calls.some(([file]) => String(file).endsWith("/environ"))).toBe(false);
   });
 
   it.skipIf(process.platform !== "linux")("a successful probe's environment finds the tmux breadcrumb with no synchronous environ read", async () => {
@@ -761,17 +779,20 @@ describe("an omp pane's chat", () => {
     expect(await chat()).toEqual([synthetic[0], { kind: "text", text: "named answer" }]);
   });
 
-  it.skipIf(process.platform !== "linux")("an agent process whose argv cannot be read beside a readable omp shows no chat", async () => {
+  it.skipIf(process.platform !== "linux")("an agent process whose argv cannot be read, alone or beside a readable omp, shows no chat", async () => {
     const plain = await standIn([], [storeTranscript(pane.cwd!)]);
     const unread = await standIn(["--session-dir", join(home, "other")], []);
     // herdr leaves out the argv of a process it takes for an agent; the helper cannot read this one
-    const read = ompProbe.ompProcessMemory;
+    const read = readProcess;
     const probe = spyOn(ompProbe, "ompProcessMemory").mockImplementation(async (pid: number, argv: boolean) => pid === unread.pid ? null : read(pid, argv));
     restores.push(() => probe.mockRestore());
     processes = [{ pid: plain.pid, name: "omp", argv: plain.argv }, { pid: unread.pid, name: "omp" }];
     agentSession = { agent: "omp", kind: "path", value: storeTranscript(pane.cwd!) };
     await unavailable();
     expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
+    // alone, it proves no store either: herdr's path in the bridge's own default store is no answer
+    processes = [{ pid: unread.pid, name: "omp" }];
+    await unavailable();
     // once that process is gone, the readable one's store is the pane's
     await reapAll();
     await only(await standIn([], [storeTranscript(pane.cwd!)]));
@@ -796,8 +817,8 @@ describe("an omp pane's chat", () => {
     agentSession = undefined;
     expect(await chat()).toEqual(synthetic);
     // with its environment unreadable, not even herdr's path in the default store reads
-    const environ = spyOn(omo, "processEnviron").mockReturnValue(null);
-    restores.push(() => environ.mockRestore());
+    const probe = spyOn(ompProbe, "ompProcessMemory").mockResolvedValue(null);
+    restores.push(() => probe.mockRestore());
     agentSession = { agent: "omp", kind: "path", value: storeTranscript(pane.cwd!) };
     await unavailable();
   });
