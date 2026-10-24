@@ -1699,6 +1699,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   its own box.
   Thinking renders as a folded block only when **Show thinking** is enabled.
 - Auto-follow stops when the reader scrolls up; later output raises a **New messages** pill.
+  A message sent from this browser's message box resumes it once the bridge accepts it at once
+  (a receipt with no pending item, no refusal and no uncertain answer): the view goes to the end
+  and follows the turn and its reply there. Agent of Empires re-pins its view on any prompt, local,
+  remote or replayed; Ovis's sends carry a receipt, so only that accepted local receipt counts. A
+  refused, uncertain, queued or Send now delivery, another browser's message, a reconnect and a
+  pane opened again keep the reader's place. Scrolling or paging back, a minimap jump, a restored
+  place, a replaced history or leaving the pane after the message went out, before its receipt or
+  before its turn shows, cancels the follow. Nothing new is drawn: the existing Jump to latest and
+  New messages controls keep the Ovis/Codex chat look.
 - An empty chat is greeted from the composer (`.composer-greeting`, below), only where the agent's
   conversation was read and holds no turn. A chat still loading, one whose read failed, an agent
   whose transcript could not be read and a pane with no recognized agent keep their own lines
