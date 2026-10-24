@@ -15,19 +15,26 @@ export class PreferencesTooLarge extends Error {
  * directory beside devices.json. One document: a browser sends the settings it changed (and the
  * pins when they changed), laid over what is held, last write wins per setting; the others take
  * the whole document from the event. A change is held, and told, only once it is on disk.
- * The muted panes are always in the document, empty while nothing is muted: a file from before
- * there were any reads as none muted, without a write or a new revision, so a browser tells a
- * server that keeps the list from an older one by the list being there.
+ * The muted panes are always in the document, empty while nothing is muted: a server with none
+ * stored reads as none muted, without a write or a new revision, so a browser tells a server that
+ * keeps the list from an older one by the list being there. They are stored in a document of their
+ * own, muted-panes.json, not in preferences.json: a release from before them rewrites
+ * preferences.json whole on its next save (a rollback, a downgrade), and would erase a list kept
+ * there. preferences.json keeps the shape every release reads and writes.
  */
 export class PreferenceStore {
   private current: SharedPreferences = { revision: 0, settings: {}, muted_panes: [] };
   private readonly path: string;
+  private readonly mutesPath: string;
   private readonly listeners = new Set<(preferences: SharedPreferences) => void>();
   /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
   private unsettled = true;
+  /** As `unsettled`, for muted-panes.json. */
+  private mutesUnsettled = true;
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "preferences.json");
+    this.mutesPath = join(stateDir, "muted-panes.json");
     try {
       const held = this.readDisk();
       if (held) this.current = held;
@@ -35,6 +42,23 @@ export class PreferenceStore {
       // a missing file is a server that has shared nothing yet; an unreadable one is not, and is never written over
       console.error(`Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"}); shared preferences start empty and are not saved until it can be read`);
     }
+    try {
+      this.current = { ...this.current, muted_panes: this.readMutes() ?? [] };
+    } catch (error) {
+      console.error(`Cannot read ${this.mutesPath} (${(error as NodeJS.ErrnoException).code ?? "error"}); no pane starts muted and the list is not saved until it can be read`);
+    }
+  }
+
+  /** The muted panes on disk: [] when there is no list yet, null when the file is damaged. Throws when it cannot be read. */
+  private readMutes(): string[] | null {
+    const read = readStateDocument(this.mutesPath);
+    if (read.kind === "missing") return [];
+    const list = read.kind === "json" && isJsonObject(read.value) ? sharedPreferencesBody({ settings: {}, muted_panes: read.value["muted_panes"] })?.muted_panes : undefined;
+    if (list === undefined) {
+      console.error(`${this.mutesPath} is not a muted panes list; no pane is muted, and the next mute keeps it as ${damagedCopy(this.mutesPath)}`);
+      return null;
+    }
+    return list;
   }
 
   /** The document on disk: undefined when there is none, null when it is damaged. Throws when it cannot be read. */
@@ -48,8 +72,8 @@ export class PreferenceStore {
       return null;
     }
     const revision = isJsonObject(parsed) && Number.isSafeInteger(parsed["revision"]) ? parsed["revision"] as number : 0;
-    // a document from before the mute list reads as none muted, with no write and no new revision
-    return { revision: Math.max(0, revision), settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: body.muted_panes ?? [] };
+    // the mutes are muted-panes.json's (readMutes): what this document holds of them is left out
+    return { revision: Math.max(0, revision), settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: this.current.muted_panes };
   }
 
   get(): SharedPreferences { return this.current; }
@@ -68,9 +92,15 @@ export class PreferenceStore {
     // a change that names no list leaves the mutes; an empty list is the last one unmuted
     const muted = change.muted_panes ?? base.muted_panes ?? [];
     const next: SharedPreferences = { revision: base.revision + 1, settings: { ...base.settings, ...change.settings }, ...(pins === undefined ? {} : { pins }), muted_panes: muted };
-    const text = `${JSON.stringify(next, null, 2)}\n`;
     if (byteLength(JSON.stringify(next)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
-    writeStateDocument(this.path, text, keepDamaged);
+    // the list first: a change of the mutes is on disk before the revision that tells it
+    if (change.muted_panes !== undefined) {
+      const keepDamagedMutes = this.mutesUnsettled && this.readMutes() === null;
+      writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
+      this.mutesUnsettled = false;
+    }
+    const { muted_panes: _stored, ...shared } = next;
+    writeStateDocument(this.path, `${JSON.stringify(shared, null, 2)}\n`, keepDamaged);
     this.unsettled = false;
     this.current = next;
     for (const listener of [...this.listeners]) listener(this.current);

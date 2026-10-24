@@ -30,6 +30,8 @@ let context: AudioContext | null = null;
 // this tab's chimes that have not ended, on its context's clock: when the last of them ends,
 // and when the last question's does (a preview queued behind a question does not move that)
 let sounding: { audio: AudioContext; until: number; question: number; questionStart: number } | null = null;
+/** chimes scheduled to start later (behind another one), each with whether it is still wanted */
+const queued = new Set<{ audio: AudioContext; start: number; wanted: () => boolean; cancel: () => void }>();
 
 function contextClass(): typeof AudioContext | undefined {
   return globalThis.AudioContext ?? (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -57,15 +59,23 @@ export function canPlayAlertSound(): boolean {
   return context?.state === "running";
 }
 
-/** Confirms only audio that started, not a question scheduled behind a finish or preview. */
-export function playAlertSound(kind: AlertSoundKind): boolean | Promise<boolean> {
+/**
+ * Confirms only audio that started, not a question scheduled behind a finish or preview. `wanted`
+ * is asked again for a chime that waits behind another (`recheckAlertSounds`): one no longer wanted
+ * then never sounds.
+ */
+export function playAlertSound(kind: AlertSoundKind, wanted?: () => boolean): boolean | Promise<boolean> {
   const audio = context;
   if (audio?.state !== "running") return false;
-  const start = chime(audio, kind);
+  const { start, cancel } = chime(audio, kind);
   if (start <= audio.currentTime) return true;
+  let cancelled = false;
+  const entry = { audio, start, wanted: wanted ?? (() => true), cancel: () => { cancelled = true; cancel(); } };
+  queued.add(entry);
   return new Promise((resolve) => {
     const check = () => {
-      if (audio.state !== "running" || context !== audio) { resolve(false); return; }
+      if (cancelled || audio.state !== "running" || context !== audio) { queued.delete(entry); resolve(false); return; }
+      if (start <= audio.currentTime) queued.delete(entry);
       const remaining = start - audio.currentTime;
       if (remaining <= 0) resolve(true);
       else setTimeout(check, Math.ceil(remaining * 1_000));
@@ -74,20 +84,33 @@ export function playAlertSound(kind: AlertSoundKind): boolean | Promise<boolean>
   });
 }
 
+/** Asks every chime still waiting to start whether it is wanted (a pane muted meanwhile), and silences each one that is not. */
+export function recheckAlertSounds(): void {
+  for (const entry of [...queued]) {
+    if (entry.start <= entry.audio.currentTime) { queued.delete(entry); continue; }
+    if (!entry.wanted()) { queued.delete(entry); entry.cancel(); }
+  }
+}
+
 /** Settings' preview of the chime: always played, after a chime of this tab that still sounds. */
 export function previewAlertSound(): void {
   const audio = context;
   if (audio?.state === "running") chime(audio, "done", true);
 }
 
-/** Plays `kind` unless this tab's last chime still sounds; a preview then starts where it ends. */
-function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): number {
+/**
+ * Plays `kind` unless this tab's last chime still sounds; a preview then starts where it ends.
+ * Returns when it starts, and a cancel that silences it and gives its place back while it has not.
+ */
+function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { start: number; cancel: () => void } {
   const now = audio.currentTime;
   const current = sounding !== null && sounding.audio === audio && sounding.until > now ? sounding : null;
   // already told by a chime that sounds or waits its turn: a finish by any, a question by a question's
-  if (current && !preview && (kind === "done" || current.question > now)) return kind === "blocked" ? Math.max(now, current.questionStart) : now;
+  if (current && !preview && (kind === "done" || current.question > now)) return { start: kind === "blocked" ? Math.max(now, current.questionStart) : now, cancel: () => {} };
   const start = current ? current.until : now;
   const notes = CHIME_NOTES[kind];
+  const gains: GainNode[] = [];
+  const oscillators: OscillatorNode[] = [];
   notes.forEach((frequency, index) => {
     const at = start + index * NOTE_GAP_S;
     const oscillator = audio.createOscillator();
@@ -101,12 +124,22 @@ function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): numb
     oscillator.connect(gain).connect(audio.destination);
     oscillator.start(at);
     oscillator.stop(at + NOTE_LENGTH_S);
+    gains.push(gain);
+    oscillators.push(oscillator);
   });
   const until = start + (notes.length - 1) * NOTE_GAP_S + NOTE_LENGTH_S;
-  sounding = {
+  const mine = {
     audio, until,
     question: kind === "blocked" && !preview ? until : current?.question ?? 0,
     questionStart: kind === "blocked" && !preview ? start : current?.questionStart ?? 0,
   };
-  return start;
+  sounding = mine;
+  const cancel = () => {
+    // a stop before its start keeps a note from ever sounding; cut off from the output as well
+    for (const oscillator of oscillators) oscillator.stop(audio.currentTime);
+    for (const gain of gains) gain.disconnect();
+    // the last one waiting: the next chime starts where the one before it ends
+    if (sounding === mine) sounding = current;
+  };
+  return { start, cancel };
 }

@@ -4858,7 +4858,9 @@ describe("shared preferences API", () => {
       expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
       const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
       expect(await first.json()).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
-      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toMatchObject({ revision: 5, muted_panes: ["w1:p1"] });
+      // the list has a document of its own, which an older release's whole rewrite of preferences.json cannot erase
+      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });
+      expect(JSON.parse(readFileSync(join(root, "muted-panes.json"), "utf8"))).toEqual({ muted_panes: ["w1:p1"] });
     } finally {
       abort.abort();
       server.stop();

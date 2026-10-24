@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { CHIME_NOTES, playAlertSound, previewAlertSound, unlockAlertSound } from "./alertSound.ts";
+import { CHIME_NOTES, playAlertSound, previewAlertSound, recheckAlertSounds, unlockAlertSound } from "./alertSound.ts";
 
 /** A stand-in AudioContext that starts suspended, as a page's does before any tap or key. */
 const started: number[] = [];
 const startedAt: number[] = [];
+/** the notes stopped before they started: they never sound */
+const cut: number[] = [];
+let disconnected = 0;
 let resumes = 0;
 const made: FakeAudioContext[] = [];
 class FakeAudioContext {
@@ -15,15 +18,16 @@ class FakeAudioContext {
   destination = {};
   async resume() { resumes += 1; this.state = "running"; }
   createGain() {
-    return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: (node: unknown) => node };
+    return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: (node: unknown) => node, disconnect() { disconnected += 1; } };
   }
   createOscillator() {
     const oscillator = {
       type: "",
       frequency: { value: 0 },
       connect: (node: unknown) => node,
-      start(at: number) { started.push(oscillator.frequency.value); startedAt.push(at); },
-      stop() {},
+      startAt: 0,
+      start(at: number) { started.push(oscillator.frequency.value); startedAt.push(at); oscillator.startAt = at; },
+      stop(at: number) { if (at < oscillator.startAt) cut.push(oscillator.frequency.value); },
     };
     return oscillator;
   }
@@ -45,6 +49,8 @@ function quiet(): FakeAudioContext {
   audio.currentTime += 10;
   started.length = 0;
   startedAt.length = 0;
+  cut.length = 0;
+  disconnected = 0;
   return audio;
 }
 
@@ -154,6 +160,28 @@ describe("one chime at a time", () => {
     audio.state = "interrupted";
     expect(await pending).toBe(false);
     await unlockAlertSound();
+  });
+
+  it("silences a queued question no longer wanted when asked again, and gives its place back", async () => {
+    const audio = made.at(-1)!;
+    const now = audio.currentTime;
+    let muted = false;
+    playAlertSound("done");
+    const pending = playAlertSound("blocked", () => !muted);
+    expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
+    // still wanted: asking again changes nothing
+    recheckAlertSounds();
+    expect(cut).toEqual([]);
+    // the pane is muted after the question was queued and before its notes start
+    audio.currentTime += 0.1;
+    muted = true;
+    recheckAlertSounds();
+    expect(cut).toEqual([...CHIME_NOTES.blocked]);
+    expect(disconnected).toBe(CHIME_NOTES.blocked.length);
+    expect(await pending).toBe(false);
+    // the finish's notes are left as they were, and the next question starts where the finish ends
+    playAlertSound("blocked");
+    expect(startedAt.at(-2)).toBeCloseTo(now + LENGTH);
   });
 
   it("previews the chime in Settings, after the chime that sounds", () => {

@@ -19,12 +19,12 @@ import {
   showPaneStatusNotification,
   type NotificationState,
 } from "./notifications.ts";
-import { currentPaneMutes } from "./paneMutes.ts";
+import { currentPaneMutes, subscribePaneMutes } from "./paneMutes.ts";
 import { ensurePushSubscription, pushSupported, removePushSubscription } from "./push.ts";
 import { hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 import type { NotificationTarget } from "./notificationTarget.ts";
 import { dropletAllows, endedTurn, seedStatuses, showDroplet, trackTurn, type DropletKind } from "./droplet.ts";
-import { canPlayAlertSound, playAlertSound, unlockAlertSound, type AlertSoundKind } from "./alertSound.ts";
+import { canPlayAlertSound, playAlertSound, recheckAlertSounds, unlockAlertSound, type AlertSoundKind } from "./alertSound.ts";
 import { createAlertTurnPlayer } from "./alertTurns.ts";
 import { sameTarget, type SplitState } from "./split.ts";
 
@@ -136,14 +136,17 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
   const alertTurns = useRef<ReturnType<typeof createAlertTurnPlayer> | null>(null);
   useEffect(() => {
     const player = createAlertTurnPlayer({
-      // a chime waits its turn among the tabs: a mute made meanwhile still silences it
+      // a chime waits its turn among the tabs, and then maybe behind another chime: a mute made
+      // meanwhile still silences it (asked here, and again on each mute change while it waits)
       play: (kind, key) => {
         const [machineId, paneId] = JSON.parse(key) as [string, string];
-        return alertsOnRef.current && alertSoundRef.current && !paneAlertsMuted(currentPaneMutes(), machineId, paneId) && playAlertSound(kind);
+        const wanted = () => alertsOnRef.current && alertSoundRef.current && !paneAlertsMuted(currentPaneMutes(), machineId, paneId);
+        return wanted() && playAlertSound(kind, wanted);
       },
     });
     alertTurns.current = player;
-    return () => { player.dispose(); alertTurns.current = null; };
+    const stopMutes = subscribePaneMutes(recheckAlertSounds);
+    return () => { stopMutes(); player.dispose(); alertTurns.current = null; };
   }, []);
   const chime = useCallback((machine: Machine, pane: HerdrPane, kind: AlertSoundKind) => {
     if (!alertsOnRef.current || !alertSoundRef.current || !canPlayAlertSound()) return;

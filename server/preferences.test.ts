@@ -124,7 +124,9 @@ describe("shared preferences", () => {
     const first = await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1", "w1:p1", "remote:pc-2:w1%3Ap1"] }));
     expect(await first.json()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] });
     expect(heard).toEqual([1]);
-    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toMatchObject({ revision: 1, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] });
+    // the list is in its own document; preferences.json keeps the shape older releases read and write
+    expect(JSON.parse(readFileSync(join(dir, "muted-panes.json"), "utf8"))).toEqual({ muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] });
+    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 1, settings: {} });
     expect(new PreferenceStore(dir).get()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] });
     // an empty list is the last one unmuted, not a missing field
     expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: [] }))).json()).toEqual({ revision: 2, settings: {}, muted_panes: [] });
@@ -144,6 +146,38 @@ describe("shared preferences", () => {
     expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }))).json()).toEqual({ revision: 8, settings: { theme: "light" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
     expect(heard).toEqual([8]);
     expect(new PreferenceStore(dir).get().muted_panes).toEqual(["w1:p1"]);
+  });
+
+  it("an older release's save after a mute erases nothing, and the mutes are back after it", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    await put(store, JSON.stringify({ settings: { theme: "light" }, pins: ["local:w1:p1"] }));
+    await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }));
+    // a rollback or a downgrade serves a release from before the mutes: what it reads is the shape it knows
+    const held = JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"));
+    expect(held).toEqual({ revision: 2, settings: { theme: "light" }, pins: ["local:w1:p1"] });
+    // its next save rewrites preferences.json whole, as origin/main's PreferenceStore.set does
+    writeFileSync(join(dir, "preferences.json"), `${JSON.stringify({ revision: held.revision + 1, settings: { ...held.settings, theme: "dark" }, pins: [] }, null, 2)}\n`);
+    // this release again: the older save and the mutes are both there, with no write of its own
+    const back = new PreferenceStore(dir);
+    expect(back.get()).toEqual({ revision: 3, settings: { theme: "dark" }, pins: [], muted_panes: ["w1:p1"] });
+    expect(readdirSync(dir).sort()).toEqual(["muted-panes.json", "preferences.json"]);
+    // and a change of something else leaves them
+    expect(await (await put(back, JSON.stringify({ settings: { theme: "light" } }))).json()).toMatchObject({ revision: 4, muted_panes: ["w1:p1"] });
+  });
+
+  it("a damaged mute list mutes nothing, leaves the settings, and is kept aside by the next mute", async () => {
+    const dir = root();
+    writeFileSync(join(dir, "preferences.json"), JSON.stringify({ revision: 2, settings: { theme: "light" } }));
+    writeFileSync(join(dir, "muted-panes.json"), "{ not json");
+    const store = new PreferenceStore(dir);
+    expect(store.get()).toEqual({ revision: 2, settings: { theme: "light" }, muted_panes: [] });
+    // a change of something else does not touch it
+    await put(store, JSON.stringify({ settings: { theme: "dark" } }));
+    expect(readFileSync(join(dir, "muted-panes.json"), "utf8")).toBe("{ not json");
+    await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }));
+    expect(readFileSync(join(dir, "muted-panes.json.bad"), "utf8")).toBe("{ not json");
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 4, settings: { theme: "dark" }, muted_panes: ["w1:p1"] });
   });
 
   it("absent field does not clear mutes", async () => {
