@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolveEntry } from "./themeCss.ts";
 import { DEFAULT_THEME, isThemeId, pickTheme, rowFor, SUPPORTED_ENTRIES, terminalColors, THEME_IDS, themeColor } from "./themes.ts";
 
 describe("theme lookups", () => {
@@ -28,6 +30,32 @@ describe("theme lookups", () => {
     }
     expect(themeColor("amber", "dark")).toBe("#181613");
     expect(terminalColors("catppuccin", "light").background).toBe("#eff1f5");
+  });
+
+  it("keeps Black identical to Tokyo Night except for its backgrounds, ordinary borders and alert outline", () => {
+    const black = rowFor("black", "dark");
+    const overrides = {
+      "droplet-ring": "var(--border-strong)",
+      bg: "#000000",
+      "bg-panel": "#000000",
+      "bg-elevated": "#0a0a0a",
+      "bg-hover": "#161616",
+      "bg-input": "#000000",
+      border: "#343a54",
+      scrim: "rgba(0, 0, 0, 0.5)",
+      "term-bg": "#000000",
+    };
+    const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+    expect(resolveEntry(css, "black", "dark").declared)
+      .toEqual({ ...resolveEntry(css, "tokyo-night", "dark").declared,
+        ...Object.fromEntries(Object.entries(overrides).map(([role, value]) => [`--${role}`, value])) });
+    expect(resolveEntry(css, "black", "dark").resolved["--droplet-ring"]).toBe("#565f89");
+    expect(terminalColors("black", "dark"))
+      .toEqual({ ...terminalColors("tokyo-night", "dark"), background: "#000000" });
+    expect(black.bgPanel).toBe("#000000");
+    expect(rowFor("black", "light")).toBe(black);
+    expect(pickTheme({ darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, "dark", "black"))
+      .toEqual({ darkTheme: "black" });
   });
 });
 

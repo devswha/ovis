@@ -727,7 +727,7 @@ try {
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(url);
         await page.locator(".conn-live").waitFor({ state: "attached" });
-        for (const id of ["dracula", "nord", "vesper"]) {
+        for (const id of ["dracula", "nord", "vesper", "black"]) {
           await openSettings(page);
           await openSettingsPage(page, "Appearance");
           await page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: "Dark", exact: true }).click();
