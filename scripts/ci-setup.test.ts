@@ -6,10 +6,61 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
+type SetupAction = {
   inputs: Record<string, { default: string }>;
   runs: { steps: Array<{ name?: string; uses?: string; if?: string; with?: Record<string, string>; env?: Record<string, string> }> };
 };
+const actionSource = readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8");
+const action = Bun.YAML.parse(actionSource) as SetupAction;
+
+// Steps are found by action repository, not by ref, so an urgent pin to a commit SHA keeps passing.
+const usesAction = (repository: string) => (step: { uses?: string }) => step.uses?.startsWith(`${repository}@`) === true;
+
+function expectHostedOnlySetup(setup: SetupAction) {
+  for (const name of ["Cache Bun dependencies", "Restore Bun dependencies (read-only)"]) {
+    expect(setup.runs.steps.find((step) => step.name === name)!.if).toStartWith("runner.environment != 'self-hosted' && ");
+  }
+  for (const repository of ["oven-sh/setup-bun", "actions/setup-node"]) {
+    expect(setup.runs.steps.find(usesAction(repository))!.if).toContain("runner.environment != 'self-hosted'");
+  }
+  expect(setup.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.3")!.if)
+    .toContain("runner.environment != 'self-hosted'");
+}
+
+type UpdateEntry = Record<string, unknown> & {
+  "package-ecosystem"?: string;
+  directories?: string[];
+  schedule?: { interval?: string };
+  groups?: unknown;
+  cooldown?: Record<string, unknown>;
+};
+const dependabot = Bun.YAML.parse(readFileSync(join(root, ".github/dependabot.yml"), "utf8")) as { updates: UpdateEntry[] };
+
+/** Problems with an Actions update policy: one monthly grouped entry whose only age rule is a flat seven-day wait. */
+function actionsPolicyProblems(updates: UpdateEntry[]) {
+  const problems: string[] = [];
+  if (updates.length !== 1) problems.push(`expected one update entry, found ${updates.length}`);
+  const entry = updates[0] ?? {};
+  if (entry["package-ecosystem"] !== "github-actions") problems.push("the entry must update github-actions");
+  if (!Bun.deepEquals(entry.directories, ["/", "/.github/actions/setup-ci"])) problems.push("the entry must read the workflows and the setup-ci action");
+  if (entry.schedule?.interval !== "monthly") problems.push("routine updates stay monthly");
+  if (!Bun.deepEquals(entry.groups, { actions: { patterns: ["*"] } })) problems.push("all actions stay in one group");
+  // Any other key (target-branch, open-pull-requests-limit, ...) can change how security updates arrive.
+  for (const key of Object.keys(entry)) {
+    if (!["package-ecosystem", "directories", "schedule", "groups", "cooldown"].includes(key)) problems.push(`unexpected key ${key}`);
+  }
+  if (entry.cooldown?.["default-days"] !== 7) problems.push("routine updates wait seven days");
+  // GitHub applies `cooldown` to version updates only; tiers or extra rules are not part of this policy.
+  for (const key of Object.keys(entry.cooldown ?? {})) {
+    if (key !== "default-days") problems.push(`unexpected cooldown rule ${key}`);
+  }
+  return problems;
+}
+
+/** GitHub's documented rule, not a live Dependabot run: version updates skip releases younger than `default-days`. */
+function heldBack(kind: "version" | "security", ageDays: number, entry: UpdateEntry) {
+  return kind === "version" && ageDays < Number(entry.cooldown?.["default-days"] ?? 3);
+}
 
 type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
 type Workflow = { jobs?: Record<string, { uses?: string; steps?: Step[] }>; runs?: { steps: Step[] } };
@@ -144,14 +195,7 @@ describe("CI cache contract", () => {
   });
 
   it("does not transfer dependency or browser caches over the prepared image", () => {
-    for (const name of ["Cache Bun dependencies", "Restore Bun dependencies (read-only)"]) {
-      expect(action.runs.steps.find((step) => step.name === name)!.if).toStartWith("runner.environment != 'self-hosted' && ");
-    }
-    for (const name of ["oven-sh/setup-bun", "actions/setup-node"]) {
-      expect(action.runs.steps.find((step) => step.uses && actionName(step.uses) === name)!.if).toContain("runner.environment != 'self-hosted'");
-    }
-    expect(action.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.3")!.if)
-      .toContain("runner.environment != 'self-hosted'");
+    expectHostedOnlySetup(action);
     const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")) as {
       jobs: Record<string, { steps: Array<{ name?: string; if?: string; with?: Record<string, string> }> }>;
     };
@@ -196,9 +240,6 @@ describe("action pins and checkout credentials", () => {
       "actions/cache", "actions/cache/restore", "actions/checkout", "actions/deploy-pages", "actions/download-artifact",
       "actions/setup-node", "actions/upload-artifact", "actions/upload-pages-artifact", "oven-sh/setup-bun",
     ]);
-    const dependabot = Bun.YAML.parse(readFileSync(join(root, ".github/dependabot.yml"), "utf8")) as {
-      updates: Array<{ "package-ecosystem": string; directories: string[] }>;
-    };
     const actions = dependabot.updates.find((update) => update["package-ecosystem"] === "github-actions")!;
     expect(actions.directories).toEqual(["/", "/.github/actions/setup-ci"]);
   });
@@ -371,4 +412,40 @@ describe.skipIf(process.platform === "win32")("fetches without a persisted check
       rmSync(f.dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("Actions update policy", () => {
+  it("delays routine Actions updates seven days and keeps the monthly group", () => {
+    expect(actionsPolicyProblems(dependabot.updates)).toEqual([]);
+    expect(dependabot.updates[0]!.cooldown).toEqual({ "default-days": 7 });
+    // A release from today, three days ago (GitHub's implicit default) and a week ago.
+    expect([0, 3, 6, 7, 30].map((age) => heldBack("version", age, dependabot.updates[0]!))).toEqual([true, true, true, false, false]);
+  });
+
+  it("never delays security updates", () => {
+    expect(heldBack("security", 0, dependabot.updates[0]!)).toBe(false);
+    const entry = dependabot.updates[0]!;
+    for (const [name, updates] of [
+      ["a security cooldown", [{ ...entry, cooldown: { "default-days": 7, "security-days": 7 } }]],
+      ["semver tiers", [{ ...entry, cooldown: { "default-days": 7, "semver-major-days": 28 } }]],
+      ["a second entry", [entry, { ...entry, directories: ["/site"] }]],
+      ["a pull request limit", [{ ...entry, "open-pull-requests-limit": 0 }]],
+      ["no cooldown", [{ ...entry, cooldown: undefined }]],
+      ["a weekly schedule", [{ ...entry, schedule: { interval: "weekly" } }]],
+    ] as const) {
+      expect(actionsPolicyProblems([...updates] as UpdateEntry[]), name).not.toEqual([]);
+    }
+  });
+
+  it("accepts an urgent fix pinned to a commit SHA released today", () => {
+    // Stands in for a reviewed patched commit; nothing local asks how old it is.
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const pinned = Bun.YAML.parse(actionSource.replace(/^(\s*(?:- )?uses: [\w./-]+)@\S+/gm, `$1@${sha}`)) as SetupAction;
+    const refs = pinned.runs.steps.flatMap((step) => (step.uses ? [step.uses] : []));
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) expect(ref).toEndWith(`@${sha}`);
+    expectHostedOnlySetup(pinned);
+    expect(pinned.runs.steps.find(usesAction("actions/cache/restore"))!.with).toEqual(action.runs.steps.find(usesAction("actions/cache/restore"))!.with);
+    expect(actionsPolicyProblems(dependabot.updates)).toEqual([]);
+  });
 });
