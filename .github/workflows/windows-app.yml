@@ -149,83 +149,20 @@ jobs:
           else
             echo "::notice title=Ovis.msix skipped::$RELEASE_TAG gets Ovis.exe but no Ovis.msix: set the repository variables OVIS_MSIX_NAME, OVIS_MSIX_PUBLISHER and OVIS_MSIX_PUBLISHER_DISPLAY_NAME from Partner Center (app/windows/README.md)."
           fi
-          built=$(cat build/build-source.txt)
-          label="built from $built"
-          asset_id() { gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq ".[] | select(.name == \"$1\") | .id"; }
-          asset_label() { gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq ".[] | select(.name == \"$1\") | .label // \"\""; }
-          # asset id, new name, label: retried, since a failure here is what leaves a release without its file. Each
-          # file keeps its own label (the commit it was built from), also when it is set aside and put back.
-          rename() {
-            for attempt in 1 2 3 4 5; do
-              gh api -X PATCH "repos/$GH_REPO/releases/assets/$1" -f name="$2" -f label="$3" >/dev/null && return 0
-              sleep 5
-            done
-            return 1
-          }
-          release_id=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)
-          for name in "${files[@]}"; do
-            # The release keeps a file under $name at every step: the new one goes up as $name.uploading, the old
-            # one steps aside as $name.previous, and the old one is deleted only once the new one has its name.
-            staged="$name.uploading"
-            previous="$name.previous"
-            # Lookups are plain assignments, so a failed one stops the run (bash -e) instead of reading as absent.
-            current=$(asset_id "$name")
-            backup=$(asset_id "$previous")
-            leftover=$(asset_id "$staged")
-            # an earlier run that stopped mid-swap: put the old file back first
-            if [ -z "$current" ] && [ -n "$backup" ]; then
-              backup_label=$(asset_label "$previous")
-              rename "$backup" "$name" "$backup_label" || { echo "::error::$previous on $RELEASE_TAG could not be renamed back to $name; rename it by hand." >&2; exit 1; }
-              current=$backup
-              backup=
-            fi
-            [ -z "$leftover" ] || gh api -X DELETE "repos/$GH_REPO/releases/assets/$leftover"
-            # a backup is only ever deleted while the file it backs up is there
-            if [ -n "$backup" ] && [ -n "$current" ]; then
-              gh api -X DELETE "repos/$GH_REPO/releases/assets/$backup"
-            fi
-            cp "build/$name" "build/$staged"
-            gh release upload "$RELEASE_TAG" "build/$staged#$label"
-            new_id=$(asset_id "$staged")
-            [ -n "$new_id" ] || { echo "::error::$staged was uploaded but is not listed on $RELEASE_TAG." >&2; exit 1; }
-            old_id=$(asset_id "$name")
-            old_label=$(asset_label "$name")
-            if [ -n "$old_id" ] && ! rename "$old_id" "$previous" "$old_label"; then
-              gh api -X DELETE "repos/$GH_REPO/releases/assets/$new_id"
-              echo "::error::$name on $RELEASE_TAG could not be moved aside; it is left as it was." >&2
-              exit 1
-            fi
-            if ! rename "$new_id" "$name" "$label"; then
-              [ -z "$old_id" ] || rename "$old_id" "$name" "$old_label" || echo "::error::$previous on $RELEASE_TAG could not be renamed back to $name; rename it by hand." >&2
-              echo "::error::$staged on $RELEASE_TAG could not be renamed to $name." >&2
-              exit 1
-            fi
-            [ -z "$old_id" ] || gh api -X DELETE "repos/$GH_REPO/releases/assets/$old_id"
-          done
+          # all or nothing: the release's files always come from one build (app/windows/release-attach.sh)
+          bash app/windows/release-attach.sh attach build "${files[@]}"
           # ovis.sh/Ovis.exe and ovis.sh/Ovis.dmg both follow releases/latest: the newest release becomes
           # latest once it has both (the Mac app job does the same check)
           if [ "$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)" = "$RELEASE_TAG" ] &&
              [ "$(gh release view "$RELEASE_TAG" --json assets --jq '[.assets[].name] | (index("Ovis.dmg") != null and index("Ovis.exe") != null)')" = true ]; then
             gh release edit "$RELEASE_TAG" --latest
           fi
-      # Also when the step above failed or the run was cancelled mid-swap: a file set aside as .previous with nothing
-      # under its own name goes straight back, with its own label, so the release is never left without it.
-      - name: Put back a file set aside mid-swap
+      # Also when the step above failed or the run was cancelled mid-swap: undo or finish the swap, so the release
+      # is left with one build's files. A runner that dies outright is repaired by the next run for the tag.
+      - name: Leave the release with one build's files
         if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          release_id=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)
-          assets=$(gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq '.[] | [.id, .name, (.label // "")] | @tsv')
-          for name in Ovis.exe Ovis.msix; do
-            if ! printf '%s\n' "$assets" | cut -f2 | grep -qx "$name"; then
-              line=$(printf '%s\n' "$assets" | awk -F'\t' -v n="$name.previous" '$2 == n' | head -n 1)
-              [ -z "$line" ] && continue
-              id=$(printf '%s' "$line" | cut -f1)
-              previous_label=$(printf '%s' "$line" | cut -f3)
-              gh api -X PATCH "repos/$GH_REPO/releases/assets/$id" -f name="$name" -f label="$previous_label" >/dev/null
-              echo "::notice::$name.previous on $RELEASE_TAG was put back as $name."
-            fi
-          done
+        run: bash app/windows/release-attach.sh recover build Ovis.exe Ovis.msix

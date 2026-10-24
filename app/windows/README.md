@@ -89,9 +89,12 @@ to the release. A pull request that changes the app builds both and keeps them a
 `https://github.com/devswha/ovis/releases/latest/download/Ovis.exe`. Release publishes without marking
 the release latest; the Windows and Mac jobs each mark it latest once it has both `Ovis.exe` and
 `Ovis.dmg` (only when its tag is the newest `v*` tag), so neither download lands on a release without
-its file. Each file uploads under a temporary name and replaces the release's old one only once it is
-there, so a failed upload leaves the release with the file it had. The files' label on the release names
-the commit they were built from.
+its file. [release-attach.sh](release-attach.sh) swaps the files in all or nothing, so a release's files always
+come from one build: every new file goes up under a temporary name, each old one steps aside, and the old
+ones are deleted only once every new one has its name. A failed or cancelled run undoes or finishes the swap.
+If the runner itself dies mid-swap, the release can be left without `Ovis.exe` until the next run, which
+repairs it first: **run the Windows app workflow again for that tag.** Each file's label on the release names
+the commit it was built from.
 
 To give a release its files later, run **Actions → Windows app → Run workflow** on `main` with the tag,
 or `gh workflow run windows-app.yml --ref main -f tag=vX.Y.Z`. A release ships what its tag holds, so a
