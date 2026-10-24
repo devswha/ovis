@@ -906,6 +906,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         inputWasReady = ready;
         setInputReady(ready);
       };
+      // A refusal shorter than the readiness poll (a liveness probe whose pong comes back within
+      // it) still counts: text entering the editor while input is refused marks the refusal, so
+      // the frame that ends it (the pong) commits that text to the draft, not the next key to the pane.
+      const noteRefusedText = () => {
+        const pane = paneRef.current;
+        if (pane && !socket.canInput(pane)) inputWasReady = false;
+      };
+      const editor = term.textarea;
+      editor?.addEventListener("input", noteRefusedText, true);
       const off = session.on((message, sent) => {
         onServerMessageRef.current?.(message);
         if (rereadHerdrUi) {
@@ -1920,6 +1929,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("dragover", onDragOver);
         host.removeEventListener("drop", onDrop);
         offDisconnect();
+        editor?.removeEventListener("input", noteRefusedText, true);
         // frames still waiting are a retired terminal's: nothing writes or acknowledges them
         outputFrames.length = 0;
         parsingReplay = false;

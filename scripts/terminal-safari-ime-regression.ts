@@ -23,12 +23,18 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   // frames as if the server sent them (a lost attachment), and frames the page did not type (a role change)
   let toPage = (_frame: object): void => {};
   let toServer = (_frame: object): void => {};
+  // a liveness probe's pings, held back while set: input is refused until their pong
+  let holdPings = false;
+  const heldPings: string[] = [];
+  let releasePings = (): void => {};
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     toPage = (frame) => socket.send(JSON.stringify(frame));
     toServer = (frame) => server.send(JSON.stringify(frame));
+    releasePings = () => { holdPings = false; for (const raw of heldPings.splice(0)) server.send(raw); };
     server.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
+      if (frame.type === "pong") signals.emit("pong");
       if (frame.type === "input-ready" && frame.ready !== false) signals.emit("ready");
       if (frame.type === "role-ack") signals.emit(`role:${frame.mode}`);
       socket.send(raw);
@@ -36,6 +42,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     socket.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
       if (frame.type === "input") { sent.push(frame); signals.emit(`input:${frame.text}`); }
+      else if (frame.type === "ping" && holdPings) { heldPings.push(String(raw)); signals.emit("ping"); }
       else server.send(raw);
     });
   });
@@ -372,6 +379,29 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
     await check("This is a test.a", "a dictated draft is sent once, by Send");
     report("refused context: the dictated draft reaches the pane only by Send");
+
+    // A liveness probe refuses input until its pong, and may end between two readiness polls:
+    // a phrase dictated while its ping is out still goes to the draft, never to the pane.
+    await reset();
+    holdPings = true;
+    const pinged = signal("ping");
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await pinged;
+    await dictate(hypotheses, false);
+    const ponged = signal("pong");
+    releasePings();
+    await ponged;
+    await input.focus();
+    await input.press("a");
+    await check("", "refused context cannot seed the next accepted rewrite: dictation during a liveness probe waits for Send");
+    assert.equal(await page.locator(".draft-text").textContent(), "This is a test.a", "the phrase dictated during the probe and the next key wait in the draft");
+    report("refused context cannot seed the next accepted rewrite: dictated during a liveness probe, held in the draft");
+    sent.length = 0;
+    const probedPhrase = signal("input:This is a test.a");
+    await page.locator(".draft-send").click();
+    await probedPhrase;
+    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await check("This is a test.a", "a draft dictated during a probe is sent once, by Send");
 
     // A pane switch during a pending dictation phrase: neither pane receives it.
     await reset(); await dictate(hypotheses.slice(0, 3), false);
