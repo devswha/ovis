@@ -275,10 +275,20 @@ async function checkAcknowledgedInsert(page: Page): Promise<void> {
   check("the label is the line's own", await page.locator(".pane-frame.is-current .terminal-input-label").getAttribute("for") === await line.getAttribute("id"), await line.getAttribute("id"));
   check("Paste has its own name on the key bar", await paste.getAttribute("aria-label") === "Paste into the input line", await paste.getAttribute("aria-label"));
   check("Insert is off while the line is empty", await insert.isDisabled(), await insert.isDisabled());
-  for (const [name, locator] of [["Insert", insert], ["Send", send], ["Paste", paste]] as const) {
+  for (const [name, locator] of [["Insert", insert], ["Send", send]] as const) {
     const box = (await locator.boundingBox())!;
     check(`${name} is at least 44x44`, box.width >= 44 && box.height >= 44, [box.width, box.height]);
   }
+  // a key-bar key is drawn shorter and reaches its 44px target through its expander (KeyBar.css .key::before, #1527):
+  // a tap half a pixel inside that band, above and below the key's middle, lands on Paste
+  const pasteBox = (await paste.boundingBox())!;
+  const pasteTaps = await paste.evaluate((key) => {
+    const rect = key.getBoundingClientRect();
+    const middle = rect.top + rect.height / 2;
+    const lands = (y: number) => document.elementFromPoint(rect.left + rect.width / 2, y)?.closest('[data-key="paste"]') === key;
+    return { above: lands(middle - 21.5), below: lands(middle + 21.5) };
+  });
+  check("Paste is at least 44x44 to a finger", pasteBox.width >= 44 && pasteTaps.above && pasteTaps.below, { width: pasteBox.width, ...pasteTaps });
   // the owned browser's clipboard, read from the tap, into the line at the caret
   await page.evaluate((text) => navigator.clipboard.writeText(text), "status --short");
   const readsBefore = await h.reads();
