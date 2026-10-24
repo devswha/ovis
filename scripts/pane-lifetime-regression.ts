@@ -99,8 +99,14 @@ async function select(page: Page, pane: string): Promise<void> {
   await page.locator(`.agent-item[data-pane="${pane}"].is-selected`).waitFor();
 }
 
-async function openRecovery(page: Page, pane: string) {
-  await page.locator(`[data-layout-pane="${pane}"] .pane-frame-menu`).click();
+/** The selected pane's actions: a lone pane keeps them in its tab's ⋯, shown once the pointer is over the strip. */
+async function openPaneMenu(page: Page): Promise<void> {
+  await page.locator(".tab-strip").hover();
+  await page.locator(".tab-strip-item.is-active .tab-strip-menu").click();
+}
+
+async function openRecovery(page: Page) {
+  await openPaneMenu(page);
   await page.getByRole("menuitem", { name: "Recover unsent text" }).click();
   const dialog = page.getByRole("dialog", { name: "Unsent text" });
   await dialog.waitFor();
@@ -181,7 +187,14 @@ try {
 
   // Then the page shows each pane as the new herdr has it: its default lens, and an empty box.
   await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true,
-    undefined, { timeout: 20_000 });
+    undefined, { timeout: 20_000 }).catch(async (error: unknown) => {
+    const roster = await (await fetch(`${origin}/api/machines`)).json() as { machines: { id: string; state: string; snapshot: { herdr_lifetime?: string; panes: { pane_id: string; agent?: string }[] } | null }[] };
+    console.log("After the herdr restart", JSON.stringify({
+      roster: roster.machines.map((machine) => ({ id: machine.id, state: machine.state, lifetime: machine.snapshot?.herdr_lifetime, panes: machine.snapshot?.panes.map((item) => `${item.pane_id}:${item.agent ?? "-"}`) })),
+      stored: await stored(page), lens: await lens(page), selected: await page.locator(".agent-item.is-selected").getAttribute("data-pane").catch(() => null),
+    }));
+    throw error;
+  });
   await chatButton(page).click();
   assert.equal(await box(page).inputValue(), "", "the pane of the new herdr starts with an empty box");
   await select(page, two);
@@ -198,7 +211,7 @@ try {
 
   // The recovery list puts a text back in the box it was opened from, without sending it.
   await select(page, one);
-  let dialog = await openRecovery(page, one);
+  let dialog = await openRecovery(page);
   const oldOne = dialog.locator(".unsent-item", { hasText: "for the old one" });
   await oldOne.getByRole("button", { name: "Put in message box" }).click();
   await box(page).waitFor();
@@ -207,12 +220,12 @@ try {
   assert.deepEqual(submits, [], "nothing was sent");
   assert.doesNotMatch((await paneRead({ paneId: one, source: "visible" }, socketPath)).text, /for the old one/);
   // And Discard removes the other: with nothing left, the dialog closes and the pane menu offers no recovery.
-  dialog = await openRecovery(page, one);
+  dialog = await openRecovery(page);
   assert.equal(await dialog.locator(".unsent-item").count(), 1, "a recovered text leaves the list");
   await dialog.locator(".unsent-item", { hasText: "for the old two" }).getByRole("button", { name: "Discard" }).click();
   await dialog.waitFor({ state: "detached" });
   assert.equal(Object.keys(await stored(page)).filter((key) => key.startsWith("ovis:unsent:")).length, 0);
-  await page.locator(`[data-layout-pane="${one}"] .pane-frame-menu`).click();
+  await openPaneMenu(page);
   await page.getByRole("menuitem", { name: "Close pane" }).waitFor();
   assert.equal(await page.getByRole("menuitem", { name: "Recover unsent text" }).count(), 0);
   await page.keyboard.press("Escape");
