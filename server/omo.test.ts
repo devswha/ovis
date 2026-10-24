@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
+import { heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoPanes, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
+import * as client from "./herdr/client.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -478,4 +479,32 @@ it("fails closed on distinct holder claims while duplicates of one claim still b
   expect(pending.ids).toEqual([]);
   expect(pending.claims).toEqual([{ id: "one", store: "/b/sessions" }]);
   expect(selectOmoTranscript("a", [fileA], [pending], 20_000)).toBeNull();
+});
+
+// every OmO status refresh reads these, so every snapshot a pending message is checked against does (#1545)
+it("reads OmO panes' process starts through ps children on macOS, never a synchronous ps", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const home = mkdtempSync(join(tmpdir(), "omo-darwin-starts-"));
+  const pane = { pane_id: "omo-darwin", workspace_id: "w", tab_id: "t", terminal_id: "term", focused: false, revision: 0,
+    agent: "pi", agent_status: "idle", cwd: home } as HerdrPane;
+  spyOn(client, "herdrRpc").mockImplementation((async () => ({ process_info: { pane_id: pane.pane_id,
+    foreground_processes: [{ pid: 4242, name: "node", argv: ["node", `${OMO_AI}/bin/omo`], cwd: home }] } })) as unknown as typeof client.herdrRpc);
+  const blocking = spyOn(Bun, "spawnSync");
+  const probes: string[][] = [];
+  const awaited = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => {
+    probes.push(argv);
+    return { stdout: new Response("01:00\n").body, exited: Promise.resolve(0), signalCode: null, kill: () => {} };
+  }) as unknown as typeof Bun.spawn);
+  try {
+    expect((await omoPanes([pane], home)).has(pane.pane_id)).toBe(true);
+    expect(probes).toContainEqual(["/bin/ps", "-o", "etime=", "-p", "4242"]);
+    expect(blocking).not.toHaveBeenCalled();
+  } finally {
+    awaited.mockRestore();
+    blocking.mockRestore();
+    (client.herdrRpc as unknown as { mockRestore(): void }).mockRestore();
+    Object.defineProperty(process, "platform", platform);
+    rmSync(home, { recursive: true, force: true });
+  }
 });

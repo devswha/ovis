@@ -29,7 +29,8 @@ import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaude
 import { registry } from "../dialogs/registry.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
-import { processStartedAt } from "../process-start.ts";
+import { processStartedAtAsync } from "../process-start.ts";
+import { agentProcessInFront } from "../agent-process.ts";
 import { capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiReceiptReservation } from "../pi-delivery.ts";
 import { piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
@@ -312,9 +313,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /**
    * The pane and the identity of what runs in it now, as a pending message is checked against them. Its
-   * process is the first in front of the pane, or `bound` (the process a message was bound to) while that
-   * one is among those in front: a wrapper that does not exec its agent (a shim, `sh -c` with more to run)
-   * stays listed before it, and is not another agent.
+   * process is the agent's in front of the pane, as a command outcome picks it (agentProcessInFront): `bound`
+   * (the process a message was bound to, or its launch reported) while it is among those in front, else the
+   * agent's own program, so a wrapper that does not exec its agent (a shim, a launcher, `sh -c` with more to run)
+   * and stays listed before it is not taken for it. While herdr names no agent, or none of its programs runs
+   * there, the first process in front. Its birth is read without holding the event loop (no `ps` on it on macOS).
    */
   async function currentIdentity(paneId: string, bound: number | null = null): Promise<{ pane: HerdrPane; identity: PendingIdentity; shellPid: number | null; processes: ProcessInfo | undefined }> {
     // The same normalized snapshot the client sees includes a known Codex finish that
@@ -322,11 +325,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
     if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
     const info = await paneProcessInfo(paneId);
-    const foreground = info?.foreground_processes ?? [];
-    const pid = (bound !== null && foreground.some((entry) => entry.pid === bound) ? bound : foreground[0]?.pid) ?? null;
     const base = pendingIdentity(pane);
+    const pid = agentProcessInFront(info, base.agent, bound)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
     return { pane, shellPid: info?.shell_pid ?? null, processes: info, identity: {
-      ...base, processPid: pid, processBirth: pid === null ? null : processStartedAt(pid),
+      ...base, processPid: pid, processBirth: pid === null ? null : await processStartedAtAsync(pid),
       omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
       // Claude's own PID record says which session it runs, also without herdr's hook
       claudeSession: base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null,
@@ -566,7 +568,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // The launch's own word wins: a shell-started agent's launch says which process it came up as, which
       // may have ended already, and then an agent the user starts later is not the one launched
       const launchedProcess = launchedPid !== null
-        ? { processPid: launchedPid, processBirth: identity.processPid === launchedPid ? identity.processBirth : processStartedAt(launchedPid) }
+        ? { processPid: launchedPid, processBirth: identity.processPid === launchedPid ? identity.processBirth : await processStartedAtAsync(launchedPid) }
         : identity.processPid !== null && identity.processPid !== undefined && identity.processPid !== shellPid
           ? { processPid: identity.processPid, processBirth: identity.processBirth } : {};
       // and to the sessions herdr, OmO or Claude's own record already name for that agent: a /resume
