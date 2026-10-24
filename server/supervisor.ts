@@ -5,7 +5,7 @@
  * launcher starts the new release's supervisor. `root` is always the source checkout.
  */
 import "./adopt-legacy-env.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
@@ -13,7 +13,22 @@ import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } fr
 import { herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
-import { Updater, type Release } from "./updater.ts";
+import { runCommand, Updater, type Release } from "./updater.ts";
+
+/**
+ * A release installed by an updater from before the Rust PTY host (0.4.13's) came without it, so its
+ * terminals run on the Node sidecar, or are mirrored where the PC has no Node. It is fetched here, in
+ * the background, as this updater fetches it for each release it installs: a bridge on the Node
+ * sidecar takes it at its next attach, and one with no PTY host at its next start.
+ */
+function installMissingRustHost(directory: string): void {
+  if (process.platform === "win32" || !existsSync(join(directory, "scripts", "pty-sidecar.ts"))
+    || existsSync(join(directory, "bin", "ovis-pty-sidecar.json"))) return;
+  runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], undefined, 120_000).then(
+    (output) => console.log(output),
+    (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
+  );
+}
 
 export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   root = resolve(root);
@@ -144,6 +159,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     switching = false;
     started.resolve();
     updater.start();
+    if (active && active.directory !== root) installMissingRustHost(active.directory);
     process.send?.({ type: "supervisor-ready" });
     console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
   } catch (error) {

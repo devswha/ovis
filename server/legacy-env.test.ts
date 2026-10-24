@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptLegacyEnv, mergeEnvLayers, ovisName, withLegacyNames } from "./legacy-env.ts";
@@ -147,6 +147,33 @@ describe("a supervisor started by the launcher of an install from before the ren
     expect(launches.map((launch) => launch.cwd)).toEqual([release, root]);
     expect(launches[1]).toEqual({ cwd: root, stateDir: join(config, "herdr-web-ui"), managed: "1", revision: git(root, "rev-parse", "HEAD") });
   }, 20_000);
+
+  it.skipIf(process.platform === "win32")("fetches the Rust PTY host that the 0.4.13 updater left out of the release", async () => {
+    // 0.4.13's updater builds a release without scripts/pty-sidecar.ts install, so the release came
+    // up without its Rust PTY host: its terminals ran on Node, or were mirrored on a PC without Node
+    const { directory, root, config, release } = installedRelease();
+    const ran = join(directory, "sidecar-install.json");
+    mkdirSync(join(release, "scripts"));
+    // the release's install, standing in: records where it ran and what it was asked
+    writeFileSync(join(release, "scripts", "pty-sidecar.ts"), `
+      import { renameSync, writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(`${ran}.tmp`)}, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }));
+      renameSync(${JSON.stringify(`${ran}.tmp`)}, ${JSON.stringify(ran)});
+    `);
+    // it runs in the background, after the supervisor is ready: watched for before the start
+    const installed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { watcher.close(); reject(new Error("the release's Rust PTY host install never ran")); }, 15_000);
+      const watcher = watch(directory, () => {
+        if (!existsSync(ran)) return;
+        watcher.close();
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root });
+    await installed;
+    expect(JSON.parse(readFileSync(ran, "utf8"))).toEqual({ cwd: realpathSync(release), args: ["install"] });
+  }, 30_000);
 
   it("moves the state dir once a launcher of this version starts it", async () => {
     const { directory, root, config } = installedRelease();
