@@ -83,6 +83,16 @@ describe("preferences sync", () => {
     expect(preferencesChange(pending.base, local(DEFAULT_SETTINGS, [], pending.muted!))).toEqual({ settings: {}, muted_panes: ["local:w1:p2"] });
   });
 
+  it("keeps an unmute made while the mute was on its way, and sends it next", () => {
+    // the mute of P is in flight; the user unmutes P before the server's answer, which carries [P]
+    const taken = takePreferences(base(DEFAULT_SETTINGS, [], []), local(DEFAULT_SETTINGS, [], []), { revision: 1, settings: {}, pins: [], muted_panes: ["local:w1:p"] }, { settings: {}, muted_panes: ["local:w1:p"] });
+    expect(taken.muted).toBeUndefined();
+    expect(preferencesChange(taken.base, local(DEFAULT_SETTINGS, [], []))).toEqual({ settings: {}, muted_panes: [] });
+    // a pane another browser muted meanwhile, outside the change on its way, keeps its new state
+    const other = takePreferences(base(DEFAULT_SETTINGS, [], []), local(DEFAULT_SETTINGS, [], []), { revision: 2, settings: {}, pins: [], muted_panes: ["local:w1:p", "local:w1:q"] }, { settings: {}, muted_panes: ["local:w1:p"] });
+    expect(other.muted).toEqual(["local:w1:q"]);
+  });
+
   it("two browsers muting different panes at once both keep their mute", () => {
     // A muted P and B muted Q, each before hearing the other: B takes A's document with its own change unsent
     const taken = takePreferences(base(DEFAULT_SETTINGS, [], []), local(DEFAULT_SETTINGS, [], ["local:w1:q"]), { revision: 2, settings: {}, pins: [], muted_panes: ["local:w1:p"] }, null);

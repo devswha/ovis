@@ -131,14 +131,18 @@ export function takePreferences(base: Baseline, local: Local, remote: SharedPref
   }
   let muted: string[] | null | undefined = null;
   if (remote.muted_panes !== undefined) {
-    const sent = inFlight?.muted_panes !== undefined && same(inFlight.muted_panes, local.muted);
-    const edited = local.muted !== null && base.muted !== null && !same(local.muted, base.muted) && !sent;
+    const flown = inFlight?.muted_panes;
+    const sent = flown !== undefined && same(flown, local.muted);
+    // an edit made while a change of the list is on its way is measured against that change: an
+    // unmute made before the server's answer to the mute is still an edit, and goes out next
+    const reference = flown ?? base.muted;
+    const edited = local.muted !== null && reference !== null && !same(local.muted, reference) && !sent;
     const overtaken = refused?.muted_panes !== undefined && same(local.muted, refused.muted_panes) && !same(remote.muted_panes, base.muted);
     if (force || !edited || overtaken) muted = [...remote.muted_panes];
     else {
       // a change made here and not yet sent is laid over the list pane by pane: a pane another browser
       // muted or unmuted meanwhile keeps its new state, and only the panes changed here go out
-      const was = base.muted!;
+      const was = reference!;
       const now = local.muted!;
       const merged = [...remote.muted_panes.filter((key) => now.includes(key) || !was.includes(key)), ...now.filter((key) => !was.includes(key) && !remote.muted_panes!.includes(key))];
       muted = same(merged, now) ? undefined : merged;
