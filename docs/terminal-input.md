@@ -114,6 +114,13 @@ the existing RPC input path. Legacy unattached mirror input remains serialized w
 Clients talking to an older bridge use its first output, after capabilities are known, as the
 compatibility signal. A screen frame alone does not establish readiness on a new bridge.
 
+A client that joins an attachment whose stream ended after it was ready (the replacement attach has
+not taken yet) first gets `{type:"output-recovering", pane_id}`, then the retained replay, and no
+`input-ready`. The client treats that replay as the screen from before: it does not present it as
+current or acknowledge it, until the next attach takes (`input-ready`) and new output arrives.
+Switching panes or reconnecting drops that wait. It is presentation only; queued input still waits
+for `input-ready`.
+
 `input_not_ready` reports a rejected PTY input. `input_failed` reports an RPC or local sidecar
 write failure; the UI displays it outside the terminal stream. These are not acknowledgements
 that the application consumed individual keystrokes. Failed input is never automatically retried.
