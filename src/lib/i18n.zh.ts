@@ -170,6 +170,8 @@ const BASE: Record<string, string> = {
   // ---- composer ----
   "Drag to resize · double-click to reset": "拖动以调整大小 · 双击重置",
   "Failed": "失败",
+  "Sent to Pi · waiting for transcript": "已发送到 Pi · 正在等待写入对话记录",
+  "Sent to Pi · transcript confirmation unavailable": "已发送到 Pi · 无法确认对话记录",
   "Send now": "立即发送",
 
   // ---- chat view ----
