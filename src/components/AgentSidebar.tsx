@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ChevronDown, ChevronRight, Ellipsis, Pin, PinOff, Terminal } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, Pin, PinOff, Terminal } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -9,6 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentRoster, type AgentRow } from "../lib/agentRoster.ts";
+import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useSidebarActivity } from "../lib/sidebarActivity.tsx";
@@ -33,13 +34,16 @@ interface AgentRowBodyProps {
   backgroundTasks?: number;
   plan?: PlanSummary;
   status?: AgentStatus;
+  /** its alerts are off for everyone (lib/paneMutes.ts): said beside the state, as a word for a screen reader */
+  muted: boolean;
 }
 
 /**
  * One agent in a list: the coding agent's mark, what it is working on, who and where it is, what
  * its plugins report, and how it is doing.
  */
-function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, status }: AgentRowBodyProps) {
+function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, status, muted }: AgentRowBodyProps) {
+  const t = useT();
   return <>
     <span className="sidebar-mark" aria-hidden="true">{mark !== null ? <AgentMark agent={mark} size={18} /> : <Terminal />}</span>
     <span className="agent-copy">
@@ -57,7 +61,10 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
       {/* text as the plugin wrote it, never markup; its own line in either row height, cut where it is too long */}
       {tokens.length > 0 && <span className="agent-tokens">{tokens.join(" · ")}</span>}
     </span>
-    <span className="agent-row-status"><BackgroundBadge count={backgroundTasks} /><PlanBadge plan={plan} /></span>
+    <span className="agent-row-status">
+      <BackgroundBadge count={backgroundTasks} /><PlanBadge plan={plan} />
+      {muted && <span className="agent-muted" title={t("Alerts muted")} data-testid="alerts-muted"><BellOff aria-hidden="true" /><span className="visually-hidden">{t("Alerts muted")}</span></span>}
+    </span>
     {/* drawn at the row's right edge, after its ⋯, as a workspace row's state is (AgentSidebar.css) */}
     <span className="agent-row-state"><StatusBadge status={status} compact /></span>
   </>;
@@ -69,6 +76,8 @@ export interface AgentSidebarProps {
   selectedPaneId: string | null;
   /** a PC's state in words, for the tooltip of a row whose PC is not connected */
   stateWord(machine: Machine): string;
+  /** this device only watches: it sees the shared mutes and cannot change them */
+  watching?: boolean;
   onSelect(machineId: string, paneId: string): void;
 }
 
@@ -86,15 +95,17 @@ interface PinMenu { key: string; anchor: HTMLElement; point?: { x: number; y: nu
  * In the phone's drawer the list starts folded, leaving the room to the workspaces.
  * The pinned agents stand first, in a card; on a desktop only a
  * right-click (or the context-menu key) opens the menu. A row's ⋯, or a right-click on it, opens its
- * menu, which pins or unpins it.
+ * menu, which pins or unpins it, and mutes or unmutes its alerts for every browser and device.
  */
-export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stateWord, onSelect }: AgentSidebarProps) {
+export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stateWord, watching = false, onSelect }: AgentSidebarProps) {
   const t = useT();
   const listId = useId();
   const [collapsed, setCollapsed] = useState(() => window.matchMedia?.(DRAWER_QUERY).matches === true);
   const { settings } = useSettings();
   // shared with the other browsers of this server (lib/preferencesSync.ts)
   const pinned = useSyncExternalStore(subscribeSidebarPins, currentSidebarPins, currentSidebarPins);
+  // the panes whose alerts are off, shared the same way; null on a server that keeps no such list, which then offers no mute
+  const muted = useSyncExternalStore(subscribePaneMutes, currentPaneMutes, currentPaneMutes);
   // which `$name` tokens herdr's own sidebar draws, from this server's herdr config (server/herdr-sidebar.ts)
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
@@ -108,6 +119,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // list is shared, and a pane this page has not seen yet (a PC still loading) is not gone
     const live = new Set(rows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     setSidebarPins(toggleSidebarPin(pruneSidebarPins(pinned, live, machines), key));
+  };
+  const toggleMute = (machineId: string, paneId: string): void => {
+    // as the pins: the mutes of panes a connected PC no longer has leave with this change, and no other PC's
+    if (muted !== null) setPaneMutes(togglePaneMute(prunePaneMutes(muted, machines), paneMuteKey(machineId, paneId)));
   };
   // a pin moves the row to the other list, so React draws it anew: the control of the row that had
   // the focus (its row or its ⋯) gets it back
@@ -173,7 +188,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId: machine.id, paneId: pane.pane_id }));
         }}>
         {/* a saved roster's state is not news: a PC that is away says nothing about its agents */}
-        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={online ? activity.status(machine.id, pane) : undefined} />
+        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={online ? activity.status(machine.id, pane) : undefined} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} />
       </button>
       <div className="agent-actions">
         <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
@@ -190,6 +205,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const shownEmpty = useAnnouncedText(rows.length === 0 ? (loading ? t("Loading agents…") : t("No agents running")) : null);
   const menuPinned = menu !== null && pinned.includes(menu.key);
   const menuShown = menuRow === undefined ? null : describe(menuRow);
+  const menuMuted = menuRow !== undefined && muted !== null && muted.includes(paneMuteKey(menuRow.machine.id, menuRow.entry.pane.pane_id));
   const runPin = (state: PinMenu): void => {
     // where the menu hands the focus back (lib RowMenu): the ⋯ itself unless the right-click said otherwise
     const back = state.previousFocus === undefined ? state.anchor : state.previousFocus;
@@ -219,6 +235,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       menuPinned
         ? { id: "unpin", label: t("Unpin agent"), icon: PinOff, run: () => runPin(menu) }
         : { id: "pin", label: t("Pin agent"), icon: Pin, run: () => runPin(menu) },
+      // one switch for every alert channel and every browser (lib/paneMutes.ts); a watching device sees its state and cannot flip it
+      ...(muted === null || menuRow === undefined ? [] : [{
+        id: "mute", label: menuMuted ? t("Unmute alerts") : t("Mute alerts"), icon: menuMuted ? Bell : BellOff, checked: menuMuted, disabled: watching,
+        run: () => toggleMute(menuRow.machine.id, menuRow.entry.pane.pane_id),
+      }]),
     ]} />}
   </section>;
 }

@@ -856,9 +856,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   worktree actions, and Expand/Collapse for a group. Dismissal restores the prior focus. The
   explicit `⋯` uses those same actions at its button. An edited name keeps the browser's paste menu;
   touch long press still reorders. Agents and PC headers keep the browser's context menu.
-  An agent row selects its pane. Its `⋯` (drawn as a workspace row's is) opens its menu with one
-  item, Pin agent or Unpin agent; a right-click opens the same menu at the pointer and leaves the
-  focus where it was.
+  An agent row selects its pane. Its `⋯` (drawn as a workspace row's is) opens its menu with
+  Pin agent or Unpin agent and Mute alerts or Unmute alerts; a right-click opens the same menu at
+  the pointer and leaves the focus where it was.
+  Mute alerts is one switch for every alert channel (web push, the in-app alert, the chime and
+  the tab notification) and every browser and device of the server: the list of muted panes is
+  shared with the pins (`muted_panes` in shared/preferences.ts), keyed by the PC and the pane as
+  the alerts key them, so the same pane id on another PC is not muted with it. The item is a
+  checkbox item (`role="menuitemcheckbox"`, the sheet's `aria-pressed`) that says the action,
+  Mute alerts or Unmute alerts, with the check mark while muted; a muted row draws a crossed bell
+  beside its state (`.agent-muted`, `--text-dim`, `--space-3`; `--text` in the half-faded row of a
+  PC that is away, so it keeps 3:1 there), named Alerts muted for a screen reader and the tooltip, so the state is never told by colour alone. A pane's status is tracked
+  while it is muted, and Unmute alerts tells only what changes after it. A watching device sees
+  the state in the menu, in `--text-dim` and `aria-disabled` (`.is-disabled`, not faded, so it keeps AA contrast), and
+  cannot change it; a server too old to keep the list offers no item. This follows Slack's and
+  Discord's per-channel mute, a checkbox item in the row's own menu, not a per-channel switch
+  (Codex's and Claude's apps have no mute of their own); agent-of-empires has a per-channel
+  override, which the shared, PC-keyed list replaces.
   A desktop (`pointer: fine` wider than 768px, the tab strip's rule) draws no row `⋯`: a
   right-click or the context-menu key opens the menu, at the pointer or at the row, and dismissal
   returns the focus where it was.

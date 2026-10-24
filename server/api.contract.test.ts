@@ -29,6 +29,9 @@ import { claudeProjectDir } from "./claude-store.ts";
 import { testShellEnv } from "../scripts/test-shell.ts";
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
 import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-agent.ts";
+import { DeviceStore } from "./devices.ts";
+import type { MachineEvent } from "../shared/machines.ts";
+import { MAX_MUTED_PANES, type SharedPreferences } from "../shared/preferences.ts";
 
 /**
  * Contract test for Ovis's HTTP + WS surface.
@@ -4590,4 +4593,144 @@ setInterval(() => {}, 1 << 30);
       rmSync(bridgeState, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+// The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
+// are always in the document, the first mute is a change of the empty list, a watching device
+// reads and cannot write, and two tabs' changes land as two revisions with both kept.
+describe("shared preferences API", () => {
+  const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
+  /** the event stream as a page reads it: each `preferences` document, and a bounded wait for the next one that matches */
+  async function openEvents(base: string, headers: Record<string, string>, abort: AbortController) {
+    const response = await fetch(`${base}/api/machines/events`, { headers, signal: abort.signal });
+    expect(response.status).toBe(200);
+    const documents: SharedPreferences[] = [];
+    const listeners = new Set<() => void>();
+    void (async () => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          if (!frame.startsWith("data: ")) continue;
+          const event = JSON.parse(frame.slice(6)) as MachineEvent;
+          if (event.type === "preferences") { documents.push(event.preferences); for (const listener of [...listeners]) listener(); }
+        }
+      }
+    })().catch(() => undefined);
+    const next = (what: string, found: (document: SharedPreferences) => boolean): Promise<SharedPreferences> => new Promise((resolve, reject) => {
+      const check = () => { const hit = documents.find(found); if (hit) { listeners.delete(check); clearTimeout(timer); resolve(hit); } };
+      const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`timed out waiting for ${what}`)); }, 10_000);
+      listeners.add(check);
+      check();
+    });
+    return { documents, next };
+  }
+
+  it("advertises the mute list from the first document on, saves the first mute, and refuses what is not a list", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { ...guard, authorization: "Bearer test-preferences" };
+    const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
+    const abort = new AbortController();
+    try {
+      // a fresh store: the empty list is in the GET and in the stream's opening document
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      const events = await openEvents(base, headers, abort);
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      // the first mute: saved, answered whole, and told to every stream
+      const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      expect(await events.next("the first mute", (document) => document.revision === 1)).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      // malformed and oversized lists: refused unread into the document, which keeps its revision
+      for (const muted of ["w1:p1", [1], [""], [null], ["x".repeat(301)], Array.from({ length: MAX_MUTED_PANES + 1 }, (_, i) => `w1:p${i}`)]) {
+        const refused = await put({ settings: {}, muted_panes: muted });
+        expect([JSON.stringify(muted).slice(0, 24), refused.status, ((await refused.json()) as ApiError).error.code]).toEqual([JSON.stringify(muted).slice(0, 24), 400, "invalid_body"]);
+      }
+      const huge = await put({ settings: {}, muted_panes: Array.from({ length: 300 }, (_, i) => `${"k".repeat(290)}${i}`) });
+      expect([huge.status, ((await huge.json()) as ApiError).error.code]).toEqual([413, "too_large"]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      // a change that names no list leaves it; an empty list clears it
+      expect(await (await put({ settings: { theme: "light" } })).json()).toEqual({ revision: 2, settings: { theme: "light" }, muted_panes: ["w1:p1"] });
+      expect(await (await put({ settings: {}, muted_panes: [] })).json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      await events.next("the cleared list", (document) => document.revision === 3);
+      expect(events.documents.map((document) => document.revision)).toEqual([0, 1, 2, 3]);
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a document from before the list as none muted, without a write, and takes the first mute of it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const stored = { revision: 4, settings: { theme: "dark" }, pins: ["local:w1:p1"] };
+    writeFileSync(join(root, "preferences.json"), JSON.stringify(stored));
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { ...guard, authorization: "Bearer test-preferences" };
+    const abort = new AbortController();
+    try {
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
+      const events = await openEvents(base, headers, abort);
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
+      expect(await first.json()).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
+      // the list has a document of its own, which an older release's whole rewrite of preferences.json cannot erase
+      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });
+      expect(JSON.parse(readFileSync(join(root, "muted-panes.json"), "utf8"))).toEqual({ muted_panes: ["w1:p1"] });
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps both of two tabs' changes as two revisions, and lets a watching device read but not write", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const devices = new DeviceStore(root);
+    const watch = devices.pair(devices.startPairing().code, "Watch", "watch")!;
+    devices.match(watch.token);
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const driving = { ...guard, authorization: "Bearer test-preferences" };
+    const watching = { ...guard, cookie: `ovis_device=${watch.token}` };
+    const abort = new AbortController();
+    try {
+      const events = await openEvents(base, watching, abort);
+      await events.next("the opening document", (document) => document.revision === 0);
+      // tab A mutes while tab B picks a theme: each change lands on the document as it is then, and neither is lost
+      const [a, b] = await Promise.all([
+        fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) }),
+        fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: { theme: "light" } }) }),
+      ]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      const revisions = [((await a.json()) as SharedPreferences).revision, ((await b.json()) as SharedPreferences).revision].sort();
+      expect(revisions).toEqual([1, 2]);
+      const merged = await events.next("both changes", (document) => document.revision === 2);
+      expect(merged).toEqual({ revision: 2, settings: { theme: "light" }, muted_panes: ["w1:p1"] });
+      // tab B then clears the list tab A set: the last write wins, as for every field
+      const cleared = await fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: {}, muted_panes: [] }) });
+      expect(await cleared.json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      // the watching device heard every document, and cannot write one: the revision stays
+      await events.next("the cleared list", (document) => document.revision === 3);
+      expect(events.documents.map((document) => document.revision)).toEqual([0, 1, 2, 3]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers: watching })).json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      const refused = await fetch(`${base}/api/preferences`, { method: "PUT", headers: watching, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
+      expect([refused.status, ((await refused.json()) as ApiError).error.code]).toEqual([403, "read_only"]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers: driving })).json()).toMatchObject({ revision: 3, muted_panes: [] });
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

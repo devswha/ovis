@@ -16,6 +16,7 @@
  */
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
+import { normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
@@ -303,6 +304,22 @@ function relabelAutoTabs(workspaceId: string): void {
 function emitSse(event: MachineEvent): void {
   const message = new MessageEvent("message", { data: JSON.stringify(event) });
   for (const listener of sseListeners) listener(message);
+}
+
+// The settings, pins and muted panes every browser of a server shares (shared/preferences.ts),
+// kept the way server/preferences.ts keeps them: one document, a change laid over it, told on the
+// event stream. The demo is one page, so the document is this page's and a reload starts it over,
+// as the rest of the demo's state does; it is here so an agent's Mute alerts works as on a server.
+let preferences: SharedPreferences = { revision: 0, settings: {}, muted_panes: [] };
+
+function changePreferences(raw: unknown): Response {
+  const change = sharedPreferencesBody(raw);
+  if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[] }", 400);
+  const { settings } = normalizeThemeChange(preferences.settings, change);
+  const pins = change.pins ?? preferences.pins;
+  preferences = { revision: preferences.revision + 1, settings: { ...preferences.settings, ...settings }, ...(pins === undefined ? {} : { pins }), muted_panes: change.muted_panes ?? preferences.muted_panes ?? [] };
+  emitSse({ type: "preferences", preferences });
+  return json(preferences, 200, { "cache-control": "no-store" });
 }
 
 function paneOf(paneId: string): Pane | undefined {
@@ -982,6 +999,14 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/connection-diagnostics") return new Response(null, { status: 204 });
   // the demo is one browser: a finish read here is kept in its own storage, with no other browser to tell
   if (path === "/api/seen") return method === "POST" ? new Response(null, { status: 204 }) : json({ finishes: [] }, 200, { "cache-control": "no-store" });
+  if (path === "/api/preferences") {
+    if (method === "GET") return json(preferences, 200, { "cache-control": "no-store" });
+    if (method !== "PUT") return error("method_not_allowed", "Use GET or PUT /api/preferences", 405);
+    let raw: unknown;
+    try { raw = init?.body ? JSON.parse(String(init.body)) : input instanceof Request ? await input.clone().json() : undefined; }
+    catch { return error("invalid_json", "The body is not JSON", 400); }
+    return changePreferences(raw);
+  }
   if (path === "/api/telemetry") return json({ error: { code: "not_found", message: "This server sends no telemetry" } }, 404, { "cache-control": "no-store" });
   if (path === "/api/herdr/update") return json({ supported: false, phase: "idle", server_version: null, binary_version: null, stale: false, output: null, finished_at: null }, 200, { "cache-control": "no-store" });
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
@@ -1598,7 +1623,12 @@ class DemoEventSource extends EventTarget {
     super();
     this.url = url;
     sseListeners.add(this.listener);
-    setTimeout(() => { this.onopen?.(new Event("open")); this.listener(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: readRoster() } satisfies MachineEvent) })); }, 30);
+    setTimeout(() => {
+      this.onopen?.(new Event("open"));
+      this.listener(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: readRoster() } satisfies MachineEvent) }));
+      // as the server's stream: it opens with the shared document, so a page that reconnects holds the latest
+      this.listener(new MessageEvent("message", { data: JSON.stringify({ type: "preferences", preferences } satisfies MachineEvent) }));
+    }, 30);
   }
   close(): void { this.readyState = 2; sseListeners.delete(this.listener); }
 }
