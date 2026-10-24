@@ -48,7 +48,7 @@ function runRunner(options: {
   dockerExitCode?: number;
   failedSlot?: number;
   /** "present" writes a host env file and passes it, "missing" passes a path that does not exist */
-  envFile?: "present" | "missing" | "bare" | "secret";
+  envFile?: "present" | "missing" | "bare" | "secret" | "nul";
   /** a grep on PATH that fails with a read error (exit 2), as on a file that passes -r but cannot be read */
   grepReadError?: boolean;
 } = {}) {
@@ -102,6 +102,7 @@ esac
     if (options.envFile === "present") writeFileSync(envFile, "# P620\n\nCHECK_HOST_MAX_RUNS=6\nCHECK_HOST_BROWSER_WORKERS=10\n");
     if (options.envFile === "bare") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nGH_TOKEN\n");
     if (options.envFile === "secret") writeFileSync(envFile, "# P620\nCHECK_HOST_MAX_RUNS=6\nGH_TOKEN=ghp_synthetic_secret\n");
+    if (options.envFile === "nul") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nCHECK_HOST_TEST_SHARDS=6\u0000\n");
     if (options.grepReadError) {
       writeFileSync(join(binDir, "grep"), "#!/bin/sh\necho 'grep: read error' >&2\nexit 2\n");
       chmodSync(join(binDir, "grep"), 0o755);
@@ -182,6 +183,36 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(result.stderr).not.toContain("ghp_synthetic_secret");
     expect(result.stderr).not.toContain("GH_TOKEN");
     expect(calls).not.toContain("docker run");
+  });
+
+  it("refuses a NUL byte in the host env file and names its line", () => {
+    const { result, calls } = runRunner({ envFile: "nul" });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("refused line(s): 2\n");
+    expect(calls).not.toContain("docker run");
+  });
+
+  it("checks a host env file named - as that file, never the launcher's stdin", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "herdr-runner-dash-"));
+    try {
+      writeFileSync(join(cwd, "-"), "GH_TOKEN\n");
+      // stubs first on PATH: a launcher that wrongly went on must never reach the real gh or docker
+      const bin = join(cwd, "bin");
+      mkdirSync(bin);
+      for (const tool of ["gh", "docker"]) {
+        writeFileSync(join(bin, tool), "#!/bin/sh\nexit 1\n");
+        chmodSync(join(bin, tool), 0o755);
+      }
+      const result = spawnSync("bash", [script, "--repo", "owner/repo", "--once", "--env-file", "-"], {
+        cwd, encoding: "utf8", timeout: 10_000, input: "",
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("refused line(s): 1\n");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("refuses to start when it cannot read the host env file to check it", () => {

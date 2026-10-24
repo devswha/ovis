@@ -100,7 +100,7 @@ The ThinkStation P620 (64 cores / 128 threads, 30 GiB) runs `--count 12 --env-fi
 %h/.config/ovis-ci-runner/host.env` with:
 
 ```sh
-CHECK_HOST_MAX_RUNS=4
+CHECK_HOST_MAX_RUNS=5
 CHECK_HOST_TEST_SHARDS=6
 CHECK_HOST_BROWSER_WORKERS=8
 CHECK_HOST_UNIT_WORKERS=8
@@ -113,8 +113,10 @@ host peaked at 14.6 of 30 GiB; Fast checks peaked at 0.6 GiB. Those jobs (all bu
 run at most `CHECK_HOST_MAX_RUNS` at once, however many runners wait for a slot, so the other
 runners hold only Fast checks and the setup steps before a slot. More browser workers raise that
 spike: with ten, Browser regression (other scripts) reached 14 GiB for about 20 s (its 90th
-percentile stayed near 5.4 GiB) while the host peaked at 20.4 GiB, so the P620 runs eight, which
-leaves room for two such spikes at once beside the other slot jobs.
+percentile stayed near 5.4 GiB) while the host peaked at 20.4 GiB, so the P620 runs eight. With
+four slot jobs and twelve runners busy, the host stayed under 17.2 GiB; a fifth slot job at about
+4 GiB puts it near 21 GiB, about 9 GiB below the total, which holds one browser spike at eight
+workers (about 5-7 GiB above that job's usual 2-4 GiB) but not two at once.
 
 A manual run can override the variable with the `self_hosted_labels` workflow_dispatch input. Fork PRs always use `ubuntu-24.04`; Windows/macOS jobs, `remote-bundles.yml` and `windows-install.yml` stay GitHub-hosted.
 
