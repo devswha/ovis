@@ -154,6 +154,12 @@ describe("shared skill walk", () => {
     ]);
   });
 
+  it("uses the name from a BOM-prefixed one-level skill header", () => {
+    const root = temp();
+    put(join(root, "folder", "SKILL.md"), "\uFEFF---\r\nname: declared\r\ndescription: Present\r\n---\r\n");
+    expect(walkSkills(root, one).map(({ name }) => name)).toEqual(["declared"]);
+  });
+
   it("distinguishes root and nested loose markdown and stops at declared skills", () => {
     const root = temp();
     put(join(root, "root.md"), "---\nname: root\ndescription: Root\n---\n");

@@ -63,7 +63,7 @@ export const MAX_WALK_FOLDERS = 4096;
  */
 function openRegular(path: string): number {
   if (!statSync(path).isFile()) throw new Error(`not a regular file: ${path}`);
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0));
   let regular = false;
   try { regular = fstatSync(fd).isFile(); } finally { if (!regular) closeSync(fd); }
   if (!regular) throw new Error(`not a regular file: ${path}`);
@@ -146,7 +146,7 @@ export function description(markdown: string): string {
 
 /** `name:` from a SKILL.md's frontmatter, else its directory's name. */
 function skillName(markdown: string, directory: string): string {
-  const frontmatter = markdown.match(/^---[ \t]*\r?\n([\s\S]*?)\n---(?:\s*\n|$)/);
+  const frontmatter = markdown.match(FRONTMATTER);
   const named = frontmatter?.[1]?.match(/^name:\s*(.+?)\s*$/m)?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2");
   return named && /^[\p{L}\p{N}_:-]+$/u.test(named) ? named : directory;
 }
