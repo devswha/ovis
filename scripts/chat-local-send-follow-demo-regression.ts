@@ -183,7 +183,7 @@ try {
         const message = JSON.parse(event.data);
         if (message.type === "submit-result" && message.id === 9001) { other.close(); resolve(); }
       });
-      other.addEventListener("open", () => other.send(JSON.stringify({ type: "submit", id: 9001, pane_id: target, text, payload: text + "\\r" })));
+      other.addEventListener("open", () => other.send(JSON.stringify({ type: "submit", id: 9001, pane_id: target, text, payload: text })));
     });
     window.fetch = (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
