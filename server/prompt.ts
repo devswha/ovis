@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { HerdrPane, InteractivePrompt, InteractivePromptOption, PanePromptResponse, PromptAnswer, SlashCommand } from "../shared/protocol.ts";
+import type { HerdrPane, InteractivePrompt, InteractivePromptOption, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
 import { agentProcesses, readCommandTranscript } from "./conversation.ts";
 import { resolveAgent } from "./pane-context.ts";
@@ -202,7 +202,7 @@ export function noteCommandEvidence(paneId: string, id: string, evidence: NonNul
   sent.outcome = commandOutcome(paneId, sent, { now: Date.now(), evidence, nextAt: commands[index + 1]?.at });
 }
 
-async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: InteractivePrompt | null, screen: string | undefined, readSendId: string | undefined, codexHome?: string): Promise<NonNullable<PanePromptResponse["outcomes"]>> {
+async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: InteractivePrompt | null, screen: string | undefined, readSendId: string | undefined, codexHome?: string, snapshot?: SessionSnapshot): Promise<NonNullable<PanePromptResponse["outcomes"]>> {
   if (!chatSent.get(paneId)?.commands.length) return [];
   chatSent.get(paneId)?.reservations.prune(Date.now());
   screen ??= await liveScreen(paneId).catch(() => "");
@@ -219,7 +219,11 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
   // the process is read only while some send still waits for its session, or is inside its window
   const watched = commands.filter((sent) => sent.visibility?.process && !sent.visibility.replaced
     && (sent.visibility.discovering || now < sent.at + COMMAND_WINDOW_MS));
-  const processes = watched.length > 0 ? await paneProcessInfo(paneId).catch(() => undefined) : undefined;
+  // The transcript can be megabytes; read it only while a send can still change from it.
+  const open = commands.some((sent) => sent.outcome?.state !== "result-observed" && sent.form?.interaction !== "terminal"
+    && now < sent.at + COMMAND_WINDOW_MS);
+  // one read of the pane's processes serves the binding checks and the transcript's lookup alike
+  const processes = watched.length > 0 || open ? await paneProcessInfo(paneId).catch(() => undefined) : undefined;
   for (const [index, sent] of commands.entries()) {
     const visibility = sent.visibility;
     if (!visibility || visibility.replaced) continue;
@@ -250,10 +254,7 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
   }
   const sameSession = (sent: PaneCommandSend): boolean => !sent.visibility?.replaced
     && (sent.visibility?.identity ?? sent.identity) === identity;
-  // The transcript can be megabytes; read it only while a send can still change from it.
-  const open = commands.some((sent) => sent.outcome?.state !== "result-observed" && sent.form?.interaction !== "terminal"
-    && now < sent.at + COMMAND_WINDOW_MS);
-  const transcript = open ? await readCommandTranscript(paneId, codexHome).catch(() => null) : null;
+  const transcript = open ? await readCommandTranscript(paneId, codexHome, { snapshot, processes: processes ?? null }).catch(() => null) : null;
   if (transcript) chatSent.get(paneId)?.reservations.observeTranscript(outcomeIdentity(pane), transcript.identity, transcript.records, readSendId);
   const parsed = prompt ? parsedByPublicPrompt.get(prompt) : undefined;
   const readIndex = commands.findIndex((sent) => sent.id === readSendId);
@@ -534,9 +535,10 @@ async function restoredOnLiveScreen(paneId: string, viewport: string): Promise<s
   return viewportShowsLive(scrollBefore, scrollAfter, colors, before, live) ? claudeRestoredDraft(live, colors, sent) : null;
 }
 
-async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?: string, openCodeState = defaultOpenCodeState, signal?: AbortSignal): Promise<{ agent: string; status: string; prompt: InteractivePrompt | null; pane: HerdrPane; panes: HerdrPane[]; screen?: string; stale?: boolean }> {
+async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?: string, openCodeState = defaultOpenCodeState, signal?: AbortSignal): Promise<{ agent: string; status: string; prompt: InteractivePrompt | null; pane: HerdrPane; panes: HerdrPane[]; snapshot: SessionSnapshot; screen?: string; stale?: boolean }> {
   const before = openCodeState.checkpoint();
-  const { panes } = await openCodeState.snapshot();
+  const snapshot = await openCodeState.snapshot();
+  const { panes } = snapshot;
   // a closed pane's wait has ended too
   for (const logged of fallbackLogged) if (!panes.some((candidate) => candidate.pane_id === logged)) fallbackLogged.delete(logged);
   for (const known of askings.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) askings.delete(known);
@@ -552,13 +554,13 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // answer ran while the screen was being read
   const turns = answerTurns.get(paneId) ?? 0;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal);
-  if (known.stale) return { agent, status, prompt: null, pane, panes, stale: true };
+  if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
   // an omo form just answered has closed, while herdr still reports the wait for a moment: that
   // is no screen to answer, and its fallback card would flash up after the form's last answer
   const settling = Date.now() - (formsAnswered.get(paneId) ?? 0) < FORM_SETTLE_MS;
   if (known.prompt !== null || status !== "blocked" || !agent || settling) {
     fallbackLogged.delete(paneId);
-    return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, screen: known.screen };
+    return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen };
   }
   // herdr says the agent waits on the user and no reader knows the screen: the fallback card
   const screen = known.screen ?? await liveScreen(paneId);
@@ -567,14 +569,14 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // (registry.waits)
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)) {
     fallbackLogged.delete(paneId);
-    return { agent, status, prompt: asked(paneId, null, turns), pane, panes, screen };
+    return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen };
   }
   const prompt = asked(paneId, parseFallbackPrompt(agent, screen), turns)!;
   if (!fallbackLogged.has(paneId) && fallbackLogged.size < FALLBACK_LOGGED_MAX) {
     fallbackLogged.add(paneId);
     console.warn(`prompt: ${agent} pane ${paneId} is blocked on a screen no reader knows; fallback card (${prompt.options.length} options)`);
   }
-  return { agent, status, prompt, pane, panes, screen };
+  return { agent, status, prompt, pane, panes, snapshot, screen };
 }
 
 async function readKnownPrompt(
@@ -906,7 +908,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         ? await paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS })
           .then((read) => read.text, () => null)
         : null;
-      const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome);
+      const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome, read.snapshot);
       return jsonResponse({
         prompt,
         suggestion: box === null ? null : parseClaudeSuggestion(box),
