@@ -12,6 +12,8 @@ import { agentRoster, type AgentRow } from "../lib/agentRoster.ts";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useSidebarActivity } from "../lib/sidebarActivity.tsx";
+import { machineFilter } from "../lib/sidebarFilter.ts";
+import { useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { currentSidebarPins, pruneSidebarPins, setSidebarPins, sidebarPinKey, subscribeSidebarPins, toggleSidebarPin } from "../lib/sidebarPins.ts";
 import { PANE_DRAG_TYPE, paneDragData } from "../lib/split.ts";
 import { AgentMark, hasAgentMark } from "./AgentMark.tsx";
@@ -33,13 +35,15 @@ interface AgentRowBodyProps {
   backgroundTasks?: number;
   plan?: PlanSummary;
   status?: AgentStatus;
+  /** why a row the filter did not match is drawn all the same: it is the selected one */
+  note?: string | null;
 }
 
 /**
  * One agent in a list: the coding agent's mark, what it is working on, who and where it is, what
  * its plugins report, and how it is doing.
  */
-function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, status }: AgentRowBodyProps) {
+function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, status, note = null }: AgentRowBodyProps) {
   return <>
     <span className="sidebar-mark" aria-hidden="true">{mark !== null ? <AgentMark agent={mark} size={18} /> : <Terminal />}</span>
     <span className="agent-copy">
@@ -57,7 +61,7 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
       {/* text as the plugin wrote it, never markup; its own line in either row height, cut where it is too long */}
       {tokens.length > 0 && <span className="agent-tokens">{tokens.join(" · ")}</span>}
     </span>
-    <span className="agent-row-status"><BackgroundBadge count={backgroundTasks} /><PlanBadge plan={plan} /></span>
+    <span className="agent-row-status">{note !== null && <span className="sidebar-filter-note">{note}</span>}<BackgroundBadge count={backgroundTasks} /><PlanBadge plan={plan} /></span>
     {/* drawn at the row's right edge, after its ⋯, as a workspace row's state is (AgentSidebar.css) */}
     <span className="agent-row-state"><StatusBadge status={status} compact /></span>
   </>;
@@ -101,12 +105,26 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes);
   // the pinned rows stand first, in the order they were pinned (lib/agentRoster.ts)
   const byActivity = settings.agentOrder === "activity";
-  const split = useMemo(() => agentRoster(machines, { byActivity, seqs: activity.seqs, pinned }), [machines, byActivity, activity, pinned]);
+  const roster = useMemo(() => agentRoster(machines, { byActivity, seqs: activity.seqs, pinned }), [machines, byActivity, activity, pinned]);
+  const allRows = useMemo(() => [...roster.pinned, ...roster.rest], [roster]);
+  // the sidebar's filter (lib/sidebarFilter.ts) keeps the matched rows and the selected one, in the same
+  // order and cards; the pins and their pruning go on reading every row
+  const { filter } = useSidebarFilter();
+  const split = useMemo(() => {
+    if (!filter.active) return roster;
+    const kept = ({ machine, entry }: AgentRow): boolean => machineFilter(filter, machine.id)?.panes.has(entry.pane.pane_id) === true;
+    return { pinned: roster.pinned.filter(kept), rest: roster.rest.filter(kept) };
+  }, [roster, filter]);
   const rows = useMemo(() => [...split.pinned, ...split.rest], [split]);
+  // a folded list (a phone's starts so) opens while the filter keeps rows in it, so a match or the selection is
+  // seen, not only kept; its caret then folds and opens it for the filter's time, the list's own fold untouched
+  const [filterFold, setFilterFold] = useState<boolean | null>(null);
+  useEffect(() => { if (!filter.active) setFilterFold(null); }, [filter.active]);
+  const folded = filter.active ? filterFold ?? (collapsed && rows.length === 0) : collapsed;
   const togglePin = (key: string): void => {
     // pins of panes gone from this server leave with a change of the user's, never by themselves: the
     // list is shared, and a pane this page has not seen yet (a PC still loading) is not gone
-    const live = new Set(rows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
+    const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     setSidebarPins(toggleSidebarPin(pruneSidebarPins(pinned, live, machines), key));
   };
   // a pin moves the row to the other list, so React draws it anew: the control of the row that had
@@ -154,6 +172,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const { machine, entry } = row;
     const { pane, agent } = entry;
     const selected = machine.id === selectedMachineId && pane.pane_id === selectedPaneId;
+    // under the filter a row it did not match is there for the selection: drawn as context, and said so
+    const filterContext = filter.active && machineFilter(filter, machine.id)?.matchedPanes.has(pane.pane_id) !== true;
     const { online, title, name, mark, context, markKind, tokens } = describe(row);
     // the row cuts a long value: the tooltip, and a phone's menu sheet, say each in full
     const tooltip = [...new Set([pane.pane_id, title, context, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
@@ -162,7 +182,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
-    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey}
+    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey}
       onMouseDownCapture={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
       onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
       <button type="button" className="agent-select agent-row" disabled={!online} aria-current={selected ? "true" : undefined} title={tooltip} onClick={() => onSelect(machine.id, pane.pane_id)}
@@ -173,7 +193,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId: machine.id, paneId: pane.pane_id }));
         }}>
         {/* a saved roster's state is not news: a PC that is away says nothing about its agents */}
-        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={online ? activity.status(machine.id, pane) : undefined} />
+        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={online ? activity.status(machine.id, pane) : undefined} note={filterContext && selected ? t("Selected") : null} />
       </button>
       <div className="agent-actions">
         <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
@@ -187,7 +207,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const loading = machines.length === 0 || machines.some((machine) => machine.state === "connected" && machine.snapshot === null);
   // the empty list's line is a live region that is in the list from its first render, clipped while empty (never
   // display: none), and its words land a frame after it (lib/useAnnouncedText.ts)
-  const shownEmpty = useAnnouncedText(rows.length === 0 ? (loading ? t("Loading agents…") : t("No agents running")) : null);
+  // under the filter an empty list is the filter's doing, which the list above says once (MachineSidebar.tsx)
+  const shownEmpty = useAnnouncedText(rows.length === 0 && !filter.active ? (loading ? t("Loading agents…") : t("No agents running")) : null);
   const menuPinned = menu !== null && pinned.includes(menu.key);
   const menuShown = menuRow === undefined ? null : describe(menuRow);
   const runPin = (state: PinMenu): void => {
@@ -199,13 +220,14 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   };
   // Settings -> Sidebar rows -> One line: an agent row is one line too, its place dim after its title
   const oneLine = settings.sidebarRows === "one";
-  return <section ref={sectionRef} className={`agents-sidebar${collapsed ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line" : ""}`} aria-label={t("Agents")}>
-    <button type="button" className="agent-section-toggle sidebar-section-label" aria-expanded={!collapsed} aria-controls={listId} onClick={() => setCollapsed(!collapsed)}>
-      {collapsed ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
+  return <section ref={sectionRef} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line" : ""}`} aria-label={t("Agents")}>
+    <button type="button" className="agent-section-toggle sidebar-section-label" aria-expanded={!folded} aria-controls={listId} onClick={() => { if (filter.active) setFilterFold(!folded); else setCollapsed(!collapsed); }}>
+      {folded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
       <span>{t("Agents")}</span>
-      {collapsed && rows.length > 0 && <span className="agent-section-count">{rows.length}</span>}
+      {/* the count is of the agents running, filter or not */}
+      {folded && allRows.length > 0 && <span className="agent-section-count">{allRows.length}</span>}
     </button>
-    <div className="agent-list-contents" id={listId} hidden={collapsed}>
+    <div className="agent-list-contents" id={listId} hidden={folded}>
       <p className={shownEmpty === null ? "visually-hidden" : "agent-empty"} role="status">{shownEmpty}</p>
       {rows.length > 0 && <>
         {split.pinned.length > 0 && <>

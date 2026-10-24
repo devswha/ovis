@@ -924,7 +924,44 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Sidebar roster row and footer
 - No top bar. The sidebar opens with the plan panel (when Settings puts it there), the PC workspace groups and a separate **Agents** list spanning the connected PCs. A workspace starts from the `+` on its PC's header, or from the **New workspace**
   button in the dashed **No workspaces yet** box of an empty PC. **Add PC** lives in Settings →
-  Remote PCs and in the command palette. Search lives in the command palette, not the roster.
+  Remote PCs and in the command palette. Search, as in finding anything and acting on it (panes by
+  status, path or folder, actions, plugins), lives in the command palette, as the Codex and Claude
+  apps keep it; the roster has only the label filter below, which the maintainer approved in #1043
+  and which differs from the palette-only design on purpose: it narrows the lists in place, by the
+  words the rows show, and holds no state.
+- **Filter workspaces and agents** (`.sidebar-filter`, MachineSidebar.tsx) is its word, **Filter**
+  (`.sidebar-filter-label`, in `--text-dim` at the size of the field's text, in view whatever is typed), then one
+  `.input` the height of a row (`--side-row`, so a finger's `--touch-target` on a phone) in the rows'
+  gutter above the lists, its placeholder naming the scope (**Workspaces and agents**) and its
+  suggestions the names the rows show (a `<datalist>`, rebuilt from the roster, nothing typed kept),
+  with its clear (`.sidebar-filter-clear`, the same square, inside the field's trailing
+  cell) only while there is text; the browser's own search cancel glyph is off, so there is one. The
+  query lives in the component's state alone: never in storage, the address, a request or a frame,
+  and it is empty again after a reload, an unmount, a clear, Escape in the field, or the phone's
+  drawer closing. Escape in a field with words clears them and leaves the drawer open; the empty
+  field's Escape is the drawer's. Nothing focuses the field by itself, and nothing typed elsewhere reaches it, so a
+  terminal keeps every keystroke. The matcher is the command palette's fuzzy one
+  (`matchesQuery`, lib/paletteSearch.ts), its membership alone, never its rank: rows keep herdr's
+  order, their PC, their group, their card and their pins (lib/sidebarFilter.ts). It reads only what
+  a row shows: the PC's name, a workspace's name and the branch under it, an agent row's title, its
+  agent's kind and name and the tab name on its context line; never a working directory, a
+  transcript, an environment, a token value or an id. A match keeps its worktrees and its agent
+  rows; a match keeps its repository head and its PC; a PC without one is hidden, its roster still
+  mounted (a folded PC's too, hidden, while the filter lasts), so the branches it reads stay findable;
+  a PC whose roster has not come (connecting, unreachable) stays as context with its state words. The
+  selected pane's agent row, its workspace, that one's head and its PC stay whatever the query,
+  drawn as context (`.is-filter-context`: the words in `--text-dim`) and never counted; the selected
+  row says **Selected** in a `.sidebar-filter-note` tag beside its name, so colour never carries it
+  alone. A folded PC, worktree group or Agents list with a match or the selection in it (a
+  matching parent's worktrees are matches) stands open for the filter's time; their carets fold and
+  open what is drawn for that time only, and no fold is written. Reordering (drag, a finger's lift, Alt+↑/↓) waits until the filter is
+  cleared, so herdr never learns an order with rows missing. When nothing matches, a `.tree-state`
+  line at the top of the list says **No workspaces or agents match** and, on its own line, **Try
+  other words, or clear the filter.** (`role="status"`, through `useAnnouncedText`), naming **the
+  PCs that answered** while a PC's roster has not come, beside
+  whatever the selection keeps. Adapted in idea from agent-of-empires'
+  sidebar filter (THIRD_PARTY_NOTICES.md): a row survives when it, a header over it or a row under
+  it matches; its substring matcher, facets and sunk/trash semantics are not taken over.
 - Every row sits on one grid, built from existing tokens as `--side-*` aliases on `.sidebar-shell`:
   a `--control-h` leading cell, the title, and a `--control-h` trailing status cell, the same two
   columns as the header zone's buttons above the list. One-line rows and section heads are

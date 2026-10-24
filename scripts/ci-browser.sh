@@ -112,6 +112,7 @@ run_script scripts/replay-clipboard-demo-regression.ts
 run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts
+run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-spacing-demo-regression.ts
 run_script scripts/sidebar-machine-layout-demo-regression.ts
 run_script scripts/sidebar-machine-removal-demo-regression.ts
