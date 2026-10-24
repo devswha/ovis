@@ -182,17 +182,22 @@ const overlap = (page: Page): Promise<{ selection: boolean; transcript: boolean;
     button: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
   };
 });
-/** puts the selection's first line at the transcript's top edge, where a reader scrolled it */
+/**
+ * puts the selection's first line at the transcript's top edge, where a reader scrolled it, or as
+ * near as the transcript scrolls; the virtual list re-measures rows as they come in, so each poll
+ * corrects the scroll again until the line stays put
+ */
 const selectionToTop = async (page: Page): Promise<void> => {
-  await page.evaluate(() => {
-    const node = document.querySelector(".chat-view-virtual")!;
-    const first = getSelection()!.getRangeAt(0).getClientRects()[0]!;
-    node.scrollTop += first.top - node.getBoundingClientRect().top;
-  });
   await page.waitForFunction(() => {
+    const node = document.querySelector(".chat-view-virtual")!;
     const first = getSelection()!.getRangeAt(0).getClientRects()[0];
-    const top = document.querySelector(".chat-view-virtual")!.getBoundingClientRect().top;
-    return first !== undefined && Math.abs(first.top - top) <= 2;
+    if (first === undefined) return false;
+    const gap = first.top - node.getBoundingClientRect().top;
+    if (Math.abs(gap) <= 2) return true;
+    const before = node.scrollTop;
+    node.scrollTop += gap;
+    // the end of the transcript: it scrolls no further, so this is the nearest the line comes
+    return node.scrollTop === before && gap > 0;
   });
 };
 /** Pushes a server frame on the live socket, as the bridge would. */
