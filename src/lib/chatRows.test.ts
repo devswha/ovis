@@ -66,12 +66,19 @@ describe("chat row slots", () => {
 
 describe("continuesHistory", () => {
   const turn = (role: ConversationTurn["role"], ts: string | null, text: string = role): ConversationTurn => ({ role, ts, parts: [{ kind: "text", text }] });
-  const page = (turns: ConversationTurn[], source: "gjc-transcript" | "claude-transcript" | "scrollback" = "gjc-transcript") => ({ source, turns });
-  const shown = page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:02Z")]);
+  const page = (turns: ConversationTurn[], source: "gjc-transcript" | "pi-transcript" | "claude-transcript" | "scrollback" = "gjc-transcript") => ({ source, turns });
+  const tool = (name: string, output: string): ConversationTurn["parts"][number] => ({ kind: "tool", name, summary: name, input: "{}", output });
+  const working = (...tools: ConversationTurn["parts"]): ConversationTurn => ({ role: "assistant", ts: "2026-10-24T00:00:02Z", parts: [{ kind: "text", text: "Reading." }, ...tools] });
+  const shown = page([turn("user", "2026-10-24T00:00:01Z"), working(tool("read", "alpha"), tool("read", "beta"))]);
 
-  it("continues a rewrite that holds every shown turn, changed or followed by more", () => {
-    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:02Z", "output trimmed"), turn("user", "2026-10-24T00:00:09Z")]))).toBeTrue();
+  it("continues a rewrite that holds every shown turn, trimmed or followed by more", () => {
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), working(tool("read", "[trimmed]"), tool("read", "beta"), tool("bash", "")), turn("user", "2026-10-24T00:00:09Z")]))).toBeTrue();
     expect(continuesHistory(shown, shown)).toBeTrue();
+  });
+
+  it("starts over when a shown turn's parts are not the ones it had", () => {
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), working(tool("read", "alpha"), tool("bash", "beta"))]))).toBeFalse();
+    expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), working(tool("read", "alpha"))]))).toBeFalse();
   });
 
   it("starts over when a shown turn is gone, moved or has another start", () => {
@@ -81,7 +88,8 @@ describe("continuesHistory", () => {
     expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("user", "2026-10-24T00:00:02Z")]))).toBeFalse();
   });
 
-  it("starts over for another source, a scrollback, nothing shown or turns without a start", () => {
+  it("starts over for another agent, another source, a scrollback, nothing shown or turns without a start", () => {
+    expect(continuesHistory(page(shown.turns, "pi-transcript"), page(shown.turns, "pi-transcript"))).toBeFalse();
     expect(continuesHistory(shown, page(shown.turns, "claude-transcript"))).toBeFalse();
     expect(continuesHistory(page(shown.turns, "scrollback"), page(shown.turns, "scrollback"))).toBeFalse();
     expect(continuesHistory(null, shown)).toBeFalse();

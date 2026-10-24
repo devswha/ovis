@@ -57,14 +57,22 @@ export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowS
 }
 
 /**
- * Whether an answer under a new history ID goes on with the turns shown. gjc writes its whole session
- * anew and renames it over the old file when it compacts or trims old tool outputs, so the server
- * names it as another history. When the newest page still opens with every turn shown, each with its
- * role and start time, the rows keep their identity. A new session, a cleared context, a rewind or a
- * moved branch changes or drops one of them, and the chat starts over.
+ * Whether a gjc answer under a new history ID goes on with the turns shown. gjc writes its whole
+ * session anew and renames it over the old file when it compacts or trims old tool outputs, so the
+ * server names it as another history. When the newest page still opens with every turn shown (its
+ * role, its start time, and the kind and tool of each of its parts, whose words a trim may shorten),
+ * the rows keep their identity. Any other agent's new ID, or a turn that changed otherwise, is a new
+ * session, a cleared context, a rewind or a moved branch: the chat starts over.
  */
 export function continuesHistory(shown: Pick<ConversationResponse, "source" | "turns"> | null, next: Pick<ConversationResponse, "source" | "turns">): boolean {
-  if (shown === null || shown.source === "scrollback" || next.source !== shown.source) return false;
+  if (shown === null || shown.source !== "gjc-transcript" || next.source !== shown.source) return false;
   if (shown.turns.length === 0 || next.turns.length < shown.turns.length) return false;
-  return shown.turns.every((turn, index) => turn.ts !== null && next.turns[index]!.role === turn.role && next.turns[index]!.ts === turn.ts);
+  return shown.turns.every((turn, index) => {
+    const after = next.turns[index]!;
+    return turn.ts !== null && after.role === turn.role && after.ts === turn.ts && after.parts.length >= turn.parts.length
+      && turn.parts.every((part, at) => {
+        const other = after.parts[at]!;
+        return other.kind === part.kind && (part.kind !== "tool" || (other.kind === "tool" && other.name === part.name));
+      });
+  });
 }

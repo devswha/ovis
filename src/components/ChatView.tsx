@@ -1299,7 +1299,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           // any held, it starts over, and a replaced history is navigation.
           const continued = olderCount.current === 0 && history.current !== undefined && conversation.history_id !== undefined
             && continuesHistory(lastAnswer.current, conversation);
-          if (continued) slotsHistory.current = conversation.history_id ?? null;
+          if (continued) {
+            slotsHistory.current = conversation.history_id ?? null;
+            // an older page still being read names the old file: it is dropped, not taken for a replacement
+            olderGeneration.current += 1; loadingOlder.current = false; setOlderState("idle");
+            // the place kept for this pane is in the new history too
+            const storageId = paneStorageId(machineId, paneId);
+            const kept = readChatPosition(storageId);
+            if (kept !== undefined && kept.historyId === (history.current ?? null)) rememberChatPosition(storageId, { ...kept, historyId: conversation.history_id ?? null });
+          }
           else { if (history.current !== undefined) navigated(); dropOlder(); }
           generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
