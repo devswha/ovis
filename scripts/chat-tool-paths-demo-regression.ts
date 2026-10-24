@@ -42,6 +42,7 @@ const LABELS: Record<string, string> = {
   "src/relative.ts": "src/relative.ts",
   "C:\\work\\app\\win.ts": "C:\\work\\app\\win.ts",
   "\\\\server\\share\\app\\unc.ts": "\\\\server\\share\\app\\unc.ts",
+  "/work/app/../etc/passwd": "/work/app/../etc/passwd",
   "/work/app/문서/설계 노트.md": "app/문서/설계 노트.md",
   [LONG]: `app/${"n".repeat(300)}.ts`,
 };
@@ -59,13 +60,14 @@ const TURNS = [
     read("src/relative.ts"),
     read("C:\\work\\app\\win.ts"),
     read("\\\\server\\share\\app\\unc.ts"),
+    read("/work/app/../etc/passwd"),
     read("/work/app/문서/설계 노트.md"),
     read(LONG),
     { kind: "text", text: REPLY },
   ] },
 ];
 /** Every tool-file label of the transcript, in order (a patch adds "(add)" after its label). */
-const ORDER = ["/work/app/src/a.ts", "/work/app/src/b.ts", "/work/app-2/a.ts", "/work/app/src/c.ts", "/work/app/docs/notes.md", "/etc/hosts", "src/relative.ts", "C:\\work\\app\\win.ts", "\\\\server\\share\\app\\unc.ts", "/work/app/문서/설계 노트.md", LONG];
+const ORDER = ["/work/app/src/a.ts", "/work/app/src/b.ts", "/work/app-2/a.ts", "/work/app/src/c.ts", "/work/app/docs/notes.md", "/etc/hosts", "src/relative.ts", "C:\\work\\app\\win.ts", "\\\\server\\share\\app\\unc.ts", "/work/app/../etc/passwd", "/work/app/문서/설계 노트.md", LONG];
 
 /** The panes under test and their folders: one in ROOT, one with no folder known, one on a Windows folder. */
 const CWD: Record<string, string | null> = { [panes.omp]: ROOT, [panes.api]: null, [panes.cli]: "C:\\work\\app" };
@@ -384,6 +386,9 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
     record("unknown-or-outside-root", "a sibling folder's file and a file outside the folder read as written", { sibling, outside });
     for (const path of ["src/relative.ts", "C:\\work\\app\\win.ts", "\\\\server\\share\\app\\unc.ts"]) assert.equal((await shownFiles(pane))[ORDER.indexOf(path)]!.text, path);
     record("unknown-or-outside-root", "a relative path, a Windows drive path and a UNC path read as written", ORDER.filter((path) => !path.startsWith("/")));
+    // `..` under the folder resolves outside it: never a label that looks inside
+    assert.equal((await shownFiles(pane))[ORDER.indexOf("/work/app/../etc/passwd")]!.text, "/work/app/../etc/passwd");
+    record("unknown-or-outside-root", "a path whose .. leaves the folder reads as written", "/work/app/../etc/passwd");
     assert.equal((await shownFiles(pane))[ORDER.indexOf("/work/app/문서/설계 노트.md")]!.text, "app/문서/설계 노트.md");
     assert.equal((await shownFiles(pane))[ORDER.indexOf(LONG)]!.text.length, 4 + 300 + 3);
     await noPageScroll(page, "desktop");

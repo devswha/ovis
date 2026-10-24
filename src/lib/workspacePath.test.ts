@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { resolveWorkspaceRoot, toolPathRoot, workspaceRelativePath } from "./workspacePath.ts";
+import { resolveWorkspaceRoot, toolPathLabel, toolPathRoot, workspaceRelativePath } from "./workspacePath.ts";
 
 describe("workspace-relative paths", () => {
   it("resolves the root from the typed start", () => {
@@ -18,7 +18,7 @@ describe("workspace-relative paths", () => {
     expect(workspaceRelativePath("/a", null, "/a")).toBe("/a");
   });
   // a chat's tool-file label: the pane's folder as the root, the path as written as the fallback
-  const label = (path: string, cwd: string | null): string => workspaceRelativePath(path, toolPathRoot(cwd), path);
+  const label = (path: string, cwd: string | null): string => toolPathLabel(path, toolPathRoot(cwd));
   it("keeps raw tool paths outside a trusted root", () => {
     expect(label("/work/app/src/a.ts", "/work/app")).toBe("app/src/a.ts");
     expect(label("/work/app/src/a.ts", "/work/app/")).toBe("app/src/a.ts");
@@ -44,6 +44,11 @@ describe("workspace-relative paths", () => {
     expect(label("src/a.ts", "/work/app")).toBe("src/a.ts");
     expect(label("./src/a.ts", "/work/app")).toBe("./src/a.ts");
     expect(label("C:\\work\\app\\a.ts", "/work/app")).toBe("C:\\work\\app\\a.ts");
+    // a `.` or `..` segment: the path may leave the folder however it starts
+    expect(label("/work/app/../etc/passwd", "/work/app")).toBe("/work/app/../etc/passwd");
+    expect(label("/work/app/src/../a.ts", "/work/app")).toBe("/work/app/src/../a.ts");
+    expect(label("/work/app/./src/a.ts", "/work/app")).toBe("/work/app/./src/a.ts");
+    expect(label("/work/app/src/..a.ts", "/work/app")).toBe("app/src/..a.ts");
   });
   it("does not mistake a sibling prefix for a descendant", () => {
     expect(label("/work/app-2/a.ts", "/work/app")).toBe("/work/app-2/a.ts");

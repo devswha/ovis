@@ -1771,8 +1771,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A file the detail names (`.chat-tool-file`: an edit's or a read's file, each file of a patch,
   a sent file) reads from the pane's folder as the file browser does, with the folder's name
   first: `/work/app/src/a.ts` in a pane on `/work/app` is `app/src/a.ts`. Only a folder herdr
-  reports as an absolute path counts; a file outside it, in a sibling (`/work/app-2`), a relative
-  or Windows path, or a pane with no folder known reads as written. The label alone is shorter:
+  reports as an absolute path counts; a file outside it, in a sibling (`/work/app-2`), one with a
+  `.` or `..` segment (`/work/app/../etc/passwd`), a relative or Windows path, or a pane with no folder known reads as written. The label alone is shorter:
   its title (`Open /work/app/src/a.ts`, or the bare path where nothing can open it), the file the
   viewer opens and a copy's text keep the path as written: selecting the whole label copies
   `/work/app/src/a.ts` (`data-raw-path`), a part of it copies that part. On a touch screen the

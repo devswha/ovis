@@ -48,7 +48,7 @@ import { usePageVisible } from "../lib/visibility.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
-import { toolPathRoot, workspaceRelativePath } from "../lib/workspacePath.ts";
+import { toolPathLabel, toolPathRoot } from "../lib/workspacePath.ts";
 import { linkFilePaths } from "./FilePathLink.tsx";
 import { patchText } from "../../shared/patch.ts";
 import { workRowLabel } from "../lib/workRowLabel.ts";
@@ -311,7 +311,7 @@ function ToolFile({ path, suffix }: { path: string; suffix?: string }) {
   const open = useContext(OpenFileContext);
   // shorter to read only: the title, the viewer and every copy keep the path as written (a copy
   // of the whole label takes data-raw-path: lib/markdownClipboard.ts)
-  const shown = workspaceRelativePath(path, useContext(ToolPathRootContext), path);
+  const shown = toolPathLabel(path, useContext(ToolPathRootContext));
   if (open === null) return <p className="chat-tool-file" title={path}><span data-raw-path={path}>{shown}</span>{suffix}</p>;
   return <p className="chat-tool-file"><button type="button" className="chat-tool-file-link" title={t("Open {path}", { path })} data-raw-path={path} onClick={() => open(path)}>{shown}</button>{suffix}</p>;
 }

@@ -27,6 +27,16 @@ export function toolPathRoot(cwd: string | null | undefined): string | null {
 }
 
 /**
+ * A chat tool-file label: `path` read from `root` (toolPathRoot) when it is inside it, else as
+ * written. A path with a `.` or `..` segment stays as written: agent output can name
+ * `/work/app/../etc/passwd`, which is not inside `/work/app` however it starts.
+ */
+export function toolPathLabel(path: string, root: string | null): string {
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) return path;
+  return workspaceRelativePath(path, root, path);
+}
+
+/**
  * `path` as "<root name>/<rest>" when it is the root or inside it, else `fallback` (the
  * home-relative form). Nothing is shown relative to a root that is not an ancestor.
  */
