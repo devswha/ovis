@@ -54,6 +54,11 @@ type PaneCommandSend = CommandSend & {
      */
     unmatched?: true;
     /**
+     * The agent herdr named for the pane when the send was made: herdr names an OmO pane `pi`, and a session it
+     * reports there is labelled so, never `omo`. An unmatched send adopts a session under this label too.
+     */
+    readonly label?: string | null;
+    /**
      * The identity herdr still reported from an earlier process when this send went to a later one (a restarted
      * Claude Code keeps its old session id until its first turn): the send waits for its own session, as one sent
      * before any session does, and is never adopted into this one; only within STALE_SESSION_LAG_MS, and not past a
@@ -169,7 +174,7 @@ export function commandSendFrom(pane: HerdrPane, agent: string, commands: SlashC
   const sessionChange = /^\/(?:clear|new|reset|resume)(?:\s|$)/iu.test(text.trim())
     && commands.some((row) => row.source === "builtin" && row.name === invocations[0]?.name);
   return { id: randomBytes(12).toString("hex"), text, at: Date.now(), agent, identity: outcomeIdentity(pane),
-    visibility: { terminalId: pane.terminal_id, discovering: pane.agent_session == null, identity: outcomeIdentity(pane) },
+    visibility: { terminalId: pane.terminal_id, discovering: pane.agent_session == null, identity: outcomeIdentity(pane), label: pane.agent },
     screen, invocations, form: invocations[0]?.form ?? null, store: null,
     ...(sessionChange ? { sessionChange: { terminalId: pane.terminal_id } } : {}) };
 }
@@ -243,10 +248,11 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
     const current = processes && watched.includes(sent) ? checkBoundProcess(visibility, sent.agent, processes) : null;
     // A send's own session is adopted while its bound process runs. With no process bound (native Windows
     // lists only the shell; an executable named otherwise than its kind), nothing can show a replacement,
-    // so the session that appears in the same terminal is taken as its own, when it is the same agent's.
+    // so the session that appears in the same terminal is taken as its own, when it is the same agent's:
+    // reported under its kind, or under the label herdr gave the pane at the send (an OmO pane's `pi`).
     if (visibility.discovering && !visibility.replaced && pane.agent_session && identity !== visibility.stale
       && visibility.terminalId === pane.terminal_id
-      && (current || visibility.unmatched && pane.agent_session.agent === sent.agent)) {
+      && (current || visibility.unmatched && [sent.agent, visibility.label].includes(pane.agent_session.agent))) {
       visibility.identity = identity;
       visibility.discovering = false;
       if (sent.sessionChange) sent.sessionChange.identity = identity;

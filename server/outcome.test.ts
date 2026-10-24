@@ -575,6 +575,43 @@ describe("session-scoped command outcomes", () => {
     });
   });
 
+  // herdr keeps a restarted agent's old session id for up to a minute (STALE_SESSION_LAG_MS): within it a session
+  // change typed in the terminal is taken for the agent's own session, past it for a later one
+  for (const [lag, kept] of [[59_000, true], [61_000, false]] as const) {
+    it(`${kept ? "keeps" : "drops"} a resumed session's send whose session changes in the terminal ${lag / 1000} s after it`, async () => {
+      const pane = { ...target(), pid: 2147483645 };
+      await withFakeHerdr(pane, async (paneId) => {
+        const fresh = await resumed(paneId, pane);
+        pane.agent_session = session("typed-in-terminal");
+        const clock = spyOn(Date, "now").mockImplementation(() => fresh.at + lag);
+        try {
+          expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual(kept ? [fresh.id] : undefined);
+        } finally {
+          clock.mockRestore();
+        }
+      });
+    });
+  }
+
+  // herdr names an OmO pane `pi` (its process cannot be told on native Windows): the session herdr reports under
+  // that label is the one the OmO send started, and a later one is not
+  it("adopts an unmatched OmO send into the session herdr reports under the pane's label at the send", async () => {
+    const pane = { ...target(), agent: "pi", agent_session: null as HerdrPane["agent_session"] };
+    await withFakeHerdr(pane, async (paneId) => {
+      const command = commandSendFrom(pane, "omo", [row("context")], "/context");
+      if (!command) throw new Error("fixture command was not recorded");
+      bindCommandProcess(paneId, command);
+      noteSubmitted(paneId, "/context", command);
+      expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
+      const reported = { agent: "pi", kind: "path", source: "herdr:pi", value: "/fixture/omo-first.jsonl" };
+      pane.agent_session = reported;
+      expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
+      expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
+      pane.agent_session = { ...reported, value: "/fixture/omo-later.jsonl" };
+      expect((await served(paneId)).outcomes).toBeUndefined();
+    });
+  });
+
   it("does not adopt a send no process was bound to into another agent's session in the same terminal", async () => {
     const pane = { ...target(), agent: "codex", agent_session: null as HerdrPane["agent_session"] };
     await withFakeHerdr(pane, async (paneId) => {
