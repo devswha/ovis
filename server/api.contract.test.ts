@@ -352,7 +352,8 @@ describe("native tool call id and state on GET /api/pane/conversation", () => {
       const ompCreated = await workspaceCreate({ cwd, label: "herdr-web-ui-test-call-state-omp" });
       workspaces.push(ompCreated.workspace.workspace_id);
       const omp = ompCreated.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: omp, text: `${ompExe} 600\n` });
+      // omp keeps its sessions under its own home, which the bridge reads from the process (#1898)
+      await herdrRpc("pane.send_text", { pane_id: omp, text: `HOME='${cwd}' exec '${ompExe}' 600\n` });
       for (const deadline = Date.now() + 10_000;;) {
         if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === omp)?.agent === "omp") break;
         if (Date.now() > deadline) throw new Error("fixture omp process did not start");
