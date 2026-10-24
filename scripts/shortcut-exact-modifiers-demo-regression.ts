@@ -125,12 +125,12 @@ try {
         // Rename tab has no default key: a recorded chord opens the open tab's name field, Escape cancels, Enter renames
         await hungarianE();
         await openSettingsPage(page, "Shortcuts");
-        await record(page, "Rename tab", "Meta+Alt+KeyR");
-        assert.equal((await stored(page))["rename-tab"], "alt+meta+r");
+        const recorded = await record(page, "Rename tab", "Meta+Alt+KeyJ");
+        assert.equal((await stored(page))["rename-tab"], "alt+meta+j", recorded);
         await page.getByRole("button", { name: "Close settings", exact: true }).click();
         const tabName = page.locator(".tab-strip-item.is-active .tab-strip-rename");
         const tabLabel = (await page.locator('.tab-strip-item.is-active [role="tab"]').textContent()) ?? "";
-        await page.keyboard.press("Meta+Alt+KeyR");
+        await page.keyboard.press("Meta+Alt+KeyJ");
         await tabName.waitFor();
         assert.equal(await tabName.evaluate((input) => input === document.activeElement), true, "the name field has the focus");
         if (screenshotDir) await page.screenshot({ path: join(screenshotDir, "rename-tab-shortcut.png") });
@@ -145,7 +145,7 @@ try {
         await page.keyboard.press("Meta+Shift+ArrowUp");
         await page.waitForFunction((before) => (document.querySelector<HTMLElement>('.tab-strip-item.is-active [role="tab"]')?.dataset["tabId"] ?? null) === before, firstTab);
         assert.equal(await page.locator(".tab-strip-rename").count(), 0, "coming back to the pane does not reopen the name field");
-        await page.keyboard.press("Meta+Alt+KeyR");
+        await page.keyboard.press("Meta+Alt+KeyJ");
         await tabName.waitFor();
         await page.keyboard.type("Renamed by shortcut");
         await page.keyboard.press("Enter");
