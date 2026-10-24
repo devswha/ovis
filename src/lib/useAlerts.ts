@@ -61,8 +61,6 @@ export function useNotificationState() {
     if (!hasNativePlugin(PUSH_PLUGIN)) return;
     let current = true;
     const read = () => {
-      // the newest permission known once the check answers, not the check's own reading: a tap's
-      // answer that overtook it must not be put back to what the check read (lib/notifications.ts)
       refreshNotificationState().then(() => { if (current) setNotifications(notificationState()); }, (err) => console.warn("could not read the notification permission", err));
     };
     const onVisible = () => { if (document.visibilityState === "visible") read(); };
@@ -213,6 +211,8 @@ export interface NotificationSwitchParams {
 
 /** The Alerts switch: turning this device's alerts on and off, and keeping its push subscription. */
 export function useNotificationSwitch({ updateSettings, locked, notifications, setNotifications, alerts, alertsRef, alertsOn, setPushOn }: NotificationSwitchParams) {
+  const alertsOnRef = useRef(alertsOn);
+  alertsOnRef.current = alertsOn;
   const enableNotifications = useCallback(async () => {
     // in-app alerts need no permission: the switch goes on whatever the browser answers
     updateSettings({ alertsOn: true });
@@ -246,7 +246,10 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
   // it); it does nothing once the app holds no endpoint for this PC
   useEffect(() => {
     if (locked !== false || alertsOn || !hasNativePlugin(PUSH_PLUGIN)) return;
-    const retry = () => { removePushSubscription().catch((err) => console.warn("could not drop the push subscription", err)); };
+    const retry = () => {
+      if (alertsOnRef.current) return;
+      removePushSubscription().catch((err) => console.warn("could not drop the push subscription", err));
+    };
     const onVisible = () => { if (document.visibilityState === "visible") retry(); };
     retry();
     document.addEventListener("visibilitychange", onVisible);
