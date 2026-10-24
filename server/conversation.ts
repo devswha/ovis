@@ -1241,8 +1241,9 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   if (cached?.signature === signature) return cached.answer;
   // Do not call transcriptStream here: building a cold pi index can read the entire file.
   // The same read supplies validation bytes AND new bytes, so their total stays in budget.
+  // Every byte is read over (a short read gives up), so it need not be zeroed first.
   const start = Math.max(0, stat.size - TRANSCRIPT_WINDOW_BYTES);
-  const bytes = Buffer.alloc(stat.size - start);
+  const bytes = Buffer.allocUnsafe(stat.size - start);
   const fd = openSync(path, "r");
   try {
     if (readSync(fd, bytes, 0, bytes.length, start) !== bytes.length) return null;
@@ -1252,10 +1253,10 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
     const newline = bytes.indexOf(0x0a);
     from += newline < 0 ? bytes.length : newline + 1;
   }
+  // an append only when every byte both reads hold is the same: compared, not hashed twice (#1487)
   const append = cached?.file === file && stat.size > cached.end && start < cached.end
     && cached.partialStart >= from
-    && createHash("sha256").update(cached.bytes.subarray(start - cached.start)).digest("hex")
-      === createHash("sha256").update(bytes.subarray(0, cached.end - start)).digest("hex");
+    && cached.bytes.subarray(start - cached.start).equals(bytes.subarray(0, cached.end - start));
   const readFrom = append ? cached.partialStart : from;
   const partialStart = Math.max(from, start + bytes.lastIndexOf(0x0a) + 1);
   const records = [
@@ -1280,7 +1281,9 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
       if (parentId === null) {
         forks.push(String(record.entry.id)); rooted = true; break;
       }
-      if (nodes[index - 1]?.entry.id !== parentId) forks.push(String(record.entry.id));
+      // The first node of a cut window has its predecessor outside it, so whether it forks cannot be told; naming it
+      // would change the branch with every append that slides the window, and orphan the sends bound to it (#1487).
+      if (nodes[index - 1]?.entry.id !== parentId && !(index === 0 && start > 0)) forks.push(String(record.entry.id));
       const parent = typeof parentId === "string" ? byId.get(parentId) : undefined;
       // In append-only pi histories, ancestors beyond a cut window precede its active path.
       if (!parent && typeof parentId === "string" && start > 0) { rooted = true; break; }
