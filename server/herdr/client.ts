@@ -774,16 +774,30 @@ export async function paneSwap(paneId: string, direction: PaneDirection, socketP
   return { ...result.swap, reason: result.swap.reason ?? null, target_pane_id: result.swap.target_pane_id ?? null };
 }
 
-/** Explicit swaps rearrange panes without taking herdr's focus from its current pane, tab or workspace. */
+const paneSwapQueues = new Map<string, Promise<void>>();
+
+/** Serialize explicit swaps per herdr so none snapshots another swap's temporary focus. */
 export async function paneSwapWith(paneId: string, targetPaneId: string, socketPath?: string): Promise<PaneLayoutOutcome & { target_pane_id: string | null }> {
-  const focusedPaneId = (await sessionSnapshot(socketPath)).focused_pane_id;
-  try {
+  const socket = socketAddress(socketPath ?? herdrSocketPath());
+  const pending = (paneSwapQueues.get(socket) ?? Promise.resolve()).then(async () => {
+    const focusedPaneId = (await sessionSnapshot(socket)).focused_pane_id;
     // Explicit swaps use source_pane_id, not the directional form's pane_id (PaneSwapParams).
-    const result = await herdrRpc<{ swap: PaneLayoutOutcome & { target_pane_id?: string | null; reason?: string | null } }>("pane.swap", { source_pane_id: paneId, target_pane_id: targetPaneId }, socketPath);
+    const result = await herdrRpc<{ swap: PaneLayoutOutcome & { target_pane_id?: string | null; reason?: string | null } }>("pane.swap", { source_pane_id: paneId, target_pane_id: targetPaneId }, socket);
+    if (result.swap.changed && focusedPaneId && focusedPaneId !== paneId) {
+      try {
+        // A user may have selected something else while the swap was in flight.
+        if ((await sessionSnapshot(socket)).focused_pane_id === paneId) await paneFocus(focusedPaneId, socket);
+      } catch (error) {
+        // The layout is already committed. A failed restore must not invite a swap-back retry.
+        console.warn("pane swap focus restore failed", error);
+      }
+    }
     return { ...result.swap, reason: result.swap.reason ?? null, target_pane_id: result.swap.target_pane_id ?? null };
-  } finally {
-    if (focusedPaneId && focusedPaneId !== paneId) await paneFocus(focusedPaneId, socketPath);
-  }
+  });
+  const settled = pending.then(() => {}, () => {});
+  paneSwapQueues.set(socket, settled);
+  void settled.then(() => { if (paneSwapQueues.get(socket) === settled) paneSwapQueues.delete(socket); });
+  return pending;
 }
 
 /** A split's absolute ratio: [] is the root, false descends first, true descends second. */

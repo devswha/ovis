@@ -423,13 +423,25 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
     {
       const [first, elsewhere] = await panesFor("title-swap", "title-swap-focus") as [string, string];
       const beside = (await paneSplit(first, "right", false)).pane_id;
-      const { page, errors } = await open([first, beside], "terminal");
+      await paneFocus(elsewhere);
+      const { page, errors } = await open([first, beside], "terminal", (context) => context.addInitScript(() => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertDone: "off", followHerdrFocus: true }));
+      }));
+      const swapApplied = Promise.withResolvers<void>();
+      const releaseSwap = Promise.withResolvers<void>();
+      await page.route("**/api/pane/swap", async (route) => {
+        // Hold the HTTP answer while the source and restored focus events reach this browser.
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        const response = await route.fetch();
+        swapApplied.resolve();
+        await releaseSwap.promise;
+        await route.fulfill({ response });
+      });
       const head = (pane: string) => page.locator(`[data-layout-pane="${pane}"] > .pane-frame-head`);
       await head(beside).waitFor();
       const left = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".pane-frame:not(.is-hidden)")]
         .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0]?.getAttribute("data-layout-pane"));
       assert.equal(await left(), first);
-      await paneFocus(elsewhere);
       const focused = await sessionSnapshot();
       const from = (await head(first).boundingBox())!;
       const to = (await head(beside).boundingBox())!;
@@ -442,7 +454,18 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       assert.equal(await page.locator(".split-drop.is-visible").count(), 0, "no half is offered over a title it would swap with");
       const swapped = page.waitForResponse((response) => response.url().endsWith("/api/pane/swap") && response.request().method() === "POST");
       await page.mouse.up();
+      try {
+        await Promise.race([swapApplied.promise, swapped]);
+        const workspaceId = focused.panes.find((pane) => pane.pane_id === first)!.workspace_id;
+        await tabCreate({ workspaceId, label: "swap focus event marker" });
+        // This later roster event proves the preceding focus events were handled, without a sleep.
+        await page.locator(".tab-strip").getByRole("tab").filter({ hasText: "swap focus event marker" }).waitFor();
+        assert.ok(await head(beside).isVisible(), "following herdr focus leaves this browser on the rearranged tab");
+      } finally {
+        releaseSwap.resolve();
+      }
       await (await swapped).finished();
+      await page.unroute("**/api/pane/swap");
       await page.waitForFunction((pane) => {
         const frames = [...document.querySelectorAll<HTMLElement>(".pane-frame:not(.is-hidden)")].sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
         return frames[0]?.getAttribute("data-layout-pane") === pane;

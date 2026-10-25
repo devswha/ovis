@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneProcessInfo, paneRead, sessionSnapshot,
+  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneProcessInfo, paneRead, paneSwapWith, sessionSnapshot,
   subscribeEvents, type EventFrame,
 } from "./client.ts";
 import type { AgentInfo, PaneInfo, PaneLayoutRect, PaneLayoutSnapshot, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
@@ -87,6 +87,103 @@ async function peer(answer: Answer) {
 function standIn(result: unknown) {
   return peer((request, { socket }) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`));
 }
+
+/** The real RPC wrapper against a peer that models swap's focus side effect. */
+async function swapPeer() {
+  const state = {
+    focus: "elsewhere", changed: true, failRestore: false, failSwap: false,
+    onSwap: (_source: string, answer: () => void) => answer(),
+  };
+  const layout = fullSnapshot(1, 1, 1).layouts[0]!;
+  const fixture = await peer((request, { socket }) => {
+    const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+    const error = () => socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "pane closed" } })}\n`);
+    if (request.method === "session.snapshot") {
+      answer({ snapshot: { ...fullSnapshot(1, 1, 1), focused_pane_id: state.focus } });
+    } else if (request.method === "pane.swap") {
+      if (state.failSwap) { error(); return; }
+      const source = (request.params as { source_pane_id: string }).source_pane_id;
+      if (state.changed) state.focus = source;
+      const swap = { changed: state.changed, reason: state.changed ? null : "same_pane",
+        focused_pane_id: state.focus, layout, target_pane_id: "target" };
+      state.onSwap(source, () => answer({ swap }));
+    } else if (request.method === "pane.focus") {
+      if (state.failRestore) { error(); return; }
+      state.focus = (request.params as { pane_id: string }).pane_id;
+      answer({ ok: true });
+    } else throw new Error(`unexpected RPC ${request.method}`);
+  });
+  return { ...fixture, state };
+}
+
+it("serializes overlapping explicit swaps before the second snapshots temporary focus", async () => {
+  const { path, state } = await swapPeer();
+  const started = Promise.withResolvers<() => void>();
+  state.onSwap = (source, answer) => source === "first" ? started.resolve(answer) : answer();
+  const first = paneSwapWith("first", "target", path);
+  const release = await within(started.promise, 5_000, "first swap");
+  const connect = spyOn(Bun, "connect");
+  const second = paneSwapWith("second", "target", path);
+  try {
+    // The first swap is unanswered; starting another must not even open its snapshot connection.
+    await Promise.resolve();
+    expect(connect).not.toHaveBeenCalled();
+  } finally {
+    connect.mockRestore();
+    release();
+    await within(Promise.all([first, second]), 5_000, "both swaps");
+  }
+  expect(state.focus).toBe("elsewhere");
+});
+
+it("lets another herdr socket swap while the first socket is busy", async () => {
+  const firstPeer = await swapPeer(), otherPeer = await swapPeer();
+  const started = Promise.withResolvers<() => void>();
+  firstPeer.state.onSwap = (_source, answer) => { started.resolve(answer); };
+  const first = paneSwapWith("first", "target", firstPeer.path);
+  const release = await within(started.promise, 5_000, "held swap");
+  try {
+    expect((await within(paneSwapWith("other", "target", otherPeer.path), 5_000, "other socket's swap")).changed).toBe(true);
+    expect(otherPeer.state.focus).toBe("elsewhere");
+  } finally {
+    release();
+    await first;
+  }
+});
+
+it("does not restore focus after a refused swap or over a user focus change", async () => {
+  for (const changed of [false, true]) {
+    const { path, state, requests } = await swapPeer();
+    state.changed = changed;
+    state.onSwap = (_source, answer) => { state.focus = "user-choice"; answer(); };
+    expect((await paneSwapWith("source", "target", path)).changed).toBe(changed);
+    expect(state.focus).toBe("user-choice");
+    expect(requests.filter((request) => request.method === "pane.focus")).toHaveLength(0);
+  }
+});
+
+it("returns the committed swap when its focus restore fails and keeps the queue usable", async () => {
+  const { path, state } = await swapPeer();
+  state.failRestore = true;
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  cleanups.push(() => warn.mockRestore());
+  expect(await paneSwapWith("source", "target", path)).toMatchObject({ changed: true, target_pane_id: "target" });
+  expect(warn).toHaveBeenCalled();
+  state.failRestore = false;
+  state.focus = "elsewhere";
+  expect((await paneSwapWith("next", "target", path)).changed).toBe(true);
+  expect(state.focus).toBe("elsewhere");
+});
+
+it("releases the swap queue after a native swap fails without restoring focus", async () => {
+  const { path, state, requests } = await swapPeer();
+  state.failSwap = true;
+  expect((await rejection(paneSwapWith("source", "target", path))).code).toBe("pane_not_found");
+  expect(requests.filter((request) => request.method === "pane.focus")).toHaveLength(0);
+  state.failSwap = false;
+  expect((await paneSwapWith("next", "target", path)).changed).toBe(true);
+  expect(state.focus).toBe("elsewhere");
+});
 
 /** `promise`, or a rejection naming `what` once `ms` pass: an awaited event, never a fixed wait. */
 function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {

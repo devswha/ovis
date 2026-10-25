@@ -1439,8 +1439,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   their existing docking behavior. This follows tmux's explicit `swap-pane` operation,
   exposed through a title drop like VS Code's editor-group drag targets rather than a new
   layout setting. Explicit swaps leave herdr's focused pane, tab and workspace where they
-  were: the bridge reads its focused pane before herdr's native swap and restores it before
-  answering. A refused title swap shows a layout notice with herdr's reason.
+  were: the bridge serializes explicit swaps per herdr socket, reads its focused pane before
+  the native swap, and restores it only after a changed swap if focus still belongs to the
+  swapped source. A later user focus choice takes precedence. Restoration is best effort:
+  its failure is logged but the committed swap still succeeds. This browser ignores the
+  request's temporary focus events until its answer, as for a split it requested itself.
+  A refused title swap shows a layout notice with herdr's reason.
   A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
