@@ -45,7 +45,9 @@ links. The marker-and-report fallback cannot detect an unobserved switch away an
 The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpoints
 complete reads, including unavailable selections. Ambiguity remains unavailable until a
 fresh registration; it does not permanently block later registrations.
-Unchanged file identity, size and timestamps reuse the last verification. Changed logs
+Unchanged file identity, size and timestamps reuse the last verification only when both
+mtime and ctime were at least two seconds old at that check; younger timestamps are rehashed
+because a same-size rewrite may share their filesystem tick. Changed logs
 revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside the catch-up
 window; logs over 64 MiB use Terminal without reading or hashing them.
 An incomplete trailing line keeps the last complete

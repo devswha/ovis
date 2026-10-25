@@ -8,12 +8,13 @@ const HEADER_BYTES = 64 * 1024;
 const MAX_DESCRIPTORS = 4096;
 const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
 const LOG_HASH_BYTES = 64 * 1024 * 1024;
+const LOG_TIMESTAMP_TICK_NS = 2_000_000_000n;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
 const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
-  dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; pendingSwitch: boolean;
+  dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
   hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
@@ -90,14 +91,19 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
         if (realpathSync(target) !== target) return unavailable();
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
         try {
+          const checkedAtNs = BigInt(Date.now()) * 1_000_000n;
           const stat = fstatSync(fd, { bigint: true });
           const named = statSync(target, { bigint: true });
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return unavailable();
           if (stat.size > LOG_HASH_BYTES) return unavailable();
           const size = Number(stat.size);
           const cached = foregroundCheckpoints.get(pid);
+          // A same-size rewrite can share both timestamps with this check.
+          // Only a check already outside that tick can attest unchanged bytes.
           if (cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
-            && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs) {
+            && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs
+            && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_TICK_NS
+            && cached.checkedAtNs - stat.ctimeNs >= LOG_TIMESTAMP_TICK_NS) {
             found = cached.pendingSwitch ? undefined : cached.binding;
             continue;
           }
@@ -140,7 +146,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
           foregroundCheckpoints.set(pid, {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
-            observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, pendingSwitch, hash, epoch, binding: selected,
+            observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, binding: selected,
           });
           found = pendingSwitch ? undefined : selected;
         } finally { closeSync(fd); }

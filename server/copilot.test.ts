@@ -543,8 +543,14 @@ it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks w
   const fixture = await logFixture([]);
   const { log, binding } = fixture;
   const reads = spyOn(fs, "readSync");
+  const clock = spyOn(Date, "now");
+  const ageLog = () => {
+    const stat = fs.statSync(log);
+    clock.mockReturnValue(Math.ceil(Math.max(stat.mtimeMs, stat.ctimeMs)) + 5000);
+  };
   try {
     appendFileSync(log, register(session));
+    ageLog();
     const original = binding();
     expect(original?.sessionId).toBe(session);
     reads.mockClear();
@@ -552,6 +558,7 @@ it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks w
     expect(reads.mock.calls).toHaveLength(0);
     for (const tail of ["ordinary partial line", register(other).trimEnd()]) {
       appendFileSync(log, tail);
+      ageLog();
       const partial = binding();
       expect(partial?.sessionId).toBe(tail.startsWith("ordinary") ? session : undefined);
       reads.mockClear();
@@ -560,8 +567,49 @@ it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks w
       appendFileSync(log, "\n");
     }
     expect(binding()?.sessionId).toBe(other);
-  } finally { reads.mockRestore(); await fixture.close(); }
+  } finally { clock.mockRestore(); reads.mockRestore(); await fixture.close(); }
 });
+
+for (const recent of ["mtime", "ctime", "both"] as const) {
+  it.skipIf(process.platform !== "linux")(`rechecks an immediate same-size rewrite with racy ${recent} without utimes`, async () => {
+    const fixture = await logFixture([]);
+    const { log, binding } = fixture;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    const identity = fs.statSync(log, { bigint: true });
+    const realFstat = fs.fstatSync;
+    const mtime = recent === "ctime" ? now - 5000 : now;
+    const ctime = recent === "mtime" ? now - 5000 : now;
+    // These are real same-size writes. Model a filesystem that reports their
+    // mtime and ctime in the same tick, rather than relying on write timing luck.
+    function tickStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
+    function tickStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
+    function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
+    function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+      const stat = realFstat(fd, options);
+      if (stat.dev === identity.dev && stat.ino === identity.ino) {
+        Object.assign(stat, {
+          mtimeNs: BigInt(mtime) * 1_000_000n, ctimeNs: BigInt(ctime) * 1_000_000n,
+          mtimeMs: BigInt(mtime), ctimeMs: BigInt(ctime), mtime: new Date(mtime), ctime: new Date(ctime),
+        });
+      }
+      return stat;
+    }
+    const stats = spyOn(fs, "fstatSync").mockImplementation(tickStat);
+    try {
+      writeFileSync(log, register(session));
+      const original = binding();
+      expect(original?.sessionId).toBe(session);
+      writeFileSync(log, register(other));
+      // A later request cannot make the earlier, racily clean check trustworthy.
+      clock.mockReturnValue(now + 5000);
+      const replacement = binding();
+      expect(replacement?.sessionId).toBe(other);
+      expect(replacement?.generation).not.toBe(original?.generation);
+      for (let request = 0; request < 100; request += 1) expect(binding()?.sessionId).toBe(other);
+    } finally { stats.mockRestore(); clock.mockRestore(); await fixture.close(); }
+  });
+}
 
 it.skipIf(process.platform !== "linux")("refuses lifecycle logs past the hash cap without reading them or falling back to a held marker", async () => {
   const fixture = await logFixture([session]);
