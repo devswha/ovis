@@ -12,9 +12,14 @@ import { storedSelection, storeSelection } from "./useSplitView.ts";
 type SelectionHint = { machine: string; pane: string; workspace: string } | null;
 type SelectTarget = (machineId: string, paneId: string | null, view?: PaneView) => void;
 
+/** Whether the address the app opened with picks the pane, rather than this tab's last selection. */
+export function linkSelects(initialLink: AppLink | null): boolean {
+  return initialLink !== null && Boolean(initialLink.pane || initialLink.workspace || fileFromLink(initialLink));
+}
+
 export function useSelectedMachine({ initialLink, machines }: { initialLink: AppLink | null; machines: Machine[] }) {
   const [selectedMachineId, setSelectedMachineId] = useState(() => {
-    if (initialLink && (initialLink.pane || initialLink.workspace || fileFromLink(initialLink))) return initialLink.machine;
+    if (linkSelects(initialLink) && initialLink) return initialLink.machine;
     return storedSelection()?.machine_id ?? "local";
   });
   const selectedMachine = machines.find((m) => m.id === selectedMachineId);

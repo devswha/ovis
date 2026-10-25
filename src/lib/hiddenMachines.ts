@@ -69,12 +69,14 @@ export function useHiddenMachines(): string[] {
 /**
  * The roster's PCs this device shows. A PC hidden here (in this tab or another) takes the selection
  * on it to a PC still shown; a pane a link or an alert opens on a hidden PC later stays selected,
- * since only a change of the list moves it.
+ * since only a change of the list moves it. `restored`: the tab opened on its last selection, not
+ * a link, so a selection on a PC hidden meanwhile moves off it once the roster names that PC.
  */
-export function useShownMachines<T extends HasId>({ machines, selectedMachineRef, selectTargetRef }: {
+export function useShownMachines<T extends HasId>({ machines, selectedMachineRef, selectTargetRef, restored }: {
   machines: readonly T[];
   selectedMachineRef: RefObject<string>;
   selectTargetRef: RefObject<(machineId: string, paneId: string | null) => void>;
+  restored: boolean;
 }): T[] {
   const hidden = useHiddenMachines();
   const shown = useMemo(() => shownMachines(machines, hidden), [machines, hidden]);
@@ -88,6 +90,13 @@ export function useShownMachines<T extends HasId>({ machines, selectedMachineRef
     const next = selectionToMove(machinesRef.current, before, hidden, selectedMachineRef.current);
     if (next !== null) selectTargetRef.current(next, null);
   }, [hidden]);
+  const restoreChecked = useRef(!restored);
+  useEffect(() => {
+    if (restoreChecked.current || !machines.some((machine) => machine.id === selectedMachineRef.current)) return;
+    restoreChecked.current = true;
+    const next = selectionAfterHiding(machines, hidden, selectedMachineRef.current);
+    if (next !== null) selectTargetRef.current(next, null);
+  }, [machines]);
   return shown;
 }
 

@@ -173,6 +173,18 @@ try {
           assert.equal(await workGroup(page).count(), 1, "the note's way back shows it again");
           assert.equal(await page.locator(".machine-hidden-note").count(), 0);
           assert.deepEqual(errors, []);
+
+          // a tab opened without a link restores its last selection: on a PC hidden meanwhile, it moves off it
+          await page.evaluate((paneId) => {
+            localStorage.setItem("ovis:hidden-pcs", JSON.stringify(["work"]));
+            localStorage.setItem("ovis:selection", JSON.stringify({ machine_id: "work", pane_id: paneId }));
+            sessionStorage.setItem("ovis:selection", JSON.stringify({ machine_id: "work", pane_id: paneId }));
+          }, panes.web);
+          await page.goto(`${origin}/`);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "local");
+          assert.equal(await page.getByText("That link's PC is not set up here").count(), 0);
+          assert.deepEqual(errors, []);
           console.log(`PASS ${width}px: Work PC hidden from the sidebar, Agents${phone ? "" : " and palette"}, selection moved, Laptop kept, reload kept, its link still opens, the note shows it again`);
         } finally { await close(); }
       }
