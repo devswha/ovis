@@ -1459,7 +1459,29 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane. It appears at the pointer, clamped to the window. Up/Down
   stop at the ends, hover selects, Enter acts, Escape and an outside click dismiss.
 - Split selects the new pane (`focus:true`), like the TUI. Swap exchanges the right-clicked
-  pane with the previously selected pane and retains the latter's focus. A close confirms when
+  pane with the previously selected pane and retains the browser's selection. On a desktop,
+  dragging a pane's title onto another pane's title in the same tab on the same PC exchanges
+  their positions too. The eligible title is highlighted instead of offering a split-view
+  half. Sidebar drags, drops outside an eligible title, and drops across tabs or PCs keep
+  their existing docking behavior. This follows tmux's explicit `swap-pane` operation,
+  exposed through a title drop like VS Code's editor-group drag targets rather than a new
+  layout setting. Explicit swaps leave herdr's focused pane, tab and workspace where they
+  were: the bridge serializes Ovis focus-changing calls (focus, swaps, split, zoom and close)
+  per herdr socket, reads its focused pane before
+  the native swap, and restores it only after a changed swap if focus still belongs to the
+  swapped source. A later Ovis focus choice runs after the restore and takes precedence.
+  A focus change in herdr's own TUI between the check and restore cannot be serialized by
+  Ovis; eliminating that window needs a native swap that does not move focus.
+  Restoration is best effort: its failure is logged but the committed swap still succeeds.
+  The browser keeps the request-only `movingHerdrFocus` guard used for a split: with
+  Follow herdr focus enabled, a focus event received while a swap is pending can be ignored.
+  A restore event received after its reply can still open the restored pane in the browser.
+  This is the approved fallback after six ordering failures of a client-only restore filter.
+  Native focus events carry no RPC correlation, so the bridge cannot prove which event was
+  caused by restoration. No sequence fields, pane-name tokens, or held/replayed events are
+  added. The root fix needs native `pane.swap focus:false` or correlated event identifiers.
+  A refused title swap shows a layout notice with a localized reason.
+  A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
 - Up to 768px a split has no room: the canvas shows the selected pane alone, full size and
@@ -2124,6 +2146,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   answered-step chips save the current step's unsent text and checks before navigating. Returning
   restores them without submitting them to the agent. This keeps the existing T3 Code-inspired
   per-question panel; folding is not cancellation, and no native cancel action is exposed.
+- Pi's rpiv multi-question widget reuses that T3 Code-inspired panel and its step chips, not a
+  second wizard. The native current tab is verified against the live styled viewport (background
+  in colored themes; neutral versus dim/green in Pi's system theme); plain labels never authorize
+  switching. Back, question chips and the complete review
+  use native left/right only, observing each move without Enter. Saved choices and custom text
+  are restored from the pane's verified pending call. Web-only edits must be sent or cleared
+  before switching, with a hint rather than silently losing them. Review reuses the existing
+  `.prompt-card-answers` definition list and its typography, not a terminal dump. Incomplete
+  answers stay visible as Not answered with question-chip recovery, no partial-submit action.
 - OpenCode multiselect Submit, custom Send and Enter send all checked choices and custom text
   together. A transient native-service failure keeps an existing question card and its edits;
   with no native question known, permissions and legacy prompts use the generic fallback card.
