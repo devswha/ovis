@@ -27,7 +27,8 @@ export const UI_FONT_PRESET_FAMILY: Record<UiFontPreset, string> = {
 };
 
 // Noto's CJK families, the UI language's first: the four draw the same Han characters in
-// different shapes, and the first one installed draws them all
+// different shapes, and the first one installed draws them all. Each region comes under both of
+// its names (the per-language family and the CJK collection's) before the next region
 const NOTO_CJK_ORDER: Record<Language, readonly string[]> = {
   en: ["JP", "KR", "SC", "TC"],
   ja: ["JP", "KR", "SC", "TC"],
@@ -54,7 +55,7 @@ export function uiFontStack(family: string, language: Language = "en"): string |
   if (chosen === UI_FONT_PRESET_FAMILY.system) return "system-ui, sans-serif";
   if (chosen === UI_FONT_PRESET_FAMILY.noto) {
     const regions = NOTO_CJK_ORDER[language];
-    return [chosen, ...regions.map((region) => `"Noto Sans ${region}"`), ...regions.map((region) => `"Noto Sans CJK ${region}"`), "sans-serif"].join(", ");
+    return [chosen, ...regions.flatMap((region) => [`"Noto Sans ${region}"`, `"Noto Sans CJK ${region}"`]), "sans-serif"].join(", ");
   }
   return `${chosen}, ${UI_FONT_STACK}`;
 }
