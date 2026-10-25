@@ -445,7 +445,7 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
     // only pi keeps a tool's images in the entry as base64; omp, omo and gjc are read the same
     // way but would carry image refs nothing can answer, so the option stays with pi alone
     : source === "claude-transcript" ? parseClaudeTranscript(text, Infinity, { subagents: subagentsOnPage(path, text), noticed })
-      : parseOmpTranscript(text, Infinity, { toolImages: source === "pi-transcript" || source === "cmd-transcript", taskTitles });
+      : parseOmpTranscript(text, Infinity, { toolImages: source === "pi-transcript" || source === "cmd-transcript", callIds: source === "gjc-transcript", taskTitles });
 }
 
 type IncrementalSource = "codex-transcript" | "omp-transcript" | "claude-transcript";
@@ -1190,10 +1190,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
   if (resolved.source === "cmd-transcript") {
-    // Command Code records no model in its transcript; herdr knows the one the pane runs at
+    // The pane's current model can change without a transcript append. Enrich a response,
+    // never the shared transcript page, and include the live model in its ETag.
     const herdrAgent = snapshot.agents.find((agent) => agent.pane_id === paneId);
     const model = typeof herdrAgent?.tokens?.model === "string" ? herdrAgent.tokens.model : null;
-    if (model && answer.metadata.model === null) answer.metadata.model = model;
+    if (model) return {
+      ...answer,
+      metadata: { ...answer.metadata, model },
+      version: answerVersion(answer.version, model),
+    };
   }
   if (resolved.source === "grok-transcript") {
     try { return { ...answer, activity: grokProjection(resolved.path, statSync(resolved.path)).activity }; }

@@ -545,6 +545,14 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   name `"JetBrains Mono Web"`. The name is the app's own so that the terminal never takes it:
   xterm's stack (`src/lib/fontFamily.ts`) names `"JetBrains Mono"`, sizes every cell from the
   first font that matches, and keeps meaning the copy installed on the device.
+- Except in Ovis for Mac's window: WebKit there draws a font the user installed, but its canvas,
+  which xterm and the glyph fit measure with, sees only the system's fonts. The terminal leaves
+  such a font out of its stack (`measurableFontStack`) and draws what Safari draws, Menlo and
+  Apple SD Gothic Neo, rather than a grid measured in one font and drawn in another. It follows
+  Zed and Warp, whose terminals size a cell with the font that draws it. VS Code's xterm.js
+  terminal, the nearest web one, never meets the case: in Electron the canvas and the page see
+  the same installed fonts. A WKWebView's canvas cannot, so here the font is dropped rather than
+  measured.
 - Chat reading scale: prose, the user's bubble and live narration are `--fs-chat` on
   `--lh-prose`; `strong` is `--fw-semibold` in `--text-strong`; inline code and code file chips
   are `0.87em` of their line; a code block is `--fs-sm` on `--lh-code`; headings are h1 `--fs-xl`,
@@ -1809,6 +1817,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Markdown supports headings, lists (a task item `- [x]` / `- [ ]` shows a checked or empty box in
   place of its bullet, not clickable), links, quotes, tables, inline/fenced code and code-copy
   actions.
+  A long press on a rendered link in the Android app opens the phone's sheet (RowMenu,
+  `MarkdownLinkMenu.tsx`) with **Copy link**, **Open link** (the tap's own way) and, where the
+  WebView has `navigator.share`, **Share link**; the link's words are its title, the address under
+  them. Android's WebView draws no link menu of its own, while Chrome, Safari and the iOS app's
+  WKWebView do, and keep theirs: the sheet follows Android Chrome's link menu, cut to those three.
+  Only the WebView's own long press (its `contextmenu`, not a mouse's) opens it, so a tap, a swipe
+  and a press on other words keep their meaning.
   Markdown files use the same renderer in the file viewer. **Open in a new tab** opens an
   app link to the resolved absolute file on its own PC, independent of the originating pane.
   **Open raw file** (Code glyph) opens the original bytes; Download still saves those bytes.
@@ -1858,13 +1873,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   column is never narrower than its longest word, and a table without room scrolls sideways in
   its own box.
   Thinking renders as a folded block only when **Show thinking** is enabled.
-- Auto-follow stops when the reader scrolls up; later output raises a **New messages** pill.
+- Auto-follow stops when the reader scrolls up, or opens a tool, a folded block or a whole output:
+  they read there, and the opened row stays put while the turn streams below it (#1388). T3 Code
+  keeps a reader at the very bottom pinned when they toggle a tool; Ovis already reads scrolling
+  up as "stop following until I come back", and opening joins that rule. Later output raises a
+  **New messages** pill. A gjc rewrite of its session file that keeps every turn shown in its place
+  (its first save, trimmed tool outputs: a new history ID whose newest page still opens with those
+  turns, each part's kind and each tool's call and input unchanged) keeps the rows, what was opened
+  and the reader's place. A compaction that drops turns, a rewind and any other new history start over.
   A message sent from this browser's message box resumes it once the bridge accepts it at once
   (a receipt with no pending item, no refusal and no uncertain answer): the view goes to the end
   and follows the turn and its reply there. Agent of Empires re-pins its view on any prompt, local,
   remote or replayed; Ovis's sends carry a receipt, so only that accepted local receipt counts. A
   refused, uncertain, queued or Send now delivery, another browser's message, a reconnect and a
-  pane opened again keep the reader's place. Scrolling or paging back, a minimap jump, a restored
+  pane opened again keep the reader's place. Scrolling or paging back, opening a tool, a folded
+  block or a whole output, a minimap jump, a restored
   place, a replaced history or leaving the pane after the message went out, before its receipt or
   before its turn shows, cancels the follow. Nothing new is drawn: the existing Jump to latest and
   New messages controls keep the Ovis/Codex chat look.
