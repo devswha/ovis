@@ -1677,7 +1677,7 @@ async function readSaid(path: string, upTo: number): Promise<SaidScan> {
   const size = Math.min(whole, upTo);
   saidScans.delete(path);
   saidScans.set(path, scan);
-  if (size <= scan.offset) return scan;
+  if (size <= scan.offset) return keptWhole(path, scan);
   const fd = await open(path, "r");
   try {
     const buffer = Buffer.alloc(1024 * 1024);
@@ -1705,6 +1705,7 @@ async function readSaid(path: string, upTo: number): Promise<SaidScan> {
           if (text !== "") {
             scan.text += text;
             scan.said.push({ end, at: scan.text.length });
+            keptWhole(path, scan);
           }
           turnAfter(scan, entry);
         }
@@ -1716,13 +1717,13 @@ async function readSaid(path: string, upTo: number): Promise<SaidScan> {
     }
     scan.offset = lineStart;
   } finally { await fd.close(); }
-  // the text kept, up to twice the bytes one read of the loaded histories may take (HISTORY_BYTES), so
+  // the text kept, up to HISTORY_TEXT (twice the bytes one read of the loaded histories may take), so
   // the next poll reads none of them again; 32 loaded threads of 33 files each are far fewer files
   // than SAID_SCANS
   let kept = 0;
   for (const read of saidScans.values()) kept += read.text.length;
   for (const [oldest, read] of saidScans) {
-    if (oldest === path || (saidScans.size <= SAID_SCANS && kept <= 2 * HISTORY_BYTES)) break;
+    if (oldest === path || (saidScans.size <= SAID_SCANS && kept <= HISTORY_TEXT)) break;
     saidScans.delete(oldest);
     kept -= read.text.length;
   }
@@ -1730,7 +1731,22 @@ async function readSaid(path: string, upTo: number): Promise<SaidScan> {
 }
 
 /** More bytes than this in the histories of the loaded threads, and none of them is weighed (loadedConversation). */
-const HISTORY_BYTES = 128 * 1024 * 1024;
+let HISTORY_BYTES = 128 * 1024 * 1024;
+/** More text than this kept of the histories read (readSaid), and none of them is weighed. */
+let HISTORY_TEXT = 2 * HISTORY_BYTES;
+
+/** Other limits for HISTORY_BYTES and HISTORY_TEXT, for tests; none for Codex's own. */
+export function limitCodexHistoryForTests(bytes = 128 * 1024 * 1024, text = 2 * bytes): void {
+  HISTORY_BYTES = bytes;
+  HISTORY_TEXT = text;
+}
+
+/** A file's read, unless it keeps more text than all reads may (HISTORY_TEXT): then it is dropped, and none is weighed. */
+function keptWhole(path: string, scan: SaidScan): SaidScan {
+  if (scan.text.length <= HISTORY_TEXT) return scan;
+  saidScans.delete(path);
+  throw new Error(`${path} keeps more text than is kept`);
+}
 /** The most rollout files whose reads are kept (readSaid). */
 const SAID_SCANS = 4096;
 

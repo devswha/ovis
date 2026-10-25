@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asCodexTitle, codexOpenRollout, codexTranscriptPath } from "./codex.ts";
+import { asCodexTitle, codexOpenRollout, codexTranscriptPath, limitCodexHistoryForTests } from "./codex.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 
@@ -785,6 +785,24 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     truncateSync(elsewhereThread(peer, ["Something else entirely."]), 129 * 1024 * 1024);
     await loaded(other, peer);
     expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing while one loaded conversation's history keeps more text than all may", async () => {
+    const rollout = otherFolderThread();
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0a00";
+    elsewhereThread(peer, Array.from({ length: 40 }, (_, index) => `Another answer, number ${index}, about something else entirely.`));
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, peer);
+    expect(await resolve()).toBe(rollout);
+    // the same history, past a limit that is lower here: read again or kept, it is not weighed
+    limitCodexHistoryForTests(128 * 1024 * 1024, 1024);
+    try {
+      expect(await resolve()).toBeNull();
+    } finally {
+      limitCodexHistoryForTests();
+    }
+    expect(await resolve()).toBe(rollout);
   });
 
   heldIt("offers nothing for an answer only a codex exec run or a subagent gave", async () => {
