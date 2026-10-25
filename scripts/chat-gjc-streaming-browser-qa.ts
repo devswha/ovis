@@ -26,6 +26,11 @@ function entry(message: Record<string, unknown>): string {
 const lines = (label: string, count: number) => Array.from({ length: count }, (_, index) => `${label} line ${index + 1}: const value${index} = compute(${index});`).join("\n");
 const call = (id: string, path: string) => entry({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id, name: "read", arguments: { path } }] });
 const result = (id: string, label: string, count: number) => entry({ role: "toolResult", toolCallId: id, toolName: "read", isError: false, content: [{ type: "text", text: lines(label, count) }] });
+// gjc's todo_write: operations on one list, answered with the whole list as it now stands
+const TODO = ["Read the fixture files", "Patch the parser", "Run the tests"];
+const todoCall = (id: string, ops: unknown[]) => entry({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id, name: "todo_write", arguments: { ops } }] });
+const todoResult = (id: string, done: number) => entry({ role: "toolResult", toolCallId: id, toolName: "todo_write", isError: false, content: [{ type: "text", text:
+  `Overall: ${done}/${TODO.length} done.\n  Fix:\n${TODO.map((item, index) => `    - [${index < done ? "X" : " "}] ${item}${index === done ? " (in progress)" : ""}`).join("\n")}` }] });
 
 function reset(earlier: number): void {
   seq = 0; parent = null; clock = Date.parse("2026-10-24T00:00:00.000Z");
@@ -53,11 +58,13 @@ function write(record: string, rewrite: boolean): number {
 }
 
 interface Frame { y: number | null; expanded: string | null; bottom: number }
-interface Track { head?: string; key?: string }
+/** `group`: once the head's todo update is folded into a run (#1846), the run's head stands in its place */
+interface Track { head?: string; key?: string; group?: boolean }
 
 function sampleScript(track: Track): Frame {
   const node = document.querySelector<HTMLElement>(".chat-view")!;
-  const head = track.head === undefined ? undefined : [...document.querySelectorAll<HTMLElement>(".work-row-head")].find((button) => button.textContent?.includes(track.head!));
+  const grouped = track.group ? document.querySelector<HTMLElement>("[data-todo-group] > .work-row-head") ?? undefined : undefined;
+  const head = grouped ?? (track.head === undefined ? undefined : [...document.querySelectorAll<HTMLElement>(".work-row-head")].find((button) => button.textContent?.includes(track.head!)));
   const row = track.key === undefined ? undefined : [...document.querySelectorAll<HTMLElement>("[data-chat-row]")].find((candidate) => candidate.dataset.chatRow === track.key);
   const element = head ?? row;
   return { y: element ? element.getBoundingClientRect().top : null, expanded: head?.getAttribute("aria-expanded") ?? null, bottom: node.scrollHeight - node.clientHeight - node.scrollTop };
@@ -108,6 +115,12 @@ const RECORDS = (): Array<[string, string]> => [
   ["result gamma", result("c3", "gamma", 25)],
   ["call delta", call("c4", "src/delta.ts")],
 ];
+/** A todo update the reader opened, then the next one, which folds both into one Plan row. */
+const TODO_RECORDS = (): Array<[string, string]> => [
+  ["call todo 2", todoCall("t2", [{ op: "done", task: TODO[0] }])],
+  ["result todo 2", todoResult("t2", 1)],
+  ["call delta", call("c4", "src/delta.ts")],
+];
 const failures: string[] = [];
 const report: Record<string, unknown> = {};
 function expect(ok: boolean, message: string): void {
@@ -140,11 +153,14 @@ try {
   } });
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   for (const width of [1440, 390] as const) {
-    for (const scenario of ["reading", "short", "following", "scrolled"] as const) {
+    for (const scenario of ["reading", "short", "following", "scrolled", "todo"] as const) {
       for (const rewrite of [false, true]) {
         const name = `${width} ${scenario} ${rewrite ? "rewrite" : "append"}`;
-        const opens = scenario === "reading" || scenario === "short";
+        const opens = scenario === "reading" || scenario === "short" || scenario === "todo";
         reset(scenario === "short" ? 0 : 6);
+        if (scenario === "todo") write(result("c2", "beta", 40) + todoCall("t1", [{ op: "init", list: [{ phase: "Fix", items: TODO }] }]) + todoResult("t1", 0), false);
+        const records = scenario === "todo" ? TODO_RECORDS() : RECORDS();
+        const rewriteAt = scenario === "todo" ? "call todo 2" : "call gamma";
         const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 }, locale: "en-US" });
         await context.addInitScript(() => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" }));
@@ -168,8 +184,8 @@ try {
         await still(page, {});
         let track: Track = {};
         if (opens) {
-          track = { head: "beta.ts" };
-          await page.locator(".work-row-head", { hasText: "beta.ts" }).click();
+          track = scenario === "todo" ? { head: "plan ·", group: true } : { head: "beta.ts" };
+          await page.locator(".work-row-head", { hasText: track.head }).click();
         } else if (scenario === "scrolled") {
           const box = (await page.locator(".chat-view").boundingBox())!;
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -185,8 +201,8 @@ try {
         }
         const start = await still(page, track);
         const steps: Array<{ record: string; minDy: number | null; maxDy: number | null; missing: number; expanded: string | null; bottom: number }> = [];
-        for (const [label, record] of RECORDS()) {
-          const bytes = write(record, rewrite && label === "call gamma");
+        for (const [label, record] of records) {
+          const bytes = write(record, rewrite && label === rewriteAt);
           const frames = await step(page, bytes, track);
           const ys = frames.map((frame) => frame.y).filter((y): y is number => y !== null);
           const end = frames.at(-1)!;
@@ -199,6 +215,11 @@ try {
           }
         }
         if (scenario === "short") expect(steps.at(-1)!.bottom > 1, `${name}: the records outgrew a chat that fit the screen when the tool was opened (bottom ${steps.at(-1)!.bottom})`);
+        if (scenario === "todo") {
+          // the run the next update formed is open, and in it the update the reader opened still is
+          const attempts = await page.locator("[data-todo-group] .work-todo-attempts .work-row-head").evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-expanded")));
+          expect(JSON.stringify(attempts) === JSON.stringify(["true", "false"]), `${name}: the opened update stays open inside its Plan row (${JSON.stringify(attempts)})`);
+        }
         let resumed: number | null = null;
         if (scenario !== "following") {
           const jump = page.locator(".chat-virtual-jump");

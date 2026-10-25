@@ -509,7 +509,13 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
  */
 function TodoGroupRow({ paneId, group, stateKeyOf }: { paneId: string; group: TodoGroup; stateKeyOf: (part: ToolPartType) => string }) {
   const t = useT();
-  const [chosen, setOpen] = useChatRowToggle(`todo-group:${group.id}`, false);
+  const memory = useContext(ChatRowMemoryContext);
+  // an update the reader opened before the next one joined it opens the group: what they were
+  // reading stays open, inside it, while the turn streams on (#1388). The group keeps that as its own
+  // state, so closing the update inside later does not fold the group when the list remounts it.
+  const groupKey = `todo-group:${group.id}`;
+  const [chosen, setOpen] = useChatRowToggle(groupKey, group.attempts.some((attempt) => memory?.toggles.get(stateKeyOf(attempt.part)) === true));
+  useLayoutEffect(() => { if (chosen === true && memory !== null && !memory.toggles.has(groupKey)) memory.toggles.set(groupKey, true); }, [chosen, memory, groupKey]);
   const open = chosen === true;
   const { current } = group;
   const items = current?.items ?? null;
