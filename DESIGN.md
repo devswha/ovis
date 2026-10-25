@@ -1432,7 +1432,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane. It appears at the pointer, clamped to the window. Up/Down
   stop at the ends, hover selects, Enter acts, Escape and an outside click dismiss.
 - Split selects the new pane (`focus:true`), like the TUI. Swap exchanges the right-clicked
-  pane with the previously selected pane and retains the latter's focus. A close confirms when
+  pane with the previously selected pane and retains the browser's selection. On a desktop,
+  dragging a pane's title onto another pane's title in the same tab on the same PC exchanges
+  their positions too. The eligible title is highlighted instead of offering a split-view
+  half. Sidebar drags, drops outside an eligible title, and drops across tabs or PCs keep
+  their existing docking behavior. This follows tmux's explicit `swap-pane` operation,
+  exposed through a title drop like VS Code's editor-group drag targets rather than a new
+  layout setting. Explicit swaps leave herdr's focused pane, tab and workspace where they
+  were: the bridge reads its focused pane before herdr's native swap and restores it before
+  answering. A refused title swap shows a layout notice with herdr's reason.
+  A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
 - Up to 768px a split has no room: the canvas shows the selected pane alone, full size and

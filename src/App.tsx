@@ -267,7 +267,10 @@ export function App() {
   const layoutRefused = useLayoutRefused(setLayoutNotice, t);
   // a pane's title dropped on another pane's title of its tab (useSplitLayout's drop)
   const swapPanes = (dragged: SplitTarget, targetPaneId: string): void => {
-    void swapPaneWith(dragged.paneId, targetPaneId, dragged.machineId).then(() => void load()).catch((err) => layoutRefused("pane swap failed", err));
+    void swapPaneWith(dragged.paneId, targetPaneId, dragged.machineId).then((swap) => {
+      if (!swap.changed) setLayoutNotice(t("Pane swap was refused: {reason}", { reason: swap.reason ?? t("Something went wrong. Try again.") }));
+      void load();
+    }).catch((err) => layoutRefused("pane swap failed", err));
   };
 
   const { takeNotificationTargetRef } = useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load });

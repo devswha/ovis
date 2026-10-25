@@ -243,6 +243,7 @@ const BASE: Record<string, string> = {
   "Zoom pane": "패널 확대",
   "Unzoom pane": "패널 확대 해제",
   "This PC's bridge does not offer this yet": "이 PC의 브리지는 아직 이 기능을 제공하지 않습니다.",
+  "Pane swap was refused: {reason}": "창 교환이 거부되었습니다: {reason}",
   "Split pane right": "패널을 오른쪽으로 분할",
   "Split pane down": "패널을 아래로 분할",
   "Plan: {done} of {total} done": "계획: {total}개 중 {done}개 완료",

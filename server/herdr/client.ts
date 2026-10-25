@@ -774,10 +774,16 @@ export async function paneSwap(paneId: string, direction: PaneDirection, socketP
   return { ...result.swap, reason: result.swap.reason ?? null, target_pane_id: result.swap.target_pane_id ?? null };
 }
 
-/** Explicit swaps use source_pane_id, not the directional form's pane_id (herdr's PaneSwapParams). */
+/** Explicit swaps rearrange panes without taking herdr's focus from its current pane, tab or workspace. */
 export async function paneSwapWith(paneId: string, targetPaneId: string, socketPath?: string): Promise<PaneLayoutOutcome & { target_pane_id: string | null }> {
-  const result = await herdrRpc<{ swap: PaneLayoutOutcome & { target_pane_id?: string | null; reason?: string | null } }>("pane.swap", { source_pane_id: paneId, target_pane_id: targetPaneId }, socketPath);
-  return { ...result.swap, reason: result.swap.reason ?? null, target_pane_id: result.swap.target_pane_id ?? null };
+  const focusedPaneId = (await sessionSnapshot(socketPath)).focused_pane_id;
+  try {
+    // Explicit swaps use source_pane_id, not the directional form's pane_id (PaneSwapParams).
+    const result = await herdrRpc<{ swap: PaneLayoutOutcome & { target_pane_id?: string | null; reason?: string | null } }>("pane.swap", { source_pane_id: paneId, target_pane_id: targetPaneId }, socketPath);
+    return { ...result.swap, reason: result.swap.reason ?? null, target_pane_id: result.swap.target_pane_id ?? null };
+  } finally {
+    if (focusedPaneId && focusedPaneId !== paneId) await paneFocus(focusedPaneId, socketPath);
+  }
 }
 
 /** A split's absolute ratio: [] is the root, false descends first, true descends second. */

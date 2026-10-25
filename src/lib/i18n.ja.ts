@@ -245,6 +245,7 @@ const BASE: Record<string, string> = {
   "Zoom pane": "ペインをズーム",
   "Unzoom pane": "ズームを解除",
   "This PC's bridge does not offer this yet": "このPCのブリッジはまだこの機能に対応していません。",
+  "Pane swap was refused: {reason}": "ペインの入れ替えが拒否されました: {reason}",
   "Split pane right": "ペインを右に分割",
   "Split pane down": "ペインを下に分割",
   "Plan: {done} of {total} done": "計画: {total} 件中 {done} 件完了",

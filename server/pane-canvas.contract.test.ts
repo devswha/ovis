@@ -65,6 +65,7 @@ describe("pane canvas: focus, explicit swap and dragged split ratio", () => {
   });
 
   it("swaps with the named pane and leaves other panes' geometry intact", async () => {
+    await paneFocus(root);
     const before = await current();
     const rect = (layout: PaneLayoutSnapshot, id: string) => layout.panes.find((pane) => pane.pane_id === id)!.rect;
     const response = await post("pane/swap", { pane_id: root, target_pane_id: below });
@@ -77,6 +78,24 @@ describe("pane canvas: focus, explicit swap and dragged split ratio", () => {
     expect(after.focused_pane_id).toBe(root);
     for (const [target, reason] of [[root, "same_pane"], [anotherTab, "cross_tab"], ["missing-pane", "not_found"]]) {
       expect(await (await post("pane/swap", { pane_id: root, target_pane_id: target })).json()).toEqual({ ok: true, changed: false, reason, target_pane_id: target });
+    }
+  });
+
+  it("keeps herdr focused in another workspace after an explicit swap, including refusals", async () => {
+    const elsewhere = await workspaceCreate({ cwd: state, label: "ovis-test-canvas-focus" });
+    try {
+      await paneFocus(elsewhere.root_pane.pane_id);
+      const focused = await sessionSnapshot();
+      for (const target of [below, below, root, anotherTab, "missing-pane"]) {
+        const response = await post("pane/swap", { pane_id: root, target_pane_id: target });
+        expect(response.status).toBe(200);
+        const after = await sessionSnapshot();
+        expect(after.focused_pane_id).toBe(focused.focused_pane_id);
+        expect(after.focused_tab_id).toBe(focused.focused_tab_id);
+        expect(after.focused_workspace_id).toBe(focused.focused_workspace_id);
+      }
+    } finally {
+      await workspaceClose(elsewhere.workspace.workspace_id);
     }
   });
 
