@@ -71,10 +71,12 @@ interface Registry { gate_closed_at: string | null; devices: StoredDevice[] }
 interface PreferencesSnapshot { settings: PreferencesChange["settings"]; pins?: string[]; muted_panes: string[] }
 interface MergeRecord {
   version: 1;
+  /** one more than the newest record of the two dirs: the clock may go back, this never does */
+  seq: number;
   at: string;
   /** both dirs' real paths, sorted */
   dirs: string[];
-  /** the device ids both registries held after this merge */
+  /** the device ids both registries held after the last merge that wrote both */
   devices: string[];
   /** each dir's preferences after this merge, by real path */
   preferences: Record<string, PreferencesSnapshot>;
@@ -125,23 +127,46 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
   return { gate_closed_at: gate, devices };
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+const isSnapshot = (value: unknown): value is PreferencesSnapshot =>
+  isObject(value) && isObject(value["settings"]) && isStrings(value["muted_panes"]) && (value["pins"] === undefined || isStrings(value["pins"]));
+const isRecord = (value: unknown): value is MergeRecord =>
+  isObject(value) && value["version"] === 1 && Number.isSafeInteger(value["seq"]) && typeof value["at"] === "string"
+  && isStrings(value["dirs"]) && isStrings(value["devices"])
+  && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
+  && isObject(value["push"]) && Object.values(value["push"]).every(isStrings);
+
 /** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
 function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
   let found: MergeRecord | null = null;
   for (const dir of dirs) {
     const read = readStateDocument(join(dir, RECORD));
     if (read.kind === "missing") continue;
-    const value = read.kind === "json" ? read.value as Partial<MergeRecord> | null : null;
-    if (!value || value.version !== 1 || typeof value.at !== "string" || !Array.isArray(value.devices)
-      || !value.devices.every((id) => typeof id === "string") || typeof value.preferences !== "object" || value.preferences === null
-      || typeof value.push !== "object" || value.push === null || !Array.isArray(value.dirs)) {
-      throw new Error(`${join(dir, RECORD)} is not a state merge record`);
-    }
+    const value = read.kind === "json" ? read.value : null;
+    if (!isRecord(value)) throw new Error(`${join(dir, RECORD)} is not a state merge record`);
     // a record of another pair of dirs (one moved since) says nothing about these
     if (text(value.dirs) !== text(pair)) continue;
-    if (found === null || value.at > found.at) found = value as MergeRecord;
+    if (found === null || value.seq > found.seq) found = value;
   }
   return found;
+}
+
+/**
+ * A merge that cannot run leaves the store gated in this process only. So that a release before
+ * this one, which knows nothing of the merge, stays gated on this dir too, the dir's own registry
+ * gets a closed gate, its devices as they are; a damaged one is left alone (it keeps every release gated).
+ */
+function closeGateOnDisk(active: string, stamp: string, now: Date): void {
+  const path = join(active, "devices.json");
+  const own = readDeviceRegistry(path);
+  if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
+  try {
+    backUp(active, "devices.json", stamp);
+    writePrivateState(path, { gate_closed_at: now.toISOString(), devices: own.kind === "ok" ? own.devices : [] });
+  } catch (error) {
+    console.error(`Cannot close the gate in ${path}: a release before this one may start on it ungated: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** Copies `name` in `dir`, if it is there, to the backups of this merge before it is replaced. */
@@ -195,7 +220,6 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       return { ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
     }
   }
-  let held = merged.devices;
   if (text(theirs) !== text(merged)) {
     try {
       backUp(sibling, "devices.json", stamp);
@@ -203,13 +227,13 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     } catch (error) {
       // the dir in use is complete; a release before this one reading the other dir would miss what changed here
       console.error(`Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`);
-      held = theirs?.devices ?? [];
+      // the other dir is as it was at the last merge, plus its own changes since: the next merge
+      // compares both with that merge's base again, so neither a device it never got reads as
+      // revoked there, nor one revoked here comes back from it
+      return { blocked: null, ids: null, changed: added };
     }
   }
-  // the base of the next merge: only what both registries now hold, or a device the other dir
-  // never got would read there as revoked
-  const ids = merged.devices.map((device) => device.id).filter((id) => held.some((device) => device.id === id));
-  return { blocked: null, ids, changed: added };
+  return { blocked: null, ids: merged.devices.map((device) => device.id), changed: added };
 }
 
 function mergePreferences(active: string, sibling: string, base: MergeRecord | null, stamp: string): Record<string, PreferencesSnapshot> | null {
@@ -239,25 +263,32 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
     ...other.doc.muted_panes.filter((pane) => !own.doc.muted_panes.includes(pane) && !was.has(pane))];
   const merged = { settings: settings as PreferencesChange["settings"], ...(pins === undefined ? {} : { pins }), muted_panes: muted };
   const document = { revision: Math.max(own.doc.revision, other.doc.revision) + 1, settings: merged.settings, ...(pins === undefined ? {} : { pins }) };
-  if (new TextEncoder().encode(text({ ...document, muted_panes: muted })).length > MAX_PREFERENCES_BYTES) {
+  // what each store would read back: two lists each within their limit may not be together
+  if (sharedPreferencesBody(merged) === null || new TextEncoder().encode(text({ ...document, muted_panes: muted })).length > MAX_PREFERENCES_BYTES) {
     console.error(`The shared preferences of ${sibling} and ${active} together are too large; those of ${sibling} are not merged`);
     return null;
   }
-  try {
-    if (text(merged.settings) !== text(own.doc.settings) || text(pins) !== text(own.doc.pins)) {
-      backUp(active, "preferences.json", stamp);
-      writeStateDocument(join(active, "preferences.json"), `${JSON.stringify(document, null, 2)}\n`, false);
+  /** Writes the merged document where it differs; false when that failed. */
+  const write = (dir: string, held: PreferencesSnapshot): boolean => {
+    try {
+      if (text(merged.settings) !== text(held.settings) || text(pins) !== text(held.pins)) {
+        backUp(dir, "preferences.json", stamp);
+        writeStateDocument(join(dir, "preferences.json"), `${JSON.stringify(document, null, 2)}\n`, false);
+      }
+      if (text(muted) !== text(held.muted_panes)) {
+        backUp(dir, "muted-panes.json", stamp);
+        writeStateDocument(join(dir, "muted-panes.json"), `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, false);
+      }
+      return true;
+    } catch (error) {
+      console.error(`Cannot write the merged shared preferences into ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
-    if (text(muted) !== text(own.doc.muted_panes)) {
-      backUp(active, "muted-panes.json", stamp);
-      writeStateDocument(join(active, "muted-panes.json"), `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, false);
-    }
-  } catch (error) {
-    console.error(`Cannot merge the shared preferences of ${sibling} into ${active}: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
+  };
+  if (!write(active, own.doc)) return null;
+  // both dirs end alike, as the devices do: whichever one a later start uses has every setting
   const { revision: _revision, ...theirs } = other.doc;
-  return { [realpath(active)]: merged, [realpath(sibling)]: theirs };
+  return { [realpath(active)]: merged, [realpath(sibling)]: write(sibling, other.doc) ? merged : theirs };
 }
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;
@@ -276,7 +307,9 @@ function subscriptionsIn(value: unknown): Subscription[] {
   });
 }
 
-function vapidIn(value: unknown): { publicKey: string; privateKey: string } | null {
+type Vapid = { publicKey: string; privateKey: string };
+
+function vapidIn(value: unknown): Vapid | null {
   const { publicKey, privateKey } = (value ?? {}) as { publicKey?: unknown; privateKey?: unknown };
   return typeof publicKey === "string" && typeof privateKey === "string" ? { publicKey, privateKey } : null;
 }
@@ -288,32 +321,48 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     const before = base?.push[realpath(sibling)] ?? [];
     const record = { [realpath(sibling)]: [...new Set([...before, ...theirs.map((subscription) => endpointHash(subscription.endpoint))])] };
     if (theirs.length === 0) return { record, taken: 0 };
-    if (theirKey === null) throw new Error(`${join(sibling, "vapid.json")} holds no key pair for its subscriptions`);
+    // the key each of their subscriptions was made for: one they took over keeps its own
+    const theirExtra = new Map<string, Vapid>();
+    const extraFile = readPushFile(join(sibling, PUSH_EXTRA_KEYS)) as { keys?: unknown } | undefined;
+    for (const entry of Array.isArray(extraFile?.keys) ? extraFile.keys as { endpoints?: unknown }[] : []) {
+      const key = vapidIn(entry);
+      if (key !== null && isStrings(entry.endpoints)) for (const endpoint of entry.endpoints) theirExtra.set(endpoint, key);
+    }
+    const keyOf = (endpoint: string): Vapid | null => theirExtra.get(endpoint) ?? theirKey;
     const mine = subscriptionsIn(readPushFile(join(active, "push-subscriptions.json")));
-    const myKey = vapidIn(readPushFile(join(active, "vapid.json")));
+    const myFile = readPushFile(join(active, "vapid.json"));
+    let myKey = vapidIn(myFile);
+    // push.ts never replaces a damaged key file (every subscription made for it would go): neither does this
+    if (myFile !== undefined && myKey === null) throw new Error(`${join(active, "vapid.json")} is malformed`);
     let retired: string[] = [];
     try {
       const value = readPushFile(join(active, "push-retired.json"));
       retired = (Array.isArray(value) ? value : []).map((entry) => (entry as { hash?: unknown } | null)?.hash).filter((hash): hash is string => typeof hash === "string");
     } catch { /* telemetry: an endpoint it would have kept out only fails its next push */ }
     const taken = theirs.filter((subscription) => !mine.some((held) => held.endpoint === subscription.endpoint)
-      && !before.includes(endpointHash(subscription.endpoint)) && !retired.includes(endpointHash(subscription.endpoint)));
+      && !before.includes(endpointHash(subscription.endpoint)) && !retired.includes(endpointHash(subscription.endpoint))
+      && keyOf(subscription.endpoint) !== null);
     if (taken.length === 0) return { record, taken: 0 };
-    if (myKey === null) {
+    if (myKey === null && theirKey !== null) {
       // this dir has signed nothing yet: the other dir's key becomes its own
-      backUp(active, "vapid.json", stamp);
       writePrivateState(join(active, "vapid.json"), theirKey);
-    } else if (myKey.publicKey !== theirKey.publicKey) {
+      myKey = theirKey;
+    }
+    const foreign = taken.filter((subscription) => keyOf(subscription.endpoint)!.publicKey !== myKey?.publicKey);
+    if (foreign.length > 0) {
       const path = join(active, PUSH_EXTRA_KEYS);
       const stored = readPushFile(path) as { keys?: unknown } | undefined;
       const keys = (Array.isArray(stored?.keys) ? stored.keys : []) as { publicKey?: unknown; privateKey?: unknown; endpoints?: unknown }[];
-      const entry = keys.find((key) => key.publicKey === theirKey.publicKey);
-      const endpoints = taken.map((subscription) => subscription.endpoint);
-      const next = entry
-        ? keys.map((key) => key === entry ? { ...theirKey, endpoints: [...new Set([...(Array.isArray(key.endpoints) ? key.endpoints : []), ...endpoints])] } : key)
-        : [...keys, { ...theirKey, endpoints }];
+      for (const subscription of foreign) {
+        const key = keyOf(subscription.endpoint)!;
+        const index = keys.findIndex((held) => held.publicKey === key.publicKey);
+        const endpoints = index === -1 ? [] : isStrings(keys[index]!.endpoints) ? keys[index]!.endpoints as string[] : [];
+        const entry = { ...key, endpoints: [...new Set([...endpoints, subscription.endpoint])] };
+        if (index === -1) keys.push(entry);
+        else keys[index] = entry;
+      }
       backUp(active, PUSH_EXTRA_KEYS, stamp);
-      writePrivateState(path, { keys: next });
+      writePrivateState(path, { keys });
     }
     backUp(active, "push-subscriptions.json", stamp);
     writePrivateState(join(active, "push-subscriptions.json"), [...mine, ...taken]);
@@ -330,13 +379,26 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
  */
 export function mergeSiblingState(active: string, sibling: string, now = new Date()): SiblingMerge {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
+  let blocked: string | null;
+  try {
+    blocked = merge(active, sibling, now, stamp);
+  } catch (error) {
+    // whatever went wrong, the server still starts, gated: a start that failed would fall back to an older release
+    blocked = `Cannot merge the state of ${sibling} into ${active} (${error instanceof Error ? error.message : String(error)}). External access without a token or trusted Tailscale login remains blocked; restart the server once it is fixed.`;
+  }
+  // the device store says why (devices.ts)
+  if (blocked !== null) closeGateOnDisk(active, stamp, now);
+  return { devicesBlocked: blocked };
+}
+
+function merge(active: string, sibling: string, now: Date, stamp: string): string | null {
   const pair = [realpath(active), realpath(sibling)].sort();
   let base: MergeRecord | null;
   try {
     base = readRecord([active, sibling], pair);
   } catch (error) {
     // without the last merge a revoked device could come back: nothing is merged, and the store stays gated
-    return { devicesBlocked: `${error instanceof Error ? error.message : String(error)}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore or remove it, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
+    return `${error instanceof Error ? error.message : String(error)}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore or remove it, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
   }
   const devices = mergeDevices(active, sibling, base, stamp);
   const preferences = mergePreferences(active, sibling, base, stamp);
@@ -346,6 +408,7 @@ export function mergeSiblingState(active: string, sibling: string, now = new Dat
   }
   const record: MergeRecord = {
     version: 1,
+    seq: (base?.seq ?? 0) + 1,
     at: now.toISOString(),
     dirs: pair,
     // a merge that could not run keeps the last one's base, so the next one compares with it
@@ -364,5 +427,5 @@ export function mergeSiblingState(active: string, sibling: string, now = new Dat
       if (dir === active) blocked ??= `${reason}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
     }
   }
-  return { devicesBlocked: blocked };
+  return blocked;
 }

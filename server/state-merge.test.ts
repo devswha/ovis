@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import webpush from "web-push";
@@ -95,6 +95,69 @@ describe("paired devices of the install's other state dir", () => {
     expect(ids(sibling)).toEqual(["a", "b"]);
   });
 
+  it("stay revoked after a merge that could not write the other dir", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [device("a"), device("b")]);
+    writeDevices(sibling, [device("a"), device("b")]);
+    mergeSiblingState(active, sibling, at(0));
+    writeDevices(active, [device("a")], registry(active).gate_closed_at);
+    const rename = privateStateFs.renameSync;
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (to === join(sibling, "devices.json")) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      rename(from, to);
+    });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(1)); } finally { failing.mockRestore(); said.mockRestore(); }
+    mergeSiblingState(active, sibling, at(2));
+    expect(ids(active)).toEqual(["a"]);
+    expect(ids(sibling)).toEqual(["a"]);
+  });
+
+  it("stay revoked when the clock went back between merges", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [device("a")]);
+    writeDevices(sibling, [device("a")]);
+    mergeSiblingState(active, sibling, at(10));
+    writeDevices(active, [device("a"), device("b")], registry(active).gate_closed_at);
+    const rename = privateStateFs.renameSync;
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (to === join(sibling, "state-merge.json")) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      rename(from, to);
+    });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(5)); } finally { failing.mockRestore(); said.mockRestore(); }
+    writeDevices(active, [device("a")], registry(active).gate_closed_at);
+    mergeSiblingState(active, sibling, at(11));
+    expect(ids(active)).toEqual(["a"]);
+    expect(ids(sibling)).toEqual(["a"]);
+  });
+
+  it("keep the old dir gated for older launchers when it could not be linked", () => {
+    // the old name still holds only the bridge registry: a launcher from before the fix starts on it
+    const { active: legacy, sibling: next } = install();
+    mkdirSync(join(legacy, "bridges"));
+    writeDevices(next, [device("a")]);
+    mergeSiblingState(next, legacy, at(0));
+    expect(new DeviceStore(legacy).gated).toBe(true);
+    expect(new DeviceStore(legacy).match("token-a")?.id).toBe(device("a").id);
+  });
+
+  it("fail closed on disk too, for a release before this one, when they cannot be merged", () => {
+    const { active, sibling } = install();
+    writeDevices(sibling, [device("b")]);
+    // valid JSON, of the wrong shape inside: the record of this very pair of dirs
+    const dirs = [realpathSync(active), realpathSync(sibling)].sort();
+    writeJson(join(active, "state-merge.json"), { version: 1, seq: 1, at: "2026", dirs, devices: [], preferences: { [realpathSync(sibling)]: { settings: null, muted_panes: [] } }, push: {} });
+    writeJson(join(sibling, "preferences.json"), { revision: 1, settings: { language: "ko" } });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { devicesBlocked } = mergeSiblingState(active, sibling, at(0));
+      expect(devicesBlocked).toContain("state-merge.json");
+      expect(new DeviceStore(active, devicesBlocked).gated).toBe(true);
+    } finally { said.mockRestore(); }
+    expect(new DeviceStore(active).gated).toBe(true);
+  });
+
   it("fail closed on a registry or merge record that cannot be read, writing neither registry", () => {
     for (const damage of ["registry", "record"] as const) {
       const { active, sibling } = install();
@@ -147,11 +210,31 @@ describe("shared preferences of the install's other state dir", () => {
     writeJson(join(sibling, "muted-panes.json"), { muted_panes: ["local:p1"] });
     mergeSiblingState(active, sibling, at(1));
     // there: language and theme changed, p1 unmuted; here, later: sidebarRows and theme changed
+    for (const dir of [active, sibling]) utimesSync(join(dir, "muted-panes.json"), at(1), at(1));
     writeJson(join(sibling, "preferences.json"), { revision: 2, settings: { language: "ko", sidebarRows: "two", theme: "light" } }, at(2));
-    writeJson(join(sibling, "muted-panes.json"), { muted_panes: [] });
+    writeJson(join(sibling, "muted-panes.json"), { muted_panes: [] }, at(2));
     writeJson(join(active, "preferences.json"), { revision: 3, settings: { language: "en", sidebarRows: "one", theme: "solar" } }, at(3));
     mergeSiblingState(active, sibling, at(4));
     expect(new PreferenceStore(active).get()).toMatchObject({ settings: { language: "ko", sidebarRows: "one", theme: "solar" }, muted_panes: [] });
+  });
+
+  it("end alike in both dirs, so a later start on either keeps every setting", () => {
+    const { active, sibling } = install();
+    writeJson(join(active, "preferences.json"), { revision: 1, settings: { language: "ko" } });
+    writeJson(join(sibling, "preferences.json"), { revision: 1, settings: { sidebarRows: "two" } });
+    mergeSiblingState(active, sibling, at(0));
+    mergeSiblingState(sibling, active, at(1));
+    for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get().settings).toEqual({ language: "ko", sidebarRows: "two" });
+  });
+
+  it("keep this dir's mutes when both lists together are over the limit", () => {
+    const { active, sibling } = install();
+    const mine = Array.from({ length: 300 }, (_, i) => `local:a${i}`);
+    writeJson(join(active, "muted-panes.json"), { muted_panes: mine });
+    writeJson(join(sibling, "muted-panes.json"), { muted_panes: Array.from({ length: 300 }, (_, i) => `local:s${i}`) });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(0)); } finally { said.mockRestore(); }
+    expect(new PreferenceStore(active).get().muted_panes).toEqual(mine);
   });
 
   it("are not merged from a damaged document, which stays as it is", () => {
@@ -203,6 +286,36 @@ describe("push subscriptions of the install's other state dir", () => {
     mergeSiblingState(active, sibling, at(1));
     const held = JSON.parse(readFileSync(join(active, "push-subscriptions.json"), "utf8")) as { endpoint: string }[];
     expect(held.map((subscription) => subscription.endpoint)).toEqual([here.subscription.endpoint]);
+  });
+});
+
+describe("push keys of the install's other state dir", () => {
+  it("never replace a damaged key file of this dir", async () => {
+    const { active, sibling } = install();
+    const fake = await startFakePushService();
+    fakes.push(fake);
+    writeFileSync(join(active, "vapid.json"), "{}\n");
+    writeJson(join(sibling, "vapid.json"), webpush.generateVAPIDKeys());
+    writeJson(join(sibling, "push-subscriptions.json"), [{ ...fake.subscription, device_id: null }]);
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(0)); } finally { said.mockRestore(); }
+    expect(readFileSync(join(active, "vapid.json"), "utf8")).toBe("{}\n");
+  });
+
+  it("stay with each subscription when it moves on again, from a dir that took it over", async () => {
+    const { active, sibling } = install();
+    const first = webpush.generateVAPIDKeys();
+    const own = webpush.generateVAPIDKeys();
+    const fake = await startFakePushService();
+    fakes.push(fake);
+    // the other dir once took this subscription over, made for a key that is not its own
+    writeJson(join(sibling, "vapid.json"), webpush.generateVAPIDKeys());
+    writeJson(join(sibling, PUSH_EXTRA_KEYS), { keys: [{ ...first, endpoints: [fake.subscription.endpoint] }] });
+    writeJson(join(sibling, "push-subscriptions.json"), [{ ...fake.subscription, device_id: null }]);
+    writeJson(join(active, "vapid.json"), own);
+    mergeSiblingState(active, sibling, at(0));
+    await createPushService({ stateDir: active, loopbackHttp: true }).sendTest(fake.subscription.endpoint);
+    expect(fake.received[0]).toMatchObject({ vapidKey: first.publicKey, vapidValid: true });
   });
 });
 
