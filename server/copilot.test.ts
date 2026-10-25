@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
@@ -84,6 +84,18 @@ it("parses persisted Copilot messages and tool rounds once, with failures and re
   expect(turns[1]?.parts[1]).toMatchObject({ kind: "tool", name: "shell", summary: "Check directory", error: true, output_ref: "call-1" });
   expect(turns[1]?.parts[2]).toEqual({ kind: "text", text: "Finished.", phase: "final_answer" });
   expect(parseConversationMetadata(text, "copilot-transcript")).toEqual({ model: "fixture-model", reasoning_effort: null });
+});
+
+it("reads a redacted recorded CLI session with root task ancestry and a tool-only assistant message", () => {
+  const recorded = readFileSync(new URL("./fixtures/copilot-recorded.jsonl", import.meta.url), "utf8");
+  const turns = parseCopilotTranscript(recorded);
+  expect(turns.map(({ role }) => role)).toEqual(["user", "assistant"]);
+  expect(turns[0]?.parts).toEqual([{ kind: "text", text: "Recorded fixture text." }]);
+  expect(turns[1]?.parts).toEqual([
+    { kind: "tool", name: "shell", summary: "redacted", input: "{}", output: "Recorded fixture text." },
+    { kind: "text", text: "Recorded fixture text.", phase: "commentary" },
+  ]);
+  expect(parseConversationMetadata(recorded, "copilot-transcript").model).toBe("fixture-model");
 });
 
 it("keeps root prompts carrying parentAgentTaskId and pages at those prompts", () => {

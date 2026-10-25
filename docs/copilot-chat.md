@@ -66,6 +66,12 @@ bun run check run --build bun scripts/copilot-chat-browser-qa.ts
 bun run check fast
 ```
 
-The unit, HTTP contract and browser fixtures use fictional transcripts and disposable
-processes. They establish reader behavior, not a live model run or compatibility with every
-Copilot CLI release. Private transcripts and process logs are not published as fixtures.
+The HTTP contract and browser fixtures use fictional transcripts and disposable processes.
+`server/fixtures/copilot-recorded.jsonl` is a redacted seven-record excerpt from a real CLI
+session whose header identifies Copilot 1.0.102. Field names, nested collections, scalar types,
+empty values and record/phase discriminators are preserved. Text, paths, identifiers, models,
+timestamps and telemetry values are replaced; intervening records are omitted, so some parent
+IDs point outside the excerpt. The unit test covers a root prompt with task ancestry, a
+tool-only assistant message, its request/result and recorded assistant text. It does not
+establish 1.0.103 lifecycle ordering, universal marker holding, a subagent discriminator or
+compatibility with every CLI release. No raw private transcript or process log is published.
