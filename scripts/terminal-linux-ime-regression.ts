@@ -1,5 +1,6 @@
 /** Replay a Chrome 155 trace of fcitx4 with Sogou Pinyin on Linux X11 (#1649), not a claim to automate the OS IME. */
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
@@ -16,29 +17,28 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
   }, pane);
   const page = await context.newPage();
   const sent: Array<{ pane_id: string; text: string }> = [];
-  let ready = false;
+  const received = new EventEmitter();
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     server.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
-      if (frame.type === "input-ready") ready = frame.ready !== false;
+      if (frame.type === "input-ready" && frame.ready !== false) received.emit("ready");
       socket.send(raw);
     });
     socket.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
-      if (frame.type === "input") sent.push(frame);
+      if (frame.type === "input") {
+        sent.push(frame);
+        received.emit(frame.text);
+      }
       else server.send(raw);
     });
   });
-  const until = async (check: () => boolean | Promise<boolean>) => {
-    const deadline = Date.now() + 10_000;
-    while (!(await check())) { assert(Date.now() < deadline, "Linux IME trace replay timed out"); await new Promise((resolve) => setTimeout(resolve, 25)); }
-  };
   const input = page.locator(".pane-frame.is-current .xterm-helper-textarea");
   const reset = async () => {
-    ready = false;
+    const ready = once(received, "ready", { signal: AbortSignal.timeout(10_000) });
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
-    await until(() => ready);
+    await ready;
     await input.focus();
     sent.length = 0;
   };
@@ -71,8 +71,9 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
     }, { key, code, keyCode, candidate, shape });
   };
   const check = async (expected: string, label: string) => {
+    const sentinel = once(received, "\x07", { signal: AbortSignal.timeout(10_000) });
     await input.press("Control+g");
-    await until(() => sent.at(-1)?.text === "\x07");
+    await sentinel;
     assert.equal(sent.map((frame) => frame.text).join(""), expected + "\x07", label);
   };
 
@@ -94,8 +95,9 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
     await check("12a0", "plain digits and letters are unchanged");
 
     await reset();
+    const control = once(received, "\x03", { signal: AbortSignal.timeout(10_000) });
     await input.press("Control+c");
-    await until(() => sent.length > 0);
+    await control;
     assert.equal(sent.map((frame) => frame.text).join(""), "\x03", "Ctrl with a key keeps its control byte");
     console.log("PASS Linux IME trace replay: digit and Space candidate picks, word picks, plain digits");
   } finally { await context.close(); }
