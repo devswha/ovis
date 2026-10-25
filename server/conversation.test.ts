@@ -2036,10 +2036,14 @@ describe("transcriptImage", () => {
         // a call whose id is written as a number, answered by its text, and one whose id JSON escapes
         call(5, 7), user(6, "7", [png(16)]),
         call(7, 'toolu_"x'), user(8, 'toolu_"x', [png(16)]),
+        // a call's id and a prompt's uuid written with \u escapes: JSON reads them as the plain ones
+        call(11, "toolu_e"), user(12, "toolu_e", [png(16)]),
         { type: "assistant", uuid: id(10), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
-      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
-      expect(refs).toEqual([`${id(3)}:0:0`, `${id(3)}:0:1`, `${id(6)}:0:0`, `${id(8)}:0:0`]);
+        { type: "user", uuid: id(13), message: { role: "user", content: [png(16)] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n").replace('"id":"toolu_e"', '"id":"toolu_\\u0065"').replace(`"uuid":"${id(13)}"`, `"uuid":"\\u0030${id(13).slice(1)}"`) + "\n");
+      expect(readFileSync(path, "utf8")).toContain('"id":"toolu_\\u0065"');
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(3)}:0:0`, `${id(3)}:0:1`, `${id(6)}:0:0`, `${id(8)}:0:0`, `${id(12)}:0:0`, `${id(13)}:0`]);
       for (const ref of refs) expect(transcriptImage(path, ref)?.mediaType).toBe("image/png");
       expect(transcriptImage(path, `${id(4)}:0:0`)).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
@@ -2073,6 +2077,94 @@ describe("transcriptImage", () => {
       expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
       // no read took the transcript whole
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThan(transcript.length - 1024 * 1024);
+    } finally { alloc.mockRestore(); rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("reads a record's cut strings as JSON does: their escapes, their marks, their spelling", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const pngBytes = (size: number) => {
+        const bytes = Buffer.alloc(size);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+        return bytes;
+      };
+      const png = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+      const small = pngBytes(16).toString("base64");
+      const pad = "x".repeat(2048);
+      const call = (n: number, toolId: unknown) => JSON.stringify({ type: "assistant", uuid: id(n), message: { content: [{ type: "tool_use", id: toolId, name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } });
+      const result = (n: number, toolId: string, data = small) => JSON.stringify({ type: "user", uuid: id(n), message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: [png(data)] }] } });
+      // a picture whose every base64 character is written as a \u escape: six times its text
+      const escaped = pngBytes(1_500_000);
+      const escapedText = [...escaped.toString("base64")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+      writeFileSync(path, [
+        JSON.stringify({ type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } }),
+        // an escape JSON does not have, past where a string is cut: the page reads no such record
+        JSON.stringify({ type: "user", uuid: id(2), message: { role: "user", content: [png(small), { type: "text", text: pad }] } }).replace(pad, `${pad}\\q`),
+        // an id that ends as a cut string's mark once did, after a string that is cut
+        call(3, "toolu_\u0000cut:0"), result(4, "toolu_\u0000cut:0"),
+        call(5, "toolu_esc"), result(6, "toolu_esc").replace(`"data":"${small}"`, `"data":"${escapedText}"`),
+        // a line that is JSON but no record, between a call and its result
+        call(7, "toolu_n"), "null", result(8, "toolu_n"),
+        // a call id written as a number in another spelling than the text it is keyed by
+        call(9, 1000).replace('"id":1000', '"id":1e3'), result(10, "1000"),
+        call(12, 1000).replace('"id":1000', '"id":1e400'), result(13, "Infinity"),
+        // a call id that starts with a BOM is another id than the same text without it
+        call(14, `\uFEFF${"a".repeat(1024)}`), result(15, "a".repeat(1024)),
+        JSON.stringify({ type: "assistant", uuid: id(11), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } }),
+      ].join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(4)}:0:0`, `${id(6)}:0:0`, `${id(8)}:0:0`, `${id(10)}:0:0`, `${id(13)}:0:0`]);
+      for (const ref of refs) expect(transcriptImage(path, ref)?.mediaType).toBe("image/png");
+      expect(transcriptImage(path, `${id(15)}:0:0`)).toBeNull();
+      expect(Buffer.from(transcriptImage(path, `${id(6)}:0:0`)!.bytes).equals(escaped)).toBe(true);
+      expect(transcriptImage(path, `${id(2)}:0`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("serves nothing a record it cannot hold could decide, rather than guess", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
+      // a result whose shape alone is past what the endpoint holds: thousands of strings under the cut
+      const shapeOnly = Array.from({ length: 4200 }, () => "x".repeat(1023));
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
+        { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture], pad: shapeOnly }] } },
+        // a second answer to the call, which the page does not draw
+        { type: "user", uuid: id(4), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture] }] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(3)}:0:0`]);
+      expect(transcriptImage(path, `${id(4)}:0:0`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("holds a window, a record's shape and the picture, never a record whole however large", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    const alloc = spyOn(Buffer, "alloc");
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const png = Buffer.alloc(300_000);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      const pad = "x".repeat(20 * 1024 * 1024);
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
+        // a call and its result, each padded past the largest picture the chat shows
+        { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [{ type: "text", text: pad }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] }] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      // the first read scans the history once; the endpoint's own reads are what is left
+      expect(transcriptImage(path, `${id(3)}:0:1`)?.mediaType).toBe("image/png");
+      alloc.mockClear();
+      const image = transcriptImage(path, `${id(3)}:0:1`);
+      expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
+      expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
     } finally { alloc.mockRestore(); rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
   });
 
