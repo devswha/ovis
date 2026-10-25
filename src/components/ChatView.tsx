@@ -1365,8 +1365,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   }, [paneId, invalidationKey, visible, conversationRefresh]);
 
   useEffect(() => {
-    conversationRefresh.setPushes(conversationPushes && state.source !== "scrollback");
-  }, [conversationPushes, state.source, conversationRefresh]);
+    conversationRefresh.setPushes(conversationPushes && (agent !== "copilot" || state.source !== "scrollback"));
+  }, [conversationPushes, state.source, conversationRefresh, agent]);
 
   // A scrollback stand-in has no native file for the server to watch, and neither have settings
   // read off the agent's screen (a conversation not begun). Their source is the pane's own

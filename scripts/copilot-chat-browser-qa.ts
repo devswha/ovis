@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
 
@@ -65,7 +65,11 @@ console.log("fixture ready");`);
   await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${id} ${input}\n` });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane)?.agent === "copilot") break;
-    if (Date.now() > deadline) throw new Error("owned Copilot fixture process was not detected");
+    if (Date.now() > deadline) throw new Error(`owned Copilot fixture process was not detected: ${JSON.stringify({
+      pane: (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane),
+      process: await paneProcessInfo(pane),
+      screen: await paneRead({ paneId: pane, source: "visible", format: "text" }),
+    })}`);
     await Bun.sleep(50);
   }
   await herdrRpc("pane.report_agent_session", { pane_id: pane, agent: "copilot", source: "herdr:copilot",
@@ -76,11 +80,7 @@ console.log("fixture ready");`);
   const body = await (await fetch(endpoint)).json() as { source: string };
   assert.equal(body.source, "copilot-transcript");
 
-  // Ubuntu's installed Chrome has an AppArmor policy allowing its user-namespace sandbox;
-  // the downloaded Playwright binary does not have that policy on hosted runners.
-  const installedChrome = "/opt/google/chrome/chrome";
-  const executablePath = process.env.CI && existsSync(installedChrome) ? installedChrome : chromePath();
-  browser = await chromium.launch({ executablePath, headless: true, chromiumSandbox: true });
+  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -155,8 +155,18 @@ console.log("fixture ready");`);
   await log.getByText("Conversation recovered without switching lenses.", { exact: true }).waitFor({ timeout: 4000 });
   await page.locator(".chat-terminal-fallback").waitFor({ state: "detached" });
   await page.unroute(conversationRoute);
+  const readableHistory = readFileSync(transcript, "utf8");
+  for (const type of ["user.message", "assistant.message"]) {
+    writeFileSync(transcript, event("session.start", { sessionId: id })
+      + event(type, { content: [{ type: "text", text: "unsupported native content" }] }));
+    await page.locator(".chat-terminal-fallback summary").waitFor();
+    assert.equal(await log.getByText("Conversation recovered without switching lenses.", { exact: true }).count(), 0);
+    writeFileSync(transcript, readableHistory);
+    await log.getByText("Conversation recovered without switching lenses.", { exact: true }).waitFor();
+    await page.locator(".chat-terminal-fallback").waitFor({ state: "detached" });
+  }
   assert.deepEqual(errors, []);
-  console.log("PASS Copilot native HTTP/React, tool detail, append, desktop/mobile, PTY send and transient recovery");
+  console.log("PASS Copilot native HTTP/React, tool detail, append, desktop/mobile, PTY send, transient recovery and unsupported-content terminal fallback");
 } finally {
   const failures: unknown[] = [];
   try { await browser?.close(); } catch (error) { failures.push(error); }
