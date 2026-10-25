@@ -1407,36 +1407,104 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 
+/** How much of a transcript the image endpoint reads at a time while it looks for a ref's entry. */
+const IMAGE_SEARCH_WINDOW = 1024 * 1024;
+
+/**
+ * Where the lines that hold `needle` lie in [from, to) of the stream, found a window at a time, so
+ * a transcript is searched and never held whole. A line off the branch reads blank (readStream).
+ */
+function linesWith(stream: TranscriptStream, needle: string, from: number, to: number): [number, number][] {
+  const pattern = Buffer.from(needle);
+  const found: [number, number][] = [];
+  let start = from;
+  let hit = false;
+  // the end of the line so far: a needle a window's edge cuts in two is still found
+  let tail: Buffer = Buffer.alloc(0);
+  for (let position = from; position < to; position = Math.min(to, position + IMAGE_SEARCH_WINDOW)) {
+    const bytes = readStream(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW));
+    for (let offset = 0; ;) {
+      const newline = bytes.indexOf(0x0a, offset);
+      if (!hit) {
+        const piece = bytes.subarray(offset, newline === -1 ? bytes.length : newline);
+        const seen = tail.length === 0 ? piece : Buffer.concat([tail, piece]);
+        hit = seen.includes(pattern);
+        tail = seen.subarray(Math.max(0, seen.length - pattern.length + 1));
+      }
+      if (newline === -1) break;
+      if (hit) found.push([start, position + newline]);
+      start = position + newline + 1;
+      hit = false;
+      tail = Buffer.alloc(0);
+      offset = newline + 1;
+    }
+  }
+  if (hit) found.push([start, to]);
+  return found;
+}
+
+/**
+ * One Claude record, parsed (null when it is no JSON): read whole whatever its size, as a page parses
+ * it, so the endpoint never judges a record the page reads differently.
+ */
+function claudeRecordAt(stream: TranscriptStream, [start, end]: [number, number]): TranscriptEntry | null {
+  try { return JSON.parse(readStream(stream, start, end).toString("utf8")) as TranscriptEntry; } catch { return null; }
+}
+
+/**
+ * Whether a tool result before `before` would be drawn, as the parser decides it: it answers a call
+ * an assistant entry the parser draws made, and no result before it answered that call already.
+ */
+function answersDrawnCall(stream: TranscriptStream, id: string, before: number): boolean {
+  let open = false;
+  // the parser keys a call by its id as text: the id as JSON writes it inside a string, which also
+  // finds one written unquoted (a number)
+  for (const range of linesWith(stream, JSON.stringify(id).slice(1, -1), stream.floor, before)) {
+    const entry = claudeRecordAt(stream, range);
+    if (entry === null || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+    for (const block of entry.message.content) {
+      const part = block as { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown } | null;
+      if (entry.type === "assistant" && part?.type === "tool_use" && String(part.id ?? "") === id && typeof part.name === "string") open = true;
+      else if (entry.type === "user" && part?.type === "tool_result" && part.tool_use_id === id) open = false;
+    }
+  }
+  return open;
+}
+
 /**
  * The image an image part's ref names in a Claude transcript file, decoded; null when there is none,
  * or when it is no picture the page would name (claudeImageType: the same check, so they agree). It
- * is read as the page is: after the last /clear, and on the branch a rewind left the session on.
+ * is read as the page is: after the last /clear, on the branch a rewind left the session on, and a
+ * tool's picture only from a result the page draws. Only the entries a ref can name are read whole.
  */
 export function transcriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
   const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
   const [, uuid, index, nested] = match;
-  let text: string;
   try {
     const stream = transcriptStream("claude-transcript", path, statSync(path), defaultCodexHome());
     applyHistoryBoundary(path, stream, "claude-transcript");
-    text = readStream(stream, stream.floor, stream.length).toString("utf8");
+    for (const range of linesWith(stream, JSON.stringify(uuid), stream.floor, stream.length)) {
+      const entry = claudeRecordAt(stream, range);
+      // only an entry the parser draws: a hidden one can carry the same id
+      if (entry === null || entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+      const content: unknown[] = entry.message.content;
+      const block = content[Number(index)] as { type?: unknown; content?: unknown; tool_use_id?: unknown } | undefined;
+      let image: unknown = block;
+      if (nested !== undefined) {
+        // a tool's picture sits inside the result it returned, drawn only when that result answers
+        // a call the page shows, which no result before it answered
+        if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string" || !Array.isArray(block.content)) return null;
+        const call = block.tool_use_id;
+        const answered = content.slice(0, Number(index)).some((other) => (other as { type?: unknown; tool_use_id?: unknown } | null)?.type === "tool_result" && (other as { tool_use_id?: unknown }).tool_use_id === call);
+        if (answered || !answersDrawnCall(stream, call, range[0])) return null;
+        image = block.content[Number(nested)];
+      }
+      const mediaType = claudeImageType(image);
+      if (mediaType === null) return null;
+      return { mediaType, bytes: new Uint8Array(Buffer.from(String((image as { source: { data: string } }).source.data), "base64")) };
+    }
   } catch { return null; }
-  const needle = JSON.stringify(uuid);
-  for (const line of text.split("\n")) {
-    if (!line.includes(needle)) continue;
-    let entry: TranscriptEntry;
-    try { entry = JSON.parse(line) as TranscriptEntry; } catch { continue; }
-    // only an entry the parser draws: a hidden one can carry the same id
-    if (entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
-    const block = entry.message.content[Number(index)] as { type?: unknown; content?: unknown } | undefined;
-    // a tool's picture sits inside the result it returned
-    const image = (nested === undefined ? block
-      : block?.type === "tool_result" && Array.isArray(block.content) ? block.content[Number(nested)] : undefined) as { source?: { data?: unknown } } | undefined;
-    const mediaType = claudeImageType(image);
-    if (mediaType === null) return null;
-    return { mediaType, bytes: new Uint8Array(Buffer.from(String(image?.source?.data), "base64")) };
-  }
   return null;
 }
 
