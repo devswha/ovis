@@ -992,9 +992,11 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
 }
 
 /** A process-owned lifecycle registration, or a trusted report plus a unique held marker. */
-async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<{ path: string; binding: string }> {
+async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {
   const report = pane.agent_session;
-  let peerClaims: Promise<Set<string>> | undefined;
+  // A request shares its peer snapshot across the read; the pane's own process
+  // and lifecycle evidence are still validated afresh before returning history.
+  let peerClaims: Promise<ReadonlySet<string>> | undefined = previousClaims === undefined ? undefined : Promise.resolve(previousClaims);
   const gatherPeerClaims = async (): Promise<Set<string>> => {
     const claims = new Set<string>();
     for (const peer of panes) {
@@ -1030,14 +1032,14 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   if (logged !== null && !(await claimedByPeer(logged.sessionId))) {
     const path = copilotTranscriptFile(logged.sessionId, selected);
     if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged.sessionId)
-      return { path, binding: `${foreground.pid}:${logged.generation}` };
+      return { path, binding: `${foreground.pid}:${logged.generation}`, peerClaims: await peerClaims! };
   }
   if (report != null) {
     if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id");
     if (logged === null) {
       const path = copilotTranscriptFile(report.value, selected);
       if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
-        return { path, binding: `${foreground.pid}:held:${path}` };
+        return { path, binding: `${foreground.pid}:held:${path}`, peerClaims: await peerClaims! };
     }
   }
   const pending = copilotUnwrittenSession(selected, argv);
@@ -1052,7 +1054,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 type ResolvedTranscript =
   | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
-    | { source: "copilot-transcript"; binding: string }
+    | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
   | { source: "opencode-transcript"; path: string; session: string }
   | { source: "hermes-transcript"; path: string; sessionId: string };
@@ -1322,7 +1324,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   }
   if (prefix !== null && resolved.source === "copilot-transcript") {
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId)!;
-    const current = await copilotTranscriptPath(pane, snapshot.panes);
+    const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims);
     if (current.path !== resolved.path || current.binding !== resolved.binding) throw new HistoryChanged();
     return bindCopilotAnswer(answer, prefix);
   }
@@ -1840,7 +1842,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   const output = transcriptToolOutput(resolved.source, resolved.path, nativeRef, resolved.codexHome ?? codexHome);
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
   if (resolved.source === "copilot-transcript") {
-    const current = await copilotTranscriptPath(pane, snapshot.panes).catch(() => null);
+    const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);
     if (current?.path !== resolved.path || current.binding !== resolved.binding) return null;
   }
   return output;

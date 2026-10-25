@@ -1,11 +1,14 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
 import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
-import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneConversation, toolOutput, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
+import * as herdr from "./herdr/client.ts";
+import * as omo from "./omo.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
 
 const session = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -197,7 +200,7 @@ it("pages bounded native turns and observes append, torn lines, and same-file re
     expect(older.turns[0]?.parts[0]).toEqual({ kind: "text", text: "prompt 0" });
     appendFileSync(path, '{"type":"user.message","data":');
     expect(transcriptPage("copilot-transcript", path).turns).toEqual(first.turns);
-    appendFileSync(path, '\n' + line("session.resume", { selectedModel: "fixture-model" }) + prompt("after resume") + answer("still here"));
+    appendFileSync(path, '{"content":"completed partial prompt"}}\n' + line("session.resume", { selectedModel: "fixture-model" }) + prompt("after resume") + answer("still here"));
     const resumed = transcriptPage("copilot-transcript", path);
     expect(resumed.history_id).toBe(first.history_id);
     expect(resumed.turns.at(-1)?.parts[0]).toEqual({ kind: "text", text: "still here", phase: "final_answer" });
@@ -282,6 +285,67 @@ it("skips oversized unrelated records and bounds selected output before parsing"
       + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "incorrect fallback" } }));
     expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBeNull();
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("bounds total tool-output scans even when a reference is missing or beyond the limit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-output-scan-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    const request = line("tool.execution_start", { toolCallId: "chosen", toolName: "shell" });
+    const output = line("tool.execution_complete", { toolCallId: "chosen", result: { content: "found" } });
+    writeFileSync(path, start + request + output);
+    expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBe("found");
+    writeFileSync(path, start + line("system.message", { content: "padding".repeat(1024 * 1024) }).repeat(6) + request + output);
+    expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBeNull();
+    expect(transcriptToolOutput("copilot-transcript", path, "missing")).toBeNull();
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== "linux")("reuses peer claims across conversation and tool reads while rechecking the pane process", async () => {
+  const own = await logFixture([]);
+  const peer = await logFixture([]);
+  const ownPane = "copilot-own";
+  const peerPane = "copilot-peer";
+  const calls: string[] = [];
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
+    calls.push(paneId);
+    return { pane_id: paneId, foreground_processes: [{ pid: paneId === ownPane ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+  });
+  const environment = spyOn(omo, "processEnviron").mockImplementation((pid) => pid === own.pid ? own.environment : peer.environment);
+  const snapshot = {
+    panes: [ownPane, peerPane].map((pane_id) => ({ pane_id, agent: "copilot", cwd: own.root })),
+    agents: [],
+  } as unknown as SessionSnapshot;
+  const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
+  try {
+    appendFileSync(own.log, register(session));
+    appendFileSync(peer.log, register(other));
+    writeFileSync(join(own.root, "session-state", session, "events.jsonl"), start + prompt("own history")
+      + line("tool.execution_start", { toolCallId: "chosen", toolName: "shell" })
+      + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "output ".repeat(1000) } }));
+    const conversation = await paneConversation(ownPane);
+    expect(conversation.source).toBe("copilot-transcript");
+    expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
+    expect(calls.filter((pane) => pane === ownPane)).toHaveLength(2);
+    const part = conversation.turns.at(-1)?.parts.at(-1);
+    if (part?.kind !== "tool" || !part.output_ref) throw new Error("tool output ref missing");
+    calls.length = 0;
+    expect(await toolOutput(ownPane, part.output_ref)).toBe("output ".repeat(1000));
+    expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
+    expect(calls.filter((pane) => pane === ownPane)).toHaveLength(2);
+    calls.length = 0;
+    info.mockImplementation(async (paneId) => {
+      calls.push(paneId);
+      if (paneId === ownPane && calls.filter((pane) => pane === ownPane).length === 2) return { pane_id: paneId, foreground_processes: [] };
+      return { pane_id: paneId, foreground_processes: [{ pid: paneId === ownPane ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+    });
+    await expect(paneConversation(ownPane)).rejects.toThrow(ConversationUnavailable);
+  } finally {
+    snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
+    forgetTranscriptState();
+    await own.close(); await peer.close();
+  }
 });
 
 it.skipIf(process.platform !== "linux")("uses only the process home and a canonical regular file with the matching native header", async () => {
@@ -440,6 +504,57 @@ for (const scenario of ["rewrite", "gap"] as const) {
   });
 }
 
+it.skipIf(process.platform !== "linux")("detects a growing mid-log rewrite with unchanged boundary bytes", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  try {
+    const padding = "ordinary line\n".repeat(6000);
+    writeFileSync(log, padding + register(session) + padding);
+    const original = binding();
+    expect(original?.sessionId).toBe(session);
+    writeFileSync(log, padding + register(other) + padding + "append\n");
+    expect(binding()?.sessionId).toBe(other);
+    expect(binding()?.generation).not.toBe(original?.generation);
+  } finally { await fixture.close(); }
+});
+
+it.each([
+  line("user.message", { content: [{ type: "text", text: "unsupported" }] }),
+  line("assistant.message", { content: [{ type: "text", text: "unsupported" }] }),
+  line("user.message", {}),
+  JSON.stringify({ type: "assistant.message", data: [] }) + "\n",
+  "malformed complete record\n",
+])("rejects unreadable history instead of returning an empty native chat: %s", (record) => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-unreadable-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, start);
+    expect(transcriptPage("copilot-transcript", path).turns).toEqual([]);
+    appendFileSync(path, record);
+    expect(() => transcriptPage("copilot-transcript", path)).toThrow(ConversationUnavailable);
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== "linux")("keeps complete bindings through safe partial lines but blocks unfinished switches", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    const original = binding();
+    for (const tail of ["ordinary partial line", "2026-10-24T00:00:00.000Z [INFO] Writing session"]) {
+      appendFileSync(log, tail);
+      expect(binding()?.generation).toBe(original?.generation);
+      expect(binding()?.sessionId).toBe(session);
+      appendFileSync(log, "\n");
+      expect(binding()?.sessionId).toBe(session);
+    }
+    appendFileSync(log, register(other).trimEnd());
+    expect(binding()).toBeNull();
+    appendFileSync(log, "\n");
+    expect(binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("recovers from an ambiguous unregister only after a fresh registration", async () => {
   const fixture = await logFixture([]);
   const { log, binding } = fixture;
@@ -500,7 +615,7 @@ it.skipIf(process.platform !== "linux")("follows process-owned foreground eviden
     appendFileSync(log, register(other, "Unregistering") + register(session));
     expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, "ordinary partial line");
-    expect(binding()).toBeNull();
+    expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, "\n");
     expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, register(other).trimEnd());

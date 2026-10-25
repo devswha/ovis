@@ -1,6 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import { processAlive, processStartedAt } from "./process-start.ts";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -12,21 +12,21 @@ const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Regist
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
   dev: number; ino: number; path: string; size: number; mtimeMs: number; ctimeMs: number;
-  boundary: string; epoch: string; binding: ForegroundBinding | null | undefined;
+  hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
 const foregroundLogProcesses = new Map<number, { started: number; observed: boolean }>();
 
-/** Check consumed content at both ends before treating the next read as an append. */
-function logBoundary(fd: number, size: number): string | null {
-  const length = Math.min(size, HEADER_BYTES);
-  const bytes = Buffer.alloc(length);
+/** Revalidate every consumed byte: unchanged boundary samples cannot prove an append. */
+function logPrefix(fd: number, size: number): Hash | null {
+  const bytes = Buffer.alloc(HEADER_BYTES);
   const hash = createHash("sha256");
-  for (const position of [0, Math.max(0, size - length)]) {
+  for (let position = 0; position < size; position += bytes.length) {
+    const length = Math.min(bytes.length, size - position);
     if (readSync(fd, bytes, 0, length, position) !== length) return null;
-    hash.update(bytes);
+    hash.update(bytes.subarray(0, length));
   }
-  return hash.digest("hex");
+  return hash;
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
@@ -92,20 +92,20 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const named = statSync(target);
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return unavailable();
           const cached = foregroundCheckpoints.get(pid);
+          const prefix = cached && stat.size >= cached.size ? logPrefix(fd, cached.size) : null;
           const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
             && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
             && (stat.size !== cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs))
-            && logBoundary(fd, cached.size) === cached.boundary;
+            && prefix?.copy().digest("hex") === cached.hash.copy().digest("hex");
           const epoch = same ? cached.epoch : randomUUID();
           const start = same ? cached.size : Math.max(0, stat.size - LOG_WINDOW_BYTES);
           const bytes = Buffer.alloc(stat.size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
-          const boundary = logBoundary(fd, stat.size);
+          const hash = same ? prefix : logPrefix(fd, start);
           const after = fstatSync(fd);
-          if (read !== bytes.length || boundary === null || after.size !== stat.size
+          if (read !== bytes.length || hash === null || after.size !== stat.size
             || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable();
           const text = bytes.subarray(0, read).toString("utf8");
-          if (text && !text.endsWith("\n")) return undefined;
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return unavailable();
@@ -121,10 +121,21 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             }
             position += Buffer.byteLength(line) + 1;
           }
+          const completeBytes = bytes.lastIndexOf(0x0a) + 1;
+          hash.update(bytes.subarray(0, completeBytes));
           foregroundCheckpoints.set(pid, {
-            dev: stat.dev, ino: stat.ino, path: target, size: stat.size,
-            mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, boundary, epoch, binding: selected,
+            dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
+            mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, hash, epoch, binding: selected,
           });
+          const tail = text.slice(text.lastIndexOf("\n") + 1);
+          if (tail) {
+            // A timestamp can still become a lifecycle event. Keep the complete
+            // checkpoint, but serve it only once the tail rules out a switch.
+            const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
+            const switchPrefixes = ["Registering foreground session: ", "Unregistering foreground session: "];
+            if (selected == null || (/^\d/.test(tail) && (message === undefined
+              || switchPrefixes.some((event) => event.startsWith(message) || message.startsWith(event))))) return undefined;
+          }
           found = selected;
         } finally { closeSync(fd); }
       } catch { return unavailable(); }
