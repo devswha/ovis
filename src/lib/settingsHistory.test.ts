@@ -308,6 +308,23 @@ describe("history traversal races", () => {
     expect(moves[2]).toEqual([{ page: null, keyBar: false, depth: 1 }, false]);
   });
 
+  it("does not take the step over buried Settings entries for Settings closing: the app's Back still goes back", async () => {
+    const browser = await delayedHistory();
+    browser.recordSettings(browser.settingsLevels(false, "about", false));
+    const stepped: boolean[] = [];
+    browser.onSettingsHistory(() => stepped.push(browser.settingsSteppedOff()));
+    browser.history.pushState({ route: "markerless" });
+    browser.history.pushState({ route: "after-markerless" });
+    await browser.move(-1);
+    browser.recordSettings([]);
+    // Back onto the buried entries steps over them to the entry they began from: a Back of the
+    // user's, which the app takes to that entry's pane, not Settings closing
+    await browser.move(-1);
+    await browser.land();
+    expect(browser.index).toBe(0);
+    expect(stepped).toEqual([false, false]);
+  });
+
   it("steps over every opening a markerless entry buried, not only the latest", async () => {
     const browser = await delayedHistory();
     const moves: Array<[ReturnType<typeof browser.settingsEntry>, boolean]> = [];

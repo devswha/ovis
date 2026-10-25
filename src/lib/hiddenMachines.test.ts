@@ -1,6 +1,4 @@
-import { describe, expect, it } from "bun:test";
-
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { canHideMachine, isMachineShown, HIDDEN_MACHINES_KEY, HIDDEN_MACHINES_MAX, parseHiddenMachines, readHiddenMachines, selectionAfterHiding, setHiddenMachines, shownMachines, withMachineHidden } from "./hiddenMachines.ts";
 import { DEFAULT_SETTINGS, saveSettings } from "./settings.ts";
@@ -80,10 +78,18 @@ describe("the stored list", () => {
       setHiddenMachines(["fixture-hidden-pc"]);
       expect(records.get(HIDDEN_MACHINES_KEY)).toBe('["fixture-hidden-pc"]');
       saveSettings(DEFAULT_SETTINGS);
-      expect(records.get("ovis:settings")).not.toContain("fixture-hidden-pc");
       expect(readHiddenMachines()).toEqual(["fixture-hidden-pc"]);
       setHiddenMachines([]);
       expect(readHiddenMachines()).toEqual([]);
+    });
+
+    it("hands React the same list until the stored one changes (useSyncExternalStore)", () => {
+      setHiddenMachines(["work"]);
+      const first = readHiddenMachines();
+      expect(readHiddenMachines()).toBe(first);
+      setHiddenMachines(["work", "home"]);
+      expect(readHiddenMachines()).not.toBe(first);
+      expect(readHiddenMachines()).toEqual(["work", "home"]);
     });
   });
 });

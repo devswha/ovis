@@ -126,7 +126,9 @@ try {
 
           await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "detached" });
-          // closing Settings steps back over its history entries, onto the one that named Work PC's pane
+          // closing Settings steps back over its history entries, onto the one that named Work PC's pane:
+          // once it has landed, the address says the pane picked meanwhile, not Work PC's
+          await page.waitForFunction(() => !(history.state !== null && typeof history.state === "object" && "ovis:settings" in history.state) && !location.search.includes("machine=work"));
           await page.locator(".machine-context-name").first().waitFor({ state: "attached" });
           assert.equal(await selection(page), "local", "the selection stays off the hidden PC after Settings closes");
           assert.equal(await page.locator(".machine-context-name").first().innerText(), "Laptop");

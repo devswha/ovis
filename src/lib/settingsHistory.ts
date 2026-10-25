@@ -68,6 +68,8 @@ type Listener = (entry: SettingsEntry | null, own: boolean) => void;
 const listeners = new Set<Listener>();
 /** whether the popstate being dispatched left Settings' entries for the one beneath: this module listens first, so the app's Back reads it for the same event */
 let steppedOff = false;
+/** a step over buried entries is under way: it lands where the user's Back meant to go, and is no closing */
+let skippingBuried = false;
 
 /**
  * Whether the popstate the app is handling is Settings closing, by its own controls or by a Back off
@@ -199,12 +201,15 @@ if (typeof window !== "undefined") {
     observed = event.state;
     const entry = settingsEntry(event.state);
     // onto the entry this opening began from, which carries its mark; Forward onto an entry above
-    // Settings (a preview opened over it) carries another and is no closing
-    steppedOff = entry === null && settingsEntry(previous) !== null && fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
+    // Settings (a preview opened over it) carries another and is no closing, nor is the step over
+    // buried entries that finishes a Back of the user's
+    steppedOff = !skippingBuried && entry === null && settingsEntry(previous) !== null && fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
+    skippingBuried = false;
     // Back from above onto the entries of a buried opening: Settings closed when they were buried,
     // so they are stepped over to the entry they began from instead of opening it again
     if (pending === null && entry !== null && buried.has(fieldOf(event.state, BASE_KEY)) && fieldOf(previous, BASE_KEY) !== fieldOf(event.state, BASE_KEY)) {
       buried.delete(fieldOf(event.state, BASE_KEY));
+      skippingBuried = true;
       rewind(entry.depth);
       return;
     }

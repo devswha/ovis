@@ -52,7 +52,11 @@ export function setHiddenMachines(ids: readonly string[]): void {
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   // another tab of this browser shows or hides a PC: this one follows
-  const onStorage = (event: StorageEvent): void => { if (event.key === HIDDEN_MACHINES_KEY || event.key === null) listener(); };
+  const onStorage = (event: StorageEvent): void => {
+    if (event.key !== HIDDEN_MACHINES_KEY && event.key !== null) return;
+    unsaved = null;
+    listener();
+  };
   window.addEventListener("storage", onStorage);
   return () => { listeners.delete(listener); window.removeEventListener("storage", onStorage); };
 }
