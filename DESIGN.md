@@ -513,7 +513,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 | Token | Value | Usage |
 |-------|-------|-------|
 | `--ui-scale` | `1`; Settings → Appearance → Interface font size over the density's body size, written on `<html>` | Multiplies every `--fs-*` token but `--fs-input` |
-| `--font-ui` | `"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif` | Chrome and chat prose |
+| `--font-ui` | `"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif`; Settings → Appearance → Interface font writes the token on `<html>`: a typed list in front of this stack, a preset as a whole stack (`src/lib/typography.ts` keeps this one verbatim) | Chrome and chat prose |
 | `--font-mono` | `"Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace` | Code, paths, keys, terminal-adjacent metadata |
 | `--lh-tight` | `1.2` | Titles |
 | `--lh-base` | `1.5` comfortable / `1.45` compact | Body copy |
@@ -603,10 +603,19 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 - Interface font size (`uiFontSize`): the body size (`--fs-md`) in px, `11–20px`, `null` follows the
   density (`14px` comfortable, `13px` compact); it reaches CSS as `--ui-scale` (above). The chat follows
   it until it has a size of its own; the terminal keeps its own size.
+- Interface font (`uiFontFamily`, kept in its own `ovis:ui-font` key so an older tab's save of
+  `ovis:settings` cannot erase it): Default (the built-in `--font-ui`), System, Noto Sans or Custom.
+  It is written as `--font-ui` on `<html>`, so everything set in it follows, the chat's prose too
+  until the chat has a font of its own. A preset is a whole stack with no Pretendard behind it, since
+  a browser takes each character from the first family that has it and Pretendard has kana but few
+  kanji: System is `system-ui, sans-serif`, so kana and kanji come from the device's own fonts;
+  Noto Sans is followed by its CJK families, the UI language's first. A typed list goes in front of
+  the built-in stack. As Zed's `ui_font_family`, it is apart from the code and terminal fonts, which
+  keep `--font-mono` and the terminal's own stack.
 - Terminal and chat font families are comma-separated lists, default empty. They go in front of the
   built-in fonts, never in place of them: the terminal's (after the bundled Symbols Nerd Font Mono,
-  which only draws icons) and `--font-ui` in the chat's prose (as `--font-chat`). The interface keeps
-  `--font-ui` and code keeps `--font-mono`. A file
+  which only draws icons) and `--font-ui` in the chat's prose (as `--font-chat`). Code keeps
+  `--font-mono`. A file
   viewer's Markdown preview takes the chat font size and family too.
   At most 200 characters, with `;`, `{`, `}`, `<`,
   `>`, `\` and control characters stripped and names with spaces quoted.
@@ -655,7 +664,8 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   event, scoped to the active, presented pane and its PC; a modal or observe mode blocks it.
   It sends no text or keys and never takes an attach. The binding follows the existing shortcut
   customization and Mod+Shift policy.
-- All settings share one sanitized `localStorage["ovis:settings"]` record.
+- Settings share one sanitized `localStorage["ovis:settings"]` record, except the interface font,
+  which is kept in `localStorage["ovis:ui-font"]` so an older tab's whole-record save cannot erase it.
 
 ## 4. Spacing & Layout
 
@@ -1037,6 +1047,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   panes have come, an empty list says **Loading agents…**, never "No agents running".
 - A PC's header is the head of its workspaces, and the caret beside its `+` is the one fold over
   them. The roster has no label or fold of its own.
+- **Settings → Remote PCs → Show in sidebar** hides a PC on this device (`lib/hiddenMachines.ts`,
+  its own `ovis:hidden-pcs` key, like the fold): it leaves the PC groups, the Agents list and the
+  command palette, stays connected, and a link or an alert to its pane still opens that pane. The
+  list shows when there are two PCs or more, the Host first; the last PC shown cannot be hidden, and
+  hiding the PC the selection is on moves it to the Host, else the first PC shown. Under the PCs a
+  quiet `--fs-xs` `--text-dim` line says how many are hidden here and opens that group. The banner of
+  a PC that needs setup or a bridge update still shows for a hidden PC: it asks for an action. herdr's
+  TUI shows one session at a time and Orca hides other clients' workspaces; Ovis shows every PC of
+  the roster, so the choice is per PC and per device, not a sidebar switch.
 - A repository's parent row keeps `workspace.label`; its opened linked
   worktree rows show their actual checkout branches. Each row's compact status
   glyph rolls up all of the workspace's panes as herdr does (blocked, then done, then working,
@@ -1907,6 +1926,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that has not written its transcript yet (a new Claude Code or Codex pane before its first
   message), so those are not greeted; an omo session not yet written answers an empty
   conversation and is.
+  While terminal output stands in for an unavailable native conversation, Chat retries on the
+  existing 2 s polling cadence, not the 10 s native-push backstop. A verified native read restores
+  the ordinary cadence without a lens switch; rejected history stays hidden meanwhile. This
+  follows T3 Code's separation of [transport health and data freshness](https://github.com/pingdotgg/t3code/blob/main/docs/internals/connection-runtime.md):
+  an open socket alone does not prove the conversation is current. No code or new controls are borrowed.
 
 ### Work block (`.work-block`, `.work-row`)
 - One per assistant turn: a `▸ Worked for 7s · 1 edit · 2 commands` header (duration = next turn's
@@ -2241,7 +2265,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is no separate Queue button or send menu. The placeholder is `Message <agent>…`; message text
   uses `--fs-chat` scaled by `--chat-scale` on `--lh-code` with a fine pointer. Otherwise it
   uses that scaled size or `--fs-input`, whichever is larger, keeping the 16px floor that avoids
-  iOS zoom. Changing Chat font size or density resizes the box around its existing draft. The
+  iOS zoom. It is set in the Chat font (`--font-chat`, else `--font-ui`), as the transcript is.
+  Changing Chat font size, either font or density resizes the box around its existing draft. The
   box's height is automatic only: it has no resize grip.
 - A local desktop composer shows the first visible account in Settings order for its agent's
   provider as a read-only usage reference inside the model pill. Plan-wide five-hour session is
@@ -2255,10 +2280,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   discards it. Actions keep a `--touch-target` touch target on phones.
   Sending disables that item's actions; errors stay inline. Uncertain messages offer Copy and
   Discard saved copy, with no retry action. Desktop and phones share this flow.
-- Accepted pending messages clear only the draft prefix acknowledged by the bridge. Actual
-  Enter delivery removes the pending row and refreshes the transcript. Next-turn delivery and
-  an explicit Send now action claim the same server ID; connection loss never resumes automatic input.
-  Previously held browser messages retain their explicit Send now/Discard recovery.
+- Accepted pending messages clear only the draft prefix acknowledged by the bridge. For agents
+  other than Pi, actual Enter delivery removes the pending row and refreshes the transcript. For
+  a message submitted from Ovis Chat to Pi, Enter changes it to a read-only **Sent to Pi ·
+  waiting for transcript** user bubble. Only a matching durable user record appended beyond the byte
+  boundary captured on that exact Pi session's unchanged active-branch prefix removes it. Pi may
+  stage input while status says idle/done during automatic compaction, so status and screen text are
+  not delivery evidence. The live receipt and its text belong only to the connection that sent it;
+  another attached typist neither sees nor acts on it. A lost connection or server restart keeps the
+  browser's saved, non-resendable **transcript confirmation unavailable** copy, but automatic
+  consumption cannot resume without that exact server-owned connection. A changed terminal or
+  session also makes confirmation unavailable. Ovis does not claim that Pi queued or consumed
+  the message until the transcript proves it. Next-turn delivery and an explicit Send
+  now action claim the same server ID. Connection loss never resumes automatic input. Previously
+  held browser messages retain their explicit Send now/Discard recovery.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and
@@ -2555,7 +2590,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   an edge swipe) takes one step out and never leaves the app from inside Settings; the Back
   control, the X, Escape and the scrim take the same entries off. Beside the list, turning pages
   replaces the one entry. A reload steps out of the entries it finds; Forward reopens the page.
-- Pages, in order: **Appearance** (theme, dark theme, light theme, density, language, sidebar rows), **Chat**
+- Pages, in order: **Appearance** (theme, dark theme, light theme, density, language, sidebar rows; then
+  **Typography**: interface font size and interface font), **Chat**
   (panes open in, show thinking, chat width, chat font size and family; then
   **Composer**: Enter sends, send queued messages automatically, in a mouse-driven window wider than
   640px the New tab button (off by default), and on a touch screen the suggestion chip (off by default); then
@@ -2564,7 +2600,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   herdr's focus), **Alerts**, **Voice input**, **Subscription usage**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (the phone address,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices),
-  **Remote PCs**, **About** (Updates, herdr, the repository links). A button that points at
+  **Remote PCs** (Add PC, Update PC bridges automatically; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
   Updates opens the dialog on About.
 - Every page is built from the same parts (`components/SettingsControls.tsx`). A group is an
   optional caption (`--fs-sm`, `--fw-semibold`, `--text-dim`, sentence case) over one card:
