@@ -5,7 +5,7 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>コーディングエージェントを、スマートフォンで。</strong>
+  <strong>すべてのコーディングエージェントを、すべての画面で。</strong>
 </p>
 
 <p align="center">
@@ -26,12 +26,12 @@
   <a href="#docs">ドキュメント</a>
 </p>
 
-コーディングエージェントは、たびたび手を止めてあなたを待ちます。権限の確認、質問、終わったターン。席を離れていると、スマートフォンのキーボードで SSH して素のターミナルを見るしかありません。[herdr](https://github.com/herdrdev/herdr) のブラウザーとスマートフォンのクライアントである Ovis は、自分のコンピューターで動く各エージェントをチャットとして表示し、確認や質問をタップで答えるカードにします。本物のターミナルもワンタップで開けます。旧称 herdr web UI。
+コーディングエージェントはターミナルで動き、たびたび手を止めてあなたを待ちます。権限の確認、質問、終わったターン。[herdr](https://github.com/herdrdev/herdr) のクライアントである Ovis は、自分のコンピューターで動く各エージェントをチャットとして表示し、確認や質問をクリックやタップで答えるカードにします。本物のターミナルもすぐ隣です。机の前でも外でも同じアプリです：Mac、Windows、Linux のブラウザー、Mac アプリ、そしてスマートフォン。旧称 herdr web UI。
 
 <p align="center">
-  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="スマートフォンで使う Ovis の画面収録：作業中の Claude Code のチャット、ワークスペース一覧、git push origin feat/export-guard を確認する Codex の Allow command? カードに Yes で回答、git log、bun test、git status を実行する本物のターミナル、そして Claude の完了通知とタップで回答に戻るところ。"></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="デスクトップのブラウザーで使う Ovis の画面収録：Claude Code に続きのメッセージを送るとターンが一歩ずつ進み、git push origin feat/export-guard を確認する Codex の Allow command? カードで Yes をクリック、シェルのペインが git log と bun test を実行する本物のターミナルとして開きます。"></a>
   <br>
-  <sub>Claude Code のチャット、<code>git push</code> の実行を確認する Codex、本物のターミナル、そして Claude の完了通知。ブラウザーで動く<a href="https://ovis.sh/demo/">デモ</a>で収録しました。</sub>
+  <sub>デスクトップのブラウザーで動く Ovis：Claude Code のターンが進み、<code>git push</code> の実行を確認する Codex に Yes と答え、シェルのペインを本物のターミナルで開きます。ブラウザーで動く<a href="https://ovis.sh/demo/">デモ</a>で収録しました。</sub>
 </p>
 
 <a id="install"></a>
@@ -45,20 +45,20 @@
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-どれも herdr と Bun がなければ一緒にインストールし、Node は不要です。Tailscale がオンなら QR コードが表示されるので、スマートフォンで読み取って Ovis を開き、ホーム画面に追加してください。iPhone（TestFlight）と Android のアプリはベータ版です：[ovis.sh/ja/beta](https://ovis.sh/ja/beta/)。
+どれも herdr と Bun がなければ一緒にインストールし、Node は不要です。表示されたアドレスを好きなブラウザーで開いてください。Tailscale がオンなら QR コードも表示されるので、スマートフォンで読み取って Ovis を開き、ホーム画面に追加できます。iPhone（TestFlight）と Android のアプリはベータ版です：[ovis.sh/ja/beta](https://ovis.sh/ja/beta/)。
 
 動作要件、PowerShell やプラグインだけのインストール、手順が失敗したときの対処：[インストールの詳細](#install-details)と [INSTALL.md](INSTALL.md)。
 
 ## できること
 
 - **herdr で動くエージェントなら何でも。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok など、ほとんどはチャットで読めます。それ以外（Letta Code など）は本物のターミナルで使えます。[対応エージェント →](docs/guide.md#supported-agents)
-- **ソファから承認。** 権限の確認や質問はカードで届きます。答えをタップすると、その確認がまだ有効かを Ovis が確かめてから送信します。
-- **本物のターミナルをワンタップで。** 机に置いてきたのと同じペインです。スマートフォンのキーボードの上のキーバーに Esc、Tab、Ctrl、矢印キーが並びます。
-- **エージェントに呼ばれたら通知。** 質問が来たときや作業が終わったとき、アプリを閉じていてもプッシュ通知が届きます。
+- **クリックやタップで答える。** 権限の確認や質問はカードで届きます。Ovis はその確認がまだ有効かを確かめてから回答を送ります。
+- **本物のターミナルをワンクリックで。** herdr が表示しているのと同じペインがライブで開きます。スマートフォンではキーボードの上のキーバーに Esc、Tab、Ctrl、矢印キーが並びます。
 - **すべてのワークスペースをひとつのリストに。** herdr のワークスペース、タブ、分割ペインに、SSH でつないだ別の PC まで。あなたを待っているものには印が付きます。
+- **机の前でも、外出先でも。** ブラウザー、Mac アプリ、スマートフォンで同じチャットを見られ、エージェントが質問したり作業を終えたりすると、アプリを閉じていてもプッシュ通知が届きます。
 - **無料、MIT ライセンス。** 自分のコンピューターで動き、登録するアカウントはありません。
 
-**制約：** Ovis には [herdr](https://github.com/herdrdev/herdr) と自分のコンピューターが必要です。電源が入っていて、スマートフォンから届く状態（Tailscale、VPN、SSH トンネル）にしておいてください。エージェントはクラウドではなく、そのコンピューターで動きます。
+**制約：** Ovis には [herdr](https://github.com/herdrdev/herdr) と、電源の入った自分のコンピューターが必要です。スマートフォンなど別の端末から使うには、その端末からコンピューターに届く必要があります（Tailscale、VPN、SSH トンネル）。エージェントはクラウドではなく、そのコンピューターで動きます。
 
 ## 動いているところ
 

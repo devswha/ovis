@@ -5,7 +5,7 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>Your coding agents, on your phone.</strong>
+  <strong>Every coding agent, on every screen.</strong>
 </p>
 
 <p align="center">
@@ -26,12 +26,12 @@
   <a href="#docs">docs</a>
 </p>
 
-Coding agents stop and wait for you: a permission prompt, a question, a finished turn. Away from your desk, that means SSH and a raw terminal on a phone keyboard. Ovis, the browser and phone client for [herdr](https://github.com/herdrdev/herdr), shows each agent running on your computer as a chat, with its prompts as cards you tap and the live terminal one tap away. Formerly herdr web UI.
+Coding agents live in terminals, and they keep stopping to wait for you: a permission prompt, a question, a finished turn. Ovis, the client for [herdr](https://github.com/herdrdev/herdr), shows each agent on your computer as a chat, with its prompts as cards you click or tap and the live terminal one step away. It is the same app at your desk and away from it: any browser on Mac, Windows or Linux, the Mac app, and your phone. Formerly herdr web UI.
 
 <p align="center">
-  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="Screen recording of Ovis on a phone: Claude Code's chat while it works, the workspace list, Codex's Allow command? card for git push origin feat/export-guard answered Yes, the live terminal running git log, bun test and git status, then an alert that Claude finished and a tap back to its answer."></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="Screen recording of Ovis in a desktop browser: a follow-up is sent to Claude Code and its turn streams in step by step; Codex asks Allow command? for git push origin feat/export-guard and Yes is clicked; a shell pane opens as a live terminal running git log and bun test."></a>
   <br>
-  <sub>Claude Code's chat, Codex asking to run <code>git push</code>, the live terminal, then the alert when Claude is done. Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
+  <sub>Ovis in a desktop browser: a Claude Code turn streams in, Codex asks to run <code>git push</code> and gets a Yes, then a shell pane as its live terminal. Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
 </p>
 
 ## install
@@ -43,20 +43,20 @@ Coding agents stop and wait for you: a permission prompt, a question, a finished
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-Each one adds herdr and Bun if they are missing; Node is not needed. With Tailscale on, it shows a QR code: scan it to open Ovis on your phone, then add it to the home screen. The iPhone (TestFlight) and Android apps are in beta: [ovis.sh/beta](https://ovis.sh/beta/).
+Each one adds herdr and Bun if they are missing; Node is not needed. Then open the address it prints in any browser. With Tailscale on, it also shows a QR code: scan it to open Ovis on your phone and add it to the home screen. The iPhone (TestFlight) and Android apps are in beta: [ovis.sh/beta](https://ovis.sh/beta/).
 
 Requirements, the PowerShell and plugin-only installs, and what to do when a step fails: [install details](#install-details) and [INSTALL.md](INSTALL.md).
 
 ## what you get
 
 - **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most of them as a chat. The rest, like Letta Code, work through the live terminal. [Supported agents →](docs/guide.md#supported-agents)
-- **Approve from the couch.** Permission prompts and questions come up as cards. Tap an answer; Ovis checks the prompt is still current before sending it.
-- **The real terminal, one tap away.** The same pane you left at your desk, with Esc, Tab, Ctrl and arrows on a key bar above the phone keyboard.
-- **Alerts when an agent needs you.** A push alert when one asks something or finishes, even with the app closed.
+- **Answer with a click or a tap.** Permission prompts and questions come up as cards. Ovis checks the prompt is still current before it sends your answer.
+- **The real terminal, one click away.** The same pane herdr shows, live. On a phone, a key bar puts Esc, Tab, Ctrl and arrows above the keyboard.
 - **Every workspace in one list.** All your herdr workspaces, tabs and splits, plus other PCs over SSH, with the ones waiting on you marked.
+- **At your desk or away from it.** The same chats in a browser, the Mac app and on your phone, with a push alert when an agent asks something or finishes, even with the app closed.
 - **Free and MIT.** It runs on your own computer, with no account to sign up for.
 
-**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on and reachable from the phone (Tailscale, a VPN or an SSH tunnel). The agents run there, not in a cloud.
+**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on. Another device, like your phone, has to reach it (Tailscale, a VPN or an SSH tunnel). The agents run there, not in a cloud.
 
 ## see it work
 

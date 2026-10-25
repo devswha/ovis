@@ -5,7 +5,7 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>내 코딩 에이전트를 폰에서.</strong>
+  <strong>모든 코딩 에이전트를, 모든 화면에서.</strong>
 </p>
 
 <p align="center">
@@ -26,12 +26,12 @@
   <a href="#docs">문서</a>
 </p>
 
-코딩 에이전트는 자꾸 멈춰서 나를 기다립니다. 권한 요청, 질문, 끝난 턴. 자리를 비우면 폰 키보드로 SSH에 붙어 터미널을 그대로 들여다봐야 하죠. [herdr](https://github.com/herdrdev/herdr)의 브라우저·폰 클라이언트인 Ovis는 내 컴퓨터에서 돌아가는 에이전트를 하나씩 채팅으로 보여 주고, 요청은 탭해서 답하는 카드로 띄웁니다. 실제 터미널도 탭 한 번이면 열립니다. 이전 이름은 herdr web UI입니다.
+코딩 에이전트는 터미널에서 돌아가고, 자꾸 멈춰서 나를 기다립니다. 권한 요청, 질문, 끝난 턴. [herdr](https://github.com/herdrdev/herdr)의 클라이언트인 Ovis는 내 컴퓨터의 에이전트를 하나씩 채팅으로 보여 주고, 요청은 클릭하거나 탭해서 답하는 카드로 띄웁니다. 실제 터미널도 바로 옆에 있습니다. 책상 앞에서든 밖에서든 같은 앱입니다: Mac, Windows, Linux의 아무 브라우저, Mac 앱, 그리고 폰. 이전 이름은 herdr web UI입니다.
 
 <p align="center">
-  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="폰에서 쓰는 Ovis 화면 녹화: 작업 중인 Claude Code 채팅, 워크스페이스 목록, git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에 Yes로 답하기, git log, bun test, git status를 실행하는 실제 터미널, Claude가 끝났다는 알림과 탭해서 그 답으로 돌아가기."></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="데스크톱 브라우저에서 쓰는 Ovis 화면 녹화: Claude Code에 후속 메시지를 보내자 턴이 단계별로 진행되고, git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에서 Yes를 누르고, 셸 pane이 git log와 bun test를 실행하는 실제 터미널로 열립니다."></a>
   <br>
-  <sub>Claude Code 채팅, <code>git push</code> 실행을 묻는 Codex, 실제 터미널, 그리고 Claude가 끝났다는 알림. 브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
+  <sub>데스크톱 브라우저의 Ovis: Claude Code의 턴이 진행되고, <code>git push</code> 실행을 묻는 Codex에 Yes로 답한 뒤, 셸 pane을 실제 터미널로 엽니다. 브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
 </p>
 
 <a id="install"></a>
@@ -45,20 +45,20 @@
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-어느 쪽이든 herdr와 Bun이 없으면 함께 설치하며, Node는 필요 없습니다. Tailscale이 켜져 있으면 QR 코드가 뜹니다. 폰으로 스캔해 Ovis를 열고 홈 화면에 추가하세요. iPhone(TestFlight)과 Android 앱은 베타입니다: [ovis.sh/ko/beta](https://ovis.sh/ko/beta/).
+어느 쪽이든 herdr와 Bun이 없으면 함께 설치하며, Node는 필요 없습니다. 설치가 끝나면 알려 주는 주소를 아무 브라우저에서 엽니다. Tailscale이 켜져 있으면 QR 코드도 뜹니다. 폰으로 스캔해 Ovis를 열고 홈 화면에 추가하세요. iPhone(TestFlight)과 Android 앱은 베타입니다: [ovis.sh/ko/beta](https://ovis.sh/ko/beta/).
 
 요구 사항, PowerShell 설치와 플러그인만 설치하는 방법, 단계가 실패했을 때 할 일: [설치 자세히](#install-details), [INSTALL.md](INSTALL.md).
 
 ## 할 수 있는 일
 
 - **herdr가 돌리는 에이전트라면 무엇이든.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분은 채팅으로 봅니다. 나머지(Letta Code 등)는 실제 터미널로 씁니다. [지원 에이전트 →](docs/guide.md#supported-agents)
-- **소파에서 승인.** 권한 요청과 질문이 카드로 뜹니다. 답을 탭하면 Ovis가 그 요청이 아직 유효한지 확인한 뒤 보냅니다.
-- **실제 터미널이 탭 한 번 거리에.** 책상에 두고 온 그 pane 그대로이고, 폰 키보드 위 키 바에 Esc, Tab, Ctrl, 방향키가 있습니다.
-- **에이전트가 나를 찾을 때 알림.** 질문하거나 일을 끝내면 앱이 닫혀 있어도 푸시 알림이 옵니다.
+- **클릭이나 탭으로 답하기.** 권한 요청과 질문이 카드로 뜹니다. Ovis는 그 요청이 아직 유효한지 확인한 뒤 답을 보냅니다.
+- **실제 터미널이 클릭 한 번 거리에.** herdr가 보여 주는 바로 그 pane이 실시간으로 열립니다. 폰에서는 키보드 위 키 바에 Esc, Tab, Ctrl, 방향키가 있습니다.
 - **모든 워크스페이스를 한 목록에.** herdr의 워크스페이스, 탭, 분할 pane에 SSH로 붙인 다른 PC까지 보이고, 나를 기다리는 것은 표시됩니다.
+- **책상 앞에서도, 밖에서도.** 브라우저, Mac 앱, 폰에서 같은 채팅을 보고, 에이전트가 질문하거나 일을 끝내면 앱이 닫혀 있어도 푸시 알림이 옵니다.
 - **무료, MIT.** 내 컴퓨터에서 돌아가고, 가입할 계정이 없습니다.
 
-**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 내 컴퓨터가 필요합니다. 컴퓨터가 켜져 있고 폰에서 닿아야 합니다(Tailscale, VPN, SSH 터널). 에이전트는 클라우드가 아니라 그 컴퓨터에서 돌아갑니다.
+**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요합니다. 폰 같은 다른 기기에서 쓰려면 그 기기가 컴퓨터에 닿아야 합니다(Tailscale, VPN, SSH 터널). 에이전트는 클라우드가 아니라 그 컴퓨터에서 돌아갑니다.
 
 ## 동작 모습
 
