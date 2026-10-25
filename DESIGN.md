@@ -1850,13 +1850,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   column is never narrower than its longest word, and a table without room scrolls sideways in
   its own box.
   Thinking renders as a folded block only when **Show thinking** is enabled.
-- Auto-follow stops when the reader scrolls up; later output raises a **New messages** pill.
+- Auto-follow stops when the reader scrolls up, or opens a tool, a folded block or a whole output:
+  they read there, and the opened row stays put while the turn streams below it (#1388). T3 Code
+  keeps a reader at the very bottom pinned when they toggle a tool; Ovis already reads scrolling
+  up as "stop following until I come back", and opening joins that rule. Later output raises a
+  **New messages** pill. A gjc rewrite of its session file (compaction or trimmed tool outputs, a
+  new history ID whose newest page still opens with every turn shown, same parts) keeps the rows,
+  what was opened and the reader's place; any other new history starts over.
   A message sent from this browser's message box resumes it once the bridge accepts it at once
   (a receipt with no pending item, no refusal and no uncertain answer): the view goes to the end
   and follows the turn and its reply there. Agent of Empires re-pins its view on any prompt, local,
   remote or replayed; Ovis's sends carry a receipt, so only that accepted local receipt counts. A
   refused, uncertain, queued or Send now delivery, another browser's message, a reconnect and a
-  pane opened again keep the reader's place. Scrolling or paging back, a minimap jump, a restored
+  pane opened again keep the reader's place. Scrolling or paging back, opening a tool, a folded
+  block or a whole output, a minimap jump, a restored
   place, a replaced history or leaving the pane after the message went out, before its receipt or
   before its turn shows, cancels the follow. Nothing new is drawn: the existing Jump to latest and
   New messages controls keep the Ovis/Codex chat look.
