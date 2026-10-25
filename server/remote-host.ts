@@ -31,6 +31,9 @@ export const HERDR_INSTALL_CMD = "https://herdr.dev/install.cmd";
 
 /** the upload is cut off after this long on the PC, as a dead SSH link may never deliver EOF */
 export const INSTALL_UPLOAD_TIMEOUT_S = 25 * 60;
+const INSTALL_EXTRACT_TIMEOUT_MS = 10 * 60_000;
+// Allow time for staging, progress probes and cleanup beyond the bounded upload and extraction.
+const INSTALL_LOCK_MAX_AGE_MINUTES = Math.ceil((INSTALL_UPLOAD_TIMEOUT_S * 1000 + INSTALL_EXTRACT_TIMEOUT_MS) / 60_000) + 5;
 /**
  * Takes `$base/install.lock` (a directory holding the owner's PID). A lock whose owner is
  * gone, or that outlived the longest possible install (the local SSH timeout is 30 minutes),
@@ -45,7 +48,7 @@ export const INSTALL_UPLOAD_TIMEOUT_S = 25 * 60;
  * other installers see it as in progress, and if its creator dies there, only the age check
  * can reclaim it.
  */
-export const POSIX_INSTALL_LOCK = `lock="$base/install.lock"; if ! mkdir "$lock" 2>/dev/null; then mkdir "$lock.reclaim" 2>/dev/null || { test -z "$(find "$lock.reclaim" -maxdepth 0 -mmin +2 2>/dev/null)" || rmdir "$lock.reclaim" 2>/dev/null; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; owner=$(cat "$lock/pid" 2>/dev/null || true); if { test -n "$owner" && ! kill -0 "$owner" 2>/dev/null; } || test -n "$(find "$lock" -maxdepth 0 -mmin +35 2>/dev/null)"; then rm -rf "$lock"; mkdir "$lock" 2>/dev/null || { rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; printf '%s' "$$" > "$lock/pid"; rmdir "$lock.reclaim"; else rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; fi; fi; printf '%s' "$$" > "$lock/pid";`;
+export const POSIX_INSTALL_LOCK = `lock="$base/install.lock"; if ! mkdir "$lock" 2>/dev/null; then mkdir "$lock.reclaim" 2>/dev/null || { test -z "$(find "$lock.reclaim" -maxdepth 0 -mmin +2 2>/dev/null)" || rmdir "$lock.reclaim" 2>/dev/null; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; owner=$(cat "$lock/pid" 2>/dev/null || true); if { test -n "$owner" && ! kill -0 "$owner" 2>/dev/null; } || test -n "$(find "$lock" -maxdepth 0 -mmin +${INSTALL_LOCK_MAX_AGE_MINUTES} 2>/dev/null)"; then rm -rf "$lock"; mkdir "$lock" 2>/dev/null || { rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; printf '%s' "$$" > "$lock/pid"; rmdir "$lock.reclaim"; else rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; fi; fi; printf '%s' "$$" > "$lock/pid";`;
 /** the exit trap's release: only a lock this shell still owns, never a successor's */
 export const POSIX_INSTALL_RELEASE = `test "$(cat "$lock/pid" 2>/dev/null)" != "$$" || rm -rf "$lock"`;
 
@@ -58,8 +61,7 @@ export const POSIX_INSTALL_RELEASE = `test "$(cat "$lock/pid" 2>/dev/null)" != "
  * `$owner` attempt beneath this server and target's stable `$reclaim` prefix. This process admits
  * only one live attempt for that prefix, so a matching lock is its stopped predecessor; cleanup
  * still compares the whole unique owner and can never remove a successor's lock. A peer's lock is
- * reclaimed only when it outlived the longest possible install (the 25 minute upload plus the
- * 10 minute extraction).
+ * reclaimed only after the bounded upload and extraction, plus a margin for the other SSH calls.
  *
  * Reclaiming happens under `install.lock.reclaim`, a second mutex, with the owner and age read
  * again inside it: two installers that both judged the lock stale cannot then delete each other's
@@ -68,7 +70,7 @@ export const POSIX_INSTALL_RELEASE = `test "$(cat "$lock/pid" 2>/dev/null)" != "
  * under `pwsh` off Windows, where the tests exercise them.
  * Expects `$base`, `$reclaim` and `$owner`; sets `$lock`.
  */
-export const WINDOWS_INSTALL_LOCK = `$lock = Join-Path $base 'install.lock'; $mutex = "$lock.reclaim"; $created = $false; try { New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch {}; if (-not $created) { try { New-Item -ItemType Directory $mutex -ErrorAction Stop | Out-Null } catch { $stale = Get-Item -LiteralPath $mutex -ErrorAction SilentlyContinue; if ($stale -and ((Get-Date).ToUniversalTime() - $stale.LastWriteTimeUtc).TotalMinutes -gt 2) { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue }; throw 'Another installation is in progress; retry shortly' }; try { if (Test-Path -LiteralPath $lock) { $held = ([string](Get-Content -LiteralPath (Join-Path $lock 'owner') -Raw -ErrorAction SilentlyContinue)).Trim(); $age = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $lock).LastWriteTimeUtc).TotalMinutes; if ($held.StartsWith($reclaim + ':') -or ($age -gt 35)) { Remove-Item -Recurse -Force $lock -ErrorAction SilentlyContinue } }; New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch { throw 'Another installation is in progress; retry shortly' } finally { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue } }; if (-not $created) { throw 'Another installation is in progress; retry shortly' }; Set-Content -LiteralPath (Join-Path $lock 'owner') -Value $owner -NoNewline -Encoding ascii`;
+export const WINDOWS_INSTALL_LOCK = `$lock = Join-Path $base 'install.lock'; $mutex = "$lock.reclaim"; $created = $false; try { New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch {}; if (-not $created) { try { New-Item -ItemType Directory $mutex -ErrorAction Stop | Out-Null } catch { $stale = Get-Item -LiteralPath $mutex -ErrorAction SilentlyContinue; if ($stale -and ((Get-Date).ToUniversalTime() - $stale.LastWriteTimeUtc).TotalMinutes -gt 2) { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue }; throw 'Another installation is in progress; retry shortly' }; try { if (Test-Path -LiteralPath $lock) { $held = ([string](Get-Content -LiteralPath (Join-Path $lock 'owner') -Raw -ErrorAction SilentlyContinue)).Trim(); $age = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $lock).LastWriteTimeUtc).TotalMinutes; if ($held.StartsWith($reclaim + ':') -or ($age -gt ${INSTALL_LOCK_MAX_AGE_MINUTES})) { Remove-Item -Recurse -Force $lock -ErrorAction SilentlyContinue } }; New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch { throw 'Another installation is in progress; retry shortly' } finally { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue } }; if (-not $created) { throw 'Another installation is in progress; retry shortly' }; Set-Content -LiteralPath (Join-Path $lock 'owner') -Value $owner -NoNewline -Encoding ascii`;
 
 /** the Windows release: only a lock this server still owns, never a successor's */
 export const WINDOWS_INSTALL_RELEASE = `$target = Join-Path $base 'install.lock'; if ((Test-Path -LiteralPath $target) -and (([string](Get-Content -LiteralPath (Join-Path $target 'owner') -Raw -ErrorAction SilentlyContinue)).Trim() -eq $owner)) { Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue }`;
@@ -284,7 +286,7 @@ export const windowsHost: RemoteHost = {
       const cleanup = () => ssh.runPowerShell(`Remove-Item -Recurse -Force ${psQuote(stage)} -ErrorAction SilentlyContinue; $base = ${psQuote(base)}; $owner = ${psQuote(owner)}; ${WINDOWS_INSTALL_RELEASE}`).catch(() => {});
       try {
         // sftp says nothing about how far it is: the file's size on the PC does
-        const upload = ssh.upload(input.path, archive);
+        const upload = ssh.upload(input.path, archive, INSTALL_UPLOAD_TIMEOUT_S * 1000);
         let settled = false;
         void upload.finally(() => { settled = true; });
         while (!settled) {
@@ -314,7 +316,7 @@ export const windowsHost: RemoteHost = {
         "  if (Test-Path $current) { if ((Get-Item $current).Attributes -band [IO.FileAttributes]::ReparsePoint) { [IO.Directory]::Delete($current) } else { Move-Item $current \"$current-legacy-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())\" } }",
         "  New-Item -ItemType Junction -Path $current -Target $release | Out-Null",
         `} finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; ${WINDOWS_INSTALL_RELEASE} }`,
-      ].join("\n"), undefined, 10 * 60_000);
+      ].join("\n"), undefined, INSTALL_EXTRACT_TIMEOUT_MS);
     });
   },
   async installHerdr(ssh) {

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installLockOwner, POSIX_INSTALL_LOCK, POSIX_INSTALL_RELEASE, WINDOWS_INSTALL_LOCK, WINDOWS_INSTALL_RELEASE, withWindowsInstallAttempt } from "./remote-host.ts";
+import { REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
+import { INSTALL_UPLOAD_TIMEOUT_S, installLockOwner, posixHost, POSIX_INSTALL_LOCK, POSIX_INSTALL_RELEASE, windowsHost, WINDOWS_INSTALL_LOCK, WINDOWS_INSTALL_RELEASE, withWindowsInstallAttempt } from "./remote-host.ts";
+import type { SshConnection } from "./ssh.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -46,10 +49,20 @@ describe("POSIX install lock", () => {
     const { lock, run } = acquire();
     mkdirSync(lock);
     writeFileSync(join(lock, "pid"), String(process.pid));
-    const old = new Date(Date.now() - 40 * 60_000);
+    const old = new Date(Date.now() - 45 * 60_000);
     utimesSync(lock, old, old);
     expect(run().exitCode).toBe(0);
     expect(readFileSync(join(lock, "pid"), "utf8")).not.toBe(String(process.pid));
+  });
+
+  it("keeps a live lock through the upload and extraction margin", () => {
+    const { lock, run } = acquire();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "pid"), String(process.pid));
+    const age = new Date(Date.now() - 36 * 60_000);
+    utimesSync(lock, age, age);
+    expect(run().exitCode).toBe(1);
+    expect(readFileSync(join(lock, "pid"), "utf8")).toBe(String(process.pid));
   });
 
   it("leaves the lock alone while another installer holds the reclaim mutex", () => {
@@ -99,6 +112,46 @@ describe("POSIX install lock", () => {
  */
 const pwsh = Bun.which("pwsh");
 const psq = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+it("keeps both reclaim ages beyond the actual SSH install timeouts", async () => {
+  const base = mkdtempSync(join(tmpdir(), "install-timeouts-"));
+  dirs.push(base);
+  const bytes = Buffer.from("test runtime bundle");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  writeFileSync(join(base, "bundle.tgz"), bytes);
+  const manifest = join(base, "manifest.json");
+  const asset = { url: "bundle.tgz", sha256 };
+  writeFileSync(manifest, JSON.stringify({ version: REMOTE_BUNDLE_VERSION, assets: { "win32-x64": asset, "linux-x64": asset } }));
+  const previous = process.env["OVIS_BUNDLE_MANIFEST"];
+  process.env["OVIS_BUNDLE_MANIFEST"] = manifest;
+  let uploadTimeout: number | undefined;
+  let extractTimeout: number | undefined;
+  let posixTimeout: number | undefined;
+  const ssh = {
+    target: { destination: "test@windows" },
+    async run(_script: string, _input?: unknown, timeout?: number) { posixTimeout = timeout; return ""; },
+    async upload(_local: string, _remote: string, timeout?: number) { uploadTimeout = timeout; },
+    async runPowerShell(script: string, _input?: unknown, timeout?: number) {
+      if (script.includes("Get-FileHash")) extractTimeout = timeout;
+      return "C:\\Users\\test\\AppData\\Local\\herdr-web-ui";
+    },
+  } as unknown as SshConnection;
+  try {
+    await windowsHost.installBundle(ssh, "win32-x64", new AbortController().signal);
+    await posixHost.installBundle(ssh, "linux-x64", new AbortController().signal);
+    expect(uploadTimeout).toBe(INSTALL_UPLOAD_TIMEOUT_S * 1000);
+    expect(extractTimeout).toBeGreaterThan(0);
+    const windowsAge = Number(WINDOWS_INSTALL_LOCK.match(/\$age -gt (\d+)/)?.[1]);
+    const posixAge = Number(POSIX_INSTALL_LOCK.match(/find "\$lock" -maxdepth 0 -mmin \+(\d+)/)?.[1]);
+    expect(windowsAge * 60_000).toBeGreaterThan(uploadTimeout! + extractTimeout!);
+    expect(posixAge).toBe(windowsAge);
+    expect(posixTimeout).toBeGreaterThan(0);
+    expect(posixAge * 60_000).toBeGreaterThan(posixTimeout!);
+  } finally {
+    if (previous === undefined) delete process.env["OVIS_BUNDLE_MANIFEST"];
+    else process.env["OVIS_BUNDLE_MANIFEST"] = previous;
+  }
+});
 
 function acquireWindows(reclaim = "test-host") {
   const base = mkdtempSync(join(tmpdir(), "install-lock-win-"));
@@ -170,10 +223,20 @@ describe.skipIf(!pwsh)("Windows install lock", () => {
     const { lock, run } = acquireWindows();
     mkdirSync(lock);
     writeFileSync(join(lock, "owner"), "peer-host:9");
-    const old = new Date(Date.now() - 40 * 60_000);
+    const old = new Date(Date.now() - 45 * 60_000);
     utimesSync(lock, old, old);
     expect(run().exitCode).toBe(0);
     expect(readFileSync(join(lock, "owner"), "utf8")).toBe("test-host:1");
+  });
+
+  it("keeps a peer's lock through the upload and extraction margin", () => {
+    const { lock, run } = acquireWindows();
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "peer-host:9");
+    const age = new Date(Date.now() - 36 * 60_000);
+    utimesSync(lock, age, age);
+    expect(run().exitCode).not.toBe(0);
+    expect(readFileSync(join(lock, "owner"), "utf8")).toBe("peer-host:9");
   });
 
   it("leaves a live peer's lock alone while another installer holds the reclaim mutex", () => {
