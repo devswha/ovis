@@ -971,7 +971,7 @@ export function Composer({
       // a typed pick waits in the card above: the empty box's Enter is its Confirm and Escape its
       // Cancel, so the keyboard alone answers, as it does in the agent's own menu. A held Enter's
       // repeats confirm nothing: its first press was the pick
-      if (waitingAnswer !== null && textRef.current.trim() === "") {
+      if (waitingAnswer !== null && textRef.current === "") {
         if (event.key === "Escape") {
           event.preventDefault();
           waitingAnswer.cancel();

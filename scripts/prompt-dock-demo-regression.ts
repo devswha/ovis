@@ -411,8 +411,12 @@ try {
           await page.locator(".prompt-card-confirm").waitFor();
           await page.keyboard.down("Enter");
           await page.keyboard.up("Enter");
-          await page.waitForTimeout(300); // fixed wait: a repeated Enter may answer nothing
-          assert.deepEqual(await answersOf(page), [], "a held Enter does not confirm its own pick");
+          // a box holding only a space is not empty: its Enter keeps the pick waiting
+          await box.fill(" ");
+          await box.press("Enter");
+          await page.waitForTimeout(300); // fixed wait: a repeated Enter, or one over a space, may answer nothing
+          assert.deepEqual(await answersOf(page), [], "a held Enter, or an Enter over a space, does not confirm the pick");
+          assert.equal(await page.locator(".prompt-card-confirm").count(), 1);
           // text in the box is a message being written: Escape there leaves the pick waiting
           await box.fill("never mind");
           await box.press("Escape");
