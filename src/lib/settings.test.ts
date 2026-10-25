@@ -293,6 +293,7 @@ describe("telemetry settings snapshot", () => {
     const settings = sanitizeSettings({
       terminalFontFamily: "private-terminal-font",
       chatFontFamily: "private-chat-font",
+      uiFontFamily: "private-ui-font",
       shortcutOverrides: { palette: "x" },
       keyBarItems: [{ type: "key", key: "x" }],
       keyBarExtras: ["alt", "shift-tab"],
@@ -313,10 +314,10 @@ describe("telemetry settings snapshot", () => {
       usageHiddenCount: 1,
       usageOrderCustom: true,
     });
-    for (const key of ["keyBarExtras", "keyBarItems", "shortcutOverrides", "terminalFontFamily", "chatFontFamily", "quickReplies", "usageOrder", "usageHidden"]) {
+    for (const key of ["keyBarExtras", "keyBarItems", "shortcutOverrides", "terminalFontFamily", "chatFontFamily", "uiFontFamily", "quickReplies", "usageOrder", "usageHidden"]) {
       expect(snapshot).not.toHaveProperty(key);
     }
-    for (const raw of ["private-terminal-font", "private-chat-font", "private quick reply", "private-order-account-id", "private-hidden-account-id"]) {
+    for (const raw of ["private-terminal-font", "private-chat-font", "private-ui-font", "private quick reply", "private-order-account-id", "private-hidden-account-id"]) {
       expect(serialized).not.toContain(raw);
     }
   });
