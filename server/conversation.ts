@@ -42,7 +42,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, codexTranscriptImage } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, codexTranscriptImage, MAX_IMAGE_BYTES } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -65,7 +65,7 @@ import { answerVersion, ConversationNotStarted, ConversationUnavailable, type Co
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, parseOmpTranscript, piImageBlock, piMessage, piResults, type TranscriptParser } from "./transcript-records.ts";
-import { claudeResultText, createClaudeTranscriptParser, IMAGE_TYPES, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
+import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
@@ -245,6 +245,8 @@ const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
 const COPILOT_SETTING_TYPES = ['"session.model_change"', '"session.resume"'];
 type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | "copilot_effort";
 const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
+/** a Claude record that holds a picture, up to the largest one the chat shows, is followed whole when it crosses a window */
+const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript") return;
   let scan = clearScans.get(path);
@@ -296,8 +298,9 @@ function applyHistoryBoundary(path: string, stream: TranscriptStream, source: Re
       scan.scanned = base + offset;
     }
     carry = bytes.subarray(offset);
-    // An oversized data record cannot be a native clear control envelope.
-    if (carry.length > METADATA_HEAD_BYTES) { carry = Buffer.alloc(0); skipping = true; }
+    // An oversized data record cannot be a native clear control envelope; a Claude prompt that is a
+    // screenshot can still be where the session's branch forks
+    if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) { carry = Buffer.alloc(0); skipping = true; }
     position = end;
   }
   scan.tail = bytesBefore(stream, scan.scanned);
@@ -1520,13 +1523,14 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
 }
 
 /**
- * One image a user pasted into a Claude prompt, by the ref its image part carries
- * (`<entry uuid>:<block index>`): the transcript holds it as base64, so it is decoded
- * here rather than sent with every poll of the conversation. Null when there is no such
+ * One image in a pane's conversation, by the ref its part carries: for Claude a picture pasted
+ * into a prompt (`<entry uuid>:<block index>`) or one a tool returned
+ * (`<entry uuid>:<block index>:<index in the result>`). The transcript holds it as base64, so it
+ * is decoded here rather than sent with every poll of the conversation. Null when there is no such
  * image. Codex uses a hash of the native attachment and searches only the bound history.
  */
 export async function conversationImage(paneId: string, ref: string, codexHome?: string, opencodeDb?: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  if (!IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
+  if (!CLAUDE_IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
@@ -1541,28 +1545,270 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 
-const IMAGE_REF = /^([0-9a-f-]{8,64}):(\d{1,3})$/i;
+/** How much of a transcript the image endpoint reads at a time while it looks for a ref's entry. */
+const IMAGE_SEARCH_WINDOW = 1024 * 1024;
 
-/** The image an image part's ref names in a Claude transcript file, decoded; null when there is none. */
-export function transcriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
-  const match = IMAGE_REF.exec(ref);
-  if (match === null) return null;
-  const [, uuid, index] = match;
-  let text: string;
-  try { text = readFileSync(path, "utf8"); } catch { return null; }
-  text = activeHistoryText(text, "claude-transcript");
-  const needle = JSON.stringify(uuid);
-  for (const line of text.split("\n")) {
-    if (!line.includes(needle)) continue;
-    let entry: TranscriptEntry;
-    try { entry = JSON.parse(line) as TranscriptEntry; } catch { continue; }
-    if (entry.uuid !== uuid || !Array.isArray(entry.message?.content)) continue;
-    const block = entry.message.content[Number(index)] as { type?: unknown; source?: { type?: unknown; media_type?: unknown; data?: unknown } } | undefined;
-    if (block?.type !== "image" || block.source?.type !== "base64" || typeof block.source.data !== "string") return null;
-    const mediaType = String(block.source.media_type);
-    if (!IMAGE_TYPES.has(mediaType)) return null;
-    return { mediaType, bytes: new Uint8Array(Buffer.from(block.source.data, "base64")) };
+/** The short escapes JSON has for some characters inside a string. */
+const JSON_SHORT_ESCAPES: Readonly<Record<string, string>> = { '"': '\\"', "\\": "\\\\", "/": "\\/", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+/**
+ * A pattern for `text` however JSON may write it inside a string (each character as itself, as a
+ * \u escape in either case, or as its short escape), over bytes read as latin1, and the longest
+ * stretch of bytes it can match.
+ */
+function jsonTextPattern(text: string): { pattern: RegExp; span: number } {
+  const literal = (bytes: string) => bytes.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
+  let source = "";
+  let span = 0;
+  for (const char of text) {
+    const forms: string[] = [];
+    if (char !== '"' && char !== "\\" && char.codePointAt(0)! >= 0x20) forms.push(literal(Buffer.from(char, "utf8").toString("latin1")));
+    const short = JSON_SHORT_ESCAPES[char];
+    if (short !== undefined) forms.push(literal(short));
+    let units = "";
+    for (let index = 0; index < char.length; index += 1) units += "\\\\u" + char.charCodeAt(index).toString(16).padStart(4, "0").replace(/[a-f]/g, (digit) => `[${digit}${digit.toUpperCase()}]`);
+    forms.push(units);
+    source += `(?:${forms.join("|")})`;
+    span += Math.max(Buffer.byteLength(char, "utf8"), 6 * char.length);
   }
+  return { pattern: new RegExp(source), span };
+}
+
+/**
+ * Where the lines `text` is in (as JSON writes it, jsonTextPattern) lie in [from, to) of the stream,
+ * found a window at a time, so a transcript is searched and never held whole. A line off the branch
+ * reads blank (readStream).
+ */
+function linesWith(stream: TranscriptStream, text: string, from: number, to: number): [number, number][] {
+  const { pattern, span } = jsonTextPattern(text);
+  const found: [number, number][] = [];
+  let start = from;
+  let hit = false;
+  // the end of the line so far: text a window's edge cuts in two is still found
+  let tail = "";
+  for (let position = from; position < to; position = Math.min(to, position + IMAGE_SEARCH_WINDOW)) {
+    const bytes = readStream(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW)).toString("latin1");
+    for (let offset = 0; ;) {
+      const newline = bytes.indexOf("\n", offset);
+      if (!hit) {
+        const seen = tail + bytes.slice(offset, newline === -1 ? bytes.length : newline);
+        hit = pattern.test(seen);
+        tail = span > 1 ? seen.slice(-(span - 1)) : "";
+      }
+      if (newline === -1) break;
+      if (hit) found.push([start, position + newline]);
+      start = position + newline + 1;
+      hit = false;
+      tail = "";
+      offset = newline + 1;
+    }
+  }
+  if (hit) found.push([start, to]);
+  return found;
+}
+
+/** The bytes of a string a record's shape keeps: ids and names whole, an output's or a picture's start. */
+const SHAPE_STRING_BYTES = 1024;
+/** The most of one record's shape the endpoint holds: past it the record is not judged, and nothing it could decide is served. */
+const SHAPE_MAX_BYTES = 4 * 1024 * 1024;
+/** The longest text claudeImageType takes for a picture: MAX_IMAGE_BYTES decoded, and the padding it leaves out. */
+const PICTURE_TEXT_BYTES = Math.floor((MAX_IMAGE_BYTES + 3) * 4 / 3);
+
+interface RecordShape { entry: TranscriptEntry; cut: [number, number][]; mark: string }
+/** a record that is no JSON object, which the parser skips too */
+const NOT_A_RECORD = "not a record";
+/** a record past what the endpoint holds, which it cannot judge */
+const UNREAD = "unread";
+type ShapeRead = RecordShape | typeof NOT_A_RECORD | typeof UNREAD;
+
+/**
+ * One Claude record, parsed as the page parses it but read a window at a time: every string past
+ * SHAPE_STRING_BYTES is cut there (its rest checked as JSON.parse would check it) and ends in a mark
+ * no record can hold, a nonce made for this read, and its place in `cut` (`wholeString` reads it
+ * back). So a record of any size costs a window and its shape, and a picture only its own text.
+ */
+function claudeRecordShape(stream: TranscriptStream, [start, end]: [number, number]): ShapeRead {
+  const nonce = randomUUID();
+  const kept: Buffer[] = [];
+  let size = 0;
+  const cut: [number, number][] = [];
+  let inString = false;
+  // -1 just after a backslash; n > 0 while a \u escape has n hex digits to come
+  let escape = 0;
+  let length = 0;
+  let cutting = false;
+  let stringStart = 0;
+  const keep = (bytes: Buffer) => { kept.push(Buffer.from(bytes)); size += bytes.length; };
+  for (let position = start; position < end; position += IMAGE_SEARCH_WINDOW) {
+    const bytes = readStream(stream, position, Math.min(end, position + IMAGE_SEARCH_WINDOW));
+    let from = cutting ? -1 : 0;
+    for (let index = 0; index < bytes.length; index += 1) {
+      const byte = bytes[index]!;
+      if (!inString) {
+        if (byte === 0x22) { inString = true; length = 0; escape = 0; stringStart = position + index + 1; }
+        continue;
+      }
+      if (escape === -1) {
+        // the bytes no longer kept are held to JSON's own rules: an escape it has, no raw control byte
+        if (cutting && !JSON_ESCAPE_LETTERS.has(byte)) return NOT_A_RECORD;
+        escape = byte === 0x75 ? 4 : 0;
+      } else if (escape > 0) {
+        if (cutting && !isHexDigit(byte)) return NOT_A_RECORD;
+        escape -= 1;
+      } else if (byte === 0x5c) escape = -1;
+      else if (byte === 0x22) {
+        inString = false;
+        if (cutting) {
+          cutting = false;
+          cut.push([stringStart, position + index]);
+          keep(Buffer.from(`\\u0000${nonce}:${cut.length - 1}`));
+          from = index;
+        }
+        continue;
+      } else if (cutting && byte < 0x20) return NOT_A_RECORD;
+      if (cutting) continue;
+      length += 1;
+      // cut only between escapes, so what is kept still reads as JSON
+      if (escape === 0 && length >= SHAPE_STRING_BYTES) {
+        cutting = true;
+        keep(bytes.subarray(from, index + 1));
+        from = -1;
+      }
+    }
+    if (from !== -1) keep(bytes.subarray(from));
+    if (size > SHAPE_MAX_BYTES) return UNREAD;
+  }
+  let entry: unknown;
+  try { entry = JSON.parse(Buffer.concat(kept).toString("utf8")); } catch { return NOT_A_RECORD; }
+  return entry !== null && typeof entry === "object" ? { entry: entry as TranscriptEntry, cut, mark: `\u0000${nonce}:` } : NOT_A_RECORD;
+}
+
+/** The letters JSON allows after a backslash. */
+const JSON_ESCAPE_LETTERS = new Set([...'"\\/bfnrtu'].map((letter) => letter.charCodeAt(0)));
+function isHexDigit(byte: number): boolean {
+  return (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66);
+}
+
+/**
+ * A string of a record's shape whole, as JSON decodes it, decoded a window at a time; null when it
+ * decodes to more than `limit` characters.
+ */
+function wholeString(stream: TranscriptStream, shape: RecordShape, value: string, limit: number): string | null {
+  const at = value.lastIndexOf(shape.mark);
+  const range = at === -1 ? undefined : shape.cut[Number(value.slice(at + shape.mark.length))];
+  if (range === undefined) return value;
+  // a BOM at a string's start is its text, as Buffer#toString keeps it for the page
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+  let whole = "";
+  let pending = "";
+  for (let position = range[0]; position <= range[1]; position += IMAGE_SEARCH_WINDOW) {
+    const last = position + IMAGE_SEARCH_WINDOW >= range[1];
+    const text = pending + (last ? decoder.decode(readStream(stream, position, range[1])) : decoder.decode(readStream(stream, position, position + IMAGE_SEARCH_WINDOW), { stream: true }));
+    // decode up to the last whole escape: the rest waits for the next window
+    let split = text.length;
+    if (!last) {
+      split = 0;
+      for (let index = 0; index < text.length;) {
+        if (text[index] !== "\\") { index += 1; split = index; continue; }
+        const next = index + (text[index + 1] === "u" ? 6 : 2);
+        if (next > text.length) break;
+        index = next;
+        split = index;
+      }
+    }
+    whole += JSON.parse(`"${text.slice(0, split)}"`) as string;
+    pending = text.slice(split);
+    if (whole.length > limit) return null;
+    if (last) break;
+  }
+  return whole;
+}
+
+/** A tool call's id as the parser keys it: its text (a number's too), read whole; null past what the endpoint reads. */
+function callId(stream: TranscriptStream, shape: RecordShape, id: unknown): string | null {
+  return typeof id === "string" ? wholeString(stream, shape, id, PICTURE_TEXT_BYTES) : String(id ?? "");
+}
+
+/**
+ * Whether a tool result before `before` would be drawn, as the parser decides it: it answers a call
+ * an assistant entry the parser draws made, and no result before it answered that call already.
+ * False too when a record it would have to judge is past what the endpoint reads: then it serves
+ * nothing rather than guess.
+ */
+function answersDrawnCall(stream: TranscriptStream, id: string, before: number): boolean {
+  const ranges = linesWith(stream, id, stream.floor, before);
+  // a call id the parser took from a number can be written in any of a number's spellings
+  if (id !== "" && String(Number(id)) === id) {
+    const seen = new Set(ranges.map(([start]) => start));
+    for (const range of linesWith(stream, "tool_use", stream.floor, before)) if (!seen.has(range[0])) ranges.push(range);
+    ranges.sort((left, right) => left[0] - right[0]);
+  }
+  let open = false;
+  for (const range of ranges) {
+    const shape = claudeRecordShape(stream, range);
+    if (shape === UNREAD) return false;
+    if (shape === NOT_A_RECORD) continue;
+    const entry = shape.entry;
+    if (entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+    for (const block of entry.message.content) {
+      const part = block as { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown } | null;
+      const call = entry.type === "assistant" && part?.type === "tool_use" && typeof part.name === "string" ? callId(stream, shape, part.id)
+        : entry.type === "user" && part?.type === "tool_result" && typeof part.tool_use_id === "string" ? callId(stream, shape, part.tool_use_id) : undefined;
+      if (call === undefined) continue;
+      if (call === null) return false;
+      if (call === id) open = part?.type === "tool_use";
+    }
+  }
+  return open;
+}
+
+/**
+ * The image an image part's ref names in a Claude transcript file, decoded; null when there is none,
+ * or when it is no picture the page would name (claudeImageType: the same check, so they agree). It
+ * is read as the page is: after the last /clear, on the branch a rewind left the session on, and a
+ * tool's picture only from a result the page draws. It holds a window, a record's shape and the
+ * picture's own bytes at a time, never a record or the transcript whole.
+ */
+export function transcriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
+  const match = CLAUDE_IMAGE_REF.exec(ref);
+  if (match === null) return null;
+  const [, uuid, index, nested] = match;
+  try {
+    const stream = transcriptStream("claude-transcript", path, statSync(path), defaultCodexHome());
+    applyHistoryBoundary(path, stream, "claude-transcript");
+    for (const range of linesWith(stream, uuid!, stream.floor, stream.length)) {
+      const shape = claudeRecordShape(stream, range);
+      // a record the endpoint cannot judge could be the one the page draws: serve nothing then
+      if (shape === UNREAD) return null;
+      if (shape === NOT_A_RECORD) continue;
+      const entry = shape.entry;
+      // only an entry the parser draws: a hidden one can carry the same id
+      if (entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+      const content: unknown[] = entry.message.content;
+      const block = content[Number(index)] as { type?: unknown; content?: unknown; tool_use_id?: unknown } | undefined;
+      let image: unknown = block;
+      if (nested !== undefined) {
+        // a tool's picture sits inside the result it returned, drawn only when that result answers
+        // a call the page shows, which no result before it answered
+        if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string" || !Array.isArray(block.content)) return null;
+        const call = callId(stream, shape, block.tool_use_id);
+        if (call === null) return null;
+        const answered = content.slice(0, Number(index)).some((other) => {
+          const result = other as { type?: unknown; tool_use_id?: unknown } | null;
+          return result?.type === "tool_result" && typeof result.tool_use_id === "string" && callId(stream, shape, result.tool_use_id) === call;
+        });
+        if (answered || !answersDrawnCall(stream, call, range[0])) return null;
+        image = block.content[Number(nested)];
+      }
+      // the picture's own bytes, read whole only up to the largest picture the chat shows
+      const picture = image as { source?: { data?: unknown } } | null | undefined;
+      const data = typeof picture?.source?.data === "string" ? wholeString(stream, shape, picture.source.data, PICTURE_TEXT_BYTES) : null;
+      if (data === null) return null;
+      const mediaType = claudeImageType({ ...picture, source: { ...picture!.source, data } });
+      if (mediaType === null) return null;
+      return { mediaType, bytes: new Uint8Array(Buffer.from(data, "base64")) };
+    }
+  } catch { return null; }
   return null;
 }
 

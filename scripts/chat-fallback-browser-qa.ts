@@ -109,7 +109,7 @@ try {
   await page.getByText("No conversation yet — say something below", { exact: true }).waitFor();
   assert.equal(await page.locator(".chat-terminal-fallback").count(), 0, "an empty structured conversation keeps its ordinary prompt");
   // Native parser output crosses HTTP into the real ChatView. Later activity must not
-  // move a final reply into the fold or duplicate it; narration and tools stay there.
+  // move a final reply into the fold or duplicate it. Only explicit commentary joins the tools there.
   const jsonl = (...records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n");
   source = "claude-transcript";
   turns = parseClaudeTranscript(jsonl(
@@ -149,7 +149,8 @@ try {
     ));
     await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.pane("agent"); window.chatFallbackQA.refresh(); });
     await page.getByText(answer, { exact: true }).waitFor();
-    const work = page.locator(".work-block");
+    const continuation = page.locator(".chat-turn-agent").nth(1);
+    const work = continuation.locator(".work-block");
     const head = work.locator(".work-block-head");
     await head.waitFor();
     if (await head.getAttribute("aria-expanded") === "true") await head.click();
@@ -157,15 +158,17 @@ try {
     assert.equal(await work.getByText(answer, { exact: true }).count(), 0, "the reply is outside work");
     assert.equal(await page.getByText(answer, { exact: true }).count(), 1, "the reply appears once");
     assert.equal(await page.getByText(answer, { exact: true }).isVisible(), true, "folding work keeps the reply visible");
+    assert.equal(await continuation.getByText(narration, { exact: true }).isVisible(), true, "unphased narration stays visible outside folded work");
+    assert.equal(await work.getByText(narration, { exact: true }).count(), 0, "unphased narration is not part of work");
+    assert.equal(await page.getByText(narration, { exact: true }).count(), 1, "unphased narration appears once");
     assert.equal(await page.getByText("Catalog verification complete.", { exact: true }).isVisible(), true, "the hook continuation's short reply is also visible");
     assert.equal(await page.locator(".chat-turn-agent").count(), 2, "hook continuation answers have separate bubbles");
     assert.equal(await page.getByText(/Stop hook feedback:/).count(), 0, "injected hook context is not a user message");
     await head.click();
-    await work.getByText(narration, { exact: true }).waitFor();
     assert.equal(await work.locator(".work-row-head").count(), 1, "the tool stays inside work");
     await head.click();
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-hook-separate-replies.png") });
-    console.log("PASS Claude hook replies stay separately visible outside folded work; narration and tool remain grouped");
+    console.log("PASS Claude hook narration and replies stay visible outside folded work; the tool remains inside");
   }
   assert.deepEqual(errors, []);
   console.log("chat fallback: browser OK (no hidden terminal reads, opened stalled output cannot block structured refresh, late cleanup, non-agent inline output, fallback error announcement and accurate empty state)");
