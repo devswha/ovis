@@ -14,11 +14,11 @@
  * never opens it. A registry or merge record that cannot be read fails closed: the store stays gated
  * and pairs nothing (devices.ts), and neither registry is written.
  *
- * Preferences, mutes and push subscriptions go to the dir in use only. A setting (or the pins) the
- * other dir changed since the last merge is laid over this dir's unless this dir changed it too; then
- * the document written last wins. The first merge counts every setting as changed on both sides.
- * Mutes follow the other dir's additions and removals since the last merge. Subscriptions are taken
- * over once each, with the key pair they were made for (push.ts PUSH_EXTRA_KEYS).
+ * Preferences and mutes, too, end alike in both dirs. A setting (or the pins) the other dir changed
+ * since the last merge is laid over this dir's unless this dir changed it too; then the preferences
+ * document written last wins. The first merge counts every setting as changed on both sides. Mutes
+ * follow the other dir's additions and removals since the last merge. Push subscriptions go to the
+ * dir in use only, each taken over once, with the key pair it was made for (push.ts PUSH_EXTRA_KEYS).
  *
  * Nothing is deleted: a file about to be replaced is first copied to `state-merge-backups/<time>/`
  * in its own dir. Every write replaces a whole file atomically and the merge only adds what one side
@@ -210,11 +210,16 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const registry = (read: typeof own): Registry | null => read.kind === "ok" && !read.placeholder ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
-  if (mine === null && theirs === null) return { blocked: null, ids: [], changed: 0 };
-  const merged = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null);
-  if (own.kind === "ok" && own.placeholder) merged.gate_closed_at = earliest([merged.gate_closed_at, own.gateClosedAt]);
+  const gates = [own, other].map((read) => read.kind === "ok" ? read.gateClosedAt : null);
+  if (mine === null && theirs === null && gates.every((gate) => gate === null)) return { blocked: null, ids: [], changed: 0 };
+  const merged: Registry & { placeholder?: true } = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null);
+  // a closed gate on either side, a placeholder's included, keeps the merge closed
+  merged.gate_closed_at = earliest([merged.gate_closed_at, ...gates]);
+  // made of placeholders alone, the result is one too: it holds no device list to revoke from
+  if (mine === null && theirs === null) merged.placeholder = true;
+  const onDisk = (read: typeof own) => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices, ...(read.placeholder ? { placeholder: true } : {}) } : null;
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
-  if (text(mine) !== text(merged) || own.kind === "ok" && own.placeholder) {
+  if (text(onDisk(own)) !== text(merged)) {
     try {
       backUp(active, "devices.json", stamp);
       writePrivateState(ownPath, merged);
@@ -222,7 +227,7 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       return { ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
     }
   }
-  if (text(theirs) !== text(merged)) {
+  if (text(onDisk(other)) !== text(merged)) {
     try {
       backUp(sibling, "devices.json", stamp);
       writePrivateState(otherPath, merged);

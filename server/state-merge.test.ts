@@ -147,6 +147,18 @@ describe("paired devices of the install's other state dir", () => {
     expect(ids(sibling)).toEqual(["a"]);
   });
 
+  it("keep the gate closed by a placeholder in the other dir, whatever this dir holds", () => {
+    for (const mine of [null, { gate_closed_at: null, devices: [] }]) {
+      const { active, sibling } = install();
+      // written where a failed merge closed the gate, before the install switched dirs
+      writeJson(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:19:00.000Z", devices: [], placeholder: true });
+      if (mine) writeJson(join(active, "devices.json"), mine);
+      expect(mergeSiblingState(active, sibling, at(0)).devicesBlocked).toBeNull();
+      expect(new DeviceStore(active).gated).toBe(true);
+      expect(new DeviceStore(sibling).gated).toBe(true);
+    }
+  });
+
   it("stay revoked when the clock went back between merges", () => {
     const { active, sibling } = install();
     writeDevices(active, [device("a")]);
