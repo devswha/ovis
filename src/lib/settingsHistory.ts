@@ -19,6 +19,9 @@ const BASE_KEY = "ovis:settings-base";
 const ABOVE_KEY = "ovis:settings-above";
 /** on an opening's entries when its first one took over the entry it began from (a phone sheet's, sheetHistory) */
 const LOST_KEY = "ovis:settings-base-lost";
+/** that opening's anchor: the id of the sheet whose entry it took, which the entry the sheet opened over carries.
+ *  Kept apart from the sheet's own key, which a sheet opened inside Settings writes again */
+const ANCHOR_KEY = "ovis:settings-anchor";
 /** how long to wait before releasing the traversal's busy state, not its ownership */
 const LANDING_MS = 1000;
 
@@ -166,10 +169,12 @@ function reconcile(): void {
     writeState("pushState", { ...base, [KEY]: { ...wanted[depth - 1], depth } });
     if (takesOver) {
       const { [SHEET_HISTORY_KEY]: _sheet, ...unmarked } = base as Record<string, unknown>;
-      base = { ...unmarked, [LOST_KEY]: true };
+      const anchor = unmarked[SHEET_UNDER_KEY];
+      const marks = { [LOST_KEY]: true, ...(anchor === undefined ? {} : { [ANCHOR_KEY]: anchor }) };
+      base = { ...unmarked, ...marks };
       // from the entry as the sheet left it, without its mark: with it, the entry is the sheet's again
       const current: unknown = window.history.state;
-      writeState("replaceState", { ...(current !== null && typeof current === "object" ? current : {}), [LOST_KEY]: true });
+      writeState("replaceState", { ...(current !== null && typeof current === "object" ? current : {}), ...marks });
     }
     held.push(wanted[depth - 1]!);
   }
@@ -237,8 +242,8 @@ if (typeof window !== "undefined") {
     const forwardAbove = fieldOf(event.state, ABOVE_KEY) !== undefined && fieldOf(event.state, ABOVE_KEY) === fieldOf(previous, BASE_KEY);
     const ontoBase = fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
     const baseLost = fieldOf(previous, LOST_KEY) === true;
-    const under = fieldOf(previous, SHEET_UNDER_KEY);
-    const ontoUnder = under === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === under;
+    const anchor = fieldOf(previous, ANCHOR_KEY);
+    const ontoUnder = anchor === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === anchor;
     steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || (baseLost && ontoUnder));
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
     for (const listener of [...listeners]) listener(entry, own);

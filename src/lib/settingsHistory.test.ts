@@ -162,6 +162,32 @@ describe("recordSettings", () => {
     await settled();
   });
 
+  it("keeps the entry a phone sheet opened over as its anchor when another sheet opens inside Settings", async () => {
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": "a" });
+    fake.window.history.pushState({ "ovis:nav": "b" });
+    openSheet(fake.window.history, "palette-4");
+    const push = fake.window.history.pushState;
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
+    recordSettings([{ page: null, keyBar: false }, { page: "devices", keyBar: false }]);
+    await settled();
+    // Sign out's sheet on Phone & devices marks the page's entry with its own id, then Cancel steps off it
+    openSheet(fake.window.history, "sign-out");
+    fake.window.history.go(-1);
+    await settled();
+    recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
+    await settled();
+    // the browser's Back menu, two entries back from the page: onto B, the entry the palette opened over
+    fake.window.history.go(-2);
+    await settled();
+    expect(seen).toEqual([false, true]);
+    recordSettings([]);
+    await settled();
+    fake.window.history.go(-(fake.held().length - 1));
+    await settled();
+  });
+
   it("does not take a jump from Settings past the entry it opened over for Settings closing", async () => {
     const seen: boolean[] = [];
     fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
