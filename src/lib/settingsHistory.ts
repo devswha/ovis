@@ -10,7 +10,7 @@
  * traversal lands, and whether it was one of its own.
  */
 
-import { SHEET_HISTORY_KEY } from "./historyKeys.ts";
+import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY } from "./historyKeys.ts";
 
 const KEY = "ovis:settings";
 /** names an opening of Settings on the entry it began from and on each of its entries */
@@ -231,13 +231,15 @@ if (typeof window !== "undefined") {
     // step back), or a Back onto the entry with the opening's mark. A jump past that entry (the
     // browser's Back menu) goes to another pane, Forward onto an entry above Settings (a preview
     // opened over it) is no closing, nor is the step over buried entries that finishes a Back of
-    // the user's. An opening whose entry a phone sheet took over has no marked entry under it: any
-    // step off its entries onto one below is taken for its closing
+    // the user's. An opening whose entry a phone sheet took over closes onto the entry the sheet
+    // opened over, which carries the sheet's id (sheetHistory); without that id, any step below does
     const left = settingsEntry(previous);
     const forwardAbove = fieldOf(event.state, ABOVE_KEY) !== undefined && fieldOf(event.state, ABOVE_KEY) === fieldOf(previous, BASE_KEY);
     const ontoBase = fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
     const baseLost = fieldOf(previous, LOST_KEY) === true;
-    steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || baseLost);
+    const under = fieldOf(previous, SHEET_UNDER_KEY);
+    const ontoUnder = under === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === under;
+    steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || (baseLost && ontoUnder));
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
     for (const listener of [...listeners]) listener(entry, own);
     // what was asked for while the traversal was under way is done now

@@ -57,6 +57,13 @@ describe("settingsEntry", () => {
   });
 });
 
+/** what sheetHistory's enterSheet does: the entry under the sheet takes its id, and the sheet's entry is pushed with it */
+function openSheet(history: { state: unknown; replaceState(state: unknown): void; pushState(state: unknown): void }, id: string): void {
+  const fields = history.state !== null && typeof history.state === "object" ? history.state : {};
+  history.replaceState({ ...fields, "ovis:sheet-under": id });
+  history.pushState({ ...fields, "ovis:sheet-under": id, "ovis:sheet": id });
+}
+
 /** what sheetHistory makes of a push from its sheet's entry: a replace, without the sheet's mark */
 const withoutSheet = (state: unknown): unknown => {
   if (state === null || typeof state !== "object") return state;
@@ -105,7 +112,7 @@ describe("recordSettings", () => {
     const seen: boolean[] = [];
     fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
     fake.window.history.pushState({ "ovis:nav": true });
-    fake.window.history.pushState({ "ovis:sheet": "palette" });
+    openSheet(fake.window.history, "palette");
     // sheetHistory turns a push made from a sheet into a replace of the sheet's entry: the entry
     // Settings began from, with its mark, is gone, and the one under its list is the pane's
     const push = fake.window.history.pushState;
@@ -124,7 +131,7 @@ describe("recordSettings", () => {
     recordSettings([]);
     await settled();
     // and closed with X or Escape from the same start
-    fake.window.history.pushState({ "ovis:sheet": "palette" });
+    openSheet(fake.window.history, "palette-2");
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
@@ -132,6 +139,26 @@ describe("recordSettings", () => {
     await settled();
     expect(seen).toEqual([false, true, true]);
     fake.window.history.go(-1);
+    await settled();
+  });
+
+  it("does not take a jump past the entry a phone sheet opened over for Settings closing", async () => {
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": "a" });
+    fake.window.history.pushState({ "ovis:nav": "b" });
+    openSheet(fake.window.history, "palette-3");
+    const push = fake.window.history.pushState;
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
+    recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
+    await settled();
+    // the browser's Back menu, three entries back from the page: to A, past B the palette opened over
+    fake.window.history.go(-3);
+    await settled();
+    expect(seen).toEqual([false]);
+    recordSettings([]);
+    await settled();
+    fake.window.history.go(-(fake.held().length - 1));
     await settled();
   });
 
