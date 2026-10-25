@@ -94,6 +94,37 @@ describe("recordSettings", () => {
     expect(seen).toEqual([true, false]);
   });
 
+  it("counts Settings closing when it opened from a phone sheet whose entry it took over", async () => {
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": true });
+    fake.window.history.pushState({ "ovis:sheet": "palette" });
+    // sheetHistory turns a push made from a sheet into a replace of the sheet's entry: the entry
+    // Settings began from, with its mark, is gone, and the one under its list is the pane's
+    const push = fake.window.history.pushState;
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(state); };
+    recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
+    await settled();
+    // Back through the levels: the page, then the list onto the pane's entry
+    fake.window.history.go(-1);
+    await settled();
+    fake.window.history.go(-1);
+    await settled();
+    expect(seen).toEqual([false, true]);
+    recordSettings([]);
+    await settled();
+    // and closed with X or Escape from the same start
+    fake.window.history.pushState({ "ovis:sheet": "palette" });
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(state); };
+    recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
+    await settled();
+    recordSettings([]);
+    await settled();
+    expect(seen).toEqual([false, true, true]);
+    fake.window.history.go(-1);
+    await settled();
+  });
+
   it("does not take Forward onto a preview opened over Settings for Settings closing", async () => {
     const seen: boolean[] = [];
     fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));

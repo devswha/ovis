@@ -49,7 +49,7 @@ export function setHiddenMachines(ids: readonly string[]): void {
   for (const listener of listeners) listener();
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeHiddenMachines(listener: () => void): () => void {
   listeners.add(listener);
   // another tab of this browser shows or hides a PC: this one follows
   const onStorage = (event: StorageEvent): void => {
@@ -63,7 +63,7 @@ function subscribe(listener: () => void): () => void {
 
 /** The ids this device hides, kept current across its tabs. */
 export function useHiddenMachines(): string[] {
-  return useSyncExternalStore(subscribe, readHiddenMachines, () => []);
+  return useSyncExternalStore(subscribeHiddenMachines, readHiddenMachines, () => []);
 }
 
 /**
@@ -84,8 +84,8 @@ export function useShownMachines<T extends HasId>({ machines, selectedMachineRef
   useEffect(() => {
     const before = hiddenBefore.current;
     hiddenBefore.current = hidden;
-    if (before === hidden || before.includes(selectedMachineRef.current)) return;
-    const next = selectionAfterHiding(machinesRef.current, hidden, selectedMachineRef.current);
+    if (before === hidden) return;
+    const next = selectionToMove(machinesRef.current, before, hidden, selectedMachineRef.current);
     if (next !== null) selectTargetRef.current(next, null);
   }, [hidden]);
   return shown;
@@ -116,6 +116,16 @@ export function withMachineHidden(machines: readonly HasId[], hidden: readonly s
 /** Whether `id` is drawn in the sidebar: what its switch in Settings says. */
 export function isMachineShown(machines: readonly HasId[], hidden: readonly string[], id: string): boolean {
   return shownMachines(machines, hidden).some((machine) => machine.id === id);
+}
+
+/**
+ * Where the selection goes when the hidden list changes from `before` to `after`: off a PC that
+ * was drawn and is not now (one drawn only because every PC was hidden counts as drawn). A pane a
+ * link or an alert opened on a PC already hidden stays selected; null when nothing moves.
+ */
+export function selectionToMove(machines: readonly HasId[], before: readonly string[], after: readonly string[], selectedMachineId: string): string | null {
+  if (!isMachineShown(machines, before, selectedMachineId)) return null;
+  return selectionAfterHiding(machines, after, selectedMachineId);
 }
 
 /**

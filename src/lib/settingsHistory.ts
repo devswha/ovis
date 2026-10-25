@@ -200,10 +200,7 @@ if (typeof window !== "undefined") {
     const previous = observed;
     observed = event.state;
     const entry = settingsEntry(event.state);
-    // onto the entry this opening began from, which carries its mark; Forward onto an entry above
-    // Settings (a preview opened over it) carries another and is no closing, nor is the step over
-    // buried entries that finishes a Back of the user's
-    steppedOff = !skippingBuried && entry === null && settingsEntry(previous) !== null && fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
+    const skipped = skippingBuried;
     skippingBuried = false;
     // Back from above onto the entries of a buried opening: Settings closed when they were buried,
     // so they are stepped over to the entry they began from instead of opening it again
@@ -216,6 +213,14 @@ if (typeof window !== "undefined") {
     const matches = pending !== null && (entry?.depth ?? 0) === pending.depth
       && (pending.level === null || (entry !== null && same(pending.level, entry)));
     const own = matches && pending?.claim === true;
+    // Settings closing, by its controls (this module's own step back) or by a Back off its first
+    // level, lands under its entries. Forward onto an entry above Settings (a preview opened over
+    // it) is no closing, nor is the step over buried entries that finishes a Back of the user's.
+    // The entry it opened from may have lost its mark (a phone sheet's entry it took over)
+    const left = settingsEntry(previous);
+    const forwardAbove = fieldOf(event.state, ABOVE_KEY) !== undefined && fieldOf(event.state, ABOVE_KEY) === fieldOf(previous, BASE_KEY);
+    const ontoBase = fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
+    steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || left.depth === 1);
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
     for (const listener of [...listeners]) listener(entry, own);
     // what was asked for while the traversal was under way is done now

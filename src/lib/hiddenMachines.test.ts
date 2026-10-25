@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
-import { canHideMachine, isMachineShown, HIDDEN_MACHINES_KEY, HIDDEN_MACHINES_MAX, parseHiddenMachines, readHiddenMachines, selectionAfterHiding, setHiddenMachines, shownMachines, withMachineHidden } from "./hiddenMachines.ts";
+import { canHideMachine, isMachineShown, selectionToMove, subscribeHiddenMachines, HIDDEN_MACHINES_KEY, HIDDEN_MACHINES_MAX, parseHiddenMachines, readHiddenMachines, selectionAfterHiding, setHiddenMachines, shownMachines, withMachineHidden } from "./hiddenMachines.ts";
 import { DEFAULT_SETTINGS, saveSettings } from "./settings.ts";
 
 const roster = [{ id: "local" }, { id: "work" }, { id: "home" }];
@@ -42,6 +42,17 @@ describe("PCs shown on this device", () => {
     expect(withMachineHidden(left, ["local", "work"], "local", false)).toEqual([]);
   });
 
+  it("moves the selection off a PC hidden now, also one shown only because every PC was hidden", () => {
+    const left = [{ id: "local" }, { id: "work" }];
+    // Host and Work were both hidden, and drawn again once Home went: hiding Host takes the selection off it
+    expect(selectionToMove(left, ["local", "work"], ["local"], "local")).toBe("work");
+    expect(selectionToMove(roster, [], ["work"], "work")).toBe("local");
+    // a pane a link opened on a PC already hidden stays selected when another PC is hidden
+    expect(selectionToMove(roster, ["work"], ["work", "home"], "work")).toBeNull();
+    // still shown: nothing moves
+    expect(selectionToMove(roster, [], ["home"], "work")).toBeNull();
+  });
+
   it("moves a selection off a PC just hidden, to the Host when it is shown", () => {
     expect(selectionAfterHiding(roster, ["work"], "work")).toBe("local");
     expect(selectionAfterHiding(roster, ["local"], "local")).toBe("work");
@@ -62,11 +73,16 @@ describe("the stored list", () => {
   describe("in this browser", () => {
     const original = Object.getOwnPropertyDescriptor(globalThis, "window");
     let records: Map<string, string>;
+    let storageListeners: Array<(event: { key: string | null }) => void> = [];
+    let failWrites = false;
     beforeEach(() => {
       records = new Map();
+      storageListeners = [];
+      failWrites = false;
       Object.defineProperty(globalThis, "window", { configurable: true, value: {
-        localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => void records.set(key, value), removeItem: (key: string) => void records.delete(key) },
-        addEventListener: () => undefined, removeEventListener: () => undefined,
+        localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => { if (failWrites) throw new Error("quota"); records.set(key, value); }, removeItem: (key: string) => void records.delete(key) },
+        addEventListener: (type: string, listener: (event: { key: string | null }) => void) => { if (type === "storage") storageListeners.push(listener); },
+        removeEventListener: () => undefined,
       } });
     });
     afterEach(() => {
@@ -81,6 +97,19 @@ describe("the stored list", () => {
       expect(readHiddenMachines()).toEqual(["fixture-hidden-pc"]);
       setHiddenMachines([]);
       expect(readHiddenMachines()).toEqual([]);
+    });
+
+    it("keeps a choice storage refused for this page, until another tab changes the list", () => {
+      const changes: number[] = [];
+      const unsubscribe = subscribeHiddenMachines(() => changes.push(1));
+      failWrites = true;
+      setHiddenMachines(["work"]);
+      expect(readHiddenMachines()).toEqual(["work"]);
+      records.set(HIDDEN_MACHINES_KEY, '["home"]');
+      for (const listener of storageListeners) listener({ key: HIDDEN_MACHINES_KEY });
+      expect(readHiddenMachines()).toEqual(["home"]);
+      expect(changes.length).toBe(2);
+      unsubscribe();
     });
 
     it("hands React the same list until the stored one changes (useSyncExternalStore)", () => {
