@@ -41,7 +41,7 @@
 <p class="date">Try Ovis for iPhone and Android before release</p>
 <p>The phone app connects to Ovis on the computer where your coding agents run. Set up the computer first, then join the test for your phone.</p>
 <h2>On your computer</h2>
-<p>First install <a href="https://tailscale.com/download">Tailscale</a> on the computer and on your phone, and sign in to both with the same account. It lets the phone reach the computer wherever you are, and Ovis sets up the phone's address when it finds Tailscale. Then install Ovis:</p>
+<p>First install <a href="https://tailscale.com/download">Tailscale</a> on the computer and on your phone, and sign in to both with the same account. It lets the phone reach the computer wherever you are. On a Mac and on Linux, the Ovis installer also sets up the phone's address when it finds Tailscale. Then install Ovis:</p>
 <ul>
 <li><strong>Mac</strong> (macOS 13 or later): <a href="https://ovis.sh/Ovis.dmg">download Ovis for Mac</a>, open it and click <strong>Install</strong>.</li>
 <li><strong>Windows</strong>: install <a href="https://git-scm.com/download/win">Git for Windows</a>, then run this in PowerShell:<br><code>irm https://ovis.sh/install.ps1 | iex</code></li>
@@ -67,7 +67,7 @@
 </section>
 <p data-beta-pending="play"><strong>Android</strong>: the link to join the Google Play test appears here as soon as it opens.</p>
 <h2>Connect your phone</h2>
-<p>Open Ovis on the phone and scan the QR code that Ovis on your computer shows. Ovis for Mac shows it in its window; otherwise open Ovis in the computer's browser (normally <code>http://127.0.0.1:7317</code>) and find it under <strong>Settings → Phone &amp; devices</strong>. You can also type the address shown under it. If the phone cannot reach the computer, see <a href="/support/">Support</a>.</p>
+<p>Open Ovis on the phone and scan the QR code that Ovis on your computer shows. Ovis for Mac shows it in its window; otherwise open Ovis in the computer's browser (normally <code>http://127.0.0.1:7317</code>) and find it under <strong>Settings → Phone &amp; devices</strong>. If it shows a <code>tailscale serve</code> command instead of a QR code (on Windows, for example), run that command on the computer, then look again. You can also type the address shown under it. If the phone cannot reach the computer, see <a href="/support/">Support</a>.</p>
 <h2>Feedback</h2>
 <div class="box"><p><strong>Found a bug, or something unclear?</strong> <a href="https://github.com/devswha/ovis/issues">Open an issue on GitHub</a> with a screenshot and your device model, for example iPhone 15 or Pixel 8.</p></div>
 </article>
