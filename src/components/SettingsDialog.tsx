@@ -313,12 +313,12 @@ function InterfaceFontRows() {
   return (
     <>
       <SettingsRow label={t("Interface font")} description={t("Menus, lists, dialogs and the sidebar; the chat's text follows it until it has a font of its own. The terminal and code keep theirs. System is this device's own interface font.")} htmlFor="settings-ui-font">
-        <select id="settings-ui-font" className="select settings-select" value={custom ? "custom" : preset} onChange={(event) => choose(event.target.value as UiFontPreset | "custom")}>
+        <SettingsSelect id="settings-ui-font" value={custom ? "custom" : preset} onChange={(event) => choose(event.target.value as UiFontPreset | "custom")}>
           <option value="default">{t("Default")}</option>
           <option value="system">{t("System")}</option>
           <option value="noto">Noto Sans</option>
           <option value="custom">{t("Custom")}</option>
-        </select>
+        </SettingsSelect>
       </SettingsRow>
       {custom && (
         <SettingsRow label={t("Custom interface font")} description={t("Comma-separated, tried in order, in front of the default. A font this device does not have falls back to the default.")} wide>
