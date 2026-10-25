@@ -894,17 +894,17 @@ function answerAnchor(text: string): string | null {
  * pane shows it, and leaves the choice open rather than letting another win by elimination.
  * `said`: what candidates ever said, for those of which every word counts against the others
  * (loadedConversation), in place of their answers. */
-export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, string> = new Map()): string | null {
+export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, Said> = new Map()): string | null {
   const lastHeader = screen.lastIndexOf("OpenAI Codex (v");
   const display = normalizeDisplay(lastHeader >= 0 ? screen.slice(lastHeader) : screen);
   const answersOf = (turns: ConversationTurn[]) => turns.filter((turn) => turn.role === "assistant")
     .flatMap((turn) => turn.parts).filter((part) => part.kind === "text").map((part) => part.text);
   const parsed = candidates.map((candidate) => parseCodexTranscript(candidate.text, Infinity));
   // every answer each candidate gave, as answerAnchor reads one (cut at link targets), read once
-  let shown: string[] | undefined;
+  let shown: Said[] | undefined;
   const givenElsewhere = (index: number, anchor: string) => (shown ??= parsed.map((turns, at) =>
-    said.get(candidates[at]!.path) ?? answersOf(turns).flatMap(saidText).join("")))
-    .some((given, at) => at !== index && given.includes(anchor));
+    said.get(candidates[at]!.path) ?? { text: answersOf(turns).flatMap(saidText).join(""), linked: [] }))
+    .some((given, at) => at !== index && (given.text.includes(anchor) || given.linked.some((text) => mayShow(anchor, text))));
   const matching = new Set<string>();
   let open = false;
   for (const [index, candidate] of candidates.entries()) {
@@ -925,13 +925,182 @@ function saidText(text: string): string[] {
 /** A markdown link's target, as answerAnchor cuts a text at it. */
 const LINK_TARGET = /\]\([^)\s]*\)/;
 
+/** What a conversation said (saidText, joined), and its texts with links as a screen may show them. */
+interface Said { text: string; linked: readonly LinkedText[] }
+
 /**
- * A text as a Codex TUI in `cwd` shows it, as normalizeDisplay reads it: each markdown link as its
- * label, then its target relative to that folder when inside it.
+ * A text with markdown links, as a Codex TUI may show it (rust-v0.163.0 markdown_render.rs and
+ * local_links.rs): each link as its label, then nothing (a web link whose target the terminal
+ * hides), its destination as written, or a local path's, decoded, relative to the session's folder
+ * or not, with a `#L12C3` location as `:12:3`. Whichever it shows is an end of one of the link's
+ * `targets`, so no folder need be known (the store may spell it otherwise than the TUI, through a
+ * symlink). Letters and digits: `pieces[i]`, an end of a form in `targets[i]`, `pieces[i + 1]`.
  */
-function shownLinks(text: string, cwd: string): string {
-  return normalizeDisplay(text.replace(/\[([^\]]*)\]\(([^)\s]*)\)/g, (_link, label: string, target: string) =>
-    `${label} ${cwd !== "" && target.startsWith(`${cwd}/`) ? target.slice(cwd.length + 1) : target}`));
+interface LinkedText { pieces: string[]; targets: string[][] }
+
+/** A reference definition, a line a screen does not show: its label and its destination. */
+const DEFINITION = /^ {0,3}\[((?:[^\]\\\n]|\\.)+)\]:[ \t]*(?:<([^<>\n]*)>|(\S+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/gm;
+
+/** How a reference link names its definition: case and runs of space do not count. */
+const referenceKey = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase();
+
+/**
+ * A text's markdown links as a screen may show them (LinkedText): inline ones (a `<destination>`
+ * and a title too), full, collapsed and shortcut references to a definition in the text, and
+ * autolinks. null for a text with none.
+ */
+function linkedText(text: string): LinkedText | null {
+  if (!text.includes("]") && !text.includes("<")) return null;
+  const definitions = new Map<string, string>();
+  const body = text.replace(DEFINITION, (_line, label: string, angled: string | undefined, bare: string | undefined) => {
+    definitions.set(referenceKey(label), angled ?? bare ?? "");
+    return "";
+  });
+  const pieces: string[] = [];
+  const targets: string[][] = [];
+  let start = 0;
+  for (let at = 0; at < body.length; at++) {
+    const link = body[at] === "]" ? linkAfter(body, at, definitions) : body[at] === "<" ? autolink(body, at) : null;
+    if (link === null) continue;
+    pieces.push(normalizeDisplay(body.slice(start, link.label)));
+    targets.push(link.targets);
+    start = link.end;
+    at = link.end - 1;
+  }
+  if (targets.length === 0 && body === text) return null;
+  pieces.push(normalizeDisplay(body.slice(start)));
+  return { pieces, targets };
+}
+
+/** A link whose label a "]" at `at` closes: where its label ends, where it ends, and the forms its target may show in. */
+function linkAfter(body: string, at: number, definitions: ReadonlyMap<string, string>): { label: number; end: number; targets: string[] } | null {
+  if (body[at + 1] === "(") {
+    const inline = inlineDestination(body, at + 2);
+    // as text too (in code, say): its destination and title as written
+    return inline && { label: at, end: inline.end, targets: destinationForms(inline.destination, body.slice(at + 2, inline.end - 1)) };
+  }
+  if (definitions.size === 0) return null;
+  const reference = /\[((?:[^\]\\\n]|\\.)*)\]/y;
+  reference.lastIndex = at + 1;
+  const full = reference.exec(body);
+  const named = full === null || full[1]!.trim() === "" ? undefined : definitions.get(referenceKey(full[1]!));
+  if (named !== undefined) return { label: at, end: at + 1 + full![0].length, targets: destinationForms(named, full![1]!) };
+  // collapsed ("[label][]") or shortcut ("[label]"): the label names it
+  const label = labelBefore(body, at);
+  const destination = label === null ? undefined : definitions.get(referenceKey(label));
+  if (destination === undefined) return null;
+  const collapsed = full !== null && full[1]!.trim() === "";
+  return { label: at, end: collapsed ? at + 1 + full[0].length : at + 1, targets: destinationForms(destination) };
+}
+
+/** The label a "]" at `at` closes, back to its "[", or null. */
+function labelBefore(body: string, at: number): string | null {
+  let depth = 0;
+  for (let index = at - 1; index >= Math.max(0, at - 1000); index--) {
+    if (body[index - 1] === "\\") continue;
+    if (body[index] === "]") depth++;
+    else if (body[index] === "[" && depth-- === 0) return body.slice(index + 1, at);
+  }
+  return null;
+}
+
+/** An inline link's destination, from just inside its "(", and where the link ends (past its ")"), or null. */
+function inlineDestination(body: string, from: number): { destination: string; end: number } | null {
+  const space = /[ \t]*\n?[ \t]*/y;
+  const skip = (index: number) => {
+    space.lastIndex = index;
+    space.exec(body);
+    return space.lastIndex;
+  };
+  let at = skip(from);
+  let destination: string;
+  if (body[at] === "<") {
+    const close = body.indexOf(">", at + 1);
+    if (close < 0 || /[<\n]/.test(body.slice(at + 1, close))) return null;
+    destination = body.slice(at + 1, close);
+    at = close + 1;
+  } else {
+    const begin = at;
+    for (let depth = 0; at < body.length && !/\s/.test(body[at]!); at++) {
+      if (body[at] === "\\") at++;
+      else if (body[at] === "(") depth++;
+      else if (body[at] === ")" && depth-- === 0) break;
+    }
+    destination = body.slice(begin, at);
+  }
+  const titled = skip(at);
+  const close = titled > at ? ({ '"': '"', "'": "'", "(": ")" } as Record<string, string>)[body[titled]!] : undefined;
+  if (close !== undefined) {
+    const end = body.indexOf(close, titled + 1);
+    if (end < 0) return null;
+    at = skip(end + 1);
+  } else at = titled;
+  return body[at] === ")" ? { destination, end: at + 1 } : null;
+}
+
+/** An autolink at `at` ("<https://...>", "<name@host>"): its text is its label, then its destination may show. */
+function autolink(body: string, at: number): { label: number; end: number; targets: string[] } | null {
+  const uri = /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>/y;
+  uri.lastIndex = at;
+  const found = uri.exec(body);
+  if (found !== null) return { label: uri.lastIndex, end: uri.lastIndex, targets: destinationForms(found[1]!) };
+  const mail = /<([^\s<>@\\]+@[A-Za-z0-9.-]+)>/y;
+  mail.lastIndex = at;
+  const address = mail.exec(body);
+  return address && { label: mail.lastIndex, end: mail.lastIndex, targets: [normalizeDisplay(`mailto:${address[1]}`)] };
+}
+
+/**
+ * The forms a link's destination may show in, as normalizeDisplay reads them: as written, decoded,
+ * and with a `#L12C3` location as Codex shows it, `:12:3`; and `literal`, what the link holds after
+ * its label as text (where it is no link). Codex shows a local path's end (relative to the
+ * session's folder), so each stands for any of its ends (mayShow).
+ */
+function destinationForms(destination: string, literal = ""): string[] {
+  const decoded = (text: string) => { try { return decodeURIComponent(text); } catch { return text; } };
+  const forms = new Set([destination, decoded(destination)]);
+  if (literal !== "") forms.add(literal);
+  const location = /#(L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?)$/.exec(destination);
+  if (location !== null) forms.add(decoded(destination.slice(0, location.index)) + location[1]!.replace(/[LC]/g, ":"));
+  return [...forms].map(normalizeDisplay);
+}
+
+/**
+ * Whether a screen may show `anchor` in a text with links (LinkedText): its pieces as they are, and
+ * each link's target as any end of one of its forms, none of it too.
+ */
+function mayShow(anchor: string, { pieces, targets }: LinkedText): boolean {
+  // the ends of the anchor a choice of targets has shown where the next piece begins
+  let shown = new Set<number>([0]);
+  const ends = (text: string, from: number, into: Set<number>) => {
+    // each run of the anchor from `from` that is an end of `text`
+    for (let length = 1; length < anchor.length - from && length <= text.length; length++) {
+      if (anchor[from + length - 1] === text[text.length - 1] && text.endsWith(anchor.slice(from, from + length))) into.add(from + length);
+    }
+  };
+  for (const [index, piece] of pieces.entries()) {
+    if (piece.includes(anchor)) return true;
+    const after = new Set<number>();
+    for (const from of shown) {
+      const rest = anchor.slice(from);
+      if (from > 0 && piece.startsWith(rest)) return true;
+      if (rest.startsWith(piece)) after.add(from + piece.length);
+    }
+    // the anchor begins inside this piece
+    ends(piece, 0, after);
+    if (index === targets.length) break;
+    shown = new Set([0]);
+    for (const form of targets[index]!) {
+      // the anchor begins inside this target (0), or goes on into it
+      for (const from of [0, ...after]) {
+        // and ends inside it: any part of it starts one of its ends
+        if (form.includes(anchor.slice(from))) return true;
+        shown.add(from);
+        ends(form, from, shown);
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -1238,33 +1407,40 @@ const HELD_THREAD_LIMIT = 32;
  * write, keeps the lock while the thread stays loaded and removes the file when it unloads it
  * (codex-rs rust-v0.163.0, rollout/src/writer_lock.rs), so the file's change time is when it was
  * loaded (or earlier, for one a crash left behind); the shared app-server daemon holds it for every
- * TUI it serves, so the conversation a TUI shows is always among them.
+ * TUI it serves, so the conversation a TUI shows is always among them. `exec` when only `codex
+ * exec` runs hold it (execRun): exec runs its app server in its own process (exec/src/lib.rs).
  * On Linux a lock counts when the kernel's lock table (/proc/locks) has a write flock on the
  * file's inode by a process that has that very file open; on macOS, a file a process has open
  * there (lsof). null where neither can be read (Windows).
  */
-async function heldThreadIds(home: string): Promise<Map<string, number> | null> {
+async function heldThreadIds(home: string): Promise<Map<string, { loadedAt: number; exec: boolean }> | null> {
   if (process.platform !== "linux" && process.platform !== "darwin") return null;
   let folder: string;
   try { folder = realpathSync(join(home, "thread-writer-locks")); } catch { return new Map(); }
-  const held = new Map<string, number>();
+  const held = new Map<string, { loadedAt: number; exec: boolean }>();
+  const hold = (id: string, loadedAt: number, exec: boolean) => held.set(id, { loadedAt, exec: exec && (held.get(id)?.exec ?? true) });
   if (process.platform === "darwin") {
     // no -b here (openRollouts has it): +d must stat the folder, which -b forbids (lsof 4.91)
     const child = Bun.spawn(["/usr/sbin/lsof", "-nPw", "-Fn", "+d", folder], { stdout: "pipe", stderr: "ignore" });
     let killed = false;
     const timer = setTimeout(() => { killed = true; child.kill(); }, 3000);
+    const holders: { id: string; born: number; pid: string }[] = [];
     try {
       const text = await new Response(child.stdout).text();
       // lsof exits 1 when no process has a file open there; a list cut short leaves a thread out
       if (await child.exited > 1 || killed) return null;
+      let pid = "";
       for (const line of text.split("\n")) {
+        if (line.startsWith("p")) pid = line.slice(1);
         const id = line.startsWith("n") && nodePath.dirname(line.slice(1)) === folder ? WRITER_LOCK.exec(nodePath.basename(line))?.[1] : undefined;
         if (id === undefined) continue;
         let born = 0;
         try { born = statSync(line.slice(1)).ctimeMs; } catch { /* unloaded meanwhile: loaded at the earliest */ }
-        held.set(id.toLowerCase(), born);
+        holders.push({ id: id.toLowerCase(), born, pid });
       }
     } finally { clearTimeout(timer); }
+    const runs = await execRuns(holders.map((holder) => holder.pid));
+    for (const { id, born, pid } of holders) hold(id, born, runs.has(pid));
     return held;
   }
   const named = new Map<string, string>();
@@ -1304,10 +1480,45 @@ async function heldThreadIds(home: string): Promise<Map<string, number> | null> 
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
       }
     }
-    if (names.has(name)) held.set(name.slice(0, -".lock".length).toLowerCase(), born.get(name) ?? 0);
+    if (names.has(name)) hold(name.slice(0, -".lock".length).toLowerCase(), born.get(name) ?? 0, execRun(readArgv(lock[1]!)));
   }
   return held;
 }
+
+/** A process's arguments on Linux, none when they cannot be read. */
+function readArgv(pid: string): string[] {
+  try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { return []; }
+}
+
+/**
+ * Which of these processes are `codex exec` runs (execRun), on macOS: `ps` joins the arguments with
+ * spaces, so a binary whose path holds one is not taken for one.
+ */
+async function execRuns(pids: readonly string[]): Promise<Set<string>> {
+  const runs = new Set<string>();
+  const listed = [...new Set(pids)].filter((pid) => /^\d+$/.test(pid));
+  if (listed.length === 0) return runs;
+  const child = Bun.spawn(["/bin/ps", "-ww", "-o", "pid=,command=", "-p", listed.join(",")], { stdout: "pipe", stderr: "ignore" });
+  const timer = setTimeout(() => child.kill(), 3000);
+  try {
+    const text = await new Response(child.stdout).text();
+    await child.exited;
+    for (const line of text.split("\n")) {
+      const [pid, ...argv] = line.trim().split(/\s+/);
+      if (pid !== undefined && execRun(argv)) runs.add(pid);
+    }
+  } catch { /* none taken for one */ }
+  finally { clearTimeout(timer); }
+  return runs;
+}
+
+/**
+ * A `codex exec` run's process, which shows an answer only once it has written it: `exec` (or its
+ * alias `e`) the first argument of Codex's binary, the only process that holds its locks. Not the
+ * thread's `source`: the picker resumes an exec run's thread in a TUI too
+ * (`--include-non-interactive`), and its row still says exec.
+ */
+const execRun = (argv: readonly string[]) => argv[1] === "exec" || argv[1] === "e";
 
 /** A thread a Codex process has loaded (loadedRollouts). */
 interface LoadedThread {
@@ -1315,9 +1526,7 @@ interface LoadedThread {
   offered: boolean;
   /** the files its history is in (codexHistorySegments), found whole */
   segments: HistorySegment[];
-  /** the folder it runs in, which Codex shows its links relative to */
-  cwd: string;
-  /** a `codex exec` run's, which shows an answer only once it has written it */
+  /** held by a `codex exec` run (execRun), which shows an answer only once it has written it */
   exec: boolean;
   /** when it was loaded (heldThreadIds) */
   loadedAt: number;
@@ -1342,9 +1551,8 @@ async function loadedRollouts(home: string): Promise<Map<string, LoadedThread> |
   try {
     db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
     const list = [...ids.keys()];
-    const sourced = interactive(db) !== "";
-    const rows = db.query<{ id: string; rollout_path: string; cwd: string | null; offered: number; source: string | null }, string[]>(
-      `SELECT id, rollout_path, cwd, (archived = 0 AND agent_role IS NULL${interactive(db)}) AS offered, ${sourced ? "source" : "NULL"} AS source FROM threads WHERE lower(id) IN (${list.map(() => "?").join(", ")})`,
+    const rows = db.query<{ id: string; rollout_path: string; offered: number }, string[]>(
+      `SELECT id, rollout_path, (archived = 0 AND agent_role IS NULL${interactive(db)}) AS offered FROM threads WHERE lower(id) IN (${list.map(() => "?").join(", ")})`,
     ).all(...list);
     if (new Set(rows.map((row) => row.id.toLowerCase())).size !== ids.size) return null;
     for (const row of rows) {
@@ -1354,12 +1562,12 @@ async function loadedRollouts(home: string): Promise<Map<string, LoadedThread> |
       // would leave out what it said there
       const segments = codexHistorySegments(path, home);
       if (!chainComplete(path, home)) return null;
+      const holder = ids.get(row.id.toLowerCase());
       loaded.set(path, {
         offered: row.offered === 1 && codexRolloutPath(path, home) !== null,
         segments,
-        cwd: row.cwd ?? "",
-        exec: row.source === "exec",
-        loadedAt: ids.get(row.id.toLowerCase()) ?? 0,
+        exec: holder?.exec ?? false,
+        loadedAt: holder?.loadedAt ?? 0,
       });
     }
     return loaded;
@@ -1377,18 +1585,18 @@ const SAID_RECORDS = ['"type":"message"', '"type":"user_message"', '"type":"agen
   .map((marker) => Buffer.from(marker));
 /**
  * What a rollout file said up to `offset` (whole lines), joined in `text`, each record with where its
- * line ends in the file and where it ends in `text`; what it said with links, as written, to be
- * read as a screen shows them (shownLinks); and its turns as far as read (turnAfter).
+ * line ends in the file and where it ends in `text`; what it said with links, as a screen may show
+ * them (linkedText); and its turns as far as read (turnAfter).
  */
 interface SaidScan {
   ino: number;
   offset: number;
   said: { end: number; at: number }[];
   text: string;
-  links: { end: number; text: string }[];
+  links: { end: number; text: LinkedText }[];
   /** a turn begun and not ended */
   running: boolean;
-  /** when its last interrupted turn was stopped, 0 for none */
+  /** when its last turn interrupted or failed ended, 0 for none */
   abortedAt: number;
 }
 const saidScans = new Map<string, SaidScan>();
@@ -1454,19 +1662,20 @@ function lineTexts(value: unknown): string[] {
 
 /**
  * A rollout's turns after one of its lines: Codex writes `task_started` when a turn begins and
- * `task_complete` when it ends, or `turn_aborted` when it is interrupted. An answer it streams is
- * written only once it is complete: one an interrupted turn streamed never is, though a screen keeps
- * what it showed of it.
+ * `task_complete` when it ends (with an `error` when it failed), or `turn_aborted` when it is
+ * interrupted. An answer it streams is written only once it is complete: one an interrupted or
+ * failed turn streamed never is, though a screen keeps what it showed of it (codex-rs
+ * rust-v0.163.0, core/src/tasks/mod.rs; tui chatwidget/streaming.rs).
  */
 function turnAfter(scan: SaidScan, value: unknown): void {
   const entry = record(value);
   const payload = record(entry.payload);
   if (entry.type !== "event_msg") return;
   if (payload.type === "task_started" || payload.type === "turn_started") scan.running = true;
-  else if (payload.type === "task_complete" || payload.type === "turn_complete") scan.running = false;
-  else if (payload.type === "turn_aborted") {
+  else if (payload.type === "task_complete" || payload.type === "turn_complete" || payload.type === "turn_aborted") {
     scan.running = false;
-    // without a time it could have been stopped at any time
+    if (payload.type !== "turn_aborted" && (payload.error === undefined || payload.error === null)) return;
+    // without a time it could have ended at any time
     const at = Date.parse(string(entry.timestamp));
     scan.abortedAt = Math.max(scan.abortedAt, Number.isNaN(at) ? Infinity : at);
   }
@@ -1522,7 +1731,10 @@ async function readSaid(path: string): Promise<SaidScan> {
             scan.text += text;
             scan.said.push({ end, at: scan.text.length });
           }
-          for (const form of forms) if (LINK_TARGET.test(form)) scan.links.push({ end, text: form });
+          for (const form of forms) {
+            const linked = linkedText(form);
+            if (linked !== null) scan.links.push({ end, text: linked });
+          }
           turnAfter(scan, entry);
         }
         lineStart = end;
@@ -1538,14 +1750,15 @@ async function readSaid(path: string): Promise<SaidScan> {
 
 /**
  * Every message a conversation ever had, user's and agent's alike, in the files its history is in
- * (`segments`, as loadedRollouts found them whole), each as saidText reads it and with its links as
- * a TUI in `cwd` shows them, joined: what matchCodexTranscript weighs another candidate's answers
- * against, beyond the last 1 MiB it reads of each. Its own file is read as far as it has been
- * written, and its turns (turnAfter) as far as that too. A file gone meanwhile throws rather than
- * leave out what it said.
+ * (`segments`, as loadedRollouts found them whole), each as saidText reads it, joined, and those with
+ * links as a screen may show them (linkedText): what matchCodexTranscript weighs another candidate's
+ * answers against, beyond the last 1 MiB it reads of each. Its own file is read as far as it has
+ * been written, and its turns (turnAfter) as far as that too. A file gone meanwhile throws rather
+ * than leave out what it said.
  */
-async function everSaid(segments: readonly HistorySegment[], cwd: string): Promise<{ said: string; running: boolean; abortedAt: number }> {
+async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: string; linked: LinkedText[]; running: boolean; abortedAt: number }> {
   const texts: string[] = [];
+  const linked: LinkedText[] = [];
   let turns = { running: false, abortedAt: 0 };
   for (const [index, segment] of segments.entries()) {
     const scan = await scanSaid(segment.path);
@@ -1554,10 +1767,10 @@ async function everSaid(segments: readonly HistorySegment[], cwd: string): Promi
     let count = scan.said.length;
     if (!own) while (count > 0 && scan.said[count - 1]!.end > segment.end) count--;
     texts.push(count === 0 ? "" : scan.text.slice(0, scan.said[count - 1]!.at));
-    for (const link of scan.links) if (own || link.end <= segment.end) texts.push(shownLinks(link.text, cwd));
+    for (const link of scan.links) if (own || link.end <= segment.end) linked.push(link.text);
     if (own) turns = { running: scan.running, abortedAt: scan.abortedAt };
   }
-  return { said: texts.join(""), ...turns };
+  return { said: texts.join(""), linked, ...turns };
 }
 
 /**
@@ -1600,8 +1813,8 @@ function shownAnswers(screen: string): string {
  * prompt too, and nothing in its last 1 MiB (tailSaid), a tool's output too: matchCodexTranscript's
  * `scrutinized` with `said`. Whole histories are read only once one that may be the answer shows an
  * answer there. Codex writes an answer only once it is complete, so nothing is offered while
- * another of them may show text it has not written: a turn running, or one interrupted since it was
- * loaded (`codex exec` shows an answer only once written). Never
+ * another of them may show text it has not written: a turn running, or one interrupted or failed
+ * since it was loaded (`codex exec` shows an answer only once written). Never
  * remembered as a binding: the next read asks the screen again, so the chat follows the TUI to
  * another conversation.
  */
@@ -1621,13 +1834,13 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
     };
     if (!offered.some((path) => matchCodexTranscript(shown, [{ path, text: tail(path) }]) !== null)) return null;
     const candidates = [...loaded.keys()].map((path) => ({ path, text: tail(path) }));
-    const said = new Map<string, string>();
+    const said = new Map<string, Said>();
     const unwritten = new Set<string>();
     for (const { path, text } of candidates) {
       const thread = loaded.get(path)!;
-      const ever = await everSaid(thread.segments, thread.cwd);
-      said.set(path, ever.said + tailSaid(text));
-      // a turn running, or one interrupted since it was loaded, may show text it has not written
+      const ever = await everSaid(thread.segments);
+      said.set(path, { text: ever.said + tailSaid(text), linked: ever.linked });
+      // a turn running, or one interrupted or failed since it was loaded, may show text it has not written
       if (!thread.exec && (ever.running || ever.abortedAt >= thread.loadedAt)) unwritten.add(path);
     }
     const found = matchCodexTranscript(shown, candidates, new Set(loaded.keys()), said);

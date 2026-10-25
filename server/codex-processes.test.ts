@@ -396,6 +396,34 @@ async function loaded(...ids: string[]): Promise<ReturnType<typeof Bun.spawn>> {
 /** As loaded, by a process whose open files no other process may list (not dumpable), as another user's. */
 const loadedUnreadably = (...ids: string[]) => holding(ids, "unreadable");
 
+/**
+ * As loaded, by a `codex exec` run, which holds its thread's lock in its own process: Python locks
+ * it, then becomes Codex's binary running exec, in name (cat, reading an empty file `exec` and then
+ * stdin). Not Python itself: on macOS it re-executes itself under another name.
+ */
+async function loadedByExec(id: string): Promise<ReturnType<typeof Bun.spawn>> {
+  const folder = join(home, "thread-writer-locks");
+  mkdirSync(folder, { recursive: true });
+  const bin = mkdtempSync(join(root, "exec-run-"));
+  writeFileSync(join(bin, "exec"), "");
+  const child = Bun.spawn(["python3", "-c", [
+    "import fcntl, os, sys",
+    "lock = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_CREAT)",
+    "fcntl.flock(lock, fcntl.LOCK_EX)",
+    "os.set_inheritable(lock, True)",
+    "os.execv('/bin/cat', [os.path.join(sys.argv[2], 'codex'), 'exec', '-'])",
+  ].join("\n"), join(folder, `${id}.lock`), bin], { cwd: bin, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  children.push(child);
+  // only cat, once Python has become it, echoes what it reads
+  child.stdin.write("READY\n");
+  await child.stdin.flush();
+  const reader = child.stdout.getReader();
+  const ready = await reader.read();
+  reader.releaseLock();
+  expect(new TextDecoder().decode(ready.value)).toBe("READY\n");
+  return child;
+}
+
 async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<ReturnType<typeof Bun.spawn>> {
   const folder = join(home, "thread-writer-locks");
   mkdirSync(folder, { recursive: true });
@@ -596,21 +624,57 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
   });
 
   heldIt("weighs a link another loaded conversation answered with by its target, as the screen shows it", async () => {
-    // this one answered with a path; another, with a link to that path in its own folder
+    // this one answered with a label and a path, as plain text; another, with a link to that path
     const target = "docs/investigations/codex-resume-picker-cross-folder-session-identification-verification-results-896.md";
-    otherFolderThread([{ type: "agent_message", message: target }]);
-    const peer = "01a16b22-7e1f-7072-8897-dddddddddddd";
-    elsewhereThread(peer, [`[Verification results](${join(root, "elsewhere-dddd", target)})`]);
+    const shown = `Verification results (${target}:12), as the run left them.`;
+    const rollout = otherFolderThread([{ type: "agent_message", message: shown }]);
     foreground = picker;
-    // Codex shows a link as its label and its target relative to the folder: the other one's screen
-    screen = `• Verification results (${target})`;
+    // Codex shows a link as its label and its target relative to the folder, a `#L12` as `:12`: the
+    // other one's screen
+    screen = `• ${shown}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    // in each form Codex shows so: a path in its folder, a file URL, percent-encoded, a <destination>
+    // with a title, a reference, and a path through a symlink to its folder, which the store keeps
+    // resolved while the TUI shows it relative to the folder as it was given
+    const forms = [
+      (folder: string) => `[Verification results](${join(folder, target)}:12), as the run left them.`,
+      (folder: string) => `[Verification results](file://${join(folder, target)}#L12), as the run left them.`,
+      (folder: string) => `[Verification results](${join(folder, target).replaceAll("-", "%2D")}:12), as the run left them.`,
+      (folder: string) => `[Verification results](<${join(folder, target)}#L12> "the results"), as the run left them.`,
+      (folder: string) => `[Verification results][results], as the run left them.\n\n[results]: ${join(folder, target)}:12`,
+      (folder: string) => `[Verification results][], as the run left them.\n\n[verification  results]: ${join(folder, target)}:12`,
+      (folder: string) => `[Verification results], as the run left them.\n\n[Verification Results]: <${join(folder, target)}#L12>`,
+      (folder: string) => {
+        symlinkSync(folder, `${folder}-link`);
+        return `[Verification results](${join(`${folder}-link`, target)}#L12), as the run left them.`;
+      },
+    ];
+    for (const [index, form] of forms.entries()) {
+      const peer = `01a16b22-7e1f-7072-8897-dddddddd000${index}`;
+      elsewhereThread(peer, [form(join(root, `elsewhere-${peer.slice(-4)}`))]);
+      const both = await loaded(other, peer);
+      expect({ index, found: await resolve() }).toEqual({ index, found: null });
+      both.kill();
+      await both.exited;
+    }
+  });
+
+  heldIt("weighs an autolink another loaded conversation answered with, which Codex shows with its address after it", async () => {
+    const url = "https://example.com/investigations/codex-resume-picker-cross-folder-results-896";
+    const shown = `See ${url} (${url}), as the run left them.`;
+    const rollout = otherFolderThread([{ type: "agent_message", message: shown }]);
+    foreground = picker;
+    screen = `• ${shown}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0100";
+    elsewhereThread(peer, [`See <${url}>, as the run left them.`]);
     await loaded(other, peer);
-    expect(await resolve()).toBeNull();
-    // also when this one's answer was that label and path, as plain text
-    writeFileSync(join(home, "sessions", `rollout-${other}.jsonl`), [
-      { type: "session_meta", payload: { id: other, cwd: join(root, "elsewhere") } },
-      { type: "event_msg", payload: { type: "agent_message", message: `Verification results (${target})` } },
-    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
     expect(await resolve()).toBeNull();
   });
 
@@ -731,14 +795,41 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     expect(await resolve()).toBeNull();
   });
 
-  heldIt("leaves a codex exec run's turn out of it, as it shows an answer only once written", async () => {
+  heldIt("offers nothing while another loaded conversation had a turn fail since it was loaded, as its screen keeps what it streamed", async () => {
+    const rollout = otherFolderThread();
+    const peer = "01a16b22-7e1f-7072-8897-ffffffffffff";
+    const event = (payload: Record<string, unknown>, timestamp = new Date().toISOString()) => `${JSON.stringify({ timestamp, type: "event_msg", payload })}\n`;
+    // Codex ends a failed turn as a completed one, with its error (core/src/tasks/mod.rs)
+    const failed = (timestamp?: string) => event({ type: "task_complete", turn_id: "failed", last_agent_message: null, error: { message: "stream disconnected before completion" } }, timestamp);
+    const failing = elsewhereThread(peer, []);
+    // failed before it was loaded: what it streamed then is on no screen
+    appendFileSync(failing, event({ type: "task_started" }, "2026-01-01T00:00:00Z") + failed("2026-01-01T00:00:02Z"));
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    await loaded(other, peer);
+    expect(await resolve()).toBe(rollout);
+    appendFileSync(failing, event({ type: "task_started" }) + failed());
+    expect(await resolve()).toBeNull();
+    // a later turn that completes leaves what the failed one streamed on its screen
+    appendFileSync(failing, event({ type: "task_started" }) + event({ type: "agent_message", message: "Understood." })
+      + event({ type: "task_complete", turn_id: "next", last_agent_message: "Understood." }));
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("leaves out the turn of a thread a codex exec run holds, as it shows an answer only once written", async () => {
     const rollout = otherFolderThread();
     const exec = "01a16b22-7e1f-7072-8897-ffffffffffff";
     elsewhereThread(exec, [{ type: "event_msg", payload: { type: "task_started" } }], "exec");
     foreground = picker;
     screen = `• ${otherAnswer}`;
-    await loaded(other, exec);
+    await loaded(other);
+    const run = await loadedByExec(exec);
     expect(await resolve()).toBe(rollout);
+    // the same thread resumed in a TUI (the picker lists exec runs too): its row still says exec
+    run.kill();
+    await run.exited;
+    await loaded(exec);
+    expect(await resolve()).toBeNull();
   });
 
   heldIt("offers nothing to a TUI of a remote app server, or without a Codex process", async () => {

@@ -7,4 +7,4 @@
   questions, a queued message, a tool's output, the status line, the input box or the picker's
   list. It is not remembered: once the screen no longer shows such an answer, the chat says it
   cannot tell, as it does while another open Codex conversation is answering, or was interrupted
-  since it was opened. On Windows the `"thread-id"` title item is still needed.
+  or failed since it was opened. On Windows the `"thread-id"` title item is still needed.
