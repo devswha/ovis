@@ -9,7 +9,7 @@
     testflight: "https://testflight.apple.com/join/dCVKYRA3",
     // Android: the Google Group whose members may join the Google Play closed test,
     // https://groups.google.com/g/…
-    play: "",
+    play: "https://groups.google.com/g/ovis-beta",
   };
 
   if (typeof module === "object" && module.exports) {
