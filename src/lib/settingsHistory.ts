@@ -10,11 +10,15 @@
  * traversal lands, and whether it was one of its own.
  */
 
+import { SHEET_HISTORY_KEY } from "./historyKeys.ts";
+
 const KEY = "ovis:settings";
 /** names an opening of Settings on the entry it began from and on each of its entries */
 const BASE_KEY = "ovis:settings-base";
 /** names the opening an entry another dialog pushed from a Settings entry lies above */
 const ABOVE_KEY = "ovis:settings-above";
+/** on an opening's entries when its first one took over the entry it began from (a phone sheet's, sheetHistory) */
+const LOST_KEY = "ovis:settings-base-lost";
 /** how long to wait before releasing the traversal's busy state, not its ownership */
 const LANDING_MS = 1000;
 
@@ -156,7 +160,17 @@ function reconcile(): void {
     held[have - 1] = wanted[have - 1]!;
   }
   for (let depth = have + 1; depth <= wanted.length; depth++) {
+    // a push from a phone sheet's entry becomes a replace of it (sheetHistory): the entry this
+    // opening began from, with its mark, is gone, so its entries say so for its closing to be told
+    const takesOver = depth === 1 && fieldOf(window.history.state, SHEET_HISTORY_KEY) !== undefined;
     writeState("pushState", { ...base, [KEY]: { ...wanted[depth - 1], depth } });
+    if (takesOver) {
+      const { [SHEET_HISTORY_KEY]: _sheet, ...unmarked } = base as Record<string, unknown>;
+      base = { ...unmarked, [LOST_KEY]: true };
+      // from the entry as the sheet left it, without its mark: with it, the entry is the sheet's again
+      const current: unknown = window.history.state;
+      writeState("replaceState", { ...(current !== null && typeof current === "object" ? current : {}), [LOST_KEY]: true });
+    }
     held.push(wanted[depth - 1]!);
   }
 }
@@ -213,14 +227,17 @@ if (typeof window !== "undefined") {
     const matches = pending !== null && (entry?.depth ?? 0) === pending.depth
       && (pending.level === null || (entry !== null && same(pending.level, entry)));
     const own = matches && pending?.claim === true;
-    // Settings closing, by its controls (this module's own step back) or by a Back off its first
-    // level, lands under its entries. Forward onto an entry above Settings (a preview opened over
-    // it) is no closing, nor is the step over buried entries that finishes a Back of the user's.
-    // The entry it opened from may have lost its mark (a phone sheet's entry it took over)
+    // Settings closing lands on the entry it was opened over: by its controls (this module's own
+    // step back), or a Back onto the entry with the opening's mark. A jump past that entry (the
+    // browser's Back menu) goes to another pane, Forward onto an entry above Settings (a preview
+    // opened over it) is no closing, nor is the step over buried entries that finishes a Back of
+    // the user's. An opening whose entry a phone sheet took over has no marked entry under it: any
+    // step off its entries onto one below is taken for its closing
     const left = settingsEntry(previous);
     const forwardAbove = fieldOf(event.state, ABOVE_KEY) !== undefined && fieldOf(event.state, ABOVE_KEY) === fieldOf(previous, BASE_KEY);
     const ontoBase = fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
-    steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || left.depth === 1);
+    const baseLost = fieldOf(previous, LOST_KEY) === true;
+    steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || baseLost);
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
     for (const listener of [...listeners]) listener(entry, own);
     // what was asked for while the traversal was under way is done now

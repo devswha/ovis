@@ -174,6 +174,26 @@ try {
           assert.equal(await page.locator(".machine-hidden-note").count(), 0);
           assert.deepEqual(errors, []);
 
+          if (phone) {
+            // Settings opened from the phone's command palette takes the palette sheet's history entry over:
+            // closing it must still keep the selection the hiding moved
+            await page.goto(`${origin}/?machine=work&pane=${pane}`);
+            await page.locator(".conn-live").waitFor({ state: "attached" });
+            await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "work");
+            await page.keyboard.press("ControlOrMeta+Shift+K");
+            const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
+            await palette.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Show in sidebar");
+            await palette.getByRole("option").filter({ hasText: "Show in sidebar" }).first().click();
+            const fromPalette = page.locator(".settings-dialog").getByRole("switch", { name: "Show Work PC in sidebar", exact: true });
+            await fromPalette.click();
+            await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "local");
+            await page.keyboard.press("Escape");
+            await page.locator(".settings-dialog").waitFor({ state: "detached" });
+            await page.waitForFunction(() => !(history.state !== null && typeof history.state === "object" && "ovis:settings" in history.state) && !location.search.includes("machine=work"));
+            assert.equal(await selection(page), "local", "Settings opened from the palette sheet keeps the moved selection when it closes");
+            await page.evaluate(() => localStorage.removeItem("ovis:hidden-pcs"));
+          }
+
           // a tab opened without a link restores its last selection: on a PC hidden meanwhile, it moves off it
           await page.evaluate((paneId) => {
             localStorage.setItem("ovis:hidden-pcs", JSON.stringify(["work"]));

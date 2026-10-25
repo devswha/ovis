@@ -57,6 +57,13 @@ describe("settingsEntry", () => {
   });
 });
 
+/** what sheetHistory makes of a push from its sheet's entry: a replace, without the sheet's mark */
+const withoutSheet = (state: unknown): unknown => {
+  if (state === null || typeof state !== "object") return state;
+  const { ["ovis:sheet"]: _sheet, ...rest } = state as Record<string, unknown>;
+  return rest;
+};
+
 describe("recordSettings", () => {
   it("rebuilds the earlier steps when the width changes: the list goes under a page a wider dialog opened, and away again", async () => {
     // a wider dialog opened on Terminal: one step
@@ -102,12 +109,15 @@ describe("recordSettings", () => {
     // sheetHistory turns a push made from a sheet into a replace of the sheet's entry: the entry
     // Settings began from, with its mark, is gone, and the one under its list is the pane's
     const push = fake.window.history.pushState;
-    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(state); };
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
+    expect(Object.keys((fake.window.history.state ?? {}) as object)).not.toContain("ovis:sheet");
     // Back through the levels: the page, then the list onto the pane's entry
     fake.window.history.go(-1);
     await settled();
+    // the entry Settings took over is its own now, never the sheet's again
+    expect(Object.keys((fake.window.history.state ?? {}) as object)).not.toContain("ovis:sheet");
     fake.window.history.go(-1);
     await settled();
     expect(seen).toEqual([false, true]);
@@ -115,13 +125,30 @@ describe("recordSettings", () => {
     await settled();
     // and closed with X or Escape from the same start
     fake.window.history.pushState({ "ovis:sheet": "palette" });
-    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(state); };
+    fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
     recordSettings([]);
     await settled();
     expect(seen).toEqual([false, true, true]);
     fake.window.history.go(-1);
+    await settled();
+  });
+
+  it("does not take a jump from Settings past the entry it opened over for Settings closing", async () => {
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": "a" });
+    fake.window.history.pushState({ "ovis:nav": "b" });
+    recordSettings([{ page: "remote", keyBar: false }]);
+    await settled();
+    // the browser's Back menu, two entries back: to pane A, past B where Settings was opened
+    fake.window.history.go(-2);
+    await settled();
+    expect(seen).toEqual([false]);
+    recordSettings([]);
+    await settled();
+    fake.window.history.go(-(fake.held().length - 1));
     await settled();
   });
 

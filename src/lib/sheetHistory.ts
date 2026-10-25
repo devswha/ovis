@@ -13,10 +13,11 @@
  * own close, does not close it. Any other sheet still up under a new one closes with it, as before.
  */
 import { useEffect, useRef } from "react";
+import { SHEET_HISTORY_KEY } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
-const KEY = "ovis:sheet";
+const KEY = SHEET_HISTORY_KEY;
 
 /** what Back does to each open sheet: false refuses it (the sheet is busy), and the sheet keeps its entry */
 const open = new Map<string, () => boolean | void>();
