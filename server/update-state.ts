@@ -1,7 +1,7 @@
 /** Where app state and managed-update state live. Dependency-free on purpose: the launcher
  * (server/managed.ts) imports it and must stay small and stable across releases. */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -101,6 +101,7 @@ export function currentStateDir(legacy: string, next: string): string {
  * meanwhile gets a closed copy of the paired devices from every server start (state-merge.ts).
  */
 export function linkLegacyRegistry(legacy: string, next: string): void {
+  finishInterruptedLink(legacy, next);
   if (legacyContents(legacy, next) !== "registry" || !isDir(next)) return;
   try { if (lstatSync(legacy).isSymbolicLink()) return; } catch { return; }
   const from = join(legacy, BRIDGE_REGISTRY);
@@ -141,7 +142,33 @@ export function linkLegacyRegistry(legacy: string, next: string): void {
   catch (error) {
     removeLink(link);
     // a bridge registered under the old name in between: the next start moves it and links
-    if (!["EEXIST", "ENOTEMPTY", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) console.error(`moved the bridge registry into ${next} but cannot link ${legacy} to it: ${(error as Error).message}`);
+    if (["EEXIST", "ENOTEMPTY", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    // The old name must not be left free: a bridge would make it again with its registry alone, where
+    // a launcher from before 0.4.16 starts ungated. Empty, those launchers pass it by, and the merge
+    // leaves its closed copy of the devices in it (state-merge.ts).
+    try { mkdirSync(legacy, { mode: 0o700 }); } catch { /* reported below */ }
+    console.error(`moved the bridge registry into ${next} but cannot link ${legacy} to it, so it stays a dir of its own, with a closed copy of the paired devices: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * A link that a process made under another name and stopped before it took the old name (a crash):
+ * where the old name is free, the link takes it now. Other such links are left over, and go.
+ */
+function finishInterruptedLink(legacy: string, next: string): void {
+  const prefix = `${basename(legacy)}.link-`;
+  let leftovers: string[];
+  try { leftovers = readdirSync(dirname(legacy)).filter((entry) => entry.startsWith(prefix)).map((entry) => join(dirname(legacy), entry)); }
+  catch { return; }
+  for (const link of leftovers) {
+    let pointsAtNext = false;
+    try { pointsAtNext = lstatSync(link).isSymbolicLink() && sameDir(link, next); } catch { /* gone */ }
+    // another process of this install may be making its own right now: only a dead one's is left over
+    if (link === `${legacy}.link-${process.pid}` || livePid(Number(link.slice(link.lastIndexOf("-") + 1)))) continue;
+    if (pointsAtNext && !existsSync(legacy)) {
+      try { renameSync(link, legacy); continue; } catch { /* removed below */ }
+    }
+    removeLink(link);
   }
 }
 
@@ -158,11 +185,17 @@ function liveBridge(registry: string): boolean {
     if (!entry.endsWith(".json")) continue;
     let pid: unknown;
     try { pid = (JSON.parse(readFileSync(join(registry, entry), "utf8")) as { pid?: unknown }).pid; } catch { continue; }
-    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
-    try { process.kill(pid, 0); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return true; }
+    if (typeof pid !== "number" || pid === process.pid) continue;
+    if (livePid(pid)) return true;
   }
   return false;
+}
+
+/** Whether `pid` names a running process (one of another user's counts). */
+function livePid(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 /**

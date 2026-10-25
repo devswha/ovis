@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeviceStore } from "./devices.ts";
+import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { adoptLegacyDir, defaultStateDir, linkLegacyRegistry, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 
 const roots: string[] = [];
@@ -95,6 +97,44 @@ describe("the state dir from before the rename", () => {
     expect(lstatSync(legacy).isDirectory()).toBe(true);
     expect(readFileSync(join(legacy, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
     expect(existsSync(join(next, "bridges"))).toBe(false);
+  });
+
+  it("keeps the old name a dir of its own when the link cannot take it at the end", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    const rename = fs.renameSync;
+    const denied = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (to === legacy) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      rename(from, to);
+    });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { linkLegacyRegistry(legacy, next); } finally { denied.mockRestore(); said.mockRestore(); }
+    // still there, empty, so the server's merge finds it (and leaves its closed copy of the devices in it)
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(fs.readdirSync(legacy)).toEqual([]);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+    expect(fs.readdirSync(config).filter((entry) => entry.includes(".link-"))).toEqual([]);
+    // the server's merge then finds it, and a bridge registering there after it leaves it gated
+    const sibling = siblingStateDir(next, { XDG_CONFIG_HOME: config });
+    expect(sibling).toBe(legacy);
+    writeFileSync(join(next, "devices.json"), JSON.stringify({ gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [] }));
+    mergeSiblingState(next, sibling!);
+    withRegistry(legacy);
+    expect(new DeviceStore(legacy).gated).toBe(true);
+  });
+
+  it("finishes a link that a process made and stopped before it took the old name", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    mkdirSync(join(next, "bridges"));
+    const legacy = join(config, "herdr-web-ui");
+    // left by a process that is gone: no pid that high runs
+    symlinkSync(next, `${legacy}.link-999999999`);
+    linkLegacyRegistry(legacy, next);
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(realpathSync(legacy)).toBe(realpathSync(next));
+    expect(existsSync(`${legacy}.link-999999999`)).toBe(false);
   });
 
   it("waits while a bridge registered under the old name runs", () => {
