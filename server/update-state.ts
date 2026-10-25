@@ -1,7 +1,7 @@
 /** Where app state and managed-update state live. Dependency-free on purpose: the launcher
  * (server/managed.ts) imports it and must stay small and stable across releases. */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -79,40 +79,87 @@ export function currentStateDir(legacy: string, next: string): string {
  * checkout starts next. So where the old name holds only the registry beside a new dir, the
  * registry moves into the new dir (in one rename: a remote bridge keeps its own state inside it)
  * and the old name becomes a link to the new dir, where those launchers then find the state.
- * A step that fails leaves the rest for the next start, with the registry where it was.
+ *
+ * The link is made first, under another name, so that where no link can be made nothing moves.
+ * A bridge that runs writes its state under the old name by path, so the move waits until no
+ * bridge registered there runs. A step that fails leaves the rest for the next start; the old dir
+ * meanwhile gets a closed copy of the paired devices from every server start (state-merge.ts).
  */
 export function linkLegacyRegistry(legacy: string, next: string): void {
-  if (legacyContents(legacy, next) !== "registry" || !isDir(next) || lstatSync(legacy).isSymbolicLink()) return;
+  if (legacyContents(legacy, next) !== "registry" || !isDir(next)) return;
+  try { if (lstatSync(legacy).isSymbolicLink()) return; } catch { return; }
   const from = join(legacy, BRIDGE_REGISTRY);
   const to = join(next, BRIDGE_REGISTRY);
-  let movedWhole = false;
-  try {
-    if (!existsSync(to)) {
-      renameSync(from, to);
-      movedWhole = true;
-    } else {
-      // left by a move that stopped before the link. Bridges register under the old name, so its
-      // file is the current one and replaces the other; a dir already there stays as it is
-      for (const entry of readdirSync(from)) {
-        const target = join(to, entry);
-        if (!existsSync(target) || !statSync(target).isDirectory() && !statSync(join(from, entry)).isDirectory()) renameSync(join(from, entry), target);
-      }
-      rmdirSync(from);
-    }
-    rmdirSync(legacy);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // ENOENT: another process of this install moved it first, and links it
-    if (code === "ENOENT") return;
-    if (movedWhole) try { renameSync(to, from); } catch { /* the registry stays in the new dir, unlinked until the next start */ }
-    console.error(`cannot link ${legacy} to ${next}, so an Ovis launcher from before 0.4.16 may start on ${legacy}: ${(error as Error).message}`);
+  if (liveBridge(from)) return;
+  const link = `${legacy}.link-${process.pid}`;
+  removeLink(link);
+  try { symlinkSync(next, link, "junction"); }
+  catch (error) {
+    console.error(`cannot link ${legacy} to ${next}, so it stays a dir of its own, with a closed copy of the paired devices: ${(error as Error).message}`);
     return;
   }
   try {
-    symlinkSync(next, legacy, "junction");
+    if (!existsSync(to)) renameSync(from, to);
+    else moveInto(from, to);
+    try { rmdirSync(legacy); }
+    catch (error) {
+      // a writer put something back under the old name in between: it joins the new dir, once
+      if (!existsSync(from) || !["ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      moveInto(from, to);
+      rmdirSync(legacy);
+    }
   } catch (error) {
-    // EEXIST: another process linked it, or a bridge registered again in between (the next start links it)
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") console.error(`moved the bridge registry into ${next} but cannot link ${legacy} to it: ${(error as Error).message}`);
+    removeLink(link);
+    // ENOENT: another process of this install moved it first, and links it
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`cannot link ${legacy} to ${next}, so it stays a dir of its own, with a closed copy of the paired devices; what moved is in ${to}: ${(error as Error).message}`);
+    return;
+  }
+  try { renameSync(link, legacy); }
+  catch (error) {
+    removeLink(link);
+    // a bridge registered under the old name in between: the next start moves it and links
+    if (!["EEXIST", "ENOTEMPTY", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) console.error(`moved the bridge registry into ${next} but cannot link ${legacy} to it: ${(error as Error).message}`);
+  }
+}
+
+/** Whether a bridge registered in `registry` may still run: a descriptor names a live process other than this one. */
+function liveBridge(registry: string): boolean {
+  let entries: string[];
+  try { entries = readdirSync(registry); } catch { return false; }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    let pid: unknown;
+    try { pid = (JSON.parse(readFileSync(join(registry, entry), "utf8")) as { pid?: unknown }).pid; } catch { continue; }
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try { process.kill(pid, 0); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return true; }
+  }
+  return false;
+}
+
+/**
+ * Moves every entry of `from` into `to`, then removes `from`. Where both hold an entry, the one under
+ * `from` is the current one (bridges register, and a running bridge writes, under the old name):
+ * a file replaces the other, and two dirs merge the same way.
+ */
+function moveInto(from: string, to: string): void {
+  for (const entry of readdirSync(from)) {
+    const source = join(from, entry);
+    const target = join(to, entry);
+    if (!existsSync(target)) renameSync(source, target);
+    else if (lstatSync(source).isDirectory() && lstatSync(target).isDirectory()) moveInto(source, target);
+    else if (!lstatSync(source).isDirectory() && !lstatSync(target).isDirectory()) renameSync(source, target);
+    // a file and a dir of one name stay as they are, and so does the old dir: the error says so
+  }
+  rmdirSync(from);
+}
+
+/** Removes a link this code made, where it is; a junction on Windows is removed as a dir. */
+function removeLink(path: string): void {
+  try { unlinkSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    try { rmdirSync(path); } catch { /* left for the next start */ }
   }
 }
 

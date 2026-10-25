@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { adoptLegacyDir, defaultStateDir, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
+import { adoptLegacyDir, defaultStateDir, linkLegacyRegistry, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -70,6 +71,62 @@ describe("the state dir from before the rename", () => {
     expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(next, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
     expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"remote\":1}");
+  });
+
+  it("moves nothing where the link cannot be made", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    const denied = spyOn(fs, "symlinkSync").mockImplementation(() => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { linkLegacyRegistry(legacy, next); } finally { denied.mockRestore(); said.mockRestore(); }
+    // the old dir is still there with its registry, where the server merge leaves a closed copy of the devices
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(readFileSync(join(legacy, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
+    expect(existsSync(join(next, "bridges"))).toBe(false);
+  });
+
+  it("waits while a bridge registered under the old name runs", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    // the parent of this test runs: a pid that answers, and is not this process
+    writeFileSync(join(legacy, "bridges", "remote.json"), JSON.stringify({ pid: process.ppid }));
+    linkLegacyRegistry(legacy, next);
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(readFileSync(join(legacy, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"remote\":1}");
+  });
+
+  it("takes in what a writer put back under the old name while the registry moved", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    const rename = fs.renameSync;
+    const writer = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      rename(from, to);
+      if (from === join(legacy, "bridges") && to === join(next, "bridges")) {
+        // a remote bridge saves its registry by path, right after the move
+        mkdirSync(join(legacy, "bridges", "remote.json.state"), { recursive: true });
+        writeFileSync(join(legacy, "bridges", "remote.json.state", "devices.json"), "{\"renamed\":1}");
+      }
+    });
+    try { linkLegacyRegistry(legacy, next); } finally { writer.mockRestore(); }
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"renamed\":1}");
+  });
+
+  it("merges a bridge's state dir held under both names by a move that did not finish", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    mkdirSync(join(next, "bridges", "remote.json.state"), { recursive: true });
+    writeFileSync(join(next, "bridges", "remote.json.state", "preferences.json"), "{\"language\":\"ko\"}");
+    const legacy = join(config, "herdr-web-ui");
+    mkdirSync(join(legacy, "bridges", "remote.json.state"), { recursive: true });
+    writeFileSync(join(legacy, "bridges", "remote.json.state", "devices.json"), "{\"renamed\":1}");
+    linkLegacyRegistry(legacy, next);
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(next, "bridges", "remote.json.state", "preferences.json"), "utf8")).toBe("{\"language\":\"ko\"}");
+    expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"renamed\":1}");
   });
 
   it("leaves the registry alone without a new dir, under OVIS_STATE_DIR", () => {
