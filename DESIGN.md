@@ -656,7 +656,8 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   event, scoped to the active, presented pane and its PC; a modal or observe mode blocks it.
   It sends no text or keys and never takes an attach. The binding follows the existing shortcut
   customization and Mod+Shift policy.
-- All settings share one sanitized `localStorage["ovis:settings"]` record.
+- Settings share one sanitized `localStorage["ovis:settings"]` record, except the interface font,
+  which is kept in `localStorage["ovis:ui-font"]` so an older tab's whole-record save cannot erase it.
 
 ## 4. Spacing & Layout
 
