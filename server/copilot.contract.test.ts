@@ -109,6 +109,8 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   for (const record of [
     event("user.message", { content: [{ type: "text", text: "unsupported prompt" }] }),
     event("assistant.message", { content: [{ type: "text", text: "unsupported answer" }] }),
+    event("assistant.message", { toolRequests: ["unreadable request"] }),
+    event("assistant.message", { content: "", toolRequests: { toolCallId: "call", name: "shell" } }),
     "malformed complete record\n",
   ]) {
     writeFileSync(file(id), header + record);

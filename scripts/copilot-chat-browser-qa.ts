@@ -1,7 +1,7 @@
 /** Owned native Copilot-shaped fixture -> Herdr -> HTTP -> built React chat. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -44,6 +44,7 @@ try {
   // marker; its stdin remains the pane's PTY so the regular composer can reach it.
   writeFileSync(executable, `import { appendFileSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
+process.title = "copilot";
 const home = process.env.COPILOT_HOME;
 const marker = join(home, "session-state", process.argv[2], \`inuse.\${process.pid}.hold\`);
 mkdirSync(join(home, "session-state", process.argv[2]), { recursive: true });
@@ -156,9 +157,14 @@ console.log("fixture ready");`);
   await page.locator(".chat-terminal-fallback").waitFor({ state: "detached" });
   await page.unroute(conversationRoute);
   const readableHistory = readFileSync(transcript, "utf8");
-  for (const type of ["user.message", "assistant.message"]) {
+  for (const [type, data] of [
+    ["user.message", { content: [{ type: "text", text: "unsupported native content" }] }],
+    ["assistant.message", { content: [{ type: "text", text: "unsupported native content" }] }],
+    ["assistant.message", { toolRequests: ["unreadable request"] }],
+    ["assistant.message", { content: "", toolRequests: { toolCallId: "call", name: "shell" } }],
+  ] as const) {
     writeFileSync(transcript, event("session.start", { sessionId: id })
-      + event(type, { content: [{ type: "text", text: "unsupported native content" }] }));
+      + event(type, data));
     await page.locator(".chat-terminal-fallback summary").waitFor();
     assert.equal(await log.getByText("Conversation recovered without switching lenses.", { exact: true }).count(), 0);
     writeFileSync(transcript, readableHistory);

@@ -7,11 +7,13 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const HEADER_BYTES = 64 * 1024;
 const MAX_DESCRIPTORS = 4096;
 const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
+const LOG_HASH_BYTES = 64 * 1024 * 1024;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
-const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Registering|Unregistering) foreground session: ([\da-f-]{36})$/;
+const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
+const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
-  dev: number; ino: number; path: string; size: number; mtimeMs: number; ctimeMs: number;
+  dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; pendingSwitch: boolean;
   hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
@@ -88,23 +90,30 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
         if (realpathSync(target) !== target) return unavailable();
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
         try {
-          const stat = fstatSync(fd);
-          const named = statSync(target);
+          const stat = fstatSync(fd, { bigint: true });
+          const named = statSync(target, { bigint: true });
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return unavailable();
+          if (stat.size > LOG_HASH_BYTES) return unavailable();
+          const size = Number(stat.size);
           const cached = foregroundCheckpoints.get(pid);
-          const prefix = cached && stat.size >= cached.size ? logPrefix(fd, cached.size) : null;
+          if (cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
+            && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs) {
+            found = cached.pendingSwitch ? undefined : cached.binding;
+            continue;
+          }
+          const prefix = cached && size >= cached.size ? logPrefix(fd, cached.size) : null;
           const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
-            && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
-            && (stat.size !== cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs))
+            && size >= cached.size && size - cached.size <= LOG_WINDOW_BYTES
+            && (size !== cached.size || (stat.mtimeNs === cached.mtimeNs && stat.ctimeNs === cached.ctimeNs))
             && prefix?.copy().digest("hex") === cached.hash.copy().digest("hex");
           const epoch = same ? cached.epoch : randomUUID();
-          const start = same ? cached.size : Math.max(0, stat.size - LOG_WINDOW_BYTES);
-          const bytes = Buffer.alloc(stat.size - start);
+          const start = same ? cached.size : Math.max(0, size - LOG_WINDOW_BYTES);
+          const bytes = Buffer.alloc(size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
           const hash = same ? prefix : logPrefix(fd, start);
-          const after = fstatSync(fd);
+          const after = fstatSync(fd, { bigint: true });
           if (read !== bytes.length || hash === null || after.size !== stat.size
-            || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable();
+            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) return unavailable();
           const text = bytes.subarray(0, read).toString("utf8");
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
@@ -116,27 +125,24 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             const match = FOREGROUND_EVENT.exec(line);
             if (match) {
               if (!SESSION_ID.test(match[2]!)) return unavailable();
-              if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
+              if (match[1] === FOREGROUND_PREFIXES[0]) selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
               else selected = undefined;
             }
             position += Buffer.byteLength(line) + 1;
           }
           const completeBytes = bytes.lastIndexOf(0x0a) + 1;
           hash.update(bytes.subarray(0, completeBytes));
+          const tail = text.slice(text.lastIndexOf("\n") + 1);
+          // Cache the visible result separately from the last complete binding:
+          // an unchanged partial timestamp or switch must remain unavailable.
+          const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
+          const pendingSwitch = !!tail && (selected == null || (/^\d/.test(tail) && (message === undefined
+            || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
           foregroundCheckpoints.set(pid, {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
-            mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, hash, epoch, binding: selected,
+            observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, pendingSwitch, hash, epoch, binding: selected,
           });
-          const tail = text.slice(text.lastIndexOf("\n") + 1);
-          if (tail) {
-            // A timestamp can still become a lifecycle event. Keep the complete
-            // checkpoint, but serve it only once the tail rules out a switch.
-            const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
-            const switchPrefixes = ["Registering foreground session: ", "Unregistering foreground session: "];
-            if (selected == null || (/^\d/.test(tail) && (message === undefined
-              || switchPrefixes.some((event) => event.startsWith(message) || message.startsWith(event))))) return undefined;
-          }
-          found = selected;
+          found = pendingSwitch ? undefined : selected;
         } finally { closeSync(fd); }
       } catch { return unavailable(); }
     }

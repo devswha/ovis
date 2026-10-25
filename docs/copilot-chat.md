@@ -45,8 +45,10 @@ links. The marker-and-report fallback cannot detect an unobserved switch away an
 The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpoints
 complete reads, including unavailable selections. Ambiguity remains unavailable until a
 fresh registration; it does not permanently block later registrations.
-Continuity verification hashes the entire consumed prefix in 64 KiB chunks, including
-bytes outside the catch-up window. An incomplete trailing line keeps the last complete
+Unchanged file identity, size and timestamps reuse the last verification. Changed logs
+revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside the catch-up
+window; logs over 64 MiB use Terminal without reading or hashing them.
+An incomplete trailing line keeps the last complete
 binding only when its prefix rules out a lifecycle event. A partial timestamp or possible
 foreground switch temporarily blocks Chat until the line is complete.
 Observation state is bounded to 256 live process identities. Exited or replaced processes

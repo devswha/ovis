@@ -96,7 +96,8 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       }
     } else if (type === "assistant.message") {
       if ((data.content != null && typeof data.content !== "string")
-        || (data.content == null && !Array.isArray(data.toolRequests))) throw new ConversationUnavailable("transcript_unreadable");
+        || (data.content == null && !Array.isArray(data.toolRequests))
+        || (data.toolRequests !== undefined && !Array.isArray(data.toolRequests))) throw new ConversationUnavailable("transcript_unreadable");
       const content = text(data.content);
       const requests = Array.isArray(data.toolRequests) ? data.toolRequests : [];
       if (content === null && requests.length === 0) continue;
@@ -108,7 +109,12 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       });
       for (const raw of requests) {
         const request = row(raw);
-        if (request) addTool(request, timestamp, text(request.name) ?? "tool", text(request.intentionSummary));
+        const name = text(request?.name);
+        if (request === null || typeof request.toolCallId !== "string" || !CALL_ID.test(request.toolCallId)
+          || name === null || (request.arguments != null && row(request.arguments) === null)) {
+          throw new ConversationUnavailable("transcript_unreadable");
+        }
+        addTool(request, timestamp, name, text(request.intentionSummary));
       }
       if (data.phase === "final_answer") finished = true;
     } else if (type === "tool.execution_start") {

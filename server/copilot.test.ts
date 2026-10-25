@@ -1,5 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
@@ -488,17 +489,25 @@ for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
     const fixture = await logFixture([]);
     const { log, binding } = fixture;
+    let modifiedAt = Date.now();
+    const rewrite = (content: string) => {
+      writeFileSync(log, content);
+      // Same-size writes can share an inode timestamp tick. Make each changed
+      // stat explicit: unchanged identity and stat deliberately reuse evidence.
+      modifiedAt += 1000;
+      fs.utimesSync(log, modifiedAt / 1000, modifiedAt / 1000);
+    };
     try {
       appendFileSync(log, register(session));
       const original = binding();
       expect(original?.sessionId).toBe(session);
       if (scenario === "rewrite") {
-        writeFileSync(log, register(other));
+        rewrite(register(other));
         expect(binding()?.sessionId).toBe(other);
-        writeFileSync(log, register(session));
+        rewrite(register(session));
         expect(binding()?.sessionId).toBe(session);
         expect(binding()?.generation).not.toBe(original?.generation);
-        writeFileSync(log, register(other) + "unrelated\n");
+        rewrite(register(other) + "unrelated\n");
         expect(binding()?.sessionId).toBe(other);
         const replaced = binding();
         appendFileSync(log, "ordinary append\n");
@@ -528,6 +537,69 @@ it.skipIf(process.platform !== "linux")("detects a growing mid-log rewrite with 
     expect(binding()?.sessionId).toBe(other);
     expect(binding()?.generation).not.toBe(original?.generation);
   } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks without reading the prefix again", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  const reads = spyOn(fs, "readSync");
+  try {
+    appendFileSync(log, register(session));
+    const original = binding();
+    expect(original?.sessionId).toBe(session);
+    reads.mockClear();
+    expect(binding()?.generation).toBe(original?.generation);
+    expect(reads.mock.calls).toHaveLength(0);
+    for (const tail of ["ordinary partial line", register(other).trimEnd()]) {
+      appendFileSync(log, tail);
+      const partial = binding();
+      expect(partial?.sessionId).toBe(tail.startsWith("ordinary") ? session : undefined);
+      reads.mockClear();
+      expect(binding()?.generation).toBe(partial?.generation);
+      expect(reads.mock.calls).toHaveLength(0);
+      appendFileSync(log, "\n");
+    }
+    expect(binding()?.sessionId).toBe(other);
+  } finally { reads.mockRestore(); await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("refuses lifecycle logs past the hash cap without reading them or falling back to a held marker", async () => {
+  const fixture = await logFixture([session]);
+  const { log, binding, environment, pid, root } = fixture;
+  const reads = spyOn(fs, "readSync");
+  try {
+    const path = join(root, "session-state", session, "events.jsonl");
+    writeFileSync(path, start + prompt("old session"));
+    appendFileSync(log, register(session));
+    expect(binding()?.sessionId).toBe(session);
+    const fd = fs.openSync(log, "r+");
+    try { fs.ftruncateSync(fd, 64 * 1024 * 1024); } finally { fs.closeSync(fd); }
+    appendFileSync(log, "\n" + register(other));
+    reads.mockClear();
+    expect(binding()).toBeNull();
+    expect(copilotTranscriptFile(session, environment, ["copilot"], pid)).toBeNull();
+    expect(reads.mock.calls).toHaveLength(0);
+    writeFileSync(log, register(other));
+    expect(binding()?.sessionId).toBe(other);
+  } finally { reads.mockRestore(); await fixture.close(); }
+});
+
+it.each([
+  { toolRequests: ["unreadable request"] },
+  { content: "", toolRequests: { toolCallId: "call", name: "shell" } },
+  { content: "readable prose", toolRequests: [null] },
+  { toolRequests: [{}] },
+  { toolRequests: [{ toolCallId: 123, name: "shell" }] },
+  { toolRequests: [{ toolCallId: "../invalid", name: "shell" }] },
+  { toolRequests: [{ toolCallId: "call", name: 123 }] },
+  { toolRequests: [{ toolCallId: "call", name: "shell", arguments: [] }] },
+])("rejects unsupported tool request containers and entries: %j", (data) => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-unreadable-tool-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, start + line("assistant.message", data));
+    expect(() => transcriptPage("copilot-transcript", path)).toThrow(ConversationUnavailable);
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it.each([
