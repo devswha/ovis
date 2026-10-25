@@ -268,7 +268,14 @@ export function App() {
   // a pane's title dropped on another pane's title of its tab (useSplitLayout's drop)
   const swapPanes = (dragged: SplitTarget, targetPaneId: string): void => {
     void swapPaneWith(dragged.paneId, targetPaneId, dragged.machineId).then((swap) => {
-      if (!swap.changed) setLayoutNotice(t("Pane swap was refused: {reason}", { reason: swap.reason ?? t("Something went wrong. Try again.") }));
+      if (!swap.changed) {
+        const reason = swap.reason === "cross_tab" ? t("The panes are in different tabs.")
+          : swap.reason === "same_pane" ? t("Choose two different panes.")
+          : swap.reason === "not_found" ? t("A pane is no longer available.")
+          : swap.reason === "no_neighbor" ? t("There is no pane on that side.")
+          : t("Something went wrong. Try again.");
+        setLayoutNotice(t("Pane swap was refused: {reason}", { reason }));
+      }
       void load();
     }).catch((err) => layoutRefused("pane swap failed", err));
   };

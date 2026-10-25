@@ -4,10 +4,11 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneProcessInfo, paneRead, paneSwapWith, sessionSnapshot,
+  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneFocus, paneProcessInfo, paneRead, paneSwap, paneSwapWith, sessionSnapshot,
   subscribeEvents, type EventFrame,
 } from "./client.ts";
 import type { AgentInfo, PaneInfo, PaneLayoutRect, PaneLayoutSnapshot, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
+import { handlePaneRequest } from "../pane-routes.ts";
 
 // The typed herdr seam (server/herdr/methods.ts). `bun run typecheck` checks the lines marked
 // with ts-expect-error below: each must stay a compile error. They hold for a call without an explicit
@@ -93,16 +94,19 @@ async function swapPeer() {
   const state = {
     focus: "elsewhere", changed: true, failRestore: false, failSwap: false,
     onSwap: (_source: string, answer: () => void) => answer(),
+    onSnapshot: (answer: () => void) => answer(),
   };
   const layout = fullSnapshot(1, 1, 1).layouts[0]!;
   const fixture = await peer((request, { socket }) => {
     const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
     const error = () => socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "pane closed" } })}\n`);
     if (request.method === "session.snapshot") {
-      answer({ snapshot: { ...fullSnapshot(1, 1, 1), focused_pane_id: state.focus } });
+      const snapshot = { ...fullSnapshot(1, 1, 1), focused_pane_id: state.focus };
+      state.onSnapshot(() => answer({ snapshot }));
     } else if (request.method === "pane.swap") {
       if (state.failSwap) { error(); return; }
-      const source = (request.params as { source_pane_id: string }).source_pane_id;
+      const params = request.params as { source_pane_id?: string; pane_id?: string };
+      const source = (params.source_pane_id ?? params.pane_id)!;
       if (state.changed) state.focus = source;
       const swap = { changed: state.changed, reason: state.changed ? null : "same_pane",
         focused_pane_id: state.focus, layout, target_pane_id: "target" };
@@ -131,7 +135,9 @@ it("serializes overlapping explicit swaps before the second snapshots temporary 
   } finally {
     connect.mockRestore();
     release();
-    await within(Promise.all([first, second]), 5_000, "both swaps");
+    expect(await within(Promise.all([first, second]), 5_000, "both swaps")).toMatchObject([
+      { changed: true, target_pane_id: "target" }, { changed: true, target_pane_id: "target" },
+    ]);
   }
   expect(state.focus).toBe("elsewhere");
 });
@@ -162,12 +168,56 @@ it("does not restore focus after a refused swap or over a user focus change", as
   }
 });
 
+it("does not even recheck focus after a refused swap that leaves focus on the source", async () => {
+  const { path, state, requests } = await swapPeer();
+  state.changed = false;
+  state.onSwap = (_source, answer) => { state.focus = "source"; answer(); };
+  expect((await paneSwapWith("source", "target", path)).changed).toBe(false);
+  expect(state.focus).toBe("source");
+  expect(requests.map((request) => request.method)).toEqual(["session.snapshot", "pane.swap"]);
+});
+
+for (const directional of [false, true]) {
+  it(`keeps a newer Ovis ${directional ? "directional swap" : "focus choice"} after the restore snapshot`, async () => {
+    const { path, state } = await swapPeer();
+    const checked = Promise.withResolvers<() => void>();
+    let snapshots = 0;
+    state.onSnapshot = (answer) => ++snapshots === 2 ? checked.resolve(answer) : answer();
+    const swap = paneSwapWith("source", "target", path);
+    const release = await within(checked.promise, 5_000, "restore snapshot");
+    const connect = spyOn(Bun, "connect");
+    const choice = directional ? paneSwap("user-choice", "right", path) : paneFocus("user-choice", path);
+    try {
+      await Promise.resolve();
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      connect.mockRestore();
+      release();
+      await within(Promise.all([swap, choice]), 5_000, "swap and user choice");
+    }
+    expect(state.focus).toBe("user-choice");
+  });
+}
+
 it("returns the committed swap when its focus restore fails and keeps the queue usable", async () => {
   const { path, state } = await swapPeer();
   state.failRestore = true;
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   cleanups.push(() => warn.mockRestore());
-  expect(await paneSwapWith("source", "target", path)).toMatchObject({ changed: true, target_pane_id: "target" });
+  const previousSocket = process.env["HERDR_SOCKET"];
+  process.env["HERDR_SOCKET"] = path;
+  try {
+    const url = new URL("http://localhost/api/pane/swap");
+    const response = await handlePaneRequest(new Request(url, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: "source", target_pane_id: "target" }),
+    }), url, url.pathname, {});
+    expect(response!.status).toBe(200);
+    expect(await response!.json()).toEqual({ ok: true, changed: true, reason: null, target_pane_id: "target" });
+  } finally {
+    if (previousSocket === undefined) delete process.env["HERDR_SOCKET"];
+    else process.env["HERDR_SOCKET"] = previousSocket;
+  }
   expect(warn).toHaveBeenCalled();
   state.failRestore = false;
   state.focus = "elsewhere";

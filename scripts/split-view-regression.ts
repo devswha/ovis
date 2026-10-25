@@ -493,7 +493,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.move(refusedTo.x + 61, refusedTo.y + refusedTo.height / 2);
       await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] > .pane-frame-head`)?.classList.contains("is-swap-target") === true, beside);
       await page.mouse.up();
-      await page.locator(".pane-notice[role='alert']").filter({ hasText: "cross_tab" }).waitFor();
+      await page.locator(".pane-notice[role='alert']").filter({ hasText: "The panes are in different tabs." }).waitFor();
       assert.equal(await left(), beside, "a refused swap leaves the layout intact");
       await page.unroute("**/api/pane/swap");
       console.log("PASS a refused title swap shows herdr's reason");
