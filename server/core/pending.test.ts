@@ -1,4 +1,4 @@
-import { afterEach, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, expect, it, mock } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,8 @@ import { createPendingDelivery } from "./pending.ts";
 
 const roots: string[] = [];
 const paths = new Map<string, string>();
+const originalProcessInfo = herdr.paneProcessInfo;
+const originalTranscriptPath = pi.piTranscriptPath;
 let lookup: { at: "identity" | "transcript"; entered: () => void; release: Promise<void> } | null = null;
 mock.module("../herdr/client.ts", () => ({
   ...herdr,
@@ -33,6 +35,10 @@ mock.module("../pi.ts", () => ({
   },
 }));
 afterEach(() => { lookup = null; paths.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterAll(() => {
+  mock.module("../herdr/client.ts", () => ({ ...herdr, paneProcessInfo: originalProcessInfo }));
+  mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
+});
 
 it.each(["identity", "transcript"] as const)("does not release another pane's slot after invalidation during %s lookup", async (at) => {
   const root = mkdtempSync(join(tmpdir(), "ovis-pending-capacity-")); roots.push(root);
