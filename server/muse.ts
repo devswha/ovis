@@ -10,7 +10,10 @@
  *   `tool_result_batch_committed`, by `tool_call_id` (`task/output` is the stream of them);
  * - a compaction: `context_compaction_installed` with a `summary_text` replacement;
  * - a run's end: `terminal`, whose `completed` makes the answer before it final.
- * Every other record is bookkeeping. The shapes are the same from Muse 1.4.2 to 1.4.12.
+ * Every other record is bookkeeping, and so are the `retained_marker` / `retained_frame` lines.
+ * The shapes are the same from Muse 1.4.2 to 1.4.13. A whole line that opens no known record, or
+ * a record the reader takes in another shape, throws MuseUnavailable: Chat then uses Terminal
+ * rather than show part of the conversation.
  */
 import { closeSync, openSync, readSync } from "node:fs";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
@@ -19,13 +22,41 @@ import { toolSummary } from "./transcript-records.ts";
 
 type Row = Record<string, unknown>;
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
-const record = (value: unknown): Row => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
+const isRow = (value: unknown): value is Row => value !== null && typeof value === "object" && !Array.isArray(value);
+const record = (value: unknown): Row => isRow(value) ? value : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 
+export class MuseUnavailable extends Error {
+  constructor() { super("Muse log is in a shape the reader does not know"); this.name = "MuseUnavailable"; }
+}
+
+/** How every line of a Muse log opens: a version 1 record, or a retained marker or frame. */
+const LINE_START = /^\{"(?:schema_version":1,|retained_)/;
 /** Lines without one of these hold nothing the reader takes; they are skipped before parsing. */
 const MARKS = ['"runtime.user_intent.accepted"', '"assistant_message_committed"', '"reasoning_summary_committed"',
   '"assistant_tool_calls_committed"', '"tool_result_batch_committed"', '"context_compaction_installed"', '"terminal":"completed"'];
+const every = (value: unknown, test: (item: Row) => boolean): boolean => Array.isArray(value) && value.every((item) => isRow(item) && test(item));
+const optionalText = (value: unknown): boolean => value === undefined || typeof value === "string";
+
+/** Whether a record the reader takes has the shape it reads, so that nothing in it is dropped. */
+function readable(entry: Row): boolean {
+  if (entry.payload_type === undefined) return Object.keys(entry).some((key) => key.startsWith("retained_"));
+  // a fork's `session.fork.compaction` has no `recorded_at`, and a turn without one has no time
+  if (typeof entry.payload_type !== "string" || !isRow(entry.payload)) return false;
+  if (entry.payload_type === "runtime.user_intent.accepted") {
+    return every(entry.payload.model_messages, (message) => every(message.content, (block) =>
+      typeof block.kind === "string" && (block.kind !== "text" || typeof block.text === "string")));
+  }
+  if (entry.payload_type !== "runtime.session" || entry.payload.kind !== "run") return true;
+  const event = entry.payload.event;
+  if (!isRow(event) || typeof event.kind !== "string") return false;
+  if (event.kind === "assistant_message_committed" || event.kind === "reasoning_summary_committed") return typeof event.text === "string";
+  if (event.kind === "assistant_tool_calls_committed") return every(event.tool_calls, (call) => typeof call.name === "string" && optionalText(call.call_id));
+  if (event.kind === "tool_result_batch_committed") return every(event.results, (item) => typeof item.text === "string" && optionalText(item.tool_call_id));
+  if (event.kind === "context_compaction_installed") return isRow(event.replacement) && typeof event.replacement.kind === "string";
+  return true;
+}
 
 function iso(value: unknown): string | null {
   return typeof value === "number" && Number.isFinite(value) ? new Date(Math.floor(value / 1000)).toISOString() : null;
@@ -66,10 +97,16 @@ export function parseMuseTranscript(text: string): ConversationTurn[] {
     if (last?.role === "assistant") { last.parts.push(...parts); if (ts !== null) last.end_ts = ts; }
     else turns.push({ role: "assistant", ts, ...(ts === null ? {} : { end_ts: ts }), parts });
   };
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  for (const [at, line] of lines.entries()) {
+    // the last line can be one Muse is still writing
+    const whole = at < lines.length - 1;
+    if (line === "") continue;
+    if (!LINE_START.test(line)) { if (whole) throw new MuseUnavailable(); continue; }
     if (!MARKS.some((mark) => line.includes(mark))) continue;
     let entry: Row;
-    try { entry = record(JSON.parse(line)); } catch { continue; }
+    try { entry = record(JSON.parse(line)); } catch { if (whole) throw new MuseUnavailable(); continue; }
+    if (!readable(entry)) throw new MuseUnavailable();
     const ts = iso(entry.recorded_at);
     const prompt = musePrompt(entry);
     if (prompt !== null) { turns.push({ role: "user", ts, parts: [{ kind: "text", text: prompt }] }); continue; }

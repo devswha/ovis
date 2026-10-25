@@ -289,6 +289,17 @@ describe("Muse conversation API", () => {
       expect(switched.turns).toHaveLength(1);
       expect(switched.history_id).not.toBe(body.history_id);
       expect((await fetch(outputUrl)).status).toBe(404);
+      // a record in a shape the reader does not know, or a log it cannot read, shows Terminal
+      const log = join(second, "session.jsonl");
+      appendFileSync(log, `${prompt.replace('{"schema_version":1,', '{"schema_version":2,')}\n`);
+      expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
+      writeFileSync(log, `${prompt}\n`);
+      expect((await (await fetch(url)).json()).source).toBe("muse-transcript");
+      // root reads a file whatever its mode
+      if (process.getuid?.() !== 0) {
+        chmodSync(log, 0);
+        expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
+      }
     } finally {
       app?.stop(); await workspaceClose(created.workspace.workspace_id);
       forgetTranscriptState(); rmSync(root, { recursive: true, force: true });

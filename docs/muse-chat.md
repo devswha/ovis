@@ -57,9 +57,15 @@ margin) and `/proc` on Linux (to 10 ms, so a 20 ms margin). Windows uses Termina
 - **Model:** `run.model.configured` and each `model_completed`. Muse records no reasoning effort
   and no context window, so neither is shown.
 
-These record shapes are the same from Muse 1.4.2 to 1.4.12. On 1.4.13, prompts, answers, a tool
-call and the model were checked in a live session. Lines without one of them are skipped
-before they are parsed, so a long session reads in tens of milliseconds.
+These record shapes are the same from Muse 1.4.2 to 1.4.13. Every other record is bookkeeping,
+as are the `retained_marker` and `retained_frame` lines. Lines without one of the records above
+are skipped before they are parsed, so a long session reads in tens of milliseconds.
+
+Chat uses Terminal, never a partial conversation, when the log is missing or cannot be read, when
+a whole line does not open a version 1 record or a retained line, or when a record above has
+another shape (a prompt without `model_messages`, a tool call without `name`, a result without
+`text`). The last line can be one Muse is still writing, so it is skipped until it is whole. The
+160 session logs of 1.4.x builds on one test PC all read without a refusal.
 
 ## Limits
 
@@ -81,7 +87,11 @@ bun run check run bun test --timeout 15000 ./server/api.contract.test.ts --test-
 bun run check fast
 ```
 
-The fixture in `server/fixtures/muse/` is fictional, written in the record shapes of real 1.4.12
-logs. The contract test runs a stand-in process named `muse` in an isolated herdr, checks that a
-lock naming another pid binds nothing, then reads the bound session over HTTP, its whole tool
-output, and a switch to a second session. It does not run the Muse TUI.
+`server/fixtures/muse/recorded-1.4.13.jsonl` is a session recorded from Muse 1.4.13, with its
+records as Muse wrote them: tool calls, a failed command, a declined call and a `/model` switch.
+Its README says what was replaced. `session.jsonl` beside it is fictional, written in the record
+shapes of real 1.4.12 logs, for the cases the recording does not have (a compaction, a long
+output). The contract test runs a stand-in process named `muse` in an isolated herdr, checks that
+a lock naming another pid binds nothing, then reads the bound session over HTTP, its whole tool
+output, a switch to a second session, and Terminal for a record of another shape and for a log it
+cannot read. It does not run the Muse TUI.

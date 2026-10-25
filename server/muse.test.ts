@@ -3,12 +3,14 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgetTranscriptState, transcriptPage, transcriptToolOutput } from "./conversation.ts";
-import { museResult, museToolOutput, parseMuseTranscript } from "./muse.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
+import { museModel, museResult, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
 import { isMuseExecutable, museSessionFor, museSessionLive, parseMuseLock } from "./muse-store.ts";
 import type { ConversationPart } from "../shared/protocol.ts";
 
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 const fixture = readFileSync(join(import.meta.dir, "fixtures", "muse", "session.jsonl"), "utf8");
+const recorded = readFileSync(join(import.meta.dir, "fixtures", "muse", "recorded-1.4.13.jsonl"), "utf8");
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ovis-muse-unit-")); forgetTranscriptState(); });
 afterEach(() => { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); });
@@ -101,6 +103,68 @@ describe("Muse session log", () => {
     appendFileSync(path, batch.replace('"call_02"', '"call_big"').replace("one\\ntwo\\nthree\\n", "x".repeat(2_000_001)));
     expect(transcriptToolOutput("muse-transcript", path, "call_big")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
     expect(transcriptToolOutput("muse-transcript", path, "call_05")).toBe(museToolOutput(path, "call_05"));
+  });
+
+  test("reads a session Muse 1.4.13 recorded, with its records as Muse wrote them", () => {
+    const turns = parseMuseTranscript(recorded);
+    expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "text" && part.phase ? `text:${part.phase}` : part.kind)])).toEqual([
+      ["user", ["text"]],
+      ["assistant", ["thinking", "text:commentary", "tool", "tool", "tool", "thinking", "text:final_answer"]],
+      ["user", ["text"]],
+      ["assistant", ["text:commentary", "tool", "text:final_answer"]],
+      ["user", ["text"]],
+      ["assistant", ["tool", "text:final_answer"]],
+    ]);
+    expect(turns.filter((turn) => turn.role === "user").map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: "Read notes.txt, run sh greet.sh, and run ls missing-folder. Then tell me in one sentence what the notes say." }],
+      [{ kind: "text", text: "Run rm greet.sh to delete the script." }],
+      [{ kind: "text", text: "Count the lines in notes.txt with wc -l and tell me the number." }],
+    ]);
+    const tools = turns.flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool");
+    expect(tools.map((tool) => [tool.name, tool.summary, tool.output, tool.error ?? false])).toEqual([
+      ["read_file", "notes.txt", "Read text file `notes.txt`.\n1|Garden plan\n2|- plant tomatoes in May\n3|- water every other day", false],
+      ["bash", "Run greet script", "hello from greet\n", false],
+      ["bash", "List missing folder", "ls: missing-folder: No such file or directory\n", true],
+      // the call the user declined at the approval prompt
+      ["bash", "Delete greet script", "tool denied: approval aborted\nThe user rejected this action. Don't retry it unless they ask.", true],
+      ["bash", "Count lines in notes", "       3 notes.txt\n", false],
+    ]);
+    // `/model` switched muse-spark-1.3 to muse-spark-1.2 before the last prompt
+    const lines = recorded.split("\n");
+    const switched = lines.findIndex((line) => line.includes('"command":"/model"'));
+    expect([museModel(lines.slice(0, switched).join("\n"), null), museModel(recorded, null)]).toEqual(["muse-spark-1.3", "muse-spark-1.2"]);
+    const path = join(root, "session.jsonl");
+    writeFileSync(path, recorded);
+    const page = transcriptPage("muse-transcript", path);
+    expect([page.turns, page.metadata.model]).toEqual([turns, "muse-spark-1.2"]);
+    expect(museToolOutput(path, "call_01a1744243497078923c0e3306f4900d")).toBe("ls: missing-folder: No such file or directory\n");
+    // Muse ended the session on exit; until then it was live
+    expect(museSessionLive(path)).toBe(false);
+    writeFileSync(path, `${lines.slice(0, -2).join("\n")}\n`);
+    expect(museSessionLive(path)).toBe(true);
+  });
+
+  test("a log in a shape the reader does not know is refused, so the pane uses Terminal", () => {
+    const line = (mark: string) => recorded.split("\n").find((candidate) => candidate.includes(mark))!;
+    const prompt = line('"runtime.user_intent.accepted"');
+    const cut = prompt.slice(0, prompt.indexOf('"model_messages"'));
+    const refused = [
+      // another log version, or a line that is no Muse record
+      prompt.replace('{"schema_version":1,', '{"schema_version":2,'),
+      "not a record",
+      // a record the reader takes, cut short or in another shape
+      cut,
+      prompt.replace('"model_messages":[', '"model_messages":"moved","messages":['),
+      line('"assistant_tool_calls_committed"').replaceAll('"name":', '"tool_name":'),
+      line('"tool_result_batch_committed"').replaceAll('"text":', '"output":'),
+    ];
+    for (const added of refused) expect(() => parseMuseTranscript(`${recorded}${added}\n`)).toThrow(MuseUnavailable);
+    // a last line Muse is still writing, or a record the reader does not take, is skipped
+    expect(parseMuseTranscript(`${recorded}${cut}`)).toEqual(parseMuseTranscript(recorded));
+    expect(parseMuseTranscript(`${recorded}{"schema_version":1,"payload_type":"later.record","payload":{"terminal":"completed"}}\n`)).toEqual(parseMuseTranscript(recorded));
+    const path = join(root, "session.jsonl");
+    writeFileSync(path, `${recorded}${refused[0]}\n`);
+    expect(() => transcriptPage("muse-transcript", path)).toThrow(ConversationUnavailable);
   });
 });
 

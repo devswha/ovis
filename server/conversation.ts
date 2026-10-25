@@ -56,7 +56,7 @@ import { forgetGrokState, grokProjection, grokToolOutput, parseGrokTranscript, G
 import { resolveGrokStore } from "./grok-store.ts";
 import { AgyUnavailable, agyCatalog, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
 import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
-import { museToolOutput, parseMuseTranscript } from "./muse.ts";
+import { museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
 import { resolveMuseSession } from "./muse-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
@@ -507,7 +507,12 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
     }
   }
   if (source === "agy-transcript") return parseAgyTranscript(text, path);
-  if (source === "muse-transcript") return parseMuseTranscript(text);
+  if (source === "muse-transcript") {
+    try { return parseMuseTranscript(text); } catch (error) {
+      if (error instanceof MuseUnavailable) throw new ConversationUnavailable("transcript_missing");
+      throw error;
+    }
+  }
   return source === "codex-transcript" ? parseCodexTranscript(text, Infinity)
     // only pi keeps a tool's images in the entry as base64; omp, omo and gjc are read the same
     // way but would carry image refs nothing can answer, so the option stays with pi alone
