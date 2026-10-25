@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { adoptLegacyDir, defaultStateDir, moveLegacyStateDir } from "./update-state.ts";
+import { adoptLegacyDir, defaultStateDir, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,8 +16,70 @@ const withDevices = (dir: string): string => {
   writeFileSync(join(dir, "devices.json"), "{\"paired\":1}");
   return dir;
 };
+/** What every bridge start leaves under the old name (bridge.ts registerBridge), a remote bridge's own state included. */
+const withRegistry = (dir: string): string => {
+  mkdirSync(join(dir, "bridges", "remote.json.state"), { recursive: true });
+  writeFileSync(join(dir, "bridges", "local.json"), "{\"port\":7317}");
+  writeFileSync(join(dir, "bridges", "local.json.guard"), "");
+  writeFileSync(join(dir, "bridges", "remote.json.state", "devices.json"), "{\"remote\":1}");
+  return dir;
+};
 
 describe("the state dir from before the rename", () => {
+  it("keeps an installed supervisor on its checkout and port's state when both names hold files", () => {
+    const config = configHome();
+    const root = join(config, "checkout");
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withDevices(join(config, "herdr-web-ui"));
+    const port = 7317;
+    const directory = join(updateStateDir(root, port, next), "release-next");
+    mkdirSync(directory, { recursive: true });
+    const supervisor = { root, port, directory };
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config }, supervisor)).toBe(next);
+    moveLegacyStateDir({ XDG_CONFIG_HOME: config }, supervisor);
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(readFileSync(join(legacy, "devices.json"), "utf8")).toBe("{\"paired\":1}");
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { ...supervisor, port: port + 1 })).toBe(legacy);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { ...supervisor, root: join(config, "other") })).toBe(legacy);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: "/srv/ovis" }, supervisor)).toBe("/srv/ovis");
+  });
+
+  it("is not the state when it holds only the bridge registry, and is linked to the new dir for older launchers", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+    // a bridge is told its dir (OVIS_STATE_DIR) and links it all the same
+    moveLegacyStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: next });
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    // what a launcher from before the fix compares: the old name is the new dir, so it takes the new one
+    expect(realpathSync(legacy)).toBe(realpathSync(next));
+    expect(readFileSync(join(legacy, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
+    expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"remote\":1}");
+    expect(readFileSync(join(next, "devices.json"), "utf8")).toBe("{\"paired\":1}");
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+  });
+
+  it("joins a registry left in the new dir by a link that did not finish, the old name's files winning", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    mkdirSync(join(next, "bridges"));
+    writeFileSync(join(next, "bridges", "local.json"), "{\"port\":1}");
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    adoptLegacyDir(legacy, next);
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(next, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
+    expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"remote\":1}");
+  });
+
+  it("leaves the registry alone without a new dir, under OVIS_STATE_DIR", () => {
+    const config = configHome();
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    moveLegacyStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: "/srv/ovis" });
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(existsSync(join(config, "ovis"))).toBe(false);
+  });
+
   it("stays where it is until its owner moves it, so resolving the dir never moves anything", () => {
     const config = configHome();
     withDevices(join(config, "herdr-web-ui"));
