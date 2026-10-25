@@ -2210,7 +2210,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is no separate Queue button or send menu. The placeholder is `Message <agent>…`; message text
   uses `--fs-chat` scaled by `--chat-scale` on `--lh-code` with a fine pointer. Otherwise it
   uses that scaled size or `--fs-input`, whichever is larger, keeping the 16px floor that avoids
-  iOS zoom. Changing Chat font size or density resizes the box around its existing draft. The
+  iOS zoom. It is set in the Chat font (`--font-chat`, else `--font-ui`), as the transcript is.
+  Changing Chat font size, the Chat font or density resizes the box around its existing draft. The
   box's height is automatic only: it has no resize grip.
 - A local desktop composer shows the first visible account in Settings order for its agent's
   provider as a read-only usage reference inside the model pill. Plan-wide five-hour session is

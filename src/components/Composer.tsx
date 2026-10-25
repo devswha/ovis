@@ -422,7 +422,7 @@ export function Composer({
   useEffect(() => {
     const frame = requestAnimationFrame(sizeTextarea);
     return () => cancelAnimationFrame(frame);
-  }, [sizeTextarea, settings.chatFontSize, settings.density]);
+  }, [sizeTextarea, settings.chatFontSize, settings.chatFontFamily, settings.density]);
 
   useEffect(() => {
     const element = textareaRef.current;
