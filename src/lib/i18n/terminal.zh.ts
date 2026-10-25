@@ -6,12 +6,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const TERMINAL_ZH: Record<string, string> = {
-  "Previous match": "上一个匹配",
-  "Next match": "下一个匹配",
-  "Close search": "关闭搜索",
   "Searching…": "搜索中…",
-  "No matches": "无匹配",
-  "{current} of {total}": "第 {current} 个，共 {total} 个",
   "Pane changed. Search again.": "窗格内容已更改，请重新搜索。",
   "Search moves the pane for every client.": "搜索会移动所有已连接客户端的窗格视图。",
   "Waiting for terminal input…": "正在准备终端输入…",
@@ -120,4 +115,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Quote in message": "引用到消息",
   "Added to the message draft": "已添加到消息草稿",
   "Too long for the message draft": "内容过长，无法加入消息草稿",
+  "Tap Input line to paste.": "要粘贴，请先点按输入框键。",
+  "Paste into the input line": "粘贴到输入行",
 };

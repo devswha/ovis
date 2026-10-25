@@ -14,9 +14,9 @@ import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
 import type { CommandSend } from "../outcome.ts";
 import { processStartedAt } from "../process-start.ts";
-import { isOmpProcess, ompAgentDir } from "../omp.ts";
+import { isOmpProcess, ompConfigDir } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
-import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, codexQuestionsCollapsed, chatOwnedInput, heldCandidate, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
+import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, codexQuestionsCollapsed, heldCandidate, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
 import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
@@ -124,7 +124,7 @@ async function ompProcess(paneId: string): Promise<{ pid: number; integrated: bo
     if (typeof candidate.pid !== "number" || !isOmpProcess(argv)) continue;
     const environ = processEnviron(candidate.pid);
     const home = environ?.find((word) => word.startsWith("HOME="))?.slice(5) || process.env["HOME"] || "";
-    const agentDir = ompAgentDir(argv, environ, home);
+    const agentDir = ompConfigDir(argv, environ, home);
     return { pid: candidate.pid, integrated: agentDir !== null && existsSync(join(agentDir, OMP_INTEGRATION)) };
   }
   return null;
@@ -165,6 +165,29 @@ export const pendingText = (text: string): string => {
   }
   return normalized;
 };
+
+/** The composer's message cap (src/lib/compose.ts MAX_COMPOSER_CHARS) and the terminal input line's (src/lib/terminalDraft.ts TERMINAL_LINE_LIMIT). */
+const MAX_CHAT_SUBMIT_CHARS = 20_000;
+const MAX_TYPED_SUBMIT_CHARS = 32_768;
+
+/**
+ * An immediate submit as the composer shapes it (src/lib/compose.ts composerMessage and composerPayload), or
+ * invalid_submit_text before anything is typed or cleared. `text` is the message as written: trailing newlines
+ * dropped, CRLF and a lone CR read as LF, and no terminal control character but tab and newline, so it holds no
+ * paste marker. `payload` must be that text with each LF a CR, bare or inside exactly one bracketed-paste pair:
+ * a payload that ends its own paste early, or carries bytes its text does not, would run what follows as
+ * commands. `typed`: the terminal's input line, whose cap is the longer one.
+ */
+export function submitFraming(text: string, payload: string, typed: boolean): { text: string; payload: string } {
+  const message = text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  const limit = typed ? MAX_TYPED_SUBMIT_CHARS : MAX_CHAT_SUBMIT_CHARS;
+  const body = message.replace(/\n/g, "\r");
+  if (message.length > limit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(message)
+    || (payload !== body && payload !== `\u001b[200~${body}\u001b[201~`)) {
+    throw new HerdrError("invalid_submit_text", `A message must be at most ${limit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed`);
+  }
+  return { text: message, payload };
+}
 
 export const pendingFault = (error: unknown) => ({
   code: error instanceof HerdrError || error instanceof PendingInputError ? error.code : "submit_failed",
@@ -224,7 +247,7 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   const refusal = (error: unknown): never => { throw refused ?? error; };
   const [live, colors] = await claudeBoxReads(paneId);
   if (!claudeInputDraft(live, colors)) return;
-  if (working || claudeRestoredDraft(live, colors, await chatOwnedInput(paneId)) === null) {
+  if (working || claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) === null) {
     throw new InputDraftError(claudeClearableDraft(live, colors), undefined, claudeInputBoxContent(live));
   }
   if (deadline - Date.now() < RESTORED_CLEAR_RESERVE_MS) throw new HerdrError("submit_timeout", "Too little time was left to clear Claude Code's input box and send; nothing was typed");
@@ -277,6 +300,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
     clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false): Promise<void> {
+    // before anything reads the pane, types or clears: closeMention and mirrorInput trust this framing
+    ({ text, payload } = submitFraming(text, payload, fromTerminal));
     let clearedDraft = false;
     let sentText = text;
     let command: ReturnType<typeof prepareCommandSend>;

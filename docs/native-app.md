@@ -198,7 +198,21 @@ What is there:
   built from this checkout's client, into `app/www` for Capacitor to copy.
 - `app/ios/App/App/HerdrBridgeViewController.swift`: a Capacitor view controller that opens the
   chosen PC as the WebView's first page (`instanceDescriptor().serverURL`). It also lets the
-  PC's whole host stay in the app and shows `error.html` when the first load fails. The
+  PC's whole host stay in the app and shows `error.html` when the first load fails. Until the
+  PC answers, a native cover says which PC is opening and offers Change PC; when a PC
+  sends no answer within 20 seconds, the cover itself says so, with Try again and Change PC, and
+  for a Tailscale address that Tailscale may be off on the phone (WebKit alone waits a minute or
+  more, which is what a phone with Tailscale off sees for a `.ts.net` address, and while that
+  connection hangs it did not paint the error page either). When a Tailscale address fails to
+  load, `error.html` (on Android too) adds the same note. A redirect of the address being opened
+  to another origin is handled as on Android (see [The Android app](#the-android-app)), where
+  Capacitor would send another host to Safari.
+  WebKit has no public mark for a redirect, so until the first page commits,
+  `NavigationFailureProxy` takes any main-frame action to another origin that comes while the
+  main frame's navigation has not committed for one. Its question to `/api/health` is a
+  `URLSession` request, which App Transport Security keeps to https and local names (`localhost`,
+  `.local`, a one-word name): a redirect to plain http on a tailnet address or name ends on the
+  error page, which names the address to open directly (the web view itself may load it). The
   `HerdrShell` plugin (`HerdrShellPlugin.swift`) opens, forgets and leaves PCs. Opening or
   leaving one builds a fresh view controller, so the next page is again a first load, and the old
   one goes with its web view. `@capacitor/barcode-scanner` kept every old one alive (its scanner
@@ -365,8 +379,37 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   `OvisBars` listener open to the app's and the PC's origins. Until then, and on a WebView without
   those features, they sit on the app's dark background (`colors.xml`), as does Android 12's own
   launch screen (`windowSplashScreenBackground`).
+- With 3-button navigation the page stays clear of the buttons, at the bottom or, on a phone in
+  landscape, at the side. On a WebView that gives the page its safe areas itself (140 and later),
+  Capacitor's SystemBars lets the page draw under the system bars and leaves the room to the CSS,
+  and the client's message box and key bar sit partly into the bottom safe area (the room an
+  iPhone's home indicator leaves), so the buttons covered them on a Galaxy. The client's layout
+  pads its sides for a side bar itself. `MainActivity` keeps the WebView clear of the bars'
+  tappable part (`WindowInsetsCompat.Type.tappableElement()`, which a pinned taskbar on a large
+  screen has too), and the strip beside it shows the window's background: the page's
+  `theme-color` once the page has sent it, the app's dark background before. A gesture bar has no
+  tappable part, so the page still draws under it. A docked keyboard covers a bottom bar, and
+  SystemBars keeps the page above both. A floating keyboard takes no bottom inset, so on WebView
+  144 and later the bar is kept clear under it; before 144 SystemBars passes the page no bottom
+  inset while any keyboard shows, and the page sits under the bar then, as it did before. On an
+  older WebView SystemBars keeps the page out from under the bars itself, and this changes
+  nothing.
 - A link to the PC's host over the other scheme (http for an https PC) opens in the browser: it is
   another origin, which gets no bridge.
+- A redirect is not a link. Capacitor would hand a redirect to another host or scheme to the
+  browser (Firefox opened the PC for testers whose default browser it was), and a page on another
+  port would have no bridge. So until the first page shows (`onPageCommitVisible`), `MainActivity`
+  holds a redirect of the address being opened to another origin back and asks that origin's
+  `/api/health?scope=bridge`, which Ovis answers to anyone (`PCStore.ovisOrigin`, following up
+  to five redirects of that request and giving up after about ten seconds in all; a slow name
+  lookup, which Android cannot cut short, can add a few). An origin that answers as Ovis
+  (http to https, an IP address to the PC's name, another port) becomes the PC and opens again as
+  the first page, with the bridge: it gets nothing the address's own page would not have had.
+  Anything else, such as a sign-in page, another site or a loop, gets no bridge and is not saved,
+  and the error page names where the address led. After five PCs in a row made this way, the next
+  redirect ends on the error page too. Once the first page shows, Capacitor decides on redirects
+  as before: one could then come from a link to a page that is not the PC's (another port on its
+  host), which must not choose the PC.
 - `file_paths.xml` shares only the app's external Pictures folder, where Capacitor puts a photo
   taken for a file input.
 - `build-web.ts` leaves out the client build's `.gz` and `.br` sidecars. The app reads files

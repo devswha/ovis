@@ -1,6 +1,6 @@
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, useMemo, type MutableRefObject } from "react";
 import { ApiError } from "./api.ts";
-import { answerFromText, answerRefusal, needsConfirmation } from "./promptAnswer.ts";
+import { answerFromText, answerRefusal, needsConfirmation, type TypedAnswer } from "./promptAnswer.ts";
 import { composerDelivery, pendingActionUncertain, submitNotTyped, submitRefusal, type DraftRefusal } from "./compose.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import { pendingMessages } from "./pendingMessages.ts";
@@ -8,6 +8,7 @@ import type { AgentStatus, InteractivePrompt, PromptAnswer } from "../../shared/
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import { plainError } from "./paneTerminalShared.ts";
 import type { Translate } from "./i18n.ts";
+import type { MachineSession } from "./machineSession.ts";
 
 export interface ComposerSendsDeps {
   agent: string | null;
@@ -23,7 +24,14 @@ export interface ComposerSendsDeps {
   observeRef: MutableRefObject<boolean>;
   paneId: string | null;
   paneRef: MutableRefObject<string | null>;
+  /** the typed pick waiting in the card for Confirm (useChatCallbacks) */
+  pendingAnswer: { pane: string; promptId: string; answer: TypedAnswer } | null;
   pendingScopeRef: MutableRefObject<string | null>;
+  /** the chat's navigation generation, read as a message goes out (ChatView `navigation`) */
+  chatNavigation: MutableRefObject<number>;
+  /** advanced once this browser's own message from the box was accepted at once (ChatView `localSend`) */
+  setChatLocalSend: (update: (current: { key: number; navigationGeneration: number }) => { key: number; navigationGeneration: number }) => void;
+  sessionRef: MutableRefObject<MachineSession | null>;
   queueOwner: string | null;
   queueStore: unknown;
   machineId: string;
@@ -42,7 +50,34 @@ export interface ComposerSendsDeps {
 }
 
 export function useComposerSends(deps: ComposerSendsDeps) {
-  const { agent, agentStatus, answerPanePrompt, answering, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
+  const { agent, agentStatus, answerPanePrompt, answering, chatNavigation, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
+
+  /** An answer from the message box, not the card: its failure is the box's note. */
+  const sendAnswer = useCallback((pane: string, prompt: InteractivePrompt, choice: TypedAnswer): Promise<boolean | string> => {
+    setPendingAnswer(null);
+    return answerPanePrompt({ pane_id: pane, prompt_id: prompt.id, ...choice }).then(
+      () => { setPromptRefresh((key) => key + 1); return true; },
+      (cause: unknown) => {
+        setPromptRefresh((key) => key + 1);
+        if (cause instanceof ApiError && cause.code === "reply_unconfirmed") return t("OpenCode did not confirm the answer. Check the question before sending again.");
+        return cause instanceof ApiError && cause.status === 409 ? t("The question on screen changed; check it and answer again.") : plainError(cause);
+      },
+    );
+  }, [answerPanePrompt, setPendingAnswer, setPromptRefresh, t]);
+
+  /**
+   * The typed pick waiting in the card for Confirm, as the message box's keys: Enter in the empty
+   * box confirms it and Escape cancels it, as the card's two buttons do. null: none waits for this prompt.
+   */
+  const waitingAnswer = useMemo(() => {
+    if (paneId === null || answering === null || pendingAnswer === null || pendingAnswer.pane !== paneId || pendingAnswer.promptId !== answering.id) return null;
+    const pane = paneId, choice = pendingAnswer.answer;
+    return {
+      confirm: (): Promise<boolean | string> => sendAnswer(pane, answering, choice),
+      cancel: (): void => setPendingAnswer(null),
+    };
+  }, [answering, paneId, pendingAnswer, sendAnswer, setPendingAnswer]);
+
   const composerSend = useCallback(
     (text: string, clearDraft?: string, sendAnyway = false): boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal> => {
       const pane = paneRef.current;
@@ -58,15 +93,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           setPendingAnswer({ pane, promptId: answering.id, answer: choice });
           return true;
         }
-        setPendingAnswer(null);
-        return answerPanePrompt({ pane_id: pane, prompt_id: answering.id, ...choice }).then(
-          () => { setPromptRefresh((key) => key + 1); return true; },
-          (cause: unknown) => {
-            setPromptRefresh((key) => key + 1);
-            if (cause instanceof ApiError && cause.code === "reply_unconfirmed") return t("OpenCode did not confirm the answer. Check the question before sending again.");
-            return cause instanceof ApiError && cause.status === 409 ? t("The question on screen changed; check it and answer again.") : plainError(cause);
-          },
-        );
+        return sendAnswer(pane, answering, choice);
       }
       if (!socketRef.current?.connected || heldRef.current || secretRef.current !== null) return false;
       // A screen a peek left open in the terminal would take the message: Send says so and keeps it,
@@ -89,14 +116,22 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       if (sendAnyway && delivery !== "immediate") return t("Not sent: the agent started working since. Check the terminal, then send again.");
       const known = knownOutcomes(pane);
       const seen = inputRowNow() === "ready";
+      // before the receipt is awaited: navigation while it is on its way cancels the follow
+      const navigation = chatNavigation.current;
+      const socket = socketRef.current, session = sessionRef.current;
       const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway);
       return result === null ? false : result.then((answer) => {
         if (!answer.ok) return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
+        // only a receipt that says the pane took it at once, on the connection and pane it left from
+        if (delivery === "immediate" && answer.pending === undefined && !answer.unconfirmed
+          && paneRef.current === pane && socketRef.current === socket && sessionRef.current === session) {
+          setChatLocalSend((current) => ({ key: current.key + 1, navigationGeneration: navigation }));
+        }
         if (pane !== null && delivery === "immediate" && answer.pending === undefined && !answer.unconfirmed) showSentCommand(pane, text, known, seen);
         return true;
       });
     },
-    [agent, agentStatus, answerPanePrompt, answering, heldByOpenQueue, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputRowNow, stillOpenNote],
+    [agent, agentStatus, answering, heldByOpenQueue, sendAnswer, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputRowNow, stillOpenNote],
   );
 
   const actOnPending = useCallback(async (id: string, action: "steer" | "discard"): Promise<void> => {
@@ -182,5 +217,5 @@ export function useComposerSends(deps: ComposerSendsDeps) {
     else await perform();
   }, [answering, ended, heldByOpenQueue, paneId, queueOwner, submitComposerMessage, submitRetention, showSentCommand, inputRowNow, stillOpenNote]);
 
-  return { composerSend, actOnPending };
+  return { composerSend, actOnPending, waitingAnswer };
 }

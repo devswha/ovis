@@ -6,12 +6,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const TERMINAL_JA: Record<string, string> = {
-  "Previous match": "前の一致",
-  "Next match": "次の一致",
-  "Close search": "検索を閉じる",
   "Searching…": "検索中…",
-  "No matches": "一致なし",
-  "{current} of {total}": "{total}件中{current}件目",
   "Pane changed. Search again.": "ペインの内容が変わりました。再検索してください。",
   "Search moves the pane for every client.": "検索すると接続中の全クライアントのペイン画面が移動します。",
   "Waiting for terminal input…": "端末の入力準備中…",
@@ -120,4 +115,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "Quote in message": "メッセージに引用",
   "Added to the message draft": "メッセージの下書きに追加しました",
   "Too long for the message draft": "メッセージの下書きには長すぎます",
+  "Tap Input line to paste.": "貼り付けるには入力欄キーをタップしてください。",
+  "Paste into the input line": "入力行に貼り付け",
 };

@@ -29,6 +29,11 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "向上滚动面板",
   "Scroll pane down": "向下滚动面板",
   "Find in terminal": "在终端中查找",
+  "Previous match": "上一个匹配",
+  "Next match": "下一个匹配",
+  "Close search": "关闭搜索",
+  "No matches": "无匹配",
+  "{current} of {total}": "第 {current} 个，共 {total} 个",
   "Recent folders": "最近的文件夹",
   "Dismiss": "关闭",
   "Input line": "输入框",
@@ -258,6 +263,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "切换电脑",
+  "Selected": "已选择",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

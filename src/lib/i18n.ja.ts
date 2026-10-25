@@ -27,6 +27,11 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "ペインを上にスクロール",
   "Scroll pane down": "ペインを下にスクロール",
   "Find in terminal": "ターミナル内を検索",
+  "Previous match": "前の一致",
+  "Next match": "次の一致",
+  "Close search": "検索を閉じる",
+  "No matches": "一致なし",
+  "{current} of {total}": "{total}件中{current}件目",
   "Recent folders": "最近のフォルダー",
   "Dismiss": "閉じる",
   "Input line": "入力欄",
@@ -256,6 +261,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PCを切り替え",
+  "Selected": "選択中",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

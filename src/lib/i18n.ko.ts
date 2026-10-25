@@ -25,6 +25,11 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "패널 위로 스크롤",
   "Scroll pane down": "패널 아래로 스크롤",
   "Find in terminal": "터미널에서 찾기",
+  "Previous match": "이전 결과",
+  "Next match": "다음 결과",
+  "Close search": "검색 닫기",
+  "No matches": "검색 결과 없음",
+  "{current} of {total}": "{total}개 중 {current}",
   "Recent folders": "최근 폴더",
   "Dismiss": "닫기",
   "Input line": "입력창",
@@ -254,6 +259,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
+  "Selected": "선택됨",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
