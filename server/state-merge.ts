@@ -28,7 +28,7 @@
  * (a crash, a power loss) merges the same way at the next start.
  */
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
@@ -91,6 +91,13 @@ interface MergeRecord {
   push: Record<string, string[]>;
   /** whether the merged registry had a closed gate: with both registries gone, the install is still not a fresh one */
   gated?: boolean;
+  /**
+   * Written before a merge publishes its registries, and gone from the record that follows them: a
+   * crash in between leaves it. For each dir, what its registry was before (a hash) and the base it
+   * was merged against: a dir whose registry is still as it was never got the merge, and keeps that
+   * base; any other got it, and its base is the merged ids, so a device revoked there since stays revoked.
+   */
+  pending?: { ids: string[]; sides: Record<string, { before: string; base: string[] | null }> };
 }
 
 const text = (value: unknown): string => JSON.stringify(value);
@@ -105,7 +112,8 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * creation and its last sighting. A missing registry (`null`) says nothing was dropped there, nor
  * does an incomplete one (`incomplete`: written where a registry was missing, devices.ts placeholder).
  */
-export function mergeRegistries(own: Registry | null, other: Registry | null, base: ReadonlySet<string> | null,
+export function mergeRegistries(own: Registry | null, other: Registry | null,
+  bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
   incomplete: { own: boolean; other: boolean } = { own: false, other: false }): Registry {
   const mine = own?.devices ?? [];
   const theirs = other?.devices ?? [];
@@ -114,7 +122,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
   const devices: StoredDevice[] = [];
   for (const device of mine) {
     // revoked through the other dir since the last merge
-    if (other !== null && !incomplete.other && base?.has(device.id) && !theirIds.has(device.id)) continue;
+    if (other !== null && !incomplete.other && bases.other?.has(device.id) && !theirIds.has(device.id)) continue;
     const twin = theirs.find((candidate) => candidate.id === device.id);
     if (!twin) {
       devices.push(device);
@@ -131,7 +139,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
   }
   for (const device of theirs) {
     // revoked here since the last merge
-    if (myIds.has(device.id) || own !== null && !incomplete.own && base?.has(device.id)) continue;
+    if (myIds.has(device.id) || own !== null && !incomplete.own && bases.own?.has(device.id)) continue;
     devices.push(device);
   }
   // every piece of evidence that either side was ever gated keeps the merge gated
@@ -149,7 +157,10 @@ const isRecord = (value: unknown): value is MergeRecord =>
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
   && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
   && isObject(value["push"]) && Object.values(value["push"]).every(isStrings)
-  && (value["gated"] === undefined || typeof value["gated"] === "boolean");
+  && (value["gated"] === undefined || typeof value["gated"] === "boolean")
+  && (value["pending"] === undefined || isObject(value["pending"]) && isStrings(value["pending"]["ids"])
+    && isObject(value["pending"]["sides"]) && Object.values(value["pending"]["sides"]).every((side) =>
+      isObject(side) && typeof side["before"] === "string" && (side["base"] === null || isStrings(side["base"]))));
 
 /** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
 function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
@@ -220,9 +231,26 @@ function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: 
   return { doc: { revision, settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: muted ?? [] }, written };
 }
 
-function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
+/** A hash of the registry file as it is on disk, or what keeps it from being read. */
+function registryHash(path: string): string {
+  try { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable"; }
+}
+
+type Intent = (ids: string[], sides: NonNullable<MergeRecord["pending"]>["sides"], gated: boolean) => string | null;
+
+function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
   const ownPath = join(active, "devices.json");
   const otherPath = join(sibling, "devices.json");
+  // the base each registry is merged against: see MergeRecord.pending for a merge that did not finish
+  const baseOf = (dir: string, path: string): ReadonlySet<string> | null => {
+    if (base === null) return null;
+    const side = base.pending?.sides[realpath(dir)];
+    if (base.pending === undefined || side === undefined) return new Set(base.devices);
+    if (registryHash(path) !== side.before) return new Set(base.pending.ids);
+    return side.base === null ? null : new Set(side.base);
+  };
+  const bases = { own: baseOf(active, ownPath), other: baseOf(sibling, otherPath) };
   const own = readDeviceRegistry(ownPath);
   const other = readDeviceRegistry(otherPath);
   const unreadable = own.kind === "bad" ? ownPath : other.kind === "bad" ? otherPath : null;
@@ -237,16 +265,22 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const theirs = registry(other);
   if (mine === null && theirs === null) {
     // both gone after a merge that knew paired devices or a closed gate: this is no first installation
-    if (base !== null && (base.devices.length > 0 || base.gated === true)) {
+    if (base !== null && (base.devices.length > 0 || base.gated === true || (base.pending?.ids.length ?? 0) > 0)) {
       return { ids: null, changed: 0, blocked: `Neither ${ownPath} nor ${otherPath} exists, although the last merge of these dirs knew ${base.devices.length} paired device(s)${base.gated ? " and a closed gate" : ""}. Restore devices.json from ${join(active, BACKUPS)} or ${join(sibling, BACKUPS)}, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
     }
     return { blocked: null, ids: [], changed: 0 };
   }
-  const merged = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null, { own: ownIncomplete, other: otherIncomplete });
+  const merged = mergeRegistries(mine, theirs, bases, { own: ownIncomplete, other: otherIncomplete });
   // with a complete registry in it, the result holds every device not revoked since the last merge
   const complete = mine !== null && !ownIncomplete || theirs !== null && !otherIncomplete;
   const onDisk = (read: typeof own) => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices, ...(read.placeholder ? { placeholder: true } : {}) } : null;
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
+  if (text(onDisk(own)) !== text(merged) || text(onDisk(other)) !== text(merged)) {
+    // before either registry changes: a crash between the two, or before the record, is then told apart from no merge
+    const side = (base: ReadonlySet<string> | null, path: string) => ({ before: registryHash(path), base: base === null ? null : [...base] });
+    const failed = intend(merged.devices.map((device) => device.id), { [realpath(active)]: side(bases.own, ownPath), [realpath(sibling)]: side(bases.other, otherPath) }, merged.gate_closed_at !== null);
+    if (failed !== null) return { ids: null, changed: 0, blocked: failed };
+  }
   if (text(onDisk(own)) !== text(merged)) {
     try {
       backUp(active, "devices.json", stamp);
@@ -268,7 +302,7 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       console.error(`Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`);
       // the base of the next merge is what the other dir still holds of what both held: the devices
       // both hold now, and those of the last base it still holds although this dir revoked them
-      const known = new Set([...merged.devices.map((device) => device.id), ...base?.devices ?? []]);
+      const known = new Set([...merged.devices.map((device) => device.id), ...bases.other ?? []]);
       return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added, gated: merged.gate_closed_at !== null };
     }
   }
@@ -472,7 +506,22 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     // without the last merge a revoked device could come back: nothing is merged, and the store stays gated
     return `${error instanceof Error ? error.message : String(error)}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore or remove it, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
   }
-  const devices = mergeDevices(active, sibling, base, stamp);
+  let intent: MergeRecord | null = null;
+  const intend: Intent = (ids, sides, gated) => {
+    intent = { version: 1, seq: (base?.seq ?? 0) + 1, at: now.toISOString(), dirs: pair, devices: base?.devices ?? [],
+      gated: gated || base?.gated === true, preferences: base?.preferences ?? {},
+      ...(base?.preferences_target ? { preferences_target: base.preferences_target } : {}), push: base?.push ?? {}, pending: { ids, sides } };
+    try { writePrivateState(join(active, RECORD), intent); }
+    catch (error) {
+      intent = null;
+      return `Cannot write ${join(active, RECORD)} before publishing the merged paired devices (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
+    }
+    // the newer of the two records is read: the active dir's copy is enough
+    try { writePrivateState(join(sibling, RECORD), intent); } catch { /* reported with the record that follows */ }
+    return null;
+  };
+  const devices = mergeDevices(active, sibling, base, stamp, intend);
+  const written = intent as MergeRecord | null;
   const preferences = mergePreferences(active, sibling, base, stamp);
   const push = mergePush(active, sibling, base, stamp);
   if (devices.changed > 0 || push !== null && push.taken > 0) {
@@ -480,11 +529,13 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
   }
   const record: MergeRecord = {
     version: 1,
-    seq: (base?.seq ?? 0) + 1,
+    seq: (written?.seq ?? base?.seq ?? 0) + 1,
     at: now.toISOString(),
     dirs: pair,
-    // a merge that could not run keeps the last one's base, so the next one compares with it
+    // a merge that could not run keeps the last one's base, so the next one compares with it, and
+    // what a publication it may have left unfinished says
     devices: devices.ids ?? base?.devices ?? [],
+    ...(devices.ids === null && (written?.pending ?? base?.pending) ? { pending: written?.pending ?? base?.pending } : {}),
     gated: devices.gated === true || base?.gated === true,
     preferences: preferences?.snapshots ?? base?.preferences ?? {},
     ...(preferences?.target ?? base?.preferences_target ? { preferences_target: preferences?.target ?? base?.preferences_target } : {}),

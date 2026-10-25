@@ -205,6 +205,49 @@ describe("paired devices of the install's other state dir", () => {
     expect(ids(sibling)).toEqual(["x", "y"]);
   });
 
+  it("stay revoked when the merge crashed after publishing the registries, before its record", async () => {
+    const { root, active, sibling } = install();
+    writeDevices(active, [device("a")]);
+    writeDevices(sibling, [device("b")]);
+    // a process that ends the moment the second registry is in place, as a crash or a power loss would
+    const script = join(root, "crash.ts");
+    writeFileSync(script, `
+      import { privateStateFs } from ${JSON.stringify(join(import.meta.dir, "private-state.ts"))};
+      import { mergeSiblingState } from ${JSON.stringify(join(import.meta.dir, "state-merge.ts"))};
+      const rename = privateStateFs.renameSync;
+      privateStateFs.renameSync = ((from: string, to: string) => { rename(from, to); if (to === ${JSON.stringify(join(sibling, "devices.json"))}) process.exit(77); }) as typeof rename;
+      mergeSiblingState(${JSON.stringify(active)}, ${JSON.stringify(sibling)});
+    `);
+    const child = Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
+    expect(await child.exited).toBe(77);
+    expect(ids(sibling)).toEqual(["a", "b"]);
+    // a release before this one, on the active dir, revokes b
+    expect(new DeviceStore(active).revoke(device("b").id)).toBe(true);
+    mergeSiblingState(active, sibling, at(1));
+    expect(ids(active)).toEqual(["a"]);
+    expect(ids(sibling)).toEqual(["a"]);
+    expect(new DeviceStore(active).match("token-b")).toBeNull();
+  });
+
+  it("stay as they were when the merge crashed before publishing anything", async () => {
+    const { root, active, sibling } = install();
+    writeDevices(active, [device("a")]);
+    writeDevices(sibling, [device("b")]);
+    const script = join(root, "crash.ts");
+    writeFileSync(script, `
+      import { privateStateFs } from ${JSON.stringify(join(import.meta.dir, "private-state.ts"))};
+      import { mergeSiblingState } from ${JSON.stringify(join(import.meta.dir, "state-merge.ts"))};
+      const rename = privateStateFs.renameSync;
+      privateStateFs.renameSync = ((from: string, to: string) => { if (to === ${JSON.stringify(join(active, "devices.json"))}) process.exit(77); rename(from, to); }) as typeof rename;
+      mergeSiblingState(${JSON.stringify(active)}, ${JSON.stringify(sibling)});
+    `);
+    const child = Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
+    expect(await child.exited).toBe(77);
+    mergeSiblingState(active, sibling, at(1));
+    expect(ids(active)).toEqual(["a", "b"]);
+    expect(ids(sibling)).toEqual(["a", "b"]);
+  });
+
   it("stay revoked when the clock went back between merges", () => {
     const { active, sibling } = install();
     writeDevices(active, [device("a")]);
