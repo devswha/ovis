@@ -108,7 +108,7 @@ describe("ovis.sh pages", () => {
 });
 
 describe("ovis.sh beta page", () => {
-  const BETA_PAGES = ["ovis-site/beta/index.html", "ovis-site/ko/beta/index.html"];
+  const BETA_PAGES = ["ovis-site/beta/index.html", "ovis-site/zh/beta/index.html", "ovis-site/ja/beta/index.html", "ovis-site/ko/beta/index.html"];
   /** The kind of address each phone test link is, so a link pasted into the wrong slot fails here. */
   const SHAPES: Record<string, RegExp> = {
     testflight: /^https:\/\/testflight\.apple\.com\/join\/[A-Za-z0-9]+$/,
