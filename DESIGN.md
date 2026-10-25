@@ -513,7 +513,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 | Token | Value | Usage |
 |-------|-------|-------|
 | `--ui-scale` | `1`; Settings → Appearance → Interface font size over the density's body size, written on `<html>` | Multiplies every `--fs-*` token but `--fs-input` |
-| `--font-ui` | `"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif`; a chosen Interface font goes in front of it, written as the token on `<html>` (`src/lib/typography.ts` keeps the stack verbatim) | Chrome and chat prose |
+| `--font-ui` | `"Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif`; Settings → Appearance → Interface font writes the token on `<html>`: a typed list in front of this stack, a preset as a whole stack (`src/lib/typography.ts` keeps this one verbatim) | Chrome and chat prose |
 | `--font-mono` | `"Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace` | Code, paths, keys, terminal-adjacent metadata |
 | `--lh-tight` | `1.2` | Titles |
 | `--lh-base` | `1.5` comfortable / `1.45` compact | Body copy |
@@ -595,12 +595,15 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 - Interface font size (`uiFontSize`): the body size (`--fs-md`) in px, `11–20px`, `null` follows the
   density (`14px` comfortable, `13px` compact); it reaches CSS as `--ui-scale` (above). The chat follows
   it until it has a size of its own; the terminal keeps its own size.
-- Interface font (`uiFontFamily`): Default (the built-in `--font-ui`), System (`system-ui`, the
-  device's own interface font, whose kana and kanji are one family where Pretendard has few kanji),
-  Noto Sans (with its CJK families) or Custom, a typed list. Whichever is chosen goes in front of the
-  built-in stack as `--font-ui` on `<html>`, so everything set in it follows, the chat's prose too
-  until the chat has a font of its own. As Zed's `ui_font_family`, it is apart from the code and
-  terminal fonts, which keep `--font-mono` and the terminal's own stack.
+- Interface font (`uiFontFamily`, kept in its own `ovis:ui-font` key so an older tab's save of
+  `ovis:settings` cannot erase it): Default (the built-in `--font-ui`), System, Noto Sans or Custom.
+  It is written as `--font-ui` on `<html>`, so everything set in it follows, the chat's prose too
+  until the chat has a font of its own. A preset is a whole stack with no Pretendard behind it, since
+  a browser takes each character from the first family that has it and Pretendard has kana but few
+  kanji: System is `system-ui, sans-serif`, so kana and kanji come from the device's own fonts;
+  Noto Sans is followed by its CJK families, the UI language's first. A typed list goes in front of
+  the built-in stack. As Zed's `ui_font_family`, it is apart from the code and terminal fonts, which
+  keep `--font-mono` and the terminal's own stack.
 - Terminal and chat font families are comma-separated lists, default empty. They go in front of the
   built-in fonts, never in place of them: the terminal's (after the bundled Symbols Nerd Font Mono,
   which only draws icons) and `--font-ui` in the chat's prose (as `--font-chat`). Code keeps

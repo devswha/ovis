@@ -20,14 +20,20 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 
 const token = (page: Page): Promise<string> => page.evaluate(() => document.documentElement.style.getPropertyValue("--font-ui"));
 const fontOf = (page: Page, selector: string): Promise<string> => page.locator(selector).first().evaluate((node) => getComputedStyle(node).fontFamily);
-const stored = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").uiFontFamily);
+// the interface font is kept in a key of its own (lib/settings.ts), not in ovis:settings
+const stored = (page: Page): Promise<unknown> => page.evaluate(() => {
+  const raw = localStorage.getItem("ovis:ui-font");
+  return { own: raw === null ? null : JSON.parse(raw), inMain: "uiFontFamily" in JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") };
+});
 
-async function open(browser: Browser, width: number, settings: Record<string, unknown>, query: string): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
+async function open(browser: Browser, width: number, settings: Record<string, unknown>, query: string, uiFont = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
-  await context.addInitScript((value) => {
-    if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value);
-  }, JSON.stringify({ language: "en", ...settings }));
+  await context.addInitScript(([value, font]) => {
+    if (localStorage.getItem("ovis:settings") !== null) return;
+    localStorage.setItem("ovis:settings", value!);
+    if (font) localStorage.setItem("ovis:ui-font", JSON.stringify(font));
+  }, [JSON.stringify({ language: "en", ...settings }), uiFont]);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -68,11 +74,11 @@ try {
           const monoBefore = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim());
 
           await select.selectOption("system");
-          assert.equal(await token(page), `system-ui, ${BUILT_IN}`, "System goes in front of the built-in stack");
-          assert.match(await fontOf(page, "body"), /^system-ui, "Pretendard Variable"/, "the interface is set in it");
-          assert.match(await fontOf(page, ".settings-label"), /^system-ui,/, "and so is Settings itself");
+          assert.equal(await token(page), "system-ui, sans-serif", "System is the device's own stack, with no Pretendard behind it");
+          assert.equal(await fontOf(page, "body"), "system-ui, sans-serif", "the interface is set in it");
+          assert.equal(await fontOf(page, ".settings-label"), "system-ui, sans-serif", "and so is Settings itself");
           assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim()), monoBefore, "code keeps its own stack");
-          assert.equal(await stored(page), "system-ui");
+          assert.deepEqual(await stored(page), { own: "system-ui", inMain: false }, "kept in its own key, out of ovis:settings");
           if (evidence) await page.screenshot({ path: join(evidence, `interface-font-system-${width}.png`) });
 
           await select.selectOption("custom");
@@ -94,7 +100,7 @@ try {
 
           await select.selectOption("default");
           assert.equal(await token(page), "", "Default gives the stylesheet its token back");
-          assert.equal(await stored(page), "");
+          assert.deepEqual(await stored(page), { own: "", inMain: false });
           assert.equal(await dialog.getByRole("textbox", { name: "Custom interface font", exact: true }).count(), 0, "the field goes with Custom");
           assert.deepEqual(errors, []);
           console.log(`PASS ${width}px: Interface font System and a typed list lead --font-ui, a reload keeps it, Default restores the stylesheet's`);
@@ -102,14 +108,14 @@ try {
       }
 
       for (const width of [390, 1440]) {
-        for (const [settings, want] of [[{ chatFontFamily: "Georgia" }, /^Georgia, "Pretendard Variable"/], [{ uiFontFamily: "system-ui" }, /^system-ui, "Pretendard Variable"/]] as const) {
-          const { page, errors, close } = await open(browser, width, settings, "&view=chat");
+        for (const [settings, uiFont, want] of [[{ chatFontFamily: "Georgia" }, "", /^Georgia, "Pretendard Variable"/], [{}, "system-ui", /^system-ui, sans-serif$/]] as const) {
+          const { page, errors, close } = await open(browser, width, settings, "&view=chat", uiFont);
           try {
             await page.locator(".composer-text").waitFor();
             assert.match(await fontOf(page, ".composer-text"), want, `${width}px ${JSON.stringify(settings)}: the message box`);
             assert.match(await fontOf(page, ".composer-measure"), want, `${width}px ${JSON.stringify(settings)}: its measure copy`);
             assert.deepEqual(errors, []);
-            if (evidence && "chatFontFamily" in settings) await page.screenshot({ path: join(evidence, `composer-chat-font-${width}.png`) });
+            if (evidence && uiFont === "") await page.screenshot({ path: join(evidence, `composer-chat-font-${width}.png`) });
           } finally { await close(); }
         }
         console.log(`PASS ${width}px: the message box takes the Chat font, else the interface font`);

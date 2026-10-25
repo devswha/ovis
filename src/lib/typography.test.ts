@@ -26,10 +26,23 @@ describe("interface font", () => {
     expect(uiFontStack(";{}")).toBeNull();
   });
 
-  it("puts the chosen list in front of the built-in stack, never in place of it", () => {
+  it("puts a typed list in front of the built-in stack, never in place of it", () => {
     expect(uiFontStack("Noto Sans JP, Segoe UI")).toBe(`"Noto Sans JP", "Segoe UI", ${UI_FONT_STACK}`);
-    expect(uiFontStack("system-ui")).toBe(`system-ui, ${UI_FONT_STACK}`);
     expect(uiFontStack("x; } body { color: red")).toBe(`"x body color: red", ${UI_FONT_STACK}`);
+  });
+
+  it("draws a preset without Pretendard behind it, so kana and kanji come from one family", () => {
+    expect(uiFontStack(UI_FONT_PRESET_FAMILY.system)).toBe("system-ui, sans-serif");
+    for (const language of ["en", "ko", "ja", "zh"] as const) {
+      expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, language)).not.toContain("Pretendard");
+      expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, language)!.endsWith(", sans-serif")).toBe(true);
+    }
+  });
+
+  it("puts the UI language's Noto CJK family first", () => {
+    expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ja")).toBe('"Noto Sans", "Noto Sans JP", "Noto Sans KR", "Noto Sans SC", "Noto Sans TC", "Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif');
+    expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ko")).toStartWith('"Noto Sans", "Noto Sans KR", ');
+    expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "zh")).toStartWith('"Noto Sans", "Noto Sans SC", "Noto Sans TC", ');
   });
 
   it("stores each preset in the form the sanitizer keeps, and reads it back as that preset", () => {

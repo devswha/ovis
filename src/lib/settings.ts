@@ -527,11 +527,28 @@ export function sanitizeSettings(raw: unknown): Settings {
   };
 }
 
+/**
+ * Settings → Appearance → Interface font is kept in a key of its own, not in ovis:settings: a tab
+ * still on an older version rewrites that record whole on its next save and would erase a field it
+ * does not know (docs/development.md, Stored-format changes).
+ */
+export const UI_FONT_STORAGE_KEY = "ovis:ui-font";
+
+function readUiFontFamily(): string {
+  try {
+    const raw = window.localStorage.getItem(UI_FONT_STORAGE_KEY);
+    return raw === null ? "" : sanitizeFontFamily(JSON.parse(raw));
+  } catch {
+    return "";
+  }
+}
+
 export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
-  return stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
+  const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
+  return { ...merged, uiFontFamily: readUiFontFamily() };
 }
 
 export function saveSettings(settings: Settings): void {
@@ -541,7 +558,9 @@ export function saveSettings(settings: Settings): void {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(mirrored));
+    const { uiFontFamily, ...main } = mirrored;
+    window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
   } catch {
     /* private mode: preferences last for the session */
   }
@@ -577,7 +596,7 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   // interface's, so a chosen chat size is drawn as itself whatever the interface size, and an unchosen one follows it
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));
   // Settings → Appearance → Interface font, written as the token itself: the chosen list in front of the built-in stack
-  const uiFont = uiFontStack(settings.uiFontFamily);
+  const uiFont = uiFontStack(settings.uiFontFamily, language);
   if (uiFont === null) root.style.removeProperty("--font-ui");
   else root.style.setProperty("--font-ui", uiFont);
   // ChatView.css sets the transcript's and a Markdown preview's prose in this, and falls back to --font-ui without it

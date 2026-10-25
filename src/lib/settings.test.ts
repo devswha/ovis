@@ -74,6 +74,16 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFontSize).toBe(18);
   });
 
+  it("keeps the interface font in its own key, out of an old tab's whole-record save", () => {
+    saveSettings(sanitizeSettings({ uiFontFamily: "system-ui" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("uiFontFamily");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().uiFontFamily).toBe("system-ui");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings(sanitizeSettings({ uiFontFamily: "" }));
+    expect(loadSettings().uiFontFamily).toBe("");
+  });
+
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
     putOld({ theme: "dark", palette: "charcoal" });
     const stale = readOld();
