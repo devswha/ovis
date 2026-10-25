@@ -986,6 +986,7 @@ function mayShowWords(words: readonly string[], { text, ends }: Said): boolean {
   if (rarest !== null && fewest > WORD_CHECKS) return true;
   const weighedRecords = new Set<number>();
   let weighed = 0;
+  const steps = { left: ENTITY_STEPS };
   for (const needle of [rarest, entities ? ENTITY : null]) {
     if (needle === null) continue;
     for (let at = text.indexOf(needle); at >= 0 && at < last;) {
@@ -1002,7 +1003,7 @@ function mayShowWords(words: readonly string[], { text, ends }: Said): boolean {
       const said = text.slice(record > 0 ? ends[record - 1]! : 0, ends[record]!);
       weighed += said.length;
       if (weighedRecords.size > WORD_CHECKS || weighed > WORD_BUDGET) return true;
-      if (longest.every((word) => said.includes(word) || (said.includes(ENTITY) && throughEntities(said, word)))) return true;
+      if (longest.every((word) => said.includes(word) || (said.includes(ENTITY) && throughEntities(said, word, steps)))) return true;
     }
   }
   return false;
@@ -1014,13 +1015,20 @@ function mayShowWords(words: readonly string[], { text, ends }: Said): boolean {
  */
 const ENTITY = "\uE000";
 
-/** Whether `text` holds `word`, each ENTITY in it standing for up to three of its letters or none. */
-function throughEntities(text: string, word: string): boolean {
+/** Steps of ENTITY matching (throughEntities) one weighing may take; past them, a record may show the word. */
+const ENTITY_STEPS = 1 << 20;
+
+/**
+ * Whether `text` holds `word`, each ENTITY in it standing for up to three of its letters or none;
+ * also once `steps` run out.
+ */
+function throughEntities(text: string, word: string, steps: { left: number }): boolean {
   for (let entity = text.indexOf(ENTITY); entity >= 0; entity = text.indexOf(ENTITY, entity + 1)) {
     // a match through this entity begins at most a word's length before it
     for (let start = Math.max(0, entity - word.length); start <= entity; start++) {
       let reached = new Set([0]);
       for (let at = start; at < text.length && reached.size > 0 && at - start <= 4 * word.length; at++) {
+        if (--steps.left < 0) return true;
         const next = new Set<number>();
         for (const done of reached) {
           if (text[at] === ENTITY) for (let more = 0; more <= 3 && done + more <= word.length; more++) next.add(done + more);
@@ -1642,26 +1650,31 @@ function turnAfter(scan: SaidScan, value: unknown): void {
 /** The read of each rollout file under way: two at once would both read from the same offset and keep its messages twice. */
 const saidQueue = new Map<string, Promise<void>>();
 
-/** The messages of a rollout file, read from where the last read stopped, one read of a file at a time. */
-async function scanSaid(path: string): Promise<SaidScan> {
+/**
+ * The messages of a rollout file, read from where the last read stopped up to `upTo` (a cut an
+ * earlier rollout is continued at; what follows it is no conversation's history there), one read of
+ * a file at a time.
+ */
+async function scanSaid(path: string, upTo = Infinity): Promise<SaidScan> {
   const before = saidQueue.get(path);
   let done!: () => void;
   const mine = new Promise<void>((resolve) => { done = resolve; });
   saidQueue.set(path, mine);
   try {
     await before;
-    return await readSaid(path);
+    return await readSaid(path, upTo);
   } finally {
     done();
     if (saidQueue.get(path) === mine) saidQueue.delete(path);
   }
 }
 
-/** The messages of a rollout file, read from where the last read stopped (a rollout only grows). */
-async function readSaid(path: string): Promise<SaidScan> {
-  const { ino, size } = await stat(path);
+/** The messages of a rollout file, read from where the last read stopped (a rollout only grows), up to `upTo`. */
+async function readSaid(path: string, upTo: number): Promise<SaidScan> {
+  const { ino, size: whole } = await stat(path);
   let scan = saidScans.get(path);
-  if (scan === undefined || scan.ino !== ino || size < scan.offset) scan = { ino, offset: 0, said: [], text: "", running: false, abortedAt: 0 };
+  if (scan === undefined || scan.ino !== ino || whole < scan.offset) scan = { ino, offset: 0, said: [], text: "", running: false, abortedAt: 0 };
+  const size = Math.min(whole, upTo);
   saidScans.delete(path);
   saidScans.set(path, scan);
   if (size <= scan.offset) return scan;
@@ -1703,14 +1716,15 @@ async function readSaid(path: string): Promise<SaidScan> {
     }
     scan.offset = lineStart;
   } finally { await fd.close(); }
-  // twice the bytes one read of the loaded histories may take (HISTORY_BYTES), so the next poll reads
-  // none of them again; 32 loaded threads of 33 files each are far fewer files than SAID_SCANS
+  // the text kept, up to twice the bytes one read of the loaded histories may take (HISTORY_BYTES), so
+  // the next poll reads none of them again; 32 loaded threads of 33 files each are far fewer files
+  // than SAID_SCANS
   let kept = 0;
-  for (const read of saidScans.values()) kept += read.offset;
+  for (const read of saidScans.values()) kept += read.text.length;
   for (const [oldest, read] of saidScans) {
     if (oldest === path || (saidScans.size <= SAID_SCANS && kept <= 2 * HISTORY_BYTES)) break;
     saidScans.delete(oldest);
-    kept -= read.offset;
+    kept -= read.text.length;
   }
   return scan;
 }
@@ -1734,8 +1748,8 @@ async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: st
   let length = 0;
   let turns = { running: false, abortedAt: 0 };
   for (const [index, segment] of segments.entries()) {
-    const scan = await scanSaid(segment.path);
     const own = index === segments.length - 1;
+    const scan = await scanSaid(segment.path, own ? Infinity : segment.end);
     // an earlier rollout up to where this conversation continued it
     let count = scan.said.length;
     if (!own) while (count > 0 && scan.said[count - 1]!.end > segment.end) count--;
@@ -1822,8 +1836,10 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
       // a turn running, or one interrupted or failed since it was loaded, may show text it has not written
       if (!thread.exec && (ever.running || ever.abortedAt >= thread.loadedAt)) unwritten.add(path);
     }
+    // offered: one that passed the check above shows an answer here too, so it is matched (two
+    // would be none) or left open (none), and a thread not offered never wins alone
     const found = matchCodexTranscript(shown, candidates, new Set(loaded.keys()), said, true);
-    if (found === null || !offered.includes(found)) return null;
+    if (found === null) return null;
     // what another may be showing without having written it is in no `said`, to count against this one
     // on any screen, this one's too
     return [...unwritten].some((path) => path !== found) ? null : found;

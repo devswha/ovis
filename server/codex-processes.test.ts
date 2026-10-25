@@ -757,6 +757,21 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     expect(await resolve()).toBeNull();
   });
 
+  heldIt("offers nothing while weighing another loaded conversation's named entities would take too long", async () => {
+    const rollout = otherFolderThread();
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    // a record with this one's longest words, and a hundred thousand entities to weigh the rest through
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0900";
+    elsewhereThread(peer, [`Another conversation resumed through ${"z&shy;".repeat(100_000)}`]);
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
   heldIt("offers nothing while the loaded conversations' histories are larger than is read", async () => {
     const rollout = otherFolderThread();
     foreground = picker;
