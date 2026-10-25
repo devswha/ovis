@@ -25,6 +25,9 @@ const { chromium } = (await import(playwrightCore)) as typeof import("playwright
 const PANE = panes.flaky;
 const HREF = "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/";
 const WORDS = "the idempotency draft";
+// an address Markdown links but no URL parser takes
+const MALFORMED = "http://127.0.0.1:99999/";
+const README = `# Payments\n\nThe header is in [the draft](${HREF}).\n`;
 const at = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
 const filler = (n: number): string => Array.from({ length: n }, (_, i) => `Step ${i + 1} reads the stored response and checks the key before it answers.`).join("\n\n");
 /** The flaky pane's conversation as this script serves it: a named link, a bare one, and enough text to scroll. */
@@ -32,12 +35,13 @@ const TURNS = [
   { role: "user", ts: at(30), parts: [{ kind: "text", text: "Which spec covers retried payments?" }] },
   { role: "assistant", ts: at(29), end_ts: at(28), parts: [{ kind: "text", text: filler(8) }] },
   { role: "user", ts: at(20), parts: [{ kind: "text", text: "Link it." }] },
-  { role: "assistant", ts: at(19), end_ts: at(18), parts: [{ kind: "text", text: `Read [${WORDS}](${HREF}) first.\n\nIt names the header, and plain words here stay selectable.\n\nThe repository is https://github.com/example/payments for the code.` }] },
+  { role: "assistant", ts: at(19), end_ts: at(18), parts: [{ kind: "text", text: `Read [${WORDS}](${HREF}) first.\n\nIt names the header, and plain words here stay selectable.\n\nThe repository is https://github.com/example/payments for the code.\n\nThe local mirror was ${MALFORMED} once.` }] },
 ];
 
 /**
- * In front of the demo: the flaky pane's conversation is TURNS, and every contextmenu that reached
- * the window is recorded with whether the page cancelled it (window.linkMenus).
+ * In front of the demo: the flaky pane's conversation is TURNS, README.md is a Markdown file
+ * holding a link (the demo has no files), and every contextmenu that reached the window is
+ * recorded with whether the page cancelled it (window.linkMenus).
  */
 const harness = `<script>(() => {
   window.linkMenus = [];
@@ -45,8 +49,14 @@ const harness = `<script>(() => {
   const demo = window.fetch;
   const pane = ${JSON.stringify(PANE)};
   const turns = ${JSON.stringify(TURNS)};
+  const readme = ${JSON.stringify(README)};
   window.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    const path = url.searchParams.get("path") ?? "";
+    if (path === "README.md" || path.endsWith("/README.md")) {
+      if (url.pathname.endsWith("/fs/stat")) return Response.json({ path, name: "README.md", kind: "text", mime: "text/markdown", size: readme.length });
+      if (url.pathname.endsWith("/fs/file")) return new Response(readme, { headers: { "content-type": "text/markdown" } });
+    }
     if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === pane && !url.searchParams.has("before") && !url.searchParams.has("from")) {
       const response = await demo(input, init);
       if (!response.ok) return response;
@@ -61,7 +71,7 @@ const harness = `<script>(() => {
 
 interface Setup { android: boolean; share?: boolean; language?: string }
 
-async function open(browser: Browser, origin: string, url: string, setup: Setup): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
+async function open(browser: Browser, origin: string, url: string, setup: Setup, ready = ".chat-turn-agent .markdown a"): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 390, height: 664 }, screen: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
   // the address a link opens: answered here, so nothing leaves the machine
@@ -81,7 +91,7 @@ async function open(browser: Browser, origin: string, url: string, setup: Setup)
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
   await page.locator(".terminal-stack.is-chat").waitFor();
-  await page.locator(".chat-turn-agent .markdown a", { hasText: WORDS }).waitFor();
+  await page.locator(ready).first().waitFor();
   return { context, page, errors };
 }
 
@@ -163,6 +173,17 @@ try {
           await page.locator(".row-sheet-cancel").tap();
           await page.locator(".row-sheet").waitFor({ state: "detached" });
 
+          // an address no URL parser takes still gets its sheet, titled by itself, and the app stays up
+          assert.equal(await longPress(page, link, MALFORMED), true);
+          await page.locator(".row-sheet").waitFor();
+          assert.equal(await page.locator(".row-sheet-title").textContent(), MALFORMED, "a malformed address is its own title");
+          assert.equal(await page.locator(".row-sheet-detail").count(), 0, "and is not repeated under itself");
+          await page.locator(".row-sheet-item", { hasText: "Copy link" }).tap();
+          await page.locator(".row-sheet").waitFor({ state: "detached" });
+          assert.equal(await page.evaluate(() => navigator.clipboard.readText()), MALFORMED, "Copy link copies it as written");
+          assert.equal(await page.locator(".terminal-stack.is-chat").count(), 1, "the app did not fall to its crash screen");
+          console.log("PASS android: an address no URL parser takes gets its sheet and is copied as written");
+
           // other words keep the WebView's own long press (it selects them), and so does a mouse's menu on a link
           assert.equal(await longPress(page, words, "plain words here"), false, "a long press on other words is left to the WebView");
           assert.equal(await longPress(page, link, WORDS, "mouse"), false, "the contextmenu Android ends a dragged selection with is not the link's");
@@ -201,6 +222,27 @@ try {
           await page.waitForFunction(() => (window as unknown as { shared: unknown[] }).shared.length === 1);
           assert.deepEqual(await page.evaluate(() => (window as unknown as { shared: unknown[] }).shared), [{ url: HREF }], "Share link shares the address");
           console.log("PASS android: Share link shares the address where the WebView can share");
+          assert.deepEqual(errors, []);
+        } finally {
+          await context.close();
+        }
+      }
+
+      // a link in a file preview, which is a dialog on a phone: the sheet is drawn over it and its items take the tap
+      {
+        const { context, page, errors } = await open(browser, origin, `${url}&file=README.md`, { android: true }, ".file-viewer .markdown a");
+        try {
+          assert.equal(await page.locator(".file-viewer-scrim").count(), 1, "on a phone the file opens in its dialog");
+          assert.equal(await longPress(page, ".file-viewer .markdown a", "the draft"), true);
+          await page.locator(".row-sheet").waitFor();
+          await sheetAtRest(page);
+          if (evidence) await page.screenshot({ path: join(evidence, "link-menu-390-android-file-viewer.png") });
+          // tap() presses only an item nothing covers: one under the file viewer fails here
+          await page.locator(".row-sheet-item", { hasText: "Copy link" }).tap({ timeout: 3_000 });
+          await page.locator(".row-sheet").waitFor({ state: "detached" });
+          assert.equal(await page.evaluate(() => navigator.clipboard.readText()), HREF, "Copy link from a file preview copies its address");
+          assert.equal(await page.locator(".file-viewer-scrim").count(), 1, "the preview stays open under the sheet");
+          console.log("PASS android: a link in a file preview opens its sheet over the preview");
           assert.deepEqual(errors, []);
         } finally {
           await context.close();

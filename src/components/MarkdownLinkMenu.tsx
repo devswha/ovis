@@ -21,6 +21,15 @@ export function pressedLink(event: MouseEvent): HTMLAnchorElement | null {
   return event.target instanceof Element ? event.target.closest<HTMLAnchorElement>(".markdown a[href]") : null;
 }
 
+/** The address's host, or "" for one no URL parser takes (an older WebView has no URL.canParse). */
+function hostOf(href: string): string {
+  try {
+    return new URL(href).host;
+  } catch {
+    return "";
+  }
+}
+
 export function MarkdownLinkMenu() {
   const t = useT();
   const [pressed, setPressed] = useState<{ link: HTMLAnchorElement; point: { x: number; y: number } } | null>(null);
@@ -41,8 +50,9 @@ export function MarkdownLinkMenu() {
   const { link, point } = pressed;
   const href = link.href;
   const text = link.textContent?.trim() ?? "";
-  // a bare address would only be cut in the title: its host names it there, and it is whole under it
-  const title = text !== "" && text !== href ? text : new URL(href).host || href;
+  // a bare address would only be cut in the title: its host names it there, and it is whole under
+  // it. Markdown links any address it reads, one no URL parser takes (port 99999) included
+  const title = text !== "" && text !== href ? text : hostOf(href) || href;
   const items: RowMenuItem[] = [
     { id: "copy", label: t("Copy link"), icon: Link2, run: () => { void copyText(href); } },
     // a tap's own way (the pane's web panel, or the phone's browser); a link the chat has since
@@ -56,5 +66,5 @@ export function MarkdownLinkMenu() {
       navigator.share({ url: href }).catch(() => undefined);
     } }] : []),
   ];
-  return <RowMenu anchor={link} point={point} restoreFocusTo={null} title={title} detail={href} items={items} onClose={close} />;
+  return <RowMenu anchor={link} point={point} restoreFocusTo={null} title={title} detail={title === href ? undefined : href} items={items} onClose={close} />;
 }
