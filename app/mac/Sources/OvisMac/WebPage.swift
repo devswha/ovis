@@ -131,11 +131,20 @@ final class WebPageController: NSObject, ObservableObject {
     }
 
     private func isOvis(_ url: URL) -> Bool {
-        url.scheme?.lowercased() == origin.scheme?.lowercased() && url.host?.lowercased() == origin.host?.lowercased() && url.port == origin.port
+        url.scheme?.lowercased() == origin.scheme?.lowercased() && url.host?.lowercased() == origin.host?.lowercased()
+            && Self.port(url.port, scheme: url.scheme) == Self.port(origin.port, scheme: origin.scheme)
     }
 
     private func isOvis(_ origin: WKSecurityOrigin) -> Bool {
-        origin.protocol == self.origin.scheme && origin.host == self.origin.host && origin.port == (self.origin.port ?? 0)
+        origin.protocol.lowercased() == self.origin.scheme?.lowercased() && origin.host.lowercased() == self.origin.host?.lowercased()
+            && Self.port(origin.port, scheme: origin.protocol) == Self.port(self.origin.port, scheme: self.origin.scheme)
+    }
+
+    /// The port an address means: none (a URL) or 0 (WebKit's origin) is the scheme's own, which an
+    /// address may also spell out (`http://host:80`).
+    private static func port(_ port: Int?, scheme: String?) -> Int {
+        if let port, port != 0 { return port }
+        return scheme?.lowercased() == "https" ? 443 : 80
     }
 
     /// Another site or a mail link opens where the system opens it. Another app's link (a site in a web
@@ -297,8 +306,7 @@ extension WebPageController: WKUIDelegate {
         // only the Ovis page itself opens app windows: a site in a web panel could otherwise fill a blank
         // one by script, and it would stay hidden
         let source = navigationAction.sourceFrame
-        guard let model, source.isMainFrame, source.securityOrigin.host == origin.host,
-              source.securityOrigin.port == (origin.port ?? 0) else { return nil }
+        guard let model, source.isMainFrame, isOvis(source.securityOrigin) else { return nil }
         // an empty one waits for the address the page gives it
         let popup = WebPageController(origin: origin, model: model, popupConfiguration: configuration)
         Self.popups.append(popup)
@@ -347,8 +355,20 @@ extension WebPageController: WKDownloadDelegate {
         DistributedNotificationCenter.default().post(name: Notification.Name("com.apple.DownloadFileFinished"), object: file.path)
     }
 
+    /// A download that goes on to another site is that site's: the browser has it, as for a site's own.
+    func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void) {
+        guard let url = request.url, !isOvis(url) else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        openElsewhere(url)
+    }
+
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         _ = ended(download)
+        // a redirect handed to the browser cancels the download: nothing went wrong
+        if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
         // a popup whose window was closed shows it in the main window
         guard let window = (closed ? nil : webView.window) ?? model?.page?.webView.window else { return }
         NSAlert(error: error).beginSheetModal(for: window)
