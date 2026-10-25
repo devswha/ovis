@@ -371,7 +371,10 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const transcript = piFile("pi-best-effort");
     const f = await setup("pi-best-effort", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
-    f.socket.send({ type: "submit", id: 914, pane_id: f.pane, text: "sent\u000bportion", payload: "sent\u000bportion", delivery: "immediate" });
+    // Main rejects terminal controls before delivery. This valid, maximum-length message
+    // instead exceeds the receipt cap only when closeMention appends its Pi-facing space.
+    const text = `${"x".repeat(19_994)} @file`;
+    f.socket.send({ type: "submit", id: 914, pane_id: f.pane, text, payload: text, delivery: "immediate" });
     expect(await f.socket.result(914)).toMatchObject({ ok: true });
     expect(f.socket.seen.some((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 914))).toBe(false);
   }, 20_000);

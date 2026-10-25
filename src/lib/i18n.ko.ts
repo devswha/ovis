@@ -166,8 +166,6 @@ const BASE: Record<string, string> = {
   // ---- composer ----
   "Drag to resize · double-click to reset": "끌어서 크기 조절 · 두 번 클릭하면 초기화",
   "Failed": "실패",
-  "Sent to Pi · waiting for transcript": "Pi로 보냄 · 대화 기록을 기다리는 중",
-  "Sent to Pi · transcript confirmation unavailable": "Pi로 보냄 · 대화 기록을 확인할 수 없음",
   "Send now": "지금 보내기",
 
   // ---- chat view ----

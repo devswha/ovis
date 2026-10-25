@@ -157,6 +157,7 @@ export function capturePiDeliveryAnchor(path: string, allowMissing = false, expe
 /** Retry only snapshots invalidated by a concurrent write. An unreadable transcript fails at once. */
 export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing = false, expectedSession?: string,
   capture: typeof capturePiDeliveryAnchorAttempt = capturePiDeliveryAnchorAttempt,
+  // fixed wait: bounded backoff lets an in-flight Pi append settle before retrying its snapshot
   wait: (milliseconds: number) => Promise<unknown> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))): Promise<PiDeliveryAnchor | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const result = capture(path, allowMissing, expectedSession);

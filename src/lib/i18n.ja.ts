@@ -168,8 +168,6 @@ const BASE: Record<string, string> = {
   // ---- composer ----
   "Drag to resize · double-click to reset": "ドラッグでサイズ変更 · ダブルクリックでリセット",
   "Failed": "失敗",
-  "Sent to Pi · waiting for transcript": "Pi に送信済み · 会話への記録を待っています",
-  "Sent to Pi · transcript confirmation unavailable": "Pi に送信済み · 会話への記録を確認できません",
   "Send now": "今すぐ送信",
 
   // ---- chat view ----
