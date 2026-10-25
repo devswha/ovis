@@ -166,7 +166,18 @@ function finishInterruptedLink(legacy: string, next: string): void {
     // another process of this install may be making its own right now: only a dead one's is left over
     if (link === `${legacy}.link-${process.pid}` || livePid(Number(link.slice(link.lastIndexOf("-") + 1)))) continue;
     if (pointsAtNext && !existsSync(legacy)) {
-      try { renameSync(link, legacy); continue; } catch { /* removed below */ }
+      try { renameSync(link, legacy); continue; }
+      catch (error) {
+        // the name must not stay free (as in linkLegacyRegistry): empty, older launchers pass it by,
+        // and the merge leaves its closed copy of the devices in it
+        try { mkdirSync(legacy, { mode: 0o700 }); }
+        catch {
+          // the link stays, for the next start to try again
+          console.error(`cannot finish linking ${legacy} to ${next}, and cannot make it again: ${(error as Error).message}`);
+          continue;
+        }
+        console.error(`cannot finish linking ${legacy} to ${next}, so it stays a dir of its own, with a closed copy of the paired devices: ${(error as Error).message}`);
+      }
     }
     removeLink(link);
   }

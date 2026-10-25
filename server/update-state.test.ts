@@ -137,6 +137,31 @@ describe("the state dir from before the rename", () => {
     expect(existsSync(`${legacy}.link-999999999`)).toBe(false);
   });
 
+  it("keeps the old name a dir of its own when an interrupted link cannot take it either", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    writeFileSync(join(next, "devices.json"), JSON.stringify({ gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [] }));
+    mkdirSync(join(next, "bridges"));
+    const legacy = join(config, "herdr-web-ui");
+    // a process stopped between removing the old dir and putting its link in its place
+    symlinkSync(next, `${legacy}.link-999999999`);
+    const rename = fs.renameSync;
+    const denied = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (to === legacy) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      rename(from, to);
+    });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { linkLegacyRegistry(legacy, next); } finally { denied.mockRestore(); said.mockRestore(); }
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+    // the server's merge finds it, and a bridge registering there after it leaves it gated
+    const sibling = siblingStateDir(next, { XDG_CONFIG_HOME: config });
+    expect(sibling).toBe(legacy);
+    mergeSiblingState(next, sibling!);
+    withRegistry(legacy);
+    expect(new DeviceStore(legacy).gated).toBe(true);
+  });
+
   it("waits while a bridge registered under the old name runs", () => {
     const config = configHome();
     const next = withDevices(join(config, "ovis"));
