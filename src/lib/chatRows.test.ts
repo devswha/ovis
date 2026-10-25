@@ -81,7 +81,17 @@ describe("continuesHistory", () => {
     expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), working(tool("read", "alpha"))]))).toBeFalse();
   });
 
+  it("starts over when a rewind put another call of the same tool in a shown place", () => {
+    const call = (input: string, callId?: string): ConversationTurn["parts"][number] => ({ kind: "tool", name: "read", summary: "read", input, output: "", ...(callId === undefined ? {} : { call_id: callId }) });
+    const before = page([turn("user", "2026-10-24T00:00:01Z"), working(call('{"path":"src/alpha.ts"}'), call('{"path":"src/beta.ts"}', "c2"))]);
+    expect(continuesHistory(before, page([turn("user", "2026-10-24T00:00:01Z"), working(call('{"path":"src/alpha.ts"}'), call('{"path":"src/gamma.ts"}', "c2"))]))).toBeFalse();
+    expect(continuesHistory(before, page([turn("user", "2026-10-24T00:00:01Z"), working(call('{"path":"src/alpha.ts"}'), call('{"path":"src/beta.ts"}', "c3"))]))).toBeFalse();
+    expect(continuesHistory(before, page([turn("user", "2026-10-24T00:00:01Z"), working(call('{"path":"src/alpha.ts"}'), call('{"path":"src/beta.ts"}', "c2"))]))).toBeTrue();
+  });
+
   it("starts over when a shown turn is gone, moved or has another start", () => {
+    // a compaction that dropped the first turns: the newest page starts later than what is shown
+    expect(continuesHistory(shown, page([shown.turns[1]!, turn("user", "2026-10-24T00:00:09Z")]))).toBeFalse();
     expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z")]))).toBeFalse();
     expect(continuesHistory(shown, page([turn("user", "2026-10-24T00:00:01Z"), turn("assistant", "2026-10-24T00:00:05Z")]))).toBeFalse();
     expect(continuesHistory(shown, page([turn("assistant", "2026-10-24T00:00:02Z"), turn("user", "2026-10-24T00:00:09Z")]))).toBeFalse();

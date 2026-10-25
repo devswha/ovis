@@ -1854,9 +1854,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   they read there, and the opened row stays put while the turn streams below it (#1388). T3 Code
   keeps a reader at the very bottom pinned when they toggle a tool; Ovis already reads scrolling
   up as "stop following until I come back", and opening joins that rule. Later output raises a
-  **New messages** pill. A gjc rewrite of its session file (compaction or trimmed tool outputs, a
-  new history ID whose newest page still opens with every turn shown, same parts) keeps the rows,
-  what was opened and the reader's place; any other new history starts over.
+  **New messages** pill. A gjc rewrite of its session file that keeps every turn shown in its place
+  (its first save, trimmed tool outputs: a new history ID whose newest page still opens with those
+  turns, each part's kind and each tool's call and input unchanged) keeps the rows, what was opened
+  and the reader's place. A compaction that drops turns, a rewind and any other new history start over.
   A message sent from this browser's message box resumes it once the bridge accepts it at once
   (a receipt with no pending item, no refusal and no uncertain answer): the view goes to the end
   and follows the turn and its reply there. Agent of Empires re-pins its view on any prompt, local,

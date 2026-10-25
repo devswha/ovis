@@ -58,11 +58,12 @@ export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowS
 
 /**
  * Whether a gjc answer under a new history ID goes on with the turns shown. gjc writes its whole
- * session anew and renames it over the old file when it compacts or trims old tool outputs, so the
- * server names it as another history. When the newest page still opens with every turn shown (its
- * role, its start time, and the kind and tool of each of its parts, whose words a trim may shorten),
- * the rows keep their identity. Any other agent's new ID, or a turn that changed otherwise, is a new
- * session, a cleared context, a rewind or a moved branch: the chat starts over.
+ * session anew and renames it over the old file (its first save, trimmed tool outputs), so the server
+ * names it as another history. When the newest page still opens with every turn shown, in the same
+ * places (its role, its start time, each part's kind, and a tool's name, call id and input; a trim
+ * may shorten what a tool answered), the rows keep their identity. Anything else starts the chat
+ * over: a page that now starts elsewhere (a compaction that dropped turns), any other agent's new
+ * ID, or a turn that changed otherwise (a new session, a cleared context, a rewind, a moved branch).
  */
 export function continuesHistory(shown: Pick<ConversationResponse, "source" | "turns"> | null, next: Pick<ConversationResponse, "source" | "turns">): boolean {
   if (shown === null || shown.source !== "gjc-transcript" || next.source !== shown.source) return false;
@@ -72,7 +73,8 @@ export function continuesHistory(shown: Pick<ConversationResponse, "source" | "t
     return turn.ts !== null && after.role === turn.role && after.ts === turn.ts && after.parts.length >= turn.parts.length
       && turn.parts.every((part, at) => {
         const other = after.parts[at]!;
-        return other.kind === part.kind && (part.kind !== "tool" || (other.kind === "tool" && other.name === part.name));
+        return other.kind === part.kind && (part.kind !== "tool" || (other.kind === "tool" && other.name === part.name
+          && other.call_id === part.call_id && other.input === part.input));
       });
   });
 }
