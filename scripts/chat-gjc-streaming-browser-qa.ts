@@ -153,10 +153,12 @@ try {
   } });
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   for (const width of [1440, 390] as const) {
-    for (const scenario of ["reading", "short", "following", "scrolled", "todo"] as const) {
+    for (const scenario of ["reading", "short", "following", "scrolled", "todo", "jump"] as const) {
       for (const rewrite of [false, true]) {
+        // Jump to latest straight after opening, before any record: nothing to rewrite
+        if (scenario === "jump" && rewrite) continue;
         const name = `${width} ${scenario} ${rewrite ? "rewrite" : "append"}`;
-        const opens = scenario === "reading" || scenario === "short" || scenario === "todo";
+        const opens = scenario === "reading" || scenario === "short" || scenario === "todo" || scenario === "jump";
         reset(scenario === "short" ? 0 : 6);
         if (scenario === "todo") write(result("c2", "beta", 40) + todoCall("t1", [{ op: "init", list: [{ phase: "Fix", items: TODO }] }]) + todoResult("t1", 0), false);
         const records = scenario === "todo" ? TODO_RECORDS() : RECORDS();
@@ -165,14 +167,32 @@ try {
         await context.addInitScript(() => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" }));
           const qa = window as unknown as { qaBytes: number; fetch: (...args: Parameters<typeof fetch>) => Promise<Response> };
+          // A transcript size counts as served once the chat has shown that very answer (its metadata
+          // object comes back through onMetadata) and React has committed after it: not when its
+          // headers arrive, nor when an answer the chat dropped was read.
           qa.qaBytes = 0;
+          const sizes = new WeakMap<object, number>();
+          let shown = 0;
           const original = window.fetch.bind(window);
           qa.fetch = async (...args) => {
             const response = await original(...args);
             const bytes = Number(response.headers.get("x-qa-bytes") ?? 0);
-            if (bytes > qa.qaBytes) qa.qaBytes = bytes;
+            if (bytes > 0) {
+              const json = response.json.bind(response);
+              response.json = async () => {
+                const body = await json() as { metadata?: unknown };
+                if (typeof body.metadata === "object" && body.metadata !== null) sizes.set(body.metadata, bytes);
+                return body;
+              };
+            }
             return response;
           };
+          window.addEventListener("chat-qa-answer", (event) => {
+            const detail = (event as CustomEvent<unknown>).detail;
+            const bytes = typeof detail === "object" && detail !== null ? sizes.get(detail) : undefined;
+            if (bytes !== undefined && bytes > shown) shown = bytes;
+          });
+          window.addEventListener("chat-qa-commit", () => { if (shown > qa.qaBytes) qa.qaBytes = shown; });
         });
         const page = await context.newPage();
         page.setDefaultTimeout(15_000);
@@ -198,6 +218,34 @@ try {
           });
           assert.ok(key !== undefined, `${name}: a row is in view`);
           track = { key };
+        }
+        if (scenario === "jump") {
+          // the opened tool's own layout is no longer held once the reader is back at the end: a row
+          // that grows afterwards (a whole output, a late image) is followed with no record between
+          const jump = page.locator(".chat-virtual-jump");
+          const atEnd = () => page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; });
+          await jump.click();
+          await atEnd();
+          await still(page, {});
+          // closed while following (its own layout is held), opened again, then back to the end: the
+          // earlier hold is not left behind either. Clicked in place, so no scroll moves the reader.
+          const head = page.locator(".work-row-head", { hasText: "beta.ts" });
+          await head.evaluate((button: HTMLElement) => button.click());
+          await still(page, {});
+          await head.evaluate((button: HTMLElement) => button.click());
+          expect(await head.getAttribute("aria-expanded") === "true", `${name}: the tool opens again`);
+          await jump.click();
+          await atEnd();
+          await still(page, {});
+          await page.locator(".chat-view [data-chat-row]").last().evaluate((row) => { const grow = document.createElement("div"); grow.style.height = "240px"; row.append(grow); });
+          const end = await still(page, {});
+          expect(end.bottom <= 1, `${name}: after Jump to latest, a row that grows with no new record is followed (bottom ${end.bottom})`);
+          if (evidence) await page.screenshot({ path: join(evidence, `gjc-${width}-jump.png`) });
+          expect(errors.length === 0, `${name}: page errors ${JSON.stringify(errors)}`);
+          report[name] = { end, errors };
+          console.log(name, JSON.stringify({ end }));
+          await context.close();
+          continue;
         }
         const start = await still(page, track);
         const steps: Array<{ record: string; minDy: number | null; maxDy: number | null; missing: number; expanded: string | null; bottom: number }> = [];

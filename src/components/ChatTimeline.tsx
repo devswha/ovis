@@ -82,10 +82,16 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       const control = event.target instanceof Element ? event.target.closest("summary, .work-block-head, .work-row-head, .chat-tool-more") : null;
       // a pending work block's head opens nothing
       if (control === null || control.closest(".work-block.is-pending")) return;
-      manualLayout.current = true;
       // captured before the row's own handler: what it shows now is what the click changes
       const details = control.matches("summary") ? control.parentElement : null;
-      if (control.matches(".chat-tool-more") || control.getAttribute("aria-expanded") === "false" || (details instanceof HTMLDetailsElement && !details.open)) onOpen();
+      // Opening is reading there: following stops until the reader goes back to the end, so nothing
+      // is held for them once they do (Jump to latest follows what grows next), not even a hold an
+      // earlier click left. Another click a following reader makes is laid out where they are until
+      // the rows change.
+      if (control.matches(".chat-tool-more") || control.getAttribute("aria-expanded") === "false" || (details instanceof HTMLDetailsElement && !details.open)) {
+        manualLayout.current = false;
+        onOpen();
+      } else if (following.current) manualLayout.current = true;
     };
     document.addEventListener("selectionchange", selectionChanged);
     node.addEventListener("focusin", focusChanged);
@@ -108,7 +114,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       node.removeEventListener("click", interaction, true);
       node.removeEventListener("copy", copy);
     };
-  }, [scroller, positions, rowKeys, onOpen]);
+  }, [scroller, positions, rowKeys, onOpen, following]);
 
   // A glide aims at the end it saw; content that grew meanwhile leaves it short. Where it stops, a
   // reader still following is put at the end at once.
