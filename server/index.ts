@@ -35,6 +35,7 @@ import {
   ping,
 } from "./herdr/client.ts";
 import { type AlertTiming, defaultStateDir, handlePushRequest } from "./push.ts";
+import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { handlePromptRequest, OpenCodePromptState } from "./prompt.ts";
 import { attachableIdentity } from "./pty/sidecar.ts";
@@ -115,6 +116,12 @@ export function createServer(
     token?: string;
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
+    /**
+     * The other default state dir of an install that kept its state in two (server/state-merge.ts):
+     * its devices, preferences and push subscriptions are taken over before anything reads them.
+     * Only the real entrypoint passes one; a test passes a temp dir.
+     */
+    siblingStateDir?: string | null;
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
     /** the operator declares `tailscale serve` as this install's only ingress; OVIS_TAILSCALE_SERVE_ONLY=1 says the same */
@@ -197,7 +204,8 @@ export function createServer(
   /** Empty token = gate disabled; every route then behaves exactly as it did before auth existed. */
   const token = options.token ?? process.env["OVIS_TOKEN"] ?? "";
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
-  const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
+  const merge = options.siblingStateDir ? mergeSiblingState(options.stateDir ?? defaultStateDir(), options.siblingStateDir) : null;
+  const devices = new DeviceStore(options.stateDir ?? defaultStateDir(), merge?.devicesBlocked ?? null);
   const preferences = new PreferenceStore(options.stateDir ?? defaultStateDir());
   const seen = new SeenStore(options.stateDir ?? defaultStateDir());
   // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
@@ -618,7 +626,7 @@ if (import.meta.main) {
   const portal = new PortalService({ stateDir: defaultStateDir() });
   let instance: ReturnType<typeof createServer>;
   try {
-    instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), portal, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, shellAgents: new ShellAgentLocator() });
+    instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), portal, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, shellAgents: new ShellAgentLocator(), siblingStateDir: siblingStateDir(defaultStateDir()) });
   } catch (err) {
     const { code, syscall } = err as { code?: string; syscall?: string };
     // only the bind itself: a permission error reading a state file keeps its own message and path
