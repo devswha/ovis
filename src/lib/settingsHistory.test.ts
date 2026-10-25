@@ -21,7 +21,7 @@ function fakeWindow() {
 const fake = fakeWindow();
 (globalThis as unknown as { window: unknown }).window = fake.window;
 // after the window: the module listens to it as it loads
-const { outsideSettings, recordSettings, settingsEntry, settingsLevels } = await import("./settingsHistory.ts");
+const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff } = await import("./settingsHistory.ts");
 const settled = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => queueMicrotask(() => resolve(undefined))); };
 
 describe("settingsLevels", () => {
@@ -77,6 +77,21 @@ describe("recordSettings", () => {
     recordSettings([]);
     await settled();
     expect(fake.held()).toEqual([null]);
+  });
+
+  it("tells the app's Back that closing Settings stepped off its entries, and that a Back between panes did not", async () => {
+    const seen: boolean[] = [];
+    // the app listens after this module, as useAddressBar does, and reads it for the same event
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": true });
+    recordSettings([{ page: "remote", keyBar: false }]);
+    await settled();
+    recordSettings([]);
+    await settled();
+    expect(seen).toEqual([true]);
+    fake.window.history.go(-1);
+    await settled();
+    expect(seen).toEqual([true, false]);
   });
 
   it("does not take a step it cannot see on trust: entries of an earlier opening a Forward landed on are rebuilt", async () => {

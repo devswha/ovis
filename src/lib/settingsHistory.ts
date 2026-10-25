@@ -66,6 +66,17 @@ export function outsideSettings(state: unknown): Record<string, unknown> {
 
 type Listener = (entry: SettingsEntry | null, own: boolean) => void;
 const listeners = new Set<Listener>();
+/** whether the popstate being dispatched left Settings' entries for the one beneath: this module listens first, so the app's Back reads it for the same event */
+let steppedOff = false;
+
+/**
+ * Whether the popstate the app is handling is Settings closing, by its own controls or by a Back off
+ * its last entry, onto the entry it opened over. That is no Back to the entry's pane: a pick made
+ * while the dialog was up stays where it is.
+ */
+export function settingsSteppedOff(): boolean {
+  return steppedOff;
+}
 let wanted: readonly SettingsLevel[] = [];
 /** the steps this module knows the history holds for Settings, by depth; null for one it did not push and cannot see */
 let held: Array<SettingsLevel | null> = [];
@@ -187,6 +198,7 @@ if (typeof window !== "undefined") {
     const previous = observed;
     observed = event.state;
     const entry = settingsEntry(event.state);
+    steppedOff = entry === null && settingsEntry(previous) !== null;
     // Back from above onto the entries of a buried opening: Settings closed when they were buried,
     // so they are stepped over to the entry they began from instead of opening it again
     if (pending === null && entry !== null && buried.has(fieldOf(event.state, BASE_KEY)) && fieldOf(previous, BASE_KEY) !== fieldOf(event.state, BASE_KEY)) {
