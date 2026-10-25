@@ -41,6 +41,21 @@ const isDir = (path: string): boolean => {
  * bridge start creates it there again. It is never app state.
  */
 const BRIDGE_REGISTRY = "bridges";
+/**
+ * What the merge of the two dirs (state-merge.ts) writes into the old one while it is not linked:
+ * copies of the new dir's files, which are not state of the old dir's own while they are the same
+ * bytes, and the backups of what it replaced, which move along.
+ */
+const MERGE_COPIES = ["devices.json", "preferences.json", "muted-panes.json", "state-merge.json", "state-merge-devices-incomplete.json"];
+const MERGE_BACKUPS = "state-merge-backups";
+
+const sameFile = (left: string, right: string): boolean => {
+  try { return readFileSync(left).equals(readFileSync(right)); } catch { return false; }
+};
+
+/** An entry of the old dir that is not state of its own: the registry, the merge's backups, or an unchanged copy. */
+const linkable = (legacy: string, next: string, entry: string): boolean =>
+  entry === BRIDGE_REGISTRY || entry === MERGE_BACKUPS || MERGE_COPIES.includes(entry) && sameFile(join(legacy, entry), join(next, entry));
 
 /**
  * What the dir under its name from before the rename holds, when it is not the new dir itself:
@@ -51,7 +66,7 @@ function legacyContents(legacy: string, next: string): "state" | "registry" | nu
     if (!isDir(legacy)) return null;
     const entries = readdirSync(legacy);
     if (entries.length === 0 || isDir(next) && realpathSync(legacy) === realpathSync(next)) return null;
-    return entries.every((entry) => entry === BRIDGE_REGISTRY) ? "registry" : "state";
+    return entries.every((entry) => linkable(legacy, next, entry)) ? "registry" : "state";
   } catch (error) {
     // ENOENT: another process of this install is moving it right now. An old dir this process
     // cannot read is not one it can use; the new one then reports what it cannot write.
@@ -99,8 +114,16 @@ export function linkLegacyRegistry(legacy: string, next: string): void {
     return;
   }
   try {
-    if (!existsSync(to)) renameSync(from, to);
+    if (!existsSync(from)) { /* only the merge's files */ }
+    else if (!existsSync(to)) renameSync(from, to);
     else moveInto(from, to);
+    for (const entry of readdirSync(legacy)) {
+      const source = join(legacy, entry);
+      if (entry === MERGE_BACKUPS) {
+        if (!existsSync(join(next, MERGE_BACKUPS))) renameSync(source, join(next, MERGE_BACKUPS));
+        else moveInto(source, join(next, MERGE_BACKUPS));
+      } else if (MERGE_COPIES.includes(entry) && sameFile(source, join(next, entry))) unlinkSync(source);
+    }
     try { rmdirSync(legacy); }
     catch (error) {
       // a writer put something back under the old name in between: it joins the new dir, once

@@ -31,7 +31,9 @@ describe("the state dir from before the rename", () => {
     const config = configHome();
     const root = join(config, "checkout");
     const next = withDevices(join(config, "ovis"));
+    // its own state: not a copy of the new dir's file, which the merge leaves there (linkable)
     const legacy = withDevices(join(config, "herdr-web-ui"));
+    writeFileSync(join(legacy, "devices.json"), "{\"paired\":2}");
     const port = 7317;
     const directory = join(updateStateDir(root, port, next), "release-next");
     mkdirSync(directory, { recursive: true });
@@ -39,7 +41,7 @@ describe("the state dir from before the rename", () => {
     expect(defaultStateDir({ XDG_CONFIG_HOME: config }, supervisor)).toBe(next);
     moveLegacyStateDir({ XDG_CONFIG_HOME: config }, supervisor);
     expect(lstatSync(legacy).isDirectory()).toBe(true);
-    expect(readFileSync(join(legacy, "devices.json"), "utf8")).toBe("{\"paired\":1}");
+    expect(readFileSync(join(legacy, "devices.json"), "utf8")).toBe("{\"paired\":2}");
     expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { ...supervisor, port: port + 1 })).toBe(legacy);
     expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { ...supervisor, root: join(config, "other") })).toBe(legacy);
     expect(defaultStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: "/srv/ovis" }, supervisor)).toBe("/srv/ovis");
@@ -127,6 +129,32 @@ describe("the state dir from before the rename", () => {
     expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(next, "bridges", "remote.json.state", "preferences.json"), "utf8")).toBe("{\"language\":\"ko\"}");
     expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"renamed\":1}");
+  });
+
+  it("is linked when it holds only the merge's copies of the new dir's files and its backups", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    writeFileSync(join(next, "state-merge.json"), "{\"seq\":2}");
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    for (const name of ["devices.json", "state-merge.json"]) writeFileSync(join(legacy, name), readFileSync(join(next, name)));
+    mkdirSync(join(legacy, "state-merge-backups", "t0"), { recursive: true });
+    writeFileSync(join(legacy, "state-merge-backups", "t0", "devices.json"), "{\"before\":1}");
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+    linkLegacyRegistry(legacy, next);
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(next, "state-merge-backups", "t0", "devices.json"), "utf8")).toBe("{\"before\":1}");
+    expect(readFileSync(join(next, "devices.json"), "utf8")).toBe("{\"paired\":1}");
+  });
+
+  it("stays a dir of its own while a copy differs from the new dir's file", () => {
+    const config = configHome();
+    const next = withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    writeFileSync(join(legacy, "devices.json"), "{\"paired\":2}");
+    linkLegacyRegistry(legacy, next);
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(readFileSync(join(legacy, "devices.json"), "utf8")).toBe("{\"paired\":2}");
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(legacy);
   });
 
   it("leaves the registry alone without a new dir, under OVIS_STATE_DIR", () => {
