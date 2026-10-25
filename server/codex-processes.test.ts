@@ -623,7 +623,7 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     expect(await resolve()).toBeNull();
   });
 
-  heldIt("weighs a link another loaded conversation answered with by its target, as the screen shows it", async () => {
+  heldIt("weighs another loaded conversation's answer in any layout Codex shows it in: a link by its target, a table, an escape decoded", async () => {
     // this one answered with a label and a path, as plain text; another, with a link to that path
     const target = "docs/investigations/codex-resume-picker-cross-folder-session-identification-verification-results-896.md";
     const shown = `Verification results (${target}:12), as the run left them.`;
@@ -637,8 +637,9 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     alone.kill();
     await alone.exited;
     // in each form Codex shows so: a path in its folder, a file URL, percent-encoded, a <destination>
-    // with a title, a reference, and a path through a symlink to its folder, which the store keeps
-    // resolved while the TUI shows it relative to the folder as it was given
+    // with a title, references, a path through a symlink to its folder (which the store keeps
+    // resolved while the TUI shows it relative to the folder as it was given), escapes it decodes,
+    // and a table, whose cells it may show as records in another order
     const forms = [
       (folder: string) => `[Verification results](${join(folder, target)}:12), as the run left them.`,
       (folder: string) => `[Verification results](file://${join(folder, target)}#L12), as the run left them.`,
@@ -651,9 +652,16 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
         symlinkSync(folder, `${folder}-link`);
         return `[Verification results](${join(`${folder}-link`, target)}#L12), as the run left them.`;
       },
+      (folder: string) => `[Verification results][report], as the run left them.\n\n[report]: ${join(folder, target)}:12\n[report]: /unrelated/no-evidence.txt`,
+      (folder: string) => `[Verification results][report], as the run left them.\n\n> [report]:\n>   ${join(folder, target)}:12`,
+      (folder: string) => `[Verification results](${join(folder, target).replace("resume-picker", "resume&#45;picker")}:12), as the run l&#101;ft them.`,
+      (folder: string) => `[Verification results](${join(folder, target).replace("picker", "pick%65r")}:12), as the run left them.`,
+      (folder: string) => `[Verification results](${join(folder, target)}:12 "An \\"escaped\\" title"), as the run left them.`,
+      (folder: string) => `[Verification results](file://${join(folder, target)}?download=yes#L12), as the run left them.`,
+      (folder: string) => `| Item | Link |\n| --- | --- |\n| Verification | [results](${join(folder, target)}:12) |\n\nThat is as the run left them.`,
     ];
     for (const [index, form] of forms.entries()) {
-      const peer = `01a16b22-7e1f-7072-8897-dddddddd000${index}`;
+      const peer = `01a16b22-7e1f-7072-8897-dddddddd${String(index).padStart(4, "0")}`;
       elsewhereThread(peer, [form(join(root, `elsewhere-${peer.slice(-4)}`))]);
       const both = await loaded(other, peer);
       expect({ index, found: await resolve() }).toEqual({ index, found: null });
@@ -675,6 +683,50 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     const peer = "01a16b22-7e1f-7072-8897-dddddddd0100";
     elsewhereThread(peer, [`See <${url}>, as the run left them.`]);
     await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs the words an answer ends with, the first only as far as the screen's match of it goes", async () => {
+    const target = "docs/investigations/codex-resume-picker-cross-folder-session-identification-verification-results-896.md";
+    const word = "abcdefghijklmnopqrstuvwxyz0123456789";
+    // its last 160 letters and digits begin inside its first word, after 8 of the 20 q's
+    const shown = `${"q".repeat(20)}${word} results (${target}:12), as the run left them.`;
+    const rollout = otherFolderThread([{ type: "agent_message", message: shown }]);
+    foreground = picker;
+    screen = `• ${shown}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    // another conversation's link whose label begins otherwise, before what the screen matched
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0300";
+    elsewhereThread(peer, [`[${"q".repeat(9)}${word} results](${join(root, "elsewhere-0300", target)}:12), as the run left them.`]);
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing while weighing another loaded conversation's words would take too long", async () => {
+    // another conversation that says this one's longest words (conversation, resumed, through) in
+    // more records than are weighed
+    const rollout = otherFolderThread();
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    const few = "01a16b22-7e1f-7072-8897-dddddddd0200";
+    elsewhereThread(few, Array.from({ length: 100 }, (_, index) => `Another conversation resumed through number ${index}.`));
+    const some = await loaded(other, few);
+    expect(await resolve()).toBe(rollout);
+    some.kill();
+    await some.exited;
+    const many = "01a16b22-7e1f-7072-8897-dddddddd0201";
+    elsewhereThread(many, Array.from({ length: 2100 }, (_, index) => `Another conversation resumed through number ${index}.`));
+    const each = await loaded(other, many);
+    expect(await resolve()).toBeNull();
+    each.kill();
+    await each.exited;
+    // or in one record longer than is weighed
+    const long = "01a16b22-7e1f-7072-8897-dddddddd0202";
+    elsewhereThread(long, [`Another conversation resumed through ${"x".repeat(8_500_000)}`]);
+    await loaded(other, long);
     expect(await resolve()).toBeNull();
   });
 

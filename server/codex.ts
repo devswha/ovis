@@ -875,15 +875,30 @@ const normalizeDisplay = (text: string): string => text.normalize("NFKC").replac
  * What of an answer to look for on screen: its last 160 letters and digits. Codex shows a
  * markdown link as its label and the target relative to the cwd ("label (docs/x.md)" for
  * `[label](/repo/docs/x.md)`), so the text is cut at link targets, and the anchor is the end of
- * the last piece long enough. Without links, that is the end of the whole text.
+ * the last piece long enough. Without links, that is the end of the whole text. With the words
+ * it is made of, for what another conversation's screen may show of it (mayShowWords).
  */
-function answerAnchor(text: string): string | null {
+function answerAnchor(text: string): Anchor | null {
   const pieces = text.split(/\]\([^)\s]*\)/);
   for (let index = pieces.length - 1; index >= 0; index--) {
     const anchor = normalizeDisplay(pieces[index]!).slice(-160);
-    if (anchor.length >= 64 && new Set(anchor).size >= 12) return anchor;
+    if (anchor.length >= 64 && new Set(anchor).size >= 12) return { anchor, words: wordsEnding(pieces[index]!, anchor.length) };
   }
   return null;
+}
+
+interface Anchor { anchor: string; words: string[] }
+
+/** The words a text ends with (runs of letters and digits), as many as make up its last `length` of them, the first cut to fit. */
+function wordsEnding(text: string, length: number): string[] {
+  const words = text.normalize("NFKC").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const taken: string[] = [];
+  for (let index = words.length - 1, left = length; index >= 0 && left > 0; index--) {
+    const word = words[index]!;
+    taken.push(word.length > left ? word.slice(-left) : word);
+    left -= word.length;
+  }
+  return taken.reverse();
 }
 
 /** Shared app-server TUIs do not hold rollout descriptors. For read-only display,
@@ -902,14 +917,14 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   const parsed = candidates.map((candidate) => parseCodexTranscript(candidate.text, Infinity));
   // every answer each candidate gave, as answerAnchor reads one (cut at link targets), read once
   let shown: Said[] | undefined;
-  const givenElsewhere = (index: number, anchor: string) => (shown ??= parsed.map((turns, at) =>
-    said.get(candidates[at]!.path) ?? { text: answersOf(turns).flatMap(saidText).join(""), linked: [] }))
-    .some((given, at) => at !== index && (given.text.includes(anchor) || given.linked.some((text) => mayShow(anchor, text))));
+  const givenElsewhere = (index: number, { anchor, words }: Anchor) => (shown ??= parsed.map((turns, at) =>
+    said.get(candidates[at]!.path) ?? { text: answersOf(turns).flatMap(saidText).join(""), ends: [] }))
+    .some((given, at) => at !== index && (given.text.includes(anchor) || mayShowWords(words, given)));
   const matching = new Set<string>();
   let open = false;
   for (const [index, candidate] of candidates.entries()) {
     const anchors = answersOf(parsed[index]!.slice(-100)).slice(-8).map(answerAnchor)
-      .filter((anchor): anchor is string => anchor !== null && display.includes(anchor));
+      .filter((found): found is Anchor => found !== null && display.includes(found.anchor));
     if (anchors.length === 0) continue;
     if (!scrutinized.has(candidate.path) || anchors.some((anchor) => !givenElsewhere(index, anchor))) matching.add(candidate.path);
     else open = true;
@@ -925,180 +940,56 @@ function saidText(text: string): string[] {
 /** A markdown link's target, as answerAnchor cuts a text at it. */
 const LINK_TARGET = /\]\([^)\s]*\)/;
 
-/** What a conversation said (saidText, joined), and its texts with links as a screen may show them. */
-interface Said { text: string; linked: readonly LinkedText[] }
+/**
+ * What a conversation said, as saidText reads it, joined, and where each of its records ends in it
+ * (`ends`; for one of which every word counts against the others, loadedConversation).
+ */
+interface Said { text: string; ends: readonly number[] }
+
+/** More records than this to weigh an anchor's words in, or more text, and a conversation may show it (mayShowWords). */
+const WORD_CHECKS = 2048;
+const WORD_BUDGET = 1 << 23;
 
 /**
- * A text with markdown links, as a Codex TUI may show it (rust-v0.163.0 markdown_render.rs and
- * local_links.rs): each link as its label, then nothing (a web link whose target the terminal
- * hides), its destination as written, or a local path's, decoded, relative to the session's folder
- * or not, with a `#L12C3` location as `:12:3`. Whichever it shows is an end of one of the link's
- * `targets`, so no folder need be known (the store may spell it otherwise than the TUI, through a
- * symlink). Letters and digits: `pieces[i]`, an end of a form in `targets[i]`, `pieces[i + 1]`.
+ * Whether another conversation's screen may show an answer made of these words (an anchor's).
+ * Codex renders an answer's markdown, so a screen may show its words in another order (a table's
+ * rows as records), without what it leaves out or decodes (a link's folder, a query, an entity)
+ * and with words joined (emphasis inside a word), but each word it shows of a record is in that
+ * record's text: it may when one of its records holds every word. Past WORD_CHECKS records that
+ * hold each of its longest three words, or WORD_BUDGET letters and digits weighed, it may.
  */
-interface LinkedText { pieces: string[]; targets: string[][] }
-
-/** A reference definition, a line a screen does not show: its label and its destination. */
-const DEFINITION = /^ {0,3}\[((?:[^\]\\\n]|\\.)+)\]:[ \t]*(?:<([^<>\n]*)>|(\S+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/gm;
-
-/** How a reference link names its definition: case and runs of space do not count. */
-const referenceKey = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase();
-
-/**
- * A text's markdown links as a screen may show them (LinkedText): inline ones (a `<destination>`
- * and a title too), full, collapsed and shortcut references to a definition in the text, and
- * autolinks. null for a text with none.
- */
-function linkedText(text: string): LinkedText | null {
-  if (!text.includes("]") && !text.includes("<")) return null;
-  const definitions = new Map<string, string>();
-  const body = text.replace(DEFINITION, (_line, label: string, angled: string | undefined, bare: string | undefined) => {
-    definitions.set(referenceKey(label), angled ?? bare ?? "");
-    return "";
-  });
-  const pieces: string[] = [];
-  const targets: string[][] = [];
-  let start = 0;
-  for (let at = 0; at < body.length; at++) {
-    const link = body[at] === "]" ? linkAfter(body, at, definitions) : body[at] === "<" ? autolink(body, at) : null;
-    if (link === null) continue;
-    pieces.push(normalizeDisplay(body.slice(start, link.label)));
-    targets.push(link.targets);
-    start = link.end;
-    at = link.end - 1;
-  }
-  if (targets.length === 0 && body === text) return null;
-  pieces.push(normalizeDisplay(body.slice(start)));
-  return { pieces, targets };
-}
-
-/** A link whose label a "]" at `at` closes: where its label ends, where it ends, and the forms its target may show in. */
-function linkAfter(body: string, at: number, definitions: ReadonlyMap<string, string>): { label: number; end: number; targets: string[] } | null {
-  if (body[at + 1] === "(") {
-    const inline = inlineDestination(body, at + 2);
-    // as text too (in code, say): its destination and title as written
-    return inline && { label: at, end: inline.end, targets: destinationForms(inline.destination, body.slice(at + 2, inline.end - 1)) };
-  }
-  if (definitions.size === 0) return null;
-  const reference = /\[((?:[^\]\\\n]|\\.)*)\]/y;
-  reference.lastIndex = at + 1;
-  const full = reference.exec(body);
-  const named = full === null || full[1]!.trim() === "" ? undefined : definitions.get(referenceKey(full[1]!));
-  if (named !== undefined) return { label: at, end: at + 1 + full![0].length, targets: destinationForms(named, full![1]!) };
-  // collapsed ("[label][]") or shortcut ("[label]"): the label names it
-  const label = labelBefore(body, at);
-  const destination = label === null ? undefined : definitions.get(referenceKey(label));
-  if (destination === undefined) return null;
-  const collapsed = full !== null && full[1]!.trim() === "";
-  return { label: at, end: collapsed ? at + 1 + full[0].length : at + 1, targets: destinationForms(destination) };
-}
-
-/** The label a "]" at `at` closes, back to its "[", or null. */
-function labelBefore(body: string, at: number): string | null {
-  let depth = 0;
-  for (let index = at - 1; index >= Math.max(0, at - 1000); index--) {
-    if (body[index - 1] === "\\") continue;
-    if (body[index] === "]") depth++;
-    else if (body[index] === "[" && depth-- === 0) return body.slice(index + 1, at);
-  }
-  return null;
-}
-
-/** An inline link's destination, from just inside its "(", and where the link ends (past its ")"), or null. */
-function inlineDestination(body: string, from: number): { destination: string; end: number } | null {
-  const space = /[ \t]*\n?[ \t]*/y;
-  const skip = (index: number) => {
-    space.lastIndex = index;
-    space.exec(body);
-    return space.lastIndex;
-  };
-  let at = skip(from);
-  let destination: string;
-  if (body[at] === "<") {
-    const close = body.indexOf(">", at + 1);
-    if (close < 0 || /[<\n]/.test(body.slice(at + 1, close))) return null;
-    destination = body.slice(at + 1, close);
-    at = close + 1;
-  } else {
-    const begin = at;
-    for (let depth = 0; at < body.length && !/\s/.test(body[at]!); at++) {
-      if (body[at] === "\\") at++;
-      else if (body[at] === "(") depth++;
-      else if (body[at] === ")" && depth-- === 0) break;
+function mayShowWords(words: readonly string[], { text, ends }: Said): boolean {
+  const last = ends.at(-1);
+  if (last === undefined || words.length === 0) return false;
+  // longest first: likeliest missing from a record that does not hold them all
+  const longest = [...new Set(words)].sort((one, other) => other.length - one.length);
+  // looked for at the rarest of the longest three: a record without one of them holds not all
+  let rarest = longest[0]!;
+  let fewest = Infinity;
+  for (const word of longest.slice(0, 3)) {
+    let count = 0;
+    for (let at = text.indexOf(word); at >= 0 && at < last && count <= WORD_CHECKS; at = text.indexOf(word, at + 1)) count++;
+    if (count === 0) return false;
+    if (count < fewest) {
+      fewest = count;
+      rarest = word;
     }
-    destination = body.slice(begin, at);
   }
-  const titled = skip(at);
-  const close = titled > at ? ({ '"': '"', "'": "'", "(": ")" } as Record<string, string>)[body[titled]!] : undefined;
-  if (close !== undefined) {
-    const end = body.indexOf(close, titled + 1);
-    if (end < 0) return null;
-    at = skip(end + 1);
-  } else at = titled;
-  return body[at] === ")" ? { destination, end: at + 1 } : null;
-}
-
-/** An autolink at `at` ("<https://...>", "<name@host>"): its text is its label, then its destination may show. */
-function autolink(body: string, at: number): { label: number; end: number; targets: string[] } | null {
-  const uri = /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>/y;
-  uri.lastIndex = at;
-  const found = uri.exec(body);
-  if (found !== null) return { label: uri.lastIndex, end: uri.lastIndex, targets: destinationForms(found[1]!) };
-  const mail = /<([^\s<>@\\]+@[A-Za-z0-9.-]+)>/y;
-  mail.lastIndex = at;
-  const address = mail.exec(body);
-  return address && { label: mail.lastIndex, end: mail.lastIndex, targets: [normalizeDisplay(`mailto:${address[1]}`)] };
-}
-
-/**
- * The forms a link's destination may show in, as normalizeDisplay reads them: as written, decoded,
- * and with a `#L12C3` location as Codex shows it, `:12:3`; and `literal`, what the link holds after
- * its label as text (where it is no link). Codex shows a local path's end (relative to the
- * session's folder), so each stands for any of its ends (mayShow).
- */
-function destinationForms(destination: string, literal = ""): string[] {
-  const decoded = (text: string) => { try { return decodeURIComponent(text); } catch { return text; } };
-  const forms = new Set([destination, decoded(destination)]);
-  if (literal !== "") forms.add(literal);
-  const location = /#(L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?)$/.exec(destination);
-  if (location !== null) forms.add(decoded(destination.slice(0, location.index)) + location[1]!.replace(/[LC]/g, ":"));
-  return [...forms].map(normalizeDisplay);
-}
-
-/**
- * Whether a screen may show `anchor` in a text with links (LinkedText): its pieces as they are, and
- * each link's target as any end of one of its forms, none of it too.
- */
-function mayShow(anchor: string, { pieces, targets }: LinkedText): boolean {
-  // the ends of the anchor a choice of targets has shown where the next piece begins
-  let shown = new Set<number>([0]);
-  const ends = (text: string, from: number, into: Set<number>) => {
-    // each run of the anchor from `from` that is an end of `text`
-    for (let length = 1; length < anchor.length - from && length <= text.length; length++) {
-      if (anchor[from + length - 1] === text[text.length - 1] && text.endsWith(anchor.slice(from, from + length))) into.add(from + length);
+  if (fewest > WORD_CHECKS) return true;
+  let weighed = 0;
+  for (let at = text.indexOf(rarest); at >= 0 && at < last;) {
+    // the record it is in: the first to end past it
+    let record = 0;
+    for (let high = ends.length - 1; record < high;) {
+      const middle = (record + high) >> 1;
+      if (ends[middle]! > at) high = middle;
+      else record = middle + 1;
     }
-  };
-  for (const [index, piece] of pieces.entries()) {
-    if (piece.includes(anchor)) return true;
-    const after = new Set<number>();
-    for (const from of shown) {
-      const rest = anchor.slice(from);
-      if (from > 0 && piece.startsWith(rest)) return true;
-      if (rest.startsWith(piece)) after.add(from + piece.length);
-    }
-    // the anchor begins inside this piece
-    ends(piece, 0, after);
-    if (index === targets.length) break;
-    shown = new Set([0]);
-    for (const form of targets[index]!) {
-      // the anchor begins inside this target (0), or goes on into it
-      for (const from of [0, ...after]) {
-        // and ends inside it: any part of it starts one of its ends
-        if (form.includes(anchor.slice(from))) return true;
-        shown.add(from);
-        ends(form, from, shown);
-      }
-    }
+    const said = text.slice(record > 0 ? ends[record - 1]! : 0, ends[record]!);
+    weighed += said.length;
+    if (weighed > WORD_BUDGET) return true;
+    if (longest.every((word) => said.includes(word))) return true;
+    at = text.indexOf(rarest, ends[record]!);
   }
   return false;
 }
@@ -1585,15 +1476,13 @@ const SAID_RECORDS = ['"type":"message"', '"type":"user_message"', '"type":"agen
   .map((marker) => Buffer.from(marker));
 /**
  * What a rollout file said up to `offset` (whole lines), joined in `text`, each record with where its
- * line ends in the file and where it ends in `text`; what it said with links, as a screen may show
- * them (linkedText); and its turns as far as read (turnAfter).
+ * line ends in the file and where it ends in `text`; and its turns as far as read (turnAfter).
  */
 interface SaidScan {
   ino: number;
   offset: number;
   said: { end: number; at: number }[];
   text: string;
-  links: { end: number; text: LinkedText }[];
   /** a turn begun and not ended */
   running: boolean;
   /** when its last turn interrupted or failed ended, 0 for none */
@@ -1631,7 +1520,19 @@ const ITEM_OUTPUTS = new Set(["aggregated_output", "formatted_output", "output",
  * reasoning; never a tool's output.
  */
 function lineForms(value: unknown): string[] {
-  return lineTexts(value).flatMap((text) => [...new Set([text, withoutMemoryCitations(text), questionReply(text) ?? ""])]);
+  return lineTexts(value).flatMap((text) => [...new Set([text, withoutMemoryCitations(text), questionReply(text) ?? "", decoded(text)])]);
+}
+
+/**
+ * A text with the escapes a screen shows as letters or digits decoded: numeric HTML entities
+ * ("&#101;") and percent escapes ("%65"). The named entities markdown text holds (`&amp;`) show as
+ * punctuation, which normalizeDisplay leaves out.
+ */
+function decoded(text: string): string {
+  return text.replace(/&#(\d{1,7});|&#[xX]([0-9A-Fa-f]{1,6});/g, (entity, decimal: string | undefined, hex: string | undefined) => {
+    const code = decimal === undefined ? Number.parseInt(hex!, 16) : Number(decimal);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  }).replace(/(?:%[0-9A-Fa-f]{2})+/g, (escaped) => { try { return decodeURIComponent(escaped); } catch { return escaped; } });
 }
 
 /** The texts of one rollout line, before lineForms adds the forms the chat shows them in. */
@@ -1703,7 +1604,7 @@ async function scanSaid(path: string): Promise<SaidScan> {
 async function readSaid(path: string): Promise<SaidScan> {
   const { ino, size } = await stat(path);
   let scan = saidScans.get(path);
-  if (scan === undefined || scan.ino !== ino || size < scan.offset) scan = { ino, offset: 0, said: [], text: "", links: [], running: false, abortedAt: 0 };
+  if (scan === undefined || scan.ino !== ino || size < scan.offset) scan = { ino, offset: 0, said: [], text: "", running: false, abortedAt: 0 };
   saidScans.delete(path);
   saidScans.set(path, scan);
   if (saidScans.size > 64) saidScans.delete(saidScans.keys().next().value!);
@@ -1726,14 +1627,14 @@ async function readSaid(path: string): Promise<SaidScan> {
         if (SAID_RECORDS.some((marker) => line.includes(marker))) {
           const entry = parseJson(line.toString("utf8"));
           const forms = lineForms(entry);
-          const text = forms.flatMap(saidText).join("");
+          // cut at link targets, and whole too: a screen may show a target's words (mayShowWords)
+          const text = forms.flatMap((form) => {
+            const pieces = saidText(form);
+            return pieces.length > 1 ? [...pieces, normalizeDisplay(form)] : pieces;
+          }).join("");
           if (text !== "") {
             scan.text += text;
             scan.said.push({ end, at: scan.text.length });
-          }
-          for (const form of forms) {
-            const linked = linkedText(form);
-            if (linked !== null) scan.links.push({ end, text: linked });
           }
           turnAfter(scan, entry);
         }
@@ -1750,15 +1651,16 @@ async function readSaid(path: string): Promise<SaidScan> {
 
 /**
  * Every message a conversation ever had, user's and agent's alike, in the files its history is in
- * (`segments`, as loadedRollouts found them whole), each as saidText reads it, joined, and those with
- * links as a screen may show them (linkedText): what matchCodexTranscript weighs another candidate's
- * answers against, beyond the last 1 MiB it reads of each. Its own file is read as far as it has
+ * (`segments`, as loadedRollouts found them whole), each as readSaid keeps it, joined, with where
+ * each ends: what matchCodexTranscript weighs another candidate's answers against (mayShowWords
+ * too), beyond the last 1 MiB it reads of each. Its own file is read as far as it has
  * been written, and its turns (turnAfter) as far as that too. A file gone meanwhile throws rather
  * than leave out what it said.
  */
-async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: string; linked: LinkedText[]; running: boolean; abortedAt: number }> {
+async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: string; ends: number[]; running: boolean; abortedAt: number }> {
   const texts: string[] = [];
-  const linked: LinkedText[] = [];
+  const ends: number[] = [];
+  let length = 0;
   let turns = { running: false, abortedAt: 0 };
   for (const [index, segment] of segments.entries()) {
     const scan = await scanSaid(segment.path);
@@ -1766,11 +1668,13 @@ async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: st
     // an earlier rollout up to where this conversation continued it
     let count = scan.said.length;
     if (!own) while (count > 0 && scan.said[count - 1]!.end > segment.end) count--;
-    texts.push(count === 0 ? "" : scan.text.slice(0, scan.said[count - 1]!.at));
-    for (const link of scan.links) if (own || link.end <= segment.end) linked.push(link.text);
+    const text = count === 0 ? "" : scan.text.slice(0, scan.said[count - 1]!.at);
+    for (let record = 0; record < count; record++) ends.push(length + scan.said[record]!.at);
+    texts.push(text);
+    length += text.length;
     if (own) turns = { running: scan.running, abortedAt: scan.abortedAt };
   }
-  return { said: texts.join(""), linked, ...turns };
+  return { said: texts.join(""), ends, ...turns };
 }
 
 /**
@@ -1839,7 +1743,7 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
     for (const { path, text } of candidates) {
       const thread = loaded.get(path)!;
       const ever = await everSaid(thread.segments);
-      said.set(path, { text: ever.said + tailSaid(text), linked: ever.linked });
+      said.set(path, { text: ever.said + tailSaid(text), ends: ever.ends });
       // a turn running, or one interrupted or failed since it was loaded, may show text it has not written
       if (!thread.exec && (ever.running || ever.abortedAt >= thread.loadedAt)) unwritten.add(path);
     }
