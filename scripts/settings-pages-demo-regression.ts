@@ -745,6 +745,31 @@ try {
         await phone.close();
       }
 
+      if (process.env.UI_EVIDENCE_DIR) {
+        for (const width of [1280, 390]) {
+          const context = await browser.newContext({
+            viewport: { width, height: width === 390 ? 844 : 800 },
+            isMobile: width === 390, hasTouch: width === 390, locale: "en-US",
+          });
+          try {
+            await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+            const page = await context.newPage();
+            await page.goto(url);
+            await page.locator(".conn-live").waitFor({ state: "attached" });
+            await openSettings(page);
+            await openSettingsPage(page, "Appearance");
+            for (const mode of ["light", "dark"]) {
+              await page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: mode === "dark" ? "Dark" : "Light", exact: true }).click();
+              await page.waitForFunction((mode) => document.documentElement.dataset.theme === mode, mode);
+              await checkSelectArrows(page);
+              await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `select-arrows-${width}-${mode}.png`), animations: "disabled" });
+            }
+          } finally {
+            await context.close();
+          }
+        }
+      }
+
       const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
       try {
         await desktop.addInitScript((settings) => {
