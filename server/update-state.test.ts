@@ -75,6 +75,15 @@ describe("the state dir from before the rename", () => {
     expect(readFileSync(join(next, "bridges", "remote.json.state", "devices.json"), "utf8")).toBe("{\"remote\":1}");
   });
 
+  it("is left alone by a process told to use a dir apart from the default ones", () => {
+    const config = configHome();
+    withDevices(join(config, "ovis"));
+    const legacy = withRegistry(join(config, "herdr-web-ui"));
+    moveLegacyStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: join(config, "elsewhere") });
+    expect(lstatSync(legacy).isDirectory()).toBe(true);
+    expect(readFileSync(join(legacy, "bridges", "local.json"), "utf8")).toBe("{\"port\":7317}");
+  });
+
   it("moves nothing where the link cannot be made", () => {
     const config = configHome();
     const next = withDevices(join(config, "ovis"));

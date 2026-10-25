@@ -145,6 +145,11 @@ export function linkLegacyRegistry(legacy: string, next: string): void {
   }
 }
 
+const sameDir = (left: string, right: string): boolean => {
+  if (resolve(left) === resolve(right)) return true;
+  try { return realpathSync(left) === realpathSync(right); } catch { return false; }
+};
+
 /** Whether a bridge registered in `registry` may still run: a descriptor names a live process other than this one. */
 function liveBridge(registry: string): boolean {
   let entries: string[];
@@ -196,9 +201,11 @@ let moved = false;
 export function moveLegacyStateDir(env: Record<string, string | undefined> = process.env, supervisor?: SupervisorRelease): void {
   if (moved) return;
   const { legacy, next } = stateDirNames(env);
-  // whichever dir this process was told to use: an older launcher finds the state through the old name
-  linkLegacyRegistry(legacy, next);
-  if (env["OVIS_STATE_DIR"]) return;
+  // a process told to use one of the two default dirs links them too (an older launcher finds the
+  // state through the old name); one told to use a dir apart from them leaves them alone
+  const told = env["OVIS_STATE_DIR"];
+  if (!told || [legacy, next].some((dir) => sameDir(told, dir))) linkLegacyRegistry(legacy, next);
+  if (told) return;
   if (supervisor && defaultStateDir(env, supervisor) !== defaultStateDir(env)) return;
   moved = true;
   adoptLegacyDir(legacy, next);
