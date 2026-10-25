@@ -28,11 +28,11 @@
  * (a crash, a power loss) merges the same way at the next start.
  */
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
-import { writePrivateState } from "./private-state.ts";
+import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { PUSH_EXTRA_KEYS } from "./push.ts";
 import { readStateDocument, writeStateDocument } from "./state-document.ts";
 import { stateDirNames } from "./update-state.ts";
@@ -93,11 +93,13 @@ interface MergeRecord {
   gated?: boolean;
   /**
    * Written before a merge publishes its registries, and gone from the record that follows them: a
-   * crash in between leaves it. For each dir, what its registry was before (a hash) and the base it
-   * was merged against: a dir whose registry is still as it was never got the merge, and keeps that
-   * base; any other got it, and its base is the merged ids, so a device revoked there since stays revoked.
+   * crash in between leaves it. The new bytes of each registry are prepared first, in a file of their
+   * own (`temp`), and publishing is renaming that file into place. So a dir got the merge when it held
+   * it already (`same`) or its prepared file is gone: its base is then the merged ids, and a device
+   * revoked there since stays revoked, whatever bytes that left. A dir whose prepared file is still
+   * there, or that was never written, did not get it, and keeps the base it was merged against.
    */
-  pending?: { ids: string[]; sides: Record<string, { before: string; base: string[] | null }> };
+  pending?: { ids: string[]; sides: Record<string, { same: boolean; temp: string | null; base: string[] | null }> };
 }
 
 const text = (value: unknown): string => JSON.stringify(value);
@@ -160,7 +162,8 @@ const isRecord = (value: unknown): value is MergeRecord =>
   && (value["gated"] === undefined || typeof value["gated"] === "boolean")
   && (value["pending"] === undefined || isObject(value["pending"]) && isStrings(value["pending"]["ids"])
     && isObject(value["pending"]["sides"]) && Object.values(value["pending"]["sides"]).every((side) =>
-      isObject(side) && typeof side["before"] === "string" && (side["base"] === null || isStrings(side["base"]))));
+      isObject(side) && typeof side["same"] === "boolean" && (side["temp"] === null || typeof side["temp"] === "string")
+      && (side["base"] === null || isStrings(side["base"]))));
 
 /** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
 function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
@@ -231,12 +234,6 @@ function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: 
   return { doc: { revision, settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: muted ?? [] }, written };
 }
 
-/** A hash of the registry file as it is on disk, or what keeps it from being read. */
-function registryHash(path: string): string {
-  try { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable"; }
-}
-
 type Intent = (ids: string[], sides: NonNullable<MergeRecord["pending"]>["sides"], gated: boolean) => string | null;
 
 /** Whether a release before this one reading `read` keeps its gate closed. */
@@ -251,7 +248,7 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     if (base === null) return null;
     const side = base.pending?.sides[realpath(dir)];
     if (base.pending === undefined || side === undefined) return new Set(base.devices);
-    if (registryHash(path) !== side.before) return new Set(base.pending.ids);
+    if (side.same || side.temp !== null && !existsSync(side.temp)) return new Set(base.pending.ids);
     return side.base === null ? null : new Set(side.base);
   };
   const bases = { own: baseOf(active, ownPath), other: baseOf(sibling, otherPath) };
@@ -279,28 +276,43 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const complete = mine !== null && !ownIncomplete || theirs !== null && !otherIncomplete;
   const onDisk = (read: typeof own) => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices, ...(read.placeholder ? { placeholder: true } : {}) } : null;
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
-  if (text(onDisk(own)) !== text(merged) || text(onDisk(other)) !== text(merged)) {
-    // before either registry changes: a crash between the two, or before the record, is then told apart from no merge
-    const side = (base: ReadonlySet<string> | null, path: string) => ({ before: registryHash(path), base: base === null ? null : [...base] });
-    const failed = intend(merged.devices.map((device) => device.id), { [realpath(active)]: side(bases.own, ownPath), [realpath(sibling)]: side(bases.other, otherPath) }, merged.gate_closed_at !== null);
-    if (failed !== null) return { ids: null, changed: 0, blocked: failed };
+  const needOwn = text(onDisk(own)) !== text(merged);
+  const needOther = text(onDisk(other)) !== text(merged);
+  const ownFailed = (error: unknown) => ({ ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` });
+  // the new bytes first, each in a file of its own: publishing one renames it into place (MergeRecord.pending)
+  let ownTemp: string | null = null;
+  let otherTemp: string | null = null;
+  let otherUnprepared: unknown = null;
+  if (needOwn) {
+    try { ownTemp = preparePrivateState(ownPath, merged); } catch (error) { return ownFailed(error); }
   }
-  if (text(onDisk(own)) !== text(merged)) {
+  if (needOther) {
+    try { otherTemp = preparePrivateState(otherPath, merged); } catch (error) { otherUnprepared = error; }
+  }
+  if (needOwn || needOther) {
+    const side = (need: boolean, temp: string | null, base: ReadonlySet<string> | null) => ({ same: !need, temp, base: base === null ? null : [...base] });
+    const failed = intend(merged.devices.map((device) => device.id), { [realpath(active)]: side(needOwn, ownTemp, bases.own), [realpath(sibling)]: side(needOther, otherTemp, bases.other) }, merged.gate_closed_at !== null);
+    if (failed !== null) {
+      for (const temp of [ownTemp, otherTemp]) if (temp !== null) rmSync(temp, { force: true });
+      return { ids: null, changed: 0, blocked: failed };
+    }
+  }
+  if (ownTemp !== null) {
+    // a failed publish leaves the prepared file: the record then says this dir did not get the merge
     try {
       backUp(active, "devices.json", stamp);
-      writePrivateState(ownPath, merged);
-    } catch (error) {
-      return { ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
-    }
+      publishPrivateState(ownTemp, ownPath);
+    } catch (error) { return ownFailed(error); }
   }
   try { markIncomplete(active, !complete); }
   catch (error) {
     return { ids: null, changed: 0, blocked: `Cannot mark whether ${ownPath} is complete (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
   }
-  if (text(onDisk(other)) !== text(merged)) {
+  if (needOther) {
     try {
+      if (otherTemp === null) throw otherUnprepared;
       backUp(sibling, "devices.json", stamp);
-      writePrivateState(otherPath, merged);
+      publishPrivateState(otherTemp, otherPath);
     } catch (error) {
       // the dir in use is complete; a release before this one reading the other dir would miss what changed here
       const reason = `Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`;
@@ -553,14 +565,23 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     push: { ...base?.push, ...push?.record },
   };
   let blocked = devices.blocked;
+  let recorded = false;
   for (const dir of [active, sibling]) {
-    try { writePrivateState(join(dir, RECORD), record); }
-    catch (error) {
+    try {
+      writePrivateState(join(dir, RECORD), record);
+      recorded = true;
+    } catch (error) {
       const reason = `Cannot write ${join(dir, RECORD)}: ${error instanceof Error ? error.message : String(error)}`;
       console.error(reason);
       // without it the next merge compares with an older one, and would bring back a device revoked
       // until then: this run changes no device, so it cannot revoke one
       if (dir === active) blocked ??= `${reason}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
+    }
+  }
+  // once the newest record names no pending publication, the prepared files left by an unfinished one go
+  if (recorded && record.pending === undefined) {
+    for (const pending of [written?.pending, base?.pending]) {
+      for (const side of Object.values(pending?.sides ?? {})) if (side.temp !== null) rmSync(side.temp, { force: true });
     }
   }
   return blocked;

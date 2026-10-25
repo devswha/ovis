@@ -6,7 +6,7 @@ import { join } from "node:path";
 import webpush from "web-push";
 import { DeviceStore, type StoredDevice } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
-import { privateStateFs } from "./private-state.ts";
+import { privateStateFs, writePrivateState } from "./private-state.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { createPushService, PUSH_EXTRA_KEYS } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
@@ -35,6 +35,23 @@ const device = (id: string, created = "2026-10-25T05:20:00.000Z"): StoredDevice 
 const writeDevices = (dir: string, devices: StoredDevice[], gate: string | null = devices[0]?.created_at ?? null) =>
   writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: gate, devices }), { mode: 0o600 });
 const registry = (dir: string) => JSON.parse(readFileSync(join(dir, "devices.json"), "utf8")) as { gate_closed_at: string | null; devices: StoredDevice[] };
+/** Runs a merge in a process that ends (77), as a crash or a power loss would, right before or after a rename onto `at`. */
+async function crashAt(root: string, active: string, sibling: string, at: string, when: "before" | "after"): Promise<number> {
+  const script = join(root, `crash-${when}.ts`);
+  writeFileSync(script, `
+    import { privateStateFs } from ${JSON.stringify(join(import.meta.dir, "private-state.ts"))};
+    import { mergeSiblingState } from ${JSON.stringify(join(import.meta.dir, "state-merge.ts"))};
+    const rename = privateStateFs.renameSync;
+    privateStateFs.renameSync = ((from: string, to: string) => {
+      if (to === ${JSON.stringify(at)} && ${JSON.stringify(when)} === "before") process.exit(77);
+      rename(from, to);
+      if (to === ${JSON.stringify(at)}) process.exit(77);
+    }) as typeof rename;
+    mergeSiblingState(${JSON.stringify(active)}, ${JSON.stringify(sibling)});
+  `);
+  const child = Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
+  return child.exited;
+}
 const ids = (dir: string) => registry(dir).devices.map((held) => held.id.replace(/^0+/, "")).sort();
 const at = (minute: number) => new Date(Date.UTC(2026, 9, 25, 6, minute));
 const writeJson = (path: string, value: unknown, mtime?: Date) => {
@@ -271,6 +288,35 @@ describe("paired devices of the install's other state dir", () => {
     mergeSiblingState(active, sibling, at(1));
     expect(ids(active)).toEqual(["a", "b"]);
     expect(ids(sibling)).toEqual(["a", "b"]);
+  });
+
+  it("stay revoked when the merge crashed after publishing, and the revocation left the registry's first bytes", async () => {
+    const { root, active, sibling } = install();
+    // written as the store writes them, so revoking the device the merge brought gives back the same bytes
+    writePrivateState(join(active, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("a")] });
+    writePrivateState(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("b")] });
+    const original = readFileSync(join(active, "devices.json"), "utf8");
+    expect(await crashAt(root, active, sibling, join(sibling, "devices.json"), "after")).toBe(77);
+    expect(new DeviceStore(active).revoke(device("b").id)).toBe(true);
+    expect(readFileSync(join(active, "devices.json"), "utf8")).toBe(original);
+    mergeSiblingState(active, sibling, at(1));
+    expect(ids(active)).toEqual(["a"]);
+    expect(new DeviceStore(active).match("token-b")).toBeNull();
+  });
+
+  it("keep a device paired when the merge crashed before publishing, and an older release then saved a sighting", async () => {
+    const { root, active, sibling } = install();
+    writePrivateState(join(active, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("a")] });
+    writePrivateState(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("b")] });
+    expect(await crashAt(root, active, sibling, join(active, "devices.json"), "before")).toBe(77);
+    // its last-seen save changes the bytes, though this dir never got the merge
+    expect(new DeviceStore(active).match("token-a")?.id).toBe(device("a").id);
+    mergeSiblingState(active, sibling, at(1));
+    expect(ids(active)).toEqual(["a", "b"]);
+    expect(ids(sibling)).toEqual(["a", "b"]);
+    // the prepared files the crash left are gone once the merge is recorded
+    expect(readdirSync(active).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(readdirSync(sibling).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   it("stay revoked when the clock went back between merges", () => {
