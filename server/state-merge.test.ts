@@ -58,6 +58,16 @@ describe("paired devices of the install's other state dir", () => {
     expect(readFileSync(join(active, "state-merge-backups", backup!, "devices.json"), "utf8")).toBe(before);
   });
 
+  it("keep the narrower role of a device whose credential differs between the dirs", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [{ ...device("a"), last_seen_at: "2026-10-25T05:30:00.000Z" }]);
+    writeDevices(sibling, [{ ...device("a", "2026-10-25T05:10:00.000Z"), role: "watch", token_hash: hash("another"), last_seen_at: "2026-10-25T05:40:00.000Z" }]);
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(0)); } finally { said.mockRestore(); }
+    const [held] = registry(active).devices;
+    expect(held).toMatchObject({ role: "watch", token_hash: hash("token-a"), created_at: "2026-10-25T05:10:00.000Z", last_seen_at: "2026-10-25T05:40:00.000Z" });
+  });
+
   it("keep the gate closed when the other dir holds only the evidence that it was", () => {
     const { active, sibling } = install();
     writeDevices(sibling, [], "2026-10-25T05:19:00.000Z");

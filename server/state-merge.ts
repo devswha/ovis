@@ -114,11 +114,12 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
     // revoked through the other dir since the last merge
     if (other !== null && !incomplete.other && base?.has(device.id) && !theirIds.has(device.id)) continue;
     const twin = theirs.find((candidate) => candidate.id === device.id);
-    if (!twin || twin.token_hash !== device.token_hash) {
-      if (twin) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
+    if (!twin) {
       devices.push(device);
       continue;
     }
+    // the credential is chosen apart from the rest: whichever is kept, the role is never widened
+    if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
     devices.push({
       ...device,
       role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
