@@ -88,6 +88,21 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("r1", "from Ovis", anchor)])).toEqual({ consumed: ["r1"], changed: [], retry: false });
   });
 
+  it("does not reuse a consumed transcript entry across reconciliation calls", () => {
+    const path = join(dir(), "reconcile.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const consumed = new Set<string>();
+    appendFileSync(path, entry("u1", "a0", "user", "same"));
+    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor), candidate("r2", "same", anchor)], consumed))
+      .toEqual({ consumed: ["r1"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [candidate("r2", "same", anchor)], consumed))
+      .toEqual({ consumed: [], changed: [], retry: false });
+    appendFileSync(path, entry("u2", "u1", "user", "same"));
+    expect(matchPiDeliveries(path, [candidate("r2", "same", anchor)], consumed))
+      .toEqual({ consumed: ["r2"], changed: [], retry: false });
+  });
+
   it("does not cross ordered Ovis receipts when a later text appears first", () => {
     const path = join(dir(), "session.jsonl");
     writeFileSync(path, header() + entry("a0", null, "assistant", "working"));

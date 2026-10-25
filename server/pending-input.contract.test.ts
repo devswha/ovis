@@ -316,24 +316,45 @@ describe("Ovis-origin Pi transcript receipts", () => {
     mismatch.send({ type: "ping", id: 9912 });
     await mismatch.wait((frame) => frame.type === "pong" && frame.id === 9912);
     f.socket.send({ type: "submit", id: 916, pane_id: f.pane, text: "while unavailable", payload: "while unavailable", delivery: "immediate" });
-    expect(await f.socket.result(916)).toMatchObject({ ok: false, code: "pending_limit" });
+    expect(await f.socket.result(916)).toMatchObject({ ok: true });
     f.socket.send({ type: "pending-action", id: 917, pane_id: f.pane, pending_id: ownerReceipt.id, action: "discard" });
     expect((await f.socket.action(917)).ok).toBe(true);
     f.socket.send({ type: "submit", id: 918, pane_id: f.pane, text: "after discard", payload: "after discard", delivery: "immediate" });
-    expect((await f.socket.result(918)).ok).toBe(true);
+    expect(await f.socket.result(918)).toMatchObject({ ok: false, code: "pending_limit" });
   }, 20_000);
 
-  it("counts confirmation-unavailable receipts until the owner discards them", async () => {
+  it("keeps the second identical send pending after only one transcript append", async () => {
+    const transcript = piFile("pi-duplicate-reconcile");
+    const f = await setup("pi-duplicate-reconcile", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    for (const id of [923, 924]) {
+      f.socket.send({ type: "submit", id, pane_id: f.pane, text: "same", payload: "same", delivery: "immediate" });
+      expect((await f.socket.result(id)).ok).toBe(true);
+    }
+    const sent = await f.socket.event((frame) => frame.messages.some((item) => item.request_id === 924));
+    const first = sent.messages.find((item) => item.request_id === 923)!;
+    const second = sent.messages.find((item) => item.request_id === 924)!;
+    const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === first.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u1", "a0", "user", "same"));
+    await consumed;
+    // Attaching schedules another reconciliation before the serialized action below.
+    await f.another(true, true);
+    f.socket.send({ type: "pending-action", id: 925, pane_id: f.pane, pending_id: second.id, action: "steer" });
+    expect(await f.socket.action(925)).toMatchObject({ ok: false, code: "pending_sent" });
+    const secondConsumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === second.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u2", "u1", "user", "same"));
+    await secondConsumed;
+  }, 20_000);
+
+  it("releases capacity for confirmation-unavailable receipts", async () => {
     const transcript = join(root, `not-a-production-session-${crypto.randomUUID()}.jsonl`);
     const f = await setup("pi-unconfirmed-capacity", "pi", "› Message\n", { piReceiptLimit: 1 }, false, transcript);
     f.socket.send({ type: "submit", id: 919, pane_id: f.pane, text: "unconfirmed", payload: "unconfirmed", delivery: "immediate" });
     expect((await f.socket.result(919)).ok).toBe(true);
     const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.error?.code === "transcript_unconfirmed"));
     const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "transcript_unconfirmed");
-    const before = f.bytes();
     f.socket.send({ type: "submit", id: 920, pane_id: f.pane, text: "over unconfirmed", payload: "over unconfirmed", delivery: "immediate" });
-    expect(await f.socket.result(920)).toMatchObject({ ok: false, code: "pending_limit" });
-    expect(f.bytes()).toBe(before);
+    expect(await f.socket.result(920)).toMatchObject({ ok: true });
     f.socket.send({ type: "pending-action", id: 921, pane_id: f.pane, pending_id: receipt.id, action: "discard" });
     expect((await f.socket.action(921)).ok).toBe(true);
     f.socket.send({ type: "submit", id: 922, pane_id: f.pane, text: "after unconfirmed discard", payload: "after unconfirmed discard", delivery: "immediate" });
@@ -367,16 +388,20 @@ describe("Ovis-origin Pi transcript receipts", () => {
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
   }, 20_000);
 
-  it("keeps a successful send successful when its text cannot be stored as a receipt", async () => {
+  it("tracks a maximum-length message with the space closing its file mention", async () => {
     const transcript = piFile("pi-best-effort");
     const f = await setup("pi-best-effort", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
-    // Main rejects terminal controls before delivery. This valid, maximum-length message
-    // instead exceeds the receipt cap only when closeMention appends its Pi-facing space.
+    // The closing space is Pi-facing framing, outside the composer's message limit.
     const text = `${"x".repeat(19_994)} @file`;
     f.socket.send({ type: "submit", id: 914, pane_id: f.pane, text, payload: text, delivery: "immediate" });
     expect(await f.socket.result(914)).toMatchObject({ ok: true });
-    expect(f.socket.seen.some((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 914))).toBe(false);
+    const sent = await f.socket.event((frame) => frame.messages.some((item) => item.request_id === 914));
+    const receipt = sent.messages.find((item) => item.request_id === 914)!;
+    expect(receipt.text).toBe(`${text} `);
+    const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === receipt.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u1", "a0", "user", `${text} `));
+    await consumed;
   }, 20_000);
 
   it("matches the exact Pi-facing text after closing a trailing file mention", async () => {

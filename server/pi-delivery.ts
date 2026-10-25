@@ -173,11 +173,13 @@ export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing
  * later Ovis receipt may not cross an earlier unmatched one. Content is only a bounded scoped
  * correlator: Pi does not expose a submission id in its TUI or transcript.
  */
-export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[]): { consumed: string[]; changed: string[]; retry: boolean } {
+export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; retry: boolean } {
   if (candidates.length === 0) return { consumed: [], changed: [], retry: false };
   const state = snapshot(path).state;
   if (state === null) return { consumed: [], changed: [], retry: true };
   const consumed: string[] = [], changed: string[] = [];
+  const matchedEntries: string[] = [];
+  const entryKey = (entry: BranchEntry): string => JSON.stringify([path, state.file, state.session, entry.id]);
   let afterMatched = -1;
   for (const candidate of candidates) {
     const { anchor } = candidate;
@@ -198,10 +200,12 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       continue;
     }
     const from = Math.max(baseline + 1, afterMatched + 1);
-    const match = state.entries.findIndex((entry, index) => index >= from && entry.start >= anchor.size && entry.role === "user" && entry.text === candidate.text);
+    const match = state.entries.findIndex((entry, index) => index >= from && entry.start >= anchor.size && entry.role === "user" && entry.text === candidate.text && !consumedEntries.has(entryKey(entry)));
     if (match < 0) break;
     consumed.push(candidate.id);
+    matchedEntries.push(entryKey(state.entries[match]!));
     afterMatched = match;
   }
+  for (const key of matchedEntries) consumedEntries.add(key);
   return { consumed, changed, retry: false };
 }

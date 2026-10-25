@@ -125,6 +125,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   /** Ovis-origin text whose Enter reached Pi but whose durable user record has not appeared yet. */
   const piTyped = new Map<string, PiTypedReceipt[]>();
+  /** Shared by every owner until the pane has no receipt that could reuse an earlier append. */
+  const piConsumed = new Map<string, Set<string>>();
   const piCapacity = new PiReceiptCapacity<Client>(options.piReceiptLimit ?? 256);
   const reservePiReceipt = (owner: Client, identity: PendingIdentity): PiReceiptReservation<Client> | null => {
     if (identity.agent !== "pi") return null;
@@ -134,7 +136,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   };
   const piReceiptText = (identity: PendingIdentity, text: string): string | undefined => {
     if (identity.agent !== "pi") return undefined;
-    try { return pendingText(closeMention(modelSwitchText(identity.agent, text))); }
+    try { return closeMention(pendingText(modelSwitchText(identity.agent, text))); }
     catch { return undefined; }
   };
   const piMessages = (paneId: string, owner: Client): PendingMessage[] => (piTyped.get(paneId) ?? [])
@@ -162,7 +164,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   };
   const recordPiTyped = (owner: Client, paneId: string, requestId: number, text: string, identity: PendingIdentity, anchor: PiDeliveryAnchor | null | undefined,
     reservation?: PiReceiptReservation<Client> | null): void => {
-    if (anchor === undefined || !clients.has(owner) || connectionOf(owner).closing || !piCapacity.retain(owner, reservation)) return;
+    if (anchor === undefined || !clients.has(owner) || connectionOf(owner).closing) return;
+    if (anchor === null) piCapacity.release(reservation);
+    else if (!piCapacity.retain(owner, reservation)) return;
     const receipt: PiTypedReceipt = {
       owner, identity: { ...identity }, anchor,
       message: { id: `pi:${crypto.randomUUID()}`, request_id: requestId, text, state: "uncertain", created_at: new Date().toISOString(),
@@ -179,10 +183,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     let changed = false;
     for (const item of items) {
       if (item.message.error?.code !== "pi_transcript_pending") continue;
+      piCapacity.remove(item.owner);
       item.message.error = { code: "pi_transcript_target_changed", message: "The Pi terminal or session changed before its transcript append was confirmed" };
       changed = true;
     }
-    if (changed) publishPi(paneId);
+    if (changed) {
+      if (!(piTyped.get(paneId) ?? []).some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
+      publishPi(paneId);
+    }
   };
   async function reconcilePiDeliveries(paneId: string): Promise<void> {
     const items = piTyped.get(paneId);
@@ -204,12 +212,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       failPi(paneId, same.filter((item) => !matching.includes(item)));
       if (matching.length === 0 || "unwritten" in found) return;
       const candidates = matching.map((item) => ({ id: item.message.id, text: item.message.text, anchor: item.anchor }));
-      let result = matchPiDeliveries(path, candidates);
+      const entries = piConsumed.get(paneId) ?? new Set<string>();
+      piConsumed.set(paneId, entries);
+      let result = matchPiDeliveries(path, candidates, entries);
       // fs.watch may report the first chunk of Pi's append. Retry only an explicitly unstable
       // snapshot, briefly and boundedly; absence of a matching user record is never polled.
       for (let attempt = 0; result.retry && attempt < 4; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 25));
-        result = matchPiDeliveries(path, candidates);
+        result = matchPiDeliveries(path, candidates, entries);
       }
       if (result.retry) return;
       failPi(paneId, matching.filter((item) => result.changed.includes(item.message.id)));
@@ -218,6 +228,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       for (const item of matching) if (consumed.has(item.message.id)) piCapacity.remove(item.owner);
       const retained = (piTyped.get(paneId) ?? []).filter((item) => !consumed.has(item.message.id));
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
+      if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
       publishPi(paneId, matching.filter((item) => consumed.has(item.message.id)).map((item) => ({ owner: item.owner, id: item.message.id, outcome: "consumed" as const })));
     }).catch(() => { /* a later transcript invalidation retries without inventing delivery */ });
   }
@@ -226,7 +237,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const item = items?.find((candidate) => candidate.owner === owner && candidate.message.id === id);
     if (!item || item.message.error?.code === "pi_transcript_pending") return false;
     const retained = items!.filter((candidate) => candidate !== item);
-    piCapacity.remove(owner);
     if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
     publishPi(paneId, [{ owner, id, outcome: "discarded" }]);
     return true;
@@ -637,10 +647,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // The browser retains a non-resendable local copy. Without this exact connection there is no
     // authenticated server owner to receive transcript content or a later consumption receipt.
     for (const [paneId, items] of piTyped) {
-      const removed = items.length - items.filter((item) => item.owner !== client).length;
+      const removed = items.filter((item) => item.owner === client && item.message.error?.code === "pi_transcript_pending").length;
       if (removed > 0) piCapacity.remove(client, removed);
       const retained = items.filter((item) => item.owner !== client);
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
+      if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
     }
   }
   /** A connection that attached the pane: it sees the pane's first messages and their receipts, and may be the one to type them. */
