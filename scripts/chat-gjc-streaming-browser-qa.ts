@@ -223,9 +223,13 @@ try {
           // the opened tool's own layout is no longer held once the reader is back at the end: a row
           // that grows afterwards (a whole output, a late image) is followed with no record between
           const jump = page.locator(".chat-virtual-jump");
-          const atEnd = () => page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; });
+          // each wait says which step never reached the end, and how far from it the view stayed
+          const atEnd = async (step: string) => {
+            try { await page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; }, undefined, { timeout: 5000 }); return true; }
+            catch { expect(false, `${name}: ${step} reaches the end (bottom ${(await still(page, {})).bottom})`); return false; }
+          };
           await jump.click();
-          await atEnd();
+          await atEnd("the first Jump");
           await still(page, {});
           // closed while following (its own layout is held), opened again, then back to the end: the
           // earlier hold is not left behind either. Clicked in place, so no scroll moves the reader.
@@ -235,11 +239,46 @@ try {
           await head.evaluate((button: HTMLElement) => button.click());
           expect(await head.getAttribute("aria-expanded") === "true", `${name}: the tool opens again`);
           await jump.click();
-          await atEnd();
+          await atEnd("Jump after reopening");
           await still(page, {});
-          await page.locator(".chat-view [data-chat-row]").last().evaluate((row) => { const grow = document.createElement("div"); grow.style.height = "240px"; row.append(grow); });
+          const grow = () => page.locator(".chat-view [data-chat-row]").last().evaluate((row) => { const block = document.createElement("div"); block.style.height = "240px"; row.append(block); });
+          await grow();
           const end = await still(page, {});
           expect(end.bottom <= 1, `${name}: after Jump to latest, a row that grows with no new record is followed (bottom ${end.bottom})`);
+          // closed while following (the hold is set), then scrolled away and back with Jump: Jump lets
+          // that hold go too
+          await head.evaluate((button: HTMLElement) => button.click());
+          await still(page, {});
+          const box = (await page.locator(".chat-view").boundingBox())!;
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.wheel(0, -400);
+          await still(page, {});
+          expect(await jump.count() === 1, `${name}: scrolled away after closing, the way back is offered`);
+          if (await jump.count() === 1) {
+            await jump.click();
+            await atEnd("Jump after closing and scrolling away");
+            await still(page, {});
+            await grow();
+            const back = await still(page, {});
+            expect(back.bottom <= 1, `${name}: after closing, scrolling away and Jump to latest, a row that grows is followed (bottom ${back.bottom})`);
+            // the same, coming back to the end by hand instead of Jump
+            await head.evaluate((button: HTMLElement) => button.click());
+            await jump.click();
+            await atEnd("Jump after opening again");
+            await still(page, {});
+            await head.evaluate((button: HTMLElement) => button.click());
+            await still(page, {});
+            // over the transcript's upper part: the way-back button that shows once away takes no wheel
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3);
+            await page.mouse.wheel(0, -400);
+            await still(page, {});
+            await page.mouse.wheel(0, 4000);
+            await atEnd("scrolling back by hand");
+            await still(page, {});
+            await grow();
+            const scrolled = await still(page, {});
+            expect(scrolled.bottom <= 1, `${name}: after closing, scrolling away and scrolling back to the end, a row that grows is followed (bottom ${scrolled.bottom})`);
+          }
           if (evidence) await page.screenshot({ path: join(evidence, `gjc-${width}-jump.png`) });
           expect(errors.length === 0, `${name}: page errors ${JSON.stringify(errors)}`);
           report[name] = { end, errors };

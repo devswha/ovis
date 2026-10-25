@@ -1115,6 +1115,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const timeline = useRef<LegendListRef>(null);
   const ChatTimeline = useChatTimeline();
   const stickToBottom = useRef(true);
+  // the timeline's hold on a following reader's own click layout (ChatTimeline manualLayout)
+  const manualLayout = useRef(false);
   // Explicit paging stays away even inside the ordinary near-bottom tolerance.
   const pagingAway = useRef(false);
   // The paging away is the reader opening something (readOpened): it holds in a chat still too short to scroll.
@@ -1549,6 +1551,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       ? before?.state === state && before.key === presentationKey ? before : { state, key: presentationKey }
       : null);
     if (atEnd) {
+      // back at the end, by hand as by Jump: what grows next is followed, no earlier hold kept
+      if (!stickToBottom.current) manualLayout.current = false;
       pagingAway.current = false; stickToBottom.current = true;
       scrollInputAt.current = -Infinity; pointerDragAt.current = -Infinity;
       setAway(false); setNewMessages(false);
@@ -1721,7 +1725,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // A downward automatic scroll may arrive before the next measured layout.
     // Only upward movement can turn an existing follow intent into reading intent.
     if (!stickToBottom.current || scrollingUp || pagingAway.current) {
-      stickToBottom.current = !pagingAway.current && distanceFromBottom <= allowance;
+      const following = !pagingAway.current && distanceFromBottom <= allowance;
+      if (following && !stickToBottom.current) manualLayout.current = false;
+      stickToBottom.current = following;
     }
     setAway(!stickToBottom.current);
     measureEnd();
@@ -1769,6 +1775,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (node === null) return;
     // Away/new-message state clears in measureEnd once the end is really on screen (#1342).
     pagingAway.current = false; stickToBottom.current = true;
+    // back at the end, what grows next is followed: no hold an earlier click set is kept (#1388)
+    manualLayout.current = false;
     // A lens change can unmount us before the deferred list scroll emits its first event.
     rememberPlace(node);
     if (timeline.current) timeline.current.scrollToEnd({ animated: false });
@@ -2045,6 +2053,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       scroller={scroller}
       listRef={timeline}
       following={stickToBottom}
+      manualLayout={manualLayout}
       smoothFollow={smoothFollow}
       memories={rowMemories}
       header={header}
