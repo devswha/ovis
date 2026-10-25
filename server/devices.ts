@@ -65,8 +65,12 @@ export function isDeviceRole(value: unknown): value is DeviceRole {
   return value === "drive" || value === "watch";
 }
 
-/** A devices.json as it is on disk: absent, a valid registry, or one that cannot be read or is not valid. */
-export type DeviceRegistry = { kind: "missing" } | { kind: "ok"; gateClosedAt: string | null; devices: StoredDevice[] } | { kind: "bad" };
+/**
+ * A devices.json as it is on disk: absent, a valid registry, or one that cannot be read or is not valid.
+ * `placeholder`: written only to close the gate where there was no registry (state-merge.ts); it says
+ * nothing about which devices were revoked. The store's next save drops the mark.
+ */
+export type DeviceRegistry = { kind: "missing" } | { kind: "ok"; gateClosedAt: string | null; devices: StoredDevice[]; placeholder: boolean } | { kind: "bad" };
 
 export function readDeviceRegistry(path: string): DeviceRegistry {
   let parsed: unknown;
@@ -81,7 +85,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && typeof d.token_hash === "string" && isDeviceRole(d.role)
       && typeof d.label === "string" && typeof d.created_at === "string"
       && (d.last_seen_at === null || typeof d.last_seen_at === "string"))) return { kind: "bad" };
-  return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[] };
+  return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
 
 export class DeviceStore {

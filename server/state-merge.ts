@@ -163,7 +163,8 @@ function closeGateOnDisk(active: string, stamp: string, now: Date): void {
   if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
   try {
     backUp(active, "devices.json", stamp);
-    writePrivateState(path, { gate_closed_at: now.toISOString(), devices: own.kind === "ok" ? own.devices : [] });
+    // where there was no registry, the mark keeps the next merge from reading its empty list as every device revoked
+    writePrivateState(path, { gate_closed_at: now.toISOString(), devices: own.kind === "ok" ? own.devices : [], ...(own.kind === "missing" ? { placeholder: true } : {}) });
   } catch (error) {
     console.error(`Cannot close the gate in ${path}: a release before this one may start on it ungated: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -190,10 +191,9 @@ function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: 
   if (body === null || muted === undefined) return null;
   const raw = read.kind === "json" ? read.value as { revision?: unknown } : {};
   const revision = Number.isSafeInteger(raw.revision) ? Math.max(0, raw.revision as number) : 0;
+  // settings and pins conflict by this document alone: mutes never do (they merge as a set)
   let written = 0;
-  for (const name of ["preferences.json", "muted-panes.json"]) {
-    try { written = Math.max(written, statSync(join(dir, name)).mtimeMs); } catch { /* absent */ }
-  }
+  try { written = statSync(join(dir, "preferences.json")).mtimeMs; } catch { /* absent */ }
   return { doc: { revision, settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: muted ?? [] }, written };
 }
 
@@ -206,13 +206,15 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   if (unreadable !== null) {
     return { ids: null, changed: 0, blocked: `Cannot read ${unreadable}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore a valid devices.json there or fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
   }
-  const registry = (read: typeof own): Registry | null => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
+  // a placeholder (closeGateOnDisk) counts as no registry, its closed gate as evidence
+  const registry = (read: typeof own): Registry | null => read.kind === "ok" && !read.placeholder ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
   if (mine === null && theirs === null) return { blocked: null, ids: [], changed: 0 };
   const merged = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null);
+  if (own.kind === "ok" && own.placeholder) merged.gate_closed_at = earliest([merged.gate_closed_at, own.gateClosedAt]);
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
-  if (text(mine) !== text(merged)) {
+  if (text(mine) !== text(merged) || own.kind === "ok" && own.placeholder) {
     try {
       backUp(active, "devices.json", stamp);
       writePrivateState(ownPath, merged);
@@ -227,10 +229,10 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     } catch (error) {
       // the dir in use is complete; a release before this one reading the other dir would miss what changed here
       console.error(`Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`);
-      // the other dir is as it was at the last merge, plus its own changes since: the next merge
-      // compares both with that merge's base again, so neither a device it never got reads as
-      // revoked there, nor one revoked here comes back from it
-      return { blocked: null, ids: null, changed: added };
+      // the base of the next merge is what the other dir still holds of what both held: the devices
+      // both hold now, and those of the last base it still holds although this dir revoked them
+      const known = new Set([...merged.devices.map((device) => device.id), ...base?.devices ?? []]);
+      return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added };
     }
   }
   return { blocked: null, ids: merged.devices.map((device) => device.id), changed: added };
@@ -286,9 +288,11 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
     }
   };
   if (!write(active, own.doc)) return null;
-  // both dirs end alike, as the devices do: whichever one a later start uses has every setting
-  const { revision: _revision, ...theirs } = other.doc;
-  return { [realpath(active)]: merged, [realpath(sibling)]: write(sibling, other.doc) ? merged : theirs };
+  // both dirs end alike, as the devices do: whichever one a later start uses has every setting.
+  // Where the other dir could not be written, the last merge's snapshots stay: what this dir took
+  // in is then still a change here, and reaches the other dir at the next merge, whichever is in use
+  if (!write(sibling, other.doc)) return null;
+  return { [realpath(active)]: merged, [realpath(sibling)]: merged };
 }
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;

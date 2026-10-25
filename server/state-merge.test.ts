@@ -113,6 +113,40 @@ describe("paired devices of the install's other state dir", () => {
     expect(ids(sibling)).toEqual(["a"]);
   });
 
+  it("stay revoked after a first merge that could not write the other dir", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [device("a")]);
+    writeDevices(sibling, [device("b")]);
+    const rename = privateStateFs.renameSync;
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (to === join(sibling, "devices.json")) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      rename(from, to);
+    });
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(0)); } finally { failing.mockRestore(); said.mockRestore(); }
+    expect(new DeviceStore(active).revoke(device("b").id)).toBe(true);
+    mergeSiblingState(active, sibling, at(1));
+    expect(ids(active)).toEqual(["a"]);
+    expect(ids(sibling)).toEqual(["a"]);
+  });
+
+  it("are kept when the gate closed over a missing registry, once the other dir is repaired", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [device("a")]);
+    writeDevices(sibling, [device("a")]);
+    mergeSiblingState(active, sibling, at(0));
+    const repaired = readFileSync(join(sibling, "devices.json"), "utf8");
+    rmSync(join(active, "devices.json"));
+    writeFileSync(join(sibling, "devices.json"), "{ not json");
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { expect(mergeSiblingState(active, sibling, at(1)).devicesBlocked).not.toBeNull(); } finally { said.mockRestore(); }
+    expect(new DeviceStore(active).gated).toBe(true);
+    writeFileSync(join(sibling, "devices.json"), repaired);
+    mergeSiblingState(active, sibling, at(2));
+    expect(ids(active)).toEqual(["a"]);
+    expect(ids(sibling)).toEqual(["a"]);
+  });
+
   it("stay revoked when the clock went back between merges", () => {
     const { active, sibling } = install();
     writeDevices(active, [device("a")]);
@@ -225,6 +259,39 @@ describe("shared preferences of the install's other state dir", () => {
     mergeSiblingState(active, sibling, at(0));
     mergeSiblingState(sibling, active, at(1));
     for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get().settings).toEqual({ language: "ko", sidebarRows: "two" });
+  });
+
+  it("reach the other dir when it could not be written, whichever dir a later start uses", () => {
+    const { active, sibling } = install();
+    for (const dir of [active, sibling]) {
+      writeJson(join(dir, "preferences.json"), { revision: 1, settings: { language: "en" } });
+      writeJson(join(dir, "muted-panes.json"), { muted_panes: ["local:p"] });
+    }
+    mergeSiblingState(active, sibling, at(0));
+    writeJson(join(active, "preferences.json"), { revision: 2, settings: { language: "ko" } });
+    writeJson(join(active, "muted-panes.json"), { muted_panes: [] });
+    // a dir where the temporary file goes: the other dir's preferences cannot be replaced
+    const blocker = join(sibling, `preferences.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(1)); } finally { said.mockRestore(); rmSync(blocker, { recursive: true }); }
+    mergeSiblingState(sibling, active, at(2));
+    for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get()).toMatchObject({ settings: { language: "ko" }, muted_panes: [] });
+  });
+
+  it("conflict by the preferences document's own time, never by the mutes'", () => {
+    const { active, sibling } = install();
+    for (const dir of [active, sibling]) {
+      writeJson(join(dir, "preferences.json"), { revision: 1, settings: { language: "en" } });
+      writeJson(join(dir, "muted-panes.json"), { muted_panes: ["local:p"] });
+    }
+    mergeSiblingState(active, sibling, at(0));
+    utimesSync(join(active, "muted-panes.json"), at(30), at(30));
+    utimesSync(join(sibling, "muted-panes.json"), at(31), at(31));
+    writeJson(join(sibling, "preferences.json"), { revision: 2, settings: { language: "de" } }, at(10));
+    writeJson(join(active, "preferences.json"), { revision: 2, settings: { language: "ko" } }, at(20));
+    mergeSiblingState(active, sibling, at(40));
+    expect(new PreferenceStore(active).get().settings).toEqual({ language: "ko" });
   });
 
   it("keep this dir's mutes when both lists together are over the limit", () => {
