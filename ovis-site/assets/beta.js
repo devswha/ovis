@@ -28,6 +28,11 @@
 
   const COPIED = { "zh-CN": ["已复制", "复制失败"], ja: ["コピーしました", "コピーできませんでした"], ko: ["복사됨", "복사 실패"] };
   const [copied, failed] = COPIED[document.documentElement.lang] ?? ["Copied", "Copy failed"];
+  // the buttons' aria-labels hide their changed text from a screen reader, so the result is also said here
+  const status = document.createElement("p");
+  status.className = "visually-hidden";
+  status.setAttribute("role", "status");
+  document.body.append(status);
   for (const button of document.querySelectorAll("button[data-copy]")) {
     const label = button.textContent;
     let timer;
@@ -48,9 +53,10 @@
         ok = document.execCommand("copy");
         field.remove();
       }
-      button.textContent = ok ? copied : failed;
+      button.textContent = status.textContent = ok ? copied : failed;
       clearTimeout(timer);
-      timer = setTimeout(() => { button.textContent = label; }, 2000);
+      // emptied with the button, so the next copy is announced again
+      timer = setTimeout(() => { button.textContent = label; status.textContent = ""; }, 2000);
     });
   }
 
