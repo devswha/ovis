@@ -26,12 +26,12 @@
   <a href="#docs">문서</a>
 </p>
 
-코딩 에이전트는 터미널에서 돌아가고, 자꾸 멈춰서 나를 기다립니다. 권한 요청, 질문, 끝난 턴. [herdr](https://github.com/herdrdev/herdr)의 클라이언트인 Ovis는 내 컴퓨터의 에이전트를 하나씩 채팅으로 보여 주고, 요청은 클릭하거나 탭해서 답하는 카드로 띄웁니다. 실제 터미널도 바로 옆에 있습니다. 책상 앞에서든 밖에서든 같은 앱입니다: Mac, Windows, Linux의 아무 브라우저, Mac 앱, 그리고 폰. 이전 이름은 herdr web UI입니다.
+Ovis는 내 컴퓨터의 코딩 에이전트를 채팅으로 보여 주고, 아무 브라우저, Mac 앱, 폰에서 클릭이나 탭으로 답하게 합니다. [herdr](https://github.com/herdrdev/herdr)의 클라이언트이며, 이전 이름은 herdr web UI입니다.
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="데스크톱 브라우저에서 쓰는 Ovis 화면 녹화: Claude Code에 후속 메시지를 보내자 턴이 단계별로 진행되고, git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에서 Yes를 누르고, 셸 pane이 git log와 bun test를 실행하는 실제 터미널로 열립니다."></a>
   <br>
-  <sub>데스크톱 브라우저의 Ovis: Claude Code의 턴이 진행되고, <code>git push</code> 실행을 묻는 Codex에 Yes로 답한 뒤, 셸 pane을 실제 터미널로 엽니다. 브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
+  <sub>브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
 </p>
 
 <a id="install"></a>
@@ -45,20 +45,20 @@
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-어느 쪽이든 herdr와 Bun이 없으면 함께 설치하며, Node는 필요 없습니다. 설치가 끝나면 알려 주는 주소를 아무 브라우저에서 엽니다. Tailscale이 켜져 있으면 QR 코드도 뜹니다. 폰으로 스캔해 Ovis를 열고 홈 화면에 추가하세요. iPhone(TestFlight)과 Android 앱은 베타입니다: [ovis.sh/ko/beta](https://ovis.sh/ko/beta/).
-
-요구 사항, PowerShell 설치와 플러그인만 설치하는 방법, 단계가 실패했을 때 할 일: [설치 자세히](#install-details), [INSTALL.md](INSTALL.md).
+어느 쪽이든 herdr와 Bun이 없으면 함께 설치하며, Node는 필요 없습니다. Tailscale이 켜져 있으면 폰용 QR 코드도 보여 줍니다. iPhone과 Android 앱은 베타입니다: [ovis.sh/ko/beta](https://ovis.sh/ko/beta/). 다른 설치 방법: [설치 자세히](#install-details).
 
 ## 할 수 있는 일
 
-- **herdr가 돌리는 에이전트라면 무엇이든.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분은 채팅으로 봅니다. 나머지(Letta Code 등)는 실제 터미널로 씁니다. [지원 에이전트 →](docs/guide.md#supported-agents)
-- **클릭이나 탭으로 답하기.** 권한 요청과 질문이 카드로 뜹니다. Ovis는 그 요청이 아직 유효한지 확인한 뒤 답을 보냅니다.
-- **실제 터미널이 클릭 한 번 거리에.** herdr가 보여 주는 바로 그 pane이 실시간으로 열립니다. 폰에서는 키보드 위 키 바에 Esc, Tab, Ctrl, 방향키가 있습니다.
-- **모든 워크스페이스를 한 목록에.** herdr의 워크스페이스, 탭, 분할 pane에 SSH로 붙인 다른 PC까지 보이고, 나를 기다리는 것은 표시됩니다.
-- **책상 앞에서도, 밖에서도.** 브라우저, Mac 앱, 폰에서 같은 채팅을 보고, 에이전트가 질문하거나 일을 끝내면 앱이 닫혀 있어도 푸시 알림이 옵니다.
+- **herdr가 돌리는 에이전트라면 무엇이든.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분 채팅으로 봅니다. [지원 에이전트 →](docs/guide.md#supported-agents)
+- **요청은 카드로.** 답을 보내기 전에 그 요청이 아직 유효한지 확인합니다.
+- **실제 터미널이 클릭 한 번 거리에.** herdr가 보여 주는 그 pane 그대로이고, 폰에는 키 바가 붙습니다.
+- **모든 워크스페이스를 한 목록에.** 탭, 분할 pane, SSH로 붙인 다른 PC까지 보이고, 나를 기다리는 것은 표시됩니다.
+- **푸시 알림.** 에이전트가 질문하거나 일을 끝내면, 앱이 닫혀 있어도 옵니다.
 - **무료, MIT.** 내 컴퓨터에서 돌아가고, 가입할 계정이 없습니다.
 
-**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요합니다. 폰 같은 다른 기기에서 쓰려면 그 기기가 컴퓨터에 닿아야 합니다(Tailscale, VPN, SSH 터널). 에이전트는 클라우드가 아니라 그 컴퓨터에서 돌아갑니다.
+[전체 기능 →](docs/guide.md#features)
+
+**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요하고, 폰에서 그 컴퓨터에 닿아야 합니다(Tailscale, VPN, SSH 터널).
 
 ## 동작 모습
 
@@ -106,16 +106,6 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 </table>
 
 <p align="center"><sub>모든 클립은 데스크톱과 폰을 동시에 녹화한 실제 동작이며, 실제 속도로 컷 없이 담았습니다. 누르면 전체 영상을 볼 수 있습니다.</sub></p>
-
-## 더 많은 기능
-
-- **채팅과 터미널을 pane 하나에** — Claude Code, Codex, omp, omo, gjc, pi, Hermes의 기록과 식별된 OpenCode, Devin CLI 세션을 보여 줍니다. Linux의 Grok과 실험적인 Antigravity(agy)도 아래 지원 조건에 따라 채팅으로 보이며, 클릭 한 번이면 같은 pane의 터미널로 넘어갑니다. 에이전트가 일하는 동안 메시지를 대기열에 두어 다음 턴에 보내거나 **지금 보내기(Send now)**로 바로 보낼 수 있습니다. [지원 에이전트 →](docs/guide.md#supported-agents)
-- **탭 한 번으로 승인** — 지원되는 승인 요청, 질문, 계획 메뉴가 카드로 뜹니다. 답을 보내기 전에 그 질문이 아직 유효한지 확인하며, 카드로 지원하지 않는 요청에는 터미널에서 답합니다.
-- **내가 필요할 때 알림** — 모든 pane의 상태를 실시간으로 보여 주고, 앱을 보고 있을 때는 알림이 위에서 내려오며, 에이전트가 입력을 기다리거나 일을 끝내면 앱이 닫혀 있어도 푸시 알림을 보냅니다.
-- **폰에 설치해서 쓰기** — 키보드 위에 키 바(Esc, Tab, Ctrl, Alt, Shift, Enter, 방향키)가 붙은 PWA입니다. 키 순서를 바꾸거나 나만의 키 조합을 Settings(설정)에서 추가할 수 있습니다. Tailscale 주소는 QR 코드로 받아 갑니다. [폰 설정 →](docs/guide.md#on-your-phone)
-- **말로 입력하기** — 채팅이나 터미널 입력 줄에 받아쓰기로 입력합니다. 한국어와 영어를 섞어 말해도 됩니다. 에이전트에게 보내기 전에 글자를 확인할 수 있고, 받아쓰기는 내 OpenAI 키나 브라우저의 음성 인식을 씁니다.
-- **저장소 변경 살펴보기** — 파일 찾아보기에서 작업 트리, 스테이징된 변경 사항, 커밋 간 비교를 열고, 저장소를 바꾸지 않고 파일별 diff를 읽습니다.
-- **작업 방식은 그대로** — 에이전트는 herdr가 관리하고, 이 앱은 거기에 연결만 합니다. 에이전트를 멈추지 않고 Settings(설정)에서 업데이트하며, 업데이트마다 무엇이 바뀌는지 패치 노트로 보여 줍니다. 새 탭과 worktree는 행의 ⋯ 메뉴에서 만듭니다. [전체 기능 →](docs/guide.md#features)
 
 <a id="install-details"></a>
 

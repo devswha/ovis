@@ -26,12 +26,12 @@
   <a href="#docs">docs</a>
 </p>
 
-Coding agents live in terminals, and they keep stopping to wait for you: a permission prompt, a question, a finished turn. Ovis, the client for [herdr](https://github.com/herdrdev/herdr), shows each agent on your computer as a chat, with its prompts as cards you click or tap and the live terminal one step away. It is the same app at your desk and away from it: any browser on Mac, Windows or Linux, the Mac app, and your phone. Formerly herdr web UI.
+Ovis shows the coding agents on your computer as chats you answer with a click or a tap, in any browser, the Mac app or your phone. A client for [herdr](https://github.com/herdrdev/herdr), formerly herdr web UI.
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="Screen recording of Ovis in a desktop browser: a follow-up is sent to Claude Code and its turn streams in step by step; Codex asks Allow command? for git push origin feat/export-guard and Yes is clicked; a shell pane opens as a live terminal running git log and bun test."></a>
   <br>
-  <sub>Ovis in a desktop browser: a Claude Code turn streams in, Codex asks to run <code>git push</code> and gets a Yes, then a shell pane as its live terminal. Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
+  <sub>Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
 </p>
 
 ## install
@@ -43,20 +43,20 @@ Coding agents live in terminals, and they keep stopping to wait for you: a permi
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-Each one adds herdr and Bun if they are missing; Node is not needed. Then open the address it prints in any browser. With Tailscale on, it also shows a QR code: scan it to open Ovis on your phone and add it to the home screen. The iPhone (TestFlight) and Android apps are in beta: [ovis.sh/beta](https://ovis.sh/beta/).
-
-Requirements, the PowerShell and plugin-only installs, and what to do when a step fails: [install details](#install-details) and [INSTALL.md](INSTALL.md).
+Each one adds herdr and Bun if they are missing; Node is not needed. With Tailscale on, it also shows a QR code for your phone. The iPhone and Android apps are in beta: [ovis.sh/beta](https://ovis.sh/beta/). Other ways to install: [install details](#install-details).
 
 ## what you get
 
-- **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most of them as a chat. The rest, like Letta Code, work through the live terminal. [Supported agents →](docs/guide.md#supported-agents)
-- **Answer with a click or a tap.** Permission prompts and questions come up as cards. Ovis checks the prompt is still current before it sends your answer.
-- **The real terminal, one click away.** The same pane herdr shows, live. On a phone, a key bar puts Esc, Tab, Ctrl and arrows above the keyboard.
-- **Every workspace in one list.** All your herdr workspaces, tabs and splits, plus other PCs over SSH, with the ones waiting on you marked.
-- **At your desk or away from it.** The same chats in a browser, the Mac app and on your phone, with a push alert when an agent asks something or finishes, even with the app closed.
-- **Free and MIT.** It runs on your own computer, with no account to sign up for.
+- **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most as a chat. [Supported agents →](docs/guide.md#supported-agents)
+- **Prompts as cards.** Checked as still current before your answer is sent.
+- **The live terminal, one click away.** The same pane herdr shows, with a key bar on phones.
+- **Every workspace in one list.** Tabs, splits and other PCs over SSH, with the ones waiting on you marked.
+- **Push alerts.** When an agent asks something or finishes, even with the app closed.
+- **Free and MIT.** Runs on your own computer, with no account to sign up for.
 
-**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on. Another device, like your phone, has to reach it (Tailscale, a VPN or an SSH tunnel). The agents run there, not in a cloud.
+[All features →](docs/guide.md#features)
+
+**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on, and your phone has to reach it (Tailscale, a VPN or an SSH tunnel).
 
 ## see it work
 
@@ -104,16 +104,6 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 </table>
 
 <p align="center"><sub>Each clip is a live recording of the desktop and a phone at once, in real time with no cuts. Click one for the full video.</sub></p>
-
-## more features
-
-- **Chat and terminal, one pane** — native Claude Code, Codex, omp, omo, gjc, pi, Hermes and explicitly identified Devin CLI transcripts, plus OpenCode sessions herdr identifies, Linux Grok sessions and experimental Antigravity (agy) support under the limits below, with the live terminal a click away. Queue a message while the agent works for the next turn, or send it at once with Send now. [Supported agents →](docs/guide.md#supported-agents)
-- **Approve with a tap** — supported approvals, questions and plan menus become cards, checked to be current before your answer is sent. Use Terminal for requests without card support.
-- **Know when you're needed** — live status for every pane, an alert that drops in while the app is open, and push alerts when an agent needs input or finishes, even with the app closed.
-- **Install it on your phone** — a PWA with a key bar above the keyboard (Esc, Tab, Ctrl, Alt, Shift, Enter, arrows) that you can rearrange and extend with your own combinations in Settings, and a QR code to your Tailscale address. [Phone setup →](docs/guide.md#on-your-phone)
-- **Speak instead of typing** — dictate into the chat or the terminal line, Korean and English mixed. Review the words before sending them to the agent; transcription uses your own OpenAI key or the browser's speech recognition.
-- **Review repository changes** — open working-tree, staged or commit comparisons from the file browser and read each file's diff without changing the repository.
-- **Keep your workflow** — herdr owns the agents; this app connects to them. Update from Settings without stopping them, with patch notes for what each update brings. New tabs and worktrees come from a row's ⋯ menu. [All features →](docs/guide.md#features)
 
 ## install details
 

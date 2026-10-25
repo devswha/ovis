@@ -26,12 +26,12 @@
   <a href="#docs">文档</a>
 </p>
 
-编程智能体运行在终端里，还总会停下来等你：一个权限请求、一个问题、一轮刚做完的任务。Ovis 是 [herdr](https://github.com/herdrdev/herdr) 的客户端，它把你电脑上的每个智能体显示成聊天，把它的请求变成点击或轻点即可回答的卡片，真正的终端也近在手边。在电脑前和离开电脑时都是同一个应用：Mac、Windows、Linux 上的任意浏览器、Mac 应用，以及你的手机。原名 herdr web UI。
+Ovis 把你电脑上的编程智能体显示成聊天，在任意浏览器、Mac 应用或手机上点击或轻点即可回答。它是 [herdr](https://github.com/herdrdev/herdr) 的客户端，原名 herdr web UI。
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="桌面浏览器中的 Ovis 录屏：向 Claude Code 发送后续消息后，它的这一轮逐步展开；Codex 通过 Allow command? 卡片询问是否运行 git push origin feat/export-guard，点击 Yes；一个 shell 窗格作为运行 git log 和 bun test 的真正终端打开。"></a>
   <br>
-  <sub>桌面浏览器中的 Ovis：Claude Code 的一轮逐步展开，Codex 请求运行 <code>git push</code> 并得到 Yes，然后以真正的终端打开一个 shell 窗格。录制自可在浏览器中运行的<a href="https://ovis.sh/demo/">演示</a>。</sub>
+  <sub>录制自可在浏览器中运行的<a href="https://ovis.sh/demo/">演示</a>。</sub>
 </p>
 
 <a id="install"></a>
@@ -45,20 +45,20 @@
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-三种方式都会在缺少时一并安装 herdr 和 Bun，无需 Node。之后在任意浏览器中打开它显示的地址。开启 Tailscale 后还会显示二维码：用手机扫码打开 Ovis，并添加到主屏幕。iPhone（TestFlight）和 Android 应用正在公测：[ovis.sh/zh/beta](https://ovis.sh/zh/beta/)。
-
-系统要求、PowerShell 安装、只装插件的方式，以及某一步失败时怎么办：见[安装详情](#install-details)和 [INSTALL.md](INSTALL.md)。
+三种方式都会在缺少时一并安装 herdr 和 Bun，无需 Node。开启 Tailscale 后还会显示供手机扫描的二维码。iPhone 和 Android 应用正在公测：[ovis.sh/zh/beta](https://ovis.sh/zh/beta/)。其他安装方式：见[安装详情](#install-details)。
 
 ## 能做什么
 
-- **herdr 跑的智能体都能用。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok 等，大多以聊天形式显示；其余的（比如 Letta Code）通过真正的终端使用。[支持的智能体 →](docs/guide.md#supported-agents)
-- **点击或轻点即可回答。** 权限请求和问题以卡片形式出现。Ovis 会先确认请求仍然有效，再发送你的回答。
-- **真正的终端，一键即达。** 就是 herdr 显示的那个窗格，实时同步。在手机上，键盘上方的按键栏有 Esc、Tab、Ctrl 和方向键。
-- **所有工作区，一个列表。** herdr 的工作区、标签页和分屏，以及通过 SSH 添加的其他电脑，等你处理的会做标记。
-- **在电脑前，也在路上。** 在浏览器、Mac 应用和手机上看到同样的聊天；智能体提问或完成任务时会发推送通知，即使应用已关闭。
+- **herdr 跑的智能体都能用。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok 等，大多以聊天形式显示。[支持的智能体 →](docs/guide.md#supported-agents)
+- **请求变成卡片。** 发送回答前，会先确认请求仍然有效。
+- **真正的终端，一键即达。** 就是 herdr 显示的那个窗格，手机上还有按键栏。
+- **所有工作区，一个列表。** 标签页、分屏和通过 SSH 添加的其他电脑，等你处理的会做标记。
+- **推送通知。** 智能体提问或完成任务时提醒你，即使应用已关闭。
 - **免费，MIT 许可。** 运行在你自己的电脑上，无需注册账号。
 
-**限制：** Ovis 需要 [herdr](https://github.com/herdrdev/herdr) 和你自己的、开着的电脑。要从手机等其他设备使用，该设备需要能访问这台电脑（Tailscale、VPN 或 SSH 隧道）。智能体在那台电脑上运行，而不是在云端。
+[全部功能 →](docs/guide.md#features)
+
+**限制：** Ovis 需要 [herdr](https://github.com/herdrdev/herdr) 和你自己开着的电脑，手机也要能访问这台电脑（Tailscale、VPN 或 SSH 隧道）。
 
 ## 实际效果
 
@@ -106,16 +106,6 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 </table>
 
 <p align="center"><sub>每段片段都是同时录制电脑和手机的真实操作，实时、无剪辑。点击可播放完整视频。</sub></p>
-
-## 更多功能
-
-- **聊天与终端，共用一个窗格** — 阅读 Claude Code、Codex、omp、omo、gjc、pi、Hermes 的原生会话记录，以及可明确识别的 OpenCode 和 Devin CLI 会话。Linux 上的 Grok 和实验性的 Antigravity（agy）也按下文所述条件提供支持，一键即可切换到同一窗格的终端。智能体工作时可将消息排队到下一轮发送，也可以用 Send now 立即发送。[支持的智能体 →](docs/guide.md#supported-agents)
-- **轻点即可批准** — 支持的审批请求、问题和计划菜单会显示为卡片，发送回答前会先确认提示仍然有效。不支持卡片的请求需在终端中回答。
-- **需要你时及时提醒** — 实时显示每个窗格的状态；应用打开时提醒会从顶部滑下；智能体需要输入或完成任务时发送推送通知，即使应用已关闭也能收到。
-- **安装到手机** — PWA 在键盘上方提供按键栏（Esc、Tab、Ctrl、Alt、Shift、Enter 和方向键），可在 Settings（设置）中调整顺序或添加自定义组合键；Tailscale 地址以二维码显示。[手机设置 →](docs/guide.md#on-your-phone)
-- **开口代替打字** — 在聊天或终端输入行中语音输入，可选择中文等识别语言，并识别混在其中的英语代码术语；文字只放进输入框，不会自动发送给智能体。使用你自己的 OpenAI API 密钥，或浏览器的语音识别。录音等对外传输的详情见[语音输入](docs/guide.md#voice-input)。
-- **查看仓库改动** — 从文件浏览器打开工作区、暂存区或提交之间的比较，逐个阅读文件差异，不会修改仓库。
-- **沿用现有工作流** — 智能体由 herdr 管理，本应用负责连接；在 Settings（设置）中更新应用，无需停止智能体，每次更新带来的变化以更新说明列出。新标签页和 worktree 可从行的 ⋯ 菜单创建。[全部功能 →](docs/guide.md#features)
 
 <a id="install-details"></a>
 

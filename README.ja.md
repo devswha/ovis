@@ -26,12 +26,12 @@
   <a href="#docs">ドキュメント</a>
 </p>
 
-コーディングエージェントはターミナルで動き、たびたび手を止めてあなたを待ちます。権限の確認、質問、終わったターン。[herdr](https://github.com/herdrdev/herdr) のクライアントである Ovis は、自分のコンピューターで動く各エージェントをチャットとして表示し、確認や質問をクリックやタップで答えるカードにします。本物のターミナルもすぐ隣です。机の前でも外でも同じアプリです：Mac、Windows、Linux のブラウザー、Mac アプリ、そしてスマートフォン。旧称 herdr web UI。
+Ovis は、自分のコンピューターで動くコーディングエージェントをチャットとして表示し、ブラウザー、Mac アプリ、スマートフォンのどれからでもクリックやタップで答えられるようにします。[herdr](https://github.com/herdrdev/herdr) のクライアントで、旧称は herdr web UI です。
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-demo.gif" alt="デスクトップのブラウザーで使う Ovis の画面収録：Claude Code に続きのメッセージを送るとターンが一歩ずつ進み、git push origin feat/export-guard を確認する Codex の Allow command? カードで Yes をクリック、シェルのペインが git log と bun test を実行する本物のターミナルとして開きます。"></a>
   <br>
-  <sub>デスクトップのブラウザーで動く Ovis：Claude Code のターンが進み、<code>git push</code> の実行を確認する Codex に Yes と答え、シェルのペインを本物のターミナルで開きます。ブラウザーで動く<a href="https://ovis.sh/demo/">デモ</a>で収録しました。</sub>
+  <sub>ブラウザーで動く<a href="https://ovis.sh/demo/">デモ</a>で収録しました。</sub>
 </p>
 
 <a id="install"></a>
@@ -45,20 +45,20 @@
   curl -fsSL https://ovis.sh/install.sh | sh
   ```
 
-どれも herdr と Bun がなければ一緒にインストールし、Node は不要です。表示されたアドレスを好きなブラウザーで開いてください。Tailscale がオンなら QR コードも表示されるので、スマートフォンで読み取って Ovis を開き、ホーム画面に追加できます。iPhone（TestFlight）と Android のアプリはベータ版です：[ovis.sh/ja/beta](https://ovis.sh/ja/beta/)。
-
-動作要件、PowerShell やプラグインだけのインストール、手順が失敗したときの対処：[インストールの詳細](#install-details)と [INSTALL.md](INSTALL.md)。
+どれも herdr と Bun がなければ一緒にインストールし、Node は不要です。Tailscale がオンなら、スマートフォン用の QR コードも表示されます。iPhone と Android のアプリはベータ版です：[ovis.sh/ja/beta](https://ovis.sh/ja/beta/)。ほかのインストール方法：[インストールの詳細](#install-details)。
 
 ## できること
 
-- **herdr で動くエージェントなら何でも。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok など、ほとんどはチャットで読めます。それ以外（Letta Code など）は本物のターミナルで使えます。[対応エージェント →](docs/guide.md#supported-agents)
-- **クリックやタップで答える。** 権限の確認や質問はカードで届きます。Ovis はその確認がまだ有効かを確かめてから回答を送ります。
-- **本物のターミナルをワンクリックで。** herdr が表示しているのと同じペインがライブで開きます。スマートフォンではキーボードの上のキーバーに Esc、Tab、Ctrl、矢印キーが並びます。
-- **すべてのワークスペースをひとつのリストに。** herdr のワークスペース、タブ、分割ペインに、SSH でつないだ別の PC まで。あなたを待っているものには印が付きます。
-- **机の前でも、外出先でも。** ブラウザー、Mac アプリ、スマートフォンで同じチャットを見られ、エージェントが質問したり作業を終えたりすると、アプリを閉じていてもプッシュ通知が届きます。
+- **herdr で動くエージェントなら何でも。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok など、ほとんどはチャットで読めます。[対応エージェント →](docs/guide.md#supported-agents)
+- **確認や質問はカードで。** 回答を送る前に、その確認がまだ有効かを確かめます。
+- **本物のターミナルをワンクリックで。** herdr が表示しているのと同じペインが開き、スマートフォンではキーバーが付きます。
+- **すべてのワークスペースをひとつのリストに。** タブ、分割ペイン、SSH でつないだ別の PC まで。あなたを待っているものには印が付きます。
+- **プッシュ通知。** エージェントが質問したり作業を終えたりすると、アプリを閉じていても届きます。
 - **無料、MIT ライセンス。** 自分のコンピューターで動き、登録するアカウントはありません。
 
-**制約：** Ovis には [herdr](https://github.com/herdrdev/herdr) と、電源の入った自分のコンピューターが必要です。スマートフォンなど別の端末から使うには、その端末からコンピューターに届く必要があります（Tailscale、VPN、SSH トンネル）。エージェントはクラウドではなく、そのコンピューターで動きます。
+[すべての機能 →](docs/guide.md#features)
+
+**制約：** Ovis には [herdr](https://github.com/herdrdev/herdr) と電源の入った自分のコンピューターが必要で、スマートフォンからそのコンピューターに届く必要があります（Tailscale、VPN、SSH トンネル）。
 
 ## 動いているところ
 
@@ -106,16 +106,6 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 </table>
 
 <p align="center"><sub>どのクリップも、パソコンとスマートフォンを同時に収録した実際の動作です。等速・カットなし。クリックすると動画全体を再生できます。</sub></p>
-
-## ほかの機能
-
-- **チャットとターミナルを、ひとつのペインで** — Claude Code、Codex、omp、omo、gjc、pi、Hermes の会話履歴と、特定できた OpenCode、Devin CLI のセッションを表示します。Linux の Grok と実験的な Antigravity（agy）も、後述の条件で対応しています。ワンクリックで同じペインのターミナルに切り替えられます。作業中のメッセージはキューに入れて次のターンで送るか、Send now ですぐに送れます。[対応エージェント →](docs/guide.md#supported-agents)
-- **タップで承認** — 対応する承認リクエスト、質問、計画メニューがカードになり、問いかけがまだ有効か確認してから回答を送信します。カードに対応していない要求にはターミナルで回答します。
-- **対応が必要なときに通知** — すべてのペインの状態をリアルタイムに表示し、アプリを開いているときは通知が上から降りてきます。入力が必要なときや完了したときには、アプリを閉じていてもプッシュ通知が届きます。
-- **スマートフォンにインストール** — キーボードの上にキーバー（Esc、Tab、Ctrl、Alt、Shift、Enter、矢印キー）が並ぶ PWA。キーの並べ替えや独自のキー組み合わせの追加は Settings（設定）でできます。Tailscale のアドレスは QR コードで表示されます。[スマートフォンの設定 →](docs/guide.md#on-your-phone)
-- **話して入力** — チャットやターミナルの入力欄に音声で入力できます。日本語などの認識言語を選べ、コード用語の英語も認識対象になります。文字起こしした文章は入力欄に入り、エージェントへ自動送信されることはありません。自分の OpenAI API キー、またはブラウザの音声認識を使います。録音などの外部送信については[音声入力](docs/guide.md#voice-input)を参照してください。
-- **リポジトリの変更を確認** — ファイルブラウザーから作業ツリー、ステージ済みの変更、コミット間の比較を開き、リポジトリを変更せずにファイルごとの差分を読めます。
-- **いつもの作業環境をそのままに** — エージェントは herdr が管理し、このアプリはそこに接続します。エージェントを止めずに Settings（設定）からアップデートでき、アップデートごとの変更はパッチノートで確認できます。新しいタブや worktree は行の ⋯ メニューから作れます。[すべての機能 →](docs/guide.md#features)
 
 <a id="install-details"></a>
 
