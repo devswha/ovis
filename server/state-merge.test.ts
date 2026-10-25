@@ -141,6 +141,31 @@ describe("paired devices of the install's other state dir", () => {
     expect(ids(sibling)).toEqual(["a"]);
   });
 
+  it("leave a closed gate in the other dir when it could not take them, or keep this store gated", () => {
+    for (const failures of [1, Infinity]) {
+      const { active, sibling } = install();
+      writeDevices(active, [device("a")]);
+      let left = failures;
+      const rename = privateStateFs.renameSync;
+      const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+        if (to === join(sibling, "devices.json") && left-- > 0) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        rename(from, to);
+      });
+      const said = spyOn(console, "error").mockImplementation(() => {});
+      let blocked: string | null;
+      try { blocked = mergeSiblingState(active, sibling, at(0)).devicesBlocked; } finally { failing.mockRestore(); said.mockRestore(); }
+      if (failures === 1) {
+        // the copy failed, the closed placeholder did not: a release before this one on that dir is gated
+        expect(blocked).toBeNull();
+        expect(new DeviceStore(sibling).gated).toBe(true);
+      } else {
+        // nothing could be written there: this server says so and stays gated
+        expect(blocked).toContain(sibling);
+        expect(new DeviceStore(active, blocked).gated).toBe(true);
+      }
+    }
+  });
+
   it("stay revoked after a first merge that could not write the other dir", () => {
     const { active, sibling } = install();
     writeDevices(active, [device("a")]);

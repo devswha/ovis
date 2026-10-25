@@ -239,7 +239,11 @@ function registryHash(path: string): string {
 
 type Intent = (ids: string[], sides: NonNullable<MergeRecord["pending"]>["sides"], gated: boolean) => string | null;
 
-function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
+/** Whether a release before this one reading `read` keeps its gate closed. */
+const closedFor = (read: ReturnType<typeof readDeviceRegistry>): boolean =>
+  read.kind === "bad" || read.kind === "ok" && (read.gateClosedAt !== null || read.devices.length > 0);
+
+function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
   const ownPath = join(active, "devices.json");
   const otherPath = join(sibling, "devices.json");
   // the base each registry is merged against: see MergeRecord.pending for a merge that did not finish
@@ -299,11 +303,18 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       writePrivateState(otherPath, merged);
     } catch (error) {
       // the dir in use is complete; a release before this one reading the other dir would miss what changed here
-      console.error(`Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`);
+      const reason = `Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`;
+      console.error(reason);
+      // that release must at least find a closed gate there, and no device revoked here
+      if (!closedFor(readDeviceRegistry(otherPath))) closeGateOnDisk(sibling, stamp, now);
+      const left = readDeviceRegistry(otherPath);
+      const revokedThere = left.kind === "ok" && left.devices.some((device) => !merged.devices.some((kept) => kept.id === device.id));
+      const risk = !closedFor(left) ? "have no sign-in gate" : revokedThere ? "still let in a device revoked here" : null;
       // the base of the next merge is what the other dir still holds of what both held: the devices
       // both hold now, and those of the last base it still holds although this dir revoked them
       const known = new Set([...merged.devices.map((device) => device.id), ...bases.other ?? []]);
-      return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added, gated: merged.gate_closed_at !== null };
+      const blocked = risk === null ? null : `${reason}. An Ovis release before 0.4.16 starting on ${sibling} would ${risk}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
+      return { blocked, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added, gated: merged.gate_closed_at !== null };
     }
   }
   try { markIncomplete(sibling, !complete); }
@@ -520,7 +531,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     try { writePrivateState(join(sibling, RECORD), intent); } catch { /* reported with the record that follows */ }
     return null;
   };
-  const devices = mergeDevices(active, sibling, base, stamp, intend);
+  const devices = mergeDevices(active, sibling, base, stamp, intend, now);
   const written = intent as MergeRecord | null;
   const preferences = mergePreferences(active, sibling, base, stamp);
   const push = mergePush(active, sibling, base, stamp);
