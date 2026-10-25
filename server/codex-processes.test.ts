@@ -659,6 +659,7 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
       (folder: string) => `[Verification results](${join(folder, target)}:12 "An \\"escaped\\" title"), as the run left them.`,
       (folder: string) => `[Verification results](file://${join(folder, target)}?download=yes#L12), as the run left them.`,
       (folder: string) => `| Item | Link |\n| --- | --- |\n| Verification | [results](${join(folder, target)}:12) |\n\nThat is as the run left them.`,
+      (folder: string) => `[Verification results](${join(folder, target)}#L1C2), as the run left them.`,
     ];
     for (const [index, form] of forms.entries()) {
       const peer = `01a16b22-7e1f-7072-8897-dddddddd${String(index).padStart(4, "0")}`;
@@ -682,6 +683,22 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     await alone.exited;
     const peer = "01a16b22-7e1f-7072-8897-dddddddd0100";
     elsewhereThread(peer, [`See <${url}>, as the run left them.`]);
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs another loaded conversation's answer in a script without spaces, a reference link inside a word", async () => {
+    const paragraph = (guide: string) => `这次修改已经完成并通过验证。请参阅${guide}了解配置方式和注意事项，确认当前工作目录以及会话恢复结果。测试覆盖了正常启动和断线恢复流程，所有检查均已通过。`;
+    const rollout = otherFolderThread([{ type: "agent_message", message: paragraph("使用指南") }]);
+    foreground = picker;
+    screen = `• ${paragraph("使用指南")}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    // shown as the label alone where the terminal links it
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0400";
+    elsewhereThread(peer, [`${paragraph("[使用指南][guide]")}\n\n[guide]: https://example.com/guide`]);
     await loaded(other, peer);
     expect(await resolve()).toBeNull();
   });

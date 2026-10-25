@@ -1520,7 +1520,18 @@ const ITEM_OUTPUTS = new Set(["aggregated_output", "formatted_output", "output",
  * reasoning; never a tool's output.
  */
 function lineForms(value: unknown): string[] {
-  return lineTexts(value).flatMap((text) => [...new Set([text, withoutMemoryCitations(text), questionReply(text) ?? "", decoded(text)])]);
+  return lineTexts(value).flatMap((text) => [...new Set([text, withoutMemoryCitations(text), questionReply(text) ?? "", decoded(text), shownMarkup(text)])]);
+}
+
+/**
+ * A text with markdown a screen does not show as written: a reference link's `[name]` and its
+ * definition left out (which would split a word of a script without spaces), and a `#L12C3` or
+ * `#L12-L34` location as the numbers Codex shows for it (`:12:3`, `:12-34`).
+ */
+function shownMarkup(text: string): string {
+  return text.replace(/^ {0,3}\[[^\]\n]+\]:[^\n]*$/gm, "").replace(/\]\[[^\]\n]*\]/g, "]")
+    .replace(/#L(\d+)(?:C(\d+))?(?:-L(\d+)(?:C(\d+))?)?/g, (_location, ...numbers: (string | undefined)[]) =>
+      `:${numbers.slice(0, 4).filter((number) => number !== undefined).join(":")}`);
 }
 
 /**
