@@ -68,6 +68,24 @@ describe("paired devices of the install's other state dir", () => {
     expect(held).toMatchObject({ role: "watch", token_hash: hash("token-a"), created_at: "2026-10-25T05:10:00.000Z", last_seen_at: "2026-10-25T05:40:00.000Z" });
   });
 
+  it("keep the gate closed when both registries are gone after a merge that knew them", () => {
+    for (const paired of [[device("a")], []]) {
+      const { active, sibling } = install();
+      // a paired install, and one whose every device was revoked (its gate stays closed)
+      writeDevices(active, paired, "2026-10-25T05:19:00.000Z");
+      mergeSiblingState(active, sibling, at(0));
+      for (const dir of [active, sibling]) rmSync(join(dir, "devices.json"));
+      const said = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { devicesBlocked } = mergeSiblingState(active, sibling, at(1));
+        expect(devicesBlocked).not.toBeNull();
+        expect(new DeviceStore(active, devicesBlocked).gated).toBe(true);
+      } finally { said.mockRestore(); }
+      // and for a release before this one, on disk
+      expect(new DeviceStore(active).gated).toBe(true);
+    }
+  });
+
   it("keep the gate closed when the other dir holds only the evidence that it was", () => {
     const { active, sibling } = install();
     writeDevices(sibling, [], "2026-10-25T05:19:00.000Z");

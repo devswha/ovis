@@ -89,6 +89,8 @@ interface MergeRecord {
   preferences_target?: PreferencesSnapshot;
   /** the hashes of the endpoints taken over from each dir, by its real path */
   push: Record<string, string[]>;
+  /** whether the merged registry had a closed gate: with both registries gone, the install is still not a fresh one */
+  gated?: boolean;
 }
 
 const text = (value: unknown): string => JSON.stringify(value);
@@ -146,7 +148,8 @@ const isRecord = (value: unknown): value is MergeRecord =>
   && isStrings(value["dirs"]) && isStrings(value["devices"])
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
   && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
-  && isObject(value["push"]) && Object.values(value["push"]).every(isStrings);
+  && isObject(value["push"]) && Object.values(value["push"]).every(isStrings)
+  && (value["gated"] === undefined || typeof value["gated"] === "boolean");
 
 /** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
 function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
@@ -217,7 +220,7 @@ function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: 
   return { doc: { revision, settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: muted ?? [] }, written };
 }
 
-function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string): { blocked: string | null; ids: string[] | null; changed: number } {
+function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
   const ownPath = join(active, "devices.json");
   const otherPath = join(sibling, "devices.json");
   const own = readDeviceRegistry(ownPath);
@@ -232,7 +235,13 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const registry = (read: typeof own): Registry | null => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
-  if (mine === null && theirs === null) return { blocked: null, ids: [], changed: 0 };
+  if (mine === null && theirs === null) {
+    // both gone after a merge that knew paired devices or a closed gate: this is no first installation
+    if (base !== null && (base.devices.length > 0 || base.gated === true)) {
+      return { ids: null, changed: 0, blocked: `Neither ${ownPath} nor ${otherPath} exists, although the last merge of these dirs knew ${base.devices.length} paired device(s)${base.gated ? " and a closed gate" : ""}. Restore devices.json from ${join(active, BACKUPS)} or ${join(sibling, BACKUPS)}, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
+    }
+    return { blocked: null, ids: [], changed: 0 };
+  }
   const merged = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null, { own: ownIncomplete, other: otherIncomplete });
   // with a complete registry in it, the result holds every device not revoked since the last merge
   const complete = mine !== null && !ownIncomplete || theirs !== null && !otherIncomplete;
@@ -260,12 +269,12 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       // the base of the next merge is what the other dir still holds of what both held: the devices
       // both hold now, and those of the last base it still holds although this dir revoked them
       const known = new Set([...merged.devices.map((device) => device.id), ...base?.devices ?? []]);
-      return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added };
+      return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added, gated: merged.gate_closed_at !== null };
     }
   }
   try { markIncomplete(sibling, !complete); }
   catch (error) { console.error(`Cannot mark whether ${otherPath} is complete: ${error instanceof Error ? error.message : String(error)}`); }
-  return { blocked: null, ids: merged.devices.map((device) => device.id), changed: added };
+  return { blocked: null, ids: merged.devices.map((device) => device.id), changed: added, gated: merged.gate_closed_at !== null };
 }
 
 function mergePreferences(active: string, sibling: string, base: MergeRecord | null, stamp: string): { snapshots: Record<string, PreferencesSnapshot>; target: PreferencesSnapshot } | null {
@@ -476,6 +485,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     dirs: pair,
     // a merge that could not run keeps the last one's base, so the next one compares with it
     devices: devices.ids ?? base?.devices ?? [],
+    gated: devices.gated === true || base?.gated === true,
     preferences: preferences?.snapshots ?? base?.preferences ?? {},
     ...(preferences?.target ?? base?.preferences_target ? { preferences_target: preferences?.target ?? base?.preferences_target } : {}),
     push: { ...base?.push, ...push?.record },
