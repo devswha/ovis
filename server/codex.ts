@@ -908,10 +908,12 @@ function wordsEnding(text: string, length: number): string[] {
  * answer no other candidate ever gave, however long ago: one the others gave too is no proof the
  * pane shows it, and leaves the choice open rather than letting another win by elimination.
  * `said`: what candidates ever said, for those of which every word counts against the others
- * (loadedConversation), in place of their answers. */
-export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, Said> = new Map()): string | null {
+ * (loadedConversation), in place of their answers. `blocks`: the screen is shownAnswers', and an
+ * answer counts only inside one of its blocks: Codex shows one answer as one block, so text that
+ * runs across blocks is answers side by side, another conversation's. */
+export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, Said> = new Map(), blocks = false): string | null {
   const lastHeader = screen.lastIndexOf("OpenAI Codex (v");
-  const display = normalizeDisplay(lastHeader >= 0 ? screen.slice(lastHeader) : screen);
+  const displays = blocks ? screen.split(/\n(?=\u2022)/).map(normalizeDisplay) : [normalizeDisplay(lastHeader >= 0 ? screen.slice(lastHeader) : screen)];
   const answersOf = (turns: ConversationTurn[]) => turns.filter((turn) => turn.role === "assistant")
     .flatMap((turn) => turn.parts).filter((part) => part.kind === "text").map((part) => part.text);
   const parsed = candidates.map((candidate) => parseCodexTranscript(candidate.text, Infinity));
@@ -924,7 +926,7 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   let open = false;
   for (const [index, candidate] of candidates.entries()) {
     const anchors = answersOf(parsed[index]!.slice(-100)).slice(-8).map(answerAnchor)
-      .filter((found): found is Anchor => found !== null && display.includes(found.anchor));
+      .filter((found): found is Anchor => found !== null && displays.some((display) => display.includes(found.anchor)));
     if (anchors.length === 0) continue;
     if (!scrutinized.has(candidate.path) || anchors.some((anchor) => !givenElsewhere(index, anchor))) matching.add(candidate.path);
     else open = true;
@@ -963,35 +965,79 @@ function mayShowWords(words: readonly string[], { text, ends }: Said): boolean {
   if (last === undefined || words.length === 0) return false;
   // longest first: likeliest missing from a record that does not hold them all
   const longest = [...new Set(words)].sort((one, other) => other.length - one.length);
+  // a record with a named entity may show a word only through it (ENTITY): weighed whatever else it holds
+  const entities = text.lastIndexOf(ENTITY, last - 1) >= 0;
   // looked for at the rarest of the longest three: a record without one of them holds not all
-  let rarest = longest[0]!;
+  let rarest: string | null = longest[0]!;
   let fewest = Infinity;
   for (const word of longest.slice(0, 3)) {
     let count = 0;
     for (let at = text.indexOf(word); at >= 0 && at < last && count <= WORD_CHECKS; at = text.indexOf(word, at + 1)) count++;
-    if (count === 0) return false;
+    if (count === 0) {
+      if (!entities) return false;
+      rarest = null;
+      break;
+    }
     if (count < fewest) {
       fewest = count;
       rarest = word;
     }
   }
-  if (fewest > WORD_CHECKS) return true;
+  if (rarest !== null && fewest > WORD_CHECKS) return true;
+  const weighedRecords = new Set<number>();
   let weighed = 0;
-  for (let at = text.indexOf(rarest); at >= 0 && at < last;) {
-    // the record it is in: the first to end past it
-    let record = 0;
-    for (let high = ends.length - 1; record < high;) {
-      const middle = (record + high) >> 1;
-      if (ends[middle]! > at) high = middle;
-      else record = middle + 1;
+  for (const needle of [rarest, entities ? ENTITY : null]) {
+    if (needle === null) continue;
+    for (let at = text.indexOf(needle); at >= 0 && at < last;) {
+      // the record it is in: the first to end past it
+      let record = 0;
+      for (let high = ends.length - 1; record < high;) {
+        const middle = (record + high) >> 1;
+        if (ends[middle]! > at) high = middle;
+        else record = middle + 1;
+      }
+      at = text.indexOf(needle, ends[record]!);
+      if (weighedRecords.has(record)) continue;
+      weighedRecords.add(record);
+      const said = text.slice(record > 0 ? ends[record - 1]! : 0, ends[record]!);
+      weighed += said.length;
+      if (weighedRecords.size > WORD_CHECKS || weighed > WORD_BUDGET) return true;
+      if (longest.every((word) => said.includes(word) || (said.includes(ENTITY) && throughEntities(said, word)))) return true;
     }
-    const said = text.slice(record > 0 ? ends[record - 1]! : 0, ends[record]!);
-    weighed += said.length;
-    if (weighed > WORD_BUDGET) return true;
-    if (longest.every((word) => said.includes(word))) return true;
-    at = text.indexOf(rarest, ends[record]!);
   }
   return false;
+}
+
+/**
+ * Where a record's text has a named entity (`&eacute;`), the form readSaid keeps of it has this in
+ * its place: Codex shows it as up to a few letters (a ligature, an accented letter) or none.
+ */
+const ENTITY = "\uE000";
+
+/** Whether `text` holds `word`, each ENTITY in it standing for up to three of its letters or none. */
+function throughEntities(text: string, word: string): boolean {
+  for (let entity = text.indexOf(ENTITY); entity >= 0; entity = text.indexOf(ENTITY, entity + 1)) {
+    // a match through this entity begins at most a word's length before it
+    for (let start = Math.max(0, entity - word.length); start <= entity; start++) {
+      let reached = new Set([0]);
+      for (let at = start; at < text.length && reached.size > 0 && at - start <= 4 * word.length; at++) {
+        const next = new Set<number>();
+        for (const done of reached) {
+          if (text[at] === ENTITY) for (let more = 0; more <= 3 && done + more <= word.length; more++) next.add(done + more);
+          else if (word[done] === text[at]) next.add(done + 1);
+        }
+        if (next.has(word.length)) return true;
+        reached = next;
+      }
+    }
+  }
+  return false;
+}
+
+/** A text with each named entity as ENTITY and the rest as normalizeDisplay reads it, or "" for one without any. */
+function entityForm(text: string): string {
+  const pieces = text.split(/&[A-Za-z][A-Za-z0-9]{1,31};/);
+  return pieces.length > 1 ? pieces.map(normalizeDisplay).join(ENTITY) : "";
 }
 
 /**
@@ -1618,7 +1664,6 @@ async function readSaid(path: string): Promise<SaidScan> {
   if (scan === undefined || scan.ino !== ino || size < scan.offset) scan = { ino, offset: 0, said: [], text: "", running: false, abortedAt: 0 };
   saidScans.delete(path);
   saidScans.set(path, scan);
-  if (saidScans.size > 64) saidScans.delete(saidScans.keys().next().value!);
   if (size <= scan.offset) return scan;
   const fd = await open(path, "r");
   try {
@@ -1638,10 +1683,11 @@ async function readSaid(path: string): Promise<SaidScan> {
         if (SAID_RECORDS.some((marker) => line.includes(marker))) {
           const entry = parseJson(line.toString("utf8"));
           const forms = lineForms(entry);
-          // cut at link targets, and whole too: a screen may show a target's words (mayShowWords)
+          // cut at link targets, and whole too: a screen may show a target's words (mayShowWords); and
+          // with its named entities as such (entityForm)
           const text = forms.flatMap((form) => {
             const pieces = saidText(form);
-            return pieces.length > 1 ? [...pieces, normalizeDisplay(form)] : pieces;
+            return [...pieces, ...pieces.length > 1 ? [normalizeDisplay(form)] : [], entityForm(form)];
           }).join("");
           if (text !== "") {
             scan.text += text;
@@ -1657,8 +1703,22 @@ async function readSaid(path: string): Promise<SaidScan> {
     }
     scan.offset = lineStart;
   } finally { await fd.close(); }
+  // twice the bytes one read of the loaded histories may take (HISTORY_BYTES), so the next poll reads
+  // none of them again; 32 loaded threads of 33 files each are far fewer files than SAID_SCANS
+  let kept = 0;
+  for (const read of saidScans.values()) kept += read.offset;
+  for (const [oldest, read] of saidScans) {
+    if (oldest === path || (saidScans.size <= SAID_SCANS && kept <= 2 * HISTORY_BYTES)) break;
+    saidScans.delete(oldest);
+    kept -= read.offset;
+  }
   return scan;
 }
+
+/** More bytes than this in the histories of the loaded threads, and none of them is weighed (loadedConversation). */
+const HISTORY_BYTES = 128 * 1024 * 1024;
+/** The most rollout files whose reads are kept (readSaid). */
+const SAID_SCANS = 4096;
 
 /**
  * Every message a conversation ever had, user's and agent's alike, in the files its history is in
@@ -1747,7 +1807,11 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
       tails.set(path, text);
       return text;
     };
-    if (!offered.some((path) => matchCodexTranscript(shown, [{ path, text: tail(path) }]) !== null)) return null;
+    if (!offered.some((path) => matchCodexTranscript(shown, [{ path, text: tail(path) }], new Set(), new Map(), true) !== null)) return null;
+    // the whole histories, within budget: past it, what is left unread could be the one that tells
+    const files = new Map<string, number>();
+    for (const { segments } of loaded.values()) for (const { path, end } of segments) files.set(path, Math.max(end, files.get(path) ?? 0));
+    if ([...files.values()].reduce((sum, end) => sum + end, 0) > HISTORY_BYTES) return null;
     const candidates = [...loaded.keys()].map((path) => ({ path, text: tail(path) }));
     const said = new Map<string, Said>();
     const unwritten = new Set<string>();
@@ -1758,7 +1822,7 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
       // a turn running, or one interrupted or failed since it was loaded, may show text it has not written
       if (!thread.exec && (ever.running || ever.abortedAt >= thread.loadedAt)) unwritten.add(path);
     }
-    const found = matchCodexTranscript(shown, candidates, new Set(loaded.keys()), said);
+    const found = matchCodexTranscript(shown, candidates, new Set(loaded.keys()), said, true);
     if (found === null || !offered.includes(found)) return null;
     // what another may be showing without having written it is in no `said`, to count against this one
     // on any screen, this one's too

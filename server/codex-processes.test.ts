@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asCodexTitle, codexOpenRollout, codexTranscriptPath } from "./codex.ts";
@@ -720,6 +720,76 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     elsewhereThread(peer, [`[${"q".repeat(9)}${word} results](${join(root, "elsewhere-0300", target)}:12), as the run left them.`]);
     await loaded(other, peer);
     expect(await resolve()).toBeNull();
+  });
+
+  heldIt("takes no answer the screen shows only across another conversation's answers, side by side", async () => {
+    const sentences = ["The database migration completed successfully.", "All configuration checks passed verification.", "The remaining workspace changes are committed."];
+    const rollout = otherFolderThread([{ type: "agent_message", message: sentences.join(" ") }]);
+    // the other conversation said them one answer each, as Codex writes an answer: an item and an event
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0500";
+    elsewhereThread(peer, sentences.flatMap((sentence) => [
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: sentence }] } },
+      { type: "event_msg", payload: { type: "agent_message", message: sentence } },
+    ]));
+    foreground = picker;
+    await loaded(other, peer);
+    // this one's answer, one block
+    screen = `• ${sentences.join(" ")}`;
+    expect(await resolve()).toBe(rollout);
+    // the other's three, a block each
+    screen = sentences.map((sentence) => `• ${sentence}`).join("\n\n");
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("weighs a named entity another loaded conversation wrote as the letter Codex shows", async () => {
+    // in the longest word, which the check starts from
+    const answer = (word: string) => `The ${word} verification completed successfully, and every remaining check passed as expected.`;
+    const rollout = otherFolderThread([{ type: "agent_message", message: answer("réexaminations") }]);
+    foreground = picker;
+    screen = `• ${answer("réexaminations")}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0600";
+    elsewhereThread(peer, [answer("r&eacute;examinations")]);
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing while the loaded conversations' histories are larger than is read", async () => {
+    const rollout = otherFolderThread();
+    foreground = picker;
+    screen = `• ${otherAnswer}`;
+    const alone = await loaded(other);
+    expect(await resolve()).toBe(rollout);
+    alone.kill();
+    await alone.exited;
+    // another loaded conversation's history past 128 MiB (sparse: no disk is used)
+    const peer = "01a16b22-7e1f-7072-8897-dddddddd0700";
+    truncateSync(elsewhereThread(peer, ["Something else entirely."]), 129 * 1024 * 1024);
+    await loaded(other, peer);
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("offers nothing for an answer only a codex exec run or a subagent gave", async () => {
+    const rollout = otherFolderThread();
+    const answerOf = (who: string) => `An answer only the ${who} gave, about the loaded threads and the picker, in its own words.`;
+    const exec = "01a16b22-7e1f-7072-8897-dddddddd0800";
+    elsewhereThread(exec, [answerOf("exec run")], "exec");
+    const subagent = "01a16b22-7e1f-7072-8897-dddddddd0801";
+    elsewhereThread(subagent, [answerOf("subagent")]);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("UPDATE threads SET agent_role = 'worker' WHERE id = ?").run(subagent);
+    db.close();
+    foreground = picker;
+    await loaded(other, exec, subagent);
+    for (const who of ["exec run", "subagent"]) {
+      screen = `• ${answerOf(who)}`;
+      expect({ who, found: await resolve() }).toEqual({ who, found: null });
+    }
+    screen = `• ${otherAnswer}`;
+    expect(await resolve()).toBe(rollout);
   });
 
   heldIt("offers nothing while weighing another loaded conversation's words would take too long", async () => {
