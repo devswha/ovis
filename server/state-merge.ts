@@ -12,12 +12,14 @@
  * revoked on the other side since, and it stays revoked. The first merge has nothing to compare with
  * and keeps every device. The gate is closed from the earliest evidence either side holds, so a merge
  * never opens it. A registry or merge record that cannot be read fails closed: the store stays gated
- * and pairs nothing (devices.ts), and neither registry is written.
+ * and pairs nothing (devices.ts), neither registry is written, and a dir without a registry gets a
+ * closed, empty one marked incomplete: its missing devices are never read as revoked.
  *
- * Preferences and mutes, too, end alike in both dirs. A setting (or the pins) the other dir changed
- * since the last merge is laid over this dir's unless this dir changed it too; then the preferences
- * document written last wins. The first merge counts every setting as changed on both sides. Mutes
- * follow the other dir's additions and removals since the last merge. Push subscriptions go to the
+ * Preferences and mutes, too, end alike in both dirs. Each merge starts from what the last one
+ * settled on and lays over it what each dir changed since (against what that dir held after the last
+ * merge); where both changed a setting, the preferences document written last wins. Mutes take each
+ * dir's additions and removals. The first merge keeps this dir's, the other's where this one has none
+ * or wrote longer ago, and the union of the mutes. Push subscriptions go to the
  * dir in use only, each taken over once, with the key pair it was made for (push.ts PUSH_EXTRA_KEYS).
  *
  * Nothing is deleted: a file about to be replaced is first copied to `state-merge-backups/<time>/`
@@ -26,7 +28,7 @@
  * (a crash, a power loss) merges the same way at the next start.
  */
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
@@ -37,6 +39,8 @@ import { stateDirNames } from "./update-state.ts";
 
 const RECORD = "state-merge.json";
 const BACKUPS = "state-merge-backups";
+/** Beside a registry written where one was missing: it may lack devices the other dir holds. */
+const INCOMPLETE = "state-merge-devices-incomplete.json";
 
 /** What a merge leaves the device store to know. */
 export interface SiblingMerge {
@@ -51,8 +55,9 @@ export interface SiblingMerge {
  */
 export function siblingStateDir(active: string, env: Record<string, string | undefined> = process.env): string | null {
   const { legacy, next } = stateDirNames(env);
-  const own = resolve(active);
-  const other = own === resolve(legacy) ? next : own === resolve(next) ? legacy : null;
+  // by real path: a supervisor names its dir as it found it on disk, a link in the config path resolved
+  const own = realpath(active);
+  const other = own === realpath(legacy) ? next : own === realpath(next) ? legacy : null;
   if (other === null) return null;
   try {
     if (!statSync(other).isDirectory()) return null;
@@ -60,7 +65,7 @@ export function siblingStateDir(active: string, env: Record<string, string | und
     // an other dir that cannot be looked at may hold devices: the merge then fails closed
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : other;
   }
-  return realpath(other) === realpath(own) ? null : other;
+  return realpath(other) === own ? null : other;
 }
 
 function realpath(path: string): string {
@@ -78,8 +83,10 @@ interface MergeRecord {
   dirs: string[];
   /** the device ids both registries held after the last merge that wrote both */
   devices: string[];
-  /** each dir's preferences after this merge, by real path */
+  /** each dir's preferences as they were on disk after this merge, by real path */
   preferences: Record<string, PreferencesSnapshot>;
+  /** the preferences this merge settled on, which a dir that could not be written has still to take */
+  preferences_target?: PreferencesSnapshot;
   /** the hashes of the endpoints taken over from each dir, by its real path */
   push: Record<string, string[]>;
 }
@@ -93,9 +100,11 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * Merges two registries by device id; `base` holds the ids both had after the last merge (null:
  * none happened). A device one side dropped since then stays dropped; one only one side added is
  * kept. A device both hold keeps this side's credential and label, the narrower role, its first
- * creation and its last sighting. A missing registry (`null`) says nothing was dropped there.
+ * creation and its last sighting. A missing registry (`null`) says nothing was dropped there, nor
+ * does an incomplete one (`incomplete`: written where a registry was missing, devices.ts placeholder).
  */
-export function mergeRegistries(own: Registry | null, other: Registry | null, base: ReadonlySet<string> | null): Registry {
+export function mergeRegistries(own: Registry | null, other: Registry | null, base: ReadonlySet<string> | null,
+  incomplete: { own: boolean; other: boolean } = { own: false, other: false }): Registry {
   const mine = own?.devices ?? [];
   const theirs = other?.devices ?? [];
   const theirIds = new Set(theirs.map((device) => device.id));
@@ -103,7 +112,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
   const devices: StoredDevice[] = [];
   for (const device of mine) {
     // revoked through the other dir since the last merge
-    if (other !== null && base?.has(device.id) && !theirIds.has(device.id)) continue;
+    if (other !== null && !incomplete.other && base?.has(device.id) && !theirIds.has(device.id)) continue;
     const twin = theirs.find((candidate) => candidate.id === device.id);
     if (!twin || twin.token_hash !== device.token_hash) {
       if (twin) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
@@ -119,7 +128,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null, ba
   }
   for (const device of theirs) {
     // revoked here since the last merge
-    if (myIds.has(device.id) || own !== null && base?.has(device.id)) continue;
+    if (myIds.has(device.id) || own !== null && !incomplete.own && base?.has(device.id)) continue;
     devices.push(device);
   }
   // every piece of evidence that either side was ever gated keeps the merge gated
@@ -135,6 +144,7 @@ const isRecord = (value: unknown): value is MergeRecord =>
   isObject(value) && value["version"] === 1 && Number.isSafeInteger(value["seq"]) && typeof value["at"] === "string"
   && isStrings(value["dirs"]) && isStrings(value["devices"])
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
+  && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
   && isObject(value["push"]) && Object.values(value["push"]).every(isStrings);
 
 /** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
@@ -163,11 +173,20 @@ function closeGateOnDisk(active: string, stamp: string, now: Date): void {
   if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
   try {
     backUp(active, "devices.json", stamp);
-    // where there was no registry, the mark keeps the next merge from reading its empty list as every device revoked
+    // where there was no registry, the marks keep the next merge from reading its empty list as
+    // every device revoked: one in the registry, and one beside it that an older release saving the
+    // registry does not erase
+    if (own.kind === "missing") markIncomplete(active, true);
     writePrivateState(path, { gate_closed_at: now.toISOString(), devices: own.kind === "ok" ? own.devices : [], ...(own.kind === "missing" ? { placeholder: true } : {}) });
   } catch (error) {
     console.error(`Cannot close the gate in ${path}: a release before this one may start on it ungated: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** Marks the registry of `dir` as missing devices that may be elsewhere, or clears that mark. */
+function markIncomplete(dir: string, incomplete: boolean): void {
+  if (incomplete) writePrivateState(join(dir, INCOMPLETE), { devices_incomplete: true });
+  else rmSync(join(dir, INCOMPLETE), { force: true });
 }
 
 /** Copies `name` in `dir`, if it is there, to the backups of this merge before it is replaced. */
@@ -206,17 +225,16 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   if (unreadable !== null) {
     return { ids: null, changed: 0, blocked: `Cannot read ${unreadable}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore a valid devices.json there or fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
   }
-  // a placeholder (closeGateOnDisk) counts as no registry, its closed gate as evidence
-  const registry = (read: typeof own): Registry | null => read.kind === "ok" && !read.placeholder ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
+  // an incomplete registry (closeGateOnDisk) adds its devices and its closed gate, and revokes nothing
+  const ownIncomplete = own.kind === "ok" && own.placeholder || existsSync(join(active, INCOMPLETE));
+  const otherIncomplete = other.kind === "ok" && other.placeholder || existsSync(join(sibling, INCOMPLETE));
+  const registry = (read: typeof own): Registry | null => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
-  const gates = [own, other].map((read) => read.kind === "ok" ? read.gateClosedAt : null);
-  if (mine === null && theirs === null && gates.every((gate) => gate === null)) return { blocked: null, ids: [], changed: 0 };
-  const merged: Registry & { placeholder?: true } = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null);
-  // a closed gate on either side, a placeholder's included, keeps the merge closed
-  merged.gate_closed_at = earliest([merged.gate_closed_at, ...gates]);
-  // made of placeholders alone, the result is one too: it holds no device list to revoke from
-  if (mine === null && theirs === null) merged.placeholder = true;
+  if (mine === null && theirs === null) return { blocked: null, ids: [], changed: 0 };
+  const merged = mergeRegistries(mine, theirs, base ? new Set(base.devices) : null, { own: ownIncomplete, other: otherIncomplete });
+  // with a complete registry in it, the result holds every device not revoked since the last merge
+  const complete = mine !== null && !ownIncomplete || theirs !== null && !otherIncomplete;
   const onDisk = (read: typeof own) => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices, ...(read.placeholder ? { placeholder: true } : {}) } : null;
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
   if (text(onDisk(own)) !== text(merged)) {
@@ -226,6 +244,10 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     } catch (error) {
       return { ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
     }
+  }
+  try { markIncomplete(active, !complete); }
+  catch (error) {
+    return { ids: null, changed: 0, blocked: `Cannot mark whether ${ownPath} is complete (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
   }
   if (text(onDisk(other)) !== text(merged)) {
     try {
@@ -240,34 +262,53 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       return { blocked: null, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added };
     }
   }
+  try { markIncomplete(sibling, !complete); }
+  catch (error) { console.error(`Cannot mark whether ${otherPath} is complete: ${error instanceof Error ? error.message : String(error)}`); }
   return { blocked: null, ids: merged.devices.map((device) => device.id), changed: added };
 }
 
-function mergePreferences(active: string, sibling: string, base: MergeRecord | null, stamp: string): Record<string, PreferencesSnapshot> | null {
+function mergePreferences(active: string, sibling: string, base: MergeRecord | null, stamp: string): { snapshots: Record<string, PreferencesSnapshot>; target: PreferencesSnapshot } | null {
   const own = readPreferences(active);
   const other = readPreferences(sibling);
   if (own === null || other === null) {
     console.error(`The shared preferences of ${own === null ? active : sibling} cannot be read; those of ${sibling} are not merged into ${active}`);
     return null;
   }
-  const before = base?.preferences[realpath(sibling)] ?? null;
-  const mineBefore = base?.preferences[realpath(active)] ?? null;
+  // what the last merge settled on, and what each dir held on disk after it: a dir's change since is
+  // what differs from its own; what it has still to take is what differs from the settled one
+  const target = base?.preferences_target ?? null;
+  const ownBefore = target === null ? null : base?.preferences[realpath(active)] ?? null;
+  const otherBefore = target === null ? null : base?.preferences[realpath(sibling)] ?? null;
   const theirsNewer = other.written > own.written;
-  // a value one side holds that differs from its own at the last merge (any value, at the first)
   const changed = (value: unknown, was: PreferencesSnapshot | null, at: (snapshot: PreferencesSnapshot) => unknown) =>
     value !== undefined && (was === null || text(value) !== text(at(was)));
-  const take = (mine: unknown, theirs: unknown, at: (snapshot: PreferencesSnapshot) => unknown): boolean =>
-    changed(theirs, before, at) && text(mine) !== text(theirs) && (mine === undefined || !changed(mine, mineBefore, at) || theirsNewer);
-  const settings: Record<string, unknown> = { ...own.doc.settings };
-  for (const [key, value] of Object.entries(other.doc.settings)) {
-    const at = (snapshot: PreferencesSnapshot) => (snapshot.settings as Record<string, unknown>)[key];
-    if (take(settings[key], value, at)) settings[key] = value;
+  /** The settled value with each dir's change since laid over it; where both changed it, the document written last. */
+  const pick = (mine: unknown, theirs: unknown, at: (snapshot: PreferencesSnapshot) => unknown): unknown => {
+    // the first merge: this dir's, the other's where this one has none or wrote longer ago
+    if (target === null) return theirs !== undefined && (mine === undefined || theirsNewer) ? theirs : mine;
+    const mineChanged = changed(mine, ownBefore, at);
+    const theirsChanged = changed(theirs, otherBefore, at);
+    if (mineChanged && theirsChanged && text(mine) !== text(theirs)) return theirsNewer ? theirs : mine;
+    return mineChanged ? mine : theirsChanged ? theirs : at(target);
+  };
+  const settings: Record<string, unknown> = {};
+  const keys = new Set([...Object.keys(own.doc.settings), ...Object.keys(other.doc.settings), ...Object.keys(target?.settings ?? {})]);
+  for (const key of keys) {
+    const read = (held: { settings: PreferencesChange["settings"] }) => (held.settings as Record<string, unknown>)[key];
+    const value = pick(read(own.doc), read(other.doc), read);
+    if (value !== undefined) settings[key] = value;
   }
-  const pins = take(own.doc.pins, other.doc.pins, (snapshot) => snapshot.pins) ? other.doc.pins : own.doc.pins;
-  const was = new Set(before?.muted_panes ?? []);
-  const now = new Set(other.doc.muted_panes);
-  const muted = [...own.doc.muted_panes.filter((pane) => !(before !== null && was.has(pane) && !now.has(pane))),
-    ...other.doc.muted_panes.filter((pane) => !own.doc.muted_panes.includes(pane) && !was.has(pane))];
+  const pins = pick(own.doc.pins, other.doc.pins, (snapshot) => snapshot.pins) as string[] | undefined;
+  let muted: string[];
+  if (target === null) muted = [...own.doc.muted_panes, ...other.doc.muted_panes.filter((pane) => !own.doc.muted_panes.includes(pane))];
+  else {
+    const set = new Set(target.muted_panes);
+    for (const [now, was] of [[own.doc.muted_panes, ownBefore?.muted_panes], [other.doc.muted_panes, otherBefore?.muted_panes]] as const) {
+      for (const pane of now) if (!was?.includes(pane)) set.add(pane);
+      for (const pane of was ?? []) if (!now.includes(pane)) set.delete(pane);
+    }
+    muted = [...set];
+  }
   const merged = { settings: settings as PreferencesChange["settings"], ...(pins === undefined ? {} : { pins }), muted_panes: muted };
   const document = { revision: Math.max(own.doc.revision, other.doc.revision) + 1, settings: merged.settings, ...(pins === undefined ? {} : { pins }) };
   // what each store would read back: two lists each within their limit may not be together
@@ -292,12 +333,22 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
       return false;
     }
   };
-  if (!write(active, own.doc)) return null;
-  // both dirs end alike, as the devices do: whichever one a later start uses has every setting.
-  // Where the other dir could not be written, the last merge's snapshots stay: what this dir took
-  // in is then still a change here, and reaches the other dir at the next merge, whichever is in use
-  if (!write(sibling, other.doc)) return null;
-  return { [realpath(active)]: merged, [realpath(sibling)]: merged };
+  // both dirs end alike, as the devices do: whichever one a later start uses has every setting. A dir
+  // that could not be written keeps its snapshot as it is on disk, and takes the settled values next time
+  write(active, own.doc);
+  write(sibling, other.doc);
+  const held = (dir: string, fallback: PreferencesSnapshot | null): PreferencesSnapshot | null => {
+    const read = readPreferences(dir);
+    if (read === null) return fallback;
+    const { revision: _revision, ...snapshot } = read.doc;
+    return snapshot;
+  };
+  const snapshots: Record<string, PreferencesSnapshot> = {};
+  for (const [dir, before] of [[active, ownBefore], [sibling, otherBefore]] as const) {
+    const snapshot = held(dir, before);
+    if (snapshot !== null) snapshots[realpath(dir)] = snapshot;
+  }
+  return { snapshots, target: merged };
 }
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;
@@ -328,8 +379,9 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     const theirs = subscriptionsIn(readPushFile(join(sibling, "push-subscriptions.json")));
     const theirKey = vapidIn(readPushFile(join(sibling, "vapid.json")));
     const before = base?.push[realpath(sibling)] ?? [];
-    const record = { [realpath(sibling)]: [...new Set([...before, ...theirs.map((subscription) => endpointHash(subscription.endpoint))])] };
-    if (theirs.length === 0) return { record, taken: 0 };
+    // an endpoint counts as taken over once it is here, or kept out on purpose: never one skipped for a key it lacks
+    const recorded = (done: Subscription[]) => ({ [realpath(sibling)]: [...new Set([...before, ...done.map((subscription) => endpointHash(subscription.endpoint))])] });
+    if (theirs.length === 0) return { record: recorded([]), taken: 0 };
     // the key each of their subscriptions was made for: one they took over keeps its own
     const theirExtra = new Map<string, Vapid>();
     const extraFile = readPushFile(join(sibling, PUSH_EXTRA_KEYS)) as { keys?: unknown } | undefined;
@@ -348,9 +400,10 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
       const value = readPushFile(join(active, "push-retired.json"));
       retired = (Array.isArray(value) ? value : []).map((entry) => (entry as { hash?: unknown } | null)?.hash).filter((hash): hash is string => typeof hash === "string");
     } catch { /* telemetry: an endpoint it would have kept out only fails its next push */ }
-    const taken = theirs.filter((subscription) => !mine.some((held) => held.endpoint === subscription.endpoint)
-      && !before.includes(endpointHash(subscription.endpoint)) && !retired.includes(endpointHash(subscription.endpoint))
-      && keyOf(subscription.endpoint) !== null);
+    const settled = (subscription: Subscription) => mine.some((held) => held.endpoint === subscription.endpoint)
+      || before.includes(endpointHash(subscription.endpoint)) || retired.includes(endpointHash(subscription.endpoint));
+    const taken = theirs.filter((subscription) => !settled(subscription) && keyOf(subscription.endpoint) !== null);
+    const record = recorded(theirs.filter((subscription) => settled(subscription) || taken.includes(subscription)));
     if (taken.length === 0) return { record, taken: 0 };
     if (myKey === null && theirKey !== null) {
       // this dir has signed nothing yet: the other dir's key becomes its own
@@ -422,7 +475,8 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     dirs: pair,
     // a merge that could not run keeps the last one's base, so the next one compares with it
     devices: devices.ids ?? base?.devices ?? [],
-    preferences: preferences ?? base?.preferences ?? {},
+    preferences: preferences?.snapshots ?? base?.preferences ?? {},
+    ...(preferences?.target ?? base?.preferences_target ? { preferences_target: preferences?.target ?? base?.preferences_target } : {}),
     push: { ...base?.push, ...push?.record },
   };
   let blocked = devices.blocked;

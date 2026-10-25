@@ -159,6 +159,24 @@ describe("paired devices of the install's other state dir", () => {
     }
   });
 
+  it("are kept when a release before this one saved over the placeholder before the other dir was repaired", () => {
+    const { active, sibling } = install();
+    writeDevices(active, [device("x")]);
+    writeDevices(sibling, [device("x")]);
+    mergeSiblingState(active, sibling, at(0));
+    const repaired = readFileSync(join(sibling, "devices.json"), "utf8");
+    rmSync(join(active, "devices.json"));
+    writeFileSync(join(sibling, "devices.json"), "{ not json");
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(1)); } finally { said.mockRestore(); }
+    // an older release pairs y on the placeholder and saves the registry its own way, without the mark
+    writeDevices(active, [device("y")], "2026-10-25T06:00:00.000Z");
+    writeFileSync(join(sibling, "devices.json"), repaired);
+    mergeSiblingState(active, sibling, at(2));
+    expect(ids(active)).toEqual(["x", "y"]);
+    expect(ids(sibling)).toEqual(["x", "y"]);
+  });
+
   it("stay revoked when the clock went back between merges", () => {
     const { active, sibling } = install();
     writeDevices(active, [device("a")]);
@@ -291,6 +309,27 @@ describe("shared preferences of the install's other state dir", () => {
     for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get()).toMatchObject({ settings: { language: "ko" }, muted_panes: [] });
   });
 
+  it("give way to a change made after they were taken in, though the other dir could not take it", () => {
+    const { active, sibling } = install();
+    for (const dir of [active, sibling]) {
+      writeJson(join(dir, "preferences.json"), { revision: 1, settings: { language: "en" } });
+      writeJson(join(dir, "muted-panes.json"), { muted_panes: [] });
+    }
+    mergeSiblingState(active, sibling, at(0));
+    writeJson(join(sibling, "preferences.json"), { revision: 2, settings: { language: "ko" } }, at(1));
+    writeJson(join(active, "muted-panes.json"), { muted_panes: ["local:p"] });
+    // this dir takes "ko" in; the other dir's mutes cannot be replaced
+    const blocker = join(sibling, `muted-panes.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    const said = spyOn(console, "error").mockImplementation(() => {});
+    try { mergeSiblingState(active, sibling, at(2)); } finally { said.mockRestore(); rmSync(blocker, { recursive: true }); }
+    expect(new PreferenceStore(active).get().settings).toEqual({ language: "ko" });
+    // the user sets it back here, later
+    writeJson(join(active, "preferences.json"), { revision: 3, settings: { language: "en" } }, at(3));
+    mergeSiblingState(active, sibling, at(4));
+    for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get()).toMatchObject({ settings: { language: "en" }, muted_panes: ["local:p"] });
+  });
+
   it("conflict by the preferences document's own time, never by the mutes'", () => {
     const { active, sibling } = install();
     for (const dir of [active, sibling]) {
@@ -381,6 +420,19 @@ describe("push keys of the install's other state dir", () => {
     expect(readFileSync(join(active, "vapid.json"), "utf8")).toBe("{}\n");
   });
 
+  it("leave a subscription whose key is missing to a later merge, once the key is back", () => {
+    const { active, sibling } = install();
+    const subscription = { endpoint: "https://push.example/e", keys: { p256dh: "p", auth: "a" }, device_id: null };
+    writeJson(join(sibling, "push-subscriptions.json"), [subscription]);
+    writeFileSync(join(sibling, "vapid.json"), "{}\n");
+    mergeSiblingState(active, sibling, at(0));
+    expect(existsSync(join(active, "push-subscriptions.json"))).toBe(false);
+    writeJson(join(sibling, "vapid.json"), webpush.generateVAPIDKeys());
+    mergeSiblingState(active, sibling, at(1));
+    const held = JSON.parse(readFileSync(join(active, "push-subscriptions.json"), "utf8")) as { endpoint: string }[];
+    expect(held.map((entry) => entry.endpoint)).toEqual([subscription.endpoint]);
+  });
+
   it("stay with each subscription when it moves on again, from a dir that took it over", async () => {
     const { active, sibling } = install();
     const first = webpush.generateVAPIDKeys();
@@ -405,6 +457,10 @@ describe("the install's other state dir", () => {
     expect(siblingStateDir(legacy, env)).toBe(next);
     expect(siblingStateDir(next, env)).toBe(legacy);
     expect(siblingStateDir(join(root, "custom"), env)).toBeNull();
+    // the config dir behind a link, named by its real path as a supervisor started from it finds it
+    const linked = join(root, "linked-config");
+    symlinkSync(root, linked);
+    expect(realpathSync(siblingStateDir(realpathSync(legacy), { XDG_CONFIG_HOME: linked })!)).toBe(realpathSync(next));
     rmSync(legacy, { recursive: true });
     expect(siblingStateDir(next, env)).toBeNull();
     symlinkSync(next, legacy);
