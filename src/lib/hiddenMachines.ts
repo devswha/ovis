@@ -102,8 +102,16 @@ export function canHideMachine(machines: readonly HasId[], hidden: readonly stri
 
 /** The hidden list after showing or hiding `id`, with the ids of PCs no longer in the roster dropped. */
 export function withMachineHidden(machines: readonly HasId[], hidden: readonly string[], id: string, hide: boolean): string[] {
-  const kept = hidden.filter((other) => other !== id && machines.some((machine) => machine.id === other));
+  const inRoster = hidden.filter((other) => machines.some((machine) => machine.id === other));
+  // a list that hides every PC is drawn as none hidden (shownMachines), and changes from there
+  const drawn = inRoster.length >= machines.length ? [] : inRoster;
+  const kept = drawn.filter((other) => other !== id);
   return hide ? [...kept, id] : kept;
+}
+
+/** Whether `id` is drawn in the sidebar: what its switch in Settings says. */
+export function isMachineShown(machines: readonly HasId[], hidden: readonly string[], id: string): boolean {
+  return shownMachines(machines, hidden).some((machine) => machine.id === id);
 }
 
 /**

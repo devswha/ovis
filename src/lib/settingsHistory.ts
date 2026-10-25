@@ -198,7 +198,9 @@ if (typeof window !== "undefined") {
     const previous = observed;
     observed = event.state;
     const entry = settingsEntry(event.state);
-    steppedOff = entry === null && settingsEntry(previous) !== null;
+    // onto the entry this opening began from, which carries its mark; Forward onto an entry above
+    // Settings (a preview opened over it) carries another and is no closing
+    steppedOff = entry === null && settingsEntry(previous) !== null && fieldOf(event.state, BASE_KEY) !== undefined && fieldOf(event.state, BASE_KEY) === fieldOf(previous, BASE_KEY);
     // Back from above onto the entries of a buried opening: Settings closed when they were buried,
     // so they are stepped over to the entry they began from instead of opening it again
     if (pending === null && entry !== null && buried.has(fieldOf(event.state, BASE_KEY)) && fieldOf(previous, BASE_KEY) !== fieldOf(event.state, BASE_KEY)) {

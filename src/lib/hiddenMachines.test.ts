@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { afterEach, beforeEach } from "bun:test";
 
-import { canHideMachine, HIDDEN_MACHINES_KEY, HIDDEN_MACHINES_MAX, parseHiddenMachines, readHiddenMachines, selectionAfterHiding, setHiddenMachines, shownMachines, withMachineHidden } from "./hiddenMachines.ts";
+import { canHideMachine, isMachineShown, HIDDEN_MACHINES_KEY, HIDDEN_MACHINES_MAX, parseHiddenMachines, readHiddenMachines, selectionAfterHiding, setHiddenMachines, shownMachines, withMachineHidden } from "./hiddenMachines.ts";
 import { DEFAULT_SETTINGS, saveSettings } from "./settings.ts";
 
 const roster = [{ id: "local" }, { id: "work" }, { id: "home" }];
@@ -32,6 +32,16 @@ describe("PCs shown on this device", () => {
     expect(withMachineHidden(roster, ["work"], "work", true)).toEqual(["work"]);
     expect(withMachineHidden(roster, ["work", "removed"], "home", true)).toEqual(["work", "home"]);
     expect(withMachineHidden(roster, ["work", "home"], "work", false)).toEqual(["home"]);
+  });
+
+  it("draws the switches as the sidebar does, and changes a list that hid every PC from what is drawn", () => {
+    // Home, the one PC shown, was removed: Host and Work, both hidden, are drawn again
+    const left = [{ id: "local" }, { id: "work" }];
+    expect(isMachineShown(left, ["local", "work"], "local")).toBe(true);
+    expect(isMachineShown(left, ["local", "work"], "work")).toBe(true);
+    expect(isMachineShown(roster, ["work"], "work")).toBe(false);
+    expect(withMachineHidden(left, ["local", "work"], "work", true)).toEqual(["work"]);
+    expect(withMachineHidden(left, ["local", "work"], "local", false)).toEqual([]);
   });
 
   it("moves a selection off a PC just hidden, to the Host when it is shown", () => {

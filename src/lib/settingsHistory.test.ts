@@ -94,6 +94,29 @@ describe("recordSettings", () => {
     expect(seen).toEqual([true, false]);
   });
 
+  it("does not take Forward onto a preview opened over Settings for Settings closing", async () => {
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
+    fake.window.history.pushState({ "ovis:nav": true });
+    recordSettings([{ page: "remote", keyBar: false }]);
+    await settled();
+    // a preview opened from the Settings entry, then Back onto Settings and Forward onto the preview
+    fake.window.history.pushState(outsideSettings(fake.window.history.state));
+    fake.window.history.go(-1);
+    await settled();
+    fake.window.history.go(1);
+    await settled();
+    expect(seen).toEqual([false, false]);
+    fake.window.history.go(-1);
+    await settled();
+    recordSettings([]);
+    await settled();
+    expect(seen).toEqual([false, false, false, true]);
+    // back onto the first entry, where the next case starts
+    fake.window.history.go(-1);
+    await settled();
+  });
+
   it("does not take a step it cannot see on trust: entries of an earlier opening a Forward landed on are rebuilt", async () => {
     // entries an earlier opening left (a wider dialog's Terminal and its editor), landed on by Forward
     const key = "ovis:settings";
