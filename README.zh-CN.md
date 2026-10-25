@@ -1,16 +1,23 @@
-# Ovis
-
-Ovis，herdr 的浏览器和手机客户端。
-
 <p align="center">
   <img src="public/icons/icon-192.png" alt="Ovis" width="100">
 </p>
 
+<h1 align="center">Ovis</h1>
+
 <p align="center">
-  <a href="README.md">English</a> · <strong>简体中文</strong> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+  <strong>你的编程智能体，就在手机上。</strong>
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
+  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
+  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <strong>简体中文</strong> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+  <br>
   <a href="https://ovis.sh/">官网</a> ·
   <a href="#install">安装</a> ·
   <a href="https://ovis.sh/demo/">体验演示</a> ·
@@ -19,17 +26,41 @@ Ovis，herdr 的浏览器和手机客户端。
   <a href="#docs">文档</a>
 </p>
 
+编程智能体总会停下来等你：一个权限请求、一个问题、一轮刚做完的任务。离开电脑时，就只能用手机键盘 SSH 进去盯着原始终端。Ovis 是 [herdr](https://github.com/herdrdev/herdr) 的浏览器和手机客户端，它把你电脑上运行的每个智能体显示成聊天，把它的请求变成轻点即可回答的卡片，需要时轻点一下就能打开真正的终端。原名 herdr web UI。
+
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT 许可证"></a>
-  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub 星标数"></a>
-  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="最新版本"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="可安装的 PWA"></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="手机上的 Ovis 录屏：工作中的 Claude Code 聊天、工作区列表、Codex 询问是否运行 git push origin feat/export-guard 的 Allow command? 卡片并回答 Yes、运行 git log、bun test 和 git status 的真正终端，然后是 Claude 完成的提醒，轻点回到它的回答。"></a>
+  <br>
+  <sub>Claude Code 的聊天、Codex 请求运行 <code>git push</code>、真正的终端，以及 Claude 完成时的提醒。录制自可在浏览器中运行的<a href="https://ovis.sh/demo/">演示</a>。</sub>
 </p>
 
-**在手机上使用 Claude Code 和 Codex。** 以聊天方式阅读并回复你电脑上正在运行的智能体会话，需要时可切换到真正的终端。原名 herdr web UI。
+<a id="install"></a>
 
----
+## 安装
+
+- **Mac：** 下载 [Ovis.dmg](https://ovis.sh/Ovis.dmg)，打开后点击 **Install**。
+- **Windows：** 下载 [Ovis.exe](https://ovis.sh/Ovis.exe)，运行后点击 **Install**。
+- **Linux：** 在终端中运行：
+  ```bash
+  curl -fsSL https://ovis.sh/install.sh | sh
+  ```
+
+三种方式都会在缺少时一并安装 herdr 和 Bun，无需 Node。开启 Tailscale 后会显示二维码：用手机扫码打开 Ovis，再添加到主屏幕。iPhone（TestFlight）和 Android 应用正在公测：[ovis.sh/zh/beta](https://ovis.sh/zh/beta/)。
+
+系统要求、PowerShell 安装、只装插件的方式，以及某一步失败时怎么办：见[安装详情](#install-details)和 [INSTALL.md](INSTALL.md)。
+
+## 能做什么
+
+- **herdr 跑的智能体都能用。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok 等，大多以聊天形式显示；其余的（比如 Letta Code）通过真正的终端使用。[支持的智能体 →](docs/guide.md#supported-agents)
+- **躺在沙发上也能批准。** 权限请求和问题以卡片形式出现。轻点一个回答，Ovis 会先确认请求仍然有效再发送。
+- **真正的终端，轻点即达。** 就是你留在电脑前的那个窗格，手机键盘上方的按键栏有 Esc、Tab、Ctrl 和方向键。
+- **智能体需要你时提醒。** 它提问或完成任务时会发推送通知，即使应用已关闭。
+- **所有工作区，一个列表。** herdr 的工作区、标签页和分屏，以及通过 SSH 添加的其他电脑，等你处理的会做标记。
+- **免费，MIT 许可。** 运行在你自己的电脑上，无需注册账号。
+
+**限制：** Ovis 需要 [herdr](https://github.com/herdrdev/herdr) 和你自己的电脑，电脑要开着并能从手机访问（Tailscale、VPN 或 SSH 隧道）。智能体在那台电脑上运行，而不是在云端。
+
+## 实际效果
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
@@ -76,6 +107,8 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>每段片段都是同时录制电脑和手机的真实操作，实时、无剪辑。点击可播放完整视频。</sub></p>
 
+## 更多功能
+
 - **聊天与终端，共用一个窗格** — 阅读 Claude Code、Codex、omp、omo、gjc、pi、Hermes 的原生会话记录，以及可明确识别的 OpenCode 和 Devin CLI 会话。Linux 上的 Grok 和实验性的 Antigravity（agy）也按下文所述条件提供支持，一键即可切换到同一窗格的终端。智能体工作时可将消息排队到下一轮发送，也可以用 Send now 立即发送。[支持的智能体 →](docs/guide.md#supported-agents)
 - **轻点即可批准** — 支持的审批请求、问题和计划菜单会显示为卡片，发送回答前会先确认提示仍然有效。不支持卡片的请求需在终端中回答。
 - **需要你时及时提醒** — 实时显示每个窗格的状态；应用打开时提醒会从顶部滑下；智能体需要输入或完成任务时发送推送通知，即使应用已关闭也能收到。
@@ -84,11 +117,9 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 - **查看仓库改动** — 从文件浏览器打开工作区、暂存区或提交之间的比较，逐个阅读文件差异，不会修改仓库。
 - **沿用现有工作流** — 智能体由 herdr 管理，本应用负责连接；在 Settings（设置）中更新应用，无需停止智能体，每次更新带来的变化以更新说明列出。新标签页和 worktree 可从行的 ⋯ 菜单创建。[全部功能 →](docs/guide.md#features)
 
----
+<a id="install-details"></a>
 
-<a id="install"></a>
-
-## 安装
+## 安装详情
 
 ```bash
 curl -fsSL https://ovis.sh/install.sh | sh

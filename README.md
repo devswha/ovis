@@ -1,16 +1,23 @@
-# Ovis
-
-Ovis, the browser and phone client for herdr.
-
 <p align="center">
   <img src="public/icons/icon-192.png" alt="Ovis" width="100">
 </p>
 
+<h1 align="center">Ovis</h1>
+
 <p align="center">
-  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+  <strong>Your coding agents, on your phone.</strong>
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
+  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
+  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+  <br>
   <a href="https://ovis.sh/">website</a> ·
   <a href="#install">install</a> ·
   <a href="https://ovis.sh/demo/">try the demo</a> ·
@@ -19,17 +26,39 @@ Ovis, the browser and phone client for herdr.
   <a href="#docs">docs</a>
 </p>
 
+Coding agents stop and wait for you: a permission prompt, a question, a finished turn. Away from your desk, that means SSH and a raw terminal on a phone keyboard. Ovis, the browser and phone client for [herdr](https://github.com/herdrdev/herdr), shows each agent running on your computer as a chat, with its prompts as cards you tap and the live terminal one tap away. Formerly herdr web UI.
+
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
-  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
-  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="Installable PWA"></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="Screen recording of Ovis on a phone: Claude Code's chat while it works, the workspace list, Codex's Allow command? card for git push origin feat/export-guard answered Yes, the live terminal running git log, bun test and git status, then an alert that Claude finished and a tap back to its answer."></a>
+  <br>
+  <sub>Claude Code's chat, Codex asking to run <code>git push</code>, the live terminal, then the alert when Claude is done. Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
 </p>
 
-**Claude Code and Codex, from your phone.** Read and reply to the agent sessions running on your computer as a chat, with the live terminal when you need it. Formerly herdr web UI.
+## install
 
----
+- **Mac:** download [Ovis.dmg](https://ovis.sh/Ovis.dmg), open it and click **Install**.
+- **Windows:** download [Ovis.exe](https://ovis.sh/Ovis.exe), run it and click **Install**.
+- **Linux:** run this in a terminal.
+  ```bash
+  curl -fsSL https://ovis.sh/install.sh | sh
+  ```
+
+Each one adds herdr and Bun if they are missing; Node is not needed. With Tailscale on, it shows a QR code: scan it to open Ovis on your phone, then add it to the home screen. The iPhone (TestFlight) and Android apps are in beta: [ovis.sh/beta](https://ovis.sh/beta/).
+
+Requirements, the PowerShell and plugin-only installs, and what to do when a step fails: [install details](#install-details) and [INSTALL.md](INSTALL.md).
+
+## what you get
+
+- **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most of them as a chat. The rest, like Letta Code, work through the live terminal. [Supported agents →](docs/guide.md#supported-agents)
+- **Approve from the couch.** Permission prompts and questions come up as cards. Tap an answer; Ovis checks the prompt is still current before sending it.
+- **The real terminal, one tap away.** The same pane you left at your desk, with Esc, Tab, Ctrl and arrows on a key bar above the phone keyboard.
+- **Alerts when an agent needs you.** A push alert when one asks something or finishes, even with the app closed.
+- **Every workspace in one list.** All your herdr workspaces, tabs and splits, plus other PCs over SSH, with the ones waiting on you marked.
+- **Free and MIT.** It runs on your own computer, with no account to sign up for.
+
+**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on and reachable from the phone (Tailscale, a VPN or an SSH tunnel). The agents run there, not in a cloud.
+
+## see it work
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
@@ -76,6 +105,8 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>Each clip is a live recording of the desktop and a phone at once, in real time with no cuts. Click one for the full video.</sub></p>
 
+## more features
+
 - **Chat and terminal, one pane** — native Claude Code, Codex, omp, omo, gjc, pi, Hermes and explicitly identified Devin CLI transcripts, plus OpenCode sessions herdr identifies, Linux Grok sessions and experimental Antigravity (agy) support under the limits below, with the live terminal a click away. Queue a message while the agent works for the next turn, or send it at once with Send now. [Supported agents →](docs/guide.md#supported-agents)
 - **Approve with a tap** — supported approvals, questions and plan menus become cards, checked to be current before your answer is sent. Use Terminal for requests without card support.
 - **Know when you're needed** — live status for every pane, an alert that drops in while the app is open, and push alerts when an agent needs input or finishes, even with the app closed.
@@ -84,9 +115,7 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 - **Review repository changes** — open working-tree, staged or commit comparisons from the file browser and read each file's diff without changing the repository.
 - **Keep your workflow** — herdr owns the agents; this app connects to them. Update from Settings without stopping them, with patch notes for what each update brings. New tabs and worktrees come from a row's ⋯ menu. [All features →](docs/guide.md#features)
 
----
-
-## install
+## install details
 
 ```bash
 curl -fsSL https://ovis.sh/install.sh | sh

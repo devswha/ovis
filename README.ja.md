@@ -1,16 +1,23 @@
-# Ovis
-
-Ovis は herdr のためのブラウザとスマートフォンのクライアントです。
-
 <p align="center">
   <img src="public/icons/icon-192.png" alt="Ovis" width="100">
 </p>
 
+<h1 align="center">Ovis</h1>
+
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <strong>日本語</strong> · <a href="README.ko.md">한국어</a>
+  <strong>コーディングエージェントを、スマートフォンで。</strong>
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
+  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
+  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <strong>日本語</strong> · <a href="README.ko.md">한국어</a>
+  <br>
   <a href="https://ovis.sh/">公式サイト</a> ·
   <a href="#install">インストール</a> ·
   <a href="https://ovis.sh/demo/">デモを試す</a> ·
@@ -19,17 +26,41 @@ Ovis は herdr のためのブラウザとスマートフォンのクライア�
   <a href="#docs">ドキュメント</a>
 </p>
 
+コーディングエージェントは、たびたび手を止めてあなたを待ちます。権限の確認、質問、終わったターン。席を離れていると、スマートフォンのキーボードで SSH して素のターミナルを見るしかありません。[herdr](https://github.com/herdrdev/herdr) のブラウザーとスマートフォンのクライアントである Ovis は、自分のコンピューターで動く各エージェントをチャットとして表示し、確認や質問をタップで答えるカードにします。本物のターミナルもワンタップで開けます。旧称 herdr web UI。
+
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT ライセンス"></a>
-  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub スター数"></a>
-  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="最新リリース"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="インストール可能な PWA"></a>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/phone-demo.gif" width="300" alt="スマートフォンで使う Ovis の画面収録：作業中の Claude Code のチャット、ワークスペース一覧、git push origin feat/export-guard を確認する Codex の Allow command? カードに Yes で回答、git log、bun test、git status を実行する本物のターミナル、そして Claude の完了通知とタップで回答に戻るところ。"></a>
+  <br>
+  <sub>Claude Code のチャット、<code>git push</code> の実行を確認する Codex、本物のターミナル、そして Claude の完了通知。ブラウザーで動く<a href="https://ovis.sh/demo/">デモ</a>で収録しました。</sub>
 </p>
 
-**Claude Code と Codex を、スマートフォンから。** 自分のコンピューターで実行中のエージェントセッションをチャットで読んで返答でき、必要なときは本物のターミナルも使えます。旧称 herdr web UI。
+<a id="install"></a>
 
----
+## インストール
+
+- **Mac:** [Ovis.dmg](https://ovis.sh/Ovis.dmg) をダウンロードして開き、**Install** をクリックします。
+- **Windows:** [Ovis.exe](https://ovis.sh/Ovis.exe) をダウンロードして実行し、**Install** をクリックします。
+- **Linux:** ターミナルで次を実行します。
+  ```bash
+  curl -fsSL https://ovis.sh/install.sh | sh
+  ```
+
+どれも herdr と Bun がなければ一緒にインストールし、Node は不要です。Tailscale がオンなら QR コードが表示されるので、スマートフォンで読み取って Ovis を開き、ホーム画面に追加してください。iPhone（TestFlight）と Android のアプリはベータ版です：[ovis.sh/ja/beta](https://ovis.sh/ja/beta/)。
+
+動作要件、PowerShell やプラグインだけのインストール、手順が失敗したときの対処：[インストールの詳細](#install-details)と [INSTALL.md](INSTALL.md)。
+
+## できること
+
+- **herdr で動くエージェントなら何でも。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok など、ほとんどはチャットで読めます。それ以外（Letta Code など）は本物のターミナルで使えます。[対応エージェント →](docs/guide.md#supported-agents)
+- **ソファから承認。** 権限の確認や質問はカードで届きます。答えをタップすると、その確認がまだ有効かを Ovis が確かめてから送信します。
+- **本物のターミナルをワンタップで。** 机に置いてきたのと同じペインです。スマートフォンのキーボードの上のキーバーに Esc、Tab、Ctrl、矢印キーが並びます。
+- **エージェントに呼ばれたら通知。** 質問が来たときや作業が終わったとき、アプリを閉じていてもプッシュ通知が届きます。
+- **すべてのワークスペースをひとつのリストに。** herdr のワークスペース、タブ、分割ペインに、SSH でつないだ別の PC まで。あなたを待っているものには印が付きます。
+- **無料、MIT ライセンス。** 自分のコンピューターで動き、登録するアカウントはありません。
+
+**制約：** Ovis には [herdr](https://github.com/herdrdev/herdr) と自分のコンピューターが必要です。電源が入っていて、スマートフォンから届く状態（Tailscale、VPN、SSH トンネル）にしておいてください。エージェントはクラウドではなく、そのコンピューターで動きます。
+
+## 動いているところ
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
@@ -76,6 +107,8 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>どのクリップも、パソコンとスマートフォンを同時に収録した実際の動作です。等速・カットなし。クリックすると動画全体を再生できます。</sub></p>
 
+## ほかの機能
+
 - **チャットとターミナルを、ひとつのペインで** — Claude Code、Codex、omp、omo、gjc、pi、Hermes の会話履歴と、特定できた OpenCode、Devin CLI のセッションを表示します。Linux の Grok と実験的な Antigravity（agy）も、後述の条件で対応しています。ワンクリックで同じペインのターミナルに切り替えられます。作業中のメッセージはキューに入れて次のターンで送るか、Send now ですぐに送れます。[対応エージェント →](docs/guide.md#supported-agents)
 - **タップで承認** — 対応する承認リクエスト、質問、計画メニューがカードになり、問いかけがまだ有効か確認してから回答を送信します。カードに対応していない要求にはターミナルで回答します。
 - **対応が必要なときに通知** — すべてのペインの状態をリアルタイムに表示し、アプリを開いているときは通知が上から降りてきます。入力が必要なときや完了したときには、アプリを閉じていてもプッシュ通知が届きます。
@@ -84,11 +117,9 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 - **リポジトリの変更を確認** — ファイルブラウザーから作業ツリー、ステージ済みの変更、コミット間の比較を開き、リポジトリを変更せずにファイルごとの差分を読めます。
 - **いつもの作業環境をそのままに** — エージェントは herdr が管理し、このアプリはそこに接続します。エージェントを止めずに Settings（設定）からアップデートでき、アップデートごとの変更はパッチノートで確認できます。新しいタブや worktree は行の ⋯ メニューから作れます。[すべての機能 →](docs/guide.md#features)
 
----
+<a id="install-details"></a>
 
-<a id="install"></a>
-
-## インストール
+## インストールの詳細
 
 ```bash
 curl -fsSL https://ovis.sh/install.sh | sh
