@@ -136,7 +136,10 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
 }) {
   const selectedMachineRef = useRef(selectedMachineId);
   selectedMachineRef.current = selectedMachineId;
+  /** how many picks were made since the tab opened: a link, an alert, the user (lib/hiddenMachines.ts reads it) */
+  const picks = useRef(0);
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
+    picks.current += 1;
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
     // on the same PC keeps the connected socket, which never reports again: resetting here
     // left the header on "reconnecting" after every pane switch.
@@ -227,7 +230,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   useEffect(() => {
     storeSelection(selectedMachineId, selectedPaneId);
   }, [selectedMachineId, selectedPaneId]);
-  return { selectedMachineRef, selectTarget, selectTargetRef };
+  return { selectedMachineRef, selectTarget, selectTargetRef, picks };
 }
 
 export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen }: {
