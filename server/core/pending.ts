@@ -128,6 +128,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   /** Shared by every owner until the pane has no receipt that could reuse an earlier append. */
   const piConsumed = new Map<string, Set<string>>();
   const piCapacity = new PiReceiptCapacity<Client>(options.piReceiptLimit ?? 256);
+  /** A receipt's identity is its slot token; invalidation and late confirmation cannot release it twice. */
+  const piSlots = new WeakSet<PiTypedReceipt>();
+  const releasePiSlot = (item: PiTypedReceipt): void => {
+    if (piSlots.delete(item)) piCapacity.remove(item.owner);
+  };
+  const activePiReceipt = (paneId: string, item: PiTypedReceipt): boolean =>
+    item.message.error?.code === "pi_transcript_pending" && piSlots.has(item) && piTyped.get(paneId)?.includes(item) === true;
   const reservePiReceipt = (owner: Client, identity: PendingIdentity): PiReceiptReservation<Client> | null => {
     if (identity.agent !== "pi") return null;
     const reservation = piCapacity.reserve(owner);
@@ -174,6 +181,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           ? { code: "transcript_unconfirmed", message: "Pi's exact transcript could not be resolved before Enter" }
           : { code: "pi_transcript_pending", message: "Waiting for Pi's durable transcript append" } },
     };
+    if (anchor !== null) piSlots.add(receipt);
     const items = piTyped.get(paneId) ?? [];
     items.push(receipt); piTyped.set(paneId, items);
     publishPi(paneId);
@@ -182,8 +190,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const failPi = (paneId: string, items: readonly PiTypedReceipt[]): void => {
     let changed = false;
     for (const item of items) {
-      if (item.message.error?.code !== "pi_transcript_pending") continue;
-      piCapacity.remove(item.owner);
+      if (!activePiReceipt(paneId, item)) continue;
+      releasePiSlot(item);
       item.message.error = { code: "pi_transcript_target_changed", message: "The Pi terminal or session changed before its transcript append was confirmed" };
       changed = true;
     }
@@ -196,19 +204,19 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const items = piTyped.get(paneId);
     if (!items?.some((item) => item.message.error?.code === "pi_transcript_pending")) return;
     await serialize(paneId, async () => {
-      const currentItems = piTyped.get(paneId)?.filter((item): item is PiTypedReceipt & { anchor: PiDeliveryAnchor } => item.message.error?.code === "pi_transcript_pending" && item.anchor !== null) ?? [];
+      const currentItems = piTyped.get(paneId)?.filter((item): item is PiTypedReceipt & { anchor: PiDeliveryAnchor } => activePiReceipt(paneId, item) && item.anchor !== null) ?? [];
       if (currentItems.length === 0) return;
       let identity: PendingIdentity;
       try { identity = (await currentIdentity(paneId, currentItems[0]!.identity.processPid ?? null)).identity; }
       catch { return; }
-      const same = currentItems.filter((item) => samePendingIdentity(item.identity, identity));
+      const same = currentItems.filter((item) => activePiReceipt(paneId, item) && samePendingIdentity(item.identity, identity));
       failPi(paneId, currentItems.filter((item) => !same.includes(item)));
       if (same.length === 0) return;
       let found: Awaited<ReturnType<typeof piTranscriptPath>>;
       try { found = await piTranscriptPath(paneId); } catch { return; }
       if (found === null) return;
       const path = "unwritten" in found ? found.unwritten.path : found.path;
-      const matching = same.filter((item) => path === item.anchor.path);
+      let matching = same.filter((item) => activePiReceipt(paneId, item) && path === item.anchor.path);
       failPi(paneId, same.filter((item) => !matching.includes(item)));
       if (matching.length === 0 || "unwritten" in found) return;
       const candidates = matching.map((item) => ({ id: item.message.id, text: item.message.text, anchor: item.anchor }));
@@ -219,13 +227,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // snapshot, briefly and boundedly; absence of a matching user record is never polled.
       for (let attempt = 0; result.retry && attempt < 4; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 25));
-        result = matchPiDeliveries(path, candidates, entries);
+        matching = matching.filter((item) => activePiReceipt(paneId, item));
+        if (matching.length === 0) return;
+        result = matchPiDeliveries(path, candidates.filter((candidate) => matching.some((item) => item.message.id === candidate.id)), entries);
       }
       if (result.retry) return;
       failPi(paneId, matching.filter((item) => result.changed.includes(item.message.id)));
       if (result.consumed.length === 0) return;
-      const consumed = new Set(result.consumed);
-      for (const item of matching) if (consumed.has(item.message.id)) piCapacity.remove(item.owner);
+      const consumed = new Set(matching.filter((item) => activePiReceipt(paneId, item) && result.consumed.includes(item.message.id)).map((item) => item.message.id));
+      for (const item of matching) if (consumed.has(item.message.id)) releasePiSlot(item);
       const retained = (piTyped.get(paneId) ?? []).filter((item) => !consumed.has(item.message.id));
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
       if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
@@ -647,8 +657,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // The browser retains a non-resendable local copy. Without this exact connection there is no
     // authenticated server owner to receive transcript content or a later consumption receipt.
     for (const [paneId, items] of piTyped) {
-      const removed = items.filter((item) => item.owner === client && item.message.error?.code === "pi_transcript_pending").length;
-      if (removed > 0) piCapacity.remove(client, removed);
+      for (const item of items) if (item.owner === client) releasePiSlot(item);
       const retained = items.filter((item) => item.owner !== client);
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
       if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
