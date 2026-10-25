@@ -556,6 +556,12 @@ it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks w
     reads.mockClear();
     expect(binding()?.generation).toBe(original?.generation);
     expect(reads.mock.calls).toHaveLength(0);
+    clock.mockReturnValue(Date.now() - 1000);
+    expect(binding()?.sessionId).toBe(session);
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    reads.mockClear();
+    expect(binding()?.sessionId).toBe(session);
+    expect(reads.mock.calls).toHaveLength(0);
     for (const tail of ["ordinary partial line", register(other).trimEnd()]) {
       appendFileSync(log, tail);
       ageLog();
@@ -570,32 +576,54 @@ it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks w
   } finally { clock.mockRestore(); reads.mockRestore(); await fixture.close(); }
 });
 
+/** Only the owned log's timestamp reporting changes; reads, size and identity stay real. */
+function fixedLogTimestamps(log: string, mtime: number, ctime = mtime) {
+  const identity = fs.statSync(log, { bigint: true });
+  const realFstat = fs.fstatSync;
+  function tickStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
+  function tickStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+    const stat = realFstat(fd, options);
+    if (stat.dev === identity.dev && stat.ino === identity.ino) {
+      Object.assign(stat, {
+        mtimeNs: BigInt(mtime) * 1_000_000n, ctimeNs: BigInt(ctime) * 1_000_000n,
+        mtimeMs: BigInt(mtime), ctimeMs: BigInt(ctime), mtime: new Date(mtime), ctime: new Date(ctime),
+      });
+    }
+    return stat;
+  }
+  return spyOn(fs, "fstatSync").mockImplementation(tickStat);
+}
+
+for (const age of [2000, 3000]) {
+  it.skipIf(process.platform !== "linux")(`checks the unchanged-log timestamp boundary at exactly ${age}ms`, async () => {
+    const fixture = await logFixture([]);
+    const { log, binding } = fixture;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    const stats = fixedLogTimestamps(log, now - age);
+    const reads = spyOn(fs, "readSync");
+    try {
+      writeFileSync(log, register(session));
+      const original = binding();
+      expect(original?.sessionId).toBe(session);
+      reads.mockClear();
+      expect(binding()?.generation).toBe(original?.generation);
+      if (age === 2000) expect(reads.mock.calls.length).toBeGreaterThan(0);
+      else expect(reads.mock.calls).toHaveLength(0);
+    } finally { reads.mockRestore(); stats.mockRestore(); clock.mockRestore(); await fixture.close(); }
+  });
+}
+
 for (const recent of ["mtime", "ctime", "both"] as const) {
   it.skipIf(process.platform !== "linux")(`rechecks an immediate same-size rewrite with racy ${recent} without utimes`, async () => {
     const fixture = await logFixture([]);
     const { log, binding } = fixture;
     const now = Date.now();
     const clock = spyOn(Date, "now").mockReturnValue(now);
-    const identity = fs.statSync(log, { bigint: true });
-    const realFstat = fs.fstatSync;
-    const mtime = recent === "ctime" ? now - 5000 : now;
-    const ctime = recent === "mtime" ? now - 5000 : now;
-    // These are real same-size writes. Model a filesystem that reports their
-    // mtime and ctime in the same tick, rather than relying on write timing luck.
-    function tickStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
-    function tickStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
-    function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
-    function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
-      const stat = realFstat(fd, options);
-      if (stat.dev === identity.dev && stat.ino === identity.ino) {
-        Object.assign(stat, {
-          mtimeNs: BigInt(mtime) * 1_000_000n, ctimeNs: BigInt(ctime) * 1_000_000n,
-          mtimeMs: BigInt(mtime), ctimeMs: BigInt(ctime), mtime: new Date(mtime), ctime: new Date(ctime),
-        });
-      }
-      return stat;
-    }
-    const stats = spyOn(fs, "fstatSync").mockImplementation(tickStat);
+    // Real same-size writes share a deterministic timestamp tick.
+    const stats = fixedLogTimestamps(log, recent === "ctime" ? now - 5000 : now, recent === "mtime" ? now - 5000 : now);
     try {
       writeFileSync(log, register(session));
       const original = binding();

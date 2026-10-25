@@ -46,10 +46,14 @@ The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpo
 complete reads, including unavailable selections. Ambiguity remains unavailable until a
 fresh registration; it does not permanently block later registrations.
 Unchanged file identity, size and timestamps reuse the last verification only when both
-mtime and ctime were at least two seconds old at that check; younger timestamps are rehashed
+mtime and ctime were at least three seconds old at that check and the wall clock has not
+moved behind it; younger timestamps or a clock rollback trigger rehashing
 because a same-size rewrite may share their filesystem tick. Changed logs
 revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside the catch-up
 window; logs over 64 MiB use Terminal without reading or hashing them.
+This assumes filesystem timestamps trail this machine's clock by no more than that margin.
+A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
+binding until the next append.
 An incomplete trailing line keeps the last complete
 binding only when its prefix rules out a lifecycle event. A partial timestamp or possible
 foreground switch temporarily blocks Chat until the line is complete.

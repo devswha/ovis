@@ -8,7 +8,8 @@ const HEADER_BYTES = 64 * 1024;
 const MAX_DESCRIPTORS = 4096;
 const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
 const LOG_HASH_BYTES = 64 * 1024 * 1024;
-const LOG_TIMESTAMP_TICK_NS = 2_000_000_000n;
+// Cover FAT's two-second granularity plus coarse wall-clock lag.
+const LOG_TIMESTAMP_MARGIN_NS = 3_000_000_000n;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
 const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
@@ -102,8 +103,9 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           // Only a check already outside that tick can attest unchanged bytes.
           if (cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
             && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs
-            && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_TICK_NS
-            && cached.checkedAtNs - stat.ctimeNs >= LOG_TIMESTAMP_TICK_NS) {
+            && checkedAtNs >= cached.checkedAtNs
+            && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_MARGIN_NS
+            && cached.checkedAtNs - stat.ctimeNs >= LOG_TIMESTAMP_MARGIN_NS) {
             found = cached.pendingSwitch ? undefined : cached.binding;
             continue;
           }
