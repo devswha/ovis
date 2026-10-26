@@ -3,5 +3,6 @@
 ### Fixed
 - Pi transcript confirmation reads bounded history tails and new entries instead of re-reading
   the whole conversation, and tolerates ongoing appends without accepting partial records.
-- Exact Pi delivery receipts reconcile after browser reconnection or reload without clearing
-  unrelated messages that happen to have the same text.
+- Exact Pi delivery receipts reconcile after browser reconnection or reload on the local machine
+  without clearing unrelated messages that happen to have the same text. Remote-machine receipt
+  resumption is disabled until relays can identify the originating paired device securely.

@@ -2401,7 +2401,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not another attached typist. The bridge retains disconnected presentation receipts and exact
   consumed IDs for up to ten minutes, capped at 1024 each. An authorized, non-observing reattach
   with the same opaque browser resume ID and device can resume that receipt or receive its exact
-  consumed removal. This conveys no input permission. The browser's saved, non-resendable
+  consumed removal on the local machine only. Remote-machine relays strip the resume ID from every
+  attach because their shared bridge token carries no trusted origin-device namespace; remote
+  reconnection cannot resume presentation receipts. This conveys no input permission. The browser's saved, non-resendable
   **transcript confirmation unavailable** copy remains after server restart or retention expiry;
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
