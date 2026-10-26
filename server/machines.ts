@@ -1,7 +1,7 @@
 import { authenticatedWebSocket } from "./remote-websocket.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { isIP, createServer as tcpServer } from "node:net";
+import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, LOCAL_MACHINE, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
@@ -15,7 +15,6 @@ import { labelOmoPanes } from "./conversation.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { sameSshSession, type HerdrMachineProfile } from "./herdr-profiles.ts";
-import { isLoopbackBind } from "./access.ts";
 import { validateTarget } from "./machine-security.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner } from "./remote-host.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
@@ -98,46 +97,16 @@ function verificationFailure(status: number, body: unknown): string {
   return `Bridge verification failed (${status}). Reconnect after checking the remote bridge.`;
 }
 
-const UNUSABLE_ADDRESS = "This PC's Ovis records an address SSH cannot forward to. Set HOST=127.0.0.1 for that Ovis, restart it, then add the PC again.";
-/** an IP address in one spelling: lower case, an IPv6 one compressed as a URL writes it */
-function canonicalIp(address: string): string {
-  return isIP(address) === 6 ? new URL(`http://[${address}]/`).hostname.slice(1, -1) : address;
-}
-/**
- * Where on the PC the SSH tunnel reaches a bridge: the address its server listens on (#1960). None
- * recorded (the bridge this app starts, an older Ovis), `localhost` or a wildcard bind answers on
- * 127.0.0.1. Only an IP address is taken otherwise: it becomes part of ssh's -L argument, and it
- * must be one of the PC's own (`ownAddress`), which a host name cannot be shown to be.
- */
-export function bridgeForwardHost(host: unknown): string {
-  if (host === undefined) return "127.0.0.1";
-  if (typeof host !== "string") throw new Error(UNUSABLE_ADDRESS);
-  const address = host.replace(/^\[(.*)\]$/, "$1").toLowerCase();
-  if (address === "0.0.0.0" || address === "::" || address === "localhost") return "127.0.0.1";
-  if (isIP(address) && !address.includes("%")) return canonicalIp(address);
-  throw new Error(UNUSABLE_ADDRESS);
-}
-/**
- * Whether the tunnel may go to `host`: loopback, or an address of one of the PC's own interfaces.
- * Anything else would hand the bridge token, and what is typed after it, to another machine that a
- * changed descriptor names.
- */
-async function ownAddress(host: string, addresses?: () => Promise<string[]>): Promise<boolean> {
-  if (isLoopbackBind(host)) return true;
-  return (await addresses?.() ?? []).some((address) => canonicalIp(address) === host);
-}
 /**
  * What the person adding the PC is told when the request through the standing tunnel to its bridge
- * fails. Only a refused connection to an address other than loopback points at HOST; a timeout or a
- * loopback bridge that is gone says nothing about where the server listens.
+ * fails (#1960): ssh resets the connection when nothing listens on the PC's 127.0.0.1 at that port,
+ * as with an Ovis older than this fix that runs with HOST set to another address.
  */
-function bridgeUnreachable(descriptor: BridgeDescriptor, host: string, error: unknown): string {
-  const at = `${host.includes(":") ? `[${host}]` : host}:${descriptor.port}`;
+function bridgeUnreachable(descriptor: BridgeDescriptor, error: unknown): string {
+  const at = `127.0.0.1:${descriptor.port}`;
   if (descriptor.managed_remote) return `The bridge on this PC does not answer at ${at} through SSH. Reconnect after checking the remote bridge.`;
   if ((error as Error | null)?.name === "TimeoutError") return `This PC's Ovis did not answer at ${at} through SSH within 15 seconds. Reconnect after checking that it runs.`;
-  if (descriptor.host === undefined) return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, set HOST=127.0.0.1 there, restart it, then add the PC again.`;
-  if (isLoopbackBind(host)) return `This PC's Ovis does not answer at ${at} through SSH. Reconnect after checking that it runs.`;
-  return `This PC's Ovis listens on ${at}, but SSH cannot reach it there (the PC's sshd may not allow forwarding to that address). Set HOST=127.0.0.1 for that Ovis, restart it, then add the PC again.`;
+  return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.`;
 }
 
 async function freePort(): Promise<number> {
@@ -677,7 +646,7 @@ export class MachineManager {
     let update = job?.update === true;
     let currentBridge: Awaited<ReturnType<MachineManager["verify"]>> | undefined;
     if (descriptor && update && descriptor.bridge_protocol === BRIDGE_PROTOCOL && descriptor.bundle_version === REMOTE_BUNDLE_VERSION) {
-      try { currentBridge = await this.verify(ssh, descriptor, expectedSocket, false, () => host.addresses(ssh)); }
+      try { currentBridge = await this.verify(ssh, descriptor, expectedSocket); }
       catch (error) {
         if (error instanceof MachineActionRequired && error.action === "update_bridge") {
           throw new MachineActionRequired("The running bridge is incompatible with this app. Another app may have reconnected with a different version. Update or disconnect the other app, then reconnect here. The remote bridge was left running.", "bridge_conflict");
@@ -739,7 +708,7 @@ export class MachineManager {
     }
     if (update && job && descriptor) {
       if (!descriptor.managed_remote) throw new Error("This socket uses an independently managed web server. Update it through its own Settings; it was left running.");
-      const verified = await this.verify(ssh, descriptor, expectedSocket, true, () => host.addresses(ssh));
+      const verified = await this.verify(ssh, descriptor, expectedSocket, true);
       if (verified.identity.managed_remote !== true || verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; no process was stopped");
       // the descriptor was checked above; the version the running bridge itself answers decides
       if (newerBundle(verified.identity.bundle_version)) throw new MachineActionRequired(newerBridge(verified.identity.bundle_version), "bridge_conflict");
@@ -770,24 +739,19 @@ export class MachineManager {
       }
       if (!descriptor) throw new Error(`Bridge did not start. Check ${host.logHint} on the PC.`);
     }
-    const verified = currentBridge ?? await this.verify(ssh, descriptor, expectedSocket, false, () => host.addresses(ssh));
+    const verified = currentBridge ?? await this.verify(ssh, descriptor, expectedSocket);
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     runtime.endpoint = verified.endpoint;
     runtime.machine.herdr = verified.identity.herdr;
   }
-  /** `addresses` lists the PC's own interface addresses, asked only for a bridge that records one beyond loopback */
-  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false, addresses?: () => Promise<string[]>): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
+  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
     if (!Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535 || typeof descriptor.token !== "string" || !/^[a-f0-9]{64}$/.test(descriptor.token)) throw new Error("Invalid bridge credentials");
-    const host = bridgeForwardHost(descriptor.host);
-    if (!(await ownAddress(host, addresses))) throw new Error(`This PC's Ovis records ${host}, which is not an address of this PC. Set HOST=127.0.0.1 for that Ovis, restart it, then add the PC again.`);
     const port = await freePort();
-    await ssh.forward(port, descriptor.port, host);
+    await ssh.forward(port, descriptor.port);
     const endpoint = { url: `http://127.0.0.1:${port}`, token: descriptor.token };
     let response: Response;
-    // the tunnel stands, so a connection that fails now failed on the PC's side: ssh resets it when
-    // nothing listens at that address (an Ovis bound to another HOST)
     try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(15_000) }); }
-    catch (error) { throw new Error(bridgeUnreachable(descriptor, host, error), { cause: error }); }
+    catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
     const identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity);
     // An approved replacement only reads this stable identity endpoint. It never uses the

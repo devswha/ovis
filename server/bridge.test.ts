@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { descriptorLive, registerBridge, type BridgeDescriptor } from "./bridge.ts";
+import { answersOnLoopback, descriptorLive, loopbackRelay, registerBridge, type BridgeDescriptor } from "./bridge.ts";
 import { guardLibrary, guardPath, OwnerGuardReleaseFailed } from "./owner-guard.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
@@ -51,14 +51,6 @@ describe("bridge registration", () => {
     registration.close();
     expect(existsSync(path)).toBe(false);
     expect(existsSync(guardPath(path))).toBe(true);
-  });
-
-  it("records the address its server listens on, and none when it was not given one", () => {
-    const tailnet = registerBridge(4242, "new-token", { path, host: "100.64.0.7" });
-    expect(read().host).toBe("100.64.0.7");
-    tailnet.close();
-    registerBridge(4242, "new-token", { path });
-    expect("host" in read()).toBe(false);
   });
 
   it("replaces a descriptor whose PID another process now holds", () => {
@@ -196,5 +188,82 @@ describe("bridge registration", () => {
     expect(message).toStartWith(`This bridge was not registered (descriptor ${path}): the file lock could not be loaded`);
     expect(message).not.toContain("old-bridge-secret");
     expect(message).not.toContain("new-token");
+  });
+});
+
+// #1960: an Ovis with HOST set to another address registers this relay, since the app's tunnel reaches only the PC's loopback
+describe("loopback relay", () => {
+  const stops: (() => void)[] = [];
+  afterEach(() => { for (const stop of stops.splice(0)) stop(); });
+  function relayTo(port: number): number {
+    const relay = loopbackRelay("127.0.0.1", port);
+    stops.push(() => relay.stop());
+    return relay.port;
+  }
+
+  it("passes requests, a large answer and a WebSocket through to the server", async () => {
+    const big = "x".repeat(8 * 1024 * 1024);
+    const server = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      fetch(request, srv) {
+        if (new URL(request.url).pathname === "/ws") return srv.upgrade(request) ? undefined : new Response("no", { status: 400 });
+        return new Response(new URL(request.url).pathname === "/big" ? big : `${request.method} ${request.headers.get("authorization")}`);
+      },
+      websocket: { message(ws, message) { ws.send(`echo ${message}`); } },
+    });
+    stops.push(() => server.stop(true));
+    const port = relayTo(server.port!);
+    expect(port).not.toBe(server.port);
+    expect(await (await fetch(`http://127.0.0.1:${port}/api/bridge`, { headers: { authorization: "Bearer t" } })).text()).toBe("GET Bearer t");
+    expect((await (await fetch(`http://127.0.0.1:${port}/big`)).text()).length).toBe(big.length);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const echoed = new Promise<string>((resolve, reject) => { ws.onmessage = (event) => resolve(String(event.data)); ws.onerror = () => reject(new Error("WebSocket failed")); });
+    ws.onopen = () => ws.send("hi");
+    expect(await echoed).toBe("echo hi");
+    ws.close();
+  });
+
+  it("keeps every byte for a client that reads slower than the server writes", async () => {
+    const size = 16 * 1024 * 1024;
+    const sent = Promise.withResolvers<void>();
+    // the server writes it all, waiting on its own backpressure, then closes
+    const writeRest = (socket: { data: { left: Uint8Array }; write(chunk: Uint8Array): number; end(): void }) => {
+      while (socket.data.left.byteLength) {
+        const written = socket.write(socket.data.left);
+        socket.data.left = socket.data.left.subarray(Math.max(written, 0));
+        if (written <= 0) return;
+      }
+      sent.resolve();
+      socket.end();
+    };
+    const server = Bun.listen<{ left: Uint8Array }>({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { socket.data = { left: new Uint8Array(size).fill(7) }; writeRest(socket); },
+      drain: writeRest,
+      data() {},
+    } });
+    stops.push(() => server.stop(true));
+    let received = 0;
+    const done = Promise.withResolvers<number>();
+    // the client reads nothing until the server has handed over every byte, so the relay must hold them
+    const client = await Bun.connect({ hostname: "127.0.0.1", port: relayTo(server.port), socket: {
+      open(socket) { socket.pause(); },
+      data(_socket, chunk) { received += chunk.byteLength; },
+      close() { done.resolve(received); },
+    } });
+    await sent.promise;
+    client.resume();
+    expect(await done.promise).toBe(size);
+  });
+
+  it("closes a connection when nothing listens behind it", async () => {
+    const gone = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const closed = gone.port;
+    gone.stop(true);
+    await expect(fetch(`http://127.0.0.1:${relayTo(closed)}/`, { signal: AbortSignal.timeout(5000) })).rejects.toThrow();
+  });
+
+  it("is needed only where the server does not answer on 127.0.0.1", () => {
+    expect(["127.0.0.1", "127.0.0.2", "0.0.0.0", "::", "[::]"].map(answersOnLoopback)).toEqual([true, true, true, true, true]);
+    expect(["100.64.0.7", "::1", "localhost", "fd7a:115c:a1e0::7", "pc.example"].map(answersOnLoopback)).toEqual([false, false, false, false, false]);
   });
 });

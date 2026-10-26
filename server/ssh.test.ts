@@ -197,18 +197,6 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
       expect(ssh.connected()).toBe(false);
     });
 
-    it("tunnels to the address a PC's Ovis listens on, an IPv6 one in brackets", async () => {
-      const { ssh, ask, calls } = fixture();
-      await ssh.start(ask("unused"));
-      for (const host of ["100.64.0.7", "fd7a:115c:a1e0::7"]) {
-        const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-        const port = free.port;
-        free.stop(true);
-        await ssh.forward(port, 18472, host);
-        expect(calls().some((line) => line.includes(`-L 127.0.0.1:${port}:${host.includes(":") ? `[${host}]` : host}:18472 pc`))).toBe(true);
-      }
-    });
-
     it("refuses a host whose SSH config adds forwards of its own", async () => {
       const { ssh, ask } = fixture({ FAKE_CONFIG_FORWARD: "1" });
       await ssh.start(ask("unused"));

@@ -50,7 +50,7 @@ import { UsageLoginService } from "./usage-login.ts";
 import { handleVoiceRequest, VoiceService } from "./voice.ts";
 
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
-import { bridgeIdentity, registerBridge } from "./bridge.ts";
+import { answersOnLoopback, bridgeIdentity, loopbackRelay, registerBridge } from "./bridge.ts";
 import { handleMachineRequest, nonCanonicalPath, slowMachinePath } from "./machine-api.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import { HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
@@ -608,7 +608,9 @@ export function createServer(
     settlePortalStartup({ ok: true });
   }
 
-  const registration = options.registerBridge ? registerBridge(server.port ?? 0, bridgeToken, { host: hostname }) : null;
+  // the app's SSH tunnel reaches a bridge on the PC's 127.0.0.1 only (#1960)
+  const relay = options.registerBridge && !answersOnLoopback(hostname) ? loopbackRelay(hostname, server.port ?? 0) : null;
+  const registration = options.registerBridge ? registerBridge(relay?.port ?? server.port ?? 0, bridgeToken) : null;
 
   core.start();
 
@@ -628,6 +630,7 @@ export function createServer(
         openCodeState.clear();
         void options.portal?.shutdown();
         registration?.close();
+        relay?.stop();
         closeCodexDaemonSources();
       });
       void shellAgents.stop();

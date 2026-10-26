@@ -1,5 +1,5 @@
 ### Fixed
 - Adding a PC whose own Ovis listens on another address than 127.0.0.1 (its HOST set to, say, its
-  Tailscale address) connects through that address instead of failing with "ECONNRESET". When SSH
-  cannot reach the PC's Ovis, the error says at which address it was tried and to set
-  HOST=127.0.0.1 there.
+  Tailscale address) connects instead of failing with "ECONNRESET": that Ovis now also answers the
+  app's SSH tunnel on the PC's 127.0.0.1. An older Ovis set up that way gets an error saying to
+  update it or set HOST=127.0.0.1 there.
