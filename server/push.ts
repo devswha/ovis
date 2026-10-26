@@ -662,8 +662,9 @@ export function createPushService(options: PushServiceOptions): PushService {
       const next = without((key) => key === endpoint);
       if (next) persist(next);
       const hash = endpointHash(endpoint);
-      // an explicit goodbye takes the endpoint's history and its retired mark with it
-      if (retiredStore().delete(hash)) persistRetired();
+      // an explicit goodbye takes the endpoint's history with it, but never its retired mark: this route proves
+      // neither owner nor keys, and a mark it cleared would let anyone register a retired endpoint again with
+      // keys of their own (#1038). The mark goes with its time to live, or with its owner's revocation
       forgetDeliveries((record) => record.hash !== hash);
     },
 

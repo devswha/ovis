@@ -151,3 +151,26 @@ it("tells a stranger, the open LAN and a revoked device nothing", async () => {
     expect(await status(openBase, {}, lan.subscription)).toEqual({ status: 404, body: NOT_FOUND });
   } finally { lan.stop(); open.stop(); rmSync(openRoot, { recursive: true, force: true }); }
 });
+
+it("never lets a watching device clear another owner's retired endpoint and register it with its own keys", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-push-health-takeover-"));
+  const store = new DeviceStore(root);
+  const watch = store.pair(store.startPairing().code, "Watch", "watch")!;
+  store.match(watch.token);
+  const server = createServer({ port: 0, stateDir: root, token: "test-push-health-takeover", tailscaleOwner: null, machines: false, pushLoopbackHttp: true });
+  const base = `http://127.0.0.1:${server.port}`;
+  const owner = { ...guard, authorization: "Bearer test-push-health-takeover" };
+  const watching = { ...guard, cookie: `${DEVICE_COOKIE}=${watch.token}` };
+  const victim = await startFakePushService();
+  try {
+    // the owner's subscription is retired by its push service
+    expect((await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: owner, body: JSON.stringify({ subscription: victim.subscription }) })).status).toBe(204);
+    victim.answerWith(410);
+    expect((await fetch(`${base}/api/push/test`, { method: "POST", headers: owner, body: JSON.stringify({ endpoint: victim.subscription.endpoint }) })).status).toBe(410);
+    // a watching device that learned the endpoint says goodbye for it, then registers it with keys of its own
+    expect((await fetch(`${base}/api/push/subscribe`, { method: "DELETE", headers: watching, body: JSON.stringify({ endpoint: victim.subscription.endpoint }) })).status).toBe(204);
+    const takeover = await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: watching, body: JSON.stringify({ subscription: withOtherKeys(victim.subscription) }) });
+    expect(takeover.status).toBe(410);
+    expect(await takeover.json()).toMatchObject({ error: { code: "subscription_gone" } });
+  } finally { victim.stop(); server.stop(); rmSync(root, { recursive: true, force: true }); }
+});

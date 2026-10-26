@@ -651,7 +651,7 @@ describe("push delivery health (#1039)", () => {
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual([]);
   });
 
-  it("expires on the running service, and a goodbye or a revocation takes the retired mark too", async () => {
+  it("expires on the running service; a goodbye takes the history, and only a revocation also the retired mark", async () => {
     let clock = 1_700_000_000_000;
     const push = createPushService({ loopbackHttp: true, stateDir, now: () => clock });
     const endpoint = fake.subscription.endpoint;
@@ -669,11 +669,11 @@ describe("push delivery health (#1039)", () => {
     expect(push.retired(endpoint)).toBe(false);
     expect(JSON.parse(readFileSync(join(stateDir, "push-delivery.json"), "utf8"))).toEqual([]);
     expect(JSON.parse(readFileSync(join(stateDir, "push-retired.json"), "utf8"))).toEqual([]);
-    // an explicit unsubscribe
+    // an explicit unsubscribe forgets the history, and keeps the mark: it proves neither owner nor keys
     await retire(null);
     push.unsubscribe(endpoint);
     expect(push.status(fake.subscription, null)).toBeNull();
-    expect(push.retired(endpoint)).toBe(false);
+    expect(push.retired(endpoint)).toBe(true);
     // the owner's revocation
     await retire("device-a");
     push.revokeDevice("device-a");
