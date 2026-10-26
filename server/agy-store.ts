@@ -39,8 +39,10 @@ const RM_PROCESS_INFO_SIZE = 668; // RM_UNIQUE_PROCESS(12) + 256 WCHAR + 64 WCHA
 const MAX_WINDOWS_CANDIDATES = 4096;
 const WINDOWS_SCAN_TTL_MS = 5_000;
 
+/** Encode a UTF-8 string to a null-terminated UTF-16LE buffer for Win32 API calls. */
 function utf16(value: string): Buffer { return Buffer.from(`${value}\0`, "utf16le"); }
 
+/** Load rstrtmgr.dll via Bun FFI for querying file lock owners. */
 const openRestartManager = () => dlopen("rstrtmgr.dll", {
   RmStartSession: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.u32 },
   RmRegisterResources: { args: [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.u32 },
@@ -48,6 +50,7 @@ const openRestartManager = () => dlopen("rstrtmgr.dll", {
   RmEndSession: { args: [FFIType.u32], returns: FFIType.u32 },
 });
 
+/** Load kernel32.dll via Bun FFI for process inspection and handle management. */
 const openKernel = () => dlopen("kernel32.dll", {
   OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
   GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
@@ -55,6 +58,7 @@ const openKernel = () => dlopen("kernel32.dll", {
 });
 
 let windowsApis: { restartManager: ReturnType<typeof openRestartManager>; kernel: ReturnType<typeof openKernel> } | null = null;
+/** Lazily initialize and cache Win32 FFI function bindings. */
 function windowsApi(): NonNullable<typeof windowsApis> {
   windowsApis ??= { restartManager: openRestartManager(), kernel: openKernel() };
   return windowsApis;
@@ -179,6 +183,7 @@ async function processIdentity(pid: number): Promise<{ started: string } | null>
   return null;
 }
 
+/** List open file paths held by the given process id on the current platform. */
 async function heldPaths(pid: number): Promise<string[]> {
   if (process.platform === "darwin") {
     const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-Fn"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
@@ -206,6 +211,7 @@ export function isAgyProcessName(name: unknown): boolean {
   return process.platform === "win32" ? /(?:^|[\\/])agy(?:\.exe)?$/i.test(name) : name === "agy";
 }
 
+/** Resolve the Agy session store for the given pane by matching process identity and held locks. */
 export async function resolveAgyStore(pane: HerdrPane): Promise<AgyStore | null> {
   if (pane.agent !== "agy") return null;
   try {
@@ -220,6 +226,7 @@ export async function resolveAgyStore(pane: HerdrPane): Promise<AgyStore | null>
   } catch { return null; }
 }
 
+/** Check whether two AgyStore references identify the same process and session path. */
 export function sameAgyStore(a: AgyStore, b: AgyStore | null): boolean {
   return b !== null && a.pid === b.pid && a.started === b.started && a.path === b.path;
 }
