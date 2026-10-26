@@ -159,13 +159,17 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
  * Mod+Shift+ArrowUp/ArrowDown move the selection in a text field (on a Mac Cmd+Shift+↑ selects to
  * the start of the text): in the message box or any other field with text they stay the field's, and
  * switch panes everywhere else: an empty field, which has nothing to select, and the terminal (its
- * own input element is xterm's, not a field to edit).
+ * own input element is xterm's, not a field to edit). keepsKeyForText also lets them go where the
+ * field has no text left that way.
  */
 export interface KeyTargetLike {
   tagName?: string;
   type?: string;
   isContentEditable?: boolean;
   value?: string;
+  selectionStart?: number | null;
+  selectionEnd?: number | null;
+  selectionDirection?: string | null;
   classList?: { contains(name: string): boolean };
 }
 
@@ -191,9 +195,20 @@ export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverr
 
 export { isMacPlatform };
 
-/** Arrows, Home and End select or move in a field with text; there a matching binding gives way. */
+/**
+ * Arrows, Home and End select or move in a field with text; there a matching binding gives way, until
+ * the selection's moving end is at the edge the key goes to: then the key has nothing left to do in
+ * the field. A pane switch focuses the next pane's message box, and a draft there must not stop the
+ * next switch for good.
+ */
 export function keepsKeyForText(event: { key: string; target: KeyTargetLike | EventTarget | null }): boolean {
-  return (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") && keepsArrowsForText(event.target);
+  if (!(event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") || !keepsArrowsForText(event.target)) return false;
+  const field = event.target as KeyTargetLike;
+  // a field without a text selection (email, number, contenteditable) keeps the key while it has text
+  if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") return true;
+  const moving = field.selectionDirection === "backward" ? field.selectionStart : field.selectionEnd;
+  const back = event.key === "ArrowUp" || event.key === "ArrowLeft" || event.key === "Home";
+  return back ? moving > 0 : moving < (field.value ?? "").length;
 }
 
 export function modKeyLabel(): string {
