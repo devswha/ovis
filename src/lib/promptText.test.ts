@@ -43,6 +43,12 @@ describe("a prompt card's words", () => {
   it("caps a translated body as the bridge caps the English one", () => {
     const long: InteractivePrompt = { ...goal, body: "x".repeat(12_000), own_text: { body: { key: "Comment: {comment}", vars: { comment: "x".repeat(20_000) } } } };
     expect(promptWords(long, inLanguage("ko")).body).toHaveLength(12_000);
+    // the cap lands between the two halves of an emoji: the emoji goes whole, never half of it
+    const prefix = translate("ko", "Comment: {comment}", { comment: "" }).length;
+    const split: InteractivePrompt = { ...long, own_text: { body: { key: "Comment: {comment}", vars: { comment: `${"x".repeat(11_999 - prefix)}\u{1F600}` } } } };
+    const body = promptWords(split, inLanguage("ko")).body!;
+    expect(body).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(body).toHaveLength(11_999);
   });
 
   it("shows an older bridge's card, which names no words of its own, as it came", () => {

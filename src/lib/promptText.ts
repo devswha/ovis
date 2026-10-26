@@ -8,6 +8,13 @@ export function cardText(card: CardText, t: Translate = inCurrentLanguage): stri
   return t(card.key, vars);
 }
 
+/** At most `limit` UTF-16 units of `text`, never ending on half of a character (a lone high surrogate). */
+function capped(text: string, limit: number): string {
+  const cut = text.slice(0, limit);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 /**
  * The words a prompt card shows: the bridge's own (`own_text`: a title it gave the card, the Close an
  * Esc is offered as) in the user's language, and the agent's own text as the agent wrote it.
@@ -19,7 +26,7 @@ export function promptWords(prompt: InteractivePrompt, t: Translate = inCurrentL
     title: words(prompt.title, own?.title),
     question: words(prompt.question, own?.question),
     // the bridge shows at most 12,000 characters of a body (finishPrompt): a translated one too
-    body: prompt.body === null ? null : words(prompt.body, own?.body).slice(0, 12_000),
+    body: prompt.body === null ? null : capped(words(prompt.body, own?.body), 12_000),
     label: (index: number): string => words(prompt.options[index]?.label ?? "", own?.labels?.[index]),
     description: (index: number): string | null => {
       const description = prompt.options[index]?.description ?? null;
