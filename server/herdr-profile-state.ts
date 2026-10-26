@@ -22,7 +22,7 @@ export class HerdrProfileState {
   private entries = new Map<string, ProfileState>();
   private dirty = false;
   private path: string;
-  /** the document as last read or written: a flush that would write the same bytes writes nothing */
+  /** the document this store last wrote: a flush that would write the same bytes writes nothing */
   private written: string | undefined;
   /** where a file that was not JSON was moved at startup (setAsideDamaged), its approvals with it */
   readonly setAside: string | null = null;
@@ -45,7 +45,6 @@ export class HerdrProfileState {
         || (item.snapshot !== null && (!item.snapshot || typeof item.snapshot !== "object" || !Array.isArray(item.snapshot.panes)))) throw new Error("Invalid herdr-profile-state.json; approvals were preserved");
       this.entries.set(item.profile_id, { binding: item.binding, approved: item.approved, connectionApproved: item.connectionApproved ?? item.approved, snapshot: item.snapshot, ...(item.retiring ? { retiring: true as const } : {}) });
     }
-    this.written = JSON.stringify(this.document());
   }
   reconcile(id: string, target: SshTarget | null, retire?: () => void): boolean {
     const next = binding(target);
@@ -94,7 +93,6 @@ export class HerdrProfileState {
     if (errors.length) throw new AggregateError(errors, "Some saved machine keys could not be removed; cleanup will retry");
     return removed;
   }
-  private document(): object[] { return [...this.entries].map(([profile_id, state]) => ({ profile_id, ...state })); }
   /**
    * Writes the approvals durably (writePrivateState): a crash must not leave the file unreadable. A
    * refresh hands over a new snapshot object each time, so an unchanged one still marks the state
@@ -102,7 +100,7 @@ export class HerdrProfileState {
    */
   flush(): void {
     if (!this.dirty) return;
-    const document = this.document();
+    const document = [...this.entries].map(([profile_id, state]) => ({ profile_id, ...state }));
     const text = JSON.stringify(document);
     if (text !== this.written) { writePrivateState(this.path, document); this.written = text; }
     this.dirty = false;

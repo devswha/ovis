@@ -204,7 +204,7 @@ export class MachineManager {
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
   private statePath: string;
-  /** machines.json as last read or written (persist) */
+  /** machines.json as this manager last wrote it (persist) */
   private written: string | undefined;
   /** the state files that were not JSON at startup, by the name they were moved to (settings) */
   private setAside: string[] = [];
@@ -264,7 +264,6 @@ export class MachineManager {
         this.machines.set(item.id, runtime);
         if (item.enabled) queueMicrotask(() => void this.reconnect(runtime));
       }
-      this.written = JSON.stringify(this.stored());
     }
     void this.refreshLocal();
     this.localTimer = setInterval(() => void this.refreshLocal(), 5000);
@@ -445,9 +444,6 @@ export class MachineManager {
     this.saveTimer = setTimeout(() => { this.saveTimer = undefined; if (!this.stopped) { try { this.persist(); } catch (e) { console.error("PC state could not be saved:", e instanceof Error ? e.message : "write failed"); } } }, 1000);
     this.saveTimer.unref();
   }
-  private stored(): StoredMachine[] {
-    return [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
-  }
   /**
    * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
    * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
@@ -455,7 +451,7 @@ export class MachineManager {
    * disk pays for the write and its fsync.
    */
   private persist(): void {
-    const data = this.stored();
+    const data: StoredMachine[] = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
     if (text !== this.written) { writePrivateState(this.statePath, data); this.written = text; }
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);

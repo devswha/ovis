@@ -1097,19 +1097,4 @@ describe("saved PCs that cannot be read", () => {
     expect(readFileSync(join(dir, "machines.json"), "utf8")).toBe("{}");
     expect(readdirSync(dir).filter((name) => name.includes("corrupt"))).toEqual([]);
   });
-
-  it("does not rewrite saved PCs that have not changed since they were read", () => {
-    const dir = directory();
-    const id = "0b9d6a52-7a5e-4f8e-9a51-2f3c4d5e6f70";
-    const path = join(dir, "machines.json");
-    const text = JSON.stringify([{ id, name: "macbook", enabled: false, target: { destination: "macbook" }, snapshot: null }]);
-    writeFileSync(path, text);
-    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
-    try {
-      (manager as unknown as { persist(): void }).persist();
-      expect(readFileSync(path, "utf8")).toBe(text);
-      manager.patch(id, { name: "laptop" });
-      expect(JSON.parse(readFileSync(path, "utf8"))[0].name).toBe("laptop");
-    } finally { manager.stop(); }
-  });
 });

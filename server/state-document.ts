@@ -23,10 +23,11 @@ export const damagedCopy = (path: string): string => `${path}.bad`;
 
 /**
  * Moves a document that is not JSON out of the way at once, bytes untouched, to
- * `<path>.corrupt-<time>` (0600), so its store can start empty instead of refusing to start. Each
- * one keeps a name of its own: these documents (machines.json, herdr-profile-state.json) hold
- * what cannot be recomputed, so an earlier damaged copy is never replaced. Returns the new path;
- * throws, leaving `path` as it was, when the file cannot be moved.
+ * `<path>.corrupt-<time>` (0600, as damagedCopy's), so its store can start empty instead of
+ * refusing to start. Each one keeps a name of its own: these documents (machines.json,
+ * herdr-profile-state.json) hold what cannot be recomputed, so an earlier damaged copy is never
+ * replaced. Returns the new path; throws, leaving `path` as it was, when the file cannot be moved,
+ * saying why so a start that stops on it can be understood from its log.
  */
 export function setAsideDamaged(path: string, now = new Date()): string {
   // no ':' in a Windows file name

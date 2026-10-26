@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { readStateDocument, setAsideDamaged } from "./state-document.ts";
@@ -31,9 +31,9 @@ describe("setAsideDamaged", () => {
     expect(kept.map((name) => readFileSync(join(dir, name), "utf8"))).toEqual(["first", "second"]);
   });
 
-  it("throws, naming the file, when it cannot be moved", () => {
-    const dir = directory(), path = join(dir, "machines.json");
-    expect(() => setAsideDamaged(path)).toThrow(/machines\.json is not JSON and cannot be set aside as machines\.json\.corrupt-.* \(ENOENT\)/);
-    expect(existsSync(path)).toBe(false);
+  it("throws, naming the file and why, when it cannot be moved", () => {
+    const dir = directory();
+    expect(() => setAsideDamaged(join(dir, "machines.json"))).toThrow(/^machines\.json is not JSON and cannot be set aside as machines\.json\.corrupt-\S+ \(ENOENT\)$/);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

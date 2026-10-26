@@ -114,13 +114,8 @@ it("writes durably, and only when the document changed", () => {
     store.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
     store.flush();
     expect(temporaries).toHaveLength(1);
-    // nor does a store that has just read the same document
-    const restored = new HerdrProfileState(dir);
-    restored.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
-    restored.flush();
-    expect(temporaries).toHaveLength(1);
-    restored.saveSnapshot("id", { panes: [{ pane_id: "other-pane" }] } as SessionSnapshot);
-    restored.flush();
+    store.saveSnapshot("id", { panes: [{ pane_id: "other-pane" }] } as SessionSnapshot);
+    store.flush();
     expect(temporaries).toHaveLength(2);
     expect(new HerdrProfileState(dir).snapshot("id")?.panes[0]?.pane_id).toBe("other-pane");
   } finally { open.mockRestore(); }
