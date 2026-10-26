@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type BridgeIdentity } from "../shared/machines.ts";
@@ -113,10 +114,16 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   };
 }
 
-/** 127.0.0.1 or a wildcard: a server bound there already answers on 127.0.0.1 (one on 127.0.0.2 does not) */
-export function answersOnLoopback(hostname: string): boolean {
+/**
+ * The address a loopback relay passes connections to for a server bound to `hostname`, or null when
+ * it needs none (127.0.0.1 or a wildcard already answers on 127.0.0.1; 127.0.0.2 does not) or gets
+ * none: a host name is not relayed, since by the next connection it may resolve to another machine
+ * and take the bridge token there. Such a server gets the app's message to set HOST=127.0.0.1.
+ */
+export function relayTarget(hostname: string): string | null {
   const name = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
-  return name === "127.0.0.1" || name === "0.0.0.0" || name === "::";
+  if (name === "127.0.0.1" || name === "0.0.0.0" || name === "::" || isIP(name) === 0) return null;
+  return name;
 }
 
 /**
@@ -156,7 +163,7 @@ function endAfterQueue(socket: Socket<Relayed> | undefined): void {
 }
 
 /**
- * A port on 127.0.0.1 that passes each connection on to `hostname:port` (#1960). An Ovis whose HOST
+ * A port on 127.0.0.1 that passes each connection on to `target:port` (#1960), `target` an IP address (`relayTarget`). An Ovis whose HOST
  * is another address does not answer on the PC's loopback, where the app's SSH tunnel always goes:
  * it registers this port as its bridge instead. The tunnel then never reaches past the PC's loopback,
  * whatever a descriptor says, and a request through it still arrives from that address, not loopback.
@@ -166,8 +173,7 @@ function endAfterQueue(socket: Socket<Relayed> | undefined): void {
  * a paused socket would not see its client leave. A client more than RELAY_CLIENT_AHEAD_BYTES ahead of
  * a server that is not reading is cut off instead.
  */
-export function loopbackRelay(hostname: string, port: number): { port: number; stop(): void } {
-  const target = hostname.replace(/^\[(.*)\]$/, "$1");
+export function loopbackRelay(target: string, port: number): { port: number; stop(): void } {
   const listener = Bun.listen<Relayed>({ hostname: "127.0.0.1", port: 0, socket: {
     open(client) {
       client.data = { queue: [], queued: 0 };

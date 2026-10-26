@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Socket } from "bun";
-import { answersOnLoopback, descriptorLive, loopbackRelay, registerBridge, RELAY_CLIENT_AHEAD_BYTES, type BridgeDescriptor } from "./bridge.ts";
+import { descriptorLive, loopbackRelay, registerBridge, RELAY_CLIENT_AHEAD_BYTES, relayTarget, type BridgeDescriptor } from "./bridge.ts";
 import { guardLibrary, guardPath, OwnerGuardReleaseFailed } from "./owner-guard.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
@@ -312,7 +312,7 @@ describe("loopback relay", () => {
   it.skipIf(process.platform === "darwin")("reaches a server on another loopback address", async () => {
     const server = Bun.serve({ port: 0, hostname: "127.0.0.2", fetch: () => new Response("two") });
     stops.push(() => server.stop(true));
-    expect(answersOnLoopback("127.0.0.2")).toBe(false);
+    expect(relayTarget("127.0.0.2")).toBe("127.0.0.2");
     const relay = loopbackRelay("127.0.0.2", server.port!);
     stops.push(() => relay.stop());
     expect(await (await fetch(`http://127.0.0.1:${relay.port}/`)).text()).toBe("two");
@@ -325,8 +325,9 @@ describe("loopback relay", () => {
     await expect(fetch(`http://127.0.0.1:${relayTo(closed)}/`, { signal: AbortSignal.timeout(5000) })).rejects.toThrow();
   });
 
-  it("is needed only where the server does not answer on 127.0.0.1", () => {
-    expect(["127.0.0.1", "0.0.0.0", "::", "[::]"].map(answersOnLoopback)).toEqual([true, true, true, true]);
-    expect(["127.0.0.2", "100.64.0.7", "::1", "localhost", "fd7a:115c:a1e0::7", "pc.example"].map(answersOnLoopback)).toEqual([false, false, false, false, false, false]);
+  it("relays an IP address that does not answer on 127.0.0.1, and never a host name", () => {
+    expect(["127.0.0.2", "100.64.0.7", "::1", "[FD7A:115C:A1E0::7]"].map(relayTarget)).toEqual(["127.0.0.2", "100.64.0.7", "::1", "fd7a:115c:a1e0::7"]);
+    // 127.0.0.1 and a wildcard need none; a host name may resolve elsewhere by the next connection
+    expect(["127.0.0.1", "0.0.0.0", "::", "[::]", "localhost", "pc.example", "pc.tail1234.ts.net"].map(relayTarget)).toEqual([null, null, null, null, null, null, null]);
   });
 });
