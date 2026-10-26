@@ -1,9 +1,12 @@
-import { expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ConversationPart } from "../shared/protocol.ts";
 import { codexImageParts, codexTranscriptImage, imageType } from "./codex-images.ts";
 import { parseCodexTranscript } from "./codex.ts";
+import { codexToolImage, forgetTranscriptState, transcriptPage } from "./conversation.ts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1sAAAAASUVORK5CYII=", "base64");
 const data = `data:image/png;base64,${png.toString("base64")}`;
@@ -121,4 +124,114 @@ it("fetches only referenced raster images within the retained history and bounds
     rmSync(join(root, "assets", "shot.png"));
     expect(await codexTranscriptImage([segment], ref, root)).toBeNull();
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// A real codex-cli 0.163.0 rollout (`codex exec` in /tmp/codex-pictures, then `codex exec resume`):
+// a prompt with `-i shot.png`, then `view_image` on it through the exec tool, whose output carries the
+// picture as a data URL beside an `ImageView` event. Only the records the chat reads are kept.
+const ROLLOUT = readFileSync(new URL("./fixtures/codex-pictures-0.163.0-rollout.jsonl", import.meta.url), "utf8");
+const VIEWED = "call_c14dcc9fd54946c7bc093bac1ec706fd";
+/** The sha256 of the 32x32 PNG the recording viewed. */
+const SHOT = "216412999d849811ca002949953aa22a041cebcf0b31e7c812ee86328338b893";
+
+describe("a Codex tool's pictures reach the chat", () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-codex-tool-images-"));
+  const home = join(root, "codex-home");
+  afterAll(() => { rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
+  const header = ROLLOUT.split("\n")[0]!;
+  let files = 0;
+  const rollout = (text: string) => {
+    files += 1;
+    const path = join(root, `rollout-2026-10-26T18-01-48-01a17771-c993-7f01-9f21-${String(files).padStart(12, "0")}.jsonl`);
+    writeFileSync(path, text);
+    return path;
+  };
+  const pictures = (path: string) => transcriptPage("codex-transcript", path, {}, home).turns.flatMap((turn) => turn.parts)
+    .flatMap((part: ConversationPart) => part.kind === "tool" ? (part.images ?? []).map((image) => `${image.media_type} ${image.ref}`) : []);
+  const sha = (path: string, ref: string) => {
+    const image = codexToolImage(path, ref, home);
+    return image === null ? null : `${image.mediaType} ${createHash("sha256").update(image.bytes).digest("hex")}`;
+  };
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1sAAAAASUVORK5CYII=", "base64");
+  const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+  const url = (bytes: Buffer, type = "image/png") => `data:${type};base64,${bytes.toString("base64")}`;
+  const picture = (bytes: Buffer, type = "image/png") => ({ type: "input_image", image_url: url(bytes, type), detail: "high" });
+  const at = "2026-10-26T09:07:06.240Z";
+  const call = (id: string, input = "await tools.view_image({path: 'shot.png'})") => ({ type: "response_item", timestamp: at, payload: { type: "custom_tool_call", call_id: id, name: "exec", input } });
+  const output = (id: string, content: unknown[]) => ({ type: "response_item", timestamp: at, payload: { type: "custom_tool_call_output", call_id: id, output: content } });
+  const records = (...entries: unknown[]) => [header, ...entries.map((entry) => JSON.stringify(entry))].join("\n") + "\n";
+  const started = { type: "event_msg", timestamp: at, payload: { type: "task_started", turn_id: "t1" } };
+
+  it("names the recorded view_image picture by its call, never its bytes, and serves those bytes", () => {
+    const path = rollout(ROLLOUT);
+    // one picture: the ImageView event beside the output is no second copy
+    expect(pictures(path)).toEqual([`image/png codex-tool:${VIEWED}:0`]);
+    expect(JSON.stringify(transcriptPage("codex-transcript", path, {}, home))).not.toContain("iVBORw0KGgo");
+    expect(sha(path, `codex-tool:${VIEWED}:0`)).toBe(`image/png ${SHOT}`);
+    for (const ref of [`codex-tool:${VIEWED}:1`, `codex-tool:${VIEWED}`, "codex-tool:call_other:0", `codex-tool:../${VIEWED}:0`, `pi:${VIEWED}:0`]) expect(codexToolImage(path, ref, home)).toBeNull();
+  });
+
+  it("numbers only the pictures the chat shows, by declared type and bytes, up to 8 MiB", () => {
+    const exact = Buffer.alloc(8 * 1024 * 1024);
+    png.copy(exact);
+    const over = Buffer.alloc(8 * 1024 * 1024 + 1);
+    png.copy(over);
+    const path = rollout(records(started, call("call_a"), output("call_a", [
+      { type: "input_text", text: "Script completed" },
+      picture(Buffer.from("<svg/>"), "image/svg+xml"),
+      picture(Buffer.from("not a picture")),
+      { type: "input_image", image_url: "https://example.com/shot.png" },
+      picture(gif, "image/gif"),
+      picture(exact),
+    ])));
+    expect(pictures(path)).toEqual(["image/gif codex-tool:call_a:0", "image/png codex-tool:call_a:1"]);
+    expect(sha(path, "codex-tool:call_a:0")).toBe(`image/gif ${createHash("sha256").update(gif).digest("hex")}`);
+    expect(codexToolImage(path, "codex-tool:call_a:1", home)?.bytes.length).toBe(8 * 1024 * 1024);
+    expect(codexToolImage(path, "codex-tool:call_a:2", home)).toBeNull();
+    // a byte past the endpoint's size takes no place either
+    const large = rollout(records(started, call("call_a"), output("call_a", [picture(over), picture(gif, "image/gif")])));
+    expect(pictures(large)).toEqual(["image/gif codex-tool:call_a:0"]);
+    expect(codexToolImage(large, "codex-tool:call_a:0", home)?.mediaType).toBe("image/gif");
+    expect(codexToolImage(large, "codex-tool:call_a:1", home)).toBeNull();
+  });
+
+  it("serves a picture only from the output the page draws: the first one answering a call it shows", () => {
+    // an output answering no call
+    const orphan = rollout(records(started, output("call_a", [picture(png)])));
+    expect(pictures(orphan)).toEqual([]);
+    expect(codexToolImage(orphan, "codex-tool:call_a:0", home)).toBeNull();
+    // a second output for an answered call
+    const twice = rollout(records(started, call("call_a"), output("call_a", [{ type: "input_text", text: "none" }]), output("call_a", [picture(png)])));
+    expect(pictures(twice)).toEqual([]);
+    expect(codexToolImage(twice, "codex-tool:call_a:0", home)).toBeNull();
+    // a call made again after an output with no picture: the second output's picture is the one named
+    const again = rollout(records(started, call("call_a"), output("call_a", [{ type: "input_text", text: "none" }]), call("call_a"), output("call_a", [picture(gif, "image/gif")])));
+    expect(pictures(again)).toEqual(["image/gif codex-tool:call_a:0"]);
+    expect(codexToolImage(again, "codex-tool:call_a:0", home)?.mediaType).toBe("image/gif");
+    // a function call's output is read as a custom tool's is
+    const fn = rollout(records(started, { type: "response_item", timestamp: at, payload: { type: "function_call", call_id: "call_f", name: "view_image", arguments: "{\"path\":\"shot.png\"}" } },
+      { type: "response_item", timestamp: at, payload: { type: "function_call_output", call_id: "call_f", output: [picture(png)] } }));
+    expect(pictures(fn)).toEqual(["image/png codex-tool:call_f:0"]);
+    expect(codexToolImage(fn, "codex-tool:call_f:0", home)?.mediaType).toBe("image/png");
+  });
+
+  it("reads a call id however JSON writes it, as the parser does", () => {
+    const path = rollout(ROLLOUT.replaceAll(`"call_id":"${VIEWED}"`, `"call_id":"\\u0063all_${VIEWED.slice(5)}"`));
+    expect(readFileSync(path, "utf8")).toContain("\\u0063all_");
+    expect(pictures(path)).toEqual([`image/png codex-tool:${VIEWED}:0`]);
+    expect(sha(path, `codex-tool:${VIEWED}:0`)).toBe(`image/png ${SHOT}`);
+  });
+
+  it("holds a window, a record's shape and the picture, never a record whole however large", () => {
+    const alloc = spyOn(Buffer, "alloc");
+    try {
+      const pad = "x".repeat(20 * 1024 * 1024);
+      // a call and its output, each padded past the largest picture the chat shows
+      const path = rollout(records(started, call("call_a", pad), output("call_a", [{ type: "input_text", text: pad }, picture(png)])));
+      expect(codexToolImage(path, "codex-tool:call_a:0", home)?.mediaType).toBe("image/png");
+      alloc.mockClear();
+      expect(Buffer.from(codexToolImage(path, "codex-tool:call_a:0", home)!.bytes).equals(png)).toBe(true);
+      expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
+    } finally { alloc.mockRestore(); }
+  });
 });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants, createReadStream } from "node:fs";
+import { closeSync, constants, createReadStream, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { extname, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { ConversationPart } from "../shared/protocol.ts";
 
@@ -29,6 +29,74 @@ export function inlineImageType(declared: unknown, data: unknown): string | null
   if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
   if (base64Size(data) > MAX_IMAGE_BYTES) return null;
   return imageType(Buffer.from(data.slice(0, 16), "base64"));
+}
+
+/** A picture omp moved out of its transcript: `blob:sha256:<digest of its bytes>`, its bytes in the agent's blob store. */
+const OMP_BLOB_REF = /^blob:sha256:([a-f0-9]{64})$/;
+
+/**
+ * The picture an omp blob ref names in the store `blobs`, read and checked as inlineImageType checks
+ * an inline one (a raster declared as one, by its leading bytes, at most MAX_IMAGE_BYTES), and only
+ * when its bytes hash to the name the transcript gave them: omp names a blob by its digest, so these
+ * are exactly the bytes it recorded. The ref is held to omp's own 64 lowercase hex digits, so it
+ * never names a path outside the store, and a link there is not followed. Null for anything else.
+ */
+export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
+  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
+  const digest = OMP_BLOB_REF.exec(data)?.[1];
+  if (digest === undefined) return null;
+  let fd: number;
+  try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_IMAGE_BYTES) return null;
+    const bytes = Buffer.alloc(stat.size);
+    if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) return null;
+    if (createHash("sha256").update(bytes).digest("hex") !== digest) return null;
+    const mediaType = imageType(bytes);
+    return mediaType === null ? null : { mediaType, bytes };
+  } catch { return null; } finally { closeSync(fd); }
+}
+
+/** What ompBlobPicture answered for a blob it found to be a picture: omp names a blob by its bytes, so the answer stays. */
+const ompBlobTypes = new Map<string, string>();
+
+/**
+ * The type of the picture an omp blob ref names (ompBlobPicture), for a parser naming it: a blob
+ * once found to be a picture is not read again, a missing or refused one is asked again next time.
+ */
+export function ompBlobImageType(blobs: string, declared: unknown, data: unknown): string | null {
+  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
+  const key = `${blobs}\0${data}`;
+  const known = ompBlobTypes.get(key);
+  if (known !== undefined) return known;
+  const picture = ompBlobPicture(blobs, declared, data);
+  if (picture === null) return null;
+  if (ompBlobTypes.size >= 4096) ompBlobTypes.delete(ompBlobTypes.keys().next().value!);
+  ompBlobTypes.set(key, picture.mediaType);
+  return picture.mediaType;
+}
+
+/**
+ * A picture a Codex tool returned in its output, `{ type: "input_image", image_url }` with the bytes
+ * inline as a data URL, checked as inlineImageType checks any inline picture. The parser and the image
+ * endpoint both read a tool's pictures here. Null for anything else: a remote URL, a path, an svg.
+ */
+export function codexOutputPicture(value: unknown): { mediaType: string; data: string } | null {
+  const part = record(value);
+  if (part.type !== "input_image" || typeof part.image_url !== "string") return null;
+  const inline = DATA_IMAGE.exec(part.image_url);
+  if (inline === null) return null;
+  const mediaType = inlineImageType(inline[1], inline[2]);
+  return mediaType === null ? null : { mediaType, data: inline[2]! };
+}
+
+/** A picture a Codex tool returned: the call its output answers, and its place among that output's pictures. */
+export const CODEX_TOOL_IMAGE_REF = /^codex-tool:([A-Za-z0-9_.\-]{1,128}):(\d{1,3})$/;
+
+/** The pictures of a Codex tool's output, in order, each with the type its bytes announce. */
+export function codexOutputPictures(output: unknown): { mediaType: string; data: string }[] {
+  return Array.isArray(output) ? output.flatMap((value) => codexOutputPicture(value) ?? []) : [];
 }
 export const CODEX_IMAGE_REF = /^codex-[a-f0-9]{64}$/;
 

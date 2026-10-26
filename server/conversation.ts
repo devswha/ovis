@@ -42,12 +42,12 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, codexTranscriptImage, MAX_IMAGE_BYTES } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, MAX_IMAGE_BYTES, ompBlobImageType, ompBlobPicture, inlineImageType } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processStartedAtAsync } from "./process-start.ts";
-import { ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
+import { ompBlobStore, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptInStore, piTranscriptPath, unwrittenSession } from "./pi.ts";
 import { cmdTranscriptPath } from "./cmd.ts";
@@ -66,7 +66,7 @@ import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
-import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
+import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
 import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
@@ -367,7 +367,7 @@ function pageBefore(stream: TranscriptStream, source: StreamSource, to: number, 
   let from = Math.max(floor, to - TRANSCRIPT_WINDOW_BYTES);
   let bytes = readStream(stream, from, to);
   for (;;) {
-    const starts = stream.promptStarts ? stream.promptStarts.filter((at) => at >= from && at < to).map((at) => at - from) : turnStarts(bytes, source);
+    const starts = stream.promptStarts ? stream.promptStarts.filter((at) => at >= from && at < to).map((at) => at - from) : turnStarts(bytes, source, undefined, turnBlobs(stream, source));
     const keep = starts.length > MAX_PAGE_PROMPTS ? starts[starts.length - MAX_PAGE_PROMPTS] : from === floor ? 0 : starts[0];
     if (keep !== undefined) return { start: from + keep, bytes: bytes.subarray(keep) };
     if (!widen || to - from >= MAX_PAGE_BYTES) {
@@ -495,10 +495,10 @@ function newestPage(path: string, stream: TranscriptStream, source: StreamSource
   if (scan.scanned < stream.length) {
     const bytes = readStream(stream, scan.scanned, stream.length);
     const complete = bytes.lastIndexOf(0x0a) + 1;
-    for (const offset of turnStarts(bytes.subarray(0, complete), source, scan.chain)) scan.starts.push(scan.scanned + offset);
+    for (const offset of turnStarts(bytes.subarray(0, complete), source, scan.chain, turnBlobs(stream, source))) scan.starts.push(scan.scanned + offset);
     // a last line still without its newline counts now, and is scanned again once
     // complete, so it is scanned on a copy that leaves the kept chain untouched
-    pending = turnStarts(bytes.subarray(complete), source, { ...scan.chain }).map((offset) => scan!.scanned + complete + offset);
+    pending = turnStarts(bytes.subarray(complete), source, { ...scan.chain }, turnBlobs(stream, source)).map((offset) => scan!.scanned + complete + offset);
     scan.scanned += complete;
     scan.tail = bytesBefore(stream, scan.scanned);
   }
@@ -539,10 +539,16 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
     }
   }
   return source === "codex-transcript" ? parseCodexTranscript(text, Infinity)
-    // only pi keeps a tool's images in the entry as base64; omp, omo and gjc are read the same
-    // way but would carry image refs nothing can answer, so the option stays with pi alone
+    // pi keeps a picture inline and omp in its blob store, and the image endpoint answers both; omo and
+    // gjc are read the same way but would carry image refs nothing answers, so they name none
     : source === "claude-transcript" ? parseClaudeTranscript(text, Infinity, { subagents: subagentsOnPage(path, text), noticed })
-      : parseOmpTranscript(text, Infinity, { images: source === "pi-transcript" || source === "cmd-transcript", callIds: source === "gjc-transcript", taskTitles });
+      : parseOmpTranscript(text, Infinity, { images: source === "pi-transcript" || source === "cmd-transcript" || source === "omp-transcript", blobs: source === "omp-transcript" ? ompBlobStore(path) : null, callIds: source === "gjc-transcript", taskTitles });
+}
+
+/** The blob store of the omp transcript a stream reads (ompBlobStore), for its turn scan; null for any other agent. */
+function turnBlobs(stream: TranscriptStream, source: StreamSource): string | null {
+  const live = stream.files.at(-1)?.path;
+  return source === "omp-transcript" && live !== undefined ? ompBlobStore(live) : null;
 }
 
 type IncrementalSource = "codex-transcript" | "omp-transcript" | "claude-transcript";
@@ -601,7 +607,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
   if (!cached) {
     const subagents = source === "claude-transcript" ? { ids: new Set<string>(), details: new Map<string, SubagentDetail>() } : undefined;
     const parser = source === "codex-transcript" ? createCodexTranscriptParser()
-      : source === "omp-transcript" ? createOmpTranscriptParser({ taskTitles: new Map(before.taskTitles) })
+      : source === "omp-transcript" ? createOmpTranscriptParser({ images: true, blobs: ompBlobStore(path), taskTitles: new Map(before.taskTitles) })
       : createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) });
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
       boundary: bytesBefore(stream, start), parser, metadata: before.metadata, subagents };
@@ -1663,10 +1669,12 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
  * into a prompt (`<entry uuid>:<block index>`) or one a tool returned
  * (`<entry uuid>:<block index>:<index in the result>`). The transcript holds it as base64, so it
  * is decoded here rather than sent with every poll of the conversation. Null when there is no such
- * image. Codex uses a hash of the native attachment and searches only the bound history.
+ * image. Codex uses a hash of the native attachment and searches only the bound history, and names a
+ * picture a tool returned by its call (`codex-tool:<call id>:<nth picture>`); omp names its pictures
+ * as pi does.
  */
 export async function conversationImage(paneId: string, ref: string, codexHome?: string, opencodeDb?: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  if (!CLAUDE_IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !PI_PROMPT_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
+  if (!CLAUDE_IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !CODEX_TOOL_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !PI_PROMPT_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
@@ -1676,8 +1684,12 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
   // OpenCode's store is read per request and keeps nothing for the pane to release
   if (resolved.source === "opencode-transcript") return opencodeImage(resolved.path, resolved.session, ref);
   rememberPaneRead(paneId, resolved.path);
-  if (resolved.source === "codex-transcript") return codexTranscriptImage(codexHistorySegments(resolved.path, resolved.codexHome ?? codexHome), ref, pane.cwd);
+  if (resolved.source === "codex-transcript") {
+    if (CODEX_TOOL_IMAGE_REF.test(ref)) return codexToolImage(resolved.path, ref, resolved.codexHome ?? codexHome ?? defaultCodexHome());
+    return codexTranscriptImage(codexHistorySegments(resolved.path, resolved.codexHome ?? codexHome), ref, pane.cwd);
+  }
   if (resolved.source === "pi-transcript" || resolved.source === "cmd-transcript") return piTranscriptImage(resolved.path, ref);
+  if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref);
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 
@@ -1758,12 +1770,12 @@ const UNREAD = "unread";
 type ShapeRead = RecordShape | typeof NOT_A_RECORD | typeof UNREAD;
 
 /**
- * One Claude record, parsed as the page parses it but read a window at a time: every string past
+ * One transcript record, parsed as the page parses it but read a window at a time: every string past
  * SHAPE_STRING_BYTES is cut there (its rest checked as JSON.parse would check it) and ends in a mark
  * no record can hold, a nonce made for this read, and its place in `cut` (`wholeString` reads it
  * back). So a record of any size costs a window and its shape, and a picture only its own text.
  */
-function claudeRecordShape(stream: TranscriptStream, [start, end]: [number, number]): ShapeRead {
+function recordShape(stream: TranscriptStream, [start, end]: [number, number]): ShapeRead {
   const nonce = randomUUID();
   const kept: Buffer[] = [];
   let size = 0;
@@ -1881,7 +1893,7 @@ function answersDrawnCall(stream: TranscriptStream, id: string, before: number):
   }
   let open = false;
   for (const range of ranges) {
-    const shape = claudeRecordShape(stream, range);
+    const shape = recordShape(stream, range);
     if (shape === UNREAD) return false;
     if (shape === NOT_A_RECORD) continue;
     const entry = shape.entry;
@@ -1913,7 +1925,7 @@ export function transcriptImage(path: string, ref: string): { mediaType: string;
     const stream = transcriptStream("claude-transcript", path, statSync(path), defaultCodexHome());
     applyHistoryBoundary(path, stream, "claude-transcript");
     for (const range of linesWith(stream, uuid!, stream.floor, stream.length)) {
-      const shape = claudeRecordShape(stream, range);
+      const shape = recordShape(stream, range);
       // a record the endpoint cannot judge could be the one the page draws: serve nothing then
       if (shape === UNREAD) return null;
       if (shape === NOT_A_RECORD) continue;
@@ -2097,7 +2109,140 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
   return found ? { mediaType: found.media_type, bytes: new Uint8Array(Buffer.from(found.data, "base64")) } : null;
 }
 
-const PI_IMAGE_REF = /^pi:([A-Za-z0-9_:.\-]{1,128}):(\d{1,3})$/;
+/**
+ * A picture in an omp conversation, by the ref the page gave it, as pi names them: one a tool call
+ * returned (`pi:<call id>:<nth picture>`) or one sent in a prompt (`pi-prompt:<entry id>:<nth
+ * picture>`), its bytes inline or in the session's blob store (ompBlobStore, ompBlobPicture). It is
+ * read as the page reads omp, the file in one line after the last clear (one JSON writes with escapes
+ * too, as the parser reads it), and as the parser draws it (parseOmpTranscript): a tool's picture only
+ * from the first result that answers a call the page draws, a prompt's only from a prompt it draws.
+ * Like a Claude picture, it holds a window, a record's shape and the picture at a time, never a record
+ * or the transcript whole.
+ */
+export function ompTranscriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
+  const tool = PI_IMAGE_REF.exec(ref);
+  const match = tool ?? PI_PROMPT_IMAGE_REF.exec(ref);
+  if (match === null || match[1] === undefined || match[2] === undefined) return null;
+  const [, id, nth] = match;
+  const blobs = ompBlobStore(path);
+  try {
+    const stream = transcriptStream("omp-transcript", path, statSync(path), defaultCodexHome());
+    applyHistoryBoundary(path, stream, "omp-transcript");
+    // the records that name the id, and those that can be a clear however JSON writes it
+    const ranges = linesWith(stream, id, stream.floor, stream.length);
+    const seen = new Set(ranges.map(([start]) => start));
+    for (const range of linesWith(stream, "context_clear", stream.floor, stream.length)) if (!seen.has(range[0])) ranges.push(range);
+    ranges.sort((left, right) => left[0] - right[0]);
+    // the parser's state for this one id, as piTranscriptImage keeps it: whether a call it draws waits
+    // for its result, and the picture it names after the last clear (null: none yet)
+    let open = false;
+    let found: { mediaType: string; bytes: Buffer } | null = null;
+    for (const range of ranges) {
+      const shape = recordShape(stream, range);
+      // a record the endpoint cannot judge could be the one the page draws: serve nothing then
+      if (shape === UNREAD) return null;
+      if (shape === NOT_A_RECORD) continue;
+      const entry: unknown = shape.entry;
+      if (isContextClear(entry, "omp-transcript")) { open = false; found = null; continue; }
+      if (found !== null) continue;
+      // what the parser draws as something other than a message carries no picture of its
+      if (skillPromptMessage(entry) !== null || piNotice(entry) !== null || omoTaskResults(entry, new Map()) !== null || (entry as { type?: unknown }).type === "compaction") continue;
+      const message = piMessage(entry);
+      if (message === null) continue;
+      let content: unknown;
+      if (tool !== null) {
+        // an assistant record opens its calls before the results beside them; any other only answers
+        if (message.role === "assistant" && Array.isArray(message.content) && message.content.some((block: unknown) => { const call = block as { type?: unknown; name?: unknown; id?: unknown }; return call.type === "toolCall" && typeof call.name === "string" && call.id === id; })) open = true;
+        if (!open) continue;
+        const results = message.role === "toolResult" ? [message] : (Array.isArray(message.content) ? message.content : []).filter((block: unknown) => (block as { type?: unknown } | null)?.type === "toolResult");
+        const result = (results as { toolCallId?: unknown; content?: unknown }[]).find((block) => block.toolCallId === id);
+        if (result === undefined) continue;
+        // the first result for a waiting call is the one drawn; a later one, or one with no call, is not
+        open = false;
+        content = result.content;
+      } else {
+        if (message.role !== "user" || (entry as { id?: unknown }).id !== id) continue;
+        content = message.content;
+      }
+      // an answer or a prompt with no such picture names nothing, and a call made again can still name one
+      found = ompPicture(stream, shape, content, blobs, Number(nth));
+    }
+    return found === null ? null : { mediaType: found.mediaType, bytes: new Uint8Array(found.bytes) };
+  } catch { return null; }
+}
+
+/**
+ * The `nth` picture among an omp record's content blocks, counted as the parser counts them (piImageOf):
+ * blocks the same check takes for a picture, inline or in `blobs`. Only one picture's text is held at
+ * a time.
+ */
+function ompPicture(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, nth: number): { mediaType: string; bytes: Buffer } | null {
+  let seen = 0;
+  for (const value of Array.isArray(content) ? content : []) {
+    const block = value as { type?: unknown; mimeType?: unknown; media_type?: unknown; data?: unknown } | null;
+    if (block?.type !== "image" || typeof block.data !== "string") continue;
+    const declared = typeof block.mimeType === "string" ? block.mimeType : block.media_type;
+    let picture: { mediaType: string; bytes: Buffer } | null = null;
+    if (blobs && block.data.startsWith("blob:")) picture = seen === nth ? ompBlobPicture(blobs, declared, block.data) : ompBlobImageTypeOf(blobs, declared, block.data);
+    else {
+      const data = wholeString(stream, shape, block.data, PICTURE_TEXT_BYTES);
+      const mediaType = data === null ? null : inlineImageType(declared, data);
+      if (mediaType !== null) picture = { mediaType, bytes: seen === nth ? Buffer.from(data!, "base64") : Buffer.alloc(0) };
+    }
+    if (picture === null) continue;
+    if (seen === nth) return picture;
+    seen += 1;
+  }
+  return null;
+}
+
+/** Whether an omp blob ref names a picture, as the parser asks it (ompBlobImageType), for a picture only counted. */
+function ompBlobImageTypeOf(blobs: string, declared: unknown, data: string): { mediaType: string; bytes: Buffer } | null {
+  const mediaType = ompBlobImageType(blobs, declared, data);
+  return mediaType === null ? null : { mediaType, bytes: Buffer.alloc(0) };
+}
+
+/**
+ * A picture a Codex tool returned, by the ref the page gave it (`codex-tool:<call id>:<nth picture>`).
+ * It is read from the history the page reads (codexHistorySegments: the rollouts this one continues,
+ * without the bytes a backtrack left behind) and as the parser draws it (parseCodexTranscript): only
+ * from the first output answering a call it draws, and only the output's own pictures, never the copy an
+ * image generation's event keeps. Like a Claude picture, it holds a window, a record's shape and the
+ * picture at a time, never a record or the rollout whole.
+ */
+export function codexToolImage(path: string, ref: string, codexHome: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
+  const match = CODEX_TOOL_IMAGE_REF.exec(ref);
+  if (match === null || match[1] === undefined || match[2] === undefined) return null;
+  const [, id, nth] = match;
+  try {
+    const stream = transcriptStream("codex-transcript", path, statSync(path), codexHome);
+    // whether a call the parser draws waits for its output: a call made again opens it again
+    let open = false;
+    for (const range of linesWith(stream, id, stream.floor, stream.length)) {
+      const shape = recordShape(stream, range);
+      if (shape === UNREAD) return null;
+      if (shape === NOT_A_RECORD) continue;
+      const entry = shape.entry as { type?: unknown; payload?: unknown };
+      const payload = (entry.payload !== null && typeof entry.payload === "object" ? entry.payload : {}) as { type?: unknown; call_id?: unknown; output?: unknown };
+      if (entry.type !== "response_item" || payload.call_id !== id) continue;
+      if (payload.type === "function_call" || payload.type === "custom_tool_call") { open = true; continue; }
+      if ((payload.type !== "function_call_output" && payload.type !== "custom_tool_call_output") || !open) continue;
+      open = false;
+      let seen = 0;
+      for (const value of Array.isArray(payload.output) ? payload.output : []) {
+        const part = value as { type?: unknown; image_url?: unknown } | null;
+        if (part?.type !== "input_image" || typeof part.image_url !== "string") continue;
+        // a data URL is the picture's text and its type, a few bytes longer than the longest picture
+        const url = wholeString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64);
+        const picture = url === null ? null : codexOutputPicture({ type: "input_image", image_url: url });
+        if (picture === null) continue;
+        if (seen === Number(nth)) return { mediaType: picture.mediaType, bytes: new Uint8Array(Buffer.from(picture.data, "base64")) };
+        seen += 1;
+      }
+    }
+  } catch { return null; }
+  return null;
+}
 
 function outputInText(source: RecognizedConversation["source"], text: string, ref: string): string | null {
   text = activeHistoryText(text, source);
