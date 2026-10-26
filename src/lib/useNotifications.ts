@@ -4,6 +4,7 @@ import type { Settings } from "./settings.ts";
 import { sendTestPush } from "./api.ts";
 import { notificationState, refreshNotificationState, requestNotificationPermission, type NotificationState } from "./notifications.ts";
 import { ensurePushSubscription, pushSupported, removePushSubscription } from "./push.ts";
+import { refreshPushHealth, resetPushHealth, runPushAction } from "./pushHealth.ts";
 import { hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 
 /** The browser's notification permission and whether this device has a push subscription. */
@@ -64,6 +65,9 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
     } catch (err) {
       console.warn("web push unavailable, alerts stay tab-only", err);
       return false;
+    } finally {
+      // what the confirmation push came to is now the device's latest delivery: the notice reads it
+      void refreshPushHealth(alertsOnRef.current);
     }
   }, [updateSettings]);
 
@@ -72,8 +76,14 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
   const disableNotifications = useCallback(async () => {
     updateSettings({ alertsOn: false });
     setPushOn(false);
+    resetPushHealth();
     await removePushSubscription().catch((err) => console.warn("could not drop the push subscription", err));
   }, [updateSettings]);
+
+  // the notice's repair is Settings' Turn alerts on again: one flow, one state (lib/pushHealth.ts)
+  const repairNotifications = useCallback(() => {
+    void runPushAction("repair", async () => await enableNotifications() ? "sent" : "failed", () => alertsOnRef.current);
+  }, [enableNotifications]);
 
   // in the app, alerts turned off while the PC could not be told keep the app's endpoint (lib/push.ts),
   // and the phone goes on getting this PC's alerts until the PC forgets it. With alerts off the removal
@@ -103,10 +113,24 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
       })
       .catch(() => {
         if (!cancelled) setPushOn(false);
+      })
+      // registered (or not): what the server knows of this subscription says whether alerts arrive
+      .finally(() => {
+        if (!cancelled) void refreshPushHealth(true);
       });
     return () => {
       cancelled = true;
     };
   }, [locked, notifications, alerts, alertsOn]);
-  return { enableNotifications, disableNotifications };
+
+  // back in front (a phone switching apps, a tab chosen again): a push that failed meanwhile is read now
+  useEffect(() => {
+    if (locked !== false || !alertsOn) return;
+    const onVisible = (): void => {
+      if (document.visibilityState === "visible" && alertsOnRef.current) void refreshPushHealth(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [locked, alertsOn]);
+  return { enableNotifications, disableNotifications, repairNotifications };
 }

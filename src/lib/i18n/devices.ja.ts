@@ -99,4 +99,8 @@ export const DEVICES_JA: Record<string, string> = {
   "Allow notifications to test alerts on this device.": "このデバイスで通知をテストするには、通知を許可してください。",
   "Could not send the test notification. Try again.": "テスト通知を送信できませんでした。もう一度お試しください。",
   "Turn alerts on again": "通知をもう一度オンにする",
+  "Turning alerts on…": "通知をオンにしています…",
+  "This device's push subscription was made for another server key. Turn alerts on again to make a new one.": "このデバイスのプッシュ通知の登録は別のサーバーキーで作られています。通知をもう一度オンにすると新しく登録します。",
+  "The push service refused the last alert to this device. Send a test to check whether it still does.": "プッシュサービスがこのデバイスへの最後の通知を拒否しました。テストを送って、今も拒否されるか確認してください。",
+  "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "最後の通知はこのデバイスに届きませんでした。次の通知は通常どおり送られます。テストを送って確認してください。",
 };

@@ -99,4 +99,8 @@ export const DEVICES_ZH: Record<string, string> = {
   "Allow notifications to test alerts on this device.": "请允许通知，以便在此设备上测试提醒。",
   "Could not send the test notification. Try again.": "无法发送测试通知。请重试。",
   "Turn alerts on again": "重新开启提醒",
+  "Turning alerts on…": "正在开启提醒…",
+  "This device's push subscription was made for another server key. Turn alerts on again to make a new one.": "此设备的推送订阅是用另一个服务器密钥创建的。请重新开启提醒以创建新的订阅。",
+  "The push service refused the last alert to this device. Send a test to check whether it still does.": "推送服务拒绝了发往此设备的上一条提醒。请发送测试，看看是否仍被拒绝。",
+  "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "上一条提醒未能送达此设备；下一条会照常发送。请发送测试以确认。",
 };
