@@ -888,8 +888,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         outputFrames.length = 0;
         // A renderer that left its pane (herdr could not restore it) ends that pane's recovery wait: a
         // rejoin is told again while the attachment still recovers. A replaced terminal of the same
-        // pane keeps it, so a late frame of the old replay is not taken for the current screen
-        if (recoveringPane !== paneRef.current) recoveringPane = null;
+        // pane keeps it until its new attach says (rejoin), so a late frame of the old replay is not
+        // taken for the current screen
+        if (recoveringPane !== paneRef.current) endRecovery();
+        else if (recoveringPane !== null) rejoin = true;
         frameGateRef.current.reset();
         if (!writingOutput) replayOscOpen = oscMayCopy();
       };
@@ -962,6 +964,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // before. Kept by pane: another pane's output is its own, while the same pane's (a replaced
       // terminal re-attaching) still waits for the attach to take (retireOutput)
       let recoveringPane: string | null = null;
+      // output-recovering came and its join's replay has not: that replay is still the screen from before
+      let joinReplay = false;
+      // the recovering pane's terminal was replaced and attached again: a replay that output-recovering
+      // did not announce is that attach joining an attachment that recovered meanwhile, the current screen
+      let rejoin = false;
+      const endRecovery = (): void => {
+        recoveringPane = null;
+        joinReplay = false;
+        rejoin = false;
+      };
       let deferredAttach = false;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
@@ -1027,13 +1039,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // output-recovering: this client joined after the stream ended, so the replay is the screen from before
           if (message.type === "output-recovering" || message.ready === false) {
             recoveringPane = message.pane_id;
+            joinReplay = message.type === "output-recovering";
+            rejoin = false;
             outputLifetime++;
             setOutputReady(false);
             setParsedTarget(undefined);
           } else if (recoveringPane === message.pane_id) {
             // Recovery revokes parses queued before this receipt too. The new stream, not
             // input permission (which observers never have), proves the screen is current.
-            recoveringPane = null;
+            endRecovery();
             outputLifetime++;
           }
         }
@@ -1044,6 +1058,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // raw pty bytes: append, never repaint, so xterm keeps the screen and selection
           const acknowledge = socket.outputAcknowledgement(message);
           const owner = message.pane_id;
+          if (message.replay === true && recoveringPane === owner) {
+            if (joinReplay) joinReplay = false;
+            else if (rejoin) {
+              // what was queued before this replay is not the current screen; this replay is
+              endRecovery();
+              outputLifetime++;
+            }
+          }
           const generation = outputGeneration;
           const lifetime = outputLifetime;
           const target = outputTargetRef.current;
@@ -1220,7 +1242,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         pendingScopeRef.current = session.scope;
         pendingEpochRef.current = session.epoch;
         outputGeneration++;
-        recoveringPane = null;
+        endRecovery();
         retireOutputRef.current();
         setOutputReady(false);
         inputWasReady = false;
@@ -1839,7 +1861,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const generation = ++outputGeneration;
         // A new attach owns a new output lifetime. A recovering attachment sends output-recovering
         // before its replay, so it revokes this again before any retained bytes.
-        recoveringPane = null;
+        endRecovery();
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
         // A frame the old stream left open is not the new one's
         frameGateRef.current.reset();
