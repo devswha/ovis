@@ -886,6 +886,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const retireOutput = (): void => {
         outputOwner++;
         outputFrames.length = 0;
+        // A renderer that left its pane (herdr could not restore it) ends that pane's recovery wait: a
+        // rejoin is told again while the attachment still recovers. A replaced terminal of the same
+        // pane keeps it, so a late frame of the old replay is not taken for the current screen
+        if (recoveringPane !== paneRef.current) recoveringPane = null;
         frameGateRef.current.reset();
         if (!writingOutput) replayOscOpen = oscMayCopy();
       };
@@ -955,8 +959,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the parse itself (a masked prompt must still keep typing out of every draft).
       let outputLifetime = 0;
       // the pane whose attachment is recovering, as this client joined it: its replay is the screen from
-      // before. Kept by pane, so the next pane's output is its own, while the same pane's (a replaced
-      // terminal re-attaching) still waits for the attach to take
+      // before. Kept by pane: another pane's output is its own, while the same pane's (a replaced
+      // terminal re-attaching) still waits for the attach to take (retireOutput)
       let recoveringPane: string | null = null;
       let deferredAttach = false;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
