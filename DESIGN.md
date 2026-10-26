@@ -2809,7 +2809,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   size the pty: watching it (a device paired to watch), or under a phone's soft keyboard, where the
   grid stays at another device's size until the keyboard goes (#1045). It is drawn from the xterm
   buffer the attach stream wrote, never from a pane read, and the pane is never resized for it; the
-  pane menu then offers the same choice, under the same setting. A phone that drives the pty is never
+  pane menu then offers the same choice, under the same setting. A cursor the grid shows (an attached
+  pane's; a mirror hides it) is drawn in the folded rows in the grid's shape and colours, and the hidden
+  grid moves down and sideways onto it, so a preedit stands on the caret even in an earlier part of a
+  long folded line. A phone that drives the pty is never
   folded (the program redraws at its width), nor is a split's following half, and a grid its mount
   fits is drawn as it is. Under the keyboard the folded rows pan by finger and wheel up to their
   edges, past which a swipe scrolls the pane as before; a tap on them is no mouse click for the

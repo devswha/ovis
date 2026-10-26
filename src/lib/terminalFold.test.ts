@@ -105,6 +105,18 @@ describe("the folded view of a mirrored grid", () => {
     expect(rowHtml(line([{ chars: "x", fg: 1, bold: true }], 1), 1, {}, scratch)).toBe('<span style="color:#ef2929;font-weight:bold;">x</span>');
   });
 
+  test("the cursor's cell is drawn on its own in the cursor's shape, the blank cells up to it included", () => {
+    const theme = { foreground: "#eeeeee", background: "#111111", cursor: "#ff0000", cursorAccent: "#000000" };
+    expect(rowHtml(line(plain("abc"), 6), 6, theme, scratch, 1, { x: 1, shape: "block" }))
+      .toBe('a<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">b</span>c');
+    // a shell's prompt ends in a blank the caret stands after
+    expect(rowHtml(line(plain("ab"), 6), 6, theme, scratch, 1, { x: 3, shape: "outline" }))
+      .toBe('ab <span class="terminal-fold-cursor" style="box-shadow:inset 0 0 0 1px #ff0000;"> </span>');
+    // on the second half of a wide glyph: the glyph is the cursor's
+    expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
+      .toBe('<span class="terminal-fold-cursor">한</span>x');
+  });
+
   test("a pane stays wide for the menu while any terminal drawing it says so, and its listeners hear each change", () => {
     const pane = wideGridKey("pc", "w1:p1");
     const first = {};

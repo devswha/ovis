@@ -1632,8 +1632,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // device's size) only up to their edges, past which the swipe scrolls the program as before
         const edged = scrollableMirror() || (fold.active && !adopted());
         if ((adopted() || fold.active) && (!edged || canPanTerminalGrid(host, delta))) {
-          // the pan owns the swipe now: history travel left from before it is not sent at the lift
+          // the pan owns the swipe now: history travel left from before it is not sent at the lift, nor are
+          // the reports of it still queued
           touchPixels = 0;
+          touchPacer.cancel();
           panned = true;
           // folded rows already fit the width: only the rows pan
           host.scrollBy(fold.active ? 0 : across, delta);

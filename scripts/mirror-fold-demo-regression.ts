@@ -661,6 +661,45 @@ try {
         await settled(phone);
         const swiped = await hostScroll(phone);
         assert.ok(swiped.top > wheeled.top, `under the keyboard, a swipe pans the folded rows (${wheeled.top} -> ${swiped.top})`);
+        // a shell's caret in a long command line that folds into several lines, moved back into its first one,
+        // then onto its last: the caret is drawn where it is, and a preedit stands on it, not at the line's end
+        const command = `$ CARET-LINE ${"x".repeat(COLS - 30)} TAIL`;
+        for (const at of [{ col: 6, glyph: "E", first: true }, { col: command.indexOf(" TAIL") + 2, glyph: "T", first: false }]) {
+          await pushScreen(phone, `\x1b[?25l\x1b[0m\x1b[H\x1b[2J${[...Array.from({ length: ROWS - 1 }, (_, index) => `R${index + 1}`), command].join("\r\n")}\x1b[${ROWS};${at.col}H\x1b[?25h`);
+          await phone.waitForFunction((glyph) => document.querySelector(".pane-frame.is-current .terminal-fold-cursor")?.textContent === glyph, at.glyph);
+          await phone.evaluate(() => document.querySelector<HTMLTextAreaElement>(".pane-frame.is-current .xterm-helper-textarea")!.focus());
+          await settled(phone);
+          const caret = await phone.evaluate(() => {
+            const node = document.querySelector<HTMLElement>(".pane-frame.is-current .terminal-fold-cursor")!;
+            const row = node.closest<HTMLElement>(".terminal-fold-row")!;
+            const box = node.getBoundingClientRect();
+            const rowBox = row.getBoundingClientRect();
+            const line = parseFloat(getComputedStyle(row).lineHeight);
+            const style = getComputedStyle(node);
+            return { top: box.top, left: box.left, rowTop: rowBox.top, rowHeight: rowBox.height, line,
+              lineTop: rowBox.top + Math.floor((box.top + box.height / 2 - rowBox.top) / line) * line, background: style.backgroundColor, shadow: style.boxShadow };
+          });
+          assert.ok(caret.rowHeight >= caret.line * 2 - 1, `the command line folds into several lines ${JSON.stringify(caret)}`);
+          assert.ok(at.first ? caret.lineTop === caret.rowTop : caret.lineTop > caret.rowTop, `the caret is on the ${at.first ? "first" : "last"} of them ${JSON.stringify(caret)}`);
+          assert.ok(caret.background !== "rgba(0, 0, 0, 0)" || caret.shadow !== "none", `the caret is drawn ${JSON.stringify(caret)}`);
+          const ime = await phone.context().newCDPSession(phone);
+          await ime.send("Input.imeSetComposition", { text: "한", selectionStart: 1, selectionEnd: 1 });
+          await phone.locator(".pane-frame.is-current .composition-view.active").waitFor();
+          const preedit = await phone.evaluate(() => {
+            const view = document.querySelector<HTMLElement>(".pane-frame.is-current .composition-view.active")!;
+            const box = view.getBoundingClientRect();
+            const host = view.closest<HTMLElement>(".pane-terminal")!;
+            const xterm = host.querySelector<HTMLElement>(".xterm")!;
+            // where the grid and the input stood, for a failure to say
+            return { top: box.top, bottom: box.bottom, left: box.left, at: view.style.left, gridLeft: host.querySelector(".xterm-screen")!.getBoundingClientRect().left, shift: xterm.style.left, scrolled: xterm.scrollLeft };
+          });
+          const preeditMiddle = (preedit.top + preedit.bottom) / 2;
+          assert.ok(Math.abs(preedit.left - caret.left) <= 2 && preeditMiddle >= caret.lineTop && preeditMiddle <= caret.lineTop + caret.line,
+            `the preedit stands on the caret (${at.glyph}) ${JSON.stringify({ preedit, caret })}`);
+          await ime.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
+          await phone.locator(".pane-frame.is-current .composition-view.active").waitFor({ state: "detached" });
+          await ime.detach();
+        }
         // the keyboard goes: the catch-up fit takes the pane back to the phone's grid, unfolded
         await phone.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         await phone.setViewportSize({ width: 390, height: 844 });
@@ -672,7 +711,7 @@ try {
         assert.deepEqual(wide.errors, []);
       } finally { await wide.close(); }
 
-      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph and an OSC 8 label (an address-shaped one too) opens its target, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, an attached pane folded while watched or under the keyboard at another device's wider grid (390, 412 and both on their side; panned by finger and wheel, with herdr's mouse reporting on), Korean words whole, Original width pans a TUI to its edge by finger, and fitted, unfolded while it drives`);
+      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph and an OSC 8 label (an address-shaped one too) opens its target, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, an attached pane folded while watched or under the keyboard at another device's wider grid (390, 412 and both on their side; panned by finger and wheel, with herdr's mouse reporting on; a caret back in a long folded line drawn, its preedit on it), Korean words whole, Original width pans a TUI to its edge by finger, and fitted, unfolded while it drives`);
     } finally { await browser.close(); }
   } finally { server.stop(); }
 } finally { rmSync(app, { recursive: true, force: true }); }
