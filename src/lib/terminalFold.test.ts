@@ -115,6 +115,9 @@ describe("the folded view of a mirrored grid", () => {
     // on the second half of a wide glyph: the glyph is the cursor's
     expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
       .toBe('<span class="terminal-fold-cursor">한</span>x');
+    // a write that filled the row: the cursor waits past the last column, and stands on the last cell
+    expect(rowHtml(line(plain("abcde"), 5), 5, theme, scratch, 1, { x: 5, shape: "block" }))
+      .toBe('abcd<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">e</span>');
   });
 
   test("a pane stays wide for the menu while any terminal drawing it says so, and its listeners hear each change", () => {
