@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SessionHistoryAgent, SessionSnapshot } from "../shared/protocol.ts";
-import { HEAD_BYTES, listSessions, MAX_ENTRIES, MAX_ROWS, MAX_STATS, MAX_WALK, SESSION_HISTORY_AGENTS } from "./session-history.ts";
+import { HEAD_BYTES, HERMES_CANDIDATES, listSessions, MAX_ENTRIES, MAX_ROWS, MAX_STATS, MAX_WALK, SESSION_HISTORY_AGENTS } from "./session-history.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, type PaneProcesses, RESUME_BUDGET_S, workspaceFolder } from "./session-history-routes.ts";
 import { claudeProjectDir, darwinProcess, forgetClaudeSessions } from "./claude-store.ts";
 import { slowMachinePath } from "./machine-api.ts";
@@ -720,9 +720,11 @@ describe("listSessions", () => {
     nativeHermes(home);
     const rows = listSessions("hermes", CWD, { home, env: {} });
     // left out, as Hermes resumes each as another row: fx0106 (an older branch branched again) as
-    // fx0119, fx0121 through its empty child as fx0123, fx0129 (no end reason) as its unmarked child
+    // fx0119, fx0121 through its empty child as fx0123, fx0129 (no end reason) as its unmarked child,
+    // fx0132 (a legacy branch compressed later) as its continuation; fx0135, a reset compressed later,
+    // resumes as itself
     expect(rows.map((row) => `${row.id.slice(-6)} ${kindOf(row.id)}`)).toEqual([
-      "fx0128 root", "fx0125 branch", "fx0124 root", "fx0120 root", "fx0119 legacy-branch", "fx0110 branch",
+      "fx0135 reset", "fx0134 root", "fx0131 root", "fx0128 root", "fx0125 branch", "fx0124 root", "fx0120 root", "fx0119 legacy-branch", "fx0110 branch",
       "fx0109 root", "fx0108 legacy-reset", "fx0107 root", "fx0105 root", "fx0104 reset", "fx0103 root",
       "fx0102 branch", "fx0101 root",
     ]);
@@ -749,6 +751,28 @@ describe("listSessions", () => {
       .toEqual(listSessions("hermes", CWD, { home: plain, env: {} }).map((row) => row.id));
   });
 
+  it("hides a Hermes child that ended in a compression whose continuation holds no messages yet", () => {
+    const home = newHome();
+    // Hermes's resume still opens the continuation (get_compression_tip reads no messages)
+    nativeHermes(home, "DELETE FROM messages WHERE session_id = '20261010_134000_fx0133'");
+    const plain = newHome();
+    nativeHermes(plain);
+    expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => row.id))
+      .toEqual(listSessions("hermes", CWD, { home: plain, env: {} }).map((row) => row.id));
+  });
+
+  it(`walks Hermes's resume for the folder's newest ${HERMES_CANDIDATES} roots and branch or reset children alone`, () => {
+    const home = newHome();
+    // newer than every row of the store: branches of fx0101 that each resume as their child, which has messages
+    nativeHermes(home, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${HERMES_CANDIDATES - 1})
+      INSERT INTO sessions (id, source, parent_session_id, model_config, started_at, last_activity_at, cwd)
+      SELECT 'newer_branch_' || i, 'cli', '20261010_090000_fx0101', '{"_branched_from": "20261010_090000_fx0101"}', 1800000000 + i, 1800000000 + i, ${sql(CWD)} FROM n;
+      INSERT INTO sessions (id, source, parent_session_id, started_at) SELECT 'newer_child_' || substr(id, 14), 'cli', id, started_at + 1 FROM sessions WHERE id LIKE 'newer_branch_%';
+      INSERT INTO messages (session_id, role, content, timestamp) SELECT id, 'user', 'newer', started_at FROM sessions WHERE id LIKE 'newer_child_%';`);
+    // the window holds those and the folder's newest conversation; the older ones are not reached
+    expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => row.id)).toEqual(["20261010_136000_fx0135"]);
+  });
+
   for (const [store, change] of [
     ["lacks a column its children are told apart by", "ALTER TABLE sessions DROP COLUMN model_config"],
     ["has a newer schema than the one proven", "UPDATE schema_version SET version = 32"],
@@ -757,7 +781,7 @@ describe("listSessions", () => {
     it(`lists a Hermes store's roots alone when it ${store}`, () => {
       const home = newHome();
       nativeHermes(home, change);
-      expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => kindOf(row.id))).toEqual(Array(8).fill("root"));
+      expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => kindOf(row.id))).toEqual(Array(10).fill("root"));
     });
   }
 

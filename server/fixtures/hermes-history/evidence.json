@@ -529,9 +529,92 @@
       "listed_in_cwd": false,
       "listed_by_activity": false,
       "resume_opens": "20261010_131000_fx0130"
+    },
+    {
+      "id": "20261010_132000_fx0131",
+      "kind": "root",
+      "parent": null,
+      "source": "cli",
+      "cwd": "/work/project",
+      "end_reason": "branched",
+      "model_config": null,
+      "listed": true,
+      "listed_in_cwd": true,
+      "listed_by_activity": true,
+      "resume_opens": "20261010_134000_fx0133"
+    },
+    {
+      "id": "20261010_133000_fx0132",
+      "kind": "legacy-branch",
+      "parent": "20261010_132000_fx0131",
+      "source": "cli",
+      "cwd": "/work/project",
+      "end_reason": "compression",
+      "model_config": null,
+      "listed": false,
+      "listed_in_cwd": false,
+      "listed_by_activity": false,
+      "resume_opens": "20261010_134000_fx0133"
+    },
+    {
+      "id": "20261010_134000_fx0133",
+      "kind": "compression",
+      "parent": "20261010_133000_fx0132",
+      "source": "cli",
+      "cwd": "/work/project",
+      "end_reason": null,
+      "model_config": null,
+      "listed": true,
+      "listed_in_cwd": true,
+      "listed_by_activity": true,
+      "resume_opens": "20261010_134000_fx0133"
+    },
+    {
+      "id": "20261010_135000_fx0134",
+      "kind": "root",
+      "parent": null,
+      "source": "telegram",
+      "cwd": "/work/project",
+      "end_reason": "session_reset",
+      "model_config": null,
+      "listed": true,
+      "listed_in_cwd": true,
+      "listed_by_activity": true,
+      "resume_opens": "20261010_135000_fx0134"
+    },
+    {
+      "id": "20261010_136000_fx0135",
+      "kind": "reset",
+      "parent": "20261010_135000_fx0134",
+      "source": "telegram",
+      "cwd": "/work/project",
+      "end_reason": "compression",
+      "model_config": "{\"_reset_from\": \"20261010_135000_fx0134\"}",
+      "listed": true,
+      "listed_in_cwd": true,
+      "listed_by_activity": true,
+      "resume_opens": "20261010_136000_fx0135"
+    },
+    {
+      "id": "20261010_137000_fx0136",
+      "kind": "compression",
+      "parent": "20261010_136000_fx0135",
+      "source": "telegram",
+      "cwd": "/work/project",
+      "end_reason": null,
+      "model_config": "{\"_reset_from\": \"20261010_135000_fx0134\"}",
+      "listed": true,
+      "listed_in_cwd": true,
+      "listed_by_activity": true,
+      "resume_opens": "20261010_137000_fx0136"
     }
   ],
   "native_list": [
+    "20261010_137000_fx0136",
+    "20261010_136000_fx0135",
+    "20261010_135000_fx0134",
+    "20261010_134000_fx0133",
+    "20261010_132000_fx0131",
     "20261010_130000_fx0129",
     "20261010_125000_fx0128",
     "20261010_122000_fx0125",
@@ -557,6 +640,11 @@
     "20261010_090000_fx0101"
   ],
   "native_list_in_cwd": [
+    "20261010_137000_fx0136",
+    "20261010_136000_fx0135",
+    "20261010_135000_fx0134",
+    "20261010_134000_fx0133",
+    "20261010_132000_fx0131",
     "20261010_130000_fx0129",
     "20261010_125000_fx0128",
     "20261010_122000_fx0125",
@@ -580,6 +668,11 @@
     "20261010_090000_fx0101"
   ],
   "native_list_by_activity": [
+    "20261010_137000_fx0136",
+    "20261010_136000_fx0135",
+    "20261010_135000_fx0134",
+    "20261010_134000_fx0133",
+    "20261010_132000_fx0131",
     "20261010_130000_fx0129",
     "20261010_125000_fx0128",
     "20261010_122000_fx0125",
@@ -630,6 +723,10 @@
       {
         "id": "20261010_122000_fx0125",
         "kind": "branch"
+      },
+      {
+        "id": "20261010_136000_fx0135",
+        "kind": "reset"
       }
     ],
     "adopted": true

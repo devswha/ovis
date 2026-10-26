@@ -159,6 +159,29 @@ session("20261010_130000_fx0129", "reset", parent="20261010_125000_fx0128", sour
         prompt="Fixture hermes open reset prompt", title="Fixture open reset")
 session("20261010_131000_fx0130", "unmarked-child", parent="20261010_130000_fx0129", source="telegram",
         key="agent:main:telegram:dm:open", prompt="Fixture hermes open reset child prompt")
+# a child compressed later: resolve_resume_session_id first follows get_compression_tip, whose chain
+# step takes an unmarked, non-reset child of a row ended "compression". A legacy branch's continuation
+# carries no marker, so the branch resumes as its continuation; a reset's continuation inherits
+# _reset_from, which the chain step leaves out, so the reset resumes as itself
+session("20261010_132000_fx0131", "root", prompt="Fixture hermes compressed legacy root prompt", title="Fixture compressed legacy root")
+db.end_session("20261010_132000_fx0131", "branched")
+session("20261010_133000_fx0132", "legacy-branch", parent="20261010_132000_fx0131",
+        prompt="Fixture hermes compressed legacy branch prompt", title="Fixture compressed legacy branch")
+db.publish_compression_child(parent_session_id="20261010_133000_fx0132", child_session_id="20261010_134000_fx0133",
+        source="cli", messages=[{"role": "user", "content": "Fixture hermes legacy compression summary"}],
+        cwd=cwd, require_compression_lease=False)
+made.append({"id": "20261010_134000_fx0133", "kind": "compression"})
+session("20261010_135000_fx0134", "root", source="telegram", key="agent:main:telegram:dm:compressed",
+        prompt="Fixture hermes compressed gateway prompt", title="Fixture compressed gateway")
+db.end_session("20261010_135000_fx0134", "session_reset")
+reset = {"_reset_from": "20261010_135000_fx0134"}
+session("20261010_136000_fx0135", "reset", parent="20261010_135000_fx0134", source="telegram",
+        key="agent:main:telegram:dm:compressed", model_config=reset,
+        prompt="Fixture hermes compressed reset prompt", title="Fixture compressed reset")
+db.publish_compression_child(parent_session_id="20261010_136000_fx0135", child_session_id="20261010_137000_fx0136",
+        source="telegram", messages=[{"role": "user", "content": "Fixture hermes reset compression summary"}],
+        model_config=reset, cwd=cwd, require_compression_lease=False)
+made.append({"id": "20261010_137000_fx0136", "kind": "compression"})
 db.close()
 
 # pin the times: row n started at 2026-10-10 09:00 + n*10 min, active 5 min later, ended (where it
