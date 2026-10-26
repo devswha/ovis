@@ -56,7 +56,7 @@ import { forgetGrokState, grokProjection, grokToolOutput, parseGrokTranscript, G
 import { resolveGrokStore } from "./grok-store.ts";
 import { AgyUnavailable, agyCatalog, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
 import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
-import { museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
+import { museSession, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
 import { resolveMuseSession } from "./muse-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
@@ -166,15 +166,40 @@ interface TranscriptStream {
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
 // invalidating settled turns and incremental parsers as well as the response cache.
-const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string }>();
-function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): string {
+const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; window?: { from: number; digest: string } }>();
+function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false): string {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   const previous = transcriptRevisions.get(path);
-  const rewritten = previous && previous.identity === identity && (stat.size < previous.size || (stat.size === previous.size && changed !== previous.changed));
+  let rewritten = previous !== undefined && previous.identity === identity && (stat.size < previous.size || (stat.size === previous.size && changed !== previous.changed));
+  // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
+  // read must still hold the bytes it held. ponytail: the last 16 MiB only, where the settled turns
+  // come from; hash the whole log if a rewrite further back matters.
+  let window = previous?.identity === identity ? previous.window : undefined;
+  if (checkWindow && (window === undefined || stat.size !== previous!.size || changed !== previous!.changed)) {
+    if (!rewritten && window !== undefined && windowDigest(path, window.from, previous!.size) !== window.digest) rewritten = true;
+    const from = Math.max(0, stat.size - TRANSCRIPT_WINDOW_BYTES);
+    window = { from, digest: windowDigest(path, from, stat.size) };
+  }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation }, 64);
+  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, window }, 64);
   return generation ? `-${generation}` : "";
+}
+
+/** A digest of bytes `from` to `to` of a file; empty when they cannot all be read. */
+function windowDigest(path: string, from: number, to: number): string {
+  let fd: number;
+  try { fd = openSync(path, "r"); } catch { return ""; }
+  try {
+    const hash = createHash("sha256");
+    const chunk = Buffer.alloc(Math.min(1024 * 1024, Math.max(1, to - from)));
+    for (let at = from, got = 0; at < to; at += got) {
+      got = readSync(fd, chunk, 0, Math.min(chunk.length, to - at), at);
+      if (got === 0) return "";
+      hash.update(chunk.subarray(0, got));
+    }
+    return hash.digest("hex");
+  } catch { return ""; } finally { closeSync(fd); }
 }
 
 function transcriptStream(source: StreamSource, path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, codexHome: string, agy?: AgyProjection, fd?: number): TranscriptStream {
@@ -223,7 +248,7 @@ function transcriptStream(source: StreamSource, path: string, stat: { dev: numbe
     });
     chain = earlier.length === 0 ? "" : `-${createHash("sha256").update(earlier.join("\n")).digest("base64url").slice(0, 10)}`;
   }
-  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat)}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd };
+  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat, source === "muse-transcript")}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd };
 }
 
 function readStream(stream: TranscriptStream, from: number, to: number): Buffer {
@@ -508,7 +533,7 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
   }
   if (source === "agy-transcript") return parseAgyTranscript(text, path);
   if (source === "muse-transcript") {
-    try { return parseMuseTranscript(text); } catch (error) {
+    try { return parseMuseTranscript(text, museSession(path)); } catch (error) {
       if (error instanceof MuseUnavailable) throw new ConversationUnavailable("transcript_missing");
       throw error;
     }
@@ -1118,6 +1143,8 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     );
     if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
   }
+  // a Muse pane's processes are asked for once, for omo and for its session lock
+  if (agent === "muse" && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
     return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
@@ -1132,7 +1159,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       return { source: "grok-transcript", path: found };
     }
     if (agent === "muse") {
-      const path = await resolveMuseSession(pane, museData);
+      const path = await resolveMuseSession(pane, museData, known);
       if (path === null) throw new ConversationUnavailable("no_session_path");
       return { source: "muse-transcript", path };
     }

@@ -1,23 +1,34 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetTranscriptState, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
-import { museModel, museResult, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
+import * as herdr from "./herdr/client.ts";
+import { museModel, musePrompt, museResult, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
 import { isMuseExecutable, museSessionFor, museSessionLive, parseMuseLock } from "./muse-store.ts";
-import type { ConversationPart } from "../shared/protocol.ts";
+import type { ConversationPart, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 const fixture = readFileSync(join(import.meta.dir, "fixtures", "muse", "session.jsonl"), "utf8");
 const recorded = readFileSync(join(import.meta.dir, "fixtures", "muse", "recorded-1.4.13.jsonl"), "utf8");
+/** The sessions the two logs belong to: a log is read in a folder named after its session. */
+const FICTION = "00000000-0000-7000-8000-000000000001";
+const RECORDED = "01a17441-bc95-7e23-b488-988dceb829cd";
+const fiction = (log: string) => parseMuseTranscript(log, FICTION);
+const real = (log: string) => parseMuseTranscript(log, RECORDED);
 let root: string;
+const logAt = (session: string, log: string): string => {
+  mkdirSync(join(root, session), { recursive: true });
+  writeFileSync(join(root, session, "session.jsonl"), log);
+  return join(root, session, "session.jsonl");
+};
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ovis-muse-unit-")); forgetTranscriptState(); });
 afterEach(() => { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); });
 
 describe("Muse session log", () => {
   test("reads prompts, reasoning, answers, tool results and compaction from the native records", () => {
-    const turns = parseMuseTranscript(fixture);
+    const turns = fiction(fixture);
     expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind)])).toEqual([
       ["user", ["text"]],
       ["assistant", ["thinking", "text", "tool", "tool", "tool", "tool", "tool", "text"]],
@@ -52,17 +63,17 @@ describe("Muse session log", () => {
   test("a result whose call is on an earlier page keeps its output on a row of its own", () => {
     const lines = fixture.trimEnd().split("\n");
     const batch = lines.find((line) => line.includes('"call_01"') && line.includes("tool_result_batch_committed"))!;
-    const tools = parseMuseTranscript(batch).flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool");
+    const tools = fiction(batch).flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool");
     expect(tools.map((tool) => [tool.name, tool.output])).toEqual([["Tool output", "3 notes.txt\n"], ["Tool output", "one\ntwo\nthree\n"]]);
     // without an id, a long result is cut with nothing to fetch the rest by
-    const unnamed = parseMuseTranscript(batch.replace('"tool_call_id":"call_01"', '"tool_call_id":""').replace("3 notes.txt", "x".repeat(5000)))
+    const unnamed = fiction(batch.replace('"tool_call_id":"call_01"', '"tool_call_id":""').replace("3 notes.txt", "x".repeat(5000)))
       .flatMap((turn) => turn.parts).find((part): part is Tool => part.kind === "tool")!;
     expect([unnamed.output.length < 5000, unnamed.output_ref, unnamed.output_size]).toEqual([true, undefined, undefined]);
   });
 
   test("only a run that completes on an answer marks it final", () => {
     const lines = fixture.trimEnd().split("\n");
-    const last = (log: string[]) => parseMuseTranscript(log.join("\n")).at(-1)!.parts.at(-1);
+    const last = (log: string[]) => fiction(log.join("\n")).at(-1)!.parts.at(-1);
     const end = lines.findIndex((line) => line.includes('"terminal":"completed"'));
     expect(last(lines.slice(0, end))).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
     expect(last([...lines.slice(0, end), lines[end]!.replace('"terminal":"completed"', '"terminal":"failed"')])).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
@@ -82,10 +93,9 @@ describe("Muse session log", () => {
   });
 
   test("pages at prompts, follows appends as a cold read does, and names the latest model", () => {
-    const path = join(root, "session.jsonl");
     const lines = fixture.trimEnd().split("\n").map((line) => `${line}\n`);
     const second = lines.findIndex((line, at) => at > 2 && line.includes('"runtime.user_intent.accepted"'));
-    writeFileSync(path, lines.slice(0, second).join(""));
+    const path = logAt(FICTION, lines.slice(0, second).join(""));
     const first = transcriptPage("muse-transcript", path);
     expect(first.source).toBe("muse-transcript");
     expect(first.metadata.model).toBe("muse-fiction-2");
@@ -94,7 +104,7 @@ describe("Muse session log", () => {
     expect(live.history_id).toBe(first.history_id);
     forgetTranscriptState();
     expect(transcriptPage("muse-transcript", path).turns).toEqual(live.turns);
-    expect(live.turns).toEqual(parseMuseTranscript(fixture));
+    expect(live.turns).toEqual(fiction(fixture));
     expect(museToolOutput(path, "call_05")).toBe(Array.from({ length: 1200 }, (_, n) => `${n + 1}\n`).join(""));
     expect(museToolOutput(path, "call_03")).toBe("cat: missing.txt: No such file or directory\n");
     expect(museToolOutput(path, "call_99")).toBeNull();
@@ -106,7 +116,7 @@ describe("Muse session log", () => {
   });
 
   test("reads a session Muse 1.4.13 recorded, with its records as Muse wrote them", () => {
-    const turns = parseMuseTranscript(recorded);
+    const turns = real(recorded);
     expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "text" && part.phase ? `text:${part.phase}` : part.kind)])).toEqual([
       ["user", ["text"]],
       ["assistant", ["thinking", "text:commentary", "tool", "tool", "tool", "thinking", "text:final_answer"]],
@@ -133,8 +143,7 @@ describe("Muse session log", () => {
     const lines = recorded.split("\n");
     const switched = lines.findIndex((line) => line.includes('"command":"/model"'));
     expect([museModel(lines.slice(0, switched).join("\n"), null), museModel(recorded, null)]).toEqual(["muse-spark-1.3", "muse-spark-1.2"]);
-    const path = join(root, "session.jsonl");
-    writeFileSync(path, recorded);
+    const path = logAt(RECORDED, recorded);
     const page = transcriptPage("muse-transcript", path);
     expect([page.turns, page.metadata.model]).toEqual([turns, "muse-spark-1.2"]);
     expect(museToolOutput(path, "call_01a1744243497078923c0e3306f4900d")).toBe("ls: missing-folder: No such file or directory\n");
@@ -148,23 +157,61 @@ describe("Muse session log", () => {
     const line = (mark: string) => recorded.split("\n").find((candidate) => candidate.includes(mark))!;
     const prompt = line('"runtime.user_intent.accepted"');
     const cut = prompt.slice(0, prompt.indexOf('"model_messages"'));
+    // the fictional log's compaction, as a record of the recorded session
+    const compaction = fixture.split("\n").find((candidate) => candidate.includes('"context_compaction_installed"'))!.replace(FICTION, RECORDED);
     const refused = [
-      // another log version, or a line that is no Muse record
+      // another log version, a line that is no Muse record, or a whole line cut short
       prompt.replace('{"schema_version":1,', '{"schema_version":2,'),
       "not a record",
-      // a record the reader takes, cut short or in another shape
       cut,
+      // a record or a run event those builds do not write, or a renamed one
+      line('"payload_type":"command.invoked"').replace('"command.invoked"', '"command.invoked_v2"'),
+      line('"assistant_message_committed"').replace('"assistant_message_committed"', '"assistant_message_final"'),
+      line('"assistant_message_committed"').replace('"kind":"run"', '"kind":"later"'),
+      // a record the reader takes, in another shape
       prompt.replace('"model_messages":[', '"model_messages":"moved","messages":['),
+      prompt.replace('"model_messages":[{"content":[{"kind":"text"', '"model_messages":[{"content":[{"kind":"video"'),
       line('"assistant_tool_calls_committed"').replaceAll('"name":', '"tool_name":'),
       line('"tool_result_batch_committed"').replaceAll('"text":', '"output":'),
+      compaction.replace('"summary_text"', '"handoff_text"'),
+      compaction.replace('"text":', '"summary":'),
+      // a record of another session: its turns are not this pane's
+      prompt.replace(RECORDED, FICTION),
     ];
-    for (const added of refused) expect(() => parseMuseTranscript(`${recorded}${added}\n`)).toThrow(MuseUnavailable);
-    // a last line Muse is still writing, or a record the reader does not take, is skipped
-    expect(parseMuseTranscript(`${recorded}${cut}`)).toEqual(parseMuseTranscript(recorded));
-    expect(parseMuseTranscript(`${recorded}{"schema_version":1,"payload_type":"later.record","payload":{"terminal":"completed"}}\n`)).toEqual(parseMuseTranscript(recorded));
-    const path = join(root, "session.jsonl");
-    writeFileSync(path, `${recorded}${refused[0]}\n`);
+    for (const added of refused) expect(() => real(`${recorded}${added}\n`), added.slice(0, 80)).toThrow(MuseUnavailable);
+    expect(real(`${recorded}${compaction}\n`).at(-1)!.parts[0]!.kind).toBe("compact");
+    // a renamed record in the recording itself, rather than Chat without its answers
+    expect(() => real(recorded.replaceAll('"assistant_message_committed"', '"assistant_message_final"'))).toThrow(MuseUnavailable);
+    // a last line Muse is still writing is skipped until it is whole
+    expect(real(`${recorded}${cut}`)).toEqual(real(recorded));
+    const path = logAt(RECORDED, `${recorded}${refused[3]}\n`);
     expect(() => transcriptPage("muse-transcript", path)).toThrow(ConversationUnavailable);
+    // the log of another session in this session's folder: no turn and no tool output of it
+    const other = logAt(FICTION, recorded);
+    expect(() => transcriptPage("muse-transcript", other)).toThrow(ConversationUnavailable);
+    expect(museToolOutput(other, "call_01a1744243497078923c0e3306f4900d")).toBeNull();
+  });
+
+  test("a log rewritten in place that also grew is read again, under another history id", () => {
+    const path = logAt(RECORDED, recorded);
+    const before = transcriptPage("muse-transcript", path);
+    // the first prompt, settled before the last, takes words of the same length, and a record follows
+    const rewritten = recorded.replaceAll("tell me in one sentence", "tell me in two sentence");
+    expect(rewritten.length).toBe(recorded.length);
+    writeFileSync(path, `${rewritten}${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`);
+    const after = transcriptPage("muse-transcript", path);
+    expect(after.turns[0]!.parts[0]).toEqual({ kind: "text", text: "Read notes.txt, run sh greet.sh, and run ls missing-folder. Then tell me in two sentence what the notes say." });
+    expect(after.history_id).not.toBe(before.history_id);
+    forgetTranscriptState();
+    expect(transcriptPage("muse-transcript", path).turns).toEqual(after.turns);
+  });
+
+  test("a prompt of pictures alone shows Muse's own name for each", () => {
+    const prompt = JSON.parse(recorded.split("\n").find((line) => line.includes('"runtime.user_intent.accepted"'))!);
+    const picture = { kind: "asset", asset: { schema_version: 1, algorithm: "sha256", digest: "0".repeat(64), media_type: "image/png", byte_length: 1, width: 1, height: 1 } };
+    prompt.payload.model_messages[0].content = [{ kind: "text", text: "" }, picture, picture];
+    expect(musePrompt(prompt)).toBe("[Image #1] [Image #2]");
+    expect(real(`${JSON.stringify(prompt)}\n`)[0]!.parts).toEqual([{ kind: "text", text: "[Image #1] [Image #2]" }]);
   });
 });
 
@@ -218,17 +265,39 @@ describe("Muse session binding", () => {
     expect(museSessionFor(root, owner, "fiction", later())).toBe(old);
   });
 
-  test("keeps a binding while its lock and log hold, and scans again once the log ends", () => {
+  test("every resolve scans again: a second live session leaves none, whatever was bound before", () => {
     const first = session("22", id(1), "pid=4242\nhost=fiction\n");
     expect(museSessionFor(root, owner, "fiction")).toBe(first);
-    // a later resolve checks only the bound session: the store is not scanned again
+    // as a cold lookup does, which sees two
     const second = session("22", id(2), "pid=4242\nhost=fiction\n");
-    expect(museSessionFor(root, owner, "fiction")).toBe(first);
-    // an in-TUI switch ends the bound log
+    expect(museSessionFor(root, owner, "fiction")).toBeNull();
+    // an in-TUI switch ends the log it leaves
     appendFileSync(first, END);
-    expect(museSessionFor(root, owner, "fiction")).toBe(second);
-    // a process that took the pid later never keeps the binding
-    expect(museSessionFor(root, [{ pid: 4242, startedAt: start + 3_600_000 }], "fiction")).toBeNull();
+    expect(museSessionFor(root, owner, "fiction", later())).toBe(second);
+    // a process that took the pid later never binds
+    expect(museSessionFor(root, [{ pid: 4242, startedAt: start + 3_600_000 }], "fiction", later())).toBeNull();
+  });
+
+  test("only the start of a lock is read", () => {
+    const live = session("22", id(1), `pid=4242\nhost=fiction\n${"#".repeat(1 << 20)}\n`);
+    expect(museSessionFor(root, owner, "fiction")).toBe(live);
+    session("22", id(1), `${"#".repeat(1024)}\npid=4242\nhost=fiction\n`);
+    expect(museSessionFor(root, owner, "fiction", later())).toBeNull();
+  });
+
+  test("a Muse pane's processes are asked for once per lookup", async () => {
+    const live = session("22", id(1), `pid=${process.pid}\nhost=${hostname()}\n`, fixture, Date.now());
+    const pane = { pane_id: "w1:p1", agent: "muse", cwd: root } as HerdrPane;
+    const asked: string[] = [];
+    const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
+      asked.push(paneId);
+      return { pane_id: paneId, foreground_processes: [{ pid: process.pid, name: "muse", argv: ["muse"] }] } as herdr.ProcessInfo;
+    });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => { asked.push(method); return {} as never; });
+    try {
+      expect((await paneTranscript(pane.pane_id, undefined, { panes: [pane] } as SessionSnapshot, undefined, undefined, undefined, undefined, root)).path).toBe(live);
+      expect(asked).toEqual(["w1:p1"]);
+    } finally { info.mockRestore(); rpc.mockRestore(); }
   });
 
   test("a launcher alive beside its muse-bin child binds the session the child holds", () => {
@@ -256,6 +325,9 @@ describe("Muse session binding", () => {
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
     rmSync(join(root, "sessions", "2026", "10", "23", id(4097)), { recursive: true });
     expect(museSessionFor(root, owner, "fiction", later())).toBe(live);
+    // nor a folder of more entries than that, sessions or not: it is not listed whole
+    for (const name of ["a", "b"]) writeFileSync(join(root, "sessions", "2026", "10", "23", name), "");
+    expect(museSessionFor(root, owner, "fiction", later())).toBeNull();
   });
 
   test("a subagent's nested session is never a candidate", () => {

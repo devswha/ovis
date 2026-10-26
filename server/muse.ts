@@ -11,11 +11,13 @@
  * - a compaction: `context_compaction_installed` with a `summary_text` replacement;
  * - a run's end: `terminal`, whose `completed` makes the answer before it final.
  * Every other record is bookkeeping, and so are the `retained_marker` / `retained_frame` lines.
- * The shapes are the same from Muse 1.4.2 to 1.4.13. A whole line that opens no known record, or
- * a record the reader takes in another shape, throws MuseUnavailable: Chat then uses Terminal
- * rather than show part of the conversation.
+ * The shapes are the same from Muse 1.4.2 to 1.4.13. A whole line that does not parse, names a
+ * record or run event those builds do not write, belongs to another session, or is a record the
+ * reader takes in another shape, throws MuseUnavailable: Chat then uses Terminal rather than show
+ * part of the conversation.
  */
 import { closeSync, openSync, readSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { trimOutput } from "./tool-output.ts";
 import { toolSummary } from "./transcript-records.ts";
@@ -31,30 +33,68 @@ export class MuseUnavailable extends Error {
   constructor() { super("Muse log is in a shape the reader does not know"); this.name = "MuseUnavailable"; }
 }
 
-/** How every line of a Muse log opens: a version 1 record, or a retained marker or frame. */
-const LINE_START = /^\{"(?:schema_version":1,|retained_)/;
-/** Lines without one of these hold nothing the reader takes; they are skipped before parsing. */
-const MARKS = ['"runtime.user_intent.accepted"', '"assistant_message_committed"', '"reasoning_summary_committed"',
-  '"assistant_tool_calls_committed"', '"tool_result_batch_committed"', '"context_compaction_installed"', '"terminal":"completed"'];
+/** Every record Muse 1.4.2 to 1.4.13 writes to a session log, as 160 logs of those builds hold them. */
+const RECORDS = new Set(["approval_wait.effect.started", "approval_wait.effect.terminal", "async.owner.attempt_admitted", "command.invoked",
+  "peer_message.admission.requested", "peer_message.admission.settled", "reminder.cleanup_effect.started", "reminder.cleanup_effect.terminal",
+  "run.model.configured", "runtime.branch_seed.diagnostics", "runtime.command_intake.branch.received",
+  "runtime.command_intake.conversation_rewind.received", "runtime.command_intake.received", "runtime.command_intake.session_name.received",
+  "runtime.command_intake.settled", "runtime.model_reconfigure.completed", "runtime.retained_fact", "runtime.session",
+  "runtime.session.capture_selection", "runtime.session.message_receipt.read", "runtime.session.message_receipt.state",
+  "runtime.session.metadata", "runtime.session.route_facts", "runtime.session.task", "runtime.session.task_source_committed",
+  "runtime.session_handoff.goal_safety", "runtime.session_start.intake_v2", "runtime.session_start.intake_v3",
+  "runtime.user_intent.accepted", "runtime.user_intent.materialized", "session.end", "session.fork.compaction", "session.fork.created",
+  "session.fork.model_prefix", "session.fork.turn", "session.login.completed", "session.name.changed", "session.opened.observed",
+  "session.resource_pressure.observed", "session.resumed", "session.side.boundary", "session.side.started", "session.started",
+  "session.startup_phases.observed", "session.subscription_entrypoint.impression", "session.workspace_branch.observed",
+  "subagent.control.attempt_admitted", "subagent.control.child_session_bound", "subagent.control.owner_command_recorded",
+  "subagent.control.owner_state_changed", "subagent.control.result_ready", "subagent.control.resume_context_recorded",
+  "subagent.control.runtime_observed", "subagent.control.spawn_accepted", "subagent.control.start_attested",
+  "subagent.control.status_updated", "subagent.control.wait_parked", "tool_batch.effect.started", "tool_batch.effect.terminal",
+  "user_shell.command", "user_shell.result"]);
+/** The kinds of a `runtime.session` payload, and of the events in a run's, in the same logs. */
+const SESSION_KINDS = new Set(["agent_tree_initialized", "approval", "run", "security_mode", "task"]);
+const RUN_EVENTS = new Set(["assistant_message_committed", "assistant_tool_calls_committed", "context_block_diagnostic", "context_block_updated",
+  "context_compaction_candidate", "context_compaction_fallback", "context_compaction_installed", "context_projection_checkpoint",
+  "context_projection_checkpoint_skipped", "goal_descendant_attachment", "goal_descendant_launch_accepted", "goal_progress_nudge_fired",
+  "goal_run_binding", "goal_usage_attribution", "hook_run_started", "hook_run_terminal", "inbox_delivery_anomaly", "inbox_item_drained",
+  "inbox_item_queued", "memory_reminder_child_session_linked", "model_completed", "model_failure_terminal_intent", "model_input_file_uploaded",
+  "model_input_trace_recorded", "model_request_configured", "model_response_created", "model_user_messages",
+  "provider_request_options_configured", "reasoning_committed", "reasoning_summary_committed", "reasoning_summary_delta",
+  "reminder_installed", "reminder_proposal", "reminder_reconciler_outcome", "reminder_snoozed", "resource_usage_sampled",
+  "run_fatal_error_classified", "run_retracted", "skill_read_observed", "skill_reminder_decision", "started", "task_backgrounded",
+  "task_stream_linked", "terminal", "todo_snapshot_updated", "tool_result_batch_committed", "tool_result_model_visible_content",
+  "tool_results_cleared", "user_input_prompt_requested", "user_input_prompt_settled", "user_prompt_display",
+  "workflow_child_journal_replay_recorded", "workflow_child_lifecycle", "workflow_launch_reconciled", "workflow_run_launched",
+  "workflow_script_fact"]);
 const every = (value: unknown, test: (item: Row) => boolean): boolean => Array.isArray(value) && value.every((item) => isRow(item) && test(item));
 const optionalText = (value: unknown): boolean => value === undefined || typeof value === "string";
 
-/** Whether a record the reader takes has the shape it reads, so that nothing in it is dropped. */
-function readable(entry: Row): boolean {
-  if (entry.payload_type === undefined) return Object.keys(entry).some((key) => key.startsWith("retained_"));
+/** The session a log belongs to: Muse names its folder after it. */
+export const museSession = (path: string): string => basename(dirname(path));
+
+/**
+ * Whether a line is one Muse writes to `session`'s log, and a record the reader takes has the
+ * shape it reads, so that nothing in it is dropped and no other session's turns are shown.
+ */
+function known(entry: Row, session: string): boolean {
+  if (entry.retained_frame !== undefined) return entry.retained_frame === "session_permission_transaction" && entry.frame_schema_version === 1;
+  if (record(entry.stream).kind !== "session" || record(entry.stream).id !== session || entry.schema_version !== 1) return false;
+  if (entry.retained_marker !== undefined) return entry.retained_marker === "omitted_live_only";
   // a fork's `session.fork.compaction` has no `recorded_at`, and a turn without one has no time
-  if (typeof entry.payload_type !== "string" || !isRow(entry.payload)) return false;
+  if (!RECORDS.has(str(entry.payload_type)) || !isRow(entry.payload)) return false;
   if (entry.payload_type === "runtime.user_intent.accepted") {
     return every(entry.payload.model_messages, (message) => every(message.content, (block) =>
-      typeof block.kind === "string" && (block.kind !== "text" || typeof block.text === "string")));
+      block.kind === "text" ? typeof block.text === "string" : block.kind === "asset"));
   }
-  if (entry.payload_type !== "runtime.session" || entry.payload.kind !== "run") return true;
+  if (entry.payload_type !== "runtime.session") return true;
+  if (!SESSION_KINDS.has(str(entry.payload.kind))) return false;
+  if (entry.payload.kind !== "run") return true;
   const event = entry.payload.event;
-  if (!isRow(event) || typeof event.kind !== "string") return false;
+  if (!isRow(event) || !RUN_EVENTS.has(str(event.kind))) return false;
   if (event.kind === "assistant_message_committed" || event.kind === "reasoning_summary_committed") return typeof event.text === "string";
   if (event.kind === "assistant_tool_calls_committed") return every(event.tool_calls, (call) => typeof call.name === "string" && optionalText(call.call_id));
   if (event.kind === "tool_result_batch_committed") return every(event.results, (item) => typeof item.text === "string" && optionalText(item.tool_call_id));
-  if (event.kind === "context_compaction_installed") return isRow(event.replacement) && typeof event.replacement.kind === "string";
+  if (event.kind === "context_compaction_installed") return isRow(event.replacement) && event.replacement.kind === "summary_text" && typeof event.replacement.text === "string";
   return true;
 }
 
@@ -62,12 +102,14 @@ function iso(value: unknown): string | null {
   return typeof value === "number" && Number.isFinite(value) ? new Date(Math.floor(value / 1000)).toISOString() : null;
 }
 
-/** The words of an accepted intent, or null when the record is none or carries no text. */
+/** The words of an accepted intent, or null when the record is none or carries nothing. */
 export function musePrompt(entry: Row): string | null {
   if (entry.payload_type !== "runtime.user_intent.accepted") return null;
-  const texts = list(record(entry.payload).model_messages).flatMap((message) => list(record(message).content))
-    .map(record).filter((block) => block.kind === "text" && str(block.text).trim() !== "").map((block) => str(block.text));
-  return texts.length > 0 ? texts.join("\n\n") : null;
+  const blocks = list(record(entry.payload).model_messages).flatMap((message) => list(record(message).content)).map(record);
+  const texts = blocks.filter((block) => block.kind === "text" && str(block.text).trim() !== "").map((block) => str(block.text));
+  // Muse names each picture `[Image #n]` in the words; a prompt of pictures alone has none
+  const pictures = blocks.filter((block) => block.kind === "asset").map((_, n) => `[Image #${n + 1}]`).join(" ");
+  return texts.length > 0 ? texts.join("\n\n") : pictures || null;
 }
 
 /** A run event: `{ kind: "run", event }` inside a `runtime.session` payload. */
@@ -89,7 +131,8 @@ export function museResult(text: string): { text: string; error: boolean } {
   return { text, error: false };
 }
 
-export function parseMuseTranscript(text: string): ConversationTurn[] {
+/** The turns of `session`'s log (museSession). */
+export function parseMuseTranscript(text: string, session: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const calls = new Map<string, Tool>();
   const answer = (ts: string | null, parts: ConversationPart[]): void => {
@@ -99,14 +142,11 @@ export function parseMuseTranscript(text: string): ConversationTurn[] {
   };
   const lines = text.split("\n");
   for (const [at, line] of lines.entries()) {
-    // the last line can be one Muse is still writing
-    const whole = at < lines.length - 1;
     if (line === "") continue;
-    if (!LINE_START.test(line)) { if (whole) throw new MuseUnavailable(); continue; }
-    if (!MARKS.some((mark) => line.includes(mark))) continue;
     let entry: Row;
-    try { entry = record(JSON.parse(line)); } catch { if (whole) throw new MuseUnavailable(); continue; }
-    if (!readable(entry)) throw new MuseUnavailable();
+    // the last line can be one Muse is still writing
+    try { entry = record(JSON.parse(line)); } catch { if (at < lines.length - 1) throw new MuseUnavailable(); continue; }
+    if (!known(entry, session)) throw new MuseUnavailable();
     const ts = iso(entry.recorded_at);
     const prompt = musePrompt(entry);
     if (prompt !== null) { turns.push({ role: "user", ts, parts: [{ kind: "text", text: prompt }] }); continue; }
@@ -178,6 +218,7 @@ export function museModel(text: string, model: string | null): string | null {
  */
 export function museToolOutput(path: string, ref: string): string | null {
   const id = JSON.stringify(ref);
+  const session = museSession(path);
   let fd: number;
   try { fd = openSync(path, "r"); } catch { return null; }
   try {
@@ -189,8 +230,11 @@ export function museToolOutput(path: string, ref: string): string | null {
       carry = Buffer.from(bytes.subarray(end));
       for (const line of bytes.subarray(0, end).toString("utf8").split("\n")) {
         if (!line.includes(id) || !line.includes('"tool_result_batch_committed"')) continue;
-        let event: Row | null;
-        try { event = runEvent(record(JSON.parse(line))); } catch { continue; }
+        let entry: Row;
+        try { entry = record(JSON.parse(line)); } catch { continue; }
+        // a log another session's records replaced has none of this session's calls
+        if (record(entry.stream).id !== session) continue;
+        const event = runEvent(entry);
         const item = list(event?.results).map(record).find((result) => result.tool_call_id === ref);
         if (item !== undefined) return museResult(str(item.text)).text;
       }
