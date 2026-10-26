@@ -121,8 +121,10 @@ the pane's current screen (so it does not count as reading the agent's finish) o
 input row from it, until the next attach takes (`input-ready`) and new output arrives. The replay's
 output credit is still acknowledged as usual. The wait belongs to that pane: another pane's output
 is its own; a reconnect drops it, and so does a terminal that leaves the pane (herdr could not
-restore it), as a rejoin is told again while the attachment still recovers; a replaced terminal of
-the same pane keeps it until its attach takes. Queued input still waits for `input-ready`.
+restore it), as a rejoin is told again while the attachment still recovers. A replaced terminal of
+the same pane keeps it until its new attach answers: `output-recovering` again (the replay that
+follows it is still the screen from before), or a replay without it, which joined an attachment
+that recovered meanwhile and is the current screen. Queued input still waits for `input-ready`.
 
 `input_not_ready` reports a rejected PTY input. `input_failed` reports an RPC or local sidecar
 write failure; the UI displays it outside the terminal stream. These are not acknowledgements
