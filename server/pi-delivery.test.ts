@@ -1,11 +1,14 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { capturePiDeliveryAnchor, capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiDeliveryCandidate } from "./pi-delivery.ts";
 
-const dir = () => mkdtempSync(join(tmpdir(), "ovis-pi-delivery-"));
+const roots: string[] = [];
+const dir = () => { const root = mkdtempSync(join(tmpdir(), "ovis-pi-delivery-")); roots.push(root); return root; };
+afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 const entry = (id: string, parentId: string | null, role: string, text: string) => JSON.stringify({
   type: "message", id, parentId, timestamp: "2026-10-24T00:00:00.000Z",
   message: { role, content: [{ type: "text", text }], timestamp: Date.now() },
@@ -40,6 +43,100 @@ describe("Pi receipt capacity", () => {
 });
 
 describe("Pi delivery transcript matching", () => {
+  it("reads bounded tails on a 200 MiB history and parses only appended records", () => {
+    const path = join(dir(), "large.jsonl");
+    writeFileSync(path, header());
+    const payload = "x".repeat(8 * 1024 * 1024);
+    for (let index = 0; index < 25; index++) appendFileSync(path, entry(`old-${index}`, index ? `old-${index - 1}` : null, "assistant", payload));
+    appendFileSync(path, entry("baseline", "old-24", "assistant", "done"));
+    const original = fs.readSync;
+    let read = 0;
+    const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const got = original(...args); read += got; return got;
+    }) as typeof fs.readSync);
+    try {
+      const anchor = capturePiDeliveryAnchor(path)!;
+      expect(anchor.leaf).toBe("baseline");
+      expect(read).toBeLessThan(768 * 1024);
+      read = 0;
+      appendFileSync(path, entry("ours", "baseline", "user", "same"));
+      const consumed = new Set<string>();
+      expect(matchPiDeliveries(path, [candidate("one", "same", anchor)], consumed).consumed).toEqual(["one"]);
+      expect(read).toBeLessThan(768 * 1024);
+      read = 0;
+      expect(matchPiDeliveries(path, [candidate("two", "same", anchor)], consumed).consumed).toEqual([]);
+      expect(read).toBeLessThan(768 * 1024);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("accepts append growth during a bounded snapshot without starving confirmation", () => {
+    const path = join(dir(), "growing.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("ours", "base", "user", "follow up"));
+    const original = fs.readSync;
+    let grew = false;
+    const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const got = original(...args);
+      if (!grew) { grew = true; appendFileSync(path, entry("work", "ours", "assistant", "still working")); }
+      return got;
+    }) as typeof fs.readSync);
+    try {
+      expect(matchPiDeliveries(path, [candidate("one", "follow up", anchor)])).toEqual({ consumed: ["one"], changed: [], retry: false });
+      expect(grew).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("does not commit receipts or cache progress through concurrent truncation", () => {
+    const path = join(dir(), "truncated.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("ours", "base", "user", "same"));
+    const original = fs.readSync, consumed = new Set<string>();
+    let truncated = false;
+    const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const got = original(...args);
+      if (!truncated) { truncated = true; fs.truncateSync(path, anchor.size); }
+      return got;
+    }) as typeof fs.readSync);
+    try {
+      expect(matchPiDeliveries(path, [candidate("one", "same", anchor)], consumed)).toEqual({ consumed: [], changed: [], retry: true });
+      expect(consumed.size).toBe(0);
+    } finally { spy.mockRestore(); }
+    appendFileSync(path, entry("ours", "base", "user", "same"));
+    expect(matchPiDeliveries(path, [candidate("one", "same", anchor)], consumed).consumed).toEqual(["one"]);
+  });
+
+  it("rejects an inode replacement even with the same session, leaf and boundary tail", () => {
+    const root = dir(), path = join(root, "session.jsonl"), replacement = join(root, "replacement.jsonl");
+    const before = header() + entry("base", null, "assistant", "working");
+    writeFileSync(path, before);
+    const anchor = capturePiDeliveryAnchor(path)!;
+    writeFileSync(replacement, before + entry("ours", "base", "user", "same"));
+    fs.renameSync(replacement, path);
+    expect(matchPiDeliveries(path, [candidate("one", "same", anchor)])).toEqual({ consumed: [], changed: ["one"], retry: false });
+  });
+
+  it("does not accept a partial line as an anchor or matching turn", () => {
+    const path = join(dir(), "partial.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const line = entry("ours", "base", "user", "same");
+    appendFileSync(path, line.slice(0, -1));
+    expect(capturePiDeliveryAnchor(path)).toBeNull();
+    expect(matchPiDeliveries(path, [candidate("one", "same", anchor)]).consumed).toEqual([]);
+    appendFileSync(path, "\n");
+    expect(matchPiDeliveries(path, [candidate("one", "same", anchor)]).consumed).toEqual(["one"]);
+  });
+
+  it("confirms the first append after an already-written header-only session", () => {
+    const path = join(dir(), "header-only.jsonl");
+    writeFileSync(path, header());
+    const anchor = capturePiDeliveryAnchor(path)!;
+    expect(anchor.leaf).toBeNull();
+    appendFileSync(path, entry("ours", null, "user", "first"));
+    expect(matchPiDeliveries(path, [candidate("one", "first", anchor)]).consumed).toEqual(["one"]);
+  });
   it("retries a capture invalidated by a concurrent append, then uses the stable anchor", async () => {
     const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc" };
     let captures = 0, waits = 0;

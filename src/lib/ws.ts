@@ -1,4 +1,5 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
+import { receiptResumeId } from "./receiptResume.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
 
@@ -334,7 +335,7 @@ export class HerdrSocket {
       for (const handler of this.beforeReplayHandlers) handler();
       for (const [paneId, state] of this.attached) {
         state.releaseSizeOwed = !state.keepSize;
-        this.rawSend({ type: "attach", pane_id: paneId, cols: state.cols, rows: state.rows, flow_control: "ack", ...(state.keepSize ? { keep_size: true } : {}) });
+        this.rawSend({ type: "attach", pane_id: paneId, cols: state.cols, rows: state.rows, flow_control: "ack", receipt_resume_id: receiptResumeId(), ...(state.keepSize ? { keep_size: true } : {}) });
       }
     });
 
@@ -707,7 +708,7 @@ export class HerdrSocket {
     this.inputReady.delete(paneId);
     this.changeLease(paneId);
     this.attached.set(paneId, { cols, rows, keepSize, releaseSizeOwed: !keepSize });
-    this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", ...(keepSize ? { keep_size: true } : {}) });
+    this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", receipt_resume_id: receiptResumeId(), ...(keepSize ? { keep_size: true } : {}) });
     if (this.conversationWanted.has(paneId) && this.features.has("conversation-watch")) {
       this.send({ type: "conversation-watch", pane_id: paneId, enabled: true });
     }

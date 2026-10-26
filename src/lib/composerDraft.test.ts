@@ -5,6 +5,20 @@ function fixture() {
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
   return { data, store: new ComposerDraftStore(() => storage) };
 }
+it("restores withdrawn text into the latest draft without losing mentions, typing or an in-flight send", () => {
+  const { store, data } = fixture();
+  store.set("a", "@/tmp/image.png draft");
+  store.begin("a", "@/tmp/image.png draft");
+  data.set("a", "@/tmp/image.png draft plus concurrent typing");
+  store.restorePending("a", "withdrawn");
+  expect(store.read("a").text).toBe("@/tmp/image.png draft plus concurrent typing\n\nwithdrawn");
+  store.settle("a", "@/tmp/image.png draft");
+  store.end("a");
+  expect(store.read("a").text).toBe(" plus concurrent typing\n\nwithdrawn");
+  store.restorePending("b", "another pane");
+  expect(store.read("b").text).toBe("another pane");
+  expect(store.read("a").text).toContain("withdrawn");
+});
 it("keeps the draft busy and intact until an acknowledged send settles, and releases a refused send for retry", () => {
   const { store } = fixture();
   store.set("a", "check delivery");

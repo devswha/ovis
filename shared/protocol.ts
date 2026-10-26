@@ -781,7 +781,7 @@ export interface PendingMessage {
 
 export type ClientMessage =
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
-  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean }
+  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
    * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative. */

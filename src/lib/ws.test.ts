@@ -579,15 +579,15 @@ it("attaches a grid the chat lens covers without resizing the shared pty, on a r
   // attached before the socket opened: the open replays it, as a reconnect does
   client.attach("w1:p1", 40, 20, true);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 40, rows: 20, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 40, rows: 20, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   // the terminal lens is shown and resizes: from then on it drives the size
   client.resize("w1:p1", 100, 30, true);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack" });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) });
   // the chat lens covers it again
   client.keepSize("w1:p1");
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   client.close();
 });
 
@@ -608,7 +608,7 @@ it("releases the shared grid once when the chat lens covers a terminal this tab 
   client.releaseSize("w1:p1");
   expect(releases()).toEqual([{ type: "release-size", pane_id: "w1:p1" }]);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   expect(releases()).toHaveLength(1);
   // an observer never drives the grid, so it never releases it either
   client.setMode("observe");
@@ -638,7 +638,7 @@ it("keeps a visible unfocused grid while changing only its reconnect policy", ()
     socket.open();
     // Control: blur still changes the reconnect policy, without replaying a release.
     expect(socket.sent.filter((m) => m.type === "attach").at(-1))
-      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", keep_size: true });
+      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
     expect(releases()).toHaveLength(1);
   } finally {
     client.close();
@@ -665,7 +665,7 @@ it("releases the shared grid once when a hidden terminal returns directly to Cha
     client.releaseSize("w1:p1");
     expect(releases()).toHaveLength(1);
     expect(socket.sent.filter((m) => m.type === "attach").at(-1))
-      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", keep_size: true });
+      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
     // Showing the terminal again at the same dimensions still reclaims its released grid.
     client.resize("w1:p1", 53, 33);
     expect(socket.sent.at(-1)).toEqual({ type: "resize", pane_id: "w1:p1", cols: 53, rows: 33 });
@@ -691,7 +691,7 @@ it("sends no resize for a pane it let go of, and does not attach it again on a r
   expect(socket.sent.slice(after).filter((m) => m.type === "attach" || m.type === "resize")).toEqual([]);
   // the user is back: it attaches at its own size again
   client.attach("w1:p1", 120, 40);
-  expect(socket.sent.at(-1)).toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack" });
+  expect(socket.sent.at(-1)).toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", receipt_resume_id: expect.any(String) });
   client.close();
 });
 
@@ -1206,7 +1206,7 @@ it("drops an open socket that answers no ping, reconnects at once and replays th
     expect(fresh).not.toBe(socket);
     expect(client.state).toBe("connecting");
     fresh.open();
-    expect(fresh.sent).toEqual([{ type: "role", mode: "interact" }, { type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack" }]);
+    expect(fresh.sent).toEqual([{ type: "role", mode: "interact" }, { type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) }]);
     expect(client.state).toBe("open");
     // the dead socket's late close changes nothing
     socket.disconnect();
