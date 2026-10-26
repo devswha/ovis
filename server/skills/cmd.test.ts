@@ -275,6 +275,18 @@ describe("Command Code command catalog", () => {
     expect(names).toContain("help");
   }, 15000);
 
+  it("lists no row a cut-short command root found after the folder it skipped", () => {
+    const home = temp();
+    const userCommands = join(home, ".commandcode", "commands");
+    // The folder bound runs out inside a-empty, so the walk skips b-skipped, whose deploy.md Command Code
+    // reaches first (depth-first, byte order), and then still reads the root's own deploy.md.
+    for (let i = 0; i < createWalkBudget().folders; i++) mkdirSync(join(userCommands, "a-empty", String(i).padStart(4, "0")), { recursive: true });
+    put(join(userCommands, "b-skipped", "deploy.md"), "Skipped deploy");
+    put(join(userCommands, "deploy.md"), "Root deploy");
+    const rows = paneCommands("cmd", null, home);
+    expect(rows.filter(({ description }) => /(Root|Skipped) deploy$/.test(description))).toEqual([]);
+  }, 15000);
+
   it("reserves personal skills even when project settings list thousands of roots", () => {
     const home = temp();
     const repo = temp();

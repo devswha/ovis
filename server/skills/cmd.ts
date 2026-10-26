@@ -228,11 +228,11 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
   ];
   const candidates = [
     ...commandRoots.map(({ path, origin }) => ({
-      walk: commandsAt(path, origin, budget), personal: false, rows: new Array<SlashCommand>(), cut: false,
+      walk: commandsAt(path, origin, budget), command: true, personal: false, rows: new Array<SlashCommand>(), cut: false,
     })),
     ...roots.map((location) => ({
       walk: skillsAt(location.path, location.origin, disabled, budget),
-      personal: personalRoots.some((root) => root === location), rows: new Array<SlashCommand>(), cut: false,
+      command: false, personal: personalRoots.some((root) => root === location), rows: new Array<SlashCommand>(), cut: false,
     })),
   ];
   const spent = (): boolean => budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0;
@@ -240,7 +240,10 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
     const step = candidate.walk.next();
     // A walk that ends with the bound spent may have stopped short of names it never listed.
     if (step.done) { candidate.cut = spent(); return false; }
-    if (step.value) candidate.rows.push(step.value);
+    // Only a command found before the bound was spent is safe: after that the walk may have skipped a
+    // folder or entries holding a same-name command that Command Code reaches first. The bound only
+    // shrinks, so the rows kept are a prefix of the walk with nothing skipped before them.
+    if (step.value && !(candidate.command && spent())) candidate.rows.push(step.value);
     return true;
   });
   // Personal roots get first use of half the work bound, even with thousands of project roots.
