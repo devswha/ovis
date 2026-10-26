@@ -35,8 +35,9 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
-import nodePath, { type PlatformPath } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import nodePath, { basename, dirname, join, relative, sep, type PlatformPath } from "node:path";
+import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
@@ -49,7 +50,7 @@ import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } f
 import { processStartedAtAsync } from "./process-start.ts";
 import { ompBlobStore, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
-import { piTranscriptInStore, piTranscriptPath, unwrittenSession } from "./pi.ts";
+import { piTranscriptPath, unwrittenSession } from "./pi.ts";
 import { cmdTranscriptPath } from "./cmd.ts";
 import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetDevinState } from "./devin.ts";
 import { forgetGrokState, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
@@ -1037,13 +1038,50 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
  * process, and on Windows, which shows no process's environment, is herdr's path held to the
  * user's own default and profile stores instead.
  */
+/** Where a test stands between a transcript's authorization and its anchor, to change the filesystem then (betweenAuthorizationForTests). */
+let betweenAuthorization: (() => void) | null = null;
+
+/** Lets a test run `between` the authorization of an omp transcript and its blob store's anchor, or stops it (null). */
+export function betweenAuthorizationForTests(between: (() => void) | null): void {
+  betweenAuthorization = between;
+}
+
 /**
- * An omp transcript as it is authorized, with the identity its blob store has at that same moment
- * (ompBlobAnchor), taken in the same synchronous step: the image endpoint reads a blob only from that
- * very directory, so nothing swapped above it once the transcript was authorized can move the read.
+ * An omp transcript as it was authorized (authorizedTranscript: the store's real root and the identity
+ * of the very file opened there), with the identity of its blob store taken from those same objects,
+ * never from its path walked again: the store root is opened as a directory without following a link
+ * and held to be the root named; the path down to the transcript is opened component by component
+ * through descriptors, no link followed, and must reach the file authorized; the blob store is then
+ * opened beside the held root, by the root's own parent. So nothing swapped above the store, before or
+ * after this, can lend another store's identity. Linux only (Node has no descriptor-relative open
+ * elsewhere: openBlob); there, and for a layout with no blob store, `blobs` is null and no blob is read.
  */
-export function ompAuthorizedTranscript(path: string): { path: string; blobs: string | null } {
-  return { path, blobs: ompBlobAnchor(ompBlobStore(path))?.identity ?? null };
+export function ompAuthorizedTranscript(authorized: { path: string; root: string; identity: string }): { path: string; blobs: string | null } {
+  betweenAuthorization?.();
+  return { path: authorized.path, blobs: process.platform === "linux" ? ompBlobIdentity(authorized) : null };
+}
+
+function ompBlobIdentity({ path, root, identity }: { path: string; root: string; identity: string }): string | null {
+  const parts = relative(root, path).split(sep);
+  // omp's managed store: <data>/sessions/<cwd>/<id>.jsonl, or a subagent's file a level below it
+  if (basename(root) !== "sessions" || parts.length < 2 || parts.length > 3) return null;
+  const held: number[] = [];
+  const open = (at: string, flags: number) => { const fd = openSync(at, flags | constants.O_NOFOLLOW); held.push(fd); return fd; };
+  const identityOf = (fd: number) => { const stat = fstatSync(fd); return `${stat.dev}:${stat.ino}`; };
+  try {
+    const store = open(root, constants.O_RDONLY | constants.O_DIRECTORY);
+    if (readlinkSync(`/proc/self/fd/${store}`) !== root) return null;
+    let at = store;
+    for (const [index, name] of parts.entries()) {
+      const last = index === parts.length - 1;
+      at = open(`/proc/self/fd/${at}/${name}`, constants.O_RDONLY | (last ? constants.O_NONBLOCK : constants.O_DIRECTORY));
+    }
+    if (identityOf(at) !== identity) return null;
+    const data = open(`/proc/self/fd/${store}/..`, constants.O_RDONLY | constants.O_DIRECTORY);
+    const blobs = open(`/proc/self/fd/${data}/blobs`, constants.O_RDONLY | constants.O_DIRECTORY);
+    if (readlinkSync(`/proc/self/fd/${blobs}`) !== join(dirname(root), "blobs")) return null;
+    return identityOf(blobs);
+  } catch { return null; } finally { for (const fd of held) closeSync(fd); }
 }
 
 async function ompTranscriptPath(paneId: string, cwd: string): Promise<{ path: string; blobs: string | null }> {
@@ -1061,14 +1099,16 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<{ path: s
     const unwritten = unwrittenSession(path, store);
     if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
     // the check above is lexical: a link out of the store is no transcript of this pane
-    const inStore = piTranscriptInStore(path, store);
-    if (inStore !== null && (route === null || ompRouteOwns(route, inStore, cwd))) return ompAuthorizedTranscript(inStore);
+    const inStore = authorizedTranscript(path, store);
+    if (inStore !== null && (route === null || ompRouteOwns(route, inStore.path, cwd))) return ompAuthorizedTranscript(inStore);
     if (route === null) throw new ConversationUnavailable("no_session_path");
   }
   // herdr names no session of this store (or another agent's): the pane's omp process does
   const held = route === null ? null : ompRouteTranscript(route, cwd);
   if (held === null) throw new ConversationUnavailable("no_session_path");
-  return ompAuthorizedTranscript(held);
+  // the held transcript is the pane's own, in the store its process keeps: authorized there, and read so
+  const authorized = authorizedTranscript(held, route!.layout.sessions);
+  return authorized === null ? { path: held, blobs: null } : ompAuthorizedTranscript(authorized);
 }
 
 /** A process-owned lifecycle registration, or a trusted report plus a unique held marker. */

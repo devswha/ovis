@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
 import { aroundBlobOpenForTests, blobPlatformForTests, ompBlobAnchor, ompBlobPicture } from "./codex-images.ts";
-import { forgetTranscriptState, ompAuthorizedTranscript, ompTranscriptImage, transcriptPage } from "./conversation.ts";
+import { betweenAuthorizationForTests, forgetTranscriptState, ompAuthorizedTranscript, ompTranscriptImage, transcriptPage } from "./conversation.ts";
+import { authorizedTranscript } from "./transcript-store.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
@@ -53,7 +54,9 @@ const result = (entry: string, id: string, content: unknown[]) => ({ type: "mess
 const answer = (entry: string, text: string) => ({ type: "message", id: entry, parentId: "r1", timestamp: at, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 4 } });
 const clear = { type: "custom", customType: "context_clear", id: "x1", parentId: "a2", timestamp: at };
 
-describe("omp's pictures reach the chat", () => {
+// omp's blob pictures are read through a store descriptor, which only Linux offers (openBlob); elsewhere
+// they are refused by design, and the non-Linux branch is run here with blobPlatformForTests
+describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", () => {
   it("names the recorded session's prompt and tool pictures by ref only, and serves their exact bytes", async () => {
     const { path } = store("recorded", FIXTURE);
     expect(refs(path)).toEqual([
@@ -212,8 +215,9 @@ describe("omp's pictures reach the chat", () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const other = store("anchor-other", records);
     const own = store("anchor-own", records, {});
-    // the store's identity is taken with the transcript, as it is authorized
-    const authorized = ompAuthorizedTranscript(own.path);
+    // the store's identity is taken from the objects authorized with the transcript
+    const sessions = (blobs: string) => join(blobs, "..", "sessions");
+    const authorized = ompAuthorizedTranscript(authorizedTranscript(own.path, sessions(own.blobs))!);
     expect(authorized).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
     expect(authorized.blobs).not.toBe(ompBlobAnchor(other.blobs)!.identity);
     // after the transcript was authorized, this omp's agent directory becomes a link to the other's
@@ -229,7 +233,21 @@ describe("omp's pictures reach the chat", () => {
     // a transcript whose store is missing is authorized with none
     const bare = store("anchor-bare", records, {});
     rmSync(bare.blobs, { recursive: true });
-    expect(ompAuthorizedTranscript(bare.path)).toEqual({ path: bare.path, blobs: null });
+    expect(ompAuthorizedTranscript(authorizedTranscript(bare.path, sessions(bare.blobs))!)).toEqual({ path: bare.path, blobs: null });
+    // between the transcript's authorization and its store's identity, this omp's agent directory
+    // becomes a link to the other's: the identity is not taken from the other store
+    const checked = authorizedTranscript(own.path, sessions(own.blobs))!;
+    betweenAuthorizationForTests(() => { renameSync(agent, `${agent}-aside`); symlinkSync(join(other.blobs, ".."), agent); });
+    try {
+      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: null });
+    } finally { betweenAuthorizationForTests(null); unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
+    // and another real store moved into this one's place there is refused the same way
+    const sessionsDir = sessions(own.blobs);
+    betweenAuthorizationForTests(() => { renameSync(sessionsDir, `${sessionsDir}-aside`); renameSync(sessions(other.blobs), sessionsDir); });
+    try {
+      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: null });
+    } finally { betweenAuthorizationForTests(null); renameSync(sessionsDir, sessions(other.blobs)); renameSync(`${sessionsDir}-aside`, sessionsDir); }
+    expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
   });
 
   it("reads no omp blob where Node cannot open it through its store, and shows the inline pictures still", async () => {
