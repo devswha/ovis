@@ -62,7 +62,7 @@ import { lineDiff } from "../lib/diff.ts";
 import { formatTokens, sameMessage } from "../lib/compose.ts";
 import { formatElapsed, taskCallItems, taskResultMarkdown } from "../lib/omoTasks.ts";
 import { sendUserFileCall } from "../lib/sendUserFile.ts";
-import { LINE_IMAGES_SHOWN, LINE_IMAGES_SHOWN_TOUCH, lineImages, previewPlace, workImages, type WorkImage } from "../lib/workImages.ts";
+import { LINE_IMAGES_SHOWN, LINE_IMAGES_SHOWN_TOUCH, lineImages, linePictures, previewPlace, workImages, type WorkImage } from "../lib/workImages.ts";
 import { shouldFoldUserMessage } from "../lib/userMessageFold.ts";
 import { rewindOffer } from "../lib/rewindAction.ts";
 import { invalidatePaneCommands } from "../lib/paneCommandCache.ts";
@@ -576,7 +576,7 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
   // an attempt inside a todo run says how it went, in the transcript's words; a failure already says "failed"
   const stateWord = state === undefined || part.error ? null
     : state === "ok" ? t("succeeded") : state === "pending" ? t("pending") : state === "error" ? t("failed") : t("outcome not recorded");
-  const images = useMemo(() => workImages([part]), [part]);
+  const images = useMemo(() => linePictures([part]), [part]);
   return <div className={`work-row${part.error ? " is-error" : ""}`}>
     <div className="work-row-line">
       <button type="button" className="work-row-head" aria-expanded={open} title={narration || verb !== null ? `${part.name} · ${summary}` : undefined} onClick={() => setOpen(!open)}>
@@ -686,7 +686,7 @@ function WorkBlockView({ paneId, parts, turnParts, rowKey, duration, live, waiti
   const groups = useMemo(() => todoGroups(turnParts, rowKey), [turnParts, rowKey]);
   const grouped = new Set([...groups.values()].flatMap((group) => group.attempts.slice(1).map((attempt) => attempt.part)));
   const toolKey = (part: ConversationPart) => `tool:${parts.indexOf(part)}`;
-  const images = useMemo(() => workImages(parts), [parts]);
+  const images = useMemo(() => linePictures(parts), [parts]);
   const visible = visibleWorkParts(parts, showThinking);
   if (visible.length === 0) return live && !waiting && pendingHead ? <PendingWorkHead title={t("Working…")} /> : null;
   const summary = workSummary(parts);
@@ -702,7 +702,7 @@ function WorkBlockView({ paneId, parts, turnParts, rowKey, duration, live, waiti
         {/* its own span: the counts before it are cut on a narrow screen, a failure never is */}
         {failed > 0 && <span className="work-block-failed">· {t("{n} failed", { n: failed })}</span>}
       </button>
-      {/* folded, the block's line carries every picture its tools returned; opened, each row carries its own */}
+      {/* folded, the block's line carries its tools' pictures the browser keeps (linePictures); opened, each row carries its own */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
     {/* the rows open and fold at the block's measured height; folded and settled, they are not drawn */}

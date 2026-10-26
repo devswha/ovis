@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationPart } from "../../shared/protocol.ts";
-import { LINE_IMAGES_SHOWN, lineImages, previewPlace, workImages } from "./workImages.ts";
+import { cachedImageRef, LINE_IMAGES_SHOWN, lineImages, linePictures, previewPlace, workImages } from "./workImages.ts";
 import type { ToolPart } from "./workBlocks.ts";
 
 const tool = (name: string, refs: string[]): ToolPart => ({
@@ -23,6 +23,33 @@ describe("workImages", () => {
 
   it("finds none in work whose tools returned no picture", () => {
     expect(workImages([tool("Bash", []), { kind: "thinking", text: "hm" }])).toEqual([]);
+  });
+});
+
+describe("cachedImageRef", () => {
+  // one ref of each kind server/pane-routes.ts serves, in the shapes their stores make
+  const claude = "6f1c2a9e-4b7d-4e2a-9c1f-0a2b3c4d5e6f:3:1";
+  const codex = `codex-${"ab".repeat(32)}`;
+  const opencode = "opencode:msg_01HZY8K2:0";
+
+  it("keeps Claude's and pi's pictures, which are served immutable", () => {
+    expect(cachedImageRef(claude)).toBe(true);
+    expect(cachedImageRef("6f1c2a9e-4b7d-4e2a-9c1f-0a2b3c4d5e6f:2")).toBe(true);
+    expect(cachedImageRef("pi:call_7:0")).toBe(true);
+    expect(cachedImageRef("pi-prompt:entry-12:1")).toBe(true);
+  });
+
+  it("leaves Codex's, OpenCode's and any other agent's to their opened row", () => {
+    expect(cachedImageRef(codex)).toBe(false);
+    expect(cachedImageRef(opencode)).toBe(false);
+    expect(cachedImageRef("grok:turn-3:0")).toBe(false);
+    expect(cachedImageRef("")).toBe(false);
+  });
+
+  it("puts only kept pictures on a line, in the work's order", () => {
+    const parts = [tool("Read", [claude]), tool("view_image", [codex]), tool("read", ["pi:call_7:0", opencode])];
+    expect(linePictures(parts).map((image) => image.ref)).toEqual([claude, "pi:call_7:0"]);
+    expect(linePictures([tool("view_image", [codex, opencode])])).toEqual([]);
   });
 });
 

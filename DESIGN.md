@@ -2003,6 +2003,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   hairline and `--radius-sm`), so a reader sees what the agent saw without opening anything.
   A folded block's line carries every picture of its tools; opened, each row's line carries its
   own, and an opened row shows them larger in its detail (`.chat-tool-images`) instead.
+  A line carries only pictures the browser keeps once fetched (Claude's and pi's, served
+  immutable), so a folded line never fetches one again; Codex's and OpenCode's are served
+  `no-store` and appear only in their opened row, as before.
   The line keeps the latest four and puts the rest on one `+N` tile before them, so it never wraps;
   the words are cut first.
   On a coarse pointer each thumbnail and the tile is a `--touch-target` square, the line's own
