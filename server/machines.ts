@@ -752,10 +752,17 @@ export class MachineManager {
     await ssh.forward(port, descriptor.port);
     const endpoint = { url: `http://127.0.0.1:${port}`, token: descriptor.token };
     let response: Response;
-    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(BRIDGE_ANSWER_MS) }); }
+    // one deadline for the answer, its body included: a bridge that stops halfway timed out too
+    const deadline = AbortSignal.timeout(BRIDGE_ANSWER_MS);
+    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: deadline }); }
     catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
-    const identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity);
+    let identity: BridgeIdentity;
+    try { identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity); }
+    catch (error) {
+      if (deadline.aborted) throw new Error(bridgeUnreachable(descriptor, deadline.reason), { cause: error });
+      throw error;
+    }
     // An approved replacement only reads this stable identity endpoint. It never uses the
     // old bridge's pane protocol; the new bridge must pass the strict version check below.
     if (!forReplacement && (identity.bridge_protocol !== BRIDGE_PROTOCOL || identity.bundle_version !== REMOTE_BUNDLE_VERSION)) {

@@ -231,33 +231,38 @@ describe("loopback relay", () => {
     const sent = Promise.withResolvers<"sent">();
     // one piece per event-loop turn, so the relay gets to read between them; a write that takes
     // less than a piece is the server feeling the client's backpressure, and its drain goes on
-    type Writer = { data: { left: number }; write(chunk: Uint8Array): number; end(): void };
-    const chunk = new Uint8Array(piece).fill(7);
+    // every byte says where it belongs, so a lost, repeated or reordered piece shows
+    const payload = new Uint8Array(size);
+    for (let i = 0; i < size; i++) payload[i] = (i ^ (i >>> 13)) & 0xff;
+    type Writer = { data: { at: number }; write(chunk: Uint8Array): number; end(): void };
     const pump = (socket: Writer): void => {
-      if (!socket.data.left) { sent.resolve("sent"); socket.end(); return; }
-      const want = Math.min(piece, socket.data.left);
-      const written = Math.max(socket.write(chunk.subarray(0, want)), 0);
-      socket.data.left -= written;
+      if (socket.data.at === size) { sent.resolve("sent"); socket.end(); return; }
+      const want = Math.min(piece, size - socket.data.at);
+      const written = Math.max(socket.write(payload.subarray(socket.data.at, socket.data.at + want)), 0);
+      socket.data.at += written;
       if (written < want) { blocked.resolve("blocked"); return; }
       setImmediate(() => pump(socket));
     };
-    const server = Bun.listen<{ left: number }>({ hostname: "127.0.0.1", port: 0, socket: {
-      open(socket) { socket.data = { left: size }; pump(socket); },
+    const server = Bun.listen<{ at: number }>({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { socket.data = { at: 0 }; pump(socket); },
       drain: pump,
       data() {},
     } });
     stops.push(() => server.stop(true));
-    let received = 0;
-    const done = Promise.withResolvers<number>();
+    const received = new Uint8Array(size);
+    let filled = 0;
+    const done = Promise.withResolvers<void>();
     const client = await Bun.connect({ hostname: "127.0.0.1", port: relayTo(server.port), socket: {
       open(socket) { socket.pause(); },
-      data(_socket, data) { received += data.byteLength; },
-      close() { done.resolve(received); },
+      data(_socket, data) { received.set(data.subarray(0, size - filled), filled); filled += data.byteLength; },
+      close() { done.resolve(); },
     } });
     // a relay that buffered everything would let the server finish while nothing is read
     expect(await Promise.race([blocked.promise, sent.promise])).toBe("blocked");
     client.resume();
-    expect(await done.promise).toBe(size);
+    await done.promise;
+    expect(filled).toBe(size);
+    expect(Buffer.compare(received, payload)).toBe(0);
   });
 
   /** a client sending `total` bytes through the relay to a server that reads nothing */

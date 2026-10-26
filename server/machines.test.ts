@@ -1027,6 +1027,24 @@ describe("bridge verification failures", () => {
     } finally { timedOut.mockRestore(); }
   });
 
+  it("says a bridge that stops halfway through its answer timed out", async () => {
+    // the deadline is what is tested: 200 ms here, not 15 s
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const short = spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(200));
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    // its headers and the start of a body, then nothing
+    const ssh = { forward: async (local: number) => {
+      const stalled = Bun.listen({ hostname: "127.0.0.1", port: local, socket: { data(socket) { socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"pid\""); } } });
+      stops.push(() => stalled.stop(true));
+    } } as unknown as SshConnection;
+    const descriptor = { port: 18472, token: TOKEN, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "" } as BridgeDescriptor;
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    try {
+      expect(await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message)).toBe("This PC's Ovis did not answer at 127.0.0.1:18472 through SSH within 15 seconds. Reconnect after checking that it runs.");
+    } finally { short.mockRestore(); }
+  });
+
   it("tunnels only to the PC's loopback, whatever address a descriptor names", async () => {
     expect((await unanswered({ host: "203.0.113.99" })).forwards).toEqual([[18472]]);
   });
