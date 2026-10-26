@@ -355,6 +355,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       info = after;
     }
   }
+  /**
+   * The process a check passed for is still in front, read once more after the awaits that followed it and just
+   * before a write: herdr cannot compare and send in one step, so this keeps the window to the write's own call.
+   */
+  async function stillInFront(paneId: string, pid: number | null | undefined): Promise<void> {
+    if (pid == null) return;
+    const info = await paneProcessInfo(paneId);
+    if (!(info?.foreground_processes ?? []).some((entry) => entry.pid === pid)) {
+      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
+    }
+  }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined }> {
     authorizePending(owner, paneId, lease);
     const { pane, identity: current, processes } = await currentIdentity(paneId, identity?.processPid ?? null);
@@ -390,6 +401,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
     }
+    // the screen and card reads above awaited: what they were read for must still be in front
+    await stillInFront(paneId, current.processPid);
     authorizePending(owner, paneId, lease);
     return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen, processes };
   }
@@ -481,6 +494,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
       const piAnchor = await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null);
+      if (piAnchor !== undefined) await stillInFront(paneId, beforeEnter.identity.processPid);
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.

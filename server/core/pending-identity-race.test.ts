@@ -10,24 +10,30 @@ afterEach(() => { mock.restore(); });
 
 type PendingFrame = Extract<ServerMessage, { type: "pending-messages" }>;
 
-// The agent in front is replaced while a birth read is awaited: the read answers for the process that was there,
-// and the message must not go to the one that came (#1986 gate G1). Read 2 is the check before the paste, read 3
-// the check before Enter; each is held open until the replacement is in place.
+// The agent in front is replaced while a check's read is awaited: the read answers for the process that was there,
+// and the message must not go to the one that came (#1986 gate G1). Birth read 2 is the check before the paste, birth
+// read 3 the check before Enter, screen read 2 the screen that check reads before the paste; each is held open until
+// the replacement is in place.
 it.each([
-  { read: 2, label: "before the paste", writes: [] as string[] },
-  { read: 3, label: "before Enter", writes: ["paste 41001"] as string[] },
-])("keeps a queued message from an agent that replaces its target during the birth read $label", async ({ read, writes: expected }) => {
+  { hold: "birth", call: 2, label: "the birth read before the paste", writes: [] as string[], state: "held" },
+  { hold: "birth", call: 3, label: "the birth read before Enter", writes: ["paste 41001"] as string[], state: "uncertain" },
+  { hold: "screen", call: 2, label: "the screen read before the paste", writes: [] as string[], state: "held" },
+])("keeps a queued message from an agent that replaces its target during $label", async ({ hold, call, writes: expected, state }) => {
   const reached = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const settled = Promise.withResolvers<PendingFrame>();
-  let reads = 0;
+  let births = 0;
+  let screens = 0;
   let foreground = [{ pid: 41001, name: "gjc", argv: ["gjc"] }];
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid: number) => {
-    if (++reads === read) { reached.resolve(); await release.promise; return 1_000; }
+    if (++births === call && hold === "birth") { reached.resolve(); await release.promise; return 1_000; }
     return pid === 41001 ? 1_000 : 2_000;
   });
   spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: foreground }));
-  spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
+  spyOn(client, "paneRead").mockImplementation(async () => {
+    if (++screens === call && hold === "screen") { reached.resolve(); await release.promise; }
+    return { text: "" } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
   const writes: string[] = [];
   spyOn(client, "paneSendText").mockImplementation(async () => { writes.push(`paste ${foreground[0]!.pid}`); });
   spyOn(client, "paneSendKeys").mockImplementation(async (_pane: string, keys: string[]) => { writes.push(`${keys.join("+")} ${foreground[0]!.pid}`); });
@@ -65,5 +71,5 @@ it.each([
 
   expect(writes).toEqual(expected);
   expect(frame.removed ?? []).toEqual([]);
-  expect(frame.messages.map((message) => message.state)).toEqual([read === 2 ? "held" : "uncertain"]);
+  expect(frame.messages.map((message) => message.state)).toEqual([state]);
 });
