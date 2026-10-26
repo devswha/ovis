@@ -204,6 +204,46 @@ const choose = async (page: Page, label: string): Promise<void> => {
   }
   await item.click();
 };
+/**
+ * Taps a character of `text` in the folded row that holds it (`at`: its index in `text`, `-1` the last one),
+ * three quarters across the glyph, where the caret lies after it. The point is measured against the row and
+ * Playwright clicks the row there once it holds still, so the view scrolling between measuring and tapping
+ * (a late resize settling, the rows following the cursor) cannot move the tap off the glyph.
+ */
+const tapFolded = async (page: Page, text: string, at: number): Promise<void> => {
+  const row = page.locator(".pane-frame.is-current .terminal-fold-row").filter({ hasText: text }).first();
+  const position = await row.evaluate((node, { text, at }) => {
+    const nodes: Text[] = [];
+    for (let walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT), each = walker.nextNode(); each; each = walker.nextNode()) nodes.push(each as Text);
+    const start = nodes.map((each) => each.data).join("").indexOf(text);
+    let index = start + (at < 0 ? text.length + at : at);
+    for (const each of nodes) {
+      if (index >= each.data.length) { index -= each.data.length; continue; }
+      const range = document.createRange();
+      range.setStart(each, index);
+      range.setEnd(each, index + 1);
+      const glyph = range.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      return { x: glyph.left + glyph.width * 0.75 - box.left, y: glyph.top + glyph.height / 2 - box.top };
+    }
+    throw new Error(`no "${text}" in the folded row`);
+  }, { text, at });
+  await row.click({ position });
+};
+/** Taps with `tap` and waits for `url` to open in a tab; when none opens, says what the tap reached and what the page tried to open. */
+const opensTab = async (page: Page, url: string, tap: () => Promise<void>): Promise<void> => {
+  const opened = page.context().waitForEvent("page", { timeout: 15_000 });
+  await tap();
+  let tab: Page;
+  try { tab = await opened; }
+  catch (cause) {
+    const seen = await page.evaluate(() => ({ ...(window as unknown as { foldSeen: unknown }).foldSeen as object, selection: window.getSelection()?.toString() ?? "", focused: document.activeElement?.className ?? "",
+      scrollTop: document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")?.scrollTop, location: location.href })).catch(() => null);
+    throw new Error(`tapping for ${url} opened no tab: ${JSON.stringify(seen)}`, { cause });
+  }
+  await tab.waitForURL(url);
+  await tab.close();
+};
 const pushScreen = (page: Page, data: string): Promise<void> => page.evaluate(({ pane, data }) => window.foldFixture.sockets.at(-1)!.push({ type: "pty-data", fixture: "fold", pane_id: pane, data }), { pane: panes.shell, data });
 const SETTINGS = { language: "en", defaultView: "terminal", terminalInputMode: "direct", terminalFontFamily: "JetBrains Mono Web", terminalWheelSpeed: 2, alertsOn: false };
 
@@ -213,6 +253,19 @@ async function open(browser: Browser, origin: string, viewport: { width: number;
   await context.addInitScript((settings) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(settings));
   }, SETTINGS);
+  // what a tap reached and which links the page tried to open, for a failure to report
+  await context.addInitScript(() => {
+    const seen = { taps: [] as string[], anchors: [] as string[] };
+    (window as unknown as { foldSeen: typeof seen }).foldSeen = seen;
+    // the app opens a web link with a detached anchor's click (lib/terminalFileLinks.ts openWebLink), which no listener sees
+    const anchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { seen.anchors.push(this.href); anchorClick.call(this); };
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target instanceof HTMLAnchorElement) seen.anchors.push(target.href);
+      else seen.taps.push(`${target?.className ?? "?"} @${Math.round(event.clientX)},${Math.round(event.clientY)}`);
+    }, true);
+  });
   // a link the fold opens lands here, not on the internet
   await context.route(/^https:\/\/example\.(com|org)\//, (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
   const page = await context.newPage();
@@ -299,38 +352,11 @@ try {
         await page.setViewportSize({ width: 390, height: 844 });
         await settled(page);
 
-        // a link in the folded rows opens as the grid's own does
-        await page.evaluate((link) => {
-          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
-          for (let walker = document.createTreeWalker(host.querySelector(".terminal-fold")!, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node; node = walker.nextNode()) {
-            if (!(node as Text).data.includes(link)) continue;
-            host.scrollTop += node.parentElement!.getBoundingClientRect().top - host.getBoundingClientRect().top - 40;
-            return;
-          }
-        }, LINK);
-        const linkRect = (await foldedText(page, LINK)).rect;
-        assert.ok(linkRect, "the folded rows draw the link");
-        const opened = page.context().waitForEvent("page");
-        // on the right half of its last character, where the caret lies after it
-        await page.mouse.click(linkRect.right - 1, (linkRect.top + linkRect.bottom) / 2);
-        const tab = await opened;
-        await tab.waitForURL(LINK);
-        await tab.close();
+        // a link in the folded rows opens as the grid's own does: tapped on its last character's right half
+        await opensTab(page, LINK, () => tapFolded(page, LINK, -1));
         // a labelled OSC 8 hyperlink opens its target, as on the grid
-        const label = (await foldedText(page, "OSC8-LABEL")).rect;
-        assert.ok(label, "the folded rows draw the hyperlink's label");
-        const openedOsc = page.context().waitForEvent("page");
-        await page.mouse.click(label.left + 20, (label.top + label.bottom) / 2);
-        const oscTab = await openedOsc;
-        await oscTab.waitForURL(OSC8);
-        await oscTab.close();
-        const shown = (await foldedText(page, OSC8_SHOWN)).rect;
-        assert.ok(shown, "the folded rows draw the address-shaped label");
-        const openedReal = page.context().waitForEvent("page");
-        await page.mouse.click(shown.left + 30, (shown.top + shown.bottom) / 2);
-        const realTab = await openedReal;
-        await realTab.waitForURL(OSC8_REAL);
-        await realTab.close();
+        await opensTab(page, OSC8, () => tapFolded(page, "OSC8-LABEL", 3));
+        await opensTab(page, OSC8_REAL, () => tapFolded(page, OSC8_SHOWN, 12));
 
 
         // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
@@ -400,10 +426,8 @@ try {
         await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
 
         // a Korean syllable composed on the cursor's row shows over the folded rows, where it will be typed
-        const last = (await foldedText(page, "FOLD-LAST")).rect;
-        assert.ok(last, "the cursor's row is drawn");
         // a tap on text that is no link: the terminal takes the typing
-        await page.mouse.click(last.left + 10, (last.top + last.bottom) / 2);
+        await tapFolded(page, "FOLD-LAST", 2);
         await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
         const cdp = await page.context().newCDPSession(page);
         await cdp.send("Input.imeSetComposition", { text: "한글", selectionStart: 2, selectionEnd: 2 });
