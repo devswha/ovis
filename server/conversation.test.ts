@@ -2669,12 +2669,21 @@ describe("a Codex pane that reported no session yet", () => {
     const pane = { pane_id: "codex-home", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
     const children: Bun.Subprocess[] = [];
     let codexes: { pid: number; argv: string[] }[] = [];
-    const started = (...homes: string[]) => {
-      codexes = homes.map((home) => {
-        const child = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 60_000)"], { cwd: root, env: { ...process.env, CODEX_HOME: home } });
+    // each one says it runs before it is asked about: until its exec, the OS shows the environment it was forked with
+    const started = async (...homes: string[]) => {
+      codexes = await Promise.all(homes.map(async (home) => {
+        const child = Bun.spawn([process.execPath, "-e", "console.log('ready'); setTimeout(() => {}, 60_000)"], { cwd: root, env: { ...process.env, CODEX_HOME: home }, stdout: "pipe" });
         children.push(child);
+        const reader = child.stdout.getReader();
+        let said = "";
+        while (!said.includes("ready")) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error("the stand-in Codex exited before it ran");
+          said += new TextDecoder().decode(value);
+        }
+        reader.releaseLock();
         return { pid: child.pid, argv: ["codex"] };
-      });
+      }));
     };
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
@@ -2686,7 +2695,7 @@ describe("a Codex pane that reported no session yet", () => {
     const ask = () => paneConversation(pane.pane_id).catch((error: unknown) => error);
     try {
       // a home its environment names, with no store yet: the greeting
-      started(own);
+      await started(own);
       const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
       expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null });
       expect(greeting.history_id).toStartWith("unwritten:codex:");
@@ -2698,12 +2707,12 @@ describe("a Codex pane that reported no session yet", () => {
       db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT, first_user_message TEXT)");
       db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, first_user_message) VALUES ('begun', '/nowhere.jsonl', ?, 'cli', ?, ?, 'hi')").run(root, now, now);
       db.close();
-      started("rel");
+      await started("rel");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       // a CODEX_HOME that is no directory, or a second Codex whose home cannot be placed
-      started(join(root, "missing"));
+      await started(join(root, "missing"));
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
-      started(own, "rel");
+      await started(own, "rel");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
     } finally {
       if (serverHome === undefined) delete process.env["CODEX_HOME"]; else process.env["CODEX_HOME"] = serverHome;
