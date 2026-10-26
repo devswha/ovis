@@ -74,7 +74,10 @@ session logs all read without a refusal.
 
 A log rewritten in place, rather than appended to, starts a new history, so that its cursors and
 the turns kept from earlier reads no longer count: when it gets smaller, when it keeps its size
-with a new time, or when it grows while the last 16 MiB it held before changed.
+with a new time, or when it grows while the last 16 MiB it held before changed. One read checks
+those 16 MiB and digests the new ones, a 64 KiB chunk at a time with xxHash3. A log that grows by
+more than 16 MiB between two reads also starts a new history, because the two windows share no
+bytes.
 
 ## Limits
 

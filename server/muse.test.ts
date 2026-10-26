@@ -206,6 +206,40 @@ describe("Muse session log", () => {
     expect(transcriptPage("muse-transcript", path).turns).toEqual(after.turns);
   });
 
+  test("an append digests each byte of the window once", () => {
+    const path = logAt(RECORDED, recorded);
+    const before = transcriptPage("muse-transcript", path);
+    appendFileSync(path, `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`);
+    const hash = spyOn(Bun.hash, "xxHash3");
+    let digested = 0;
+    try {
+      expect(transcriptPage("muse-transcript", path).history_id).toBe(before.history_id);
+      for (const [bytes] of hash.mock.calls) digested += (bytes as Uint8Array).length;
+    } finally { hash.mockRestore(); }
+    // the last chunk of the window read before is digested again only as far as that read went
+    expect(digested).toBeLessThanOrEqual(readFileSync(path).length + 64 * 1024);
+  });
+
+  test("a log past one window keeps its history as it slides, unless it grew past it or its start changed", () => {
+    const path = logAt(RECORDED, recorded);
+    const before = transcriptPage("muse-transcript", path);
+    const name = `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`;
+    appendFileSync(path, name.repeat(Math.ceil((16 * 1024 * 1024 + 1) / name.length)));
+    const grown = transcriptPage("muse-transcript", path);
+    expect(grown.history_id).not.toBe(before.history_id);
+    // appends that slide the window past a chunk, then one that does not, keep the history
+    appendFileSync(path, name.repeat(Math.ceil(64 * 1024 / name.length) + 1));
+    expect(transcriptPage("muse-transcript", path).history_id).toBe(grown.history_id);
+    appendFileSync(path, name);
+    expect(transcriptPage("muse-transcript", path).history_id).toBe(grown.history_id);
+    // a name changed at the start of the window read last, which the next append slides past
+    const log = readFileSync(path);
+    const start = Math.ceil((log.length - 16 * 1024 * 1024) / (64 * 1024)) * 64 * 1024;
+    log.write("neat-tucanb", log.indexOf("neat-tucana", start));
+    writeFileSync(path, Buffer.concat([log, Buffer.from(name.repeat(Math.ceil(64 * 1024 / name.length) + 1))]));
+    expect(transcriptPage("muse-transcript", path).history_id).not.toBe(grown.history_id);
+  });
+
   test("a prompt of pictures alone shows Muse's own name for each", () => {
     const prompt = JSON.parse(recorded.split("\n").find((line) => line.includes('"runtime.user_intent.accepted"'))!);
     const picture = { kind: "asset", asset: { schema_version: 1, algorithm: "sha256", digest: "0".repeat(64), media_type: "image/png", byte_length: 1, width: 1, height: 1 } };
