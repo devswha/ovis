@@ -36,7 +36,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
-import nodePath, { basename, dirname, join, relative, sep, type PlatformPath } from "node:path";
+import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
@@ -1057,7 +1057,6 @@ export function betweenAuthorizationForTests(between: (() => void) | null): void
  * elsewhere: openBlob); there, and for a layout with no blob store, `blobs` is null and no blob is read.
  */
 export function ompAuthorizedTranscript(authorized: { path: string; root: string; identity: string }): { path: string; blobs: string | null } {
-  betweenAuthorization?.();
   return { path: authorized.path, blobs: process.platform === "linux" ? ompBlobIdentity(authorized) : null };
 }
 
@@ -1069,18 +1068,19 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
   const open = (at: string, flags: number) => { const fd = openSync(at, flags | constants.O_NOFOLLOW); held.push(fd); return fd; };
   const identityOf = (fd: number) => { const stat = fstatSync(fd); return `${stat.dev}:${stat.ino}`; };
   try {
-    const store = open(root, constants.O_RDONLY | constants.O_DIRECTORY);
-    if (readlinkSync(`/proc/self/fd/${store}`) !== root) return null;
-    let at = store;
+    // one descriptor of the agent data directory, opened once and held: the transcript and the blob store
+    // are both reached from it, so a directory renamed or moved after this open moves neither
+    const data = open(dirname(root), constants.O_RDONLY | constants.O_DIRECTORY);
+    if (readlinkSync(`/proc/self/fd/${data}`) !== dirname(root)) return null;
+    betweenAuthorization?.();
+    let at = open(`/proc/self/fd/${data}/sessions`, constants.O_RDONLY | constants.O_DIRECTORY);
     for (const [index, name] of parts.entries()) {
       const last = index === parts.length - 1;
       at = open(`/proc/self/fd/${at}/${name}`, constants.O_RDONLY | (last ? constants.O_NONBLOCK : constants.O_DIRECTORY));
     }
+    // the very file authorized, under this data directory's own sessions
     if (identityOf(at) !== identity) return null;
-    const data = open(`/proc/self/fd/${store}/..`, constants.O_RDONLY | constants.O_DIRECTORY);
-    const blobs = open(`/proc/self/fd/${data}/blobs`, constants.O_RDONLY | constants.O_DIRECTORY);
-    if (readlinkSync(`/proc/self/fd/${blobs}`) !== join(dirname(root), "blobs")) return null;
-    return identityOf(blobs);
+    return identityOf(open(`/proc/self/fd/${data}/blobs`, constants.O_RDONLY | constants.O_DIRECTORY));
   } catch { return null; } finally { for (const fd of held) closeSync(fd); }
 }
 

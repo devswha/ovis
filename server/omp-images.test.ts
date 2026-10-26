@@ -234,13 +234,32 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     const bare = store("anchor-bare", records, {});
     rmSync(bare.blobs, { recursive: true });
     expect(ompAuthorizedTranscript(authorizedTranscript(bare.path, sessions(bare.blobs))!)).toEqual({ path: bare.path, blobs: null });
-    // between the transcript's authorization and its store's identity, this omp's agent directory
-    // becomes a link to the other's: the identity is not taken from the other store
+    // once the data directory is held, this omp's agent directory becomes a link to the other's: the store
+    // is still reached through the held directory, this omp's own
     const checked = authorizedTranscript(own.path, sessions(own.blobs))!;
+    const ownIdentity = ompBlobAnchor(own.blobs)!.identity;
     betweenAuthorizationForTests(() => { renameSync(agent, `${agent}-aside`); symlinkSync(join(other.blobs, ".."), agent); });
     try {
-      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: null });
+      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ownIdentity });
     } finally { betweenAuthorizationForTests(null); unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
+    // this omp's sessions moved under the other's agent directory, and the two agent directories swapped
+    // names: the held data directory has no sessions left, and nothing is anchored
+    const otherAgent = join(other.blobs, "..");
+    betweenAuthorizationForTests(() => {
+      renameSync(sessions(other.blobs), `${sessions(other.blobs)}-aside`);
+      renameSync(sessions(own.blobs), sessions(other.blobs));
+      renameSync(agent, `${agent}-aside`);
+      renameSync(otherAgent, agent);
+    });
+    try {
+      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: null });
+    } finally {
+      betweenAuthorizationForTests(null);
+      renameSync(agent, otherAgent);
+      renameSync(`${agent}-aside`, agent);
+      renameSync(sessions(other.blobs), sessions(own.blobs));
+      renameSync(`${sessions(other.blobs)}-aside`, sessions(other.blobs));
+    }
     // and another real store moved into this one's place there is refused the same way
     const sessionsDir = sessions(own.blobs);
     betweenAuthorizationForTests(() => { renameSync(sessionsDir, `${sessionsDir}-aside`); renameSync(sessions(other.blobs), sessionsDir); });
