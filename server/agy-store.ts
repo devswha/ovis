@@ -35,7 +35,7 @@ export function agyStoreFromLocks(paths: readonly string[]): Pick<AgyStore, "roo
  * Manager instead: `RmGetList` names the processes using a file. Agy's presence locks are the only
  * files asked about, and a caller that cannot get an answer fails closed to the terminal.
  */
-const RM_PROCESS_INFO_SIZE = 672; // RM_UNIQUE_PROCESS(16) + 256 WCHAR + 64 WCHAR + 4 ULONG
+const RM_PROCESS_INFO_SIZE = 668; // RM_UNIQUE_PROCESS(12) + 256 WCHAR + 64 WCHAR + 4 x 4-byte fields
 const MAX_WINDOWS_CANDIDATES = 4096;
 const WINDOWS_SCAN_TTL_MS = 5_000;
 
@@ -64,7 +64,8 @@ function windowsApi(): NonNullable<typeof windowsApis> {
 function windowsHolders(path: string): number[] {
   const { restartManager } = windowsApi();
   const session = Buffer.alloc(4);
-  if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(64)) !== 0) return [];
+  // CCH_RM_SESSION_KEY (32) + NUL, in WCHARs = 66 bytes.
+  if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(68)) !== 0) return [];
   const handle = session.readUInt32LE(0);
   try {
     const name = utf16(path);
