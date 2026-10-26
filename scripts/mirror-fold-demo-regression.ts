@@ -206,6 +206,18 @@ async function open(browser: Browser, origin: string, viewport: { width: number;
   await context.route("https://example.com/**", (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
+  // a timed-out wait says which one it was and what the pane showed: Playwright's own stack does not reach this file
+  const wait = page.waitForFunction.bind(page);
+  page.waitForFunction = ((fn: never, arg?: never, options?: never) => {
+    const where = new Error().stack?.split("\n")[2]?.trim() ?? "";
+    return wait(fn, arg, options).catch(async (cause: unknown) => {
+      const shown = await page.evaluate(() => {
+        const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
+        return { folded: host?.hasAttribute("data-folded"), scrollTop: host?.scrollTop, scrollHeight: host?.scrollHeight, clientHeight: host?.clientHeight, focused: document.activeElement?.className, composing: document.querySelector(".composition-view.active") !== null };
+      }).catch(() => null);
+      throw new Error(`${cause instanceof Error ? cause.message : String(cause)} ${where} ${JSON.stringify(shown)}`, { cause });
+    });
+  }) as typeof page.waitForFunction;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal${query}`);
@@ -288,22 +300,37 @@ try {
         const linkRect = (await foldedText(page, LINK)).rect;
         assert.ok(linkRect, "the folded rows draw the link");
         const opened = page.context().waitForEvent("page");
-        await page.mouse.click(linkRect.left + 40, (linkRect.top + linkRect.bottom) / 2);
+        // on the right half of its last character, where the caret lies after it
+        await page.mouse.click(linkRect.right - 1, (linkRect.top + linkRect.bottom) / 2);
         const tab = await opened;
         await tab.waitForURL(LINK);
         await tab.close();
 
+
         // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
         await page.waitForFunction(() => window.foldFixture.reads > 0);
-        await page.evaluate(() => { document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop = 0; });
-        const box = await page.locator(".pane-frame.is-current .terminal-fold").boundingBox();
+        const box = await page.locator(".pane-frame.is-current .pane-terminal").boundingBox();
         assert.ok(box);
-        await page.mouse.move(box.x + box.width / 2, box.y + 60);
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        // up through the folded rows by wheel, as a user reads back: that pans them, and sends herdr nothing
+        const scrollTop = (): Promise<number> => page.evaluate(() => document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop);
+        for (let turns = 0; await scrollTop() > 1; turns++) {
+          assert.ok(turns < 40, "the folded rows pan up to their top");
+          await page.mouse.wheel(0, -400);
+          await settled(page);
+        }
+        assert.deepEqual(await page.evaluate(() => window.foldFixture.offsets), [], "panning the folded rows leaves herdr's history alone");
         await page.mouse.wheel(0, -120);
-        await page.waitForFunction(() => window.foldFixture.offsets.length > 0);
+        await page.waitForFunction(() => window.foldFixture.offsets.length > 0).catch(async (cause) => {
+          throw new Error(`a wheel past the folded rows' top scrolled no history: ${JSON.stringify(await page.evaluate(() => ({ ...window.foldFixture, sockets: undefined, scrollTop: document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop })))}`, { cause });
+        });
         assert.equal(await page.evaluate(() => window.foldFixture.offset), 6, "one wheel step moves 3 lines at speed 2");
-        await page.mouse.wheel(0, 120);
-        await page.waitForFunction(() => window.foldFixture.offset === 0);
+        // back down: the folded rows pan to their end first, as an oversized grid does, then history returns
+        for (let turns = 0; await page.evaluate(() => window.foldFixture.offset) !== 0; turns++) {
+          assert.ok(turns < 40, "wheeling down returns the history to its end");
+          await page.mouse.wheel(0, 400);
+          await settled(page);
+        }
 
         // a smaller Android phone, then the phone on its side: still folded, still whole
         for (const [width, height] of [[360, 800], [844, 390]] as const) {
@@ -343,6 +370,29 @@ try {
         await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "interact" })));
         await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
 
+        // a Korean syllable composed on the cursor's row shows over the folded rows, where it will be typed
+        const last = (await foldedText(page, "FOLD-LAST")).rect;
+        assert.ok(last, "the cursor's row is drawn");
+        // a tap on text that is no link: the terminal takes the typing
+        await page.mouse.click(last.left + 10, (last.top + last.bottom) / 2);
+        await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Input.imeSetComposition", { text: "한글", selectionStart: 2, selectionEnd: 2 });
+        await page.locator(".pane-frame.is-current .composition-view.active").waitFor();
+        const preedit = await page.evaluate(() => {
+          const view = document.querySelector<HTMLElement>(".pane-frame.is-current .composition-view.active")!;
+          const host = view.closest<HTMLElement>(".pane-terminal")!;
+          const rect = view.getBoundingClientRect();
+          const box = host.getBoundingClientRect();
+          const top = document.elementFromPoint(rect.left + Math.min(rect.width / 2, 8), rect.top + rect.height / 2);
+          return { rect: { top: rect.top, bottom: rect.bottom }, view: { top: box.top + host.clientTop, bottom: box.top + host.clientTop + host.clientHeight }, onTop: top === view || view.contains(top), topmost: top?.className ?? null };
+        });
+        assert.ok(preedit.onTop && preedit.rect.top >= preedit.view.top - 1 && preedit.rect.bottom <= preedit.view.bottom + 1, `the preedit is in view and drawn over the folded rows ${JSON.stringify(preedit)}`);
+        // the composition cancelled: nothing reaches the pane
+        await cdp.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
+        await page.locator(".pane-frame.is-current .composition-view.active").waitFor({ state: "detached" });
+        await cdp.detach();
+
         // a desktop the grid fits: drawn as it is, as before
         await page.setViewportSize({ width: 1440, height: 900 });
         await foldState(page, false);
@@ -377,7 +427,7 @@ try {
         assert.deepEqual(attached.errors, []);
       } finally { await attached.close(); }
 
-      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a link opens, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded`);
+      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded`);
     } finally { await browser.close(); }
   } finally { server.stop(); }
 } finally { rmSync(app, { recursive: true, force: true }); }

@@ -134,10 +134,20 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
   return html + run(text, style);
 }
 
+/** `url` without the punctuation a sentence put after it; a closing parenthesis it opened stays (`Function_(mathematics)`). */
+const trimUrl = (url: string): string => {
+  for (;;) {
+    const last = url.at(-1);
+    const extra = last === ")" && url.split(")").length > url.split("(").length;
+    if (!extra && !(last !== undefined && ",.;:!?'\"]}".includes(last))) return url;
+    url = url.slice(0, -1);
+  }
+};
+
 /** The http(s) address in a folded row's text that `offset` falls in, its trailing punctuation left out, or null. */
 export function webLinkAt(text: string, offset: number): { url: string; start: number; end: number } | null {
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
-    const url = match[0].replace(/[),.;:!?'\]}]+$/, "");
+    const url = trimUrl(match[0]);
     if (offset >= match.index && offset < match.index + url.length) return { url, start: match.index, end: match.index + url.length };
   }
   return null;
@@ -221,15 +231,19 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
   // cursor, and the input bounds keep them inside the part of the grid in view. Folded rows are taller
   // than the grid, so the grid moves down with them until its cursor row lies on the folded cursor row:
   // a preedit is drawn where the text it adds will show. It never reaches past the folded rows' end.
+  // It moves by `top` (.xterm is relative), not a transform: a transform would make the grid a stacking
+  // context, and the preedit (xterm's helpers, z-index 5) would go under the folded rows drawn after it.
   const align = (): void => {
     const xterm = term.element;
     const grid = screen();
     const row = cursorRow();
     if (!xterm || !grid || !row || term.rows === 0) return;
     const gridCursorBottom = grid.getBoundingClientRect().top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * grid.offsetHeight / term.rows;
-    const most = view.offsetTop + view.offsetHeight - (xterm.offsetTop + xterm.offsetHeight);
-    const shift = Math.max(0, Math.min(most, view.offsetTop + row.offsetTop + row.offsetHeight - (xterm.offsetTop + gridCursorBottom)));
-    xterm.style.transform = shift > 0 ? `translateY(${Math.round(shift)}px)` : "";
+    // where the grid stands unmoved: offsetTop counts the offset this set last time
+    const base = xterm.offsetTop - (parseFloat(xterm.style.top) || 0);
+    const most = view.offsetTop + view.offsetHeight - (base + xterm.offsetHeight);
+    const shift = Math.max(0, Math.min(most, view.offsetTop + row.offsetTop + row.offsetHeight - (base + gridCursorBottom)));
+    xterm.style.top = shift > 0 ? `${Math.round(shift)}px` : "";
   };
   const draw = (start: number, end: number): void => {
     const theme = term.options.theme ?? {};
@@ -280,7 +294,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     view.replaceChildren();
     rows.length = 0;
     drawn.length = 0;
-    if (term.element) term.element.style.transform = "";
+    if (term.element) term.element.style.top = "";
   };
   // xterm draws only the rows a write changed: those are redrawn here too, after it
   const rendered = term.onRender(({ start, end }) => {
@@ -301,9 +315,19 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     const row = caret.node.parentElement?.closest(".terminal-fold-row");
     const index = row ? rows.indexOf(row as HTMLDivElement) : -1;
     if (!row || index < 0) return null;
+    // the caret falls between characters: on a glyph's right half it is after it, so the glyph is the one before
+    const node = caret.node;
+    const holds = (at: number): boolean => {
+      if (at < 0 || at >= node.data.length) return false;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, Math.min(node.data.length, at + (/[\uD800-\uDBFF]/.test(node.data[at]!) ? 2 : 1)));
+      return [...range.getClientRects()].some((rect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+    };
+    const at = holds(caret.offset) ? caret.offset : holds(caret.offset - 1) ? caret.offset - 1 : caret.offset;
     let offset = 0;
-    for (let walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node && node !== caret.node; node = walker.nextNode()) offset += (node as Text).data.length;
-    return { row: index, offset: offset + caret.offset, text: row.textContent ?? "", node: caret.node };
+    for (let walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT), text = walker.nextNode(); text && text !== node; text = walker.nextNode()) offset += (text as Text).data.length;
+    return { row: index, offset: offset + at, text: row.textContent ?? "", node };
   };
   /** whether the point is on the drawn text of `[start, end)` in a row, not in the blank past a line's end */
   const onText = (row: number, start: number, end: number, x: number, y: number): boolean => {
@@ -357,7 +381,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
       view.removeEventListener("wheel", wheel);
       view.remove();
       host.removeAttribute("data-folded");
-      if (term.element) term.element.style.transform = "";
+      if (term.element) term.element.style.top = "";
     },
   };
 }

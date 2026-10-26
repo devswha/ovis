@@ -72,6 +72,8 @@ describe("the folded view of a mirrored grid", () => {
     expect(webLinkAt(text, 30)).toBeNull();
     expect(webLinkAt(text, 1)).toBeNull();
     expect(webLinkAt(text, text.length - 1)?.url).toBe("http://x.y");
+    const wiki = "(see https://en.wikipedia.org/wiki/Function_(mathematics)).";
+    expect(webLinkAt(wiki, 10)?.url).toBe("https://en.wikipedia.org/wiki/Function_(mathematics)");
   });
 
   test("a folded row's character is found in its grid column, past wide glyphs and the cells they cover", () => {
