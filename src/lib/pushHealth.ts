@@ -72,9 +72,12 @@ export function classifyPushHealth(input: PushHealthInput): PushHealth {
   if (status === "unknown") return { problem: "missing", repair: true, transient: null };
   if (failureIsNewer(status)) {
     const failure = status.last_failure!;
-    // the push service refused the server's signature (401/403): with the browser's key proven the
-    // server's own above, subscribing anew would make the same subscription, so it is told as a refusal
-    if (failure === "key-mismatch") return { problem: "rejected", repair: false, transient: null };
+    // the push service refused the server's signature (401/403). With the browser's key proven the server's
+    // own above, subscribing anew would make the same subscription, so it is told as a refusal. A key nobody
+    // can read (the phone app's, or a browser that does not say) is most likely the old one, after the
+    // server's key changed and a registration with the new one failed: subscribing anew replaces a
+    // subscription whose key is not proven (lib/push.ts, and the app's plugin on a changed key), so it mends it
+    if (failure === "key-mismatch") return input.keyMatches === null ? { problem: "key-mismatch", repair: true, transient: null } : { problem: "rejected", repair: false, transient: null };
     if (permanent(failure)) return { problem: failure, repair: failure === "gone", transient: null };
     return { problem: status.registered ? null : "missing", repair: !status.registered, transient: failure };
   }
@@ -85,10 +88,14 @@ export function classifyPushHealth(input: PushHealthInput): PushHealth {
 /** What Send test or a repair came to, for Settings' line (components/PushTestControls.tsx). */
 export type PushActionResult = "sent" | "unsupported" | "permission" | "missing" | "gone" | "read-only" | "failed";
 
-/** A result with the subscription it is about: the endpoint tested, or the one a repair registered; null when none was reached. */
+/**
+ * A result with the subscription it is about: the endpoint tested, or the one a repair registered;
+ * null when the action found this device holding none; absent when that is not known, and the next
+ * look claims it for the subscription it finds.
+ */
 export interface PushActionOutcome {
   result: PushActionResult;
-  endpoint: string | null;
+  endpoint?: string | null;
 }
 
 export interface PushHealthState {
@@ -230,11 +237,11 @@ export async function runPushAction(kind: "test" | "repair", action: () => Promi
   const mine = ++actions;
   setState({ ...state, busy: kind, result: null });
   let result: PushActionResult = "failed";
-  let about: string | undefined;
+  let about: string | null | undefined;
   try {
     const outcome = await action();
     result = typeof outcome === "string" ? outcome : outcome.result;
-    about = typeof outcome === "string" ? undefined : outcome.endpoint ?? undefined;
+    about = typeof outcome === "string" ? undefined : outcome.endpoint;
   } finally {
     // reset or followed by another action meanwhile: that one's state is not this one's to clear
     if (mine === actions) {

@@ -82,10 +82,7 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
 
   // the notice's repair is Settings' Turn alerts on again: one flow, one state (lib/pushHealth.ts)
   const repairNotifications = useCallback(() => {
-    void runPushAction("repair", async () => {
-      const ok = await enableNotifications();
-      return { result: ok ? "sent" : "failed", endpoint: ok ? registeredPushEndpoint() : null };
-    }, () => alertsOnRef.current);
+    void runPushAction("repair", async () => await enableNotifications() ? { result: "sent", endpoint: registeredPushEndpoint() } : { result: "failed" }, () => alertsOnRef.current);
   }, [enableNotifications]);
 
   // in the app, alerts turned off while the PC could not be told keep the app's endpoint (lib/push.ts),

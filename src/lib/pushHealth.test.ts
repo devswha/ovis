@@ -52,7 +52,9 @@ describe("classifyPushHealth", () => {
     // the push service refused the server's key (401/403) while the browser's key is the server's own: subscribing
     // anew would make the same subscription, so it is a refusal with no repair; unknown local key alike
     expect(repairs({ ...fine, status: status({ last_failure_at: at(1), last_failure: "key-mismatch" }) })).toEqual(["rejected", false]);
-    expect(repairs({ ...fine, keyMatches: null, status: status({ last_failure_at: at(1), last_failure: "key-mismatch" }) })).toEqual(["rejected", false]);
+    // a key nobody can read (the phone app's) refused: most likely the old key after the server's changed, and
+    // subscribing anew replaces a subscription whose key is not proven
+    expect(repairs({ ...fine, keyMatches: null, status: status({ last_failure_at: at(1), last_failure: "key-mismatch" }) })).toEqual(["key-mismatch", true]);
     // a refusal is told, and not mended by subscribing again
     expect(repairs({ ...fine, status: status({ last_failure_at: at(1), last_failure: "rejected" }) })).toEqual(["rejected", false]);
     // a denied permission is the browser's to mend
@@ -319,6 +321,9 @@ describe("the shared health state", () => {
     // the line stays when the subscription tested is the one held
     await runPushAction("test", async () => ({ result: "sent", endpoint: "https://push.example/11" }), () => true);
     expect(readPushHealth().result).toBe("sent");
+    // a test that found no subscription while a registration made one: its "missing" is not the new one's
+    await runPushAction("test", async () => ({ result: "missing", endpoint: null }), () => true);
+    expect(readPushHealth()).toMatchObject({ health: { problem: null }, result: null });
   });
 
   it("keeps a known fault through an answer that proves nothing", async () => {

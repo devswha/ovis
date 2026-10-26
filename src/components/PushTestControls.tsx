@@ -19,14 +19,13 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<boolean
   const enable = !settings.alertsOn || health.repair || result === "missing" || result === "gone" || result === "permission";
 
   const send = (repair: boolean) => runPushAction(repair ? "repair" : "test", async (): Promise<PushActionOutcome> => {
-    // the subscription the line will be about: the one tested, or the one the repair registered
-    let endpoint: string | null = null;
+    // the subscription the line will be about: the one tested, or the one the repair registered; none
+    // held when the test found none, and unknown (the next look's) when the action stopped before it knew
+    let endpoint: string | undefined;
     try {
-      if (repair) {
-        const ok = await onEnable();
-        return { result: ok ? "sent" : "failed", endpoint: ok ? registeredPushEndpoint() : null };
-      }
-      return { result: await testDevicePush((tested) => { endpoint = tested; }), endpoint };
+      if (repair) return await onEnable() ? { result: "sent", endpoint: registeredPushEndpoint() } : { result: "failed" };
+      const result = await testDevicePush((tested) => { endpoint = tested; });
+      return { result, endpoint: result === "missing" ? null : endpoint };
     } catch (error) {
       // gone: the push service retired the endpoint; Turn alerts on again subscribes this device anew
       const code = error instanceof ApiError ? error.code : null;
