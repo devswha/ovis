@@ -8,8 +8,12 @@ import { OwnerGuardUnavailable, withOwnerGuard } from "./owner-guard.ts";
 import { newOwnerRecord, ownerGone, probeProcess, type ProcessBirth } from "./process-owner.ts";
 import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
 
-/** `generation` and `birth` identify the registering process beyond its PID; older bridges wrote neither. */
-export interface BridgeDescriptor { managed_remote?: boolean; port: number; token: string; pid: number; generation?: string; birth?: ProcessBirth; socket_path: string; bridge_protocol: number; bundle_version: string }
+/**
+ * `generation` and `birth` identify the registering process beyond its PID; older bridges wrote neither.
+ * `host` is the address the server listens on (its HOST), which the app's SSH tunnel reaches; without
+ * it (the bridge this app starts, or an Ovis older than #1960) the server listens on 127.0.0.1.
+ */
+export interface BridgeDescriptor { managed_remote?: boolean; port: number; host?: string; token: string; pid: number; generation?: string; birth?: ProcessBirth; socket_path: string; bridge_protocol: number; bundle_version: string }
 export function bridgeRegistry(): string { return join(homedir(), ".config/herdr-web-ui/bridges"); }
 export function socketPath(): string {
   const path = resolve(herdrSocketPath());
@@ -58,10 +62,11 @@ function liveIn(reading: { text: string } | null): boolean {
 /**
  * `registered` says whether this server's descriptor was written: it is not while another live
  * bridge holds the descriptor, when the descriptor changed while this one started, or when its
- * guard cannot be taken. `options.path` places the descriptor elsewhere and `options.sampled` runs
- * between reading the old descriptor and taking the guard; both are test seams.
+ * guard cannot be taken. `options.host` is the address the server listens on. `options.path` places
+ * the descriptor elsewhere and `options.sampled` runs between reading the old descriptor and taking
+ * the guard; both are test seams.
  */
-export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { path?: string; sampled?(): void } = {}): { token: string; registered: boolean; close(): void } {
+export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { host?: string; path?: string; sampled?(): void } = {}): { token: string; registered: boolean; close(): void } {
   const path = options.path ?? descriptorPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const unregistered = { token, registered: false, close() {} };
@@ -76,7 +81,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
       // another bridge registered while this one started: it is the registered one
       if (now?.id !== seen?.id || now?.text !== seen?.text || liveIn(now)) return false;
       const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, ...(options.host ? { host: options.host } : {}), token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, path);
       return true;

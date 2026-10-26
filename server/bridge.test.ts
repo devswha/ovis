@@ -53,6 +53,14 @@ describe("bridge registration", () => {
     expect(existsSync(guardPath(path))).toBe(true);
   });
 
+  it("records the address its server listens on, and none when it was not given one", () => {
+    const tailnet = registerBridge(4242, "new-token", { path, host: "100.64.0.7" });
+    expect(read().host).toBe("100.64.0.7");
+    tailnet.close();
+    registerBridge(4242, "new-token", { path });
+    expect("host" in read()).toBe(false);
+  });
+
   it("replaces a descriptor whose PID another process now holds", () => {
     // regression (fails on main, which took any live PID for the bridge): a reused PID
     const reused = other();

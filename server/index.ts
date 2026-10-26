@@ -608,7 +608,7 @@ export function createServer(
     settlePortalStartup({ ok: true });
   }
 
-  const registration = options.registerBridge ? registerBridge(server.port ?? 0, bridgeToken) : null;
+  const registration = options.registerBridge ? registerBridge(server.port ?? 0, bridgeToken, { host: hostname }) : null;
 
   core.start();
 

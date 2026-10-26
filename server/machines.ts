@@ -1,7 +1,7 @@
 import { authenticatedWebSocket } from "./remote-websocket.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer as tcpServer } from "node:net";
+import { isIP, createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, LOCAL_MACHINE, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
@@ -95,6 +95,28 @@ function verificationFailure(status: number, body: unknown): string {
   if (error?.code === "socket_missing" || error?.code === "internal_error" && typeof error.message === "string" && error.message.startsWith("ENOENT")) return "herdr is not running for this session on the PC (its socket is missing). Start herdr there, then reconnect.";
   if (error?.code === "connect_failed") return "herdr is not answering on the PC (its socket is there, but nothing listens). Restart herdr there, then reconnect.";
   return `Bridge verification failed (${status}). Reconnect after checking the remote bridge.`;
+}
+
+const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+/**
+ * Where on the PC the SSH tunnel reaches a bridge: the address its server listens on (#1960). None
+ * recorded (the bridge this app starts, an older Ovis) or a wildcard bind answers on 127.0.0.1.
+ * Anything but an IP address or a host name is refused: it becomes part of ssh's -L argument.
+ */
+export function bridgeForwardHost(host: unknown): string {
+  if (host === undefined) return "127.0.0.1";
+  if (typeof host !== "string") throw new Error("Invalid bridge address");
+  const address = host.replace(/^\[(.*)\]$/, "$1");
+  if (address === "0.0.0.0" || address === "::") return "127.0.0.1";
+  if (isIP(address) || HOST_NAME.test(address)) return address;
+  throw new Error("Invalid bridge address");
+}
+/** what the person adding the PC is told when nothing answers at the end of the tunnel to its bridge */
+function bridgeUnreachable(descriptor: BridgeDescriptor, host: string): string {
+  const at = `${host.includes(":") ? `[${host}]` : host}:${descriptor.port}`;
+  if (descriptor.managed_remote) return `The bridge on this PC does not answer at ${at} through SSH. Reconnect after checking the remote bridge.`;
+  if (descriptor.host === undefined) return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, set HOST=127.0.0.1 there (other devices can still reach it through tailscale serve), restart it, then add the PC again.`;
+  return `This PC's Ovis listens on ${at}, but SSH cannot reach it there. Set HOST=127.0.0.1 for that Ovis (other devices can still reach it through tailscale serve), restart it, then add the PC again.`;
 }
 
 async function freePort(): Promise<number> {
@@ -734,10 +756,15 @@ export class MachineManager {
   }
   private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
     if (!Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535 || typeof descriptor.token !== "string" || !/^[a-f0-9]{64}$/.test(descriptor.token)) throw new Error("Invalid bridge credentials");
+    const host = bridgeForwardHost(descriptor.host);
     const port = await freePort();
-    await ssh.forward(port, descriptor.port);
+    await ssh.forward(port, descriptor.port, host);
     const endpoint = { url: `http://127.0.0.1:${port}`, token: descriptor.token };
-    const response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(15_000) });
+    let response: Response;
+    // the tunnel stands, so a connection that fails now failed on the PC's side: ssh resets it when
+    // nothing listens at that address (an Ovis bound to another HOST)
+    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(15_000) }); }
+    catch { throw new Error(bridgeUnreachable(descriptor, host)); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
     const identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity);
     // An approved replacement only reads this stable identity endpoint. It never uses the

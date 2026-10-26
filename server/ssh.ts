@@ -316,13 +316,15 @@ export class SshConnection {
       : this.direct().slice(1);
     await this.exec(["sftp", ...options, "-b", "-", this.target.destination], put, timeout);
   }
-  async forward(port: number, remotePort: number): Promise<void> {
+  /** `remoteHost` is an address or host name the caller validated; an IPv6 address goes in brackets */
+  async forward(port: number, remotePort: number, remoteHost = "127.0.0.1"): Promise<void> {
     if (this.closed) throw new Error("SSH connection closed");
+    const spec = `127.0.0.1:${port}:${remoteHost.includes(":") ? `[${remoteHost}]` : remoteHost}:${remotePort}`;
     if (this.multiplexed) {
       // Mux commands read SSH config too: even a master with ClearAllForwardings
       // would accept those extra tunnels here. -O uses only our existing control
       // socket, so no host config is needed; ClearAllForwardings would erase our -L.
-      await this.exec(["ssh", "-F", "none", "-S", this.control, "-O", "forward", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination]);
+      await this.exec(["ssh", "-F", "none", "-S", this.control, "-O", "forward", "-L", spec, this.target.destination]);
       return;
     }
     // Our -L needs ClearAllForwardings off, which would also open the forwards the account's
@@ -330,7 +332,7 @@ export class SshConnection {
     if (CONFIG_FORWARD.test(await this.exec(["ssh", "-G", ...this.options(false), this.target.destination]))) {
       throw new Error(`The SSH config for ${this.target.destination} sets LocalForward, RemoteForward or DynamicForward, which the web UI on Windows cannot switch off. Use a host alias without them.`);
     }
-    const proc = Bun.spawn([...this.direct(undefined, false), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
+    const proc = Bun.spawn([...this.direct(undefined, false), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", spec, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
     this.tunnels.add(proc);
     const stderr = new Response(proc.stderr).text();
     void proc.exited.then(() => {

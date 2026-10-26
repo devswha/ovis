@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import type { Socket } from "bun";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -11,7 +12,7 @@ import { canSendSecret, sameOrigin, shellQuote, validateTarget } from "./machine
 import { handleMachineRequest, MACHINE_PROXY_PATH } from "./machine-api.ts";
 import type { BridgeDescriptor } from "./bridge.ts";
 import { createServer } from "./index.ts";
-import { MachineManager } from "./machines.ts";
+import { bridgeForwardHost, MachineManager } from "./machines.ts";
 import { detectHost, psQuote, UNSUPPORTED_HOST, windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import { decodeClixml, SshConnection } from "./ssh.ts";
 import { terminalAttachSupported } from "./herdr/client.ts";
@@ -868,8 +869,8 @@ describe("bridge verification failures", () => {
     return server.port!;
   }
   /** a bridge that answers /api/bridge with one fixed response */
-  function answering(status: number, body: string): number {
-    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(body, { status }) });
+  function answering(status: number, body: string, hostname = "127.0.0.1"): number {
+    const server = Bun.serve({ port: 0, hostname, fetch: () => new Response(body, { status }) });
     stops.push(() => server.stop(true));
     return server.port!;
   }
@@ -885,6 +886,34 @@ describe("bridge verification failures", () => {
     const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
     return verify(ssh, descriptor, socket).then(() => "verified", (error: Error) => error.message);
   }
+  /** an SSH tunnel: each connection goes on to `host:remote` on the PC, and is closed, as sshd closes it, when nothing listens there */
+  function tunnel(local: number, remote: number, host: string): void {
+    const listener = Bun.listen<{ peer?: Socket; pending: Uint8Array[] }>({ hostname: "127.0.0.1", port: local, socket: {
+      open(client) {
+        client.data = { pending: [] };
+        Bun.connect({ hostname: host, port: remote, socket: {
+          open(peer) { client.data.peer = peer; for (const chunk of client.data.pending.splice(0)) peer.write(chunk); },
+          data(_peer, chunk) { client.write(chunk); },
+          close() { client.end(); },
+        } }).catch(() => client.end());
+      },
+      data(client, chunk) { if (client.data.peer) client.data.peer.write(chunk); else client.data.pending.push(chunk); },
+      close(client) { client.data.peer?.end(); },
+    } });
+    stops.push(() => listener.stop(true));
+  }
+  /** what verifying `descriptor` says through a tunnel to the address forward() was given, and the addresses it was given */
+  async function throughTunnel(descriptor: Partial<BridgeDescriptor> & { port: number }, socket = "/home/u/.config/herdr/herdr.sock"): Promise<{ told: string; forwarded: string[] }> {
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    const forwarded: string[] = [];
+    const ssh = { forward: async (local: number, remote: number, host: string) => { forwarded.push(`${host}:${remote}`); tunnel(local, remote, host); } } as unknown as SshConnection;
+    const full: BridgeDescriptor = { token: TOKEN, pid: process.pid, socket_path: socket, bridge_protocol: 0, bundle_version: "", ...descriptor };
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    const told = await verify(ssh, full, socket).then(() => "verified", (error: Error) => error.message);
+    return { told, forwarded };
+  }
+  const IDENTITY = (socket: string) => JSON.stringify({ pid: process.pid, managed_remote: false, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, socket_path: socket, socket_id: "1:2", herdr: { protocol: 22 } });
 
   // Evaluate the entrypoint's actual socket setup without starting its daemon.
   const entryLines = readFileSync(new URL("./remote-entry.ts", import.meta.url), "utf8").split("\n");
@@ -1001,5 +1030,36 @@ describe("bridge verification failures", () => {
     expect(await told(answering(500, JSON.stringify({ error: { code: "internal_error", message: "EACCES: permission denied, stat '/home/u/x'" } })))).toBe(GENERIC(500));
     expect(await told(answering(503, "<html>proxy</html>"))).toBe(GENERIC(503));
     expect(await told(answering(500, "null"))).toBe(GENERIC(500));
+  });
+
+  // #1960: an Ovis started with HOST set to an address other than 127.0.0.1 (127.0.0.2 here)
+  it("reaches a PC's Ovis on the address it listens on", async () => {
+    const socket = "/home/u/.config/herdr/herdr.sock";
+    const port = answering(200, IDENTITY(socket), "127.0.0.2");
+    expect(await throughTunnel({ port, host: "127.0.0.2" }, socket)).toEqual({ told: "verified", forwarded: [`127.0.0.2:${port}`] });
+  });
+
+  it("names the address and HOST=127.0.0.1 when an Ovis that recorded no address does not answer on loopback", async () => {
+    const port = answering(200, IDENTITY("/home/u/.config/herdr/herdr.sock"), "127.0.0.2");
+    const { told } = await throughTunnel({ port });
+    expect(told).toBe(`This PC's Ovis does not answer at 127.0.0.1:${port} through SSH. If it runs with HOST set to another address, set HOST=127.0.0.1 there (other devices can still reach it through tailscale serve), restart it, then add the PC again.`);
+  });
+
+  it("says SSH cannot reach the recorded address, and leaves HOST out for the bridge this app starts", async () => {
+    const closed = answering(200, "{}", "127.0.0.3");
+    stops.pop()!();
+    expect((await throughTunnel({ port: closed, host: "127.0.0.3" })).told).toBe(`This PC's Ovis listens on 127.0.0.3:${closed}, but SSH cannot reach it there. Set HOST=127.0.0.1 for that Ovis (other devices can still reach it through tailscale serve), restart it, then add the PC again.`);
+    expect((await throughTunnel({ port: closed, managed_remote: true })).told).toBe(`The bridge on this PC does not answer at 127.0.0.1:${closed} through SSH. Reconnect after checking the remote bridge.`);
+  });
+
+  it("refuses a recorded address that is not an IP address or a host name before opening any tunnel", async () => {
+    for (const host of ["127.0.0.1:22", "-oProxyCommand=sh", "pc example", "", "[::1", 42]) {
+      expect(await throughTunnel({ port: 18472, host: host as string })).toEqual({ told: "Invalid bridge address", forwarded: [] });
+    }
+  });
+
+  it("tunnels a wildcard bind to loopback and keeps an address or host name as it was given", () => {
+    expect([undefined, "0.0.0.0", "::", "[::]", "[::1]", "100.64.0.1", "fd7a:115c:a1e0::1", "localhost", "pc.tail1234.ts.net"].map(bridgeForwardHost))
+      .toEqual(["127.0.0.1", "127.0.0.1", "127.0.0.1", "127.0.0.1", "::1", "100.64.0.1", "fd7a:115c:a1e0::1", "localhost", "pc.tail1234.ts.net"]);
   });
 });
