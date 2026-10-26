@@ -699,6 +699,68 @@ describe("listSessions", () => {
     expect(listed(MAX_STATS - 5)).toBe(0);
   });
 
+  // the store hermes-agent's own SessionDB made, and what Hermes answered about each row
+  // (scripts/hermes-history-schema-probe.ts)
+  const HERMES_NATIVE = join(import.meta.dir, "fixtures", "hermes-history");
+  const hermesEvidence = JSON.parse(readFileSync(join(HERMES_NATIVE, "evidence.json"), "utf8")) as {
+    native_list_in_cwd: string[]; rows: Array<{ id: string; kind: string; resume_opens: string }>;
+    decision: { proven: Array<{ id: string }> };
+  };
+  const nativeHermes = (home: string, change?: string) => {
+    mkdirSync(join(home, ".hermes"));
+    const db = new Database(join(home, ".hermes", "state.db"), { create: true });
+    db.transaction(() => db.exec(readFileSync(join(HERMES_NATIVE, "state.sql"), "utf8").replaceAll(":cwd", sql(CWD))))();
+    if (change) db.exec(change);
+    db.close();
+  };
+  const kindOf = (id: string) => hermesEvidence.rows.find((row) => row.id === id)!.kind;
+
+  it("lists Hermes's branched and reset conversations of the folder with their own ids, and none of its other children", () => {
+    const home = newHome();
+    nativeHermes(home);
+    const rows = listSessions("hermes", CWD, { home, env: {} });
+    // left out, as Hermes resumes each as another row: fx0106 (an older branch branched again) as
+    // fx0119, fx0121 through its empty child as fx0123, fx0129 (no end reason) as its unmarked child
+    expect(rows.map((row) => `${row.id.slice(-6)} ${kindOf(row.id)}`)).toEqual([
+      "fx0128 root", "fx0125 branch", "fx0124 root", "fx0120 root", "fx0119 legacy-branch", "fx0110 branch",
+      "fx0109 root", "fx0108 legacy-reset", "fx0107 root", "fx0105 root", "fx0104 reset", "fx0103 root",
+      "fx0102 branch", "fx0101 root",
+    ]);
+    // the children are exactly those Hermes lists in the folder and resumes as themselves
+    expect(rows.filter((row) => kindOf(row.id) !== "root").map((row) => row.id).sort())
+      .toEqual(hermesEvidence.decision.proven.map((row) => row.id).sort());
+    for (const row of rows) {
+      // Hermes's own list shows it, and `hermes --resume <id>` opens it
+      expect(hermesEvidence.native_list_in_cwd).toContain(row.id);
+      if (kindOf(row.id) !== "root") expect(hermesEvidence.rows.find((made) => made.id === row.id)!.resume_opens).toBe(row.id);
+      expect(row.resume?.argv).toEqual(["hermes", "--resume", row.id]);
+    }
+    const child = rows.find((row) => row.id.endsWith("fx0104"))!;
+    expect([child.title, child.firstMessage, child.startedAt]).toEqual(["Fixture native reset", "Fixture hermes native reset prompt", "2026-10-10T09:30:00.000Z"]);
+  });
+
+  it("hides an unmarked Hermes child that started before its parent ended branched", () => {
+    const home = newHome();
+    // fx0105 ended "branched" at 1791625560: this child started a minute before
+    nativeHermes(home, `INSERT INTO sessions (id, source, parent_session_id, started_at, cwd) VALUES ('20261010_094500_fx0199', 'cli', '20261010_094000_fx0105', 1791625500, ${sql(CWD)})`);
+    const plain = newHome();
+    nativeHermes(plain);
+    expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => row.id))
+      .toEqual(listSessions("hermes", CWD, { home: plain, env: {} }).map((row) => row.id));
+  });
+
+  for (const [store, change] of [
+    ["lacks a column its children are told apart by", "ALTER TABLE sessions DROP COLUMN model_config"],
+    ["has a newer schema than the one proven", "UPDATE schema_version SET version = 32"],
+    ["has no schema version", "DROP TABLE schema_version"],
+  ] as const) {
+    it(`lists a Hermes store's roots alone when it ${store}`, () => {
+      const home = newHome();
+      nativeHermes(home, change);
+      expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => kindOf(row.id))).toEqual(Array(8).fill("root"));
+    });
+  }
+
   // the entries a listing walks, taken or passed over, as the opendir seam counts them
   const walking = () => {
     const seen = { walked: 0, lstats: 0 };
