@@ -2,13 +2,14 @@
  * A mirrored pane wider than a phone (a Windows PC: herdr has no terminal attach there, so the bridge
  * repaints the pane at its size on that PC) is drawn folded to the screen's width, with nothing cut off
  * on the right; the pane menu's "Original width" draws the grid as it is again, remembered for this
- * device. On the unmodified app over the demo's fixture transport: no herdr, no user state.
+ * device, and a desktop keeps the original width until it chooses "Wrap to screen". On the unmodified
+ * app over the demo's fixture transport: no herdr, no user state.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -16,18 +17,36 @@ import { appFaces } from "./app-faces.ts";
 
 const COLS = 120;
 const ROWS = 40;
+const LINK = "https://example.com/fold-link";
 
-interface FoldFixture { sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> }
+interface FoldFixture {
+  sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }>;
+  offsets: number[];
+  reads: number;
+  offset: number;
+}
 declare global { interface Window { foldFixture: FoldFixture } }
 
-/** The demo owns metadata and auth; this makes its PC a mirror, as a Windows PC is, with a grid of its own. */
-function installFoldFixture(screen: string, cols: number, rows: number): void {
-  const state: FoldFixture = { sockets: [] };
+/**
+ * The demo owns metadata and auth; this makes its PC a mirror, as a Windows PC is, and gives `fixedPane`
+ * a fixed grid of its own and a stand-in for herdr's history. `?fold=off` leaves the demo as it is: an
+ * attached PC.
+ */
+function installFoldFixture(screen: string, cols: number, rows: number, fixedPane: string): void {
+  if (new URL(location.href).searchParams.get("fold") === "off") return;
+  const state: FoldFixture = { sockets: [], offsets: [], reads: 0, offset: 0 };
   window.foldFixture = state;
   const fetchDemo = window.fetch.bind(window);
   window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await fetchDemo(input, init);
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.pathname === "/api/pane/scroll") {
+      if (init?.method === "POST") {
+        state.offset = Math.max(0, Math.min(200, (JSON.parse(String(init.body)) as { offset_from_bottom: number }).offset_from_bottom));
+        state.offsets.push(state.offset);
+      } else state.reads++;
+      return new Response(JSON.stringify({ scroll: { offset_from_bottom: state.offset, max_offset_from_bottom: 200, viewport_rows: rows } }), { headers: { "content-type": "application/json" } });
+    }
+    const response = await fetchDemo(input, init);
     if (url.pathname !== "/api/health" || url.search !== "") return response;
     const body = await response.json() as { herdr: Record<string, unknown> };
     body.herdr = { ...body.herdr, terminal_attach: false, terminal_mirror: true };
@@ -39,7 +58,8 @@ function installFoldFixture(screen: string, cols: number, rows: number): void {
     state.sockets.push(socket);
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
-      if (frame.type === "pane-geometry") push({ ...frame, cols, rows, fixed: true });
+      if (frame.pane_id !== fixedPane) push(frame);
+      else if (frame.type === "pane-geometry") push({ ...frame, cols, rows, fixed: true });
       // the demo's own recording would draw over the fixture's screen
       else if (frame.type === "pty-data" && frame.fixture !== "fold") return;
       else if (frame.type === "pty-data") {
@@ -52,7 +72,7 @@ function installFoldFixture(screen: string, cols: number, rows: number): void {
     socket.send = (raw) => {
       send(raw);
       const frame = JSON.parse(String(raw)) as { type: string; pane_id?: string };
-      if (frame.type !== "attach") return;
+      if (frame.type !== "attach" || frame.pane_id !== fixedPane) return;
       socket.push({ type: "pane-geometry", pane_id: frame.pane_id, cols, rows, fixed: true });
       socket.push({ type: "pty-data", fixture: "fold", pane_id: frame.pane_id, data: screen });
     };
@@ -75,12 +95,14 @@ const screenRows: string[] = [];
 for (let index = 1; index <= ROWS; index++) {
   if (index === 3) screenRows.push(`\x1b[31mRED-SEGMENT\x1b[0m${row(index, " ").slice("RED-SEGMENT".length)}`);
   else if (index === 5) screenRows.push(row(index, "한글 줄바꿈: 오른쪽 끝까지 보여야 합니다 ", "가"));
+  else if (index === 7) screenRows.push(row(index, `R07 ${LINK} `));
   else if (index === ROWS) screenRows.push(row(index, "FOLD-LAST "));
   else screenRows.push(row(index, `R${String(index).padStart(2, "0")} the quick brown fox `));
 }
 for (const text of screenRows) assert.equal(cellWidth(plain(text)), COLS, `a fixture row is the grid's width: ${plain(text)}`);
 // what server/mirror.ts sends for a whole screen: line wrap off while the rows are drawn
-const SCREEN = `\x1b[?25l\x1b[0m\x1b[H\x1b[2J\x1b[?7l${screenRows.join("\r\n")}\x1b[0m\x1b[?7h`;
+const frameOf = (rows: string[]): string => `\x1b[?25l\x1b[0m\x1b[H\x1b[2J\x1b[?7l${rows.join("\r\n")}\x1b[0m\x1b[?7h`;
+const SCREEN = frameOf(screenRows);
 
 interface Visible { folded: boolean; cut: string[]; hostScrollWidth: number; hostClientWidth: number }
 /** Whether every row's END marker is inside the pane's visible width, in whichever view draws it. */
@@ -122,6 +144,24 @@ const visibleMarkers = (page: Page): Promise<Visible> => page.evaluate((rows) =>
   return { folded, cut, hostScrollWidth: host.scrollWidth, hostClientWidth: host.clientWidth };
 }, ROWS);
 
+/** The rectangle of `text` in the folded rows, and the pane's visible box, both in viewport pixels. */
+const foldedText = (page: Page, text: string): Promise<{ rect: { left: number; top: number; right: number; bottom: number } | null; box: { top: number; bottom: number } }> => page.evaluate((wanted) => {
+  const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
+  const box = host.getBoundingClientRect();
+  const visible = { top: box.top + host.clientTop, bottom: box.top + host.clientTop + host.clientHeight };
+  for (let walker = document.createTreeWalker(host.querySelector(".terminal-fold") ?? host, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node; node = walker.nextNode()) {
+    const at = (node as Text).data.indexOf(wanted);
+    if (at < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, at);
+    range.setEnd(node, at + wanted.length);
+    const { left, top, right, bottom } = range.getBoundingClientRect();
+    return { rect: { left, top, right, bottom }, box: visible };
+  }
+  return { rect: null, box: visible };
+}, text);
+const inView = (seen: Awaited<ReturnType<typeof foldedText>>): boolean => seen.rect !== null && seen.rect.top >= seen.box.top - 1 && seen.rect.bottom <= seen.box.bottom + 1;
+
 const settled = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 const foldState = (page: Page, folded: boolean): Promise<unknown> => page.waitForFunction((want) => {
   const host = document.querySelector(".pane-frame.is-current .pane-terminal");
@@ -138,28 +178,49 @@ const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   assert.deepEqual(seen.cut, [], `${label}: rows cut off on the right ${JSON.stringify(seen)}`);
   return seen;
 };
+/** Picks `label` from the tab's menu: a bottom sheet of buttons on a phone, a popover of menu items on a desktop (RowMenu). */
 const choose = async (page: Page, label: string): Promise<void> => {
-  await page.locator(".tab-strip-menu").first().click();
-  // at phone width the tab's menu is a bottom sheet of buttons (RowMenu)
-  const item = page.locator(".row-sheet").getByRole("button", { name: label, exact: true });
+  // a desktop's tab strip shows the selected tab's actions button under the pointer (ui-regression.ts)
+  await page.locator(".tab-strip").first().hover();
+  const button = page.locator(".tab-strip-item.is-active .tab-strip-menu").first();
+  await button.waitFor({ state: "visible" });
+  await button.click();
+  const item = page.locator('.row-sheet-item, [role="menuitem"], [role="menuitemcheckbox"]').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) });
   try { await item.waitFor({ timeout: 5_000 }); }
   catch (cause) {
-    const menu = await page.evaluate(() => ({
-      items: [...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], .row-sheet-item')].map((node) => node.textContent?.trim()),
-      buttons: [...document.querySelectorAll<HTMLElement>(".tab-strip-menu")].map((node) => ({ label: node.getAttribute("aria-label"), expanded: node.getAttribute("aria-expanded"), shown: node.offsetParent !== null })),
-      open: document.querySelector('[role="menu"], .row-sheet, .menu')?.outerHTML.slice(0, 1200) ?? null,
-    }));
+    const menu = await page.evaluate(() => [...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], .row-sheet-item')].map((node) => node.textContent?.trim()));
     throw new Error(`the pane menu offers no "${label}": ${JSON.stringify(menu)}`, { cause });
   }
   await item.click();
 };
+const pushScreen = (page: Page, data: string): Promise<void> => page.evaluate(({ pane, data }) => window.foldFixture.sockets.at(-1)!.push({ type: "pty-data", fixture: "fold", pane_id: pane, data }), { pane: panes.shell, data });
+const SETTINGS = { language: "en", defaultView: "terminal", terminalInputMode: "direct", terminalFontFamily: "JetBrains Mono Web", terminalWheelSpeed: 2, alertsOn: false };
+
+async function open(browser: Browser, origin: string, viewport: { width: number; height: number }, phone: boolean, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
+  const context = await browser.newContext({ viewport, isMobile: phone, hasTouch: phone, locale: "en-US" });
+  // fixed metrics: the 120-column grid fits a 1440px desktop and no phone
+  await context.addInitScript((settings) => {
+    if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(settings));
+  }, SETTINGS);
+  // a link the fold opens lands here, not on the internet
+  await context.route("https://example.com/**", (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
+  const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal${query}`);
+  await page.locator(".conn-live").waitFor();
+  await appFaces(page);
+  return { page, errors, close: () => context.close() };
+}
+const drawnScreen = (page: Page): Promise<unknown> => page.waitForFunction(() => document.querySelector(".pane-frame.is-current .xterm-rows")?.textContent?.includes("FOLD-LAST"));
 
 const app = mkdtempSync(join(tmpdir(), "herdr-mirror-fold-demo-"));
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () =>
-    `<script src="./demo-transport.js"></script>\n<script>(${installFoldFixture.toString()})(${JSON.stringify(SCREEN)}, ${COLS}, ${ROWS})</script>\n<script type="module"`));
+    `<script src="./demo-transport.js"></script>\n<script>(${installFoldFixture.toString()})(${JSON.stringify(SCREEN)}, ${COLS}, ${ROWS}, ${JSON.stringify(panes.shell)})</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
@@ -172,23 +233,14 @@ try {
     const body = Bun.file(join(app, file));
     return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
   } });
+  const origin = `http://127.0.0.1:${server.port}${prefix}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+      const phone = await open(browser, origin, { width: 390, height: 844 }, true);
+      const { page } = phone;
       try {
-        // fixed metrics: the 120-column grid fits a 1440px desktop and no phone
-        await context.addInitScript(() => {
-          if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", terminalFontFamily: "JetBrains Mono Web", alertsOn: false }));
-        });
-        const page = await context.newPage();
-        page.setDefaultTimeout(10_000);
-        const errors: string[] = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
-        await page.locator(".conn-live").waitFor();
-        await appFaces(page);
-        await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .xterm-rows")?.textContent?.includes("FOLD-LAST"));
+        await drawnScreen(page);
 
         // a phone: every row whole, folded to the screen's width, and nothing to pan sideways
         let seen = await rowsWhole(page, "390px phone");
@@ -196,16 +248,62 @@ try {
         assert.ok(seen.hostScrollWidth <= seen.hostClientWidth, `390px phone: the folded pane has nothing to pan sideways ${JSON.stringify(seen)}`);
         const fold = await page.evaluate(() => {
           const view = document.querySelector<HTMLElement>(".pane-frame.is-current .terminal-fold")!;
-          const host = view.parentElement!;
           const rows = [...view.querySelectorAll<HTMLElement>(".terminal-fold-row")].map((node) => node.textContent ?? "");
           const red = [...view.querySelectorAll<HTMLElement>("span")].find((span) => span.textContent?.includes("RED-SEGMENT"));
-          const last = [...view.querySelectorAll<HTMLElement>(".terminal-fold-row")].at(-1)!.getBoundingClientRect();
-          const box = host.getBoundingClientRect();
-          return { rows, red: red ? getComputedStyle(red).color : null, plain: getComputedStyle(view).color, lastBottom: last.bottom, hostBottom: box.top + host.clientTop + host.clientHeight };
+          return { rows, red: red ? getComputedStyle(red).color : null, plain: getComputedStyle(view).color };
         });
         assert.deepEqual(fold.rows, screenRows.map((text) => plain(text).trimEnd()), "the folded rows hold the grid's rows, each whole and in order");
         assert.ok(fold.red !== null && fold.red !== fold.plain, `a coloured run keeps its colour when folded (${fold.red} against ${fold.plain})`);
-        assert.ok(Math.abs(fold.lastBottom - fold.hostBottom) <= 1, `the last row, where a prompt sits, is in view (${fold.lastBottom} against ${fold.hostBottom})`);
+        assert.ok(inView(await foldedText(page, "FOLD-LAST")), "the cursor's row, the last one with text, is in view");
+        // the hidden grid holds xterm's input (its helper textarea, an IME's preedit): its cursor row is in view too
+        const gridCursor = await page.evaluate((rows) => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
+          const screen = host.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
+          const box = host.getBoundingClientRect();
+          return { top: screen.top + (rows - 1) * screen.height / rows, bottom: screen.top + screen.height, viewTop: box.top + host.clientTop, viewBottom: box.top + host.clientTop + host.clientHeight };
+        }, ROWS);
+        assert.ok(gridCursor.top >= gridCursor.viewTop - 1 && gridCursor.bottom <= gridCursor.viewBottom + 1, `the grid's cursor row stays in view under the folded rows ${JSON.stringify(gridCursor)}`);
+
+        // a cleared shell, its prompt on the first row: the folded rows keep it in sight, not the blank rows under it
+        await page.setViewportSize({ width: 390, height: 600 });
+        await pushScreen(page, frameOf(["PROMPT-TOP C:\\>"]));
+        await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .terminal-fold")?.textContent?.includes("PROMPT-TOP"));
+        await settled(page);
+        const prompt = await foldedText(page, "PROMPT-TOP");
+        assert.ok(inView(prompt), `a prompt on the first row stays in view ${JSON.stringify(prompt)}`);
+        await pushScreen(page, SCREEN);
+        await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .terminal-fold")?.textContent?.includes("FOLD-LAST"));
+        await page.setViewportSize({ width: 390, height: 844 });
+        await settled(page);
+
+        // a link in the folded rows opens as the grid's own does
+        await page.evaluate((link) => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
+          for (let walker = document.createTreeWalker(host.querySelector(".terminal-fold")!, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!(node as Text).data.includes(link)) continue;
+            host.scrollTop += node.parentElement!.getBoundingClientRect().top - host.getBoundingClientRect().top - 40;
+            return;
+          }
+        }, LINK);
+        const linkRect = (await foldedText(page, LINK)).rect;
+        assert.ok(linkRect, "the folded rows draw the link");
+        const opened = page.context().waitForEvent("page");
+        await page.mouse.click(linkRect.left + 40, (linkRect.top + linkRect.bottom) / 2);
+        const tab = await opened;
+        await tab.waitForURL(LINK);
+        await tab.close();
+
+        // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
+        await page.waitForFunction(() => window.foldFixture.reads > 0);
+        await page.evaluate(() => { document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop = 0; });
+        const box = await page.locator(".pane-frame.is-current .terminal-fold").boundingBox();
+        assert.ok(box);
+        await page.mouse.move(box.x + box.width / 2, box.y + 60);
+        await page.mouse.wheel(0, -120);
+        await page.waitForFunction(() => window.foldFixture.offsets.length > 0);
+        assert.equal(await page.evaluate(() => window.foldFixture.offset), 6, "one wheel step moves 3 lines at speed 2");
+        await page.mouse.wheel(0, 120);
+        await page.waitForFunction(() => window.foldFixture.offset === 0);
 
         // a smaller Android phone, then the phone on its side: still folded, still whole
         for (const [width, height] of [[360, 800], [844, 390]] as const) {
@@ -229,27 +327,57 @@ try {
         assert.equal(await savedWrap(page), false, "the choice is kept in this device's settings");
         await page.reload();
         await page.locator(".conn-live").waitFor();
-        await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .xterm-rows")?.textContent?.includes("FOLD-LAST"));
+        await drawnScreen(page);
         await settled(page);
         assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-folded]").count(), 0, "a reload keeps the original width");
         await choose(page, "Wrap to screen");
         await foldState(page, true);
         assert.equal(await savedWrap(page), true, "Wrap to screen is kept too");
 
-        // an observer's grid is the pty's own: never folded
+        // a phone that only watches the pane folds it too: a mirror's grid is the PC's either way
         await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "observe" })));
-        await foldState(page, false);
-        await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "interact" })));
+        await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
+        await settled(page);
         await foldState(page, true);
+        await rowsWhole(page, "a watching phone");
+        await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "interact" })));
+        await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
 
         // a desktop the grid fits: drawn as it is, as before
         await page.setViewportSize({ width: 1440, height: 900 });
         await foldState(page, false);
         await rowsWhole(page, "1440px desktop, the grid fits");
+        assert.deepEqual(phone.errors, []);
+      } finally { await phone.close(); }
 
-        assert.deepEqual(errors, []);
-        console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), Original width pans and survives a reload, observers and a desktop unfolded`);
-      } finally { await context.close(); }
+      // a desktop window narrower than the grid keeps the original width until its menu says Wrap to screen
+      const desk = await open(browser, origin, { width: 1000, height: 800 }, false);
+      try {
+        await drawnScreen(desk.page);
+        await settled(desk.page);
+        const unfolded = await visibleMarkers(desk.page);
+        assert.ok(!unfolded.folded && unfolded.hostScrollWidth > unfolded.hostClientWidth, `a desktop draws a wide mirror at its width by default ${JSON.stringify(unfolded)}`);
+        await choose(desk.page, "Wrap to screen");
+        await foldState(desk.page, true);
+        await rowsWhole(desk.page, "a desktop that chose Wrap to screen");
+        assert.deepEqual(desk.errors, []);
+      } finally { await desk.close(); }
+
+      // an attached PC's pane (no mirror) on a phone: fitted to the screen as before, never folded
+      const attached = await open(browser, origin, { width: 390, height: 844 }, true, "&fold=off");
+      try {
+        await attached.page.waitForFunction(() => (document.querySelector(".pane-frame.is-current .xterm-rows")?.textContent?.trim().length ?? 0) > 0);
+        await settled(attached.page);
+        const state = await attached.page.evaluate(() => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
+          return { folded: host.hasAttribute("data-folded"), fold: host.querySelector(".terminal-fold") !== null, scrollWidth: host.scrollWidth, clientWidth: host.clientWidth };
+        });
+        assert.deepEqual({ folded: state.folded, fold: state.fold }, { folded: false, fold: false }, "an attached pane is never folded");
+        assert.ok(state.scrollWidth <= state.clientWidth + 1, `an attached pane fits the phone ${JSON.stringify(state)}`);
+        assert.deepEqual(attached.errors, []);
+      } finally { await attached.close(); }
+
+      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a link opens, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded`);
     } finally { await browser.close(); }
   } finally { server.stop(); }
 } finally { rmSync(app, { recursive: true, force: true }); }

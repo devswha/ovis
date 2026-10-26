@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { IBufferCell, IBufferLine } from "@xterm/xterm";
-import { paletteColor, readableColor, rowHtml } from "./terminalFold.ts";
+import { columnAt, paletteColor, readableColor, rowHtml, webLinkAt } from "./terminalFold.ts";
 
-interface Cell { chars: string; width?: number; fg?: number; bg?: number; bold?: boolean }
+interface Cell { chars: string; width?: number; fg?: number; bg?: number; bold?: boolean; dim?: boolean }
 
 /** A grid row of plain cells: what rowHtml reads of xterm's buffer, palette colours only. */
 function line(cells: Cell[], cols: number): IBufferLine {
@@ -14,7 +14,7 @@ function line(cells: Cell[], cols: number): IBufferLine {
       getWidth: () => c.width ?? 1,
       getCode: () => c.chars.codePointAt(0) ?? 0,
       isBold: () => (c.bold ? 1 : 0),
-      isItalic: () => 0, isDim: () => 0, isUnderline: () => 0, isBlink: () => 0, isInverse: () => 0,
+      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => 0,
       isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0,
       isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined,
       isFgRGB: () => false, isBgRGB: () => false,
@@ -59,6 +59,25 @@ describe("the folded view of a mirrored grid", () => {
   test("a row that draws only a background keeps it, and an empty row is empty", () => {
     expect(rowHtml(line([{ chars: " ", bg: 2 }], 4), 4, { green: "#50fa7b" }, scratch)).toBe('<span style="background:#50fa7b;"> </span>');
     expect(rowHtml(line([], 4), 4, {}, scratch)).toBe("");
+  });
+
+  test("dim text fades its colour, not its background", () => {
+    expect(rowHtml(line([{ chars: "d", fg: 2, bg: 0, dim: true }], 1), 1, {}, scratch))
+      .toBe('<span style="color:color-mix(in srgb, #4e9a06 50%, transparent);background:#2e3436;">d</span>');
+  });
+
+  test("a tap on a folded row finds the http(s) address it is on, without the punctuation after it", () => {
+    const text = " see https://example.com/a?b=1). or http://x.y";
+    expect(webLinkAt(text, text.indexOf("example"))).toEqual({ url: "https://example.com/a?b=1", start: 5, end: 30 });
+    expect(webLinkAt(text, 30)).toBeNull();
+    expect(webLinkAt(text, 1)).toBeNull();
+    expect(webLinkAt(text, text.length - 1)?.url).toBe("http://x.y");
+  });
+
+  test("a folded row's character is found in its grid column, past wide glyphs and the cells they cover", () => {
+    const row = line([{ chars: "가", width: 2 }, { chars: "", width: 0 }, { chars: "" }, ...plain("ab")], 6);
+    expect([0, 1, 2, 3].map((offset) => columnAt(row, 6, offset, scratch))).toEqual([0, 2, 3, 4]);
+    expect(columnAt(row, 6, 9, scratch)).toBe(-1);
   });
 
   test("bold text of the first eight colours draws in their bright forms", () => {

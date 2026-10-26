@@ -1,5 +1,5 @@
 import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
-import { canPanTerminalGrid } from "./terminalWheel.ts";
+import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
 
 /*
  * The folded view of a mirrored grid wider than its screen. A Windows PC's herdr has no terminal
@@ -11,6 +11,9 @@ import { canPanTerminalGrid } from "./terminalWheel.ts";
  * pre-wrap block; no code is taken from it). A full-screen program's boxes and right-aligned bars
  * fold with the text: the pane menu's "Original width" draws the grid as it is again.
  */
+
+/** "Wrap to screen" until the user chooses: a touch screen, or a window as narrow as a phone's layout */
+export const MIRROR_WRAP_QUERY = "(pointer: coarse), (max-width: 768px)";
 
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
   "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
@@ -84,11 +87,12 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 1)
   if (fg && under) fg = readableColor(fg, under, minimumContrast);
   let style = "";
   if (cell.isInvisible() !== 0) style += "color:transparent;";
+  // dim fades the text, not its background
+  else if (cell.isDim() !== 0) style += `color:color-mix(in srgb, ${fg ?? theme.foreground ?? "currentColor"} 50%, transparent);`;
   else if (fg) style += `color:${fg};`;
   if (bg) style += `background:${bg};`;
   if (bold) style += "font-weight:bold;";
   if (cell.isItalic() !== 0) style += "font-style:italic;";
-  if (cell.isDim() !== 0) style += "opacity:.5;";
   const lines = [cell.isUnderline() !== 0 ? "underline" : "", cell.isStrikethrough() !== 0 ? "line-through" : "", cell.isOverline() !== 0 ? "overline" : ""].filter(Boolean);
   if (lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
   return style;
@@ -130,13 +134,40 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
   return html + run(text, style);
 }
 
+/** The http(s) address in a folded row's text that `offset` falls in, its trailing punctuation left out, or null. */
+export function webLinkAt(text: string, offset: number): { url: string; start: number; end: number } | null {
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
+    const url = match[0].replace(/[),.;:!?'\]}]+$/, "");
+    if (offset >= match.index && offset < match.index + url.length) return { url, start: match.index, end: match.index + url.length };
+  }
+  return null;
+}
+
+/** The grid column of the character at `offset` in a row drawn by rowHtml (each drawn cell's characters, a blank one as a space), or -1. */
+export function columnAt(line: IBufferLine, cols: number, offset: number, scratch: IBufferCell): number {
+  let at = 0;
+  for (let x = 0; x < cols; x++) {
+    const cell = line.getCell(x, scratch);
+    if (!cell) break;
+    if (cell.getWidth() === 0) continue;
+    at += (cell.getChars() || " ").length;
+    if (offset < at) return x;
+  }
+  return -1;
+}
+
 export interface TerminalFold {
   /** the folded view is drawn in place of the grid */
   readonly active: boolean;
   /** decides again whether the grid is folded (the host or the grid resized, the setting or the grid's role changed), and redraws it if so */
   sync(): void;
+  /** the bottom of the folded row the grid's cursor is on, in the host's content, or null when not folded */
+  cursorBottom(): number | null;
   dispose(): void;
 }
+
+/** what a tap on the folded rows landed on: an http(s) address, or a cell of the grid (a file path may be there) */
+export type FoldLinkTarget = { url: string } | { row: number; col: number };
 
 export interface TerminalFoldOptions {
   /** the grid may be folded: a mirror this browser does not drive, and the user's choice is to wrap it */
@@ -145,12 +176,26 @@ export interface TerminalFoldOptions {
   onDrawn: () => void;
   /** a tap on the view, which xterm under it no longer receives: it focuses the terminal, as xterm's own tap does */
   onTap: () => void;
+  /** a tap that may be on a link, as xterm's link providers would have read it: true when it opened one */
+  onLink: (target: FoldLinkTarget, event: MouseEvent) => boolean;
   /** a wheel moved the folded rows within the host: the view is the user's until they follow again */
   onPan: () => void;
 }
 
+type CaretDocument = Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
+/** the text node and offset under a point, in the browsers that name it either way */
+const caretAt = (x: number, y: number): { node: Node; offset: number } | null => {
+  const doc = document as CaretDocument;
+  if (doc.caretPositionFromPoint) {
+    const position = doc.caretPositionFromPoint(x, y);
+    return position ? { node: position.offsetNode, offset: position.offset } : null;
+  }
+  const range = document.caretRangeFromPoint?.(x, y);
+  return range ? { node: range.startContainer, offset: range.startOffset } : null;
+};
+
 /** Folds `term`'s grid inside `host` while `wanted()` holds and the grid is wider than the host. */
-export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, onDrawn, onTap, onPan }: TerminalFoldOptions): TerminalFold {
+export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
   const view = document.createElement("div");
   view.className = "terminal-fold";
   // the grid under it stays the terminal's accessible text; this is the same text drawn again
@@ -166,6 +211,25 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     if (!grid || !term.element || host.clientWidth === 0) return false;
     const style = getComputedStyle(term.element);
     return grid.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > host.clientWidth + 1;
+  };
+  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(term.buffer.active.cursorY, rows.length - 1)];
+  const cursorBottom = (): number | null => {
+    const row = cursorRow();
+    return active && row ? view.offsetTop + row.offsetTop + row.offsetHeight : null;
+  };
+  // The hidden grid holds xterm's input: its helper textarea and an IME's preedit stand at the grid's
+  // cursor, and the input bounds keep them inside the part of the grid in view. Folded rows are taller
+  // than the grid, so the grid moves down with them until its cursor row lies on the folded cursor row:
+  // a preedit is drawn where the text it adds will show. It never reaches past the folded rows' end.
+  const align = (): void => {
+    const xterm = term.element;
+    const grid = screen();
+    const row = cursorRow();
+    if (!xterm || !grid || !row || term.rows === 0) return;
+    const gridCursorBottom = grid.getBoundingClientRect().top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * grid.offsetHeight / term.rows;
+    const most = view.offsetTop + view.offsetHeight - (xterm.offsetTop + xterm.offsetHeight);
+    const shift = Math.max(0, Math.min(most, view.offsetTop + row.offsetTop + row.offsetHeight - (xterm.offsetTop + gridCursorBottom)));
+    xterm.style.transform = shift > 0 ? `translateY(${Math.round(shift)}px)` : "";
   };
   const draw = (start: number, end: number): void => {
     const theme = term.options.theme ?? {};
@@ -195,6 +259,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
       drawn[y] = html;
       rows[y]!.innerHTML = html;
     }
+    align();
     onDrawn();
   };
   const sync = (): void => {
@@ -215,6 +280,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     view.replaceChildren();
     rows.length = 0;
     drawn.length = 0;
+    if (term.element) term.element.style.transform = "";
   };
   // xterm draws only the rows a write changed: those are redrawn here too, after it
   const rendered = term.onRender(({ start, end }) => {
@@ -224,8 +290,49 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     else draw(start, end);
   });
   const resized = term.onResize(() => sync());
+  // a font change (Settings, a pinch) keeps the grid's rows and columns: only its size says the grid now fits, or no longer does
+  const measured = new ResizeObserver(() => sync());
+  const grid = screen();
+  if (grid) measured.observe(grid);
+  /** the folded row under a point and the offset in its text, or null */
+  const textAt = (x: number, y: number): { row: number; offset: number; text: string; node: Text } | null => {
+    const caret = caretAt(x, y);
+    if (!caret || !(caret.node instanceof Text)) return null;
+    const row = caret.node.parentElement?.closest(".terminal-fold-row");
+    const index = row ? rows.indexOf(row as HTMLDivElement) : -1;
+    if (!row || index < 0) return null;
+    let offset = 0;
+    for (let walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node && node !== caret.node; node = walker.nextNode()) offset += (node as Text).data.length;
+    return { row: index, offset: offset + caret.offset, text: row.textContent ?? "", node: caret.node };
+  };
+  /** whether the point is on the drawn text of `[start, end)` in a row, not in the blank past a line's end */
+  const onText = (row: number, start: number, end: number, x: number, y: number): boolean => {
+    const range = document.createRange();
+    let at = 0;
+    let started = false;
+    for (let walker = document.createTreeWalker(rows[row]!, NodeFilter.SHOW_TEXT), node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node as Text;
+      if (!started && start < at + text.data.length) { range.setStart(text, start - at); started = true; }
+      if (started && end <= at + text.data.length) { range.setEnd(text, end - at); break; }
+      at += text.data.length;
+    }
+    return started && [...range.getClientRects()].some((rect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+  };
   // a tap with no text selected in the view: a long press that selected some is a copy, not a tap
-  const tap = (): void => { if (!window.getSelection()?.toString()) onTap(); };
+  const tap = (event: MouseEvent): void => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
+    const hit = textAt(event.clientX, event.clientY);
+    if (hit) {
+      const web = webLinkAt(hit.text, hit.offset);
+      if (web && onText(hit.row, web.start, web.end, event.clientX, event.clientY) && onLink({ url: web.url }, event)) return;
+      const buffer = term.buffer.active;
+      const line = buffer.getLine(buffer.viewportY + hit.row);
+      const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;
+      if (!web && col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;
+    }
+    onTap();
+  };
   // xterm's wheel handler is on the grid, which the view covers: the folded rows pan in the host while
   // they can, and past their edge the wheel goes on to xterm, which scrolls the mirror's history
   const wheel = (event: WheelEvent): void => {
@@ -234,20 +341,23 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
       return;
     }
     event.preventDefault();
-    term.element?.dispatchEvent(new WheelEvent("wheel", event));
+    if (term.element) forwardWheel(term.element, event);
   };
   view.addEventListener("click", tap);
   view.addEventListener("wheel", wheel, { passive: false });
   return {
     get active() { return active; },
     sync,
+    cursorBottom,
     dispose() {
       rendered.dispose();
       resized.dispose();
+      measured.disconnect();
       view.removeEventListener("click", tap);
       view.removeEventListener("wheel", wheel);
       view.remove();
       host.removeAttribute("data-folded");
+      if (term.element) term.element.style.transform = "";
     },
   };
 }

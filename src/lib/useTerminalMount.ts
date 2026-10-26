@@ -20,7 +20,7 @@ import { measurableFontStack, TERMINAL_FONT_STACK } from "./fontFamily.ts";
 import type { Translate } from "./i18n.ts";
 import { isAppShortcut } from "./shortcuts.ts";
 import { keyboardHoldsGrid, keyboardUp } from "./keyboard.ts";
-import { fileUriPath, hyperlinkFilter, isWebLink, openWebLink, terminalFileLinkProvider } from "./terminalFileLinks.ts";
+import { fileUriPath, hyperlinkFilter, isWebLink, openWebLink, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
 import { adjustTerminalGlyphs } from "./terminalGlyphs.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
 import { pinchFontSize } from "./pinchFontSize.ts";
@@ -390,11 +390,38 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let panned = false;
       // A mirror wider than the screen is drawn folded to its width (lib/terminalFold.ts): a Windows
       // PC's pane keeps its size there and a phone cannot change it. The pane menu's "Original width"
-      // draws the grid as it is again. The folded rows keep their bottom, where a prompt sits, in view.
+      // draws the grid as it is again. A watching phone folds it too: a mirror's grid is the PC's either way.
+      // The folded rows keep the cursor's row in view, as the grid does: at the top while it fits there,
+      // else at the bottom of the view (a cleared shell's prompt on the first row stays in sight).
+      const followFold = (): void => {
+        const bottom = fold.cursorBottom();
+        if (bottom !== null) host.scrollTop = bottom <= host.clientHeight ? 0 : bottom - host.clientHeight;
+      };
       const fold = createTerminalFold(term, host, {
-        wanted: () => mirrorWrapRef.current && scrollableMirror(),
-        onDrawn: () => { if (!panned) host.scrollTop = host.scrollHeight - host.clientHeight; },
+        wanted: () => mirrorWrapRef.current && fixedGridRef.current && !followRef.current,
+        onDrawn: () => {
+          if (!panned) followFold();
+          // the grid moved under the folded rows (lib/terminalFold.ts align): the input stays at its cursor
+          syncInputViewport();
+        },
         onTap: () => { if (activeRef.current && !findOpenRef.current) term.focus(); },
+        // the grid's own links, read as its link providers read them (the policy of the linkHandler above)
+        onLink: (target, event) => {
+          if (!linkPressed(event)) return false;
+          if ("url" in target) {
+            if (!isWebLink(target.url)) return false;
+            if (!openWebRef.current(target.url, event.shiftKey)) openWebLink(target.url);
+            return true;
+          }
+          const buffer = term.buffer.active;
+          const y = buffer.viewportY + target.row + 1;
+          const x = target.col + 1;
+          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); })
+            .find(({ range: { start, end } }) => (y > start.y || (y === start.y && x >= start.x)) && (y < end.y || (y === end.y && x <= end.x)));
+          if (!link) return false;
+          link.activate(event);
+          return true;
+        },
         onPan: () => { panned = true; },
       });
       const followCursor = (): void => {
@@ -402,7 +429,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
         if (!(adopted() || keyboardHeld) || panned || !screen) return;
         if (fold.active) {
-          host.scrollTop = host.scrollHeight - host.clientHeight;
+          followFold();
           return;
         }
         const row = screen.offsetHeight / term.rows;
@@ -1072,7 +1099,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (pane && sizesPty()) socket.resize(pane, term.cols, term.rows, true);
           }
           panned = false;
-          // an observer's grid is never folded: it is the pty's own, panned to
+          // a mirror stays folded for a watching phone; an attached pty's grid is never folded
           fold.sync();
           followCursor();
         } else if (message.type === "pane-geometry") {

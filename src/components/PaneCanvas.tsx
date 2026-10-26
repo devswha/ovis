@@ -12,6 +12,7 @@ import { layoutCells, zoomMode } from "../lib/layoutMap.ts";
 import { layoutTopology, paneContextPress, paneFieldTarget, SOLO_PANE_QUERY, soloPane, splitPath, splitRatioAt } from "../lib/paneCanvas.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
+import { MIRROR_WRAP_QUERY } from "../lib/terminalFold.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
@@ -61,6 +62,8 @@ interface Drag {
 export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged, renderPane, actionsRef, onOpenInHalf, mirrored = false }: Props) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
+  const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
+  const mirrorWraps = settings.terminalMirrorWrap ?? narrowScreen;
   const machineId = useMachineId();
   const apple = /Mac|iPhone|iPad/.test(navigator.platform);
   const coarse = useMediaQuery("(pointer: coarse)");
@@ -173,9 +176,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       }) },
     // a mirror wider than the screen is folded to it (lib/terminalFold.ts); a full-screen program reads
     // better at its own width, panned sideways. This device's choice, for every mirrored pane
-    ...(mirrored ? [{ id: "mirror-width", label: t(settings.terminalMirrorWrap ? "Original width" : "Wrap to screen"),
-      icon: settings.terminalMirrorWrap ? MoveHorizontal : TextWrap,
-      run: () => updateSettings({ terminalMirrorWrap: !settings.terminalMirrorWrap }) }] : []),
+    ...(mirrored ? [{ id: "mirror-width", label: t(mirrorWraps ? "Original width" : "Wrap to screen"),
+      icon: mirrorWraps ? MoveHorizontal : TextWrap,
+      run: () => updateSettings({ terminalMirrorWrap: !mirrorWraps }) }] : []),
     { id: "close", label: t("Close pane"), icon: X, danger: true, run: () => requestClose(target) },
   ];
   const items = target ? itemsFor(target) : [];

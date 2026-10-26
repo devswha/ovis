@@ -98,9 +98,10 @@ export interface Settings {
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
   /** a mirrored pane (a Windows PC: no terminal attach) whose grid is wider than this screen is drawn
-   *  folded to the screen's width (lib/terminalFold.ts); off draws the grid at its original width, panned
-   *  sideways. Chosen from the pane menu, for this device. */
-  terminalMirrorWrap: boolean;
+   *  folded to the screen's width (lib/terminalFold.ts); false draws the grid at its original width, panned
+   *  sideways. Chosen from the pane menu, for this device; null until then: folded on a narrow screen
+   *  (MIRROR_WRAP_QUERY), the original width elsewhere. */
+  terminalMirrorWrap: boolean | null;
   /** a desktop tab out of use for a moment detaches its pane (PaneTerminal's release) and only watches it, so herdr's own
    *  window keeps the pane at its size; paused where the server cannot watch. Off: the tab keeps the pane and its size. */
   releasePaneAway: boolean;
@@ -313,7 +314,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
   paneClipboard: true,
-  terminalMirrorWrap: true,
+  terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
   chatFontSize: null,
@@ -493,7 +494,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontSize: sanitizeUiFontSize(record["uiFontSize"]),
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
-    terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : DEFAULT_SETTINGS.terminalMirrorWrap,
+    terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),
