@@ -42,7 +42,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -286,11 +286,19 @@ const clearScans = new Map<string, { id: string; scanned: number; floor: number;
 /** a Claude record that holds a picture, up to the largest one the chat shows, is followed whole when it crosses a window */
 const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
+  finish(applyHistoryBoundarySteps(path, stream, source, false));
+}
+
+/**
+ * applyHistoryBoundary in steps a window apart (Steps). With `apart`, the scan works on its own copy of
+ * what is kept and puts it back when it ends, so a page read between its steps never sees half of it.
+ */
+function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], apart: boolean): Steps<void> {
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript" || source === "muse-transcript") return;
   let scan = clearScans.get(path);
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
     scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] } } : {}) };
-  }
+  } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
   let carry = Buffer.alloc(0);
@@ -340,6 +348,7 @@ function applyHistoryBoundary(path: string, stream: TranscriptStream, source: Re
     // screenshot can still be where the session's branch forks
     if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) { carry = Buffer.alloc(0); skipping = true; }
     position = end;
+    if (position < stream.length) yield;
   }
   scan.tail = bytesBefore(stream, scan.scanned);
   remember(clearScans, path, scan, 32);
@@ -1690,7 +1699,9 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
     return codexTranscriptImage(codexHistorySegments(resolved.path, resolved.codexHome ?? codexHome), ref, pane.cwd);
   }
   if (resolved.source === "pi-transcript" || resolved.source === "cmd-transcript") return piTranscriptImage(resolved.path, ref);
-  if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref);
+  // the store is held to what it is now, as the transcript was just authorized: a path above it
+  // swapped later cannot move the read elsewhere
+  if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref, ompBlobAnchor(ompBlobStore(resolved.path))?.identity ?? null);
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 
@@ -2155,19 +2166,31 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
  * or the transcript whole, and it gives the event loop its turn between windows (finishAsync), so a
  * large transcript never holds the bridge for more than a window's work.
  */
-export async function ompTranscriptImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  try { return await finishAsync(ompTranscriptImageSteps(path, ref)); } catch { return null; }
+export async function ompTranscriptImage(path: string, ref: string, anchor?: string | null): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  try { return await finishAsync(ompTranscriptImageSteps(path, ref, anchor)); } catch { return null; }
 }
 
-function* ompTranscriptImageSteps(path: string, ref: string): Steps<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+/**
+ * How many records a reader judges between two turns of the event loop: a record's own windows already
+ * yield (Steps), and a run of small records yields every so many.
+ */
+const RECORDS_PER_STEP = 32;
+
+/**
+ * ompTranscriptImage's steps. `anchor` is the identity the blob store had when the transcript was
+ * authorized (conversationImage: ompBlobAnchor); a blob is read only from that directory. Without one
+ * (a caller that authorized nothing first), it is the store as this read starts.
+ */
+function* ompTranscriptImageSteps(path: string, ref: string, given?: string | null): Steps<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const tool = PI_IMAGE_REF.exec(ref);
   const match = tool ?? PI_PROMPT_IMAGE_REF.exec(ref);
   if (match === null || match[1] === undefined || match[2] === undefined) return null;
   const [, id, nth] = match;
   const blobs = ompBlobStore(path);
+  const anchor = given === undefined ? ompBlobAnchor(blobs)?.identity ?? null : given;
   {
     const stream = transcriptStream("omp-transcript", path, statSync(path), defaultCodexHome());
-    applyHistoryBoundary(path, stream, "omp-transcript");
+    yield* applyHistoryBoundarySteps(path, stream, "omp-transcript", true);
     // the records that name the id, and those that can be a clear however JSON writes it
     const ranges = yield* linesWithSteps(stream, id, stream.floor, stream.length);
     const seen = new Set(ranges.map(([start]) => start));
@@ -2177,7 +2200,9 @@ function* ompTranscriptImageSteps(path: string, ref: string): Steps<{ mediaType:
     // for its result, and the picture it names after the last clear (null: none yet)
     let open = false;
     let found: { mediaType: string; bytes: Buffer } | null = null;
+    let judged = 0;
     for (const range of ranges) {
+      if (++judged % RECORDS_PER_STEP === 0) yield;
       const shape = yield* recordShapeSteps(stream, range);
       // a record the endpoint cannot judge could be the one the page draws: serve nothing then
       if (shape === UNREAD) return null;
@@ -2205,7 +2230,7 @@ function* ompTranscriptImageSteps(path: string, ref: string): Steps<{ mediaType:
         content = message.content;
       }
       // an answer or a prompt with no such picture names nothing, and a call made again can still name one
-      found = yield* ompPictureSteps(stream, shape, content, blobs, Number(nth));
+      found = yield* ompPictureSteps(stream, shape, content, blobs, anchor, Number(nth));
     }
     return found === null ? null : { mediaType: found.mediaType, bytes: new Uint8Array(found.bytes) };
   }
@@ -2217,7 +2242,7 @@ function* ompTranscriptImageSteps(path: string, ref: string): Steps<{ mediaType:
  * holds. A blob at that place is read now, and gives nothing when it is no picture now rather than the
  * next one. A picture only counted is checked a window at a time; only the one served is held whole.
  */
-function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, nth: number): Steps<{ mediaType: string; bytes: Buffer } | null> {
+function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, anchor: string | null, nth: number): Steps<{ mediaType: string; bytes: Buffer } | null> {
   let place = 0;
   for (const value of Array.isArray(content) ? content : []) {
     const block = value as { type?: unknown; mimeType?: unknown; media_type?: unknown; data?: unknown } | null;
@@ -2225,7 +2250,8 @@ function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content:
     const declared = typeof block.mimeType === "string" ? block.mimeType : block.media_type;
     if (blobs && block.data.startsWith("blob:")) {
       if (ompBlobDigest(declared, block.data) === null) continue;
-      if (place === nth) return yield* ompBlobPictureSteps(blobs, declared, block.data);
+      // a store that was no directory when the transcript was authorized answers nothing
+      if (place === nth) return anchor === null ? null : yield* ompBlobPictureSteps(blobs, declared, block.data, anchor);
       place += 1;
       continue;
     }
@@ -2262,7 +2288,9 @@ function* codexToolImageSteps(path: string, ref: string, codexHome: string): Ste
     const stream = transcriptStream("codex-transcript", path, statSync(path), codexHome);
     // whether a call the parser draws waits for its output: a call made again opens it again
     let open = false;
+    let judged = 0;
     for (const range of yield* linesWithSteps(stream, id, stream.floor, stream.length)) {
+      if (++judged % RECORDS_PER_STEP === 0) yield;
       const shape = yield* recordShapeSteps(stream, range);
       if (shape === UNREAD) return null;
       if (shape === NOT_A_RECORD) continue;

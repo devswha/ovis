@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
-import { aroundBlobOpenForTests, ompBlobPicture } from "./codex-images.ts";
+import { aroundBlobOpenForTests, blobPlatformForTests, ompBlobAnchor, ompBlobPicture } from "./codex-images.ts";
 import { forgetTranscriptState, ompTranscriptImage, transcriptPage } from "./conversation.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -205,6 +205,73 @@ describe("omp's pictures reach the chat", () => {
     expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0")).toBeNull();
     // the other store, untouched, still serves its own picture
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
+  });
+
+  it("reads a blob only from the store authorized with the transcript, whatever the path above it names later", async () => {
+    // two omps' sessions at the same place in their own agent directories; only the other one holds the blob
+    const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
+    const other = store("anchor-other", records);
+    const own = store("anchor-own", records, {});
+    const anchor = ompBlobAnchor(ompBlobStore(own.path));
+    expect(anchor?.path).toBe(own.blobs);
+    // after the transcript was authorized, this omp's agent directory becomes a link to the other's
+    const agent = join(own.blobs, "..");
+    renameSync(agent, `${agent}-aside`);
+    symlinkSync(join(other.blobs, ".."), agent);
+    try {
+      expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0", anchor!.identity)).toBeNull();
+    } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
+    expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
+  });
+
+  it("reads no omp blob where Node cannot open it through its store, and shows the inline pictures still", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const { path } = store("no-descriptor-open", jsonl(prompt("u1", [{ type: "text", text: "two" }, { type: "image", mimeType: "image/png", data: png.toString("base64") }, picture()]), answer("a1", "both")));
+    blobPlatformForTests("darwin");
+    try {
+      forgetTranscriptState();
+      // the blob keeps its place, empty: the inline picture before it is named and served as ever
+      expect(refs(path)).toEqual([["image/png pi-prompt:u1:0"], []]);
+      expect((await ompTranscriptImage(path, "pi-prompt:u1:0"))?.mediaType).toBe("image/png");
+      expect(await ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
+    } finally { blobPlatformForTests(null); forgetTranscriptState(); }
+    expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/webp pi-prompt:u1:1"], []]);
+  });
+
+  it("never holds the event loop for more than a few windows, however many small records it judges", async () => {
+    // 30,000 short answers that each name the call in their words, so the search hands every one to be
+    // judged, over 40 MiB, so the cold scan for clears takes several windows too
+    const words = "call c1 again ".repeat(90);
+    const many = Array.from({ length: 30_000 }, (_, at) => answer(`n${at}`, words));
+    const { path } = store("many-records", jsonl(prompt("u1", [{ type: "text", text: "read it" }]), ...many, call("a1", "c1"), result("r1", "c1", [picture()]), answer("a2", "done")));
+    forgetTranscriptState();
+    // work between two turns of the loop, counted in buffers taken rather than in time: a window read is
+    // one, a record judged is one or two
+    let since = 0, sinceLarge = 0, most = 0, mostLarge = 0;
+    const real = Buffer.alloc.bind(Buffer);
+    const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => {
+      since += 1;
+      if (Number(args[0]) >= 1024 * 1024) sinceLarge += 1;
+      return real(...args);
+    }) as typeof Buffer.alloc);
+    let looking = true;
+    const turn = () => {
+      most = Math.max(most, since); mostLarge = Math.max(mostLarge, sinceLarge);
+      since = 0; sinceLarge = 0;
+      if (looking) setImmediate(turn);
+    };
+    try {
+      setImmediate(turn);
+      expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+    } finally {
+      looking = false;
+      most = Math.max(most, since); mostLarge = Math.max(mostLarge, sinceLarge);
+      counting.mockRestore();
+    }
+    // a reader that judged every record, or scanned every window for clears, before the loop's next turn
+    // would take thousands of buffers, or every window, in one stretch
+    expect(mostLarge).toBeLessThanOrEqual(2);
+    expect(most).toBeLessThanOrEqual(400);
   });
 
   it("lets the event loop run between windows while it looks through a large transcript", async () => {

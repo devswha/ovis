@@ -245,6 +245,25 @@ describe("a Codex tool's pictures reach the chat", () => {
     expect(turns).toBeGreaterThanOrEqual(15);
   });
 
+  it("never holds the event loop for more than a few windows, however many small records it judges", async () => {
+    // 30,000 short records that each name the call in their words, so the search hands every one to be judged
+    const words = "call_a again ".repeat(90);
+    const many = Array.from({ length: 30_000 }, () => ({ type: "response_item", timestamp: at, payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: words }] } }));
+    const path = rollout(records(started, ...many, call("call_a"), output("call_a", [picture(png)])));
+    // work between two turns of the loop, counted in buffers taken rather than in time
+    let since = 0, most = 0;
+    const real = Buffer.alloc.bind(Buffer);
+    const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => { since += 1; return real(...args); }) as typeof Buffer.alloc);
+    let looking = true;
+    const turn = () => { most = Math.max(most, since); since = 0; if (looking) setImmediate(turn); };
+    try {
+      setImmediate(turn);
+      expect((await codexToolImage(path, "codex-tool:call_a:0", home))?.mediaType).toBe("image/png");
+    } finally { looking = false; most = Math.max(most, since); counting.mockRestore(); }
+    // a reader that judged every record before the loop's next turn would take thousands in one stretch
+    expect(most).toBeLessThanOrEqual(400);
+  });
+
   it("holds a window, a record's shape and the picture, never a record whole however large", async () => {
     const alloc = spyOn(Buffer, "alloc");
     try {

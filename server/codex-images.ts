@@ -124,16 +124,32 @@ export function ompBlobDigest(declared: unknown, data: unknown): string | null {
  * never names a path outside the store, and neither the blob nor the store is followed through a link
  * (ompBlobSteps). Null for anything else.
  */
-export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
-  return finish(ompBlobPictureSteps(blobs, declared, data));
+export function ompBlobPicture(blobs: string, declared: unknown, data: unknown, anchor?: string): { mediaType: string; bytes: Buffer } | null {
+  return finish(ompBlobPictureSteps(blobs, declared, data, anchor));
 }
 
-/** ompBlobPicture, read in steps a window apart (Steps): the image endpoint gives the event loop its turn between them. */
-export function* ompBlobPictureSteps(blobs: string, declared: unknown, data: unknown): Steps<{ mediaType: string; bytes: Buffer } | null> {
+/**
+ * ompBlobPicture, read in steps a window apart (Steps): the image endpoint gives the event loop its turn
+ * between them. `anchor` is the identity the store had when the transcript was authorized
+ * (ompBlobAnchor): the blob is read only from that very directory.
+ */
+export function* ompBlobPictureSteps(blobs: string, declared: unknown, data: unknown, anchor?: string): Steps<{ mediaType: string; bytes: Buffer } | null> {
   const digest = ompBlobDigest(declared, data);
   if (digest === null) return null;
-  const picture = yield* ompBlobSteps(blobs, digest, true);
+  const picture = yield* ompBlobSteps(blobs, digest, true, anchor);
   return picture?.bytes ? { mediaType: picture.mediaType, bytes: picture.bytes } : null;
+}
+
+/**
+ * The blob store of an omp transcript and its identity, taken once where the transcript is authorized
+ * (the image endpoint, as it resolves the pane's transcript): a blob is then read only from that very
+ * directory, whatever the paths above it come to name later. Null when there is no store, or it is
+ * no real directory.
+ */
+export function ompBlobAnchor(blobs: string | null): { path: string; identity: string } | null {
+  if (blobs === null) return null;
+  const identity = blobStoreIdentity(blobs);
+  return identity === null ? null : { path: blobs, identity };
 }
 
 /**
@@ -174,6 +190,14 @@ function blobStoreIdentity(blobs: string): string | null {
   } catch { return null; }
 }
 
+/** The platform openBlob reads blobs on: a test sets another to run the branch it takes there (blobPlatformForTests). */
+let blobPlatform: NodeJS.Platform = process.platform;
+
+/** Lets a test run openBlob as on `platform`, or as on this one again (null). */
+export function blobPlatformForTests(platform: NodeJS.Platform | null): void {
+  blobPlatform = platform ?? process.platform;
+}
+
 /** What openBlob opens: the store directory, then the blob in it. */
 type BlobOpening = "store" | "blob";
 /** Where a test stands around openBlob's opens, to change the store at that moment (aroundBlobOpenForTests). */
@@ -185,21 +209,19 @@ export function aroundBlobOpenForTests(around: ((opening: BlobOpening, open: () 
 }
 
 /**
- * Opens the blob `digest` in the store `blobs` without following a link to either. On Linux the store
- * is opened first, as a directory and not through a link (O_NOFOLLOW), and held to be the very
- * directory checked before (`checked`, its identity: blobStoreIdentity) and the one `blobs` names (its
- * descriptor's own path, /proc/self/fd); the blob is then opened through that descriptor, so nothing
- * put in the store's place, a link or another directory, can stand in for it. It needs /proc: a Linux
- * without it serves no omp blob rather than open one by name. Node has no descriptor-relative open
- * elsewhere: there the blob is opened by name, with the store checked around the read (ompBlobSteps).
- * A descriptor, or null.
+ * Opens the blob `digest` in the store `blobs` without following a link to either, from the very
+ * directory `checked` names (its identity: blobStoreIdentity, or ompBlobAnchor's). On Linux the store
+ * is opened first, as a directory and not through a link (O_NOFOLLOW), and held to be that directory
+ * and the one `blobs` names (its descriptor's own path, /proc/self/fd); the blob is then opened through
+ * that descriptor, so nothing put in the store's place, or above it, a link or another directory, can
+ * stand in for it. It needs /proc: a Linux without it serves no omp blob. Node has no
+ * descriptor-relative open on macOS or Windows, and a blob opened there by name can come from wherever
+ * a path above it is swapped to for that moment: there no omp blob is read at all. A descriptor, or null.
  */
 function openBlob(blobs: string, digest: string, checked: string): number | null {
   const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
   const opened = (opening: BlobOpening, open: () => number) => aroundBlobOpen ? aroundBlobOpen(opening, open) : open();
-  if (process.platform !== "linux") {
-    try { return opened("blob", () => openSync(join(blobs, digest), flags)); } catch { return null; }
-  }
+  if (blobPlatform !== "linux") return null;
   let store: number;
   try { store = opened("store", () => openSync(blobs, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); } catch { return null; }
   try {
@@ -216,11 +238,11 @@ function openBlob(blobs: string, digest: string, checked: string): number | null
  * The blob `digest` in the store `blobs`, read a window at a time and hashed as it goes, its type from
  * its leading bytes, its bytes kept only when `keep`. Null unless it is a regular file of at most
  * MAX_IMAGE_BYTES whose bytes hash to `digest` and announce a raster, opened without following a link
- * to it or to its store (openBlob), in a store that is a real directory and the same one before the
- * blob was opened and after it was read.
+ * to it or to its store (openBlob) from the directory `anchor` names (the store as it is now when no
+ * anchor is given), and the same one after it was read.
  */
-function* ompBlobSteps(blobs: string, digest: string, keep: boolean): Steps<{ mediaType: string; bytes: Buffer | null } | null> {
-  const store = blobStoreIdentity(blobs);
+function* ompBlobSteps(blobs: string, digest: string, keep: boolean, anchor?: string): Steps<{ mediaType: string; bytes: Buffer | null } | null> {
+  const store = anchor ?? blobStoreIdentity(blobs);
   if (store === null) return null;
   const fd = openBlob(blobs, digest, store);
   if (fd === null) return null;
