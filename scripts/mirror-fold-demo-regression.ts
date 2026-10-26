@@ -19,6 +19,8 @@ const COLS = 120;
 const ROWS = 40;
 const LINK = "https://example.com/fold-link";
 const OSC8 = "https://example.com/osc8-target";
+const OSC8_SHOWN = "https://example.org/display-label";
+const OSC8_REAL = "https://example.com/real-target";
 
 interface FoldFixture {
   sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }>;
@@ -101,6 +103,8 @@ for (let index = 1; index <= ROWS; index++) {
   else if (index === 5) screenRows.push(row(index, "한글 줄바꿈: 오른쪽 끝까지 보여야 합니다 ", "가"));
   else if (index === 7) screenRows.push(row(index, `R07 ${LINK} `));
   // a labelled OSC 8 hyperlink: the row shows OSC8-LABEL, its target is OSC8
+  // an OSC 8 hyperlink whose label is itself an address: its target, not the label, is what opens
+  else if (index === 11) screenRows.push(`R11 \x1b]8;;${OSC8_REAL}\x1b\\${OSC8_SHOWN}\x1b]8;;\x1b\\${row(index, " ").slice(`R11 ${OSC8_SHOWN}`.length)}`);
   else if (index === 9) screenRows.push(`R09 \x1b]8;;${OSC8}\x1b\\OSC8-LABEL\x1b]8;;\x1b\\${row(index, " ").slice("R09 OSC8-LABEL".length)}`);
   else if (index === ROWS) screenRows.push(row(index, "FOLD-LAST "));
   else screenRows.push(row(index, `R${String(index).padStart(2, "0")} the quick brown fox `));
@@ -210,7 +214,7 @@ async function open(browser: Browser, origin: string, viewport: { width: number;
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(settings));
   }, SETTINGS);
   // a link the fold opens lands here, not on the internet
-  await context.route("https://example.com/**", (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
+  await context.route(/^https:\/\/example\.(com|org)\//, (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   // a timed-out wait says which one it was and what the pane showed: Playwright's own stack does not reach this file
@@ -320,6 +324,13 @@ try {
         const oscTab = await openedOsc;
         await oscTab.waitForURL(OSC8);
         await oscTab.close();
+        const shown = (await foldedText(page, OSC8_SHOWN)).rect;
+        assert.ok(shown, "the folded rows draw the address-shaped label");
+        const openedReal = page.context().waitForEvent("page");
+        await page.mouse.click(shown.left + 30, (shown.top + shown.bottom) / 2);
+        const realTab = await openedReal;
+        await realTab.waitForURL(OSC8_REAL);
+        await realTab.close();
 
 
         // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
@@ -469,7 +480,7 @@ try {
         assert.deepEqual(watched.errors, []);
       } finally { await watched.close(); }
 
-      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph and an OSC 8 label opens its target, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded (one fitting, one wider and watched)`);
+      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph and an OSC 8 label (an address-shaped one too) opens its target, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded (one fitting, one wider and watched)`);
     } finally { await browser.close(); }
   } finally { server.stop(); }
 } finally { rmSync(app, { recursive: true, force: true }); }

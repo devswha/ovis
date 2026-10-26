@@ -215,7 +215,7 @@ export interface TerminalFold {
   dispose(): void;
 }
 
-/** what a tap on the folded rows landed on: an http(s) address, or a cell of the grid (a file path may be there) */
+/** what a tap on the folded rows landed on: a cell of the grid (an OSC 8 hyperlink or a file path may be there), or an http(s) address its text shows */
 export type FoldLinkTarget = { url: string } | { row: number; col: number };
 
 export interface TerminalFoldOptions {
@@ -387,12 +387,14 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
     const hit = textAt(event.clientX, event.clientY);
     if (hit) {
-      const web = webLinkAt(hit.text, hit.offset);
-      if (web && onText(hit.row, web.start, web.end, event.clientX, event.clientY) && onLink({ url: web.url }, event)) return;
+      // the cell's own target first (an OSC 8 hyperlink, whatever its label shows, then a file path), as the grid
+      // ranks its links; then the address the text shows
       const buffer = term.buffer.active;
       const line = buffer.getLine(buffer.viewportY + hit.row);
       const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;
-      if (!web && col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;
+      if (col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;
+      const web = webLinkAt(hit.text, hit.offset);
+      if (web && onText(hit.row, web.start, web.end, event.clientX, event.clientY) && onLink({ url: web.url }, event)) return;
     }
     onTap();
   };
