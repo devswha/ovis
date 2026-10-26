@@ -186,7 +186,9 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
     const bytes = windowBytes(path, from, stat.size);
     const digests = bytes && chunkDigests(bytes);
     if (check && (!digests || !sameOverlap(check, from, bytes!, digests))) rewritten = true;
-    window = digests ? { start, end: stat.size, digests: digests.slice((start - from) / WINDOW_CHUNK_BYTES) } : undefined;
+    // an empty log keeps no window: it has no bytes to check
+    const kept = digests?.slice((start - from) / WINDOW_CHUNK_BYTES);
+    window = kept?.length ? { start, end: stat.size, digests: kept } : undefined;
   }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
   remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, window }, 64);

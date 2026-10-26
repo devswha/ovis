@@ -220,6 +220,13 @@ describe("Muse session log", () => {
     expect(digested).toBeLessThanOrEqual(readFileSync(path).length + 64 * 1024);
   });
 
+  test("a log read while empty keeps its history when Muse writes it", () => {
+    const path = logAt(RECORDED, "");
+    const before = transcriptPage("muse-transcript", path);
+    appendFileSync(path, recorded);
+    expect(transcriptPage("muse-transcript", path).history_id).toBe(before.history_id);
+  });
+
   test("a log past one window keeps its history as it slides, unless it grew past it or its start changed", () => {
     const path = logAt(RECORDED, recorded);
     const before = transcriptPage("muse-transcript", path);
