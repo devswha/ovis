@@ -1037,7 +1037,16 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
  * process, and on Windows, which shows no process's environment, is herdr's path held to the
  * user's own default and profile stores instead.
  */
-async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
+/**
+ * An omp transcript as it is authorized, with the identity its blob store has at that same moment
+ * (ompBlobAnchor), taken in the same synchronous step: the image endpoint reads a blob only from that
+ * very directory, so nothing swapped above it once the transcript was authorized can move the read.
+ */
+export function ompAuthorizedTranscript(path: string): { path: string; blobs: string | null } {
+  return { path, blobs: ompBlobAnchor(ompBlobStore(path))?.identity ?? null };
+}
+
+async function ompTranscriptPath(paneId: string, cwd: string): Promise<{ path: string; blobs: string | null }> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
@@ -1053,13 +1062,13 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
     if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
     // the check above is lexical: a link out of the store is no transcript of this pane
     const inStore = piTranscriptInStore(path, store);
-    if (inStore !== null && (route === null || ompRouteOwns(route, inStore, cwd))) return inStore;
+    if (inStore !== null && (route === null || ompRouteOwns(route, inStore, cwd))) return ompAuthorizedTranscript(inStore);
     if (route === null) throw new ConversationUnavailable("no_session_path");
   }
   // herdr names no session of this store (or another agent's): the pane's omp process does
   const held = route === null ? null : ompRouteTranscript(route, cwd);
   if (held === null) throw new ConversationUnavailable("no_session_path");
-  return held;
+  return ompAuthorizedTranscript(held);
 }
 
 /** A process-owned lifecycle registration, or a trusted report plus a unique held marker. */
@@ -1123,7 +1132,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
 type ResolvedTranscript =
-  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null } & (
+  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -1203,7 +1212,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       const path = await claudeTranscriptPath(paneId, [cwd, pane.foreground_cwd], undefined, known);
       return { source: "claude-transcript", path };
     }
-    if (agent === "omp") return { source: "omp-transcript", path: await ompTranscriptPath(paneId, sessionCwd) };
+    if (agent === "omp") {
+      const authorized = await ompTranscriptPath(paneId, sessionCwd);
+      return { source: "omp-transcript", path: authorized.path, ompBlobs: authorized.blobs };
+    }
     if (agent === "gjc") return { source: "gjc-transcript", path: await gjcTranscriptPath(paneId, sessionCwd) };
     // pi's own label only routes pi: an omo pane was taken above, by its process tree.
     if (agent === "pi") {
@@ -1699,9 +1711,9 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
     return codexTranscriptImage(codexHistorySegments(resolved.path, resolved.codexHome ?? codexHome), ref, pane.cwd);
   }
   if (resolved.source === "pi-transcript" || resolved.source === "cmd-transcript") return piTranscriptImage(resolved.path, ref);
-  // the store is held to what it is now, as the transcript was just authorized: a path above it
-  // swapped later cannot move the read elsewhere
-  if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref, ompBlobAnchor(ompBlobStore(resolved.path))?.identity ?? null);
+  // the store is held to the identity it had where the transcript was authorized (ompAuthorizedTranscript):
+  // a path above it swapped since cannot move the read elsewhere
+  if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref, resolved.ompBlobs ?? null);
   return resolved.source === "claude-transcript" ? transcriptImage(resolved.path, ref) : null;
 }
 

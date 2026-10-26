@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
 import { aroundBlobOpenForTests, blobPlatformForTests, ompBlobAnchor, ompBlobPicture } from "./codex-images.ts";
-import { forgetTranscriptState, ompTranscriptImage, transcriptPage } from "./conversation.ts";
+import { forgetTranscriptState, ompAuthorizedTranscript, ompTranscriptImage, transcriptPage } from "./conversation.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
@@ -212,16 +212,24 @@ describe("omp's pictures reach the chat", () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const other = store("anchor-other", records);
     const own = store("anchor-own", records, {});
-    const anchor = ompBlobAnchor(ompBlobStore(own.path));
-    expect(anchor?.path).toBe(own.blobs);
+    // the store's identity is taken with the transcript, as it is authorized
+    const authorized = ompAuthorizedTranscript(own.path);
+    expect(authorized).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
+    expect(authorized.blobs).not.toBe(ompBlobAnchor(other.blobs)!.identity);
     // after the transcript was authorized, this omp's agent directory becomes a link to the other's
     const agent = join(own.blobs, "..");
     renameSync(agent, `${agent}-aside`);
     symlinkSync(join(other.blobs, ".."), agent);
     try {
-      expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0", anchor!.identity)).toBeNull();
+      expect(await ompTranscriptImage(authorized.path, "pi-prompt:u1:0", authorized.blobs)).toBeNull();
+      // the same read with no authorized store serves nothing either
+      expect(await ompTranscriptImage(authorized.path, "pi-prompt:u1:0", null)).toBeNull();
     } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
+    // a transcript whose store is missing is authorized with none
+    const bare = store("anchor-bare", records, {});
+    rmSync(bare.blobs, { recursive: true });
+    expect(ompAuthorizedTranscript(bare.path)).toEqual({ path: bare.path, blobs: null });
   });
 
   it("reads no omp blob where Node cannot open it through its store, and shows the inline pictures still", async () => {
