@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -849,6 +849,30 @@ describe("push delivery health (#1039)", () => {
     // a malformed record file is ignored, never fatal
     writeFileSync(join(stateDir, "push-delivery.json"), "not json");
     expect(createPushService({ loopbackHttp: true, stateDir }).status(fake.subscription, null)).toEqual({ registered: true, last_success_at: null, last_failure_at: null, last_failure: null });
+    // so is a record whose times no date can hold: it is dropped, and the status is still told
+    const hash = createHash("sha256").update(fake.subscription.endpoint).digest("base64url");
+    const keys = createHash("sha256").update(`${fake.subscription.keys.p256dh}.${fake.subscription.keys.auth}`).digest("base64url");
+    for (const times of [{ success_at: 1e100 }, { failure_at: -1e100, failure: "gone" }, { at: 1e100 }]) {
+      writeFileSync(join(stateDir, "push-delivery.json"), JSON.stringify([{ hash, owner: null, keys, success_at: clock, failure_at: null, failure: null, at: clock, ...times }]));
+      expect(createPushService({ loopbackHttp: true, stateDir, now: () => clock }).status(fake.subscription, null)).toEqual({ registered: true, last_success_at: null, last_failure_at: null, last_failure: null });
+    }
+  });
+
+  it("counts a push's outcome, a retirement included, when its record cannot be written", async () => {
+    // the record file cannot be replaced: a directory stands at its path
+    mkdirSync(join(stateDir, "push-delivery.json"));
+    const quiet = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const push = createPushService({ loopbackHttp: true, stateDir });
+      push.subscribe(fake.subscription, undefined, null);
+      expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: true });
+      expect(push.status(fake.subscription, null)?.last_success_at).not.toBeNull();
+      fake.answerWith(410);
+      expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: false, status: 410, gone: true });
+      expect(push.retired(fake.subscription.endpoint)).toBe(true);
+      expect(push.status(fake.subscription, null)).toMatchObject({ registered: false, last_failure: "gone" });
+      expect(quiet.mock.calls.some(([line]) => String(line).includes("push-delivery.json"))).toBe(true);
+    } finally { quiet.mockRestore(); }
   });
 });
 

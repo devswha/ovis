@@ -409,16 +409,26 @@ export function createPushService(options: PushServiceOptions): PushService {
     const cutoff = (options.now ?? Date.now)() - DELIVERY_TTL_MS;
     for (const entry of stored.slice(-DELIVERY_LIMIT)) {
       const { hash, owner, keys, success_at, failure_at, failure, at } = (entry ?? {}) as Partial<Record<keyof DeliveryRecord, unknown>>;
-      const time = (value: unknown): value is number | null => value === null || typeof value === "number";
-      if (typeof hash !== "string" || !(owner === null || typeof owner === "string") || typeof keys !== "string" || typeof at !== "number" || at <= cutoff) continue;
+      // a number a Date cannot hold (1e100, NaN) would throw when the status is told: such a record is dropped
+      const date = (value: unknown): value is number => typeof value === "number" && Number.isFinite(new Date(value).getTime());
+      const time = (value: unknown): value is number | null => value === null || date(value);
+      if (typeof hash !== "string" || !(owner === null || typeof owner === "string") || typeof keys !== "string" || !date(at) || at <= cutoff) continue;
       if (!time(success_at) || !time(failure_at) || !(failure === null || FAILURES.includes(failure as PushDeliveryFailure))) continue;
       deliveries.set(hash, { hash, owner, keys, success_at, failure_at, failure: failure as PushDeliveryFailure | null, at });
     }
     return deliveries;
   }
 
+  /**
+   * Never throws: the records are telemetry, and a write that fails (a full disk) must not keep a
+   * push's own outcome from counting, a retirement included. They stay in memory until a write succeeds.
+   */
   function persistDeliveries(): void {
-    writeJsonPrivate(deliveryPath, [...deliveryStore().values()]);
+    try {
+      writeJsonPrivate(deliveryPath, [...deliveryStore().values()]);
+    } catch (error) {
+      console.error(`Cannot write ${deliveryPath} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); push health is kept in memory until a write succeeds`);
+    }
   }
 
   /** The identity a delivery is recorded for, taken before the push goes out. */
