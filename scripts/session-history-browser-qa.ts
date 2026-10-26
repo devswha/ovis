@@ -307,6 +307,8 @@ try {
   const outside = await page.evaluate(() => {
     const field = document.createElement("input");
     field.setAttribute("aria-label", "qa overlay field");
+    // fixed, as the palette is: focusing a field below #root scrolls the page, and the list closes on that scroll
+    field.style.cssText = "position: fixed; top: 0; left: 0";
     document.body.append(field);
     field.focus();
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
