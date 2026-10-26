@@ -39,8 +39,8 @@ const refs = (path: string): string[][] => transcriptPage("omp-transcript", path
   const pictured = part as Pictured;
   return pictured.kind === "image" ? [`${pictured.media_type} ${pictured.ref}`] : pictured.kind === "tool" ? (pictured.images ?? []).map((image) => `${image.media_type} ${image.ref}`) : [];
 }));
-const served = (path: string, ref: string) => {
-  const image = ompTranscriptImage(path, ref);
+const served = async (path: string, ref: string) => {
+  const image = await ompTranscriptImage(path, ref);
   return image === null ? null : { mediaType: image.mediaType, same: Buffer.from(image.bytes).equals(BLOB) };
 };
 
@@ -54,7 +54,7 @@ const answer = (entry: string, text: string) => ({ type: "message", id: entry, p
 const clear = { type: "custom", customType: "context_clear", id: "x1", parentId: "a2", timestamp: at };
 
 describe("omp's pictures reach the chat", () => {
-  it("names the recorded session's prompt and tool pictures by ref only, and serves their exact bytes", () => {
+  it("names the recorded session's prompt and tool pictures by ref only, and serves their exact bytes", async () => {
     const { path } = store("recorded", FIXTURE);
     expect(refs(path)).toEqual([
       ["image/webp pi-prompt:d4a9dbba:0"], [],
@@ -65,40 +65,84 @@ describe("omp's pictures reach the chat", () => {
     const page = JSON.stringify(transcriptPage("omp-transcript", path));
     expect(page).not.toContain(BLOB.toString("base64").slice(0, 32));
     expect(page).not.toContain("blob:sha256");
-    for (const ref of ["pi-prompt:d4a9dbba:0", `pi:${CALL}:0`, "pi-prompt:faaa5772:0"]) expect(served(path, ref)).toEqual({ mediaType: "image/webp", same: true });
+    for (const ref of ["pi-prompt:d4a9dbba:0", `pi:${CALL}:0`, "pi-prompt:faaa5772:0"]) expect(await served(path, ref)).toEqual({ mediaType: "image/webp", same: true });
     // no picture at that place, an entry with none, a ref that is no ref
-    for (const ref of ["pi-prompt:d4a9dbba:1", `pi:${CALL}:1`, "pi-prompt:5cd289cf:0", "pi-prompt:d4a9dbba", `pi:${CALL.split("|")[0]}:0`, "pi-prompt:../d4a9dbba:0"]) expect(ompTranscriptImage(path, ref)).toBeNull();
+    for (const ref of ["pi-prompt:d4a9dbba:1", `pi:${CALL}:1`, "pi-prompt:5cd289cf:0", "pi-prompt:d4a9dbba", `pi:${CALL.split("|")[0]}:0`, "pi-prompt:../d4a9dbba:0"]) expect(await ompTranscriptImage(path, ref)).toBeNull();
   });
 
   it("finds the blob store beside omp's managed store, and none for a session directory of its own", () => {
-    expect(ompBlobStore("/home/u/.omp/agent/sessions/-home-u-p-/s.jsonl")).toBe("/home/u/.omp/agent/blobs");
+    const at = (...parts: string[]) => {
+      const file = join(root, "layouts", ...parts);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, "");
+      return file;
+    };
+    const agent = join(root, "layouts", "home", ".omp", "agent");
+    mkdirSync(join(agent, "blobs"), { recursive: true });
+    expect(ompBlobStore(at("home", ".omp", "agent", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(agent, "blobs"));
     // a subagent's file, a level below its parent session
-    expect(ompBlobStore("/home/u/.omp/agent/sessions/-home-u-p-/s/sub.jsonl")).toBe("/home/u/.omp/agent/blobs");
-    expect(ompBlobStore("/data/omp/sessions/-home-u-p-/s.jsonl")).toBe("/data/omp/blobs");
-    expect(ompBlobStore("/somewhere/own-dir/s.jsonl")).toBeNull();
+    expect(ompBlobStore(at("home", ".omp", "agent", "sessions", "-home-u-p-", "s", "sub.jsonl"))).toBe(join(agent, "blobs"));
+    // omp's XDG data directory keeps both side by side, with no `agent` level
+    mkdirSync(join(root, "layouts", "data", "omp", "blobs"), { recursive: true });
+    expect(ompBlobStore(at("data", "omp", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(root, "layouts", "data", "omp", "blobs"));
+    // a store with no blobs beside it, and a session directory of its own
+    expect(ompBlobStore(at("bare", "sessions", "-home-u-p-", "s.jsonl"))).toBeNull();
+    expect(ompBlobStore(at("own-dir", "s.jsonl"))).toBeNull();
+    expect(ompBlobStore(join(root, "layouts", "nowhere", "sessions", "-p-", "s.jsonl"))).toBeNull();
   });
 
-  it("names and serves a blob only when its bytes are the picture the transcript recorded", () => {
+  it("names and serves a blob only when its bytes are the picture the transcript recorded", async () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const ok = store("blob-ok", records);
     expect(refs(ok.path)).toEqual([["image/webp pi-prompt:u1:0"], []]);
     // no blob: the prompt's words stay, with no picture named
     const missing = store("blob-missing", records, {});
     expect(refs(missing.path)).toEqual([[], []]);
-    expect(ompTranscriptImage(missing.path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(missing.path, "pi-prompt:u1:0")).toBeNull();
     // bytes that do not hash to the name the transcript gave them
     const tampered = store("blob-tampered", records, { [DIGEST]: Buffer.concat([BLOB, Buffer.from("x")]) });
     expect(refs(tampered.path)).toEqual([[], []]);
-    expect(ompTranscriptImage(tampered.path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(tampered.path, "pi-prompt:u1:0")).toBeNull();
     // a link in the store is not followed, even to the right bytes
     const linked = store("blob-linked", records, {});
     writeFileSync(join(root, "elsewhere.webp"), BLOB);
     symlinkSync(join(root, "elsewhere.webp"), join(linked.blobs, DIGEST));
     expect(ompBlobPicture(linked.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
-    expect(ompTranscriptImage(linked.path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(linked.path, "pi-prompt:u1:0")).toBeNull();
   });
 
-  it("names only a raster the chat shows, by its declared type and its bytes, up to 8 MiB", () => {
+  it("names and serves nothing from a blob store that is a link, even to another omp's real store", async () => {
+    const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
+    const other = store("blob-dir-real", records);
+    // this session's agent directory keeps no store of its own: its `blobs` is a link to another's
+    const linked = store("blob-dir-linked", records, {});
+    rmSync(linked.blobs, { recursive: true });
+    symlinkSync(other.blobs, linked.blobs);
+    expect(ompBlobStore(linked.path)).toBeNull();
+    expect(refs(linked.path)).toEqual([[], []]);
+    expect(await ompTranscriptImage(linked.path, "pi-prompt:u1:0")).toBeNull();
+    // a store that becomes a link after it was found is refused where the blob is read
+    expect(ompBlobPicture(linked.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
+    expect(ompBlobPicture(other.blobs, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType).toBe("image/webp");
+    expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
+  });
+
+  it("lets the event loop run between windows while it looks through a large transcript", async () => {
+    const pad = "x".repeat(20 * 1024 * 1024);
+    const { path } = store("event-loop", jsonl(prompt("u1", [{ type: "text", text: "read it" }]), answer("n1", pad), call("a1", "c1"), result("r1", "c1", [picture()]), answer("a2", "done")));
+    // warm, as the page's own read has already scanned the transcript for clears
+    expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+    let turns = 0;
+    let looking = true;
+    const turn = () => { if (looking) { turns += 1; setImmediate(turn); } };
+    setImmediate(turn);
+    expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+    looking = false;
+    // a reader that held the loop for the whole search would let it turn once, at the end
+    expect(turns).toBeGreaterThanOrEqual(20);
+  });
+
+  it("names only a raster the chat shows, by its declared type and its bytes, up to 8 MiB", async () => {
     const blob = (bytes: Buffer) => ({ digest: createHash("sha256").update(bytes).digest("hex"), bytes });
     const svg = blob(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"));
     const png = (size: number) => { const bytes = Buffer.alloc(size); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes); return blob(bytes); };
@@ -118,14 +162,14 @@ describe("omp's pictures reach the chat", () => {
     // a blob ref in omp's form keeps its place whatever its blob holds, shown as nothing when that is
     // no picture; a block naming no blob omp writes, or no raster, takes none
     expect(refs(path)).toEqual([["image/png pi-prompt:u1:2", "image/webp pi-prompt:u1:3"], []]);
-    expect(ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
-    expect(ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
-    expect(ompTranscriptImage(path, "pi-prompt:u1:2")?.bytes.length).toBe(8 * 1024 * 1024);
-    expect(served(path, "pi-prompt:u1:3")).toEqual({ mediaType: "image/webp", same: true });
-    expect(ompTranscriptImage(path, "pi-prompt:u1:4")).toBeNull();
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
+    expect((await ompTranscriptImage(path, "pi-prompt:u1:2"))?.bytes.length).toBe(8 * 1024 * 1024);
+    expect(await served(path, "pi-prompt:u1:3")).toEqual({ mediaType: "image/webp", same: true });
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:4")).toBeNull();
   });
 
-  it("keeps a picture's place when its blob goes or changes, and serves nothing in its place", () => {
+  it("keeps a picture's place when its blob goes or changes, and serves nothing in its place", async () => {
     const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
     const gifDigest = createHash("sha256").update(gif).digest("hex");
     const text = jsonl(prompt("u1", [{ type: "text", text: "two" }, picture(), picture(gifDigest, "image/gif")]), answer("a1", "both"));
@@ -137,17 +181,17 @@ describe("omp's pictures reach the chat", () => {
     // the first blob goes while the bridge runs: its place stays, empty, and the gif keeps its own
     rmSync(join(blobs, DIGEST));
     expect(parsed()).toEqual([["image/gif pi-prompt:u1:1"], []]);
-    expect(ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
-    expect(ompTranscriptImage(path, "pi-prompt:u1:1")?.mediaType).toBe("image/gif");
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
+    expect((await ompTranscriptImage(path, "pi-prompt:u1:1"))?.mediaType).toBe("image/gif");
     // the gif's blob becomes a link to the same bytes: no longer a blob omp wrote, so neither names it
     writeFileSync(join(root, "gif-elsewhere"), gif);
     rmSync(join(blobs, gifDigest));
     symlinkSync(join(root, "gif-elsewhere"), join(blobs, gifDigest));
     expect(parsed()).toEqual([[], []]);
-    expect(ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
   });
 
-  it("checks a blob it does not serve a window at a time, and holds only the served one whole", () => {
+  it("checks a blob it does not serve a window at a time, and holds only the served one whole", async () => {
     const big = (fill: number) => { const bytes = Buffer.alloc(3 * 1024 * 1024, fill); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes); return bytes; };
     const [first, second] = [big(1), big(2)];
     const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -160,13 +204,13 @@ describe("omp's pictures reach the chat", () => {
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
       forgetTranscriptState();
       alloc.mockClear();
-      expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:1")!.bytes).equals(second)).toBe(true);
+      expect(Buffer.from((await ompTranscriptImage(path, "pi-prompt:u1:1"))!.bytes).equals(second)).toBe(true);
       // the served picture is the one allocation past a window
       expect(alloc.mock.calls.map(([size]) => Number(size)).filter((size) => size > 1024 * 1024)).toEqual([second.length]);
     } finally { alloc.mockRestore(); }
   });
 
-  it("counts an inline picture before the one it serves as the parser does, its text written with escapes", () => {
+  it("counts an inline picture before the one it serves as the parser does, its text written with escapes", async () => {
     const png = (fill: number, size: number) => { const bytes = Buffer.alloc(size, fill); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes); return bytes; };
     const first = png(1, 2 * 1024 * 1024);
     const second = png(2, 1000);
@@ -175,17 +219,17 @@ describe("omp's pictures reach the chat", () => {
     const text = jsonl(prompt("u1", [{ type: "text", text: "two inline" }, inline(first), { type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" }, inline(second)]), answer("a1", "both")).replaceAll("/", "\\/");
     const { path } = store("inline-escaped", text);
     expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/png pi-prompt:u1:1"], []]);
-    expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:0")!.bytes).equals(first)).toBe(true);
-    expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:1")!.bytes).equals(second)).toBe(true);
-    expect(ompTranscriptImage(path, "pi-prompt:u1:2")).toBeNull();
+    expect(Buffer.from((await ompTranscriptImage(path, "pi-prompt:u1:0"))!.bytes).equals(first)).toBe(true);
+    expect(Buffer.from((await ompTranscriptImage(path, "pi-prompt:u1:1"))!.bytes).equals(second)).toBe(true);
+    expect(await ompTranscriptImage(path, "pi-prompt:u1:2")).toBeNull();
   });
 
-  it("shows a prompt that is only a picture as its own turn, and opens a page there", () => {
+  it("shows a prompt that is only a picture as its own turn, and opens a page there", async () => {
     const records = [prompt("u1", [{ type: "text", text: "first" }]), answer("a1", "one"), prompt("u2", [picture()]), answer("a2", "two")];
     const { path, blobs } = store("picture-only", jsonl(...records));
     expect(refs(path)).toEqual([[], [], ["image/webp pi-prompt:u2:0"], []]);
     expect(transcriptPage("omp-transcript", path).turns[2]!.parts.map((part) => part.kind)).toEqual(["image"]);
-    expect(served(path, "pi-prompt:u2:0")).toEqual({ mediaType: "image/webp", same: true });
+    expect(await served(path, "pi-prompt:u2:0")).toEqual({ mediaType: "image/webp", same: true });
     const rows = records.map((row) => JSON.stringify(row));
     const bytes = Buffer.from(rows.join("\n"));
     const second = rows[0]!.length + rows[1]!.length + 2;
@@ -194,35 +238,35 @@ describe("omp's pictures reach the chat", () => {
     expect(turnStarts(bytes, "omp-transcript", undefined, join(root, "no-blobs"))).toEqual([0]);
   });
 
-  it("serves a tool's picture only from the result the page draws: the first one answering a call it shows", () => {
+  it("serves a tool's picture only from the result the page draws: the first one answering a call it shows", async () => {
     const shown = [prompt("u1", [{ type: "text", text: "read it" }]), call("a1", "c1")];
     // a second result for an answered call
     const twice = store("tool-twice", jsonl(...shown, result("r1", "c1", [{ type: "text", text: "nothing" }]), result("r2", "c1", [picture()]), answer("a2", "done")));
     expect(refs(twice.path).flat()).toEqual([]);
-    expect(ompTranscriptImage(twice.path, "pi:c1:0")).toBeNull();
+    expect(await ompTranscriptImage(twice.path, "pi:c1:0")).toBeNull();
     // a result answering no call the page draws
     const orphan = store("tool-orphan", jsonl(...shown, result("r1", "c2", [picture()]), answer("a2", "done")));
     expect(refs(orphan.path).flat()).toEqual([]);
-    expect(ompTranscriptImage(orphan.path, "pi:c2:0")).toBeNull();
+    expect(await ompTranscriptImage(orphan.path, "pi:c2:0")).toBeNull();
     // a call made again after an answer with no picture: the second answer's picture is the one named
     const again = store("tool-again", jsonl(...shown, result("r1", "c1", [{ type: "text", text: "nothing" }]), call("a2", "c1"), result("r2", "c1", [picture()]), answer("a3", "done")));
     expect(refs(again.path).flat()).toEqual(["image/webp pi:c1:0"]);
-    expect(served(again.path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+    expect(await served(again.path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
   });
 
-  it("puts a picture from before a clear out of reach, a clear however JSON writes it", () => {
+  it("puts a picture from before a clear out of reach, a clear however JSON writes it", async () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "read it" }, picture()]), call("a1", "c1"), result("r1", "c1", [picture()]), answer("a2", "done"), clear);
     const cleared = store("cleared", records);
     expect(transcriptPage("omp-transcript", cleared.path).turns).toEqual([]);
-    expect(ompTranscriptImage(cleared.path, "pi-prompt:u1:0")).toBeNull();
-    expect(ompTranscriptImage(cleared.path, "pi:c1:0")).toBeNull();
+    expect(await ompTranscriptImage(cleared.path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(cleared.path, "pi:c1:0")).toBeNull();
     const escaped = store("cleared-escaped", records.replace('"customType":"context_clear"', '"customType":"context\\u005fclear"'));
     expect(transcriptPage("omp-transcript", escaped.path).turns).toEqual([]);
-    expect(ompTranscriptImage(escaped.path, "pi-prompt:u1:0")).toBeNull();
-    expect(ompTranscriptImage(escaped.path, "pi:c1:0")).toBeNull();
+    expect(await ompTranscriptImage(escaped.path, "pi-prompt:u1:0")).toBeNull();
+    expect(await ompTranscriptImage(escaped.path, "pi:c1:0")).toBeNull();
   });
 
-  it("reads a call id and an entry id however JSON writes them, as the parser does", () => {
+  it("reads a call id and an entry id however JSON writes them, as the parser does", async () => {
     // omp's own call ids hold a `|`; here it and a letter are written as escapes
     const text = FIXTURE.replaceAll(JSON.stringify(CALL), JSON.stringify(CALL).replace("|", "\\u007c").replace("call_", "\\u0063all_"))
       .replace('"id":"d4a9dbba"', '"id":"\\u00644a9dbba"');
@@ -230,8 +274,8 @@ describe("omp's pictures reach the chat", () => {
     const { path } = store("escaped-ids", text);
     expect(refs(path)[0]).toEqual(["image/webp pi-prompt:d4a9dbba:0"]);
     expect(refs(path)[3]).toEqual([`image/webp pi:${CALL}:0`]);
-    expect(served(path, "pi-prompt:d4a9dbba:0")).toEqual({ mediaType: "image/webp", same: true });
-    expect(served(path, `pi:${CALL}:0`)).toEqual({ mediaType: "image/webp", same: true });
+    expect(await served(path, "pi-prompt:d4a9dbba:0")).toEqual({ mediaType: "image/webp", same: true });
+    expect(await served(path, `pi:${CALL}:0`)).toEqual({ mediaType: "image/webp", same: true });
   });
 
   it("names the same pictures as a session grows as a cold read does", () => {
@@ -246,7 +290,7 @@ describe("omp's pictures reach the chat", () => {
     expect(warm.flat()).toEqual(["image/webp pi-prompt:d4a9dbba:0", `image/webp pi:${CALL}:0`, "image/webp pi-prompt:faaa5772:0"]);
   });
 
-  it("holds a window, a record's shape and the picture, never a record whole however large", () => {
+  it("holds a window, a record's shape and the picture, never a record whole however large", async () => {
     const alloc = spyOn(Buffer, "alloc");
     try {
       const pad = "x".repeat(20 * 1024 * 1024);
@@ -255,9 +299,9 @@ describe("omp's pictures reach the chat", () => {
         { ...call("a1", "c1"), message: { ...call("a1", "c1").message, content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "shot.png", pad } }] } },
         result("r1", "c1", [{ type: "text", text: pad }, picture()]), answer("a2", "done")));
       // the first read scans the history once; the endpoint's own reads are what is left
-      expect(served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+      expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
       alloc.mockClear();
-      expect(served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+      expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
     } finally { alloc.mockRestore(); }
   });

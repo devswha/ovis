@@ -87,9 +87,9 @@ try {
       // answered by the endpoint's own readers, from the files as the agents wrote them
       const ref = url.searchParams.get("ref") ?? "";
       served.push(ref);
-      const image = ref.startsWith("codex-tool:") ? codexToolImage(codexPath, ref, codexHome)
+      const image = ref.startsWith("codex-tool:") ? await codexToolImage(codexPath, ref, codexHome)
         : ref.startsWith("codex-") ? await codexTranscriptImage([{ path: codexPath, end: Bun.file(codexPath).size }], ref, codexCwd)
-        : ompTranscriptImage(ompPath, ref);
+        : await ompTranscriptImage(ompPath, ref);
       return image ? new Response(image.bytes, { headers: { "content-type": image.mediaType } }) : new Response(JSON.stringify({ error: { code: "image_not_found" } }), { status: 404 });
     }
     const path = url.pathname;

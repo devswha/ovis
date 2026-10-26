@@ -42,7 +42,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobDigest, ompBlobPicture } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -1729,6 +1729,11 @@ function jsonTextPattern(text: string): { pattern: RegExp; span: number } {
  * reads blank (readStream).
  */
 function linesWith(stream: TranscriptStream, text: string, from: number, to: number): [number, number][] {
+  return finish(linesWithSteps(stream, text, from, to));
+}
+
+/** linesWith in steps a window apart (Steps). */
+function* linesWithSteps(stream: TranscriptStream, text: string, from: number, to: number): Steps<[number, number][]> {
   const { pattern, span } = jsonTextPattern(text);
   const found: [number, number][] = [];
   let start = from;
@@ -1751,6 +1756,7 @@ function linesWith(stream: TranscriptStream, text: string, from: number, to: num
       tail = "";
       offset = newline + 1;
     }
+    if (position + IMAGE_SEARCH_WINDOW < to) yield;
   }
   if (hit) found.push([start, to]);
   return found;
@@ -1776,7 +1782,12 @@ type ShapeRead = RecordShape | typeof NOT_A_RECORD | typeof UNREAD;
  * no record can hold, a nonce made for this read, and its place in `cut` (`wholeString` reads it
  * back). So a record of any size costs a window and its shape, and a picture only its own text.
  */
-function recordShape(stream: TranscriptStream, [start, end]: [number, number]): ShapeRead {
+function recordShape(stream: TranscriptStream, range: [number, number]): ShapeRead {
+  return finish(recordShapeSteps(stream, range));
+}
+
+/** recordShape in steps a window apart (Steps). */
+function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, number]): Steps<ShapeRead> {
   const nonce = randomUUID();
   const kept: Buffer[] = [];
   let size = 0;
@@ -1826,6 +1837,7 @@ function recordShape(stream: TranscriptStream, [start, end]: [number, number]): 
     }
     if (from !== -1) keep(bytes.subarray(from));
     if (size > SHAPE_MAX_BYTES) return UNREAD;
+    if (position + IMAGE_SEARCH_WINDOW < end) yield;
   }
   let entry: unknown;
   try { entry = JSON.parse(Buffer.concat(kept).toString("utf8")); } catch { return NOT_A_RECORD; }
@@ -1843,15 +1855,21 @@ function isHexDigit(byte: number): boolean {
  * decodes to more than `limit` characters.
  */
 function wholeString(stream: TranscriptStream, shape: RecordShape, value: string, limit: number): string | null {
+  return finish(wholeStringSteps(stream, shape, value, limit));
+}
+
+/** wholeString in steps a window apart (Steps). */
+function* wholeStringSteps(stream: TranscriptStream, shape: RecordShape, value: string, limit: number): Steps<string | null> {
   let whole = "";
-  return scanString(stream, shape, value, limit, (piece) => { whole += piece; }) ? whole : null;
+  return (yield* scanStringSteps(stream, shape, value, limit, (piece) => { whole += piece; })) ? whole : null;
 }
 
 /**
  * A string of a record's shape as JSON decodes it, handed to `visit` a window's piece at a time and
- * never held whole; false when it decodes to more than `limit` characters.
+ * never held whole, in steps a window apart (Steps); false when it decodes to more than `limit`
+ * characters.
  */
-function scanString(stream: TranscriptStream, shape: RecordShape, value: string, limit: number, visit: (piece: string) => void): boolean {
+function* scanStringSteps(stream: TranscriptStream, shape: RecordShape, value: string, limit: number, visit: (piece: string) => void): Steps<boolean> {
   const at = value.lastIndexOf(shape.mark);
   const range = at === -1 ? undefined : shape.cut[Number(value.slice(at + shape.mark.length))];
   if (range === undefined) {
@@ -1884,6 +1902,7 @@ function scanString(stream: TranscriptStream, shape: RecordShape, value: string,
     if (length > limit) return false;
     visit(piece);
     if (last) break;
+    yield;
   }
   return true;
 }
@@ -2133,28 +2152,33 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
  * too, as the parser reads it), and as the parser draws it (parseOmpTranscript): a tool's picture only
  * from the first result that answers a call the page draws, a prompt's only from a prompt it draws.
  * Like a Claude picture, it holds a window, a record's shape and the picture at a time, never a record
- * or the transcript whole.
+ * or the transcript whole, and it gives the event loop its turn between windows (finishAsync), so a
+ * large transcript never holds the bridge for more than a window's work.
  */
-export function ompTranscriptImage(path: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
+export async function ompTranscriptImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  try { return await finishAsync(ompTranscriptImageSteps(path, ref)); } catch { return null; }
+}
+
+function* ompTranscriptImageSteps(path: string, ref: string): Steps<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const tool = PI_IMAGE_REF.exec(ref);
   const match = tool ?? PI_PROMPT_IMAGE_REF.exec(ref);
   if (match === null || match[1] === undefined || match[2] === undefined) return null;
   const [, id, nth] = match;
   const blobs = ompBlobStore(path);
-  try {
+  {
     const stream = transcriptStream("omp-transcript", path, statSync(path), defaultCodexHome());
     applyHistoryBoundary(path, stream, "omp-transcript");
     // the records that name the id, and those that can be a clear however JSON writes it
-    const ranges = linesWith(stream, id, stream.floor, stream.length);
+    const ranges = yield* linesWithSteps(stream, id, stream.floor, stream.length);
     const seen = new Set(ranges.map(([start]) => start));
-    for (const range of linesWith(stream, "context_clear", stream.floor, stream.length)) if (!seen.has(range[0])) ranges.push(range);
+    for (const range of yield* linesWithSteps(stream, "context_clear", stream.floor, stream.length)) if (!seen.has(range[0])) ranges.push(range);
     ranges.sort((left, right) => left[0] - right[0]);
     // the parser's state for this one id, as piTranscriptImage keeps it: whether a call it draws waits
     // for its result, and the picture it names after the last clear (null: none yet)
     let open = false;
     let found: { mediaType: string; bytes: Buffer } | null = null;
     for (const range of ranges) {
-      const shape = recordShape(stream, range);
+      const shape = yield* recordShapeSteps(stream, range);
       // a record the endpoint cannot judge could be the one the page draws: serve nothing then
       if (shape === UNREAD) return null;
       if (shape === NOT_A_RECORD) continue;
@@ -2181,10 +2205,10 @@ export function ompTranscriptImage(path: string, ref: string): { mediaType: stri
         content = message.content;
       }
       // an answer or a prompt with no such picture names nothing, and a call made again can still name one
-      found = ompPicture(stream, shape, content, blobs, Number(nth));
+      found = yield* ompPictureSteps(stream, shape, content, blobs, Number(nth));
     }
     return found === null ? null : { mediaType: found.mediaType, bytes: new Uint8Array(found.bytes) };
-  } catch { return null; }
+  }
 }
 
 /**
@@ -2193,7 +2217,7 @@ export function ompTranscriptImage(path: string, ref: string): { mediaType: stri
  * holds. A blob at that place is read now, and gives nothing when it is no picture now rather than the
  * next one. A picture only counted is checked a window at a time; only the one served is held whole.
  */
-function ompPicture(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, nth: number): { mediaType: string; bytes: Buffer } | null {
+function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, nth: number): Steps<{ mediaType: string; bytes: Buffer } | null> {
   let place = 0;
   for (const value of Array.isArray(content) ? content : []) {
     const block = value as { type?: unknown; mimeType?: unknown; media_type?: unknown; data?: unknown } | null;
@@ -2201,15 +2225,15 @@ function ompPicture(stream: TranscriptStream, shape: RecordShape, content: unkno
     const declared = typeof block.mimeType === "string" ? block.mimeType : block.media_type;
     if (blobs && block.data.startsWith("blob:")) {
       if (ompBlobDigest(declared, block.data) === null) continue;
-      if (place === nth) return ompBlobPicture(blobs, declared, block.data);
+      if (place === nth) return yield* ompBlobPictureSteps(blobs, declared, block.data);
       place += 1;
       continue;
     }
     const scan = new InlinePictureScan();
-    const mediaType = scanString(stream, shape, block.data, PICTURE_TEXT_BYTES, (piece) => scan.push(piece)) ? scan.type(declared) : null;
+    const mediaType = (yield* scanStringSteps(stream, shape, block.data, PICTURE_TEXT_BYTES, (piece) => scan.push(piece))) ? scan.type(declared) : null;
     if (mediaType === null) continue;
     if (place === nth) {
-      const data = wholeString(stream, shape, block.data, PICTURE_TEXT_BYTES);
+      const data = yield* wholeStringSteps(stream, shape, block.data, PICTURE_TEXT_BYTES);
       return data === null ? null : { mediaType, bytes: Buffer.from(data, "base64") };
     }
     place += 1;
@@ -2223,18 +2247,23 @@ function ompPicture(stream: TranscriptStream, shape: RecordShape, content: unkno
  * without the bytes a backtrack left behind) and as the parser draws it (parseCodexTranscript): only
  * from the first output answering a call it draws, and only the output's own pictures, never the copy an
  * image generation's event keeps. Like a Claude picture, it holds a window, a record's shape and the
- * picture at a time, never a record or the rollout whole.
+ * picture at a time, never a record or the rollout whole, and it gives the event loop its turn between
+ * windows (finishAsync).
  */
-export function codexToolImage(path: string, ref: string, codexHome: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
+export async function codexToolImage(path: string, ref: string, codexHome: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  try { return await finishAsync(codexToolImageSteps(path, ref, codexHome)); } catch { return null; }
+}
+
+function* codexToolImageSteps(path: string, ref: string, codexHome: string): Steps<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const match = CODEX_TOOL_IMAGE_REF.exec(ref);
   if (match === null || match[1] === undefined || match[2] === undefined) return null;
   const [, id, nth] = match;
-  try {
+  {
     const stream = transcriptStream("codex-transcript", path, statSync(path), codexHome);
     // whether a call the parser draws waits for its output: a call made again opens it again
     let open = false;
-    for (const range of linesWith(stream, id, stream.floor, stream.length)) {
-      const shape = recordShape(stream, range);
+    for (const range of yield* linesWithSteps(stream, id, stream.floor, stream.length)) {
+      const shape = yield* recordShapeSteps(stream, range);
       if (shape === UNREAD) return null;
       if (shape === NOT_A_RECORD) continue;
       const entry = shape.entry as { type?: unknown; payload?: unknown };
@@ -2250,16 +2279,16 @@ export function codexToolImage(path: string, ref: string, codexHome: string): { 
         // a data URL is the picture's text and its type, a few bytes longer than the longest picture;
         // one only counted is checked a window at a time, and only the one served is held whole
         const scan = new DataUrlPictureScan();
-        if (!scanString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64, (piece) => scan.push(piece)) || scan.type() === null) continue;
+        if (!(yield* scanStringSteps(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64, (piece) => scan.push(piece))) || scan.type() === null) continue;
         if (place === Number(nth)) {
-          const url = wholeString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64);
+          const url = yield* wholeStringSteps(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64);
           const picture = url === null ? null : codexOutputPicture({ type: "input_image", image_url: url });
           return picture === null ? null : { mediaType: picture.mediaType, bytes: new Uint8Array(Buffer.from(picture.data, "base64")) };
         }
         place += 1;
       }
     }
-  } catch { return null; }
+  }
   return null;
 }
 

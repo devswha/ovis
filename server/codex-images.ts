@@ -121,49 +121,96 @@ export function ompBlobDigest(declared: unknown, data: unknown): string | null {
  * an inline one (a raster declared as one, by its leading bytes, at most MAX_IMAGE_BYTES), and only
  * when its bytes hash to the name the transcript gave them: omp names a blob by its digest, so these
  * are exactly the bytes it recorded. The ref is held to omp's own 64 lowercase hex digits, so it
- * never names a path outside the store, and a link there is not followed. Null for anything else.
+ * never names a path outside the store, and neither the blob nor the store is followed through a link
+ * (ompBlobSteps). Null for anything else.
  */
 export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
-  const digest = ompBlobDigest(declared, data);
-  if (digest === null) return null;
-  let fd: number;
-  try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_IMAGE_BYTES) return null;
-    const bytes = Buffer.alloc(stat.size);
-    if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) return null;
-    if (createHash("sha256").update(bytes).digest("hex") !== digest) return null;
-    const mediaType = imageType(bytes);
-    return mediaType === null ? null : { mediaType, bytes };
-  } catch { return null; } finally { closeSync(fd); }
+  return finish(ompBlobPictureSteps(blobs, declared, data));
 }
 
-/** How much of a blob ompBlobType holds at a time while it checks one it does not serve. */
-const BLOB_CHECK_WINDOW = 1024 * 1024;
+/** ompBlobPicture, read in steps a window apart (Steps): the image endpoint gives the event loop its turn between them. */
+export function* ompBlobPictureSteps(blobs: string, declared: unknown, data: unknown): Steps<{ mediaType: string; bytes: Buffer } | null> {
+  const digest = ompBlobDigest(declared, data);
+  if (digest === null) return null;
+  const picture = yield* ompBlobSteps(blobs, digest, true);
+  return picture?.bytes ? { mediaType: picture.mediaType, bytes: picture.bytes } : null;
+}
 
 /**
- * ompBlobPicture's answer for a blob, without holding it: read a window at a time, hashed as it goes,
- * its type from its leading bytes. The type, or null when ompBlobPicture would refuse it.
+ * Steps a windowed reader takes: it yields between two windows of a file, where an async reader gives
+ * the event loop its turn (finishAsync) and a synchronous one goes straight on (finish).
  */
-function ompBlobType(blobs: string, digest: string): string | null {
+export type Steps<T> = Generator<void, T, void>;
+
+/** Runs a reader's steps straight through. */
+export function finish<T>(steps: Steps<T>): T {
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs a reader's steps with the event loop running between them, so a large file never holds the bridge for more than a window's work. */
+export async function finishAsync<T>(steps: Steps<T>): Promise<T> {
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/** How much of a blob is read at a time, and all a blob not served costs to check. */
+const BLOB_WINDOW = 1024 * 1024;
+
+/**
+ * The blob store `blobs` as it is now: its identity when it is a real directory; null when it is
+ * missing or a link. omp keeps its store as a directory beside its sessions, so a link there (to
+ * another omp's store, or anywhere) names no blob of this one.
+ */
+function blobStoreIdentity(blobs: string): string | null {
+  try {
+    const stat = lstatSync(blobs);
+    return stat.isDirectory() ? `${stat.dev}:${stat.ino}` : null;
+  } catch { return null; }
+}
+
+/**
+ * The blob `digest` in the store `blobs`, read a window at a time and hashed as it goes, its type from
+ * its leading bytes, its bytes kept only when `keep`. Null unless it is a regular file of at most
+ * MAX_IMAGE_BYTES whose bytes hash to `digest` and announce a raster, in a store that is a real
+ * directory and the same one before the blob was opened and after it was read; neither the blob
+ * (O_NOFOLLOW) nor the store (blobStoreIdentity) is followed through a link.
+ */
+function* ompBlobSteps(blobs: string, digest: string, keep: boolean): Steps<{ mediaType: string; bytes: Buffer | null } | null> {
+  const store = blobStoreIdentity(blobs);
+  if (store === null) return null;
   let fd: number;
   try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_IMAGE_BYTES) return null;
-    const window = Buffer.alloc(Math.min(stat.size, BLOB_CHECK_WINDOW));
+    const bytes = keep ? Buffer.alloc(stat.size) : null;
+    const window = bytes ?? Buffer.alloc(Math.min(stat.size, BLOB_WINDOW));
     const hash = createHash("sha256");
     let type: string | null = null;
     for (let at = 0; at < stat.size;) {
-      const got = readSync(fd, window, 0, Math.min(window.length, stat.size - at), at);
+      const offset = bytes === null ? 0 : at;
+      const got = readSync(fd, window, offset, Math.min(BLOB_WINDOW, stat.size - at), at);
       if (got === 0) return null;
-      if (at === 0) type = imageType(window.subarray(0, got));
-      hash.update(window.subarray(0, got));
+      const piece = window.subarray(offset, offset + got);
+      if (at === 0) type = imageType(piece);
+      hash.update(piece);
       at += got;
+      if (at < stat.size) yield;
     }
-    return hash.digest("hex") === digest ? type : null;
+    if (hash.digest("hex") !== digest || blobStoreIdentity(blobs) !== store) return null;
+    return type === null ? null : { mediaType: type, bytes };
   } catch { return null; } finally { closeSync(fd); }
+}
+
+/** ompBlobPicture's answer for a blob, without holding it: the type, or null when ompBlobPicture would refuse it. */
+function ompBlobType(blobs: string, digest: string): string | null {
+  return finish(ompBlobSteps(blobs, digest, false))?.mediaType ?? null;
 }
 
 /** What ompBlobType answered for a blob, a picture or not, and the file it answered for. */
@@ -177,10 +224,13 @@ const ompBlobTypes = new Map<string, { file: string; type: string | null }>();
 export function ompBlobImageType(blobs: string, declared: unknown, data: unknown): string | null {
   const digest = ompBlobDigest(declared, data);
   if (digest === null) return null;
+  // a store that is gone or a link names nothing; the answer is kept for this store and this file
+  const store = blobStoreIdentity(blobs);
+  if (store === null) return null;
   let file: string;
   try {
     const stat = lstatSync(join(blobs, digest));
-    file = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.mode}`;
+    file = `${store}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.mode}`;
   } catch { return null; }
   const key = `${blobs}\0${digest}`;
   const known = ompBlobTypes.get(key);
