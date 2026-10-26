@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IBufferCell, IBufferLine } from "@xterm/xterm";
-import { columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt } from "./terminalFold.ts";
+import { columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
@@ -103,5 +103,26 @@ describe("the folded view of a mirrored grid", () => {
 
   test("bold text of the first eight colours draws in their bright forms", () => {
     expect(rowHtml(line([{ chars: "x", fg: 1, bold: true }], 1), 1, {}, scratch)).toBe('<span style="color:#ef2929;font-weight:bold;">x</span>');
+  });
+
+  test("a pane stays wide for the menu while any terminal drawing it says so, and its listeners hear each change", () => {
+    const pane = wideGridKey("pc", "w1:p1");
+    const first = {};
+    const second = {};
+    let heard = 0;
+    const stop = wideGrids.subscribe(() => { heard++; });
+    wideGrids.set(first, pane);
+    wideGrids.set(second, pane);
+    wideGrids.set(first, pane);
+    expect(heard).toBe(2);
+    wideGrids.set(first, null);
+    expect(wideGrids.snapshot().has(pane)).toBe(true);
+    // the other terminal moved on to another pane: this one is no longer wide anywhere
+    wideGrids.set(second, wideGridKey("pc", "w1:p2"));
+    expect(wideGrids.snapshot().has(pane)).toBe(false);
+    wideGrids.set(second, null);
+    expect(wideGrids.snapshot().size).toBe(0);
+    expect(heard).toBe(5);
+    stop();
   });
 });

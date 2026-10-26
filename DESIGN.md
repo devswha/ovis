@@ -2805,7 +2805,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   this device's, kept in its own `ovis:mirror-wrap` key so an older tab's save of `ovis:settings` cannot
   erase it), the grid at its size panned sideways as before, and Wrap to screen back. Until the
   user chooses, a narrow screen (a touch screen, or 768px and under) folds and a desktop does not. A
-  watching phone folds too; an attached pty and a mirror its mount fits are drawn as they are. Folded
+  watching phone folds too. An attached pane's grid folds the same way while this device does not
+  size the pty: watching it (a device paired to watch), or under a phone's soft keyboard, where the
+  grid stays at another device's size until the keyboard goes (#1045). It is drawn from the xterm
+  buffer the attach stream wrote, never from a pane read, and the pane is never resized for it; the
+  pane menu then offers the same choice, under the same setting. A phone that drives the pty is never
+  folded (the program redraws at its width), nor is a split's following half, and a grid its mount
+  fits is drawn as it is. Folded
   rows keep the cursor's row in view and pan only up and down; a tap on a web address, a file path or
   an OSC 8 hyperlink's label opens it as the grid's links do, any other tap focuses the terminal, and a wheel past their edges
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.

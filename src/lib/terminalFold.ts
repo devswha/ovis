@@ -2,18 +2,45 @@ import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
 
 /*
- * The folded view of a mirrored grid wider than its screen. A Windows PC's herdr has no terminal
- * attach, so the bridge repaints the pane at the pane's own size on that PC (server/mirror.ts) and
- * a phone cannot resize it: drawn as it is, every row ran off the right edge. The grid stays as it
- * is, unseen, so whatever reads it (the masked prompt, the agent's input row, Find) still reads what
- * herdr drew; this view draws its rows again as text that wraps at the screen's width, the way
- * Collie draws a pane read (AltanS/collie, web/src/components/ansi-output.tsx: SGR runs in a
- * pre-wrap block; no code is taken from it). A full-screen program's boxes and right-aligned bars
- * fold with the text: the pane menu's "Original width" draws the grid as it is again.
+ * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
+ * herdr has no terminal attach, so the bridge repaints the pane at the pane's own size on that PC
+ * (server/mirror.ts) and a phone cannot resize it; an attached pane a phone only watches, or holds
+ * under its keyboard, is drawn at the pty's grid, which another device sized. Drawn as it is, every
+ * row ran off the right edge. The grid stays as it is, unseen, so whatever reads it (the masked
+ * prompt, the agent's input row, Find) still reads what herdr drew (for an attached pane, what the
+ * attach stream drew: never a pane read); this view draws its rows again as text that wraps at the
+ * screen's width, the way Collie draws a pane read (AltanS/collie, web/src/components/ansi-output.tsx:
+ * SGR runs in a pre-wrap block; no code is taken from it). A full-screen program's boxes and
+ * right-aligned bars fold with the text: the pane menu's "Original width" draws the grid as it is again.
  */
 
 /** "Wrap to screen" until the user chooses: a touch screen, or a window as narrow as a phone's layout */
 export const MIRROR_WRAP_QUERY = "(pointer: coarse), (max-width: 768px)";
+
+/** A pane of a PC, as the wide grids below name it. */
+export const wideGridKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
+const wideOwners = new Map<object, string>();
+let wideKeys: ReadonlySet<string> = new Set();
+const wideListeners = new Set<() => void>();
+/**
+ * The panes this page draws at a grid it does not size and that is wider than their mount (wideGridKey), one
+ * entry per terminal: the pane menu offers Wrap to screen / Original width for them, as for every mirrored pane.
+ */
+export const wideGrids = {
+  subscribe(listener: () => void): () => void {
+    wideListeners.add(listener);
+    return () => { wideListeners.delete(listener); };
+  },
+  snapshot: (): ReadonlySet<string> => wideKeys,
+  /** what `owner`'s terminal draws wide now: a pane's key, or null for nothing */
+  set(owner: object, key: string | null): void {
+    if ((wideOwners.get(owner) ?? null) === key) return;
+    if (key === null) wideOwners.delete(owner);
+    else wideOwners.set(owner, key);
+    wideKeys = new Set(wideOwners.values());
+    for (const listener of wideListeners) listener();
+  },
+};
 
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
   "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
@@ -219,8 +246,12 @@ export interface TerminalFold {
 export type FoldLinkTarget = { url: string } | { row: number; col: number };
 
 export interface TerminalFoldOptions {
-  /** the grid may be folded: a mirror this browser does not drive, and the user's choice is to wrap it */
-  wanted: () => boolean;
+  /** the grid is not this browser's to size: a mirror, a grid it watches, or one held at another device's size */
+  foreign: () => boolean;
+  /** the user's choice: Wrap to screen (true) or Original width */
+  wrap: () => boolean;
+  /** after each decision: whether the grid is foreign and wider than the host, folded or not (the menu offers the choice) */
+  onWide: (wide: boolean) => void;
   /** after each drawing: the caller keeps the prompt in view */
   onDrawn: () => void;
   /** a tap on the view, which xterm under it no longer receives: it focuses the terminal, as xterm's own tap does */
@@ -243,8 +274,8 @@ const caretAt = (x: number, y: number): { node: Node; offset: number } | null =>
   return range ? { node: range.startContainer, offset: range.startOffset } : null;
 };
 
-/** Folds `term`'s grid inside `host` while `wanted()` holds and the grid is wider than the host. */
-export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
+/** Folds `term`'s grid inside `host` while the grid is foreign, wider than the host, and the user wraps it. */
+export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign, wrap, onWide, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
   const view = document.createElement("div");
   view.className = "terminal-fold";
   // the grid under it stays the terminal's accessible text; this is the same text drawn again
@@ -316,7 +347,9 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
     onDrawn();
   };
   const sync = (): void => {
-    const next = wanted() && wider();
+    const wide = foreign() && wider();
+    onWide(wide);
+    const next = wide && wrap();
     if (next === active) {
       if (active) draw(0, term.rows - 1);
       return;
@@ -338,8 +371,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, 
   // xterm draws only the rows a write changed: those are redrawn here too, after it
   const rendered = term.onRender(({ start, end }) => {
     if (!active) return;
-    // the grid stopped being a mirror this browser folds (a pane switch, a role) since the last sync
-    if (!wanted()) sync();
+    // the grid became this browser's to size (a pane switch, a role, the keyboard gone) since the last sync
+    if (!foreign() || !wrap()) sync();
     else draw(start, end);
   });
   const resized = term.onResize(() => sync());
