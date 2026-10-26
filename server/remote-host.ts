@@ -13,6 +13,7 @@
  *   with a fixed ACL; everyone else's in ~\.ssh\authorized_keys.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { hostname } from "node:os";
 import { win32 } from "node:path";
 import { REMOTE_BUNDLE_VERSION, type SshTarget } from "../shared/machines.ts";
@@ -132,6 +133,17 @@ export interface RemoteHost {
   stop(ssh: SshConnection, pid: number): Promise<void>;
   start(ssh: SshConnection, options: StartOptions): Promise<void>;
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
+  /** the IP addresses of the PC's own interfaces, as the PC lists them */
+  addresses(ssh: SshConnection): Promise<string[]>;
+}
+
+/**
+ * The addresses in `ip -o addr` or `ifconfig -a` output (an `inet`/`inet6` word, then the address),
+ * or in Windows' `Get-NetIPAddress` one per line; a zone (`%en0`) and a prefix length are dropped.
+ */
+export function parseAddresses(text: string, windows = false): string[] {
+  const words = windows ? text.split(/\r?\n/) : [...text.matchAll(/\binet6?\s+(?:addr:\s*)?(\S+)/g)].map((match) => match[1]!);
+  return words.map((word) => word.trim().replace(/[%/].*$/, "").toLowerCase()).filter((address) => isIP(address) !== 0);
 }
 
 function parseDescriptors(lines: string[]): BridgeDescriptor[] {
@@ -186,6 +198,9 @@ export const posixHost: RemoteHost = {
   },
   async descriptors(ssh) {
     return parseDescriptors((await ssh.run(`for f in "$HOME/.config/herdr-web-ui/bridges/"*.json; do test ! -f "$f" || cat "$f"; printf '\\n'; done`)).split("\n"));
+  },
+  async addresses(ssh) {
+    return parseAddresses(await ssh.run(REMOTE_PATH + "ip -o addr show 2>/dev/null || ifconfig -a 2>/dev/null || true"));
   },
 };
 
@@ -367,6 +382,9 @@ export const windowsHost: RemoteHost = {
   },
   async descriptors(ssh) {
     return parseDescriptors((await ssh.runPowerShell(WINDOWS_DESCRIPTORS)).split("\n"));
+  },
+  async addresses(ssh) {
+    return parseAddresses(await ssh.runPowerShell("Get-NetIPAddress | ForEach-Object { $_.IPAddress }"), true);
   },
 };
 
