@@ -479,6 +479,8 @@ export class MachineManager {
     if (this.jobs.size > 40) for (const [key, j] of this.jobs) if (["connected", "failed", "cancelled"].includes(j.public.phase) && key !== id) { this.jobs.delete(key); break; }
     const runtime = existing ?? this.runtime({ id: machineId, name: name?.trim() || target.destination, kind: "ssh", enabled: true, state: "connecting", target, snapshot: null, error: null });
     this.disconnect(runtime);
+    // a setup or bridge update is a try to connect too: a failed one waits its interval (retryNow)
+    runtime.triedAt = this.now();
     runtime.machine.target = target;
     const ssh = new SshConnection(target, this.sshDir, join(this.sshDir, machineId));
     job.ssh = ssh;

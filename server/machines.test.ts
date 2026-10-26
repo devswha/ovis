@@ -681,7 +681,7 @@ describe("a bridge update on a PC that cannot be reached", () => {
     let clock = 0;
     const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); }, { now: () => clock });
     type Waiting = { machine: { enabled: boolean; state: string }; attempts: number; retry?: unknown };
-    const internals = manager as unknown as { machines: Map<string, Waiting>; retryLater(runtime: Waiting): void };
+    const internals = manager as unknown as { machines: Map<string, Waiting>; retryLater(runtime: Waiting): void; jobs: Map<string, { finished: Promise<void> }> };
     const runtime = internals.machines.get(id)!;
     runtime.machine.enabled = true;
     // six failed tries already: the next waits a minute
@@ -700,11 +700,18 @@ describe("a bridge update on a PC that cannot be reached", () => {
       expect((await conversation()).status).toBe(503);
       expect(starts).toBe(2);
       await waitingAgain();
+      // a bridge update that could not reach the PC was a try as well: the next read waits the interval
+      clock += 5000;
+      await internals.jobs.get(manager.updateBridge(id).id)!.finished;
+      expect(starts).toBe(3);
+      expect(runtime.retry).toBeDefined();
+      expect((await conversation()).status).toBe(503);
+      expect(starts).toBe(3);
       // a PC that is switched off is never tried
       runtime.machine.enabled = false;
       clock += 5000;
       await conversation();
-      expect(starts).toBe(2);
+      expect(starts).toBe(3);
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
