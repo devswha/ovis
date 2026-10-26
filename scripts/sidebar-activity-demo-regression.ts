@@ -155,7 +155,7 @@ function installSidebarFixture(): void {
         if (message.type === "attach") window.sidebarFixture.attaches[message.pane_id] = (window.sidebarFixture.attaches[message.pane_id] ?? 0) + 1;
         if (message.type === "attach" && replay?.held) return;
         if (message.type === "attach" && replay?.recovering) {
-          for (const frame of [{ type: "output-recovering", pane_id: message.pane_id }, { type: "pty-data", pane_id: message.pane_id, data: replay.data }]) {
+          for (const frame of [{ type: "output-recovering", pane_id: message.pane_id }, { type: "pty-data", pane_id: message.pane_id, data: replay.data, replay: true }]) {
             this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
           }
           return;
@@ -460,33 +460,32 @@ try {
       }
       if (!finishCase || finishCase === "recovering-replaced") {
         await withPage(browser, {}, async (page) => {
+          // the pane's attach has not been answered yet
           await page.evaluate((id) => {
-            window.sidebarFixture.recoveringReplay(id, "previous answer\r\n");
+            window.sidebarFixture.hold(id);
             window.sidebarFixture.block(id, "loading");
           }, panes.omp);
           await agent(page, INFRA).locator(".agent-select").click();
           await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
           const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
           await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
-          await outputParsed(page, "previous answer\r\n");
-          // herdr replaces the pane's terminal, and the new attach has not taken yet
+          await page.waitForFunction((id) => (window.sidebarFixture.attaches[id] ?? 0) > 0, panes.omp);
+          // the attach joins a recovering attachment, and herdr replaces the pane's terminal before that join's replay comes
+          await page.evaluate((id) => window.sidebarFixture.frame({ type: "output-recovering", pane_id: id }), panes.omp);
           const attaches = await page.evaluate((id) => window.sidebarFixture.attaches[id] ?? 0, panes.omp);
-          await page.evaluate(async (id) => {
-            window.sidebarFixture.hold(id);
-            await window.sidebarFixture.replaceTerminal(id);
-          }, panes.omp);
+          await page.evaluate((id) => window.sidebarFixture.replaceTerminal(id), panes.omp);
           await page.waitForFunction(([id, before]) => (window.sidebarFixture.attaches[id as string] ?? 0) > (before as number), [panes.omp, attaches] as const);
-          // a late frame of the old replay is still the screen from before
-          await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "late replay\r\n" }), panes.omp);
-          await outputParsed(page, "late replay\r\n");
-          assert.equal(await content.count(), 0, "a replaced terminal of the recovering pane waits for its attach");
+          await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "previous answer\r\n", replay: true }), panes.omp);
+          await outputParsed(page, "previous answer\r\n");
+          assert.equal(await content.count(), 0, "the recovering join's late replay is still the screen from before");
+          // the new attach joins the attachment, which recovered meanwhile: its replay is the current screen
           await page.evaluate((id) => {
+            window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "current screen\r\n", replay: true });
             window.sidebarFixture.frame({ type: "input-ready", pane_id: id });
-            window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "fresh after the attach\r\n" });
           }, panes.omp);
           await content.waitFor({ timeout: 10_000 });
         });
-        console.log("PASS a replaced terminal of a recovering pane waits for its attach to take");
+        console.log("PASS a replaced terminal of a recovering pane shows the replay of an attachment that recovered");
       }
       if (!finishCase || finishCase === "transcript-finish") {
         for (const source of ["claude-transcript", "codex-transcript"] as const) await withPage(browser, {}, async (page) => {
