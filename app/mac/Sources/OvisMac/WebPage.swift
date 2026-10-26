@@ -78,6 +78,15 @@ final class WebPageController: NSObject, ObservableObject {
     private static var reserved: Set<String> = []
     private var destinations: [ObjectIdentifier: URL] = [:]
     private var reloads: AnyCancellable?
+    /// The drafts of the page this one replaced are written into its storage as it loads.
+    private var carrying = false
+
+    /// What the user typed and has not sent, as the page keeps it in its origin's storage: the chat's
+    /// draft and its send on its way, the terminal's held input and input line, held and pending
+    /// messages. Nothing here is sent by itself; it waits in the page for the user's Send or Discard.
+    /// A chat send on its way keeps its lease, as across a reload: until it runs out (2 minutes) the new
+    /// page does not offer that text again, which the old server may have taken.
+    static let draftPrefixes = ["ovis:composer-draft:", "ovis:composer-sending:", "ovis:terminal-draft:", "ovis:terminal-line:", "ovis:queue:", "ovis:pending:"]
 
     /// A popup gets the configuration WebKit hands over for it; the main window's page makes its own.
     init(origin: URL, model: Model, popupConfiguration: WKWebViewConfiguration? = nil) {
@@ -93,6 +102,12 @@ final class WebPageController: NSObject, ObservableObject {
         guard !isPopup else { return }
         model.page = self
         reloads = model.$reloads.dropFirst().sink { [weak self] _ in self?.reload() }
+        // a window the page opened outlives it: one still open on this address keeps using its storage
+        let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
+        if let script = Self.carryScript(model.carriedDrafts, shared: shared) {
+            webView.configuration.userContentController.addUserScript(script)
+            carrying = true
+        }
         webView.load(URLRequest(url: origin))
     }
 
@@ -121,6 +136,54 @@ final class WebPageController: NSObject, ObservableObject {
         webView.evaluateJavaScript("document.getElementById('root')?.childElementCount ?? 0") { [weak self] result, _ in
             if (result as? Int ?? 0) == 0 { self?.reload() }
         }
+    }
+
+    /// The page's unsent drafts, read before it goes for a page at another address (another port is
+    /// another origin, whose storage holds none of them).
+    func unsentDrafts() async -> [String: String] {
+        let prefixes = String(data: (try? JSONSerialization.data(withJSONObject: Self.draftPrefixes)) ?? Data(), encoding: .utf8) ?? "[]"
+        let source = """
+        (() => { const found = {}; try { for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i);
+          if (key && \(prefixes).some((prefix) => key.startsWith(prefix))) found[key] = localStorage.getItem(key); } } catch {}
+          return JSON.stringify(found); })()
+        """
+        // a page whose code hangs never answers: the window must still move on
+        let json: String? = await withCheckedContinuation { done in
+            var answered = false
+            let answer = { (value: String?) in
+                if !answered { answered = true; done.resume(returning: value) }
+            }
+            webView.evaluateJavaScript(source) { result, _ in answer(result as? String) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { answer(nil) }
+        }
+        guard let data = json?.data(using: .utf8),
+              let drafts = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+        return drafts
+    }
+
+    /// Writes the carried drafts before the page's own code reads its storage. This app's storage is its
+    /// own, so what the new origin holds is from the app's earlier visit there, older than the page just
+    /// left: a carried key replaces it, and a chat send left on its way there is over (the new page has
+    /// none of its own yet). Unless a window the page opened is still open there (`shared`): then that
+    /// window's drafts and sends are live, and a carried key only fills a gap. Any other key stays, never
+    /// sent by itself; the page it came from keeps its copy. One key that does not fit (a full store)
+    /// does not stop the rest. It runs once per origin: a reload before the page finished, or a window it
+    /// opened meanwhile, would otherwise put the carried text back over what was typed since.
+    private static func carryScript(_ drafts: [String: String], shared: Bool) -> WKUserScript? {
+        guard !drafts.isEmpty, let data = try? JSONSerialization.data(withJSONObject: drafts),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        let token = UUID().uuidString
+        let source = """
+        (() => { const carried = \(json), shared = \(shared);
+          try { if (localStorage.getItem("ovis-mac:carried") === "\(token)") return; localStorage.setItem("ovis-mac:carried", "\(token)"); } catch { return; }
+          if (!shared) { try { const leases = [];
+          for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i);
+            if (key && key.startsWith("ovis:composer-sending:") && !(key in carried)) leases.push(key); }
+          for (const key of leases) localStorage.removeItem(key); } catch {} }
+          for (const [key, value] of Object.entries(carried)) {
+            try { if (!shared || localStorage.getItem(key) === null) localStorage.setItem(key, value); } catch {} } })();
+        """
+        return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
     /// Loads the page again where it is, or from the start when it is not on an Ovis page.
@@ -281,6 +344,12 @@ extension WebPageController: WKNavigationDelegate {
         state = .shown
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
         if !isPopup { model?.pageLoaded() }
+        // the carried drafts are in this origin's storage now; a page that did not load keeps them for the next try
+        if carrying {
+            carrying = false
+            webView.configuration.userContentController.removeAllUserScripts()
+            model?.draftsCarried()
+        }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

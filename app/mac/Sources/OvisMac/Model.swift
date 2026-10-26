@@ -38,6 +38,9 @@ final class Model: ObservableObject {
     @Published var phoneSetupRequested = false
     /// The main window's page, for Open in Browser.
     weak var page: WebPageController?
+    /// Unsent drafts read from the page the window left (another port is another origin, with storage of
+    /// its own), for the next page to take up. Kept until a page has loaded with them.
+    private(set) var carriedDrafts: [String: String] = [:]
     /// The page did not load: it loads again once the server answers. A page that did load reconnects
     /// by itself, as it does in a browser, and keeps what the user had open in it.
     private var pageFailedToLoad = false
@@ -75,6 +78,14 @@ final class Model: ObservableObject {
         guard work == started else { return }
         self.status = status
         let origin = status.running ? status.origin : nil
+        if origin != webOrigin, webOrigin != nil, let page {
+            // the page about to go holds its drafts in its own origin's storage: read them while it runs
+            let drafts = await page.unsentDrafts()
+            // a check that Install, Restart or Remove overtook drops what it read: their own refresh reads
+            // the page again, and a copy left here could later bring back a draft sent meanwhile
+            guard work == started else { return }
+            carriedDrafts.merge(drafts) { $1 }
+        }
         if origin != webOrigin {
             // a page at a new address loads by itself
             webOrigin = origin
@@ -126,6 +137,10 @@ final class Model: ObservableObject {
 
     func pageLoaded() {
         pageFailedToLoad = false
+    }
+
+    func draftsCarried() {
+        carriedDrafts = [:]
     }
 
     func reload() {
