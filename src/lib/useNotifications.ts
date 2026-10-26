@@ -108,7 +108,14 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
   // brings the device back if the server lost its subscriptions; a changed choice of
   // alerts goes the same way
   useEffect(() => {
-    if (locked !== false || notifications !== "granted" || !alertsOn || !pushSupported()) return;
+    if (locked !== false || !alertsOn) return;
+    // the permission changed away from granted (taken back in the phone's Settings while the app was away,
+    // read only once it is back): what is known of this device is read again, so no repair stays offered
+    // that cannot help
+    if (notifications !== "granted" || !pushSupported()) {
+      void refreshPushHealth(true);
+      return;
+    }
     let cancelled = false;
     ensurePushSubscription(alerts)
       .then((endpoint) => {
