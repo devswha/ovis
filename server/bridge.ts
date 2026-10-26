@@ -118,16 +118,20 @@ export function answersOnLoopback(hostname: string): boolean {
   return name === "0.0.0.0" || name === "::" || /^127(?:\.\d{1,3}){3}$/.test(name);
 }
 
+/** `queue`: what this socket has not taken yet; `ending`: the other side closed, so this one ends once its queue is sent */
+interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; closed?: boolean; ending?: boolean }
 /**
- * `queue`: what this socket has not taken yet; `early`: what the client sent before the server's side
- * opened; `ending`: the other side closed, so this one ends once its queue is sent
+ * Writes `chunk` after what the socket has not taken yet, and stops reading the other side while
+ * there is any: the sender then feels the slow reader as its own backpressure, as it would without
+ * the relay (the server's output-stall checks read it), instead of the relay holding it all.
  */
-interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; early: Uint8Array[]; closed?: boolean; ending?: boolean }
-/** writes `chunk` after what the socket has not taken yet; `drain` sends the rest */
 function send(socket: Socket<Relayed>, chunk: Uint8Array): void {
   if (socket.data.queue.length) { socket.data.queue.push(chunk); return; }
   const written = socket.write(chunk);
-  if (written < chunk.byteLength) socket.data.queue.push(chunk.subarray(Math.max(written, 0)));
+  if (written < chunk.byteLength) {
+    socket.data.queue.push(chunk.subarray(Math.max(written, 0)));
+    socket.data.peer?.pause();
+  }
 }
 function drain(socket: Socket<Relayed>): void {
   while (socket.data.queue.length) {
@@ -137,6 +141,7 @@ function drain(socket: Socket<Relayed>): void {
     socket.data.queue.shift();
   }
   if (socket.data.ending) socket.end();
+  else socket.data.peer?.resume();
 }
 /** ends `socket` after what it still has to send */
 function endAfterQueue(socket: Socket<Relayed> | undefined): void {
@@ -155,13 +160,15 @@ export function loopbackRelay(hostname: string, port: number): { port: number; s
   const target = hostname.replace(/^\[(.*)\]$/, "$1");
   const listener = Bun.listen<Relayed>({ hostname: "127.0.0.1", port: 0, socket: {
     open(client) {
-      client.data = { queue: [], early: [] };
-      void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [], early: [] }, socket: {
+      client.data = { queue: [] };
+      // read nothing from the client until the server's side is there to take it
+      client.pause();
+      void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [] }, socket: {
         open(peer) {
           if (client.data.closed) { peer.end(); return; }
           peer.data.peer = client;
           client.data.peer = peer;
-          for (const chunk of client.data.early.splice(0)) send(peer, chunk);
+          client.resume();
         },
         data(peer, chunk) { send(client, chunk); },
         drain,
@@ -169,7 +176,7 @@ export function loopbackRelay(hostname: string, port: number): { port: number; s
         error() { endAfterQueue(client); },
       } }).catch(() => client.end());
     },
-    data(client, chunk) { if (client.data.peer) send(client.data.peer, chunk); else client.data.early.push(chunk); },
+    data(client, chunk) { if (client.data.peer) send(client.data.peer, chunk); },
     drain,
     close(client) { client.data.closed = true; endAfterQueue(client.data.peer); },
     error(client) { client.data.closed = true; endAfterQueue(client.data.peer); },

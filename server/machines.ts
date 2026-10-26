@@ -97,6 +97,8 @@ function verificationFailure(status: number, body: unknown): string {
   return `Bridge verification failed (${status}). Reconnect after checking the remote bridge.`;
 }
 
+/** how long verifying a bridge waits for its answer through the tunnel */
+const BRIDGE_ANSWER_MS = 15_000;
 /**
  * What the person adding the PC is told when the request through the standing tunnel to its bridge
  * fails (#1960): ssh resets the connection when nothing listens on the PC's 127.0.0.1 at that port,
@@ -105,7 +107,7 @@ function verificationFailure(status: number, body: unknown): string {
 function bridgeUnreachable(descriptor: BridgeDescriptor, error: unknown): string {
   const at = `127.0.0.1:${descriptor.port}`;
   if (descriptor.managed_remote) return `The bridge on this PC does not answer at ${at} through SSH. Reconnect after checking the remote bridge.`;
-  if ((error as Error | null)?.name === "TimeoutError") return `This PC's Ovis did not answer at ${at} through SSH within 15 seconds. Reconnect after checking that it runs.`;
+  if ((error as Error | null)?.name === "TimeoutError") return `This PC's Ovis did not answer at ${at} through SSH within ${BRIDGE_ANSWER_MS / 1000} seconds. Reconnect after checking that it runs.`;
   return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.`;
 }
 
@@ -750,7 +752,7 @@ export class MachineManager {
     await ssh.forward(port, descriptor.port);
     const endpoint = { url: `http://127.0.0.1:${port}`, token: descriptor.token };
     let response: Response;
-    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(15_000) }); }
+    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(BRIDGE_ANSWER_MS) }); }
     catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
     const identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity);
