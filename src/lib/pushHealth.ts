@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { PushDeliveryFailure, PushSubscriptionStatus } from "../../shared/protocol.ts";
-import { ApiError, fetchPushKey, fetchPushSubscriptionStatus } from "./api.ts";
+import { ApiError, fetchPushKey, fetchPushSubscriptionStatus, routeMissing } from "./api.ts";
 import { notificationState, type NotificationState } from "./notifications.ts";
 import { currentPushOperation, heldPushSubscription, pushSubscriptionEpoch, pushSupported, sameServerKey } from "./push.ts";
 
@@ -85,6 +85,12 @@ export function classifyPushHealth(input: PushHealthInput): PushHealth {
 /** What Send test or a repair came to, for Settings' line (components/PushTestControls.tsx). */
 export type PushActionResult = "sent" | "unsupported" | "permission" | "missing" | "gone" | "read-only" | "failed";
 
+/** A result with the subscription it is about: the endpoint tested, or the one a repair registered; null when none was reached. */
+export interface PushActionOutcome {
+  result: PushActionResult;
+  endpoint: string | null;
+}
+
 export interface PushHealthState {
   health: PushHealth;
   /** the test or repair under way, from the notice or Settings: the other waits */
@@ -159,8 +165,10 @@ async function observe(wanted: boolean): Promise<{ input: PushHealthInput; reach
     input.status = (await fetchPushSubscriptionStatus(subscription.json)) ?? "unknown";
   } catch (error) {
     // a server from before the question answers 404 for the route, and the open LAN, which signs in as no
-    // device, 403 status_unavailable: nothing to go on, and nothing wrong
-    return { input, reached: error instanceof ApiError, endpoint };
+    // device, 403 status_unavailable: nothing to go on, and nothing wrong. Any other failure (a 5xx, the PC
+    // out of reach) proves nothing either way: what was known stands
+    const answered = routeMissing(error) || error instanceof ApiError && error.code === "status_unavailable";
+    return { input, reached: answered, endpoint };
   }
   return { input, reached: true, endpoint };
 }
@@ -217,18 +225,22 @@ export function resetPushHealth(): void {
  * to; then looks again, so the notice clears on the success the test or repair just proved.
  * `wanted` is read when that look begins: a repair turns the switch on, a disable meanwhile off.
  */
-export async function runPushAction(kind: "test" | "repair", action: () => Promise<PushActionResult>, wanted: () => boolean): Promise<void> {
+export async function runPushAction(kind: "test" | "repair", action: () => Promise<PushActionResult | PushActionOutcome>, wanted: () => boolean): Promise<void> {
   if (state.busy !== null) return;
   const mine = ++actions;
   setState({ ...state, busy: kind, result: null });
   let result: PushActionResult = "failed";
+  let about: string | undefined;
   try {
-    result = await action();
+    const outcome = await action();
+    result = typeof outcome === "string" ? outcome : outcome.result;
+    about = typeof outcome === "string" ? undefined : outcome.endpoint ?? undefined;
   } finally {
     // reset or followed by another action meanwhile: that one's state is not this one's to clear
     if (mine === actions) {
-      // the look below claims it for the subscription it finds
-      resultFor = undefined;
+      // the subscription the line is about: the one tested or registered, else the one the look below finds.
+      // One replaced while a test was out (another tab) is not the one the line speaks of
+      resultFor = about;
       setState({ ...state, busy: null, result });
     }
   }

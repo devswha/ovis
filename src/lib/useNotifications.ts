@@ -3,7 +3,7 @@ import type { AlertPrefs } from "../../shared/notify-policy.ts";
 import type { Settings } from "./settings.ts";
 import { sendTestPush } from "./api.ts";
 import { notificationState, refreshNotificationState, requestNotificationPermission, type NotificationState } from "./notifications.ts";
-import { ensurePushSubscription, pushSupported, removePushSubscription } from "./push.ts";
+import { ensurePushSubscription, pushSupported, registeredPushEndpoint, removePushSubscription } from "./push.ts";
 import { refreshPushHealth, resetPushHealth, runPushAction } from "./pushHealth.ts";
 import { hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 
@@ -82,7 +82,10 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
 
   // the notice's repair is Settings' Turn alerts on again: one flow, one state (lib/pushHealth.ts)
   const repairNotifications = useCallback(() => {
-    void runPushAction("repair", async () => await enableNotifications() ? "sent" : "failed", () => alertsOnRef.current);
+    void runPushAction("repair", async () => {
+      const ok = await enableNotifications();
+      return { result: ok ? "sent" : "failed", endpoint: ok ? registeredPushEndpoint() : null };
+    }, () => alertsOnRef.current);
   }, [enableNotifications]);
 
   // in the app, alerts turned off while the PC could not be told keep the app's endpoint (lib/push.ts),

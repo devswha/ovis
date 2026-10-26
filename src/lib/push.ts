@@ -36,11 +36,13 @@ export function pushSupported(): boolean {
 }
 
 /** Test the existing subscription without repairing it first, so stale registrations stay visible. */
-export async function testDevicePush(): Promise<"sent" | "unsupported" | "permission" | "missing"> {
+export async function testDevicePush(tested?: (endpoint: string) => void): Promise<"sent" | "unsupported" | "permission" | "missing"> {
   if (!pushSupported()) return "unsupported";
   if (notificationState() !== "granted") return "permission";
   const subscription = appPush() ? await appSubscription() : await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
   if (!subscription) return "missing";
+  // the subscription the test is about, whatever replaces it while the push is out (lib/pushHealth.ts)
+  tested?.(subscription.endpoint);
   await sendTestPush(subscription.endpoint);
   return "sent";
 }
@@ -106,6 +108,13 @@ export function pushSubscriptionEpoch(): number {
   return epoch;
 }
 
+/** The endpoint this page's latest registration ended with, null after a failed one or a removal: what a repair proved (lib/pushHealth.ts). */
+let registered: string | null = null;
+
+export function registeredPushEndpoint(): string | null {
+  return registered;
+}
+
 /** Settles with the registration or removal under way, if any: a look at the subscription waits for it (lib/pushHealth.ts). */
 export function currentPushOperation(): Promise<void> {
   return operations.then(() => undefined, () => undefined);
@@ -124,7 +133,13 @@ export function currentPushOperation(): Promise<void> {
 export function ensurePushSubscription(alerts?: AlertPrefs): Promise<string | null> {
   if (pending) return pending;
   epoch += 1;
-  const request = operations.catch(() => undefined).then(() => subscribeDevice(alerts)).finally(() => {
+  const request = operations.catch(() => undefined).then(() => subscribeDevice(alerts)).then((endpoint) => {
+    registered = endpoint;
+    return endpoint;
+  }, (error: unknown) => {
+    registered = null;
+    throw error;
+  }).finally(() => {
     if (pending === request) pending = null;
   });
   pending = request;
@@ -186,6 +201,7 @@ export function removePushSubscription(): Promise<void> {
   // A later enable must enqueue a new registration after this removal, not join the old one.
   pending = null;
   epoch += 1;
+  registered = null;
   const request = operations.catch(() => undefined).then(unsubscribeDevice);
   operations = request;
   return request;

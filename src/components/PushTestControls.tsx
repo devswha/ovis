@@ -3,8 +3,8 @@ import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inNativeApp } from "../lib/nativeApp.ts";
 import { notificationState } from "../lib/notifications.ts";
-import { pushSupported, testDevicePush } from "../lib/push.ts";
-import { runPushAction, usePushHealth, type PushActionResult } from "../lib/pushHealth.ts";
+import { pushSupported, registeredPushEndpoint, testDevicePush } from "../lib/push.ts";
+import { runPushAction, usePushHealth, type PushActionOutcome, type PushActionResult } from "../lib/pushHealth.ts";
 import { useSettings } from "../lib/settings.ts";
 
 export function PushTestControls({ onEnable }: { onEnable: () => Promise<boolean> }) {
@@ -18,15 +18,21 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<boolean
   const denied = notificationState() === "denied";
   const enable = !settings.alertsOn || health.repair || result === "missing" || result === "gone" || result === "permission";
 
-  const send = (repair: boolean) => runPushAction(repair ? "repair" : "test", async (): Promise<PushActionResult> => {
+  const send = (repair: boolean) => runPushAction(repair ? "repair" : "test", async (): Promise<PushActionOutcome> => {
+    // the subscription the line will be about: the one tested, or the one the repair registered
+    let endpoint: string | null = null;
     try {
-      if (repair) return await onEnable() ? "sent" : "failed";
-      return await testDevicePush();
+      if (repair) {
+        const ok = await onEnable();
+        return { result: ok ? "sent" : "failed", endpoint: ok ? registeredPushEndpoint() : null };
+      }
+      return { result: await testDevicePush((tested) => { endpoint = tested; }), endpoint };
     } catch (error) {
       // gone: the push service retired the endpoint; Turn alerts on again subscribes this device anew
       const code = error instanceof ApiError ? error.code : null;
       // a watching device may receive alerts but never send one: the line says so, and Send test stays unavailable
-      return code === "subscription_not_found" ? "missing" : code === "subscription_gone" ? "gone" : code === "read_only" ? "read-only" : "failed";
+      const result: PushActionResult = code === "subscription_not_found" ? "missing" : code === "subscription_gone" ? "gone" : code === "read_only" ? "read-only" : "failed";
+      return { result, endpoint };
     }
   }, () => wanted.current);
 

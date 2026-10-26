@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { PushDeliveryFailure, PushSubscriptionStatus } from "../../shared/protocol.ts";
 import { classifyPushHealth, failureIsNewer, readPushHealth, refreshPushHealth, resetPushHealth, runPushAction, type PushHealthInput } from "./pushHealth.ts";
 import { refreshNotificationState } from "./notifications.ts";
-import { ensurePushSubscription } from "./push.ts";
+import { ensurePushSubscription, registeredPushEndpoint } from "./push.ts";
 
 const at = (seconds: number): string => new Date(1_700_000_000_000 + seconds * 1000).toISOString();
 const status = (fields: Partial<PushSubscriptionStatus> = {}): PushSubscriptionStatus =>
@@ -184,6 +184,8 @@ describe("the shared health state", () => {
     expect(race.replies[0]!.endpoint).toBe("https://push.example/1");
     live!.options.applicationServerKey = new Uint8Array(65).fill(7).buffer as ArrayBuffer;
     expect(await ensurePushSubscription()).toBe("https://push.example/2");
+    // what a repair proved: the endpoint this page's registration ended with
+    expect(registeredPushEndpoint()).toBe("https://push.example/2");
     race.replies[0]!.reply.resolve(Response.json(gone));
     await race.sent(2);
     expect(race.replies[1]!.endpoint).toBe("https://push.example/2");
@@ -306,6 +308,29 @@ describe("the shared health state", () => {
     answer = async () => Response.json(status({ last_success_at: at(2) }));
     await refreshPushHealth(true);
     expect(readPushHealth()).toMatchObject({ health: { problem: null }, result: null });
+
+    // a test whose push is out while another tab replaces the subscription: its line is not the new one's
+    const release = deferred<void>();
+    const pending = runPushAction("test", async () => { await release.promise; return { result: "sent", endpoint: "https://push.example/10" }; }, () => true);
+    live = standIn("https://push.example/11");
+    release.resolve();
+    await pending;
+    expect(readPushHealth()).toMatchObject({ health: { problem: null }, result: null });
+    // the line stays when the subscription tested is the one held
+    await runPushAction("test", async () => ({ result: "sent", endpoint: "https://push.example/11" }), () => true);
+    expect(readPushHealth().result).toBe("sent");
+  });
+
+  it("keeps a known fault through an answer that proves nothing", async () => {
+    answer = async () => Response.json(gone);
+    await refreshPushHealth(true);
+    expect(readPushHealth().health.problem).toBe("gone");
+    // a failing PC (5xx) or a refused key read says nothing of the subscription: the notice stands
+    for (const failing of [500, 503]) {
+      answer = async () => Response.json({ error: { code: "internal_error", message: "no" } }, { status: failing });
+      await refreshPushHealth(true);
+      expect(readPushHealth().health).toEqual({ problem: "gone", repair: true, transient: null });
+    }
   });
 
   it("reads the phone app's subscription for this PC, which has no service worker", async () => {
