@@ -351,10 +351,11 @@ describe("push delivery", () => {
     fake.answerWith(410);
     await push.sendTest(fake.subscription.endpoint);
     expect(push.retired(fake.subscription.endpoint)).toBe(true);
+    // control: inside the time to live it is still remembered (read first: a load past it rewrites the file without it)
+    expect(createPushService({ loopbackHttp: true, stateDir, now: () => 1_000_000 + 1000 }).retired(fake.subscription.endpoint)).toBe(true);
     clock += 31 * 24 * 60 * 60 * 1000;
     expect(createPushService({ loopbackHttp: true, stateDir, now: () => clock }).retired(fake.subscription.endpoint)).toBe(false);
-    // control: inside the time to live it is still remembered
-    expect(createPushService({ loopbackHttp: true, stateDir, now: () => 1_000_000 + 1000 }).retired(fake.subscription.endpoint)).toBe(true);
+    expect(readFileSync(join(stateDir, "push-retired.json"), "utf8")).not.toContain("hash");
     // a malformed file is ignored, never fatal
     writeFileSync(join(stateDir, "push-retired.json"), "not json");
     expect(createPushService({ loopbackHttp: true, stateDir }).retired(fake.subscription.endpoint)).toBe(false);
@@ -856,6 +857,21 @@ describe("push delivery health (#1039)", () => {
       writeFileSync(join(stateDir, "push-delivery.json"), JSON.stringify([{ hash, owner: null, keys, success_at: clock, failure_at: null, failure: null, at: clock, ...times }]));
       expect(createPushService({ loopbackHttp: true, stateDir, now: () => clock }).status(fake.subscription, null)).toEqual({ registered: true, last_success_at: null, last_failure_at: null, last_failure: null });
     }
+  });
+
+  it("rewrites its files without what expired, so a revocation leaves nothing of the device on disk", () => {
+    const now = 1_700_000_000_000;
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    writeFileSync(join(stateDir, "push-delivery.json"), JSON.stringify([
+      { hash: "h-old", owner: "device-x", keys: "k", success_at: old, failure_at: null, failure: null, at: old },
+      { hash: "h-new", owner: "device-y", keys: "k", success_at: now, failure_at: null, failure: null, at: now },
+    ]));
+    writeFileSync(join(stateDir, "push-retired.json"), JSON.stringify([{ hash: "h-old", at: old, owner: "device-x" }, { hash: "h-new", at: now, owner: "device-y" }]));
+    // the expired history of device-x is already gone from memory: revoking it must still clear it from disk
+    createPushService({ loopbackHttp: true, stateDir, now: () => now }).revokeDevice("device-x");
+    const hashes = (file: string) => (JSON.parse(readFileSync(join(stateDir, file), "utf8")) as { hash: string }[]).map((entry) => entry.hash);
+    expect(hashes("push-delivery.json")).toEqual(["h-new"]);
+    expect(hashes("push-retired.json")).toEqual(["h-new"]);
   });
 
   it("counts a push's outcome, a retirement included, when its record cannot be written", async () => {

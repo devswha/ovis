@@ -377,6 +377,15 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (typeof hash !== "string" || typeof at !== "number" || at <= cutoff) continue;
       retiredEndpoints.set(hash, { at, ...(owner === null || typeof owner === "string" ? { owner } : {}) });
     }
+    // what was dropped (expired, over the bound, malformed) leaves the file too: a revocation later finds
+    // nothing of it to remove, and the device's marks must not stay on disk
+    if (retiredEndpoints.size !== stored.length) {
+      try {
+        persistRetired();
+      } catch (error) {
+        console.error(`Cannot write ${retiredPath} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); its expired entries stay on disk until the next write`);
+      }
+    }
     return retiredEndpoints;
   }
 
@@ -416,6 +425,9 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (!time(success_at) || !time(failure_at) || !(failure === null || FAILURES.includes(failure as PushDeliveryFailure))) continue;
       deliveries.set(hash, { hash, owner, keys, success_at, failure_at, failure: failure as PushDeliveryFailure | null, at });
     }
+    // what was dropped leaves the file too: an unsubscribe or a revocation later finds nothing of it to
+    // remove, and a device's history must not stay on disk without another push
+    if (deliveries.size !== stored.length) persistDeliveries();
     return deliveries;
   }
 
