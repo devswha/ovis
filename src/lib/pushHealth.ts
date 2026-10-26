@@ -158,7 +158,8 @@ async function observe(wanted: boolean): Promise<{ input: PushHealthInput; reach
     if (input.keyMatches === false) return { input, reached: true, endpoint };
     input.status = (await fetchPushSubscriptionStatus(subscription.json)) ?? "unknown";
   } catch (error) {
-    // a server from before the question answers 404 for the route: nothing to go on, and nothing wrong
+    // a server from before the question answers 404 for the route, and the open LAN, which signs in as no
+    // device, 403 status_unavailable: nothing to go on, and nothing wrong
     return { input, reached: error instanceof ApiError, endpoint };
   }
   return { input, reached: true, endpoint };

@@ -142,7 +142,10 @@ it("tells a stranger, the open LAN and a revoked device nothing", async () => {
     expect((await fetch(`${openBase}/api/push/subscribe`, { method: "POST", headers: { ...guard, ...forwarded }, body: JSON.stringify({ subscription: lan.subscription }) })).status).toBe(204);
     expect((await fetch(`${openBase}/api/push/test`, { method: "POST", headers: { ...guard, ...forwarded }, body: JSON.stringify({ endpoint: lan.subscription.endpoint }) })).status).toBe(204);
     await lan.waitFor((push) => push.payload.tag === "herdr-test", "confirmation push", 5000);
-    expect(await status(openBase, forwarded, lan.subscription)).toEqual({ status: 404, body: NOT_FOUND });
+    // told it has no device to answer for, the same whatever subscription it names, so its device stays quiet
+    const unavailable = { status: 403, body: { error: { code: "status_unavailable", message: "this sign-in has no device to answer for" } } };
+    expect(await status(openBase, forwarded, lan.subscription)).toEqual(unavailable);
+    expect(await status(openBase, forwarded, { ...lan.subscription, endpoint: "https://push.example.test/unknown" })).toEqual(unavailable);
     // this PC itself (owner null) does not own what the LAN registered either
     expect(await status(openBase, {}, lan.subscription)).toEqual({ status: 404, body: NOT_FOUND });
   } finally { lan.stop(); open.stop(); rmSync(openRoot, { recursive: true, force: true }); }

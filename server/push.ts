@@ -800,7 +800,7 @@ function subscriptionNotFound(): Response {
 const PUSH_ROUTES = ["POST /api/push/subscribe", "DELETE /api/push/subscribe", "POST /api/push/test", "POST /api/push/status"];
 
 export async function handlePushRequest(request: Request, pathname: string, push: PushService, deviceId: string | null | undefined): Promise<Response | null> {
-  if (pathname === "/api/push" || pathname === "/api/push/subscribe" || pathname === "/api/push/test") setRequestRoute(pathname);
+  if (pathname === "/api/push" || pathname === "/api/push/subscribe" || pathname === "/api/push/test" || pathname === "/api/push/status") setRequestRoute(pathname);
   const route = `${request.method} ${pathname}`;
   if (route === "GET /api/push") return jsonResponse({ public_key: push.publicKey() });
   if (!PUSH_ROUTES.includes(route)) {
@@ -824,6 +824,9 @@ export async function handlePushRequest(request: Request, pathname: string, push
     return new Response(null, { status: 204 });
   }
   if (route === "POST /api/push/status") {
+    // the open LAN signs in as nobody: no record can be its own, so it is told that before any is looked
+    // at, and its device stays quiet rather than reading "not subscribed" for a subscription that works
+    if (deviceId === undefined) return jsonResponse({ error: { code: "status_unavailable", message: "this sign-in has no device to answer for" } }, 403);
     const subscription = push.parse(body.subscription);
     if (!subscription) return badRequest("invalid_subscription", "subscription needs an https endpoint and p256dh/auth keys");
     const status = push.status(subscription, deviceId);

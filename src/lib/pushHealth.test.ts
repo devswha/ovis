@@ -143,6 +143,13 @@ describe("the shared health state", () => {
     answer = async () => Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     await refreshPushHealth(true);
     expect(readPushHealth().health).toEqual({ problem: null, repair: false, transient: null });
+    // the open LAN signs in as nobody, so its subscription has no record to read: quiet, never "missing"
+    answer = async () => Response.json({ error: { code: "subscription_not_found", message: "no" } }, { status: 404 });
+    await refreshPushHealth(true);
+    expect(readPushHealth().health.problem).toBe("missing");
+    answer = async () => Response.json({ error: { code: "status_unavailable", message: "no device" } }, { status: 403 });
+    await refreshPushHealth(true);
+    expect(readPushHealth().health).toEqual({ problem: null, repair: false, transient: null });
   });
 
   it("drops a late answer after a later success, a disable or a new subscription", async () => {

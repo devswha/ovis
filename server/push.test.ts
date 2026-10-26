@@ -750,12 +750,16 @@ describe("push delivery health (#1039)", () => {
     for (const [label, subscription, owner] of [
       ["another device", fake.subscription, "device-b"],
       ["a local sign-in", fake.subscription, null],
-      ["the open LAN", fake.subscription, undefined],
       ["the owner with the wrong keys", wrongKeys, "device-a"],
     ] as const) {
       const response = (await statusRequest(push, subscription, owner))!;
       expect([label, response.status]).toEqual([label, 404]);
       expect([label, await response.json()]).toEqual([label, unknownBody]);
+    }
+    // the open LAN signs in as no device: told so alike for a known and an unknown subscription, before either is looked at
+    for (const subscription of [fake.subscription, { ...fake.subscription, endpoint: `${fake.subscription.endpoint}-never-known` }]) {
+      const response = (await statusRequest(push, subscription, undefined))!;
+      expect([response.status, await response.json()]).toEqual([403, { error: { code: "status_unavailable", message: "this sign-in has no device to answer for" } }]);
     }
     // a retired subscription keeps the same rule: the tombstone answers its owner alone
     fake.answerWith(410);
