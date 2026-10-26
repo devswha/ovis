@@ -31,15 +31,13 @@ const DRAFT = "ovis:composer-draft:w1:p1";
 describe("pane state per herdr lifetime", () => {
   it("keeps a pane's state across server restarts on one herdr, and leaves a replaced herdr's text to recovery", () => {
     const storage = new MemoryStorage();
-    storage.setItem(DRAFT, "for the old pane");
-    storage.setItem("ovis:view:w1:p1", "chat");
-    storage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo ", at: 1_000 }));
-    storage.setItem(`ovis:composer-sending:${DRAFT}`, JSON.stringify({ sent: "x", at: 1_000 }));
-    storage.setItem("ovis:terminal-line:remote:pc2:w1%3Ap1", "another PC's line");
     const first = page(storage);
-    // what is stored before any lifetime was named stays the pane's
     first.observe([pc("local", "herdr-a")], title);
-    expect(first.paneStorage.getItem(DRAFT)).toBe("for the old pane");
+    first.paneStorage.setItem(DRAFT, "for the old pane");
+    first.paneStorage.setItem("ovis:view:w1:p1", "chat");
+    first.paneStorage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo ", at: 1_000 }));
+    first.paneStorage.setItem(`ovis:composer-sending:${DRAFT}`, JSON.stringify({ sent: "x", at: 1_000 }));
+    storage.setItem("ovis:terminal-line:remote:pc2:w1%3Ap1", "another PC's line");
     // a server restart on the same herdr: a new page, the same lifetime
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-a")], title);
@@ -128,15 +126,79 @@ describe("pane state per herdr lifetime", () => {
     expect(stale.unsent().map(({ text }) => text)).toEqual(["for herdr-b's pane"]);
   });
 
-  it("takes a snapshot without a lifetime from a PC that proved one as no news", () => {
+  it("sends text an earlier release stored, for a herdr nothing proves, to recovery, and keeps its lenses", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(DRAFT, "typed before this release");
+    storage.setItem("ovis:view:w1:p1", "chat");
+    storage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo ", at: 1_000 }));
+    storage.setItem(`ovis:composer-sending:${DRAFT}`, JSON.stringify({ sent: "x", at: 1_000 }));
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    expect(storage.getItem(`ovis:composer-sending:${DRAFT}`)).toBeNull();
+    expect(lifetimes.paneStorage.getItem("ovis:view:w1:p1")).toBe("chat");
+    expect(storage.getItem("ovis:pane-lifetime:local")).toBe("herdr-a");
+    expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`).sort()).toEqual(["held:echo ", "message:typed before this release"]);
+    // a reload on the same herdr finds the record: nothing more leaves the panes
+    const reloaded = page(storage);
+    reloaded.observe([pc("local", "herdr-a")], title);
+    reloaded.paneStorage.setItem(DRAFT, "typed after");
+    page(storage).observe([pc("local", "herdr-a")], title);
+    expect(storage.getItem(DRAFT)).toBe("typed after");
+    expect(reloaded.unsent()).toHaveLength(2);
+  });
+
+  it("gives the panes of a snapshot naming no herdr none of the stored state, and gives it back once that herdr is named again", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
     lifetimes.observe([pc("local", "herdr-a")], title);
-    lifetimes.paneStorage.setItem(DRAFT, "still mine");
+    lifetimes.paneStorage.setItem(DRAFT, "for herdr a's pane");
+    // a read that could not prove its herdr: its panes may be a replacement's under the same IDs
     lifetimes.observe([pc("local", undefined)], title);
-    expect(lifetimes.generation("local")).toBe("herdr-a");
-    expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("still mine");
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p1", "typed meanwhile");
+    expect(storage.getItem(DRAFT)).toBe("for herdr a's pane");
+    expect(storage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    // herdr a named again: they were its panes all along
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("for herdr a's pane");
+    expect(storage.getItem("ovis:terminal-line:w1:p1")).toBe("typed meanwhile");
     expect(lifetimes.unsent()).toEqual([]);
+    // unproven again, then another herdr named: neither the stored text nor what was typed meanwhile reaches its panes
+    lifetimes.observe([pc("local", undefined)], title);
+    lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed while unproven");
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p2")).toBeNull();
+    expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["for herdr a's pane", "typed meanwhile", "typed while unproven"]);
+    // a late read naming herdr a is stale
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-b");
+  });
+
+  it("settles a send begun for a pane of the herdr before nothing in the draft its pane ID holds now", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    const drafts = new ComposerDraftStore(() => lifetimes.paneStorage, undefined, () => lifetimes.generation("local"));
+    lifetimes.onRetire((machineId) => drafts.forget(machineId, lifetimes));
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    drafts.set(DRAFT, "deploy");
+    expect(drafts.begin(DRAFT, "deploy")).toBe(true);
+    const send = drafts.sendOf(DRAFT);
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    // the new pane's box is free, and what is typed there is its own
+    expect(drafts.read(DRAFT).sending).toBe(false);
+    drafts.set(DRAFT, "deploy new target");
+    expect(drafts.begin(DRAFT, "deploy new target")).toBe(true);
+    const next = drafts.sendOf(DRAFT);
+    // the earlier herdr's acknowledgement and end arrive late
+    expect(drafts.settle(DRAFT, "deploy", send)).toBeNull();
+    drafts.end(DRAFT, send);
+    expect(drafts.read(DRAFT)).toEqual({ text: "deploy new target", sending: true });
+    expect(drafts.settle(DRAFT, "deploy new target", next)).toEqual({ text: "", edited: false });
+    drafts.end(DRAFT, next);
+    expect(drafts.read(DRAFT).sending).toBe(false);
   });
 
   it("keeps text in this page for recovery when storage refuses its record, or refused the edit itself", () => {
@@ -165,9 +227,10 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.paneStorage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo held", at: 1_000 }));
     lifetimes.paneStorage.setItem("ovis:view:w1:p1", "chat");
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed here");
-    // meanwhile another tab kept its own line for that pane under the same herdr
-    storage.setItem("ovis:terminal-line:w1:p2", "typed in another tab");
     storage.refuse = null;
+    // meanwhile another tab, whose storage took the record, kept its own line for that pane under the same herdr
+    storage.setItem("ovis:pane-lifetime:local", "herdr-a");
+    storage.setItem("ovis:terminal-line:w1:p2", "typed in another tab");
     lifetimes.observe([pc("local", "herdr-a", [pane("w1:p1", "api"), pane("w1:p2", "web")])], title);
     expect(lifetimes.stored("local")).toBe(true);
     expect(storage.getItem("ovis:terminal-draft:w1:p1")).toBe(JSON.stringify({ text: "echo held", at: 1_000 }));

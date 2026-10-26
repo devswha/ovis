@@ -78,7 +78,8 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
     && typeof lifetime === "string" && drawnUnder.current.lifetime !== lifetime;
   useEffect(() => {
     if (replaced) setNotificationViewTarget(null);
-    drawnUnder.current = { machineId: selectedMachineId, lifetime };
+    // reads that named no herdr in between leave the one it last named
+    if (drawnUnder.current.machineId !== selectedMachineId || typeof lifetime === "string") drawnUnder.current = { machineId: selectedMachineId, lifetime };
   }, [replaced, selectedMachineId, lifetime, setNotificationViewTarget]);
   const notificationView = replaced ? null : notificationViewForPane(notificationViewTarget, selectedMachineId, selectedPaneId);
   let view = lens.view;

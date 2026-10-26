@@ -1612,7 +1612,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   line, held input, held or unconfirmed chat messages) and its lens belong to the herdr they were made under (`herdr_lifetime` in the
   snapshot, src/lib/paneLifetime.ts). When a PC's snapshot names another herdr, its panes open with
   an empty box and their default lens in that same render, and the earlier text waits here instead
-  of in a pane it was not written for. Nothing is deleted or sent on its own.
+  of in a pane it was not written for. Nothing is deleted or sent on its own. Text stored before
+  this release, which names no herdr, waits here too from the first load; a snapshot that names no
+  herdr draws its panes with none of the stored state until one is named again.
 - Opened only by the user, from a pane's menu (**Recover unsent text**, lucide `ArchiveRestore`,
   listed only while there is some). A `.modal` of 560px, a bottom sheet on a phone: a lead sentence,
   then one row per text, each with its PC, pane, kind (Message box, Terminal line, Held input, Held message) and

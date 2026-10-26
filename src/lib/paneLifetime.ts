@@ -9,7 +9,8 @@ import { restoreDraft } from "./draft.ts";
  * which herdr it belongs to (`ovis:pane-lifetime:<PC>`, the snapshot's `herdr_lifetime`). When a
  * snapshot names another one, the earlier herdr's text leaves its panes for Recover unsent text
  * (`ovis:unsent:`), never deleted and never sent, and its lenses and leases go. A server restart
- * alone keeps the lifetime, and the state with it.
+ * alone keeps the lifetime, and the state with it. Text stored before any record was (an earlier
+ * release) names no herdr: it goes to recovery on the first load, and its lenses stay.
  *
  * A PC whose snapshot names no lifetime (an older bridge) keeps its pane state in this page only:
  * it survives reconnects, never reaches storage, and reads none of it. So does a PC whose stored
@@ -126,30 +127,35 @@ export class PaneLifetimes {
    * Each roster before it is drawn (useMachineRoster): a PC whose snapshot names another herdr than
    * the page drew it under leaves its pane state to recovery in this same render. Only the page
    * that saw the stored herdr go retires the stored state; a page that is behind another tab
-   * leaves it alone, and keeps its own state in memory until it catches up. A PC's connection
-   * reports its snapshot here too (lib/machineSession.ts), before its panes hear of it, with no
-   * titles: the roster's next read brings them.
+   * leaves it alone, and keeps its own state in memory until it catches up. A snapshot that names
+   * no herdr after one was proven proves neither: the panes it draws get none of the stored state,
+   * which stays where it is until a snapshot names a herdr again. A PC's connection reports its
+   * snapshot here too (lib/machineSession.ts), before its panes hear of it, with no titles: the
+   * roster's next read brings them.
    */
   observe(machines: readonly Pick<Machine, "id" | "snapshot">[], title?: (pane: HerdrPane) => string): void {
     const changed: string[] = [];
     for (const machine of machines) {
       if (!machine.snapshot) continue;
       const titles = this.titles.get(machine.id) ?? new Map<string, string>();
-      // once a PC proved its herdr, a snapshot naming none (a read that could not prove one) is no news
       const named = machine.snapshot.herdr_lifetime;
-      if (named === undefined && this.proven.has(machine.id)) continue;
       // a read from before the herdr this page already moved to (a roster the connection overtook)
       if (named !== undefined && this.outlived.get(machine.id)?.has(named)) continue;
       const next = named ?? null;
+      const proven = this.proven.get(machine.id);
       if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {
-        this.retireMemory(machine.id, titles);
-        const left = this.generations.get(machine.id);
-        if (typeof left === "string" && next !== null) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], left].slice(-RETIRED_KEPT)));
+        // back on the herdr this page last proved, after reads that proved none: what the page kept
+        // meanwhile was for that herdr's panes. Any other change leaves it to recovery
+        const back = next !== null && next === proven;
+        if (!back) this.retireMemory(machine.id, titles);
+        if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
         if (next !== null) this.settle(machine.id, next, titles);
+        if (back && this.stored(machine.id)) this.storeMemory(machine.id, titles);
         changed.push(machine.id);
-      } else if (next !== null && !this.stored(machine.id)) {
-        // behind another tab, or refused by storage: tried again with each roster
+      } else if (next !== null && (!this.stored(machine.id) || this.holds(machine.id))) {
+        // behind another tab, or refused by storage: tried again with each roster. Storage that took
+        // another tab's record meanwhile still leaves this page's own text to move
         this.settle(machine.id, next, titles);
         if (this.stored(machine.id)) {
           // what this page kept meanwhile was made under this same herdr: it goes to storage, as the
@@ -174,16 +180,19 @@ export class PaneLifetimes {
       try { const list: unknown = JSON.parse(storage.getItem(RETIRED_PREFIX + machineId) ?? "[]"); if (Array.isArray(list)) retired = list.filter((item): item is string => typeof item === "string"); } catch { /* unreadable: no history */ }
       // a herdr the stored state already outlived: this page is behind another tab, and leaves that state alone
       if (retired.includes(next)) return;
-      // no record: what is stored was written before lifetimes were (or on a fresh page), and stays the pane's
       if (record !== null) {
         this.retireStored(storage, machineId, titles);
         storage.setItem(RETIRED_PREFIX + machineId, JSON.stringify([...retired.filter((item) => item !== record), record].slice(-RETIRED_KEPT)));
+      } else {
+        // no record: the text was stored before lifetimes were (an earlier release), for a herdr
+        // nothing proves is this one. It goes to recovery; a lens is no text, and stays
+        this.retireStored(storage, machineId, new Map(), true);
       }
       storage.setItem(RECORD_PREFIX + machineId, next);
     } catch { /* storage refused: the PC's state stays in this page */ }
   }
 
-  private retireStored(storage: Storage, machineId: string, titles: ReadonlyMap<string, string>): void {
+  private retireStored(storage: Storage, machineId: string, titles: ReadonlyMap<string, string>, keepLenses = false): void {
     const keys: string[] = [];
     for (let index = 0; index < storage.length; index++) {
       const key = storage.key(index);
@@ -192,6 +201,7 @@ export class PaneLifetimes {
     for (const key of keys) {
       const pane = paneStateKey(key);
       if (pane?.machineId !== machineId) continue;
+      if (keepLenses && key.startsWith(VIEW_PREFIX)) continue;
       if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, storage.getItem(key), this.now()), titles);
       storage.removeItem(key);
     }
@@ -206,6 +216,12 @@ export class PaneLifetimes {
       this.memory.delete(key);
       if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, value, this.now()), titles);
     }
+  }
+
+  /** whether this page keeps any of the PC's pane state in its memory */
+  private holds(machineId: string): boolean {
+    for (const key of this.memory.keys()) if (paneStateKey(key)?.machineId === machineId) return true;
+    return false;
   }
 
   private storeMemory(machineId: string, titles: ReadonlyMap<string, string>): void {
