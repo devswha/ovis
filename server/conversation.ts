@@ -1039,10 +1039,10 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
  * user's own default and profile stores instead.
  */
 /** Where a test stands between a transcript's authorization and its anchor, to change the filesystem then (betweenAuthorizationForTests). */
-let betweenAuthorization: (() => void) | null = null;
+let betweenAuthorization: ((stage: "before" | "after") => void) | null = null;
 
 /** Lets a test run `between` the authorization of an omp transcript and its blob store's anchor, or stops it (null). */
-export function betweenAuthorizationForTests(between: (() => void) | null): void {
+export function betweenAuthorizationForTests(between: ((stage: "before" | "after") => void) | null): void {
   betweenAuthorization = between;
 }
 
@@ -1070,9 +1070,13 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
   try {
     // one descriptor of the agent data directory, opened once and held: the transcript and the blob store
     // are both reached from it, so a directory renamed or moved after this open moves neither
+    // the trust boundary: the directory at the data directory's path when it is opened here is the one
+    // trusted, as the user's own arrangement then (a process that can rename inside it runs as the user);
+    // from this open on, nothing is reached by path again
+    betweenAuthorization?.("before");
     const data = open(dirname(root), constants.O_RDONLY | constants.O_DIRECTORY);
     if (readlinkSync(`/proc/self/fd/${data}`) !== dirname(root)) return null;
-    betweenAuthorization?.();
+    betweenAuthorization?.("after");
     let at = open(`/proc/self/fd/${data}/sessions`, constants.O_RDONLY | constants.O_DIRECTORY);
     for (const [index, name] of parts.entries()) {
       const last = index === parts.length - 1;

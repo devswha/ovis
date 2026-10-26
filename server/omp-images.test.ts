@@ -238,14 +238,36 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     // is still reached through the held directory, this omp's own
     const checked = authorizedTranscript(own.path, sessions(own.blobs))!;
     const ownIdentity = ompBlobAnchor(own.blobs)!.identity;
-    betweenAuthorizationForTests(() => { renameSync(agent, `${agent}-aside`); symlinkSync(join(other.blobs, ".."), agent); });
+    const otherAgent = join(other.blobs, "..");
+    betweenAuthorizationForTests((stage) => { if (stage !== "after") return; renameSync(agent, `${agent}-aside`); symlinkSync(join(other.blobs, ".."), agent); });
     try {
       expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ownIdentity });
     } finally { betweenAuthorizationForTests(null); unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
+    // before the data directory is opened, this omp's sessions moved into the other agent directory and
+    // that directory moved to this one's path: the arrangement then is the one trusted, and the transcript
+    // and the blob store both come from the one data directory now at that path
+    let consistent: string | undefined;
+    betweenAuthorizationForTests((stage) => {
+      if (stage !== "before") return;
+      renameSync(sessions(other.blobs), `${sessions(other.blobs)}-aside`);
+      renameSync(sessions(own.blobs), sessions(other.blobs));
+      renameSync(agent, `${agent}-aside`);
+      renameSync(otherAgent, agent);
+      consistent = ompBlobAnchor(own.blobs)!.identity;
+    });
+    try {
+      expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: consistent! });
+      expect(consistent).not.toBe(ownIdentity);
+    } finally {
+      betweenAuthorizationForTests(null);
+      renameSync(agent, otherAgent);
+      renameSync(`${agent}-aside`, agent);
+      renameSync(sessions(other.blobs), sessions(own.blobs));
+      renameSync(`${sessions(other.blobs)}-aside`, sessions(other.blobs));
+    }
     // this omp's sessions moved under the other's agent directory, and the two agent directories swapped
     // names: the held data directory has no sessions left, and nothing is anchored
-    const otherAgent = join(other.blobs, "..");
-    betweenAuthorizationForTests(() => {
+    betweenAuthorizationForTests((stage) => { if (stage !== "after") return;
       renameSync(sessions(other.blobs), `${sessions(other.blobs)}-aside`);
       renameSync(sessions(own.blobs), sessions(other.blobs));
       renameSync(agent, `${agent}-aside`);
@@ -262,7 +284,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     }
     // and another real store moved into this one's place there is refused the same way
     const sessionsDir = sessions(own.blobs);
-    betweenAuthorizationForTests(() => { renameSync(sessionsDir, `${sessionsDir}-aside`); renameSync(sessions(other.blobs), sessionsDir); });
+    betweenAuthorizationForTests((stage) => { if (stage !== "after") return; renameSync(sessionsDir, `${sessionsDir}-aside`); renameSync(sessions(other.blobs), sessionsDir); });
     try {
       expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: null });
     } finally { betweenAuthorizationForTests(null); renameSync(sessionsDir, sessions(other.blobs)); renameSync(`${sessionsDir}-aside`, sessionsDir); }
