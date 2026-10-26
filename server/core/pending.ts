@@ -657,7 +657,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const { identity, shellPid } = await currentIdentity(paneId, item.identity.processPid ?? null);
       // its agent came up and left, or what herdr names there is not what was launched for it: held at once, as
       // pendingContext would hold it at a send, which a pane that is not at rest never gets to
-      if (launchGone(item, identity)) holdFor(item, LAUNCH_GONE);
+      if (launchGone(item, identity, shellPid)) holdFor(item, LAUNCH_GONE);
       else if (targetChanged(item, identity)) holdFor(item, TARGET_CHANGED);
       else learn(item, identity, shellPid);
     }
@@ -672,22 +672,26 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   async function bindLaunched(item: PendingItem): Promise<"bound" | "wait" | "ended"> {
     if (!launchBound.has(item)) return "bound";
     const { identity, shellPid } = await currentIdentity(item.paneId, item.identity.processPid ?? null);
-    if (launchGone(item, identity)) return "ended";
+    if (launchGone(item, identity, shellPid)) return "ended";
     if (identity.terminalId === item.identity.terminalId && identity.agent === null) return "wait";
     learn(item, identity, shellPid);
     return "bound";
   }
-  /**
-   * Whether the agent launched for a first message came up and left: herdr names no agent in its terminal
-   * and the process learned for it is no longer the one in front.
-   */
   /** Whether what runs in a first message's pane is not what was launched for it: another terminal, or an agent herdr names that disagrees. */
   function targetChanged(item: PendingItem, identity: PendingIdentity): boolean {
     return identity.terminalId !== item.identity.terminalId || (identity.agent !== null && !samePendingIdentity(item.identity, identity));
   }
-  function launchGone(item: PendingItem, identity: PendingIdentity): boolean {
+  /**
+   * Whether the agent launched for a first message came up and left: the process learned for it is no longer
+   * the one in front, and herdr names no agent in its terminal, or still names the launched kind while the
+   * pane's shell itself is back in front (herdr's name can outlast the process). Any other process in front
+   * under that name is another agent (targetChanged).
+   */
+  function launchGone(item: PendingItem, identity: PendingIdentity, shellPid: number | null): boolean {
     const launched = item.identity.processPid;
-    if (launched == null || identity.terminalId !== item.identity.terminalId || identity.agent !== null) return false;
+    if (launched == null || identity.terminalId !== item.identity.terminalId) return false;
+    const shellBack = shellPid !== null && identity.processPid === shellPid && identity.agent === item.identity.agent;
+    if (identity.agent !== null && !shellBack) return false;
     return identity.processPid !== launched
       // macOS reads a birth to the whole second (samePendingIdentity)
       || (item.identity.processBirth != null && identity.processBirth != null

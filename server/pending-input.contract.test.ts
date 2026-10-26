@@ -1827,6 +1827,55 @@ describe("a create request's first message", () => {
     expect(readFileSync(log, "utf8")).toBe("");
   }, 30_000);
 
+  it("says first_message_launch_ended while herdr still names its launched agent with the shell back in front, and keeps it once herdr lets go", async () => {
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-stale-name", cwd: root, focus: false });
+    const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
+    const server = createServer({ port: 0, stateDir: join(root, "state-first-stale-name") });
+    entry.stop = server.stop;
+    standInLaunch = true;
+    const res = await fetch(`http://localhost:${server.port}/api/tab/create`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace_id: created.workspace.workspace_id, cwd: root, agent: { kind: "claude" }, first_message: "FIRST-STALE-NAME" }),
+    }).finally(() => { standInLaunch = false; });
+    const tab = await res.json() as { pane_id: string; first_message: { id: string } };
+    const pane = tab.pane_id;
+    const device = new Socket(server.port); entry.sockets.push(device);
+    await device.attach(pane);
+    expect((await listed(device, pane, tab.first_message.id, "held")).messages[0].error.code).toBe("first_message_unattended");
+    await drained(server, pane);
+    const log = join(root, "first-stale-name.jsonl");
+    const screenFile = join(root, "first-stale-name.screen");
+    writeFileSync(screenFile, "");
+    const ended = join(root, "first-stale-name.ended");
+    const up = written(() => existsSync(log), "the launched agent did not start", 10_000);
+    const before = device.seen.length;
+    await herdrRpc("pane.send_text", { pane_id: pane, text: `'${join(root, "claude")}' '${join(root, "record.cjs")}' '${log}' '\u203a Message' '${screenFile}'; : > '${ended}'\n` });
+    await up;
+    await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state: "working" });
+    await learned(server, device, pane, "claude", before, entry.sockets);
+    const launched = (await herdrClient.paneProcessInfo(pane))?.foreground_processes?.find((process) => process.name === "claude");
+    if (!launched) throw new Error("the launched agent has no foreground process");
+    const shell = (await herdrClient.paneProcessInfo(pane))?.shell_pid;
+    if (shell == null) throw new Error("the pane has no shell");
+    // the first reason it is held with once its agent is gone, whichever event of the pane gives it
+    const reason = device.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane
+      && frame.messages.some((item: PendingMessage) => item.id === tab.first_message.id
+        && (item.error?.code === "first_message_launch_ended" || item.error?.code === "pending_target_changed")), device.seen.length);
+    const quit = written(() => existsSync(ended), "the launched agent did not end", 10_000);
+    globalThis.process.kill(launched.pid, "SIGKILL");
+    await quit;
+    // control: the shell is back in front, while herdr still names the agent its manual report started
+    expect((await herdrClient.paneProcessInfo(pane))?.foreground_processes?.[0]?.pid).toBe(shell);
+    expect((await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane)?.agent).toBe("claude");
+    const probe = new Socket(server.port); entry.sockets.push(probe);
+    await probe.attach(pane);
+    expect((await reason).messages.find((item: PendingMessage) => item.id === tab.first_message.id).error.code).toBe("first_message_launch_ended");
+    await herdrRpc("pane.release_agent", { pane_id: pane, source: "manual", agent: "claude" });
+    device.send({ type: "pending-action", id: 51, pane_id: pane, pending_id: tab.first_message.id, action: "steer", launch_ended: true });
+    expect(await device.action(51)).toMatchObject({ ok: false, code: "first_message_launch_ended" });
+    expect(readFileSync(log, "utf8")).toBe("");
+  }, 30_000);
+
   it("bound to a launch that runs behind a wrapper in front of the pane, is typed once into that agent, not held", async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-wrapped", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
