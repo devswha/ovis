@@ -82,6 +82,9 @@ final class WebPageController: NSObject, ObservableObject {
     private var carryToken: String?
     /// A window the page opened was still open on this address when the carry began.
     private var carryShared = false
+    /// What each carried key held in this origin before the carry began, as the carry posted it: a retry
+    /// after a mark that did not fit in the page's storage gets them back from here.
+    private var carryBefore: [String: Any]?
 
     /// What the user typed and has not sent, as the page keeps it in its origin's storage: the chat's
     /// draft and its send on its way, the terminal's held input and input line, held and pending
@@ -109,8 +112,9 @@ final class WebPageController: NSObject, ObservableObject {
             // a window the page opened outlives it: one still open on this address keeps using its storage
             let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
             let token = UUID().uuidString
-            if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: false) {
+            if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: false, before: nil) {
                 webView.configuration.userContentController.addUserScript(script)
+                webView.configuration.userContentController.add(CarryBaselines(page: self), name: "ovisCarry")
                 carryToken = token
                 carryShared = shared
             }
@@ -174,11 +178,20 @@ final class WebPageController: NSObject, ObservableObject {
 
     /// Writes the carried drafts before the page's own code reads its storage (`carry-drafts.js`). The
     /// page it came from keeps its copy. `loaded`: the page has loaded since, so the user may have typed.
-    private static func carryScript(_ drafts: [String: String], shared: Bool, token: String, loaded: Bool) -> WKUserScript? {
+    /// `before`: the baselines the carry posted, for a run whose mark never made it into the page's storage.
+    private static func carryScript(_ drafts: [String: String], shared: Bool, token: String, loaded: Bool, before: [String: Any]?) -> WKUserScript? {
         guard !drafts.isEmpty, let carrySource, let data = try? JSONSerialization.data(withJSONObject: drafts),
               let json = String(data: data, encoding: .utf8) else { return nil }
-        let source = "(() => {\n\(carrySource)\novisCarryDrafts(window.localStorage, \(json), \(shared), \"\(token)\", \(loaded));\n})();"
+        let given = before.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+        let post = "(baselines) => window.webkit?.messageHandlers?.ovisCarry?.postMessage(baselines)"
+        let source = "(() => {\n\(carrySource)\novisCarryDrafts(window.localStorage, \(json), \(shared), \"\(token)\", \(loaded), \(given), \(post));\n})();"
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    /// The carry's first baselines win: a later run (in a window the page opened) may already see typing.
+    fileprivate func keepBaselines(_ before: [String: Any], token: String) {
+        guard token == carryToken, carryBefore == nil else { return }
+        carryBefore = before
     }
 
     /// This Mac's own server, which the app reaches without pairing: the only addresses drafts move between.
@@ -352,6 +365,7 @@ extension WebPageController: WKNavigationDelegate {
         // knowing the page has loaded: a carry that never got to start then only fills empty keys.
         if let token = carryToken {
             let shared = carryShared
+            let before = carryBefore
             let landed = """
             (() => { try { const mark = JSON.parse(localStorage.getItem("ovis-mac:carried") ?? "null");
               return mark && mark.token === "\(token)" && Array.isArray(mark.done) ? mark.done : []; } catch { return []; } })()
@@ -361,7 +375,7 @@ extension WebPageController: WKNavigationDelegate {
                 model.draftsCarried(Set(keys))
                 let controller = self.webView.configuration.userContentController
                 controller.removeAllUserScripts()
-                if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: true) {
+                if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: true, before: before) {
                     controller.addUserScript(script)
                 } else {
                     self.carryToken = nil
@@ -488,5 +502,22 @@ extension WebPageController: NSWindowDelegate {
         // a download still running keeps its popup until it ends
         closed = true
         closePopup()
+    }
+}
+
+/// The carry's baselines, posted before it writes anything (`carry-drafts.js`). Held weakly: the web view's
+/// configuration keeps its message handlers, and the page must not keep itself alive through them.
+@MainActor
+private final class CarryBaselines: NSObject, WKScriptMessageHandler {
+    private weak var page: WebPageController?
+
+    init(page: WebPageController) {
+        self.page = page
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let token = body["token"] as? String,
+              let before = body["before"] as? [String: Any] else { return }
+        page?.keepBaselines(before, token: token)
     }
 }

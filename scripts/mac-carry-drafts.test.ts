@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Ovis for Mac's draft carry (app/mac/Resources/carry-drafts.js), run as the app runs it in a page. */
-type Carry = (storage: Storage, carried: Record<string, string>, shared: boolean, token: string, loaded?: boolean) => void;
+type Baselines = { token: string; before: Record<string, string | null> };
+type Carry = (storage: Storage, carried: Record<string, string>, shared: boolean, token: string, loaded?: boolean, given?: Record<string, string | null> | null, post?: (baselines: Baselines) => void) => void;
 const source = readFileSync(join(import.meta.dir, "..", "app", "mac", "Resources", "carry-drafts.js"), "utf8");
 const carry = new Function(`${source}\nreturn ovisCarryDrafts;`)() as Carry;
 
@@ -71,16 +72,31 @@ describe("Mac app draft carry", () => {
     expect(landed(page).done).toEqual([draft]);
   });
 
-  test("a mark too big to write once is written in full by the next run, which then replaces the older copy", () => {
+  /** A first run whose mark does not fit, the page loading, then the app's retry with the baselines it was posted. */
+  function afterFailedMark(between: (page: ReturnType<typeof store>) => void) {
     const full = new Set(["ovis-mac:carried"]);
     const page = store({ [draft]: "older visit" }, full);
-    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    const posted: Baselines[] = [];
+    carry(page, { [draft]: "typed on the old port" }, false, "t1", false, null, (baselines) => posted.push(baselines));
     expect(page.entries.get(draft)).toBe("older visit");
+    expect(posted).toEqual([{ token: "t1", before: { [draft]: "older visit" } }]);
     full.clear();
-    carry(page, { [draft]: "typed on the old port" }, false, "t1");
-    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    between(page);
+    carry(page, { [draft]: "typed on the old port" }, false, "t1", true, posted[0]!.before);
+    carry(page, { [draft]: "typed on the old port" }, false, "t1", true, posted[0]!.before);
+    return page;
+  }
+
+  test("after a first mark that did not fit and the page loading, the retry replaces the unchanged older copy", () => {
+    const page = afterFailedMark(() => {});
     expect(page.entries.get(draft)).toBe("typed on the old port");
-    expect(landed(page)).toEqual({ token: "t1", done: [draft], before: { [draft]: "older visit" } });
+    expect(landed(page).done).toEqual([draft]);
+  });
+
+  test("after a first mark that did not fit and the page loading, a draft discarded meanwhile stays discarded", () => {
+    const page = afterFailedMark((page) => page.removeItem(draft));
+    expect(page.entries.has(draft)).toBe(false);
+    expect(landed(page).done).toEqual([draft]);
   });
 
   test("once the page has loaded, a carry that never started only fills keys the page holds none of", () => {

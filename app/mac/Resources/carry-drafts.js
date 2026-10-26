@@ -11,10 +11,11 @@
 // before the carry began (`before`), all in its first write: a carry that cannot write it writes nothing.
 // A later run of the same carry (a reload, a window the page opened) writes a key that has not landed only
 // while it still holds that value; one the page changed since is the page's own, so carried text never goes
-// back over what was typed since. `loaded` is set once the page has loaded (WebPage.swift): from then on
-// the user may type, so a carry that never got to start only fills keys the page holds none of. The app
-// reads the landed keys when the page has loaded and keeps the rest; the old origin keeps its copy.
-function ovisCarryDrafts(storage, carried, shared, token, loaded) {
+// back over what was typed since. The baselines also go to the app first (`post`), which hands them back
+// (`given`) to a run after a mark that did not fit. `loaded` is set once the page has loaded (WebPage.swift):
+// from then on the user may type, so a carry with no baselines only fills keys the page holds none of. The
+// app reads the landed keys when the page has loaded and keeps the rest; the old origin keeps its copy.
+function ovisCarryDrafts(storage, carried, shared, token, loaded, given, post) {
   const MARK = "ovis-mac:carried";
   let mark = null;
   try {
@@ -25,7 +26,7 @@ function ovisCarryDrafts(storage, carried, shared, token, loaded) {
   const again = mark !== null && typeof mark === "object" && mark.token === token && Array.isArray(mark.done)
     && mark.before !== null && typeof mark.before === "object";
   const landed = new Set(again ? mark.done : []);
-  const before = again ? mark.before : {};
+  const before = again ? mark.before : given ?? {};
   const save = () => {
     try {
       storage.setItem(MARK, JSON.stringify({ token, done: [...landed], before }));
@@ -35,11 +36,16 @@ function ovisCarryDrafts(storage, carried, shared, token, loaded) {
     }
   };
   if (!again) {
-    if (!loaded) {
+    if (!given && !loaded) {
       try {
         for (const key of Object.keys(carried)) before[key] = storage.getItem(key);
       } catch {
         return;
+      }
+      try {
+        post?.({ token, before });
+      } catch {
+        // no app to keep them (a browser, a test): the mark alone holds them
       }
     }
     // the mark first, with every baseline: a draft written without one could be written again over typing
