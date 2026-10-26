@@ -78,8 +78,9 @@ final class Model: ObservableObject {
         guard work == started else { return }
         self.status = status
         let origin = status.running ? status.origin : nil
-        if origin != webOrigin, webOrigin != nil, let page {
-            // the page about to go holds its drafts in its own origin's storage: read them while it runs
+        if origin != webOrigin, let old = webOrigin, WebPageController.isLoopback(old), let page {
+            // the page about to go holds its drafts in its own origin's storage: read them while it runs (only
+            // this Mac's own server's, and WebPageController writes them only into another of its addresses)
             let drafts = await page.unsentDrafts()
             // a check that Install, Restart or Remove overtook drops what it read: their own refresh reads
             // the page again, and a copy left here could later bring back a draft sent meanwhile
@@ -139,8 +140,9 @@ final class Model: ObservableObject {
         pageFailedToLoad = false
     }
 
-    func draftsCarried() {
-        carriedDrafts = [:]
+    /// These carried drafts are in the new page's storage now; any other stays for the next try.
+    func draftsCarried(_ keys: Set<String>) {
+        carriedDrafts = carriedDrafts.filter { !keys.contains($0.key) }
     }
 
     func reload() {

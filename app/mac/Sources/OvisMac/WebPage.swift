@@ -78,8 +78,8 @@ final class WebPageController: NSObject, ObservableObject {
     private static var reserved: Set<String> = []
     private var destinations: [ObjectIdentifier: URL] = [:]
     private var reloads: AnyCancellable?
-    /// The drafts of the page this one replaced are written into its storage as it loads.
-    private var carrying = false
+    /// The drafts of the page this one replaced are written into its storage as it loads, under this token.
+    private var carryToken: String?
 
     /// What the user typed and has not sent, as the page keeps it in its origin's storage: the chat's
     /// draft and its send on its way, the terminal's held input and input line, held and pending
@@ -102,11 +102,15 @@ final class WebPageController: NSObject, ObservableObject {
         guard !isPopup else { return }
         model.page = self
         reloads = model.$reloads.dropFirst().sink { [weak self] _ in self?.reload() }
-        // a window the page opened outlives it: one still open on this address keeps using its storage
-        let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
-        if let script = Self.carryScript(model.carriedDrafts, shared: shared) {
-            webView.configuration.userContentController.addUserScript(script)
-            carrying = true
+        // drafts go only to this Mac's own server, as they came only from it
+        if Self.isLoopback(origin) {
+            // a window the page opened outlives it: one still open on this address keeps using its storage
+            let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
+            let token = UUID().uuidString
+            if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token) {
+                webView.configuration.userContentController.addUserScript(script)
+                carryToken = token
+            }
         }
         webView.load(URLRequest(url: origin))
     }
@@ -161,29 +165,25 @@ final class WebPageController: NSObject, ObservableObject {
         return drafts
     }
 
-    /// Writes the carried drafts before the page's own code reads its storage. This app's storage is its
-    /// own, so what the new origin holds is from the app's earlier visit there, older than the page just
-    /// left: a carried key replaces it, and a chat send left on its way there is over (the new page has
-    /// none of its own yet). Unless a window the page opened is still open there (`shared`): then that
-    /// window's drafts and sends are live, and a carried key only fills a gap. Any other key stays, never
-    /// sent by itself; the page it came from keeps its copy. One key that does not fit (a full store)
-    /// does not stop the rest. It runs once per origin: a reload before the page finished, or a window it
-    /// opened meanwhile, would otherwise put the carried text back over what was typed since.
-    private static func carryScript(_ drafts: [String: String], shared: Bool) -> WKUserScript? {
-        guard !drafts.isEmpty, let data = try? JSONSerialization.data(withJSONObject: drafts),
+    /// The carry itself, `Resources/carry-drafts.js`: what replaces what, and what a second run leaves.
+    private static let carrySource = Bundle.main.url(forResource: "carry-drafts", withExtension: "js")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+
+    /// Writes the carried drafts before the page's own code reads its storage (`carry-drafts.js`). The
+    /// page it came from keeps its copy.
+    private static func carryScript(_ drafts: [String: String], shared: Bool, token: String) -> WKUserScript? {
+        guard !drafts.isEmpty, let carrySource, let data = try? JSONSerialization.data(withJSONObject: drafts),
               let json = String(data: data, encoding: .utf8) else { return nil }
-        let token = UUID().uuidString
-        let source = """
-        (() => { const carried = \(json), shared = \(shared);
-          try { if (localStorage.getItem("ovis-mac:carried") === "\(token)") return; localStorage.setItem("ovis-mac:carried", "\(token)"); } catch { return; }
-          if (!shared) { try { const leases = [];
-          for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i);
-            if (key && key.startsWith("ovis:composer-sending:") && !(key in carried)) leases.push(key); }
-          for (const key of leases) localStorage.removeItem(key); } catch {} }
-          for (const [key, value] of Object.entries(carried)) {
-            try { if (!shared || localStorage.getItem(key) === null) localStorage.setItem(key, value); } catch {} } })();
-        """
+        let source = "(() => {\n\(carrySource)\novisCarryDrafts(window.localStorage, \(json), \(shared), \"\(token)\");\n})();"
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    /// This Mac's own server, which the app reaches without pairing: the only addresses drafts move between.
+    static func isLoopback(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else { return false }
+        return host == "localhost" || host == "::1"
+            || host.range(of: #"^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$"#, options: .regularExpression) != nil
     }
 
     /// Loads the page again where it is, or from the start when it is not on an Ovis page.
@@ -344,11 +344,21 @@ extension WebPageController: WKNavigationDelegate {
         state = .shown
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
         if !isPopup { model?.pageLoaded() }
-        // the carried drafts are in this origin's storage now; a page that did not load keeps them for the next try
-        if carrying {
-            carrying = false
-            webView.configuration.userContentController.removeAllUserScripts()
-            model?.draftsCarried()
+        // the carried drafts that are in this origin's storage now are done; the rest stay for a reload or
+        // the next page, and the old origin keeps its copy meanwhile
+        if let token = carryToken {
+            let landed = """
+            (() => { try { const mark = JSON.parse(localStorage.getItem("ovis-mac:carried") ?? "null");
+              return mark && mark.token === "\(token)" && Array.isArray(mark.done) ? mark.done : []; } catch { return []; } })()
+            """
+            webView.evaluateJavaScript(landed) { [weak self] result, _ in
+                guard let self, let model = self.model, let keys = result as? [String] else { return }
+                model.draftsCarried(Set(keys))
+                if model.carriedDrafts.isEmpty {
+                    self.carryToken = nil
+                    self.webView.configuration.userContentController.removeAllUserScripts()
+                }
+            }
         }
     }
 
