@@ -37,6 +37,10 @@ describe("answering a prompt from the chat", () => {
       expect(answerFromText(keys, translate("ko", "No (n)"))).toEqual({ option_index: 1 });
       expect(answerFromText(keys, "No (n)")).toEqual({ option_index: 1 });
       expect(answerFromText(keys, "y")).toEqual({ option_index: 0 });
+      // an option the agent drew in those words is named by them before a translated label is
+      const drawn: InteractivePrompt = { ...prompt(["Cancel", translate("ko", "Cancel")], null), kind: "menu", own_text: { labels: { 0: { key: "Cancel" } } } };
+      expect(answerFromText(drawn, translate("ko", "Cancel"))).toEqual({ option_index: 1 });
+      expect(answerFromText(drawn, "Cancel")).toEqual({ option_index: 0 });
     } finally {
       setCurrentLanguage("en");
     }

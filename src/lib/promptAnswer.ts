@@ -44,8 +44,9 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   const lower = value.toLowerCase();
   // a label the bridge wrote is named as the card shows it, in the user's language, or in English
   const words = promptWords(prompt);
-  const named = valid.find((index) => [prompt.options[index]!.label, words.label(index)]
-    .some((label) => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower));
+  const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
+  // an option's own words first: a translated label never takes the words another option shows
+  const named = valid.find((index) => names(prompt.options[index]!.label)) ?? valid.find((index) => names(words.label(index)));
   if (named !== undefined) return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }

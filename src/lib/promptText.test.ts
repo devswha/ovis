@@ -40,6 +40,11 @@ describe("a prompt card's words", () => {
     expect(promptWords(model, inLanguage("en")).question).toBe(model.question);
   });
 
+  it("caps a translated body as the bridge caps the English one", () => {
+    const long: InteractivePrompt = { ...goal, body: "x".repeat(12_000), own_text: { body: { key: "Comment: {comment}", vars: { comment: "x".repeat(20_000) } } } };
+    expect(promptWords(long, inLanguage("ko")).body).toHaveLength(12_000);
+  });
+
   it("shows an older bridge's card, which names no words of its own, as it came", () => {
     const { own_text: _, ...older } = goal;
     const words = promptWords(older, inLanguage("ko"));

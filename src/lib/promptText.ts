@@ -18,7 +18,8 @@ export function promptWords(prompt: InteractivePrompt, t: Translate = inCurrentL
   return {
     title: words(prompt.title, own?.title),
     question: words(prompt.question, own?.question),
-    body: prompt.body === null ? null : words(prompt.body, own?.body),
+    // the bridge shows at most 12,000 characters of a body (finishPrompt): a translated one too
+    body: prompt.body === null ? null : words(prompt.body, own?.body).slice(0, 12_000),
     label: (index: number): string => words(prompt.options[index]?.label ?? "", own?.labels?.[index]),
     description: (index: number): string | null => {
       const description = prompt.options[index]?.description ?? null;
