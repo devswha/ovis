@@ -610,7 +610,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // bound to the terminal and the kind launched there, and to the process the launch left in front when
       // it is not the shell: a replacement of the same kind is not what the message was sent to. Right after
       // a launch herdr may name no agent yet; that binding is completed when it does (bindLaunched)
-      const { pane, identity, shellPid } = await currentIdentity(paneId, launchedPid);
+      const { pane, identity, shellPid, processes } = await currentIdentity(paneId, launchedPid);
       // The launch's own word wins: a shell-started agent's launch says which process it came up as, which
       // may have ended already, and then an agent the user starts later is not the one launched
       const launchedProcess = launchedPid !== null
@@ -624,6 +624,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, text, null,
         { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess });
       launchBound.add(item);
+      // this read learns as an event's would: an agent it sees in front under its kind is named before it can leave
+      learn(item, identity, shellPid, processes);
       // no page to type it, or one that closed meanwhile: held before any drain could see it queued
       if (page === undefined || !present(page)) pending.holdItem(item, FIRST_MESSAGE_UNATTENDED);
       else {
