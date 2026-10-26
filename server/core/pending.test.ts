@@ -14,6 +14,8 @@ const paths = new Map<string, string>();
 const originalProcessInfo = herdr.paneProcessInfo;
 const originalTranscriptPath = pi.piTranscriptPath;
 let lookup: { at: "identity" | "transcript"; entered: () => void; release: Promise<void> } | null = null;
+/** what herdr's process read answers for a pane, where a case sets it */
+const processes = new Map<string, { shell_pid: number; foreground_processes: { pid: number; name: string }[] }>();
 mock.module("../herdr/client.ts", () => ({
   ...herdr,
   paneProcessInfo: async (paneId: string) => {
@@ -21,7 +23,7 @@ mock.module("../herdr/client.ts", () => ({
       const held = lookup; lookup = null;
       held.entered(); await held.release;
     }
-    return { foreground_processes: [], shell_pid: null };
+    return processes.get(paneId) ?? { foreground_processes: [], shell_pid: null };
   },
 }));
 mock.module("../pi.ts", () => ({
@@ -34,7 +36,7 @@ mock.module("../pi.ts", () => ({
     return { path: paths.get(paneId)! };
   },
 }));
-afterEach(() => { lookup = null; paths.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { lookup = null; paths.clear(); processes.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 afterAll(() => {
   mock.module("../herdr/client.ts", () => ({ ...herdr, paneProcessInfo: originalProcessInfo }));
   mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
@@ -97,3 +99,51 @@ it.each(["identity", "transcript"] as const)("does not release another pane's sl
   expect(frames.some((frame) => frame.type === "pending-messages" && frame.pane_id === "p"
     && frame.removed?.some((item) => item.outcome === "consumed"))).toBe(false);
 }, 10_000);
+
+// pids no process of this PC has: their start is read as unknown, as for an ended process
+const SHELL = 4_194_001, AGENT = 4_194_002;
+it.each([
+  ["learned at an event and ended with the shell back in front under herdr's name for it", null, { pid: SHELL, name: "bash" }, "first_message_launch_ended"],
+  ["bound at its queueing and ended with the shell back in front under herdr's name for it", AGENT, { pid: SHELL, name: "bash" }, "first_message_launch_ended"],
+  ["bound at its queueing and replaced by an agent of its kind exec'd at the shell's pid", AGENT, { pid: SHELL, name: "codex" }, "pending_target_changed"],
+] as const)("holds a first message whose launched agent was %s with that reason, and types nothing", async (_case, launchedPid, front, code) => {
+  let named: string | null = null;
+  const frames: ServerMessage[] = [], typed: string[] = [];
+  const owner = {
+    data: connectionData({ deviceId: undefined, readOnly: false }),
+    getBufferedAmount: () => 0,
+    send: (value: string) => { frames.push(JSON.parse(value)); return 1; },
+  } as Client;
+  owner.data.attached.set("L", { keepSize: false });
+  const queues = new Map<string, Promise<unknown>>();
+  const serialize = <T>(pane: string, task: () => T | Promise<T>): Promise<T> => {
+    const run = (queues.get(pane) ?? Promise.resolve()).catch(() => {}).then(task);
+    queues.set(pane, run);
+    return run;
+  };
+  const delivery = createPendingDelivery({
+    options: {}, clients: new Set([owner]), attachments: new Map(),
+    sight: () => { throw new Error("no page types a first message held from the start"); },
+    serialize, lastTyped: new Map(),
+    submitText: async (_pane, text) => { typed.push(text); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "working" }] }) as SessionSnapshot,
+    omo: { sessionOf: () => null },
+    SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  /** a pane event: its drain, and every drain it asks for, has run */
+  const event = async () => { delivery.drainPending("L"); await serialize("L", () => {}); };
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [{ pid: SHELL, name: "bash" }] });
+  if (launchedPid === null) await delivery.queueFirstMessage("L", "FIRST", "codex");
+  // the launched agent comes up in front, and herdr names it
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [{ pid: AGENT, name: "codex" }] });
+  named = "codex";
+  if (launchedPid !== null) await delivery.queueFirstMessage("L", "FIRST", "codex", null, launchedPid);
+  await event();
+  // it leaves: something else is in front at the shell's pid, under herdr's name for the launched agent
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [front] });
+  await event();
+  const last = frames.filter((frame) => frame.type === "pending-messages" && frame.pane_id === "L").at(-1);
+  expect(last?.type === "pending-messages" ? last.messages : []).toMatchObject([{ text: "FIRST", state: "held", error: { code } }]);
+  expect(typed).toEqual([]);
+});

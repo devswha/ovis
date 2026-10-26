@@ -102,6 +102,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   let nextFirstRequestId = -1;
   /** first messages still learning the agent launched for them (queueFirstMessage, learnLaunched) */
   const launchBound = new WeakSet<PendingItem>();
+  /** the process name of the agent a launch-bound first message is bound to, read while it runs in front: an agent exec'd at the shell's pid keeps it */
+  const launchedNames = new WeakMap<PendingItem, string>();
+  /** the name one process read gives the foreground process `pid` */
+  const processName = (processes: ProcessInfo | undefined, pid: number | null | undefined): string | undefined =>
+    pid == null ? undefined : processes?.foreground_processes?.find((entry) => entry.pid === pid)?.name;
   /**
    * The pane's launch-bound first messages that are checked at its events: a queued one, and a held one
    * until it is held for its launched agent having left (first_message_launch_ended) or been replaced
@@ -637,13 +642,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * never replaced, so a later session or process of the same kind is another; pendingContext holds the
    * message for it with pending_target_changed.
    */
-  function learn(item: PendingItem, identity: PendingIdentity, shellPid: number | null): void {
+  function learn(item: PendingItem, identity: PendingIdentity, shellPid: number | null, processes: ProcessInfo | undefined): void {
     if (identity.terminalId !== item.identity.terminalId || identity.agent !== item.identity.agent || !samePendingIdentity(item.identity, identity)) return;
     item.identity.session ??= identity.session;
     // the shell itself is never the launched process: with it still in front, the launch is not known yet
     if (identity.processPid !== shellPid) {
       item.identity.processPid ??= identity.processPid;
       item.identity.processBirth ??= identity.processBirth;
+      // bound here or at its queueing, the launched process is named as it runs under its kind (an exec renames it)
+      const name = identity.processPid === item.identity.processPid ? processName(processes, identity.processPid) : undefined;
+      if (name) launchedNames.set(item, name);
     }
     item.identity.omoSession ??= identity.omoSession;
     item.identity.claudeSession ??= identity.claudeSession;
@@ -654,12 +662,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (items.length === 0) return;
     // read for each message's own bound process (a pane holds one first message, so one read in practice)
     for (const item of items) {
-      const { identity, shellPid } = await currentIdentity(paneId, item.identity.processPid ?? null);
+      const { identity, shellPid, processes } = await currentIdentity(paneId, item.identity.processPid ?? null);
       // its agent came up and left, or what herdr names there is not what was launched for it: held at once, as
       // pendingContext would hold it at a send, which a pane that is not at rest never gets to
-      if (launchGone(item, identity, shellPid)) holdFor(item, LAUNCH_GONE);
+      if (launchGone(item, identity, shellPid, processes)) holdFor(item, LAUNCH_GONE);
       else if (targetChanged(item, identity)) holdFor(item, TARGET_CHANGED);
-      else learn(item, identity, shellPid);
+      else learn(item, identity, shellPid, processes);
     }
   }
   /**
@@ -671,10 +679,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    */
   async function bindLaunched(item: PendingItem): Promise<"bound" | "wait" | "ended"> {
     if (!launchBound.has(item)) return "bound";
-    const { identity, shellPid } = await currentIdentity(item.paneId, item.identity.processPid ?? null);
-    if (launchGone(item, identity, shellPid)) return "ended";
+    const { identity, shellPid, processes } = await currentIdentity(item.paneId, item.identity.processPid ?? null);
+    if (launchGone(item, identity, shellPid, processes)) return "ended";
     if (identity.terminalId === item.identity.terminalId && identity.agent === null) return "wait";
-    learn(item, identity, shellPid);
+    learn(item, identity, shellPid, processes);
     return "bound";
   }
   /** Whether what runs in a first message's pane is not what was launched for it: another terminal, or an agent herdr names that disagrees. */
@@ -684,13 +692,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   /**
    * Whether the agent launched for a first message came up and left: the process learned for it is no longer
    * the one in front, and herdr names no agent in its terminal, or still names the launched kind while the
-   * pane's shell itself is back in front (herdr's name can outlast the process). Any other process in front
-   * under that name is another agent (targetChanged).
+   * pane's shell itself is back in front (herdr's name can outlast the process). An exec keeps the shell's
+   * pid, so the process there counts as the shell only under a name other than the launched agent's. Any
+   * other process in front under that name is another agent (targetChanged).
    */
-  function launchGone(item: PendingItem, identity: PendingIdentity, shellPid: number | null): boolean {
+  function launchGone(item: PendingItem, identity: PendingIdentity, shellPid: number | null, processes: ProcessInfo | undefined): boolean {
     const launched = item.identity.processPid;
     if (launched == null || identity.terminalId !== item.identity.terminalId) return false;
-    const shellBack = shellPid !== null && identity.processPid === shellPid && identity.agent === item.identity.agent;
+    const front = processName(processes, identity.processPid);
+    const launchedName = launchedNames.get(item);
+    const shellBack = shellPid !== null && identity.processPid === shellPid && identity.agent === item.identity.agent
+      && front !== undefined && launchedName !== undefined && front !== launchedName;
     if (identity.agent !== null && !shellBack) return false;
     return identity.processPid !== launched
       // macOS reads a birth to the whole second (samePendingIdentity)
