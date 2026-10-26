@@ -61,7 +61,7 @@ afterAll(() => {
   mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
 });
 
-it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap"] as const)(
+it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(
   "resumes only exact, authorized Pi presentation receipts: %s", async (when) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-resume-")); roots.push(root);
     const path = join(root, "session.jsonl"); paths.set("p", path);
@@ -93,6 +93,25 @@ it.each(["before close", "after close", "overlapping reload", "same live browser
     const sent = frames.get(first)!.flatMap((frame) => frame.type === "pending-messages" ? frame.messages : [])
       .find((message) => message.error?.code === "pi_transcript_pending")!;
     expect(sent).toBeDefined();
+    if (when === "confirmation budget") {
+      // An oversized partial record is permanently beyond this receipt's scan budget.
+      appendFileSync(path, "x".repeat(16 * 1024 * 1024 + 1));
+      await delivery.reconcilePiDeliveries("p");
+      expect(frames.get(first)!.flatMap((frame) => frame.type === "pending-messages" ? frame.messages : [])
+        .some((message) => message.id === sent.id && message.error?.code === "transcript_unconfirmed")).toBe(true);
+      // A small, valid tail lets a new send capture its own bounded anchor.
+      appendFileSync(path, "\n" + JSON.stringify({ type: "message", id: "new-base", parentId: "base", message: { role: "assistant", content: [] } }) + "\n");
+      await delivery.pendingFrames.submit(first, { type: "submit", id: 2, pane_id: "p", text: "released", payload: "released", delivery: "immediate" });
+      expect(frames.get(first)!.find((frame) => frame.type === "submit-result" && frame.id === 2)).toMatchObject({ ok: true });
+      await serialize("p", () => {});
+      await delivery.reconcilePiDeliveries("p");
+      await delivery.pendingFrames["pending-action"](first, { type: "pending-action", id: 3, pane_id: "p", pending_id: sent.id, action: "discard" });
+      expect(frames.get(first)!.find((frame) => frame.type === "pending-result" && frame.id === 3)).toMatchObject({ ok: true });
+      await delivery.pendingFrames.submit(first, { type: "submit", id: 4, pane_id: "p", text: "still full", payload: "still full", delivery: "immediate" });
+      expect(frames.get(first)!.find((frame) => frame.type === "submit-result" && frame.id === 4)).toMatchObject({ ok: false, code: "pending_limit" });
+      expect(typed).toEqual(["same", "released"]);
+      return;
+    }
     const append = () => appendFileSync(path, JSON.stringify({ type: "message", id: "ours", parentId: "base",
       message: { role: "user", content: [{ type: "text", text: "same" }] } }) + "\n");
     if (when === "pending cap") {

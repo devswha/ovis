@@ -43,6 +43,41 @@ describe("Pi receipt capacity", () => {
 });
 
 describe("Pi delivery transcript matching", () => {
+  it.each(["append bytes", "complete record", "partial record", "retention", "entry count"])("settles permanent %s budget exhaustion without retry or partial consumption", (budget) => {
+    const path = join(dir(), "budget.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const receipts = [candidate("one", "ours", anchor), candidate("two", "next", anchor)];
+    const consumed = new Set<string>();
+    if (budget === "retention") {
+      appendFileSync(path, entry("large", "base", "user", "x".repeat(9 * 1024 * 1024)));
+      expect(matchPiDeliveries(path, receipts, consumed).retry).toBe(false);
+      appendFileSync(path, entry("larger", "large", "user", "x".repeat(9 * 1024 * 1024)));
+    } else if (budget === "entry count") {
+      for (let index = 0; index < 100_001; index++) appendFileSync(path, entry(`e${index}`, index ? `e${index - 1}` : "base", "assistant", ""));
+    } else {
+      appendFileSync(path, entry("ours", "base", "user", "ours"));
+      appendFileSync(path, budget === "append bytes" ? "x".repeat(32 * 1024 * 1024)
+        : budget === "complete record" ? entry("large", "ours", "assistant", "x".repeat(16 * 1024 * 1024))
+        : "x".repeat(16 * 1024 * 1024 + 1));
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: [], changed: [], unavailable: ["one", "two"], retry: false });
+      expect(consumed.size).toBe(0);
+    }
+  });
+
+  it("retries a transient read failure and later confirms the same receipt", () => {
+    const path = join(dir(), "transient.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("ours", "base", "user", "ours"));
+    const receipts = [candidate("one", "ours", anchor)];
+    const read = spyOn(fs, "readSync").mockImplementation(() => { throw new Error("transient read"); });
+    try { expect(matchPiDeliveries(path, receipts)).toEqual({ consumed: [], changed: [], retry: true }); }
+    finally { read.mockRestore(); }
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one"]);
+  });
   it("reads bounded tails on a 200 MiB history and parses only appended records", () => {
     const path = join(dir(), "large.jsonl");
     writeFileSync(path, header());

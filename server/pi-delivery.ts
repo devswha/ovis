@@ -62,6 +62,8 @@ export class PiReceiptCapacity<Owner extends object> {
 type BranchEntry = { id: string; parent: string | null; role: string; text: string; start: number; end: number };
 const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
+/** Permanent for this anchor: retrying cannot shrink its append or retained history. */
+class PiDeliveryBudgetExceeded extends Error {}
 const identity = (stat: NonNullable<ReturnType<typeof statSync>>): string => `${stat.dev}:${stat.ino}`;
 const fileId = (path: string): string | null => {
   try { const stat = statSync(path); return stat.isFile() ? identity(stat) : null; }
@@ -133,20 +135,20 @@ const appends = new WeakMap<PiDeliveryAnchor, AppendState>();
 function appended(fd: number, size: number, anchor: PiDeliveryAnchor): AppendState {
   const previous = appends.get(anchor) ?? { scanned: anchor.size, tail: anchor.prefix, entries: [] };
   if (size < previous.scanned || tailAt(fd, previous.scanned) !== previous.tail) throw new Error("Pi append changed");
-  if (size - previous.scanned > MAX_APPEND_BYTES) throw new Error("Pi append budget exceeded");
+  if (size - previous.scanned > MAX_APPEND_BYTES) throw new PiDeliveryBudgetExceeded("Pi append budget exceeded");
   const bytes = bytesAt(fd, previous.scanned, size - previous.scanned);
   const entries = [...previous.entries];
   let offset = 0;
   for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, offset)) {
-    if (newline - offset > MAX_PI_ENTRY_BYTES || entries.length >= MAX_PI_INDEX_ENTRIES) throw new Error("Pi append budget exceeded");
+    if (newline - offset > MAX_PI_ENTRY_BYTES || entries.length >= MAX_PI_INDEX_ENTRIES) throw new PiDeliveryBudgetExceeded("Pi append budget exceeded");
     const entry = parseEntry(bytes.subarray(offset, newline), previous.scanned + offset, previous.scanned + newline + 1);
     // A first-file session header attests the session, not a user turn or a tree parent.
     if (!(anchor.size === 0 && entry.start === 0)) entries.push(entry);
     offset = newline + 1;
   }
-  if (bytes.length - offset > MAX_PI_ENTRY_BYTES) throw new Error("Partial Pi entry exceeds limit");
+  if (bytes.length - offset > MAX_PI_ENTRY_BYTES) throw new PiDeliveryBudgetExceeded("Partial Pi entry exceeds limit");
   const scanned = previous.scanned + offset;
-  if (entries.reduce((bytes, entry) => bytes + 192 + 2 * (entry.id.length + (entry.parent?.length ?? 0) + entry.text.length), 0) > MAX_APPEND_BYTES) throw new Error("Pi append retention budget exceeded");
+  if (entries.reduce((bytes, entry) => bytes + 192 + 2 * (entry.id.length + (entry.parent?.length ?? 0) + entry.text.length), 0) > MAX_APPEND_BYTES) throw new PiDeliveryBudgetExceeded("Pi append retention budget exceeded");
   if (tailAt(fd, previous.scanned) !== previous.tail) throw new Error("Pi append changed during read");
   return { scanned, tail: tailAt(fd, scanned), entries };
 }
@@ -198,7 +200,7 @@ export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing
  * later Ovis receipt may not cross an earlier unmatched one. Content is only a bounded scoped
  * correlator: Pi does not expose a submission id in its TUI or transcript.
  */
-export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; retry: boolean } {
+export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; unavailable?: string[]; retry: boolean } {
   if (candidates.length === 0) return { consumed: [], changed: [], retry: false };
   let fd: number | undefined;
   try {
@@ -240,6 +242,11 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
     for (const [anchor, state] of updates) appends.set(anchor, state);
     for (const key of matchedEntries) consumedEntries.add(key);
     return { consumed, changed, retry: false };
-  } catch { return { consumed: [], changed: [], retry: true }; }
+  } catch (error) {
+    // No partial matches were committed. Conservatively settle the whole candidate batch:
+    // FIFO correlation cannot safely cross the receipt whose bounded history is unavailable.
+    if (error instanceof PiDeliveryBudgetExceeded) return { consumed: [], changed: [], unavailable: candidates.map((candidate) => candidate.id), retry: false };
+    return { consumed: [], changed: [], retry: true };
+  }
   finally { if (fd !== undefined) closeSync(fd); }
 }
