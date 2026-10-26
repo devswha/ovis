@@ -30,7 +30,7 @@ describe("Mac app draft carry", () => {
     carry(page, { [draft]: "typed on the old port", [lease]: "{\"sent\":\"a\"}" }, false, "t1");
     expect(Object.fromEntries(page.entries)).toEqual({
       [draft]: "typed on the old port", [lease]: "{\"sent\":\"a\"}", "ovis:queue:w2:p2": "its own", "ovis:settings": "{}",
-      "ovis-mac:carried": JSON.stringify({ token: "t1", done: [draft, lease] }),
+      "ovis-mac:carried": JSON.stringify({ token: "t1", done: [draft, lease], before: {} }),
     });
   });
 
@@ -46,6 +46,18 @@ describe("Mac app draft carry", () => {
     expect(page.entries.get(draft)).toBe("typed on the old port");
     expect(page.entries.get("ovis:terminal-line:w1:p1")).toBe("ls -la");
     expect(landed(page).done).toEqual(["ovis:terminal-line:w1:p1", draft]);
+  });
+
+  test("an overwrite that fails once is written by the next run while the key still holds the older copy", () => {
+    const full = new Set([draft]);
+    const page = store({ [draft]: "older visit" }, full);
+    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    expect(page.entries.get(draft)).toBe("older visit");
+    expect(landed(page).done).toEqual([]);
+    full.clear();
+    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    expect(page.entries.get(draft)).toBe("typed on the old port");
+    expect(landed(page).done).toEqual([draft]);
   });
 
   test("a second run of the same carry leaves what the page typed since, even in a key that had not landed", () => {
