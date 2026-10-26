@@ -5,7 +5,8 @@
  * resumed pane's session (App's RecentResume record), a session a pane already shows selected instead of
  * started, a row without a verified resume listed with no button, the keyboard along the rows,
  * the agent picker (each agent with its mark, no Shell, its open list taking Escape alone, also with the
- * focus off its button and when the sessions arrive while it is open, disabled while a resume is in flight), a PC whose bridge answers 404 for the route, whose menu has no item, and
+ * focus off its button and when the sessions arrive while it is open, disabled while a resume is in
+ * flight), a PC whose bridge answers 404 for the route, whose menu has no item, and
  * Claude's store-bound Resume: the list asked for from a pane of the workspace, one POST sessions/resume
  * per double click (never tab/create), the same UUID reported by a pane on another store left to Resume, a
  * store that changed read again, and a bridge from before store-bound Resume (rows without a source, no
@@ -298,8 +299,11 @@ try {
     modal.innerHTML = '<button type="button">Add PC</button>';
     document.body.append(modal);
     modal.showModal();
+    // the focus on body, as Safari leaves it after a click in the modal: only the modal check keeps this Escape the modal's
     modal.querySelector("button")!.focus();
+    modal.querySelector("button")!.blur();
   });
+  assert.equal(await page.evaluate(() => document.activeElement === document.body), true, "the focus is on body under the native modal");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !(document.getElementById("qa-native-modal") as HTMLDialogElement).open);
   assert.equal(await agentList.isVisible(), true, "Escape in a native modal over the dialog closes that modal, not the agent list under it");
