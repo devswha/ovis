@@ -320,23 +320,40 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * and stays listed before it is not taken for it. For OmO, the process holding its session (heldOmoProcess), as
    * typing picks it, so a custom OmO is not taken for its SDK child. While herdr names no agent, or none of its
    * programs runs there, the first process in front. Its birth is read without holding the event loop (no `ps` on
-   * it on macOS).
+   * it on macOS); the foreground is then read again, and a process no longer in front by then is not the one that
+   * runs now: the reads are made again from what is, so a replacement that came meanwhile is never checked against
+   * the old process's birth. While the foreground keeps changing, the latest process with no birth.
    */
   async function currentIdentity(paneId: string, bound: number | null = null): Promise<{ pane: HerdrPane; identity: PendingIdentity; shellPid: number | null; processes: ProcessInfo | undefined }> {
     // The same normalized snapshot the client sees includes a known Codex finish that
     // herdr reports as unknown. Nothing is inferred from a bare unknown state.
     const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
     if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
-    const info = await paneProcessInfo(paneId);
     const base = pendingIdentity(pane);
-    const held = base.agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []) : null;
-    const pid = agentProcessInFront(info, base.agent, bound, held)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
-    return { pane, shellPid: info?.shell_pid ?? null, processes: info, identity: {
-      ...base, processPid: pid, processBirth: pid === null ? null : await processStartedAtAsync(pid),
-      omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
+    const pick = async (info: ProcessInfo | undefined): Promise<number | null> => {
+      const held = base.agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []) : null;
+      return agentProcessInFront(info, base.agent, bound, held)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
+    };
+    const inFront = (info: ProcessInfo | undefined, pid: number | null): boolean =>
+      pid === null ? (info?.foreground_processes ?? []).length === 0 : (info?.foreground_processes ?? []).some((entry) => entry.pid === pid);
+    let info = await paneProcessInfo(paneId);
+    for (let attempt = 1; ; attempt++) {
+      const pid = await pick(info);
+      const processBirth = pid === null ? null : await processStartedAtAsync(pid);
       // Claude's own PID record says which session it runs, also without herdr's hook
-      claudeSession: base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null,
-    } };
+      const claudeSession = base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null;
+      const after = await paneProcessInfo(paneId);
+      const settled = inFront(after, pid);
+      if (settled || attempt === 3) {
+        const processPid = settled ? pid : await pick(after);
+        return { pane, shellPid: after?.shell_pid ?? null, processes: after, identity: {
+          ...base, processPid, processBirth: settled ? processBirth : null,
+          omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
+          claudeSession: settled ? claudeSession : null,
+        } };
+      }
+      info = after;
+    }
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined }> {
     authorizePending(owner, paneId, lease);
