@@ -64,7 +64,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const { settings, update: updateSettings } = useSettings();
   const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
   const mirrorWraps = settings.terminalMirrorWrap ?? narrowScreen;
-  // attached panes drawn here at a grid this device does not size, wider than the screen (a watched pane)
+  // attached panes drawn here at a grid this device does not size, wider than the screen (watched, or held under the keyboard)
   const wideGrid = useSyncExternalStore(wideGrids.subscribe, wideGrids.snapshot, wideGrids.snapshot);
   const machineId = useMachineId();
   const apple = /Mac|iPhone|iPad/.test(navigator.platform);

@@ -395,7 +395,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // change it), an attached pane this device only watches (the pty's grid, which another device
       // sized), or one held under the soft keyboard at another device's size until the keyboard goes.
       // A phone that drives the pty is never folded: the program redraws at its width. Nor is a split's
-      // following half. The pane menu's "Original width" draws the grid as it is again.
+      // following half. A tap on folded rows opens a link or focuses the terminal, as on a mirror; it is
+      // no mouse click for the program (herdr's attach always reports the mouse, so that cannot tell a
+      // program that wants clicks): the pane menu's "Original width" draws the grid as it is again.
       // The folded rows keep the cursor's row in view, as the grid does: at the top while it fits there,
       // else at the bottom of the view (a cleared shell's prompt on the first row stays in sight).
       const followFold = (): void => {
@@ -1626,7 +1628,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const across = touchX - first.clientX;
         touchX = first.clientX;
         touchY = first.clientY;
-        if (adopted() && (!scrollableMirror() || canPanTerminalGrid(host, delta))) {
+        // folded rows pan in the browser too; under the keyboard (a grid this phone drives, held at another
+        // device's size) only up to their edges, past which the swipe scrolls the program as before
+        const edged = scrollableMirror() || (fold.active && !adopted());
+        if ((adopted() || fold.active) && (!edged || canPanTerminalGrid(host, delta))) {
           // the pan owns the swipe now: history travel left from before it is not sent at the lift
           touchPixels = 0;
           panned = true;

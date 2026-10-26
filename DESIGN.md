@@ -2811,7 +2811,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   buffer the attach stream wrote, never from a pane read, and the pane is never resized for it; the
   pane menu then offers the same choice, under the same setting. A phone that drives the pty is never
   folded (the program redraws at its width), nor is a split's following half, and a grid its mount
-  fits is drawn as it is. Folded
+  fits is drawn as it is. Under the keyboard the folded rows pan by finger and wheel up to their
+  edges, past which a swipe scrolls the pane as before; a tap on them is no mouse click for the
+  program (herdr's attach reports the mouse for every pane, so a program that wants clicks cannot be
+  told apart): Original width keeps clicks. Folded
   rows keep the cursor's row in view and pan only up and down; a tap on a web address, a file path or
   an OSC 8 hyperlink's label opens it as the grid's links do, any other tap focuses the terminal, and a wheel past their edges
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.

@@ -111,18 +111,23 @@ describe("the folded view of a mirrored grid", () => {
     const second = {};
     let heard = 0;
     const stop = wideGrids.subscribe(() => { heard++; });
-    wideGrids.set(first, pane);
-    wideGrids.set(second, pane);
-    wideGrids.set(first, pane);
-    expect(heard).toBe(2);
-    wideGrids.set(first, null);
-    expect(wideGrids.snapshot().has(pane)).toBe(true);
-    // the other terminal moved on to another pane: this one is no longer wide anywhere
-    wideGrids.set(second, wideGridKey("pc", "w1:p2"));
-    expect(wideGrids.snapshot().has(pane)).toBe(false);
-    wideGrids.set(second, null);
-    expect(wideGrids.snapshot().size).toBe(0);
-    expect(heard).toBe(5);
-    stop();
+    try {
+      wideGrids.set(first, pane);
+      wideGrids.set(second, pane);
+      wideGrids.set(first, pane);
+      expect(heard).toBe(2);
+      wideGrids.set(first, null);
+      expect(wideGrids.snapshot().has(pane)).toBe(true);
+      // the other terminal moved on to another pane: this one is no longer wide anywhere
+      wideGrids.set(second, wideGridKey("pc", "w1:p2"));
+      expect(wideGrids.snapshot().has(pane)).toBe(false);
+      wideGrids.set(second, null);
+      expect(wideGrids.snapshot().size).toBe(0);
+      expect(heard).toBe(5);
+    } finally {
+      stop();
+      wideGrids.set(first, null);
+      wideGrids.set(second, null);
+    }
   });
 });
