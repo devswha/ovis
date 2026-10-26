@@ -1,0 +1,253 @@
+import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
+import { canPanTerminalGrid } from "./terminalWheel.ts";
+
+/*
+ * The folded view of a mirrored grid wider than its screen. A Windows PC's herdr has no terminal
+ * attach, so the bridge repaints the pane at the pane's own size on that PC (server/mirror.ts) and
+ * a phone cannot resize it: drawn as it is, every row ran off the right edge. The grid stays as it
+ * is, unseen, so whatever reads it (the masked prompt, the agent's input row, Find) still reads what
+ * herdr drew; this view draws its rows again as text that wraps at the screen's width, the way
+ * Collie draws a pane read (AltanS/collie, web/src/components/ansi-output.tsx: SGR runs in a
+ * pre-wrap block; no code is taken from it). A full-screen program's boxes and right-aligned bars
+ * fold with the text: the pane menu's "Original width" draws the grid as it is again.
+ */
+
+const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
+// xterm's own sixteen, for the ones a theme leaves out (a dark theme here names none of them)
+const XTERM_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+  "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"];
+const CUBE = [0, 95, 135, 175, 215, 255];
+const hex = (value: number): string => value.toString(16).padStart(2, "0");
+
+/** A 256-colour palette index as CSS: the theme's sixteen colours (xterm's where it names none), then xterm's 6x6x6 cube and grey ramp. */
+export function paletteColor(index: number, theme: ITheme): string {
+  if (index < 16) return theme[ANSI[index]!] ?? XTERM_ANSI[index]!;
+  if (index < 232) {
+    const cube = index - 16;
+    return `#${hex(CUBE[Math.floor(cube / 36)]!)}${hex(CUBE[Math.floor(cube / 6) % 6]!)}${hex(CUBE[cube % 6]!)}`;
+  }
+  return `#${hex(8 + (index - 232) * 10).repeat(3)}`;
+}
+
+const colorOf = (isDefault: boolean, isRgb: boolean, value: number, theme: ITheme, brighten: boolean): string | null => {
+  if (isDefault) return null;
+  if (isRgb) return `#${value.toString(16).padStart(6, "0")}`;
+  // xterm draws bold text of the first eight colours in their bright forms (drawBoldTextInBrightColors)
+  return paletteColor(brighten && value < 8 ? value + 8 : value, theme);
+};
+
+type Rgb = [number, number, number];
+const rgbOf = (color: string): Rgb | null => {
+  const long = /^#([0-9a-f]{6})$/i.exec(color);
+  if (long) {
+    const value = parseInt(long[1]!, 16);
+    return [value >> 16, (value >> 8) & 255, value & 255];
+  }
+  const short = /^#([0-9a-f]{3})$/i.exec(color);
+  return short ? [...short[1]!].map((digit) => parseInt(digit + digit, 16)) as Rgb : null;
+};
+// WCAG relative luminance and contrast ratio, as xterm's minimumContrastRatio measures them
+const luminance = (rgb: Rgb): number => {
+  const [r, g, b] = rgb.map((value) => {
+    const s = value / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  }) as Rgb;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a: Rgb, b: Rgb): number => {
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (light + 0.05) / (dark + 0.05);
+};
+
+/** `fg` moved toward white on a dark `bg` (black on a light one) until it reaches `ratio` against it, as
+ *  the grid's own minimumContrastRatio draws it; a colour that is not #rgb or #rrggbb is left as it is. */
+export function readableColor(fg: string, bg: string, ratio: number): string {
+  const from = rgbOf(fg);
+  const under = rgbOf(bg);
+  if (!from || !under || ratio <= 1 || contrast(from, under) >= ratio) return fg;
+  const target = luminance(under) < 0.5 ? 255 : 0;
+  for (let step = 1; step < 10; step++) {
+    const mixed = from.map((value) => Math.round(value + (target - value) * step / 10)) as Rgb;
+    if (contrast(mixed, under) >= ratio) return `#${mixed.map(hex).join("")}`;
+  }
+  return `#${hex(target).repeat(3)}`;
+}
+
+/** The inline CSS a cell draws with; "" for the terminal's plain text. `minimumContrast` is the grid's minimumContrastRatio. */
+export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 1): string {
+  const bold = cell.isBold() !== 0;
+  let fg = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor(), theme, bold);
+  let bg = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor(), theme, false);
+  if (cell.isInverse() !== 0) [fg, bg] = [bg ?? theme.background ?? null, fg ?? theme.foreground ?? null];
+  const under = bg ?? theme.background;
+  if (fg && under) fg = readableColor(fg, under, minimumContrast);
+  let style = "";
+  if (cell.isInvisible() !== 0) style += "color:transparent;";
+  else if (fg) style += `color:${fg};`;
+  if (bg) style += `background:${bg};`;
+  if (bold) style += "font-weight:bold;";
+  if (cell.isItalic() !== 0) style += "font-style:italic;";
+  if (cell.isDim() !== 0) style += "opacity:.5;";
+  const lines = [cell.isUnderline() !== 0 ? "underline" : "", cell.isStrikethrough() !== 0 ? "line-through" : "", cell.isOverline() !== 0 ? "overline" : ""].filter(Boolean);
+  if (lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
+  return style;
+}
+
+const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
+/** a cell that draws nothing: a space (or nothing) on the default background */
+const blank = (cell: IBufferCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
+
+/**
+ * One grid row as HTML, its cells grouped in runs drawn alike, without the blank cells it ends with:
+ * herdr pads every row to the grid's width, and folded those would add an empty line to each row.
+ * `scratch` is a cell to read into (xterm reuses it for every getCell).
+ */
+export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch: IBufferCell, minimumContrast = 1): string {
+  let end = 0;
+  for (let x = 0; x < cols; x++) {
+    const cell = line.getCell(x, scratch);
+    if (!cell) break;
+    if (!blank(cell)) end = x + Math.max(1, cell.getWidth());
+  }
+  let html = "";
+  let text = "";
+  let style = "";
+  for (let x = 0; x < end; x++) {
+    const cell = line.getCell(x, scratch);
+    if (!cell) break;
+    // the second half of a wide glyph: the glyph itself was the cell before
+    if (cell.getWidth() === 0) continue;
+    const next = cellStyle(cell, theme, minimumContrast);
+    if (next !== style) {
+      html += run(text, style);
+      text = "";
+      style = next;
+    }
+    text += cell.getChars() || " ";
+  }
+  return html + run(text, style);
+}
+
+export interface TerminalFold {
+  /** the folded view is drawn in place of the grid */
+  readonly active: boolean;
+  /** decides again whether the grid is folded (the host or the grid resized, the setting or the grid's role changed), and redraws it if so */
+  sync(): void;
+  dispose(): void;
+}
+
+export interface TerminalFoldOptions {
+  /** the grid may be folded: a mirror this browser does not drive, and the user's choice is to wrap it */
+  wanted: () => boolean;
+  /** after each drawing: the caller keeps the prompt in view */
+  onDrawn: () => void;
+  /** a tap on the view, which xterm under it no longer receives: it focuses the terminal, as xterm's own tap does */
+  onTap: () => void;
+  /** a wheel moved the folded rows within the host: the view is the user's until they follow again */
+  onPan: () => void;
+}
+
+/** Folds `term`'s grid inside `host` while `wanted()` holds and the grid is wider than the host. */
+export function createTerminalFold(term: Terminal, host: HTMLElement, { wanted, onDrawn, onTap, onPan }: TerminalFoldOptions): TerminalFold {
+  const view = document.createElement("div");
+  view.className = "terminal-fold";
+  // the grid under it stays the terminal's accessible text; this is the same text drawn again
+  view.setAttribute("aria-hidden", "true");
+  const rows: HTMLDivElement[] = [];
+  const drawn: string[] = [];
+  const scratch = term.buffer.active.getNullCell();
+  let active = false;
+
+  const screen = (): HTMLElement | null => term.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+  const wider = (): boolean => {
+    const grid = screen();
+    if (!grid || !term.element || host.clientWidth === 0) return false;
+    const style = getComputedStyle(term.element);
+    return grid.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > host.clientWidth + 1;
+  };
+  const draw = (start: number, end: number): void => {
+    const theme = term.options.theme ?? {};
+    const grid = screen();
+    view.style.fontFamily = term.options.fontFamily ?? "";
+    view.style.fontSize = `${term.options.fontSize ?? 13}px`;
+    // a row's own height in the grid, so the folded rows stand as far apart as the grid's
+    if (grid && term.rows > 0) view.style.setProperty("--fold-line", `${grid.offsetHeight / term.rows}px`);
+    view.style.color = theme.foreground ?? "";
+    view.style.background = theme.background ?? "";
+    while (rows.length < term.rows) {
+      const row = document.createElement("div");
+      row.className = "terminal-fold-row";
+      view.append(row);
+      rows.push(row);
+      drawn.push("");
+    }
+    while (rows.length > term.rows) {
+      rows.pop()!.remove();
+      drawn.pop();
+    }
+    const buffer = term.buffer.active;
+    for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
+      const line = buffer.getLine(buffer.viewportY + y);
+      const html = line ? rowHtml(line, term.cols, theme, scratch, term.options.minimumContrastRatio ?? 1) : "";
+      if (html === drawn[y]) continue;
+      drawn[y] = html;
+      rows[y]!.innerHTML = html;
+    }
+    onDrawn();
+  };
+  const sync = (): void => {
+    const next = wanted() && wider();
+    if (next === active) {
+      if (active) draw(0, term.rows - 1);
+      return;
+    }
+    active = next;
+    host.toggleAttribute("data-folded", active);
+    if (active) {
+      host.scrollLeft = 0;
+      host.append(view);
+      draw(0, term.rows - 1);
+      return;
+    }
+    view.remove();
+    view.replaceChildren();
+    rows.length = 0;
+    drawn.length = 0;
+  };
+  // xterm draws only the rows a write changed: those are redrawn here too, after it
+  const rendered = term.onRender(({ start, end }) => {
+    if (!active) return;
+    // the grid stopped being a mirror this browser folds (a pane switch, a role) since the last sync
+    if (!wanted()) sync();
+    else draw(start, end);
+  });
+  const resized = term.onResize(() => sync());
+  // a tap with no text selected in the view: a long press that selected some is a copy, not a tap
+  const tap = (): void => { if (!window.getSelection()?.toString()) onTap(); };
+  // xterm's wheel handler is on the grid, which the view covers: the folded rows pan in the host while
+  // they can, and past their edge the wheel goes on to xterm, which scrolls the mirror's history
+  const wheel = (event: WheelEvent): void => {
+    if (canPanTerminalGrid(host, event.deltaY)) {
+      onPan();
+      return;
+    }
+    event.preventDefault();
+    term.element?.dispatchEvent(new WheelEvent("wheel", event));
+  };
+  view.addEventListener("click", tap);
+  view.addEventListener("wheel", wheel, { passive: false });
+  return {
+    get active() { return active; },
+    sync,
+    dispose() {
+      rendered.dispose();
+      resized.dispose();
+      view.removeEventListener("click", tap);
+      view.removeEventListener("wheel", wheel);
+      view.remove();
+      host.removeAttribute("data-folded");
+    },
+  };
+}

@@ -97,6 +97,10 @@ export interface Settings {
    *  Stored under this key, not 0.4.1's `terminalOsc52`: settings are saved whole, so a `false` there
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
+  /** a mirrored pane (a Windows PC: no terminal attach) whose grid is wider than this screen is drawn
+   *  folded to the screen's width (lib/terminalFold.ts); off draws the grid at its original width, panned
+   *  sideways. Chosen from the pane menu, for this device. */
+  terminalMirrorWrap: boolean;
   /** a desktop tab out of use for a moment detaches its pane (PaneTerminal's release) and only watches it, so herdr's own
    *  window keeps the pane at its size; paused where the server cannot watch. Off: the tab keeps the pane and its size. */
   releasePaneAway: boolean;
@@ -186,12 +190,12 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * fileOpen, webLinks, the launch modes, followHerdrFocus, composerNewTabButton and the interface font are not collected: the
- * telemetry schema (shared/telemetry.ts) does not carry them. */
+ * fileOpen, webLinks, the launch modes, followHerdrFocus, composerNewTabButton, terminalMirrorWrap and the interface font are
+ * not collected: the telemetry schema (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode"
-  | "followHerdrFocus" | "composerNewTabButton">;
+  | "followHerdrFocus" | "composerNewTabButton" | "terminalMirrorWrap">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -268,6 +272,8 @@ export const SETTING_SCOPE = {
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", shortcutOverrides: "device", density: "device",
   terminalFontSize: "device",
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
+  // a phone folds a wide mirror, a desk's window may draw it whole
+  terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
   chatFontSize: "device", chatFontFamily: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
@@ -307,6 +313,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
   paneClipboard: true,
+  terminalMirrorWrap: true,
   releasePaneAway: false,
   followHerdrFocus: false,
   chatFontSize: null,
@@ -486,6 +493,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontSize: sanitizeUiFontSize(record["uiFontSize"]),
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
+    terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : DEFAULT_SETTINGS.terminalMirrorWrap,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),

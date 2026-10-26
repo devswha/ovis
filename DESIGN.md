@@ -2794,6 +2794,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   resize it to reveal the caret. No terminal pixels or input handling code are copied from Zed.
   Local wheel panning in an oversized mirror survives subsequent output. A tap or a touch movement
   that produces no history step sends no shared scroll request.
+- A mirrored grid wider than its mount (a Windows PC's pane, whose size a phone cannot change) is
+  drawn folded (`lib/terminalFold.ts`): its rows are drawn again as SGR runs in a pre-wrap block at
+  the mount's width, over the grid, which stays at the pane's size for input, the masked prompt, the
+  input row and Find. This follows Collie (AltanS/collie, `ansi-output.tsx`), which draws herdr's
+  pane read the same way and never resizes the pane; no code is copied. A full-screen program's
+  boxes fold with the text, so the pane menu offers Original width (`terminalMirrorWrap`, this
+  device's), the grid at its size panned sideways as before, and Wrap to screen back. An observer's
+  grid, and a mirror its mount fits, are drawn as they are. Folded rows keep their bottom in view and
+  pan only up and down; a tap focuses the terminal, and a wheel past their edges scrolls the mirror's
+  history.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
   replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
