@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Ovis for Mac's draft carry (app/mac/Resources/carry-drafts.js), run as the app runs it in a page. */
-type Carry = (storage: Storage, carried: Record<string, string>, shared: boolean, token: string) => void;
+type Carry = (storage: Storage, carried: Record<string, string>, shared: boolean, token: string, loaded?: boolean) => void;
 const source = readFileSync(join(import.meta.dir, "..", "app", "mac", "Resources", "carry-drafts.js"), "utf8");
 const carry = new Function(`${source}\nreturn ovisCarryDrafts;`)() as Carry;
 
@@ -30,7 +30,7 @@ describe("Mac app draft carry", () => {
     carry(page, { [draft]: "typed on the old port", [lease]: "{\"sent\":\"a\"}" }, false, "t1");
     expect(Object.fromEntries(page.entries)).toEqual({
       [draft]: "typed on the old port", [lease]: "{\"sent\":\"a\"}", "ovis:queue:w2:p2": "its own", "ovis:settings": "{}",
-      "ovis-mac:carried": JSON.stringify({ token: "t1", done: [draft, lease], before: {} }),
+      "ovis-mac:carried": JSON.stringify({ token: "t1", done: [draft, lease], before: { [draft]: "older visit", [lease]: null } }),
     });
   });
 
@@ -69,6 +69,26 @@ describe("Mac app draft carry", () => {
     carry(page, { [draft]: "typed on the old port" }, false, "t1");
     expect(page.entries.get(draft)).toBe("typed on the new port");
     expect(landed(page).done).toEqual([draft]);
+  });
+
+  test("a mark too big to write once is written in full by the next run, which then replaces the older copy", () => {
+    const full = new Set(["ovis-mac:carried"]);
+    const page = store({ [draft]: "older visit" }, full);
+    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    expect(page.entries.get(draft)).toBe("older visit");
+    full.clear();
+    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    carry(page, { [draft]: "typed on the old port" }, false, "t1");
+    expect(page.entries.get(draft)).toBe("typed on the old port");
+    expect(landed(page)).toEqual({ token: "t1", done: [draft], before: { [draft]: "older visit" } });
+  });
+
+  test("once the page has loaded, a carry that never started only fills keys the page holds none of", () => {
+    const page = store({ [draft]: "typed after the page loaded", "ovis:composer-sending:w9:p9": "{}" });
+    carry(page, { [draft]: "typed on the old port", "ovis:queue:w2:p2": "held" }, false, "t1", true);
+    expect(page.entries.get(draft)).toBe("typed after the page loaded");
+    expect(page.entries.get("ovis:queue:w2:p2")).toBe("held");
+    expect(page.entries.get("ovis:composer-sending:w9:p9")).toBe("{}");
   });
 
   test("a carry that cannot write its mark writes nothing, so no later run can write over the page", () => {

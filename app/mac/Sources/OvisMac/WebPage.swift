@@ -80,6 +80,8 @@ final class WebPageController: NSObject, ObservableObject {
     private var reloads: AnyCancellable?
     /// The drafts of the page this one replaced are written into its storage as it loads, under this token.
     private var carryToken: String?
+    /// A window the page opened was still open on this address when the carry began.
+    private var carryShared = false
 
     /// What the user typed and has not sent, as the page keeps it in its origin's storage: the chat's
     /// draft and its send on its way, the terminal's held input and input line, held and pending
@@ -107,9 +109,10 @@ final class WebPageController: NSObject, ObservableObject {
             // a window the page opened outlives it: one still open on this address keeps using its storage
             let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
             let token = UUID().uuidString
-            if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token) {
+            if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: false) {
                 webView.configuration.userContentController.addUserScript(script)
                 carryToken = token
+                carryShared = shared
             }
         }
         webView.load(URLRequest(url: origin))
@@ -170,11 +173,11 @@ final class WebPageController: NSObject, ObservableObject {
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 
     /// Writes the carried drafts before the page's own code reads its storage (`carry-drafts.js`). The
-    /// page it came from keeps its copy.
-    private static func carryScript(_ drafts: [String: String], shared: Bool, token: String) -> WKUserScript? {
+    /// page it came from keeps its copy. `loaded`: the page has loaded since, so the user may have typed.
+    private static func carryScript(_ drafts: [String: String], shared: Bool, token: String, loaded: Bool) -> WKUserScript? {
         guard !drafts.isEmpty, let carrySource, let data = try? JSONSerialization.data(withJSONObject: drafts),
               let json = String(data: data, encoding: .utf8) else { return nil }
-        let source = "(() => {\n\(carrySource)\novisCarryDrafts(window.localStorage, \(json), \(shared), \"\(token)\");\n})();"
+        let source = "(() => {\n\(carrySource)\novisCarryDrafts(window.localStorage, \(json), \(shared), \"\(token)\", \(loaded));\n})();"
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
@@ -345,8 +348,10 @@ extension WebPageController: WKNavigationDelegate {
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
         if !isPopup { model?.pageLoaded() }
         // the carried drafts that are in this origin's storage now are done; the rest stay for a reload or
-        // the next page, and the old origin keeps its copy meanwhile
+        // the next page, and the old origin keeps its copy meanwhile. A reload runs the carry again, now
+        // knowing the page has loaded: a carry that never got to start then only fills empty keys.
         if let token = carryToken {
+            let shared = carryShared
             let landed = """
             (() => { try { const mark = JSON.parse(localStorage.getItem("ovis-mac:carried") ?? "null");
               return mark && mark.token === "\(token)" && Array.isArray(mark.done) ? mark.done : []; } catch { return []; } })()
@@ -354,9 +359,12 @@ extension WebPageController: WKNavigationDelegate {
             webView.evaluateJavaScript(landed) { [weak self] result, _ in
                 guard let self, let model = self.model, let keys = result as? [String] else { return }
                 model.draftsCarried(Set(keys))
-                if model.carriedDrafts.isEmpty {
+                let controller = self.webView.configuration.userContentController
+                controller.removeAllUserScripts()
+                if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: true) {
+                    controller.addUserScript(script)
+                } else {
                     self.carryToken = nil
-                    self.webView.configuration.userContentController.removeAllUserScripts()
                 }
             }
         }

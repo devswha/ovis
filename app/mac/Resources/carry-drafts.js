@@ -7,13 +7,14 @@
 // over (the new page has none of its own yet). Unless `shared`, a window the page opened still open
 // there: then that window's drafts and sends are live, and a carried key only fills a gap.
 //
-// `ovis-mac:carried` records the carry's token, the keys that landed, and for each key it is about to
-// write the value the key held just before (`before`). A later run of the same carry (a reload before the
-// page finished, or a window it opened meanwhile) retries a key that did not land only while it still holds
-// that value: one the page changed since is the page's own, so carried text never goes back over what was
-// typed since. A key whose attempt was never recorded is left alone. The app reads the landed keys when the
-// page has loaded and keeps the rest; the old origin keeps its copy meanwhile.
-function ovisCarryDrafts(storage, carried, shared, token) {
+// `ovis-mac:carried` records the carry's token, the keys that landed, and the value each carried key held
+// before the carry began (`before`), all in its first write: a carry that cannot write it writes nothing.
+// A later run of the same carry (a reload, a window the page opened) writes a key that has not landed only
+// while it still holds that value; one the page changed since is the page's own, so carried text never goes
+// back over what was typed since. `loaded` is set once the page has loaded (WebPage.swift): from then on
+// the user may type, so a carry that never got to start only fills keys the page holds none of. The app
+// reads the landed keys when the page has loaded and keeps the rest; the old origin keeps its copy.
+function ovisCarryDrafts(storage, carried, shared, token, loaded) {
   const MARK = "ovis-mac:carried";
   let mark = null;
   try {
@@ -33,50 +34,40 @@ function ovisCarryDrafts(storage, carried, shared, token) {
       return false;
     }
   };
-  // the mark first: a draft written without one would be written again over what is typed since
-  if (!again && !save()) return;
-  if (!again && !shared) {
-    try {
-      const leases = [];
-      for (let i = 0; i < storage.length; i++) {
-        const key = storage.key(i);
-        if (key && key.startsWith("ovis:composer-sending:") && !Object.hasOwn(carried, key)) leases.push(key);
+  if (!again) {
+    if (!loaded) {
+      try {
+        for (const key of Object.keys(carried)) before[key] = storage.getItem(key);
+      } catch {
+        return;
       }
-      for (const key of leases) storage.removeItem(key);
-    } catch {
-      // a lease left behind runs out by itself
+    }
+    // the mark first, with every baseline: a draft written without one could be written again over typing
+    if (!save()) return;
+    if (!loaded && !shared) {
+      try {
+        const leases = [];
+        for (let i = 0; i < storage.length; i++) {
+          const key = storage.key(i);
+          if (key && key.startsWith("ovis:composer-sending:") && !Object.hasOwn(carried, key)) leases.push(key);
+        }
+        for (const key of leases) storage.removeItem(key);
+      } catch {
+        // a lease left behind runs out by itself
+      }
     }
   }
   for (const [key, value] of Object.entries(carried)) {
     if (landed.has(key)) continue;
     try {
       const now = storage.getItem(key);
-      if (again) {
-        if (!Object.hasOwn(before, key)) continue;
-        if (now !== before[key]) {
-          landed.add(key);
-          delete before[key];
-          save();
-          continue;
-        }
-      } else {
-        if (shared && now !== null) {
-          landed.add(key);
-          continue;
-        }
-        before[key] = now;
-        if (!save()) {
-          delete before[key];
-          continue;
-        }
-      }
-      storage.setItem(key, value);
+      // the page's own: a window of it still open there, or a value that is not the one the carry began with
+      const pagesOwn = shared || !Object.hasOwn(before, key) ? now !== null : now !== before[key];
+      if (!pagesOwn) storage.setItem(key, value);
       landed.add(key);
-      delete before[key];
       save();
     } catch {
       // one key that does not fit (a full store) does not stop the rest; it stays in the app to retry
     }
   }
-  save();
 }
