@@ -552,12 +552,25 @@ function readUiFontFamily(): string {
   }
 }
 
+/** The pane menu's Wrap to screen / Original width, kept in a key of its own for the same reason: null until chosen. */
+export const MIRROR_WRAP_STORAGE_KEY = "ovis:mirror-wrap";
+
+function readMirrorWrap(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(MIRROR_WRAP_STORAGE_KEY);
+    const value: unknown = raw === null ? null : JSON.parse(raw);
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, uiFontFamily: readUiFontFamily() };
+  return { ...merged, uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap() };
 }
 
 export function saveSettings(settings: Settings): void {
@@ -567,8 +580,9 @@ export function saveSettings(settings: Settings): void {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, ...main } = mirrored;
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
+    window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
   } catch {
     /* private mode: preferences last for the session */

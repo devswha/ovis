@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { IBufferCell, IBufferLine } from "@xterm/xterm";
-import { columnAt, paletteColor, readableColor, rowHtml, webLinkAt } from "./terminalFold.ts";
+import { columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt } from "./terminalFold.ts";
 
-interface Cell { chars: string; width?: number; fg?: number; bg?: number; bold?: boolean; dim?: boolean }
+interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
 /** A grid row of plain cells: what rowHtml reads of xterm's buffer, palette colours only. */
 function line(cells: Cell[], cols: number): IBufferLine {
@@ -14,12 +14,12 @@ function line(cells: Cell[], cols: number): IBufferLine {
       getWidth: () => c.width ?? 1,
       getCode: () => c.chars.codePointAt(0) ?? 0,
       isBold: () => (c.bold ? 1 : 0),
-      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => 0,
+      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => (c.inverse ? 1 : 0),
       isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0,
-      isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined,
-      isFgRGB: () => false, isBgRGB: () => false,
+      isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined && c.bgRgb === undefined,
+      isFgRGB: () => false, isBgRGB: () => c.bgRgb !== undefined,
       isFgPalette: () => c.fg !== undefined, isBgPalette: () => c.bg !== undefined,
-      getFgColor: () => c.fg ?? 0, getBgColor: () => c.bg ?? 0,
+      getFgColor: () => c.fg ?? 0, getBgColor: () => c.bgRgb ?? c.bg ?? 0,
       getFgColorMode: () => 0, getBgColorMode: () => 0, isAttributeDefault: () => c.fg === undefined && c.bg === undefined && !c.bold,
     } as unknown as IBufferCell;
   };
@@ -80,6 +80,25 @@ describe("the folded view of a mirrored grid", () => {
     const row = line([{ chars: "가", width: 2 }, { chars: "", width: 0 }, { chars: "" }, ...plain("ab")], 6);
     expect([0, 1, 2, 3].map((offset) => columnAt(row, 6, offset, scratch))).toEqual([0, 2, 3, 4]);
     expect(columnAt(row, 6, 9, scratch)).toBe(-1);
+  });
+
+  test("a colour that cannot reach the contrast one way reaches it the other", () => {
+    const grey = readableColor("#aaaaaa", "#aaaaaa", 4.5);
+    expect(contrastRatio(grey, "#aaaaaa")!).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("a default foreground on a background of the program's own colour still reads", () => {
+    const html = rowHtml(line([{ chars: "x", bgRgb: 0xd8d0c3 }], 1), 1, { foreground: "#d8d0c3", background: "#1b1b1b" }, scratch, 4.5);
+    const color = /color:(#[0-9a-f]{6});/.exec(html)?.[1];
+    expect(color).toBeDefined();
+    expect(contrastRatio(color!, "#d8d0c3")!).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("inverse swaps the colours before bold brightens the foreground, as xterm draws them", () => {
+    expect(rowHtml(line([{ chars: "x", fg: 1, bg: 4, bold: true, inverse: true }], 1), 1, {}, scratch))
+      .toBe('<span style="color:#729fcf;background:#cc0000;font-weight:bold;">x</span>');
+    expect(rowHtml(line([{ chars: "x", inverse: true }], 1), 1, { foreground: "#eeeeee", background: "#111111" }, scratch))
+      .toBe('<span style="color:#111111;background:#eeeeee;">x</span>');
   });
 
   test("bold text of the first eight colours draws in their bright forms", () => {

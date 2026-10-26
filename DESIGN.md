@@ -2802,11 +2802,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   to the window, which a mirror cannot; this follows Collie (AltanS/collie, `ansi-output.tsx`), which
   draws herdr's pane read the same way and never resizes the pane. No code is copied. A full-screen
   program's boxes fold with the text, so the pane menu offers Original width (`terminalMirrorWrap`,
-  this device's), the grid at its size panned sideways as before, and Wrap to screen back. Until the
+  this device's, kept in its own `ovis:mirror-wrap` key so an older tab's save of `ovis:settings` cannot
+  erase it), the grid at its size panned sideways as before, and Wrap to screen back. Until the
   user chooses, a narrow screen (a touch screen, or 768px and under) folds and a desktop does not. A
   watching phone folds too; an attached pty and a mirror its mount fits are drawn as they are. Folded
-  rows keep the cursor's row in view and pan only up and down; a tap on a web address or a file path
-  opens it as the grid's links do, any other tap focuses the terminal, and a wheel past their edges
+  rows keep the cursor's row in view and pan only up and down; a tap on a web address, a file path or
+  an OSC 8 hyperlink's label opens it as the grid's links do, any other tap focuses the terminal, and a wheel past their edges
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation

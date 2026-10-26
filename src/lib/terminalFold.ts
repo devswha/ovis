@@ -33,12 +33,11 @@ export function paletteColor(index: number, theme: ITheme): string {
   return `#${hex(8 + (index - 232) * 10).repeat(3)}`;
 }
 
-const colorOf = (isDefault: boolean, isRgb: boolean, value: number, theme: ITheme, brighten: boolean): string | null => {
-  if (isDefault) return null;
-  if (isRgb) return `#${value.toString(16).padStart(6, "0")}`;
-  // xterm draws bold text of the first eight colours in their bright forms (drawBoldTextInBrightColors)
-  return paletteColor(brighten && value < 8 ? value + 8 : value, theme);
-};
+/** a cell's colour as xterm holds it: a palette index, a CSS colour (24-bit, or the theme's own), or null for the default */
+type CellColor = { index: number } | { css: string } | null;
+const colorOf = (isDefault: boolean, isRgb: boolean, value: number): CellColor =>
+  isDefault ? null : isRgb ? { css: `#${value.toString(16).padStart(6, "0")}` } : { index: value };
+const cssOf = (color: CellColor, theme: ITheme): string | null => color === null ? null : "css" in color ? color.css : paletteColor(color.index, theme);
 
 type Rgb = [number, number, number];
 const rgbOf = (color: string): Rgb | null => {
@@ -63,28 +62,54 @@ const contrast = (a: Rgb, b: Rgb): number => {
   return (light + 0.05) / (dark + 0.05);
 };
 
+/** The WCAG contrast ratio of two #rgb or #rrggbb colours, or null for any other notation. */
+export function contrastRatio(a: string, b: string): number | null {
+  const first = rgbOf(a);
+  const second = rgbOf(b);
+  return first && second ? contrast(first, second) : null;
+}
+
 /** `fg` moved toward white on a dark `bg` (black on a light one) until it reaches `ratio` against it, as
- *  the grid's own minimumContrastRatio draws it; a colour that is not #rgb or #rrggbb is left as it is. */
+ *  the grid's own minimumContrastRatio draws it, and the other way when that way cannot reach it; a colour
+ *  that is not #rgb or #rrggbb is left as it is. */
 export function readableColor(fg: string, bg: string, ratio: number): string {
   const from = rgbOf(fg);
   const under = rgbOf(bg);
   if (!from || !under || ratio <= 1 || contrast(from, under) >= ratio) return fg;
-  const target = luminance(under) < 0.5 ? 255 : 0;
-  for (let step = 1; step < 10; step++) {
-    const mixed = from.map((value) => Math.round(value + (target - value) * step / 10)) as Rgb;
-    if (contrast(mixed, under) >= ratio) return `#${mixed.map(hex).join("")}`;
-  }
-  return `#${hex(target).repeat(3)}`;
+  const toward = (target: number): string | null => {
+    for (let step = 1; step <= 10; step++) {
+      const mixed = from.map((value) => Math.round(value + (target - value) * step / 10)) as Rgb;
+      if (contrast(mixed, under) >= ratio) return `#${mixed.map(hex).join("")}`;
+    }
+    return null;
+  };
+  const first = luminance(under) < 0.5 ? 255 : 0;
+  return toward(first) ?? toward(255 - first)
+    ?? (contrast([255, 255, 255], under) >= contrast([0, 0, 0], under) ? "#ffffff" : "#000000");
 }
 
 /** The inline CSS a cell draws with; "" for the terminal's plain text. `minimumContrast` is the grid's minimumContrastRatio. */
 export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 1): string {
   const bold = cell.isBold() !== 0;
-  let fg = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor(), theme, bold);
-  let bg = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor(), theme, false);
-  if (cell.isInverse() !== 0) [fg, bg] = [bg ?? theme.background ?? null, fg ?? theme.foreground ?? null];
-  const under = bg ?? theme.background;
-  if (fg && under) fg = readableColor(fg, under, minimumContrast);
+  let fgColor = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor());
+  let bgColor = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor());
+  // as xterm draws a cell: inverse swaps the colours first (a default one standing for the theme's), then bold
+  // draws a foreground of the first eight colours in its bright form (drawBoldTextInBrightColors)
+  if (cell.isInverse() !== 0) {
+    [fgColor, bgColor] = [bgColor ?? (theme.background ? { css: theme.background } : null), fgColor ?? (theme.foreground ? { css: theme.foreground } : null)];
+  }
+  if (bold && fgColor !== null && "index" in fgColor && fgColor.index < 8) fgColor = { index: fgColor.index + 8 };
+  let fg = cssOf(fgColor, theme);
+  const bg = cssOf(bgColor, theme);
+  // the minimum contrast holds for a default foreground on a colour of the program's, and for a colour on the default background
+  if (fg !== null || bg !== null) {
+    const text = fg ?? theme.foreground;
+    const under = bg ?? theme.background;
+    if (text && under) {
+      const readable = readableColor(text, under, minimumContrast);
+      if (fg !== null || readable !== text) fg = readable;
+    }
+  }
   let style = "";
   if (cell.isInvisible() !== 0) style += "color:transparent;";
   // dim fades the text, not its background
@@ -151,6 +176,20 @@ export function webLinkAt(text: string, offset: number): { url: string; start: n
     if (offset >= match.index && offset < match.index + url.length) return { url, start: match.index, end: match.index + url.length };
   }
   return null;
+}
+
+/**
+ * The OSC 8 target (`ESC ] 8 ; ; uri`) of grid cell `x` on buffer row `y`, or null. xterm 5.5 keeps it in its own link
+ * service with no public way to read it, so this reads its internals and finds nothing where they are not there; the
+ * caller applies the grid's own link policy (http(s) or file only) to what it finds.
+ */
+export function hyperlinkAt(term: Terminal, y: number, x: number): string | null {
+  const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
+  const id = cell?.extended?.urlId;
+  if (!id) return null;
+  const links = (term as unknown as { _core?: { _oscLinkService?: { getLinkData?: (id: number) => { uri?: string } | undefined } } })._core?._oscLinkService;
+  const uri = links?.getLinkData?.(id)?.uri;
+  return typeof uri === "string" && uri !== "" ? uri : null;
 }
 
 /** The grid column of the character at `offset` in a row drawn by rowHtml (each drawn cell's characters, a blank one as a space), or -1. */

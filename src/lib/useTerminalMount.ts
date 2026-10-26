@@ -28,7 +28,7 @@ import { narrowPaneFontSize } from "./narrowPaneFont.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
-import { createTerminalFold } from "./terminalFold.ts";
+import { createTerminalFold, hyperlinkAt } from "./terminalFold.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
@@ -177,6 +177,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // xterm activates a link whenever a press and its release land on it: a drag that selects
       // part of a path and a right click do too, and neither means "open this"
       const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !term.hasSelection();
+      // an OSC 8 hyperlink's target: a file opens in the viewer, an http(s) address as a web link, and nothing else
+      const openHyperlink = (event: MouseEvent, uri: string): void => {
+        if (!linkPressed(event)) return;
+        const path = fileUriPath(uri);
+        if (path !== null) openFileRef.current?.(path);
+        else if (isWebLink(uri) && !openWebRef.current(uri, event.shiftKey)) openWebLink(uri);
+      };
       const term = new Terminal({
         convertEol: false,
         // a program's own DECSCUSR still changes the cursor
@@ -197,12 +204,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // needs half that, and box, block and powerline glyphs keep their color.
         minimumContrastRatio: 4.5,
         linkHandler: {
-          activate: (event, uri) => {
-            if (!linkPressed(event)) return;
-            const path = fileUriPath(uri);
-            if (path !== null) openFileRef.current?.(path);
-            else if (isWebLink(uri) && !openWebRef.current(uri, event.shiftKey)) openWebLink(uri);
-          },
+          activate: openHyperlink,
           allowNonHttpProtocols: true,
         },
         // Option+drag selects on macOS, as Shift+drag does elsewhere; a plain drag is forced below
@@ -414,6 +416,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             return true;
           }
           const buffer = term.buffer.active;
+          // a labelled OSC 8 hyperlink shows no address of its own: its target is the cell's
+          const uri = hyperlinkAt(term, buffer.viewportY + target.row, target.col);
+          if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
+            openHyperlink(event, uri);
+            return true;
+          }
           const y = buffer.viewportY + target.row + 1;
           const x = target.col + 1;
           const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); })

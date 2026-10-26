@@ -18,6 +18,7 @@ import { appFaces } from "./app-faces.ts";
 const COLS = 120;
 const ROWS = 40;
 const LINK = "https://example.com/fold-link";
+const OSC8 = "https://example.com/osc8-target";
 
 interface FoldFixture {
   sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }>;
@@ -30,10 +31,13 @@ declare global { interface Window { foldFixture: FoldFixture } }
 /**
  * The demo owns metadata and auth; this makes its PC a mirror, as a Windows PC is, and gives `fixedPane`
  * a fixed grid of its own and a stand-in for herdr's history. `?fold=off` leaves the demo as it is: an
- * attached PC.
+ * attached PC. `?fold=attached` keeps the PC attached but gives the pane the same wide pty grid, which a
+ * watching phone adopts.
  */
 function installFoldFixture(screen: string, cols: number, rows: number, fixedPane: string): void {
-  if (new URL(location.href).searchParams.get("fold") === "off") return;
+  const mode = new URL(location.href).searchParams.get("fold");
+  if (mode === "off") return;
+  const fixed = mode !== "attached";
   const state: FoldFixture = { sockets: [], offsets: [], reads: 0, offset: 0 };
   window.foldFixture = state;
   const fetchDemo = window.fetch.bind(window);
@@ -47,7 +51,7 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
       return new Response(JSON.stringify({ scroll: { offset_from_bottom: state.offset, max_offset_from_bottom: 200, viewport_rows: rows } }), { headers: { "content-type": "application/json" } });
     }
     const response = await fetchDemo(input, init);
-    if (url.pathname !== "/api/health" || url.search !== "") return response;
+    if (!fixed || url.pathname !== "/api/health" || url.search !== "") return response;
     const body = await response.json() as { herdr: Record<string, unknown> };
     body.herdr = { ...body.herdr, terminal_attach: false, terminal_mirror: true };
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
@@ -59,7 +63,7 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (frame.pane_id !== fixedPane) push(frame);
-      else if (frame.type === "pane-geometry") push({ ...frame, cols, rows, fixed: true });
+      else if (frame.type === "pane-geometry") push({ ...frame, cols, rows, ...(fixed ? { fixed: true } : {}) });
       // the demo's own recording would draw over the fixture's screen
       else if (frame.type === "pty-data" && frame.fixture !== "fold") return;
       else if (frame.type === "pty-data") {
@@ -73,7 +77,7 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
       send(raw);
       const frame = JSON.parse(String(raw)) as { type: string; pane_id?: string };
       if (frame.type !== "attach" || frame.pane_id !== fixedPane) return;
-      socket.push({ type: "pane-geometry", pane_id: frame.pane_id, cols, rows, fixed: true });
+      socket.push({ type: "pane-geometry", pane_id: frame.pane_id, cols, rows, ...(fixed ? { fixed: true } : {}) });
       socket.push({ type: "pty-data", fixture: "fold", pane_id: frame.pane_id, data: screen });
     };
     return socket;
@@ -90,12 +94,14 @@ const row = (index: number, head: string, fill = "."): string => {
   while (cellWidth(text) + cellWidth(fill) <= COLS - marker.length) text += fill;
   return text + " ".repeat(COLS - marker.length - cellWidth(text)) + marker;
 };
-const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
+const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
 const screenRows: string[] = [];
 for (let index = 1; index <= ROWS; index++) {
   if (index === 3) screenRows.push(`\x1b[31mRED-SEGMENT\x1b[0m${row(index, " ").slice("RED-SEGMENT".length)}`);
   else if (index === 5) screenRows.push(row(index, "한글 줄바꿈: 오른쪽 끝까지 보여야 합니다 ", "가"));
   else if (index === 7) screenRows.push(row(index, `R07 ${LINK} `));
+  // a labelled OSC 8 hyperlink: the row shows OSC8-LABEL, its target is OSC8
+  else if (index === 9) screenRows.push(`R09 \x1b]8;;${OSC8}\x1b\\OSC8-LABEL\x1b]8;;\x1b\\${row(index, " ").slice("R09 OSC8-LABEL".length)}`);
   else if (index === ROWS) screenRows.push(row(index, "FOLD-LAST "));
   else screenRows.push(row(index, `R${String(index).padStart(2, "0")} the quick brown fox `));
 }
@@ -167,7 +173,8 @@ const foldState = (page: Page, folded: boolean): Promise<unknown> => page.waitFo
   const host = document.querySelector(".pane-frame.is-current .pane-terminal");
   return host !== null && host.hasAttribute("data-folded") === want && (!want || host.querySelector(".terminal-fold-row") !== null);
 }, folded);
-const savedWrap = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalMirrorWrap);
+// kept in a key of its own (lib/settings.ts MIRROR_WRAP_STORAGE_KEY), out of an older tab's whole-record save
+const savedWrap = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:mirror-wrap") ?? "null"));
 /** Every row's END marker inside the pane's visible width, waited for: the view settles a frame or a resize after it is drawn. */
 const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   let seen = await visibleMarkers(page);
@@ -305,6 +312,14 @@ try {
         const tab = await opened;
         await tab.waitForURL(LINK);
         await tab.close();
+        // a labelled OSC 8 hyperlink opens its target, as on the grid
+        const label = (await foldedText(page, "OSC8-LABEL")).rect;
+        assert.ok(label, "the folded rows draw the hyperlink's label");
+        const openedOsc = page.context().waitForEvent("page");
+        await page.mouse.click(label.left + 20, (label.top + label.bottom) / 2);
+        const oscTab = await openedOsc;
+        await oscTab.waitForURL(OSC8);
+        await oscTab.close();
 
 
         // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
@@ -355,7 +370,10 @@ try {
         await page.reload();
         await page.locator(".conn-live").waitFor();
         await drawnScreen(page);
-        await settled(page);
+        await page.waitForFunction(() => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
+          return host !== null && host.hasAttribute("data-adopted-grid") && !host.hasAttribute("data-folded") && host.scrollWidth > host.clientWidth;
+        });
         assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-folded]").count(), 0, "a reload keeps the original width");
         await choose(page, "Wrap to screen");
         await foldState(page, true);
@@ -404,7 +422,10 @@ try {
       const desk = await open(browser, origin, { width: 1000, height: 800 }, false);
       try {
         await drawnScreen(desk.page);
-        await settled(desk.page);
+        await desk.page.waitForFunction(() => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
+          return host !== null && host.hasAttribute("data-adopted-grid") && host.scrollWidth > host.clientWidth;
+        });
         const unfolded = await visibleMarkers(desk.page);
         assert.ok(!unfolded.folded && unfolded.hostScrollWidth > unfolded.hostClientWidth, `a desktop draws a wide mirror at its width by default ${JSON.stringify(unfolded)}`);
         await choose(desk.page, "Wrap to screen");
@@ -427,7 +448,28 @@ try {
         assert.deepEqual(attached.errors, []);
       } finally { await attached.close(); }
 
-      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded`);
+      // an attached PC's pane whose pty grid is wider than the phone, watched: the grid is the pty's own, panned as before, never folded
+      const watched = await open(browser, origin, { width: 390, height: 844 }, true, "&fold=attached");
+      try {
+        await watched.page.waitForFunction(() => window.foldFixture?.sockets.length > 0);
+        await watched.page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "observe" })));
+        await watched.page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
+        await watched.page.evaluate(({ pane, cols, rows, data }) => {
+          const socket = window.foldFixture.sockets.at(-1)!;
+          socket.push({ type: "pane-geometry", pane_id: pane, cols, rows });
+          socket.push({ type: "pty-data", fixture: "fold", pane_id: pane, data });
+        }, { pane: panes.shell, cols: COLS, rows: ROWS, data: SCREEN });
+        await watched.page.waitForFunction((cols) => {
+          const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
+          return host !== null && host.hasAttribute("data-adopted-grid") && host.scrollWidth > host.clientWidth
+            && (host.querySelector(".xterm-rows")?.textContent ?? "").includes("FOLD-LAST") && host.querySelector(".xterm-rows")!.children.length > 0
+            && cols > 0;
+        }, COLS);
+        assert.equal(await watched.page.locator(".pane-frame.is-current .pane-terminal[data-folded], .pane-frame.is-current .terminal-fold").count(), 0, "a watched attached grid wider than the phone is never folded");
+        assert.deepEqual(watched.errors, []);
+      } finally { await watched.close(); }
+
+      console.log(`PASS mirror fold: ${COLS}x${ROWS} mirror folded whole at 390, 360 and 844 (landscape), cursor rows and a top prompt in view, a preedit drawn over them, a link opens on its last glyph and an OSC 8 label opens its target, history wheels at speed, Original width pans and survives a reload, a watching phone folds, desktops keep the width until Wrap to screen, attached panes unfolded (one fitting, one wider and watched)`);
     } finally { await browser.close(); }
   } finally { server.stop(); }
 } finally { rmSync(app, { recursive: true, force: true }); }
