@@ -2657,4 +2657,59 @@ describe("a Codex pane that reported no session yet", () => {
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
     } finally { snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
   });
+
+  // each Codex is a child started with the CODEX_HOME under test, whose environment the server reads from
+  // the OS: a Bun process, since macOS's ps shows no environment for a system binary such as sleep
+  it.skipIf(process.platform === "win32")("greets a terminal Codex only in the store its own environment places for certain", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-home-"));
+    const own = join(root, "own");
+    const fallback = join(root, "fallback");
+    mkdirSync(own);
+    mkdirSync(fallback);
+    const pane = { pane_id: "codex-home", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
+    const children: Bun.Subprocess[] = [];
+    let codexes: { pid: number; argv: string[] }[] = [];
+    const started = (...homes: string[]) => {
+      codexes = homes.map((home) => {
+        const child = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 60_000)"], { cwd: root, env: { ...process.env, CODEX_HOME: home } });
+        children.push(child);
+        return { pid: child.pid, argv: ["codex"] };
+      });
+    };
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
+      ? { agent: { agent: "codex" } } : { process_info: { foreground_processes: codexes } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: FRESH }) as never);
+    // the server's own default store holds nothing: a home it cannot place must not fall back to it
+    const serverHome = process.env["CODEX_HOME"];
+    process.env["CODEX_HOME"] = fallback;
+    const ask = () => paneConversation(pane.pane_id).catch((error: unknown) => error);
+    try {
+      // a home its environment names, with no store yet: the greeting
+      started(own);
+      const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
+      expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null });
+      expect(greeting.history_id).toStartWith("unwritten:codex:");
+      // a relative CODEX_HOME: Codex places it under its folder, where a conversation has begun
+      const relative = join(root, "rel");
+      mkdirSync(relative);
+      const db = new Database(join(relative, "state_5.sqlite"));
+      const now = Math.floor(Date.now() / 1000);
+      db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT, first_user_message TEXT)");
+      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, first_user_message) VALUES ('begun', '/nowhere.jsonl', ?, 'cli', ?, ?, 'hi')").run(root, now, now);
+      db.close();
+      started("rel");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // a CODEX_HOME that is no directory, or a second Codex whose home cannot be placed
+      started(join(root, "missing"));
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      started(own, "rel");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+    } finally {
+      if (serverHome === undefined) delete process.env["CODEX_HOME"]; else process.env["CODEX_HOME"] = serverHome;
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+      snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

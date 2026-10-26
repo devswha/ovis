@@ -388,20 +388,49 @@ async function readProcessCodexHome(pid: number): Promise<string | null> {
     if (process.platform === "linux") {
       home = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) || null;
     } else if (process.platform === "darwin") {
-      const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => child.kill(), 3000);
-      try {
-        // the environment follows the arguments, space-separated: the last match is the
-        // environment's, and its value runs to the next `NAME=` (a path may hold spaces).
-        // ponytail: a value holding ` NAME=` is cut there, and with none in the environment an
-        // argument spelled CODEX_HOME=/path would be taken. /proc on Linux has neither problem
-        const text = await new Response(child.stdout).text();
-        await child.exited;
-        home = codexHomeInPsLine(text);
-      } finally { clearTimeout(timer); }
+      // the environment follows the arguments, space-separated: the last match is the
+      // environment's, and its value runs to the next `NAME=` (a path may hold spaces).
+      // ponytail: a value holding ` NAME=` is cut there, and with none in the environment an
+      // argument spelled CODEX_HOME=/path would be taken. /proc on Linux has neither problem
+      home = codexHomeInPsLine((await psEnvironmentLine(pid)) ?? "");
     }
   } catch { home = null; }
   return home !== null && (await isCodexHomeDir(home)) ? home : null;
+}
+
+/** A process's `ps -E` line on macOS: its arguments, then its environment when it is this user's. Null when ps fails. */
+async function psEnvironmentLine(pid: number): Promise<string | null> {
+  const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
+  const timer = setTimeout(() => child.kill(), 3000);
+  try {
+    const text = await new Response(child.stdout).text();
+    return (await child.exited) === 0 ? text : null;
+  } finally { clearTimeout(timer); }
+}
+
+/**
+ * The store a process's Codex writes to, only as far as its environment tells it for certain
+ * (#1191): the CODEX_HOME directory it names, ~/.codex when it names none, or null. Null covers
+ * an environment that cannot be read (another user's process, a gone one, Windows), a CODEX_HOME
+ * that is relative or no directory (Codex places one itself, while paneCodexHome falls back to
+ * the default store for it), and on macOS a command line that spells CODEX_HOME= itself, which
+ * `ps -E` cannot tell from the environment.
+ */
+async function certainProcessCodexHome(pid: number, argv: readonly string[]): Promise<string | null> {
+  let named: string | null = null;
+  try {
+    if (process.platform === "linux") {
+      named = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) ?? "";
+    } else if (process.platform === "darwin" && !argv.some((word) => word.includes("CODEX_HOME="))) {
+      const line = await psEnvironmentLine(pid);
+      // ps draws another user's process without its environment, and Codex always has a HOME in it
+      if (line !== null && /\sHOME=/.test(line)) named = codexHomeInPsLine(line) ?? "";
+    }
+  } catch { return null; }
+  if (named === null) return null;
+  // Codex reads an empty CODEX_HOME as none
+  if (named === "") return join(homedir(), ".codex");
+  return (await isCodexHomeDir(named)) ? named : null;
 }
 
 /** An absolute path to a directory that is there: `ps` cannot tell an argument from the environment, a store can be checked. */
@@ -1344,22 +1373,26 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
  *   since it started (no later than its start: processStartLowerBound), so no first message of
  *   its own and no conversation it resumed and wrote to. One another pane began there since
  *   counts too: which pane's it is cannot be told here. A thread with no message yet holds no
- *   conversation, whoever made it.
+ *   conversation, whoever made it. That store is an explicit one (`configured`), else the one
+ *   its own environment names for certain (certainProcessCodexHome), on every platform.
  *
- * A start time or a store that cannot be read says nothing, and then neither does this. The id
+ * A start time, a home or a store that cannot be read says nothing, and then neither does this. The id
  * names the pane and its processes, never a time: a start read on macOS moves between reads.
  */
-export async function codexFreshSession(paneId: string, cwds: readonly string[], home: string, screen: string): Promise<string | null> {
+export async function codexFreshSession(paneId: string, cwds: readonly string[], configured: string | undefined, screen: string): Promise<string | null> {
   if (!codexStartScreenUnused(screen)) return null;
   const { list, key } = await codexProcessesOf(paneId).catch(() => ({ list: [], key: "" }));
   if (list.length === 0 || list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
-  // a CODEX_HOME the pane's Codex names but paneCodexHome cannot use (a relative one) leaves the store unknown
-  if (process.platform === "linux" && list.some((codex) => {
-    let named: string | undefined;
-    try { named = readFileSync(`/proc/${codex.pid}/environ`, "utf8").split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11); }
-    catch { return true; }
-    return named !== undefined && named !== "" && !isAbsolute(named);
-  })) return null;
+  // an explicit store wins, as in paneCodexHome. Else every Codex's home must be placed for
+  // certain, and the first decides: one paneCodexHome cannot place (a relative CODEX_HOME) falls
+  // back to the default store, where this pane's conversation is not
+  let home = configured;
+  if (home === undefined) {
+    const homes = await Promise.all(list.map((codex) => certainProcessCodexHome(codex.pid, codex.argv ?? [])));
+    const [first] = homes;
+    if (first == null || homes.some((known) => known === null)) return null;
+    home = first;
+  }
   const starts = list.map((codex) => processStartLowerBound(codex.pid));
   if (starts.some((started) => started === null)) return null;
   // whole seconds, and one more: a start read anew may land in the second before

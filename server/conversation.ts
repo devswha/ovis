@@ -1327,7 +1327,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         // started does. At work or asking, its first turn may have begun.
         if (error.message === "no_session_path" && screen.model !== null && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
           // every folder the pane names, and the screen this was decided on
-          const fresh = await codexFreshSession(paneId, [pane.cwd ?? "", pane.foreground_cwd ?? ""], await paneCodexHome(paneId, codexHome), text);
+          const fresh = await codexFreshSession(paneId, [pane.cwd ?? "", pane.foreground_cwd ?? ""], codexHome, text);
           if (fresh !== null) return await notBegun("codex-transcript", fresh, screen);
         }
         if (screen.model !== null) throw new ConversationUnavailable(error.message, screen);
