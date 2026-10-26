@@ -1,3 +1,3 @@
 ### Fixed
-- Switching panes in a terminal that was waiting for its attachment to recover no longer carries
-  that wait over to the next pane, whose screen could then show as not current.
+- A pane that comes back after herdr could not restore it shows its screen as current again when
+  its attachment recovered meanwhile, instead of keeping its DONE dot until new output arrives.
