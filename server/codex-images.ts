@@ -186,13 +186,15 @@ export function aroundBlobOpenForTests(around: ((opening: BlobOpening, open: () 
 
 /**
  * Opens the blob `digest` in the store `blobs` without following a link to either. On Linux the store
- * is opened first, as a directory and not through a link (O_NOFOLLOW), and held to be the directory
- * `blobs` names (its descriptor's own path, /proc/self/fd); the blob is then opened through that
- * descriptor, so nothing put in the store's place after the check can stand in for it. Node has no
- * descriptor-relative open elsewhere: there the blob is opened by name, with the store checked around
- * the read (ompBlobSteps). A descriptor, or null.
+ * is opened first, as a directory and not through a link (O_NOFOLLOW), and held to be the very
+ * directory checked before (`checked`, its identity: blobStoreIdentity) and the one `blobs` names (its
+ * descriptor's own path, /proc/self/fd); the blob is then opened through that descriptor, so nothing
+ * put in the store's place, a link or another directory, can stand in for it. It needs /proc: a Linux
+ * without it serves no omp blob rather than open one by name. Node has no descriptor-relative open
+ * elsewhere: there the blob is opened by name, with the store checked around the read (ompBlobSteps).
+ * A descriptor, or null.
  */
-function openBlob(blobs: string, digest: string): number | null {
+function openBlob(blobs: string, digest: string, checked: string): number | null {
   const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
   const opened = (opening: BlobOpening, open: () => number) => aroundBlobOpen ? aroundBlobOpen(opening, open) : open();
   if (process.platform !== "linux") {
@@ -201,6 +203,9 @@ function openBlob(blobs: string, digest: string): number | null {
   let store: number;
   try { store = opened("store", () => openSync(blobs, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); } catch { return null; }
   try {
+    // the directory opened must be the one checked, not one moved into its place since
+    const held = fstatSync(store);
+    if (`${held.dev}:${held.ino}` !== checked) return null;
     // a link above the store is followed by the open: the directory opened must be the one named
     if (readlinkSync(`/proc/self/fd/${store}`) !== blobs) return null;
     return opened("blob", () => openSync(`/proc/self/fd/${store}/${digest}`, flags));
@@ -217,7 +222,7 @@ function openBlob(blobs: string, digest: string): number | null {
 function* ompBlobSteps(blobs: string, digest: string, keep: boolean): Steps<{ mediaType: string; bytes: Buffer | null } | null> {
   const store = blobStoreIdentity(blobs);
   if (store === null) return null;
-  const fd = openBlob(blobs, digest);
+  const fd = openBlob(blobs, digest, store);
   if (fd === null) return null;
   try {
     const stat = fstatSync(fd);

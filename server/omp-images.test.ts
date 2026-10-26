@@ -173,6 +173,35 @@ describe("omp's pictures reach the chat", () => {
         expect(swapped).toBe(1);
       } finally { aroundBlobOpenForTests(null); }
     }
+    // the other store itself, a real directory, moved into this one's place as the store is opened,
+    // and both put back before the blob is opened through it
+    let moves = 0;
+    aroundBlobOpenForTests((opening, open) => {
+      if (opening === "store") {
+        renameSync(own.blobs, `${own.blobs}-aside`);
+        renameSync(other.blobs, own.blobs);
+      } else {
+        renameSync(own.blobs, other.blobs);
+        renameSync(`${own.blobs}-aside`, own.blobs);
+      }
+      moves += 1;
+      return open();
+    });
+    try {
+      expect(ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
+    } finally {
+      aroundBlobOpenForTests(null);
+      // a refusal at the store's open leaves the move half done: put both stores back
+      if (moves === 1) { renameSync(own.blobs, other.blobs); renameSync(`${own.blobs}-aside`, own.blobs); }
+    }
+    expect(moves).toBeGreaterThanOrEqual(1);
+    // the agent directory above the store is a link to the other omp's for the whole read: the store
+    // checks and opens alike go through it, so only where the opened store really is tells them apart
+    renameSync(agent, `${agent}-aside`);
+    symlinkSync(join(other.blobs, ".."), agent);
+    try {
+      expect(ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
+    } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
     expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0")).toBeNull();
     // the other store, untouched, still serves its own picture
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
