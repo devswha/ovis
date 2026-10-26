@@ -329,7 +329,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
     const info = await paneProcessInfo(paneId);
     const base = pendingIdentity(pane);
-    const held = base.agent === "omo" ? await heldOmoProcess(info?.foreground_processes ?? []) : null;
+    const held = base.agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []) : null;
     const pid = agentProcessInFront(info, base.agent, bound, held)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
     return { pane, shellPid: info?.shell_pid ?? null, processes: info, identity: {
       ...base, processPid: pid, processBirth: pid === null ? null : await processStartedAtAsync(pid),

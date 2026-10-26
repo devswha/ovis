@@ -486,17 +486,20 @@ it("names the OmO process holding a session, not the bundled SDK child beside it
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-held-pid-")));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
-  const pid = process.pid;
+  const pid = 41001;
   const start = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_792_000_000_000);
   const environ = spyOn(omoModule, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
   try {
     holdRecord(join(agentDir, "sessions", omoSessionFolder(cwd)), "sess-1", pid, { pid, processStartedAtMs: 1_792_000_000_000, cwd });
-    // an argv-silent custom OmO, known by its holder alone, and the SDK child it runs a turn in
-    const parent = { pid, argv: ["/opt/team-ai/bin/run"], cwd };
-    const sdk = { pid: pid + 1, argv: [`${OMO_AI}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`], cwd };
-    expect(await heldOmoProcess([parent, sdk], root)).toBe(pid);
-    expect(await heldOmoProcess([sdk, parent], root)).toBe(pid);
-    expect(await heldOmoProcess([sdk], root)).toBeNull();
+    // an argv-silent custom OmO, known by its holder alone, and the SDK child it runs a turn in; herdr gives no
+    // per-process cwd (macOS), so the pane's own directory places them
+    const pane = { pane_id: "p", cwd } as HerdrPane;
+    const parent = { pid, argv: ["/opt/team-ai/bin/run"] };
+    const sdk = { pid: pid + 1, argv: [`${OMO_AI}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`] };
+    expect(await heldOmoProcess(pane, [parent, sdk], root)).toBe(pid);
+    expect(await heldOmoProcess(pane, [sdk, parent], root)).toBe(pid);
+    expect(await heldOmoProcess(pane, [sdk], root)).toBeNull();
+    expect(await heldOmoProcess({ ...pane, cwd: join(root, "elsewhere") }, [parent, sdk], root)).toBeNull();
   } finally { start.mockRestore(); environ.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 

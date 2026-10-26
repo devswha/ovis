@@ -25,8 +25,9 @@ it("delivers a queued follow-up to a custom OmO whose SDK child exits at the end
   writeFileSync(join(holders, "41001.json"), JSON.stringify({ pid: 41001, processStartedAtMs: 1_000, cwd }));
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
   spyOn(omo, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
-  const parent = { pid: 41001, name: "run", argv: ["/opt/team-ai/bin/run"], cwd };
-  const sdk = { pid: 41002, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"], cwd };
+  // herdr gives no per-process cwd here (macOS): the pane's own directory places the OmO
+  const parent = { pid: 41001, name: "run", argv: ["/opt/team-ai/bin/run"] };
+  const sdk = { pid: 41002, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
   let foreground = [parent, sdk];
   spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: foreground }));
   spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
