@@ -196,14 +196,15 @@ export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverr
 export { isMacPlatform };
 
 /**
- * Arrows, Home and End select or move in a field with text; there a matching binding gives way, until
- * the selection's moving end is at the edge the key goes to: then the key has nothing left to do in
- * the field. A pane switch focuses the next pane's message box, and a draft there must not stop the
- * next switch for good.
+ * Arrows, Home and End select or move in a field with text; there a matching binding gives way. A pane
+ * step gives way only until the selection's moving end is at the edge the key goes to: then the key
+ * has nothing left to do in the field. A pane switch focuses the next pane's message box, and a draft
+ * there must not stop the next switch for good.
  */
-export function keepsKeyForText(event: { key: string; target: KeyTargetLike | EventTarget | null }): boolean {
+export function keepsKeyForText(event: { key: string; target: KeyTargetLike | EventTarget | null }, shortcut: ShortcutId): boolean {
   if (!(event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") || !keepsArrowsForText(event.target)) return false;
   const field = event.target as KeyTargetLike;
+  if (shortcut !== "previous-pane" && shortcut !== "next-pane") return true;
   // a field without a text selection (email, number, contenteditable) keeps the key while it has text
   if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") return true;
   const moving = field.selectionDirection === "backward" ? field.selectionStart : field.selectionEnd;
@@ -243,7 +244,7 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
       if (recordingShortcut) return;
       const shortcut = matchShortcut(event, platformIsMac, settings.shortcutOverrides);
       if (shortcut === null) return;
-      if (keepsKeyForText(event)) return;
+      if (keepsKeyForText(event, shortcut)) return;
       event.preventDefault();
       // a held chord repeats: a tab or a split is made once per press, not once per key repeat
       if (event.repeat && (shortcut === "new-tab" || shortcut === "rename-tab" || shortcut === "split-right" || shortcut === "split-down")) return;
