@@ -18,9 +18,8 @@ const { paneSendText, paneSendKeys, paneRead } = herdr;
 const originalTranscriptPath = pi.piTranscriptPath;
 let lookup: { at: "identity" | "transcript"; entered: () => void; release: Promise<void> } | null = null;
 type Processes = { shell_pid: number; foreground_processes: { pid: number; name: string }[] };
-/** what herdr's process read answers for a pane a case sets up: its scripted answers in turn, then this */
+/** what herdr's process read answers for a pane a case sets up */
 const processes = new Map<string, Processes>();
-const scripted = new Map<string, Processes[]>();
 /** each text, key, screen read or pty write the bridge asks for in such a pane, where no herdr answers */
 const calls: string[] = [];
 mock.module("../herdr/client.ts", () => ({
@@ -30,7 +29,7 @@ mock.module("../herdr/client.ts", () => ({
       const held = lookup; lookup = null;
       held.entered(); await held.release;
     }
-    return scripted.get(paneId)?.shift() ?? processes.get(paneId) ?? { foreground_processes: [], shell_pid: null };
+    return processes.get(paneId) ?? { foreground_processes: [], shell_pid: null };
   },
   paneSendText: async (...args: Parameters<typeof paneSendText>) => {
     if (!processes.has(args[0])) return paneSendText(...args);
@@ -56,7 +55,7 @@ mock.module("../pi.ts", () => ({
     return { path: paths.get(paneId)! };
   },
 }));
-afterEach(() => { lookup = null; paths.clear(); processes.clear(); scripted.clear(); calls.length = 0; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { lookup = null; paths.clear(); processes.clear(); calls.length = 0; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 afterAll(() => {
   mock.module("../herdr/client.ts", () => ({ ...herdr, paneProcessInfo: originalProcessInfo, paneSendText, paneSendKeys, paneRead }));
   mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
@@ -131,6 +130,8 @@ it.each([
   ["bound at its queueing, then replaced by an agent of its kind exec'd at the shell's pid", "queueing", "codex", "pending_target_changed"],
 ] as const)("a first message whose launched agent was %s is held with that reason, keeps it, is refused by Send now, and is never typed", async (_case, bound, front, code) => {
   let named: string | null = null;
+  /** what runs in the pane from the `leaveAt`-th identity read on (each starts with the session snapshot) */
+  let snapshots = 0, leaveAt = 0, left: Processes | null = null;
   const frames: ServerMessage[] = [];
   const owner = {
     data: connectionData({ deviceId: undefined, readOnly: false }),
@@ -151,7 +152,10 @@ it.each([
     serialize, lastTyped: new Map(),
     submitText: async (pane) => { calls.push(`submit ${pane}`); },
     authorizeSocket: () => {},
-    clientSnapshot: async () => ({ panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "working" }] }) as SessionSnapshot,
+    clientSnapshot: async () => {
+      if (++snapshots === leaveAt && left) processes.set("L", left);
+      return { panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "working" }] } as SessionSnapshot;
+    },
     omo: { sessionOf: () => null },
     SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
   });
@@ -167,10 +171,11 @@ it.each([
     await event();
     processes.set("L", shellIn(front));
   } else {
-    // the launch names its process, which the read at its queueing sees in front under herdr's name; every read after finds it gone
+    // the launch names its process, which the reads at its queueing see in front under herdr's name; from the
+    // next identity read on, whichever drain makes it, it is gone
     named = "codex";
-    processes.set("L", shellIn(front));
-    scripted.set("L", [agentIn]);
+    processes.set("L", agentIn);
+    leaveAt = 2; left = shellIn(front);
     message = await delivery.queueFirstMessage("L", "FIRST", "codex", null, AGENT);
   }
   await event();
