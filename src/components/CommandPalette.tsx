@@ -301,7 +301,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const browseStart = selectedPane && panePath(selectedPane) ? panePath(selectedPane) : null;
   // Rename tab opens the tab strip's name field: not offered where the strip is left out (a lone tab on a cramped screen)
   const tabCount = selectedPane ? snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0 : 0;
-  const stripDrawn = !loneTabHidden(cramped, tabCount);
+  const stripDrawn = selectedPane !== undefined && !loneTabHidden(cramped, tabCount);
 
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },

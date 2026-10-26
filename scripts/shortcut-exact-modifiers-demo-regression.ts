@@ -148,6 +148,8 @@ try {
         await page.keyboard.press("Meta+Shift+KeyY");
         await tabName.waitFor();
         await page.keyboard.type("Renamed by shortcut");
+        // a second press while the field is open keeps what was typed
+        await page.keyboard.press("Meta+Shift+KeyY");
         await page.keyboard.press("Enter");
         await tabName.waitFor({ state: "detached" });
         assert.match((await page.locator('.tab-strip-item.is-active [role="tab"]').textContent()) ?? "", /Renamed by shortcut/, "Enter renames the tab");

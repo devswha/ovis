@@ -224,7 +224,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useLayoutEffect(() => {
     if (renameRequest === null) return;
     const tab = tabs.find((candidate) => candidate.tab_id === selectedPane.tab_id);
-    if (tab && shown && !loneTabHidden(cramped, tabs.length)) beginRename(tab);
+    // a second press while the field is open keeps what was typed in it
+    if (tab && shown && !loneTabHidden(cramped, tabs.length) && editing?.tabId !== tab.tab_id) beginRename(tab);
     onRenameHandled?.();
   }, [renameRequest]);
 
