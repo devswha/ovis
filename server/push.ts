@@ -354,13 +354,26 @@ export function createPushService(options: PushServiceOptions): PushService {
     return changed;
   }
 
+  /**
+   * Writes the list back without what expired or was dropped. Never throws: a read of the list (a
+   * subscribe's retired check) must not fail on it. What was dropped stays dropped in memory, and the
+   * next write that succeeds leaves it off disk too.
+   */
+  function rewriteRetired(): void {
+    try {
+      persistRetired();
+    } catch (error) {
+      console.error(`Cannot write ${retiredPath} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); its expired entries stay on disk until the next write`);
+    }
+  }
+
   function persistRetired(): void {
     writeJsonPrivate(retiredPath, [...retiredStore()].map(([hash, { at, owner }]) => ({ hash, at, ...(owner === undefined ? {} : { owner }) })));
   }
 
   function retiredStore(): Map<string, RetiredMark> {
     if (retiredEndpoints) {
-      if (expire(retiredEndpoints, (mark) => mark.at, RETIRED_TTL_MS)) persistRetired();
+      if (expire(retiredEndpoints, (mark) => mark.at, RETIRED_TTL_MS)) rewriteRetired();
       return retiredEndpoints;
     }
     retiredEndpoints = new Map();
@@ -380,11 +393,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     // what was dropped (expired, over the bound, malformed) leaves the file too: a revocation later finds
     // nothing of it to remove, and the device's marks must not stay on disk
     if (retiredEndpoints.size !== stored.length) {
-      try {
-        persistRetired();
-      } catch (error) {
-        console.error(`Cannot write ${retiredPath} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); its expired entries stay on disk until the next write`);
-      }
+      rewriteRetired();
     }
     return retiredEndpoints;
   }

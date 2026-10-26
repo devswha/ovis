@@ -874,6 +874,28 @@ describe("push delivery health (#1039)", () => {
     expect(hashes("push-retired.json")).toEqual(["h-new"]);
   });
 
+  it("answers a subscribe when the retired list's expiry cannot be written", async () => {
+    let clock = 1_700_000_000_000;
+    const push = createPushService({ loopbackHttp: true, stateDir, now: () => clock });
+    push.subscribe(fake.subscription, undefined, null);
+    fake.answerWith(410);
+    expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: false, status: 410, gone: true });
+    // the list cannot be replaced any more: a directory stands at its path
+    rmSync(join(stateDir, "push-retired.json"));
+    mkdirSync(join(stateDir, "push-retired.json"));
+    clock += 31 * 24 * 60 * 60 * 1000;
+    const quiet = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // the expired mark is dropped in memory, and the subscribe that reads the list is answered
+      const response = await handlePushRequest(new Request("http://localhost/api/push/subscribe", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: fake.subscription }),
+      }), "/api/push/subscribe", push, null);
+      expect(response?.status).toBe(204);
+      expect(push.retired(fake.subscription.endpoint)).toBe(false);
+      expect(quiet.mock.calls.some(([line]) => String(line).includes("push-retired.json"))).toBe(true);
+    } finally { quiet.mockRestore(); }
+  });
+
   it("counts a push's outcome, a retirement included, when its record cannot be written", async () => {
     // the record file cannot be replaced: a directory stands at its path
     mkdirSync(join(stateDir, "push-delivery.json"));
