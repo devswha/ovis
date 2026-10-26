@@ -129,7 +129,8 @@ export class PaneLifetimes {
    * that saw the stored herdr go retires the stored state; a page that is behind another tab
    * leaves it alone, and keeps its own state in memory until it catches up. A snapshot that names
    * no herdr after one was proven proves neither: the panes it draws get none of the stored state,
-   * which stays where it is until a snapshot names a herdr again. A PC's connection reports its
+   * which stays where it is until a snapshot names a herdr again, and what is typed meanwhile goes
+   * to recovery then. A PC's connection reports its
    * snapshot here too (lib/machineSession.ts), before its panes hear of it, with no titles: the
    * roster's next read brings them.
    */
@@ -144,14 +145,12 @@ export class PaneLifetimes {
       const next = named ?? null;
       const proven = this.proven.get(machine.id);
       if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {
-        // back on the herdr this page last proved, after reads that proved none: what the page kept
-        // meanwhile was for that herdr's panes. Any other change leaves it to recovery
-        const back = next !== null && next === proven;
-        if (!back) this.retireMemory(machine.id, titles);
+        // what the page kept for the panes it drew until now goes to recovery: typed while no read
+        // proved their herdr, even the same herdr named again proves nothing about it
+        this.retireMemory(machine.id, titles);
         if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
         if (next !== null) this.settle(machine.id, next, titles);
-        if (back && this.stored(machine.id)) this.storeMemory(machine.id, titles);
         changed.push(machine.id);
       } else if (next !== null && (!this.stored(machine.id) || this.holds(machine.id))) {
         // behind another tab, or refused by storage: tried again with each roster. Storage that took

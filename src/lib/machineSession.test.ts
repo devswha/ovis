@@ -216,4 +216,21 @@ describe("PC connection ownership", () => {
     expect(drawnUnder).toEqual(["fence-herdr-b"]);
     session.close();
   });
+  it("draws a reconnected PC's panes under no herdr when its snapshot proves none, before any pane hears of it (#1608)", () => {
+    const { session, socket } = setup("unproven-pc");
+    const owner = paneStorageId("unproven-pc", "w1:p1");
+    const bare = { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [] };
+    const seen: { lifetime: string | null | undefined; text: string | null }[] = [];
+    session.on((message) => {
+      if (message.type === "snapshot") seen.push({ lifetime: paneLifetimes.generation("unproven-pc"), text: paneLifetimes.paneStorage.getItem(`ovis:composer-draft:${owner}`) });
+    });
+    session.connect();
+    socket.receive({ type: "snapshot", snapshot: { ...bare, herdr_lifetime: "unproven-herdr-a" } });
+    paneLifetimes.paneStorage.setItem(`ovis:composer-draft:${owner}`, "old socket pane text");
+    socket.disconnect();
+    session.connect();
+    socket.receive({ type: "snapshot", snapshot: bare });
+    expect(seen).toEqual([{ lifetime: "unproven-herdr-a", text: null }, { lifetime: null, text: null }]);
+    session.close();
+  });
 });

@@ -148,7 +148,7 @@ describe("pane state per herdr lifetime", () => {
     expect(reloaded.unsent()).toHaveLength(2);
   });
 
-  it("gives the panes of a snapshot naming no herdr none of the stored state, and gives it back once that herdr is named again", () => {
+  it("gives the panes of a snapshot naming no herdr none of the stored state, gives the proven state back once that herdr is named again, and leaves what was typed meanwhile to recovery", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
     lifetimes.observe([pc("local", "herdr-a")], title);
@@ -159,11 +159,11 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p1", "typed meanwhile");
     expect(storage.getItem(DRAFT)).toBe("for herdr a's pane");
     expect(storage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
-    // herdr a named again: they were its panes all along
+    // herdr a named again: its own text is back, and what was typed with no proof of the panes' herdr is not adopted
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("for herdr a's pane");
-    expect(storage.getItem("ovis:terminal-line:w1:p1")).toBe("typed meanwhile");
-    expect(lifetimes.unsent()).toEqual([]);
+    expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    expect(lifetimes.unsent().map(({ text }) => text)).toEqual(["typed meanwhile"]);
     // unproven again, then another herdr named: neither the stored text nor what was typed meanwhile reaches its panes
     lifetimes.observe([pc("local", undefined)], title);
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed while unproven");
