@@ -194,6 +194,8 @@ export const COMPOSER_JA: Record<string, string> = {
   "Select advanced reasoning for this session (currently {level})": "このセッションの高度な推論を選択 (現在: {level})",
   "Select reasoning level for {model} for this session": "このセッションの {model} の推論レベルを選択",
   "Select reasoning level for {model} for this session (currently {level})": "このセッションの {model} の推論レベルを選択 (現在: {level})",
+  "Select thinking level": "思考レベルを選択",
+  "Select thinking level (currently {level})": "思考レベルを選択 (現在: {level})",
   "{question}. 1 more model is listed in the terminal.": "{question}。ターミナルにはモデルがあと 1 個あります。",
   "{question}. {count} more models are listed in the terminal.": "{question}。ターミナルにはモデルがあと {count} 個あります。",
   "{question}. More models are listed in the terminal.": "{question}。ターミナルにはほかにもモデルがあります。",

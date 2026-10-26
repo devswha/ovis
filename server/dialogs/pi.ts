@@ -145,7 +145,7 @@ function parsePiThinking(screen: string): ParsedPrompt | null {
   if (rows.length === 0 || rows.filter((row) => row.cursor).length !== 1 || rows.filter((row) => row.current).length > 1) return null;
   const current = rows.find((row) => row.current);
   return finishPrompt("pi", {
-    kind: "question", title: "", question: current ? `Select thinking level (currently ${current.label})` : "Select thinking level",
+    kind: "question", title: "", question: current ? own("Select thinking level (currently {level})", { level: current.label }) : own("Select thinking level"),
     body: null, options: rows.map(({ label, description }) => ({ label, description })),
     multi_select: false, custom_option_index: null,
   }, {

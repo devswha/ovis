@@ -194,6 +194,8 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Select advanced reasoning for this session (currently {level})": "选择此会话的高级推理（当前：{level}）",
   "Select reasoning level for {model} for this session": "选择此会话中 {model} 的推理级别",
   "Select reasoning level for {model} for this session (currently {level})": "选择此会话中 {model} 的推理级别（当前：{level}）",
+  "Select thinking level": "选择思考级别",
+  "Select thinking level (currently {level})": "选择思考级别（当前：{level}）",
   "{question}. 1 more model is listed in the terminal.": "{question}。终端中还列出了 1 个模型。",
   "{question}. {count} more models are listed in the terminal.": "{question}。终端中还列出了 {count} 个模型。",
   "{question}. More models are listed in the terminal.": "{question}。终端中还列出了更多模型。",

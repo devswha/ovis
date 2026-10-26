@@ -3172,6 +3172,8 @@ describe("pi's thinking selector", () => {
     const wide = parseInteractivePrompt("pi", piThinking(2))!;
     const narrow = parseInteractivePrompt("pi", piThinking(2, true))!;
     expect(wide.question).toBe("Select thinking level (currently medium)");
+    expect(wide.own_text).toEqual({ question: { key: "Select thinking level (currently {level})", vars: { level: "medium" } } });
+    expect(wide.id).toBe("cb779b7d598a"); // the id main's bridge gave this card before its question went as a key
     expect(wide.options[2]).toEqual({ label: "max", description: "Maximum reasoning · default" });
     expect(narrow.options).toEqual(["off", "medium", "max"].map((label) => ({ label, description: null })));
     expect(narrow.question).toBe(wide.question);

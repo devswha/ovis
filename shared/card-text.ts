@@ -40,6 +40,8 @@ const CARD_TEXT = [
   "Select advanced reasoning for this session (currently {level})",
   "Select reasoning level for {model} for this session",
   "Select reasoning level for {model} for this session (currently {level})",
+  "Select thinking level",
+  "Select thinking level (currently {level})",
   "{question}. 1 more model is listed in the terminal.",
   "{question}. {count} more models are listed in the terminal.",
   "{question}. More models are listed in the terminal.",

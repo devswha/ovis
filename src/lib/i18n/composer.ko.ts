@@ -194,6 +194,8 @@ export const COMPOSER_KO: Record<string, string> = {
   "Select advanced reasoning for this session (currently {level})": "이 세션의 고급 추론 선택 (현재 {level})",
   "Select reasoning level for {model} for this session": "이 세션에서 {model}의 추론 수준 선택",
   "Select reasoning level for {model} for this session (currently {level})": "이 세션에서 {model}의 추론 수준 선택 (현재 {level})",
+  "Select thinking level": "생각 수준 선택",
+  "Select thinking level (currently {level})": "생각 수준 선택 (현재 {level})",
   "{question}. 1 more model is listed in the terminal.": "{question}. 터미널에 모델이 1개 더 있습니다.",
   "{question}. {count} more models are listed in the terminal.": "{question}. 터미널에 모델이 {count}개 더 있습니다.",
   "{question}. More models are listed in the terminal.": "{question}. 터미널에 모델이 더 있습니다.",
