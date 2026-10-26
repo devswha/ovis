@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneCommands } from "../commands.ts";
@@ -239,6 +239,42 @@ describe("Command Code command catalog", () => {
     expect(names).toEqual(expect.arrayContaining(["help", "personal", "user-command"]));
   });
 
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("keeps the catalog when a project command root cannot be read", () => {
+    const home = temp();
+    const repo = temp();
+    put(join(repo, ".git"), "");
+    const locked = join(repo, ".commandcode", "commands");
+    put(join(locked, "hidden.md"), "Hidden command");
+    put(join(home, ".commandcode", "commands", "user-command.md"), "User command");
+    skill(join(home, ".commandcode", "skills"), "personal");
+    chmodSync(locked, 0o000);
+    try {
+      const names = paneCommands("cmd", repo, home).map(({ name }) => name);
+      expect(names).toEqual(expect.arrayContaining(["help", "personal", "user-command"]));
+      expect(names).not.toContain("hidden");
+    } finally { chmodSync(locked, 0o755); }
+  });
+
+  it("lists no row for a name a command root cut short by the bound may hold", () => {
+    const home = temp();
+    const repo = temp();
+    put(join(repo, ".git"), "");
+    const userCommands = join(home, ".commandcode", "commands");
+    // Command Code runs the user's /zdeploy; the bound runs out before the walk reaches it.
+    for (let i = 0; i < createWalkBudget().reads; i++) put(join(userCommands, `a-${String(i).padStart(4, "0")}.md`), `User ${i}`);
+    put(join(userCommands, "zdeploy.md"), "User deploy");
+    put(join(repo, ".commandcode", "commands", "zdeploy.md"), "Project deploy");
+    skill(join(home, ".commandcode", "skills"), "personal");
+    const rows = paneCommands("cmd", repo, home);
+    const names = rows.map(({ name }) => name);
+    expect(rows.filter(({ description }) => description === "Project deploy")).toEqual([]);
+    expect(names).not.toContain("zdeploy");
+    // a skill's plain name could be an unlisted command's, so it is offered as /skill:<name>, which always runs the skill
+    expect(names).toContain("skill:personal");
+    expect(names).not.toContain("personal");
+    expect(names).toContain("help");
+  }, 15000);
+
   it("reserves personal skills even when project settings list thousands of roots", () => {
     const home = temp();
     const repo = temp();
@@ -316,8 +352,9 @@ describe("Command Code command catalog", () => {
     skill(join(repo, "extra"), "configured");
     put(join(repo, ".commandcode", "settings.json"), JSON.stringify({ skills: ["./extra"] }));
     const names = source.discover(context(home, repo)).map(({ name }) => name);
-    expect(names).toContain("personal");
-    expect(names).toContain("configured");
+    // the command root was cut short, so a plain /personal could be one of its unlisted commands
+    expect(names).toContain("skill:personal");
+    expect(names).toContain("skill:configured");
   });
 
   it("matches the pinned canonical builtins", () => {

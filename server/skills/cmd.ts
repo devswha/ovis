@@ -176,15 +176,17 @@ function* skillsAt(root: string, origin: NonNullable<SlashCommand["origin"]>, di
 }
 
 function* commandsAt(root: string, origin: SlashCommand["source"], budget: WalkBudget): Generator<SlashCommand | null> {
-  for (const command of customCommandSteps(root, origin, budget, undefined, true)) {
-    if (!command) { yield null; continue; }
-    const folder = command.name.includes(":") ? command.name.slice(0, command.name.lastIndexOf(":")).split(":").at(-1) : "";
-    yield {
-      ...command,
-      name: command.name.split(":").at(-1)!,
-      description: folder ? `${folder} · ${command.description}` : command.description,
-    };
-  }
+  try {
+    for (const command of customCommandSteps(root, origin, budget, undefined, true)) {
+      if (!command) { yield null; continue; }
+      const folder = command.name.includes(":") ? command.name.slice(0, command.name.lastIndexOf(":")).split(":").at(-1) : "";
+      yield {
+        ...command,
+        name: command.name.split(":").at(-1)!,
+        description: folder ? `${folder} · ${command.description}` : command.description,
+      };
+    }
+  } catch { return; /* an unreadable command root lists nothing, as Command Code's own loader skips it */ }
 }
 
 function discover(ctx: AgentCommandContext): SlashCommand[] {
@@ -226,16 +228,18 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
   ];
   const candidates = [
     ...commandRoots.map(({ path, origin }) => ({
-      walk: commandsAt(path, origin, budget), personal: false, rows: new Array<SlashCommand>(),
+      walk: commandsAt(path, origin, budget), personal: false, rows: new Array<SlashCommand>(), cut: false,
     })),
     ...roots.map((location) => ({
       walk: skillsAt(location.path, location.origin, disabled, budget),
-      personal: personalRoots.some((root) => root === location), rows: new Array<SlashCommand>(),
+      personal: personalRoots.some((root) => root === location), rows: new Array<SlashCommand>(), cut: false,
     })),
   ];
+  const spent = (): boolean => budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0;
   const advance = (walks: typeof candidates): typeof candidates => walks.filter((candidate) => {
     const step = candidate.walk.next();
-    if (step.done) return false;
+    // A walk that ends with the bound spent may have stopped short of names it never listed.
+    if (step.done) { candidate.cut = spent(); return false; }
     if (step.value) candidate.rows.push(step.value);
     return true;
   });
@@ -248,7 +252,15 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
   while (personal.length && budget.folders >= reserved.folders && budget.entries >= reserved.entries && budget.reads >= reserved.reads) personal = advance(personal);
   let pending = candidates;
   while (pending.length) pending = advance(pending);
-  const discovered = candidates.flatMap(({ rows }) => rows);
+  // Once a command root is cut short, any name may be one of its unlisted commands, which Command Code
+  // runs first: lower-priority command roots list nothing, and skills keep only their /skill: form.
+  let unresolved = false;
+  const discovered = candidates.flatMap((candidate, index) => {
+    if (index >= commandRoots.length) return candidate.rows;
+    const rows = unresolved ? [] : candidate.rows;
+    unresolved ||= candidate.cut;
+    return rows;
+  });
   const shadowed = new Set([...source.builtins, ...discovered.filter((row) => row.source !== "skill").map(({ name }) => name)].map((name) => name.toLocaleLowerCase()));
   const bundled = bundledSkills.filter((name) => !disabled.has(name)).map((name): SlashCommand => ({
     name,
@@ -258,7 +270,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
     id: `command-code@1.84.0:skill:${name}`,
   }));
   const seen = new Set(source.builtins.map((name) => name.toLocaleLowerCase()));
-  return [...discovered, ...bundled].map((row) => row.source === "skill" && shadowed.has(row.name.toLocaleLowerCase()) ? { ...row, name: `skill:${row.name}` } : row).filter((row) => {
+  return [...discovered, ...bundled].map((row) => row.source === "skill" && (unresolved || shadowed.has(row.name.toLocaleLowerCase())) ? { ...row, name: `skill:${row.name}` } : row).filter((row) => {
     const key = row.name.toLocaleLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
