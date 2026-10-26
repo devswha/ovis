@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
-import { ompBlobPicture } from "./codex-images.ts";
+import { aroundBlobOpenForTests, ompBlobPicture } from "./codex-images.ts";
 import { forgetTranscriptState, ompTranscriptImage, transcriptPage } from "./conversation.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -85,8 +85,9 @@ describe("omp's pictures reach the chat", () => {
     // omp's XDG data directory keeps both side by side, with no `agent` level
     mkdirSync(join(root, "layouts", "data", "omp", "blobs"), { recursive: true });
     expect(ompBlobStore(at("data", "omp", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(root, "layouts", "data", "omp", "blobs"));
-    // a store with no blobs beside it, and a session directory of its own
-    expect(ompBlobStore(at("bare", "sessions", "-home-u-p-", "s.jsonl"))).toBeNull();
+    // a store not made yet is named by the layout all the same (its blobs are asked for when read),
+    // and a session directory of its own names none
+    expect(ompBlobStore(at("bare", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(root, "layouts", "bare", "blobs"));
     expect(ompBlobStore(at("own-dir", "s.jsonl"))).toBeNull();
     expect(ompBlobStore(join(root, "layouts", "nowhere", "sessions", "-p-", "s.jsonl"))).toBeNull();
   });
@@ -118,12 +119,62 @@ describe("omp's pictures reach the chat", () => {
     const linked = store("blob-dir-linked", records, {});
     rmSync(linked.blobs, { recursive: true });
     symlinkSync(other.blobs, linked.blobs);
-    expect(ompBlobStore(linked.path)).toBeNull();
+    // named by the layout, and refused where a blob is read: no picture in the page, none served
+    expect(ompBlobStore(linked.path)).toBe(linked.blobs);
     expect(refs(linked.path)).toEqual([[], []]);
     expect(await ompTranscriptImage(linked.path, "pi-prompt:u1:0")).toBeNull();
     // a store that becomes a link after it was found is refused where the blob is read
     expect(ompBlobPicture(linked.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
     expect(ompBlobPicture(other.blobs, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType).toBe("image/webp");
+    expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
+  });
+
+  it("names a picture once omp makes its store, live as in a cold read", async () => {
+    const first = jsonl(prompt("u1", [{ type: "text", text: "read it" }]), call("a1", "c1"));
+    const { path, blobs } = store("store-later", first, {});
+    // a fresh omp: no store yet when the page is first read
+    rmSync(blobs, { recursive: true });
+    expect(refs(path).flat()).toEqual([]);
+    mkdirSync(blobs);
+    writeFileSync(join(blobs, DIGEST), BLOB);
+    appendFileSync(path, jsonl(result("r1", "c1", [picture()]), answer("a2", "done")));
+    const live = refs(path);
+    forgetTranscriptState();
+    expect(live).toEqual(refs(path));
+    expect(live.flat()).toEqual(["image/webp pi:c1:0"]);
+    expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
+  });
+
+  // Linux opens the blob through a descriptor of its store; Node has no such open elsewhere
+  it.skipIf(process.platform !== "linux")("serves nothing when a link to another store is swapped in as the store or the blob is opened", async () => {
+    const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
+    // the other omp's store holds the blob; this one's does not
+    const other = store("swap-other", records);
+    const own = store("swap-own", records, {});
+    const agent = join(own.blobs, "..");
+    // the store, or the agent directory above it, is put aside and a link to the other omp's takes its
+    // place just for one open, then put back before the read is checked again
+    const swaps = [
+      { at: "blob", place: own.blobs, link: other.blobs },
+      { at: "store", place: own.blobs, link: other.blobs },
+      { at: "store", place: agent, link: join(other.blobs, "..") },
+    ] as const;
+    for (const swap of swaps) {
+      let swapped = 0;
+      aroundBlobOpenForTests((opening, open) => {
+        if (opening !== swap.at) return open();
+        renameSync(swap.place, `${swap.place}-aside`);
+        symlinkSync(swap.link, swap.place);
+        swapped += 1;
+        try { return open(); } finally { unlinkSync(swap.place); renameSync(`${swap.place}-aside`, swap.place); }
+      });
+      try {
+        expect([swap.at, swap.place === agent, ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)]).toEqual([swap.at, swap.place === agent, null]);
+        expect(swapped).toBe(1);
+      } finally { aroundBlobOpenForTests(null); }
+    }
+    expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0")).toBeNull();
+    // the other store, untouched, still serves its own picture
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
   });
 

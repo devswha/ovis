@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, createReadStream, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, createReadStream, fstatSync, lstatSync, openSync, readlinkSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -174,18 +174,51 @@ function blobStoreIdentity(blobs: string): string | null {
   } catch { return null; }
 }
 
+/** What openBlob opens: the store directory, then the blob in it. */
+type BlobOpening = "store" | "blob";
+/** Where a test stands around openBlob's opens, to change the store at that moment (aroundBlobOpenForTests). */
+let aroundBlobOpen: ((opening: BlobOpening, open: () => number) => number) | null = null;
+
+/** Lets a test run `around` each of openBlob's opens, or stops it (null). */
+export function aroundBlobOpenForTests(around: ((opening: BlobOpening, open: () => number) => number) | null): void {
+  aroundBlobOpen = around;
+}
+
+/**
+ * Opens the blob `digest` in the store `blobs` without following a link to either. On Linux the store
+ * is opened first, as a directory and not through a link (O_NOFOLLOW), and held to be the directory
+ * `blobs` names (its descriptor's own path, /proc/self/fd); the blob is then opened through that
+ * descriptor, so nothing put in the store's place after the check can stand in for it. Node has no
+ * descriptor-relative open elsewhere: there the blob is opened by name, with the store checked around
+ * the read (ompBlobSteps). A descriptor, or null.
+ */
+function openBlob(blobs: string, digest: string): number | null {
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  const opened = (opening: BlobOpening, open: () => number) => aroundBlobOpen ? aroundBlobOpen(opening, open) : open();
+  if (process.platform !== "linux") {
+    try { return opened("blob", () => openSync(join(blobs, digest), flags)); } catch { return null; }
+  }
+  let store: number;
+  try { store = opened("store", () => openSync(blobs, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); } catch { return null; }
+  try {
+    // a link above the store is followed by the open: the directory opened must be the one named
+    if (readlinkSync(`/proc/self/fd/${store}`) !== blobs) return null;
+    return opened("blob", () => openSync(`/proc/self/fd/${store}/${digest}`, flags));
+  } catch { return null; } finally { closeSync(store); }
+}
+
 /**
  * The blob `digest` in the store `blobs`, read a window at a time and hashed as it goes, its type from
  * its leading bytes, its bytes kept only when `keep`. Null unless it is a regular file of at most
- * MAX_IMAGE_BYTES whose bytes hash to `digest` and announce a raster, in a store that is a real
- * directory and the same one before the blob was opened and after it was read; neither the blob
- * (O_NOFOLLOW) nor the store (blobStoreIdentity) is followed through a link.
+ * MAX_IMAGE_BYTES whose bytes hash to `digest` and announce a raster, opened without following a link
+ * to it or to its store (openBlob), in a store that is a real directory and the same one before the
+ * blob was opened and after it was read.
  */
 function* ompBlobSteps(blobs: string, digest: string, keep: boolean): Steps<{ mediaType: string; bytes: Buffer | null } | null> {
   const store = blobStoreIdentity(blobs);
   if (store === null) return null;
-  let fd: number;
-  try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
+  const fd = openBlob(blobs, digest);
+  if (fd === null) return null;
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_IMAGE_BYTES) return null;

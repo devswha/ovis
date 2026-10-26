@@ -3,7 +3,7 @@
  * Herdr deliberately omits recognized agents' argv on WSL to avoid blocking procfs reads.
  * Recover process identity outside the bridge, then use the open transcript or breadcrumb.
  */
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -347,18 +347,16 @@ export function ompRouteOwns({ layout }: OmpRoute, file: string, cwd: string): b
  * XDG data directory), so a session of a managed store, `<data>/sessions/<cwd>/<id>.jsonl` or a
  * subagent's file a level below it, has its blobs beside the store. A session directory of its own
  * (`--session-dir`) names no data directory, and its pictures stay unnamed. The store is found from
- * the transcript's real path, and only a real directory counts: a `blobs` that is a link (to another
- * omp's store, or anywhere) names none, and ompBlobPicture checks that again around every read. A
- * blob is served only when its bytes hash to the name the transcript gave them, so a wrong guess finds
- * nothing.
+ * the transcript's real path, by layout alone, whether it exists yet or not: the parser, a page read
+ * live and the image endpoint all ask of the store when they read a blob, and a store that is missing,
+ * or a link (to another omp's store, or anywhere), answers nothing then (ompBlobPicture). A blob is
+ * served only when its bytes hash to the name the transcript gave them, so a wrong guess finds nothing.
  */
 export function ompBlobStore(transcript: string): string | null {
   let real: string;
   try { real = realpathSync(transcript); } catch { return null; }
   for (let dir = dirname(dirname(real)), depth = 0; depth < 2; depth += 1, dir = dirname(dir)) {
-    if (basename(dir) !== "sessions") continue;
-    const blobs = join(dirname(dir), "blobs");
-    try { return lstatSync(blobs).isDirectory() ? blobs : null; } catch { return null; }
+    if (basename(dir) === "sessions") return join(dirname(dir), "blobs");
   }
   return null;
 }
