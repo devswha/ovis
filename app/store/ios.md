@@ -156,8 +156,9 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 > to the user's own computer, so there is no account to give you. To review the whole app without
 > a computer, tap "Try the demo" on the first screen: it runs the full interface with made-up
 > agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
-> pairing code a computer shows. The app uses the microphone only for voice input the user starts
-> with the mic button.
+> pairing code a computer shows. The app uses the microphone for voice input the user chooses:
+> turning Voice input on in Settings briefly opens it to ask for access; the mic button or the
+> keyboard shortcut starts dictation.
 
 ## 8. Release checklist
 
