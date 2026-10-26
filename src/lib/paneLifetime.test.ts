@@ -156,6 +156,42 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent()).toHaveLength(1);
   });
 
+  it("stores what the page kept while storage refused its record once storage takes it on the same herdr, leaving only another tab's text to recovery", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    storage.refuse = "ovis:pane-lifetime:";
+    lifetimes.observe([pc("local", "herdr-a", [pane("w1:p1", "api"), pane("w1:p2", "web")])], title);
+    expect(lifetimes.stored("local")).toBe(false);
+    lifetimes.paneStorage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo held", at: 1_000 }));
+    lifetimes.paneStorage.setItem("ovis:view:w1:p1", "chat");
+    lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed here");
+    // meanwhile another tab kept its own line for that pane under the same herdr
+    storage.setItem("ovis:terminal-line:w1:p2", "typed in another tab");
+    storage.refuse = null;
+    lifetimes.observe([pc("local", "herdr-a", [pane("w1:p1", "api"), pane("w1:p2", "web")])], title);
+    expect(lifetimes.stored("local")).toBe(true);
+    expect(storage.getItem("ovis:terminal-draft:w1:p1")).toBe(JSON.stringify({ text: "echo held", at: 1_000 }));
+    expect(storage.getItem("ovis:view:w1:p1")).toBe("chat");
+    expect(storage.getItem("ovis:terminal-line:w1:p2")).toBe("typed in another tab");
+    expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["line:typed here"]);
+  });
+
+  it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    lifetimes.paneStorage.setItem(DRAFT, "for herdr a's pane");
+    // the PC's connection names the new herdr first (lib/machineSession.ts), without titles
+    lifetimes.observe([pc("local", "herdr-b")]);
+    lifetimes.paneStorage.setItem(DRAFT, "for herdr b's pane");
+    // then a roster read before the replacement arrives
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-b");
+    expect(lifetimes.stored("local")).toBe(true);
+    expect(storage.getItem(DRAFT)).toBe("for herdr b's pane");
+    expect(lifetimes.unsent().map(({ text, pane_title }) => `${pane_title}:${text}`)).toEqual(["api:for herdr a's pane"]);
+  });
+
   it("empties a draft store's copy in the render that names another herdr, and Discard removes recovered text", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);

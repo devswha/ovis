@@ -3,6 +3,7 @@ import type { PendingMessage, ServerMessage } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { greetingMemory } from "./greeting.ts";
 import { MachineSession, MachineSessionRegistry } from "./machineSession.ts";
+import { paneLifetimes } from "./paneLifetime.ts";
 import { PendingMessageStore } from "./pendingMessages.ts";
 import type { HerdrSocket } from "./ws.ts";
 
@@ -203,5 +204,16 @@ describe("PC connection ownership", () => {
     start(next, made[1]!.socket);
     expect(next.scope).not.toBeNull();
     registry.closeAll();
+  });
+  it("gives the page the herdr a reconnected PC names before any pane hears of its snapshot (#1608)", () => {
+    const { session, socket } = setup("fence-pc");
+    const named = (herdr_lifetime: string): ServerMessage => ({ type: "snapshot", snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [], herdr_lifetime } });
+    paneLifetimes.observe([{ id: "fence-pc", snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [], herdr_lifetime: "fence-herdr-a" } }], (pane) => pane.pane_id);
+    const drawnUnder: (string | null | undefined)[] = [];
+    session.on((message) => { if (message.type === "snapshot") drawnUnder.push(paneLifetimes.generation("fence-pc")); });
+    session.connect();
+    socket.receive(named("fence-herdr-b"));
+    expect(drawnUnder).toEqual(["fence-herdr-b"]);
+    session.close();
   });
 });

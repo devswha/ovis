@@ -14,7 +14,11 @@ export function setTerminalDraftSending(owner: string, value: boolean): void {
 const memory = new Map<string, string>();
 /** how many times each owner's draft was written: a paste that waited on the clipboard compares it (TerminalInput.tsx) */
 const versions = new Map<string, number>();
-export function terminalDraftVersion(owner: string): number { return versions.get(owner) ?? 0; }
+export function terminalDraftVersion(owner: string): number {
+  // a line asked about is counted from here on, so a herdr replacement can count it too (onRetire below)
+  if (!versions.has(owner)) versions.set(owner, 0);
+  return versions.get(owner)!;
+}
 /** lines storage refused: they live in `memory` alone */
 const unsaved = new Set<string>();
 const PREFIX = "ovis:terminal-line:";
@@ -39,12 +43,15 @@ export function writeTerminalDraft(owner: string, text: string): void {
 
 // another herdr took the PC's pane IDs: its lines are read again from where they now are
 paneLifetimes.onRetire((machineId) => {
-  for (const [owner, line] of [...memory]) {
+  for (const owner of new Set([...memory.keys(), ...versions.keys()])) {
     const pane = paneStateKey(PREFIX + owner);
     if (pane?.machineId !== machineId) continue;
     // a line storage refused lives only here: it goes to recovery, not away
-    if (unsaved.delete(owner)) paneLifetimes.keep(machineId, pane.paneId, "line", line);
+    const line = memory.get(owner);
+    if (unsaved.delete(owner) && line !== undefined) paneLifetimes.keep(machineId, pane.paneId, "line", line);
     memory.delete(owner);
+    // the line is another one now: a paste still waiting on the clipboard is not put into it
+    versions.set(owner, terminalDraftVersion(owner) + 1);
   }
   notify();
 });

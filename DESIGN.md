@@ -1621,7 +1621,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   was opened from holds, and that pane shows its chat), **Copy** and **Discard**. Nothing here sends;
   the list closes when its last text is recovered or discarded.
 - Slack's Drafts list is the model: unsent text kept apart from the conversation, put back only by
-  hand. A PC whose server names no herdr (an older bridge) keeps its drafts in the page alone.
+  hand. The coding-agent apps (the Codex and Claude apps, Paseo, T3 Code) make their own
+  conversation IDs and never give one to another conversation, so none of them has a draft whose
+  owner was replaced, and there is no app precedent to follow. A PC whose server names no herdr (an older bridge) keeps its drafts in the page alone.
 
 ### Changes list and diff viewer (`.repo-changes`, `.repo-diff*`)
 - Files has two faces, **Browse** | **Changes** (`.segmented` in its header). **Changes** lists

@@ -76,6 +76,8 @@ export class PaneLifetimes {
   private readonly generations = new Map<string, string | null>();
   /** the last lifetime this page saw a snapshot name for each PC */
   private readonly proven = new Map<string, string>();
+  /** lifetimes this page drew a PC under and then left: a replaced herdr never comes back */
+  private readonly outlived = new Map<string, Set<string>>();
   /** each PC's pane titles in its latest snapshot, for the text it leaves to recovery */
   private readonly titles = new Map<string, Map<string, string>>();
   /** the pane state of PCs this page keeps out of storage */
@@ -124,9 +126,11 @@ export class PaneLifetimes {
    * Each roster before it is drawn (useMachineRoster): a PC whose snapshot names another herdr than
    * the page drew it under leaves its pane state to recovery in this same render. Only the page
    * that saw the stored herdr go retires the stored state; a page that is behind another tab
-   * leaves it alone, and keeps its own state in memory until it catches up.
+   * leaves it alone, and keeps its own state in memory until it catches up. A PC's connection
+   * reports its snapshot here too (lib/machineSession.ts), before its panes hear of it, with no
+   * titles: the roster's next read brings them.
    */
-  observe(machines: readonly Machine[], title: (pane: HerdrPane) => string): void {
+  observe(machines: readonly Pick<Machine, "id" | "snapshot">[], title?: (pane: HerdrPane) => string): void {
     const changed: string[] = [];
     for (const machine of machines) {
       if (!machine.snapshot) continue;
@@ -134,9 +138,13 @@ export class PaneLifetimes {
       // once a PC proved its herdr, a snapshot naming none (a read that could not prove one) is no news
       const named = machine.snapshot.herdr_lifetime;
       if (named === undefined && this.proven.has(machine.id)) continue;
+      // a read from before the herdr this page already moved to (a roster the connection overtook)
+      if (named !== undefined && this.outlived.get(machine.id)?.has(named)) continue;
       const next = named ?? null;
       if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {
         this.retireMemory(machine.id, titles);
+        const left = this.generations.get(machine.id);
+        if (typeof left === "string" && next !== null) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], left].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
         if (next !== null) this.settle(machine.id, next, titles);
         changed.push(machine.id);
@@ -144,13 +152,14 @@ export class PaneLifetimes {
         // behind another tab, or refused by storage: tried again with each roster
         this.settle(machine.id, next, titles);
         if (this.stored(machine.id)) {
-          // what was typed meanwhile in this page alone is not what storage now holds for the panes
-          this.retireMemory(machine.id, titles);
+          // what this page kept meanwhile was made under this same herdr: it goes to storage, as the
+          // stores read it from there now, and only text storage holds otherwise is left to recovery
+          this.storeMemory(machine.id, titles);
           changed.push(machine.id);
         }
       }
       if (next !== null) this.proven.set(machine.id, next);
-      this.titles.set(machine.id, new Map(machine.snapshot.panes.map((pane) => [pane.pane_id, title(pane)])));
+      if (title) this.titles.set(machine.id, new Map(machine.snapshot.panes.map((pane) => [pane.pane_id, title(pane)])));
     }
     for (const machineId of changed) for (const forget of this.retired) forget(machineId);
     if (changed.length > 0) this.notify();
@@ -195,6 +204,23 @@ export class PaneLifetimes {
       const pane = paneStateKey(key);
       if (pane?.machineId !== machineId) continue;
       this.memory.delete(key);
+      if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, value, this.now()), titles);
+    }
+  }
+
+  private storeMemory(machineId: string, titles: ReadonlyMap<string, string>): void {
+    let storage: Storage | null = null;
+    try { storage = this.storage(); } catch { /* no storage: the text is kept in this page */ }
+    for (const [key, value] of [...this.memory]) {
+      const pane = paneStateKey(key);
+      if (pane?.machineId !== machineId) continue;
+      this.memory.delete(key);
+      try {
+        const stored = storage?.getItem(key) ?? null;
+        if (stored === value) continue;
+        if (stored === null && storage) { storage.setItem(key, value); continue; }
+      } catch { /* storage refused it: recovery below */ }
+      // another tab's text for the pane, or storage refused this one: neither is lost
       if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, value, this.now()), titles);
     }
   }
