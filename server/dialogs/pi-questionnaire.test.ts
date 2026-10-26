@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import fixture from "../fixtures/pi-questionnaire.json";
-import { answerKeys } from "../prompt.ts";
-import { parsePiQuestionnaire, piQuestionnaireInputMatches, piQuestionnaireOf } from "./pi-questionnaire.ts";
+import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
+import { isPiQuestionnaireScreen, MAX_QUESTIONNAIRE_SCREEN_CHARS, parsePiQuestionnaire, piQuestionnaireInputMatches, piQuestionnaireOf } from "./pi-questionnaire.ts";
 import { ANSI_RE, publicPrompt } from "./shared.ts";
 
 const single = piQuestionnaireOf("single-call", fixture.single)!;
@@ -128,4 +128,45 @@ test("review distinguishes exact whitespace-colliding labels and refuses ambiguo
     ...q, options: [{ value: "first", label: "Savefile" }, { value: "second", label: "Savefile" }],
   }) };
   expect(parsePiQuestionnaire(fixture.screens.review.replace("Small compatibility fix", "Savefile"), duplicate)).toBeNull();
+});
+
+test("old questionnaire hints above a live native Pi menu do not suppress its card", () => {
+  const menu = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
+  for (const old of [fixture.screens.single, fixture.screens["multi-first-narrow"], fixture.screens["input-empty"]]) {
+    for (const footer of ["", "\n/home/fixture\n12.0%/200k some-model"]) {
+      const screen = `${old}\n${menu}${footer}`;
+      expect(isPiQuestionnaireScreen(screen)).toBe(false);
+      const prompt = parseInteractivePrompt("pi", screen);
+      expect(prompt?.question).toBe("Choose a color");
+      expect(prompt?.options.map(option => option.label)).toEqual(["Red", "Blue"]);
+    }
+  }
+});
+
+test("active questionnaire hints remain reserved when the drawing is malformed or clipped", () => {
+  for (const name of ["single-narrow", "multi-first-narrow", "input-empty", "review-narrow"] as const) {
+    for (const footer of ["", "\n/home/fixture\n12.0%/200k some-model"]) {
+      const screen = fixture.screens[name].split("\n").slice(1).join("\n") + footer;
+      expect(isPiQuestionnaireScreen(screen)).toBe(true);
+      expect(parseInteractivePrompt("pi", screen)).toBeNull();
+    }
+  }
+  expect(isPiQuestionnaireScreen("↑↓ navigate • Enter select • Esc")).toBe(true);
+  expect(isPiQuestionnaireScreen(fixture.screens.single + "\nUnrelated newer output")).toBe(false);
+});
+
+test("questionnaire parser rejects oversized adversarial input before reading source or scanning suffixes", () => {
+  const padding = "malformed review summary\n".repeat(Math.ceil(MAX_QUESTIONNAIRE_SCREEN_CHARS / 24));
+  const oversized = fixture.screens.review.replace("Press Enter to submit", padding);
+  expect(oversized.length).toBeGreaterThan(MAX_QUESTIONNAIRE_SCREEN_CHARS);
+  const unreadableSource = new Proxy(multi, { get() { throw new Error("oversized input must be rejected before reading the form"); } });
+  expect(parsePiQuestionnaire(oversized, unreadableSource)).toBeNull();
+  expect(isPiQuestionnaireScreen(oversized)).toBe(true);
+  expect(parseInteractivePrompt("pi", oversized)).toBeNull();
+  // Many short lines stay below the character cap but exceed the independent line budget.
+  expect(parsePiQuestionnaire(fixture.screens.review.replace("Press Enter to submit", "x\n".repeat(600)), multi)).toBeNull();
+  // Also exercise a missing caption inside both budgets: no growing suffix copies are needed.
+  const bounded = fixture.screens.review.replace("Press Enter to submit", `${"x".repeat(80)}\n`.repeat(400));
+  expect(bounded.length).toBeLessThan(MAX_QUESTIONNAIRE_SCREEN_CHARS);
+  expect(parsePiQuestionnaire(bounded, multi)).toBeNull();
 });

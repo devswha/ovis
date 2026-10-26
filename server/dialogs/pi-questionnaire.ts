@@ -17,11 +17,34 @@ const compact = (text: string): string => text.replace(/\s/g, "");
 const same = (a: string, b: string): boolean => compact(a) === compact(b);
 const rule = (line: string): boolean => /^─{8,}$/.test(line);
 
-/** Also reserves malformed/clipped questionnaire drawings from guessed fallback digit keys. */
+/** Also reserves malformed/clipped active drawings, never old hints above a newer prompt. */
 export function isPiQuestionnaireScreen(screen: string): boolean {
-  const text = compact(screen.replace(ANSI_RE, ""));
-  return ["↑↓ navigate • Enter select", "Tab/←→ navigate • ↑↓ select", INPUT]
-    .some(hint => text.includes(compact(hint)));
+  const lines = screen.slice(-8192).replace(ANSI_RE, "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const last = lines.at(-1) ?? "";
+  if (/\d+(?:\.\d+)?%\/\d/.test(last) && !/^[>›❯]/.test(last)
+    && /^(?:[A-Za-z]:[\\/]|[~\/])/.test(lines.at(-2) ?? "")) lines.splice(-2);
+  if (rule(lines.at(-1) ?? "")) lines.pop();
+  const tail = compact(lines.slice(-32).join(" "));
+  return /↑↓navigate•Enterselect(?:•Esc(?:cancel)?)?$/.test(tail)
+    || /Tab\/←→navigate•↑↓select(?:•Enterconfirm(?:•Esc(?:cancel)?)?)?$/.test(tail)
+    || /Entertosubmit•Esc(?:tocancel)?$/.test(tail);
+}
+
+// Bound synchronous work before splitting, stripping escapes or reconstructing any frame.
+export const MAX_QUESTIONNAIRE_SCREEN_CHARS = 64 * 1024;
+const MAX_QUESTIONNAIRE_SCREEN_LINES = 512;
+
+/** Compare a wrapped suffix one line at a time, without copying growing screen suffixes. */
+function suffixStart(lines: string[], text: string): number {
+  const wanted = compact(text);
+  let end = wanted.length;
+  let at = lines.length;
+  while (at > 0 && end > 0) {
+    const line = compact(lines[--at]!);
+    if (line.length > end || !wanted.endsWith(line, end)) return -1;
+    end -= line.length;
+  }
+  return end > 0 ? -1 : at;
 }
 
 export function piQuestionnaireOf(id: string, args: unknown): PiQuestionnaire | null {
@@ -46,8 +69,9 @@ export function piQuestionnaireOf(id: string, args: unknown): PiQuestionnaire | 
 }
 
 export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): ParsedPrompt | null {
-  if (!source) return null;
+  if (!source || screen.length > MAX_QUESTIONNAIRE_SCREEN_CHARS) return null;
   const raw = screen.replace(/\u001b_pi:[^\u0007]*\u0007/g, "").split(/\r?\n/).map(line => line.trimEnd());
+  if (raw.length > MAX_QUESTIONNAIRE_SCREEN_LINES) return null;
   const lines = raw.map(line => line.replace(ANSI_RE, ""));
   let bottom = lines.length - 1;
   while (bottom >= 0 && !lines[bottom]) bottom--;
@@ -93,10 +117,8 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
   const inputMode = joined.endsWith(compact(INPUT));
   if (!joined.endsWith(compact(inputMode ? INPUT : hint))) return null;
   // Strip the complete wrapped hint, preserving all content before its leading blank.
-  let hintStart = content.length;
-  const wanted = compact(inputMode ? INPUT : hint);
-  while (hintStart > 0 && compact(content.slice(hintStart).join(" ")) !== wanted) hintStart--;
-  if (hintStart === 0 || compact(content.slice(hintStart).join(" ")) !== wanted) return null;
+  const hintStart = suffixStart(content, inputMode ? INPUT : hint);
+  if (hintStart <= 0) return null;
   let own = content.slice(0, hintStart);
   while (own.at(-1)?.trim() === "") own.pop();
   const internal = {
@@ -109,7 +131,7 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
     const answered = tabs!.slice(0, -1);
     const missing = answered.filter(tab => !tab.answered);
     const caption = missing.length ? `Unanswered: ${missing.map(tab => tab.label).join(", ")}` : "Press Enter to submit";
-    const captionStart = own.findIndex((_, at) => same(own.slice(at).join(" "), caption));
+    const captionStart = suffixStart(own, caption);
     if (captionStart < 0) return null;
     // Keep row boundaries: joining a hard wrap with a space can turn "Savefile"
     // into the distinct option "Save file". Only unwrapped text is exact evidence.

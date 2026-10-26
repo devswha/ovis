@@ -357,3 +357,25 @@ test("route review preserves exact whitespace-colliding selection and refuses am
     expect(pane.sent).toEqual([]);
   });
 });
+
+test("old questionnaire scrollback leaves the live native Pi menu readable and answerable", async () => {
+  await withPane(screens["multi-first-narrow"], fixture.multi, async pane => {
+    pane.settle();
+    pane.screen += "\n────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n/home/fixture\n12.0%/200k some-model";
+    const card = await pane.card();
+    expect(card.question).toBe("Choose a color");
+    expect(card.options.map(option => option.label)).toEqual(["Red", "Blue"]);
+    expect(await pane.answer(card.id, { option_index: 0 })).toBe(200);
+    expect(pane.sent).toEqual(["enter"]);
+  });
+});
+
+test("oversized active questionnaire review cannot offer guessed fallback controls or submit", async () => {
+  await withPane(screens.review, fixture.multi, async pane => {
+    const card = await pane.card();
+    pane.screen = screens.review.replace("Press Enter to submit", `${"x".repeat(80)}\n`.repeat(8000));
+    expect(await pane.answer(card.id, { option_index: 0 })).toBe(409);
+    expect(await pane.read()).toBeNull();
+    expect(pane.sent).toEqual([]);
+  });
+});
