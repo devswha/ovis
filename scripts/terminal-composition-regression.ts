@@ -36,6 +36,10 @@ function compositionGlyphs(): { left: number; right: number; first: { left: numb
   return { left: box.left, right: box.right, first: glyph(0, 1), last: glyph(length - 1, length) };
 }
 
+/**
+ * Composes in a pane of its own at each width, mode and font, then from a cursor far along a row,
+ * and checks that nothing scrolls sideways and the composition's newest characters stay in view.
+ */
 export async function checkTerminalComposition(browser: Browser, origin: string): Promise<void> {
   const out = process.env["UI_EVIDENCE_DIR"];
   if (out) mkdirSync(out, { recursive: true });
