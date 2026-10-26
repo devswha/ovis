@@ -98,6 +98,12 @@ const listeners = new Set<() => void>();
 let generation = 0;
 /** every test or repair takes a number too, and a reset moves it on: an action that ends after a reset or a later action says nothing */
 let actions = 0;
+/**
+ * The subscription Settings' line (`result`) speaks of: the endpoint the first look after the test
+ * or repair found, null for none; undefined until that look claims it. A look that finds another
+ * subscription (another tab's, or the service worker's renewal) drops the line.
+ */
+let resultFor: string | null | undefined;
 
 function setState(next: PushHealthState): void {
   state = next;
@@ -119,29 +125,43 @@ export function readPushHealth(): PushHealthState {
   return state;
 }
 
-/** This browser's subscription as it stands, read without changing it; `reached` is false when the PC did not answer at all. */
-async function observe(wanted: boolean): Promise<{ input: PushHealthInput; reached: boolean }> {
+/** The endpoint this device holds now: null for none, undefined when that cannot be read. */
+async function heldEndpoint(): Promise<string | null | undefined> {
+  try {
+    const subscription = await heldPushSubscription();
+    return subscription === undefined ? undefined : subscription?.json.endpoint ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * This browser's subscription as it stands, read without changing it; `reached` is false when the
+ * PC did not answer at all, and `endpoint` is the one read (null for none, undefined when not looked at).
+ */
+async function observe(wanted: boolean): Promise<{ input: PushHealthInput; reached: boolean; endpoint: string | null | undefined }> {
   const input: PushHealthInput = { wanted, supported: pushSupported(), permission: notificationState(), subscribed: null, keyMatches: null, status: null };
-  if (!input.wanted || !input.supported || input.permission !== "granted") return { input, reached: true };
+  if (!input.wanted || !input.supported || input.permission !== "granted") return { input, reached: true, endpoint: undefined };
   let subscription: Awaited<ReturnType<typeof heldPushSubscription>>;
   try {
     subscription = await heldPushSubscription();
   } catch {
-    return { input, reached: true };
+    return { input, reached: true, endpoint: undefined };
   }
   // no worker registered yet: there is nothing to look at, which is not a missing subscription
-  if (subscription === undefined) return { input, reached: true };
+  if (subscription === undefined) return { input, reached: true, endpoint: undefined };
   input.subscribed = subscription !== null;
-  if (!subscription) return { input, reached: true };
+  if (!subscription) return { input, reached: true, endpoint: null };
+  const endpoint = subscription.json.endpoint ?? null;
   try {
     input.keyMatches = sameServerKey(subscription.key, await fetchPushKey());
-    if (input.keyMatches === false) return { input, reached: true };
+    if (input.keyMatches === false) return { input, reached: true, endpoint };
     input.status = (await fetchPushSubscriptionStatus(subscription.json)) ?? "unknown";
   } catch (error) {
     // a server from before the question answers 404 for the route: nothing to go on, and nothing wrong
-    return { input, reached: error instanceof ApiError };
+    return { input, reached: error instanceof ApiError, endpoint };
   }
-  return { input, reached: true };
+  return { input, reached: true, endpoint };
 }
 
 /**
@@ -159,21 +179,35 @@ export async function refreshPushHealth(wanted: boolean): Promise<void> {
     if (mine !== generation) return;
   } while (subject !== pushSubscriptionEpoch());
   // a registration or removal begun while the look is out replaces what it reads
-  const { input, reached } = await observe(wanted);
+  const { input, reached, endpoint } = await observe(wanted);
   if (mine !== generation) return;
   // what was read belongs to a subscription since replaced: look again at the one that stands
   if (subject !== pushSubscriptionEpoch()) return refreshPushHealth(wanted);
+  // replaced from outside this page's operations while its answer was out (another tab, or the service
+  // worker renewing it): the answer is for a subscription this device no longer holds
+  if (input.subscribed === true) {
+    const now = await heldEndpoint();
+    if (mine !== generation) return;
+    if (now !== undefined && now !== endpoint) return refreshPushHealth(wanted);
+  }
   // the PC out of reach says nothing new: what was known stands, a notice included, until it answers again
   if (!reached) return;
   const health = classifyPushHealth(input);
-  // a fault found later is the latest word: the line of an earlier test does not stand beside it
-  setState({ ...state, health, result: health.problem === null ? state.result : null });
+  // a fault found later is the latest word: the line of an earlier test does not stand beside it, nor
+  // does the line of a test or repair of a subscription since replaced
+  let result = health.problem === null ? state.result : null;
+  if (result !== null && endpoint !== undefined) {
+    if (resultFor === undefined) resultFor = endpoint;
+    else if (resultFor !== endpoint) result = null;
+  }
+  setState({ ...state, health, result });
 }
 
 /** Alerts turned off here, or the device locked: nothing is wrong any more, and no answer still out may say otherwise. */
 export function resetPushHealth(): void {
   generation += 1;
   actions += 1;
+  resultFor = undefined;
   setState({ health: QUIET, busy: null, result: null });
 }
 
@@ -191,7 +225,11 @@ export async function runPushAction(kind: "test" | "repair", action: () => Promi
     result = await action();
   } finally {
     // reset or followed by another action meanwhile: that one's state is not this one's to clear
-    if (mine === actions) setState({ ...state, busy: null, result });
+    if (mine === actions) {
+      // the look below claims it for the subscription it finds
+      resultFor = undefined;
+      setState({ ...state, busy: null, result });
+    }
   }
   if (mine === actions) await refreshPushHealth(wanted());
 }

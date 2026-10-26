@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import type { PushDeliveryFailure, PushSubscriptionStatus } from "../../shared/protocol.ts";
 import { classifyPushHealth, failureIsNewer, readPushHealth, refreshPushHealth, resetPushHealth, runPushAction, type PushHealthInput } from "./pushHealth.ts";
+import { refreshNotificationState } from "./notifications.ts";
 import { ensurePushSubscription } from "./push.ts";
 
 const at = (seconds: number): string => new Date(1_700_000_000_000 + seconds * 1000).toISOString();
@@ -272,5 +273,62 @@ describe("the shared health state", () => {
     await expect(runPushAction("test", async () => { throw new Error("no"); }, () => true)).rejects.toThrow("no");
     expect(readPushHealth().busy).toBeNull();
     expect(readPushHealth().result).toBe("failed");
+  });
+
+  it("drops an answer and a test's line once another tab or the service worker replaced the subscription", async () => {
+    // replaced outside this page's own operations while the answer for the old one was out
+    const race = held();
+    const look = refreshPushHealth(true);
+    await race.sent(1);
+    live = standIn("https://push.example/9");
+    race.replies[0]!.reply.resolve(Response.json(gone));
+    await race.sent(2);
+    expect(race.replies[1]!.endpoint).toBe("https://push.example/9");
+    race.replies[1]!.reply.resolve(Response.json(status()));
+    await look;
+    expect(readPushHealth().health.problem).toBeNull();
+
+    // a failed test whose subscription only had a passing failure: its line stands while that subscription does
+    answer = async () => Response.json(status({ last_failure_at: at(1), last_failure: "network" }));
+    await runPushAction("test", async () => "failed", () => true);
+    expect(readPushHealth().result).toBe("failed");
+    await refreshPushHealth(true);
+    expect(readPushHealth().result).toBe("failed");
+    // and goes once a clean subscription replaced it
+    live = standIn("https://push.example/10");
+    answer = async () => Response.json(status({ last_success_at: at(2) }));
+    await refreshPushHealth(true);
+    expect(readPushHealth()).toMatchObject({ health: { problem: null }, result: null });
+  });
+
+  it("reads the phone app's subscription for this PC, which has no service worker", async () => {
+    let held: string | null = "https://push.ovis.sh/v1/push/1";
+    const asked: unknown[] = [];
+    delete (globalThis.navigator as { serviceWorker?: unknown }).serviceWorker;
+    Object.assign(globalThis, { PushManager: undefined, Notification: undefined });
+    (globalThis as { Capacitor?: unknown }).Capacitor = {
+      isNativePlatform: () => true,
+      PluginHeaders: [{ name: "HerdrShell" }, { name: "OvisPush" }],
+      nativePromise: async (_plugin: string, method: string) => {
+        if (method === "checkPermissions") return { notifications: "granted" };
+        if (method === "getSubscription") return { subscription: held && { endpoint: held, expirationTime: null, keys: { p256dh: "p", auth: "a" } } };
+        return undefined;
+      },
+    };
+    answer = async (init) => { asked.push(JSON.parse(String(init?.body))); return Response.json(gone); };
+    try {
+      await refreshNotificationState();
+      await refreshPushHealth(true);
+      expect(asked).toEqual([{ subscription: { endpoint: "https://push.ovis.sh/v1/push/1", expirationTime: null, keys: { p256dh: "p", auth: "a" } } }]);
+      expect(readPushHealth().health).toEqual({ problem: "gone", repair: true, transient: null });
+      // the app keeps no endpoint for this PC: missing, and the server is not asked
+      held = null;
+      await refreshPushHealth(true);
+      expect(readPushHealth().health).toEqual({ problem: "missing", repair: true, transient: null });
+      expect(asked).toHaveLength(1);
+    } finally {
+      delete (globalThis as { Capacitor?: unknown }).Capacitor;
+      await refreshNotificationState();
+    }
   });
 });
