@@ -124,8 +124,8 @@ export function ompBlobDigest(declared: unknown, data: unknown): string | null {
  * never names a path outside the store, and neither the blob nor the store is followed through a link
  * (ompBlobSteps). Null for anything else.
  */
-export function ompBlobPicture(blobs: string, declared: unknown, data: unknown, anchor?: string): { mediaType: string; bytes: Buffer } | null {
-  return finish(ompBlobPictureSteps(blobs, declared, data, anchor));
+export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
+  return finish(ompBlobPictureSteps(blobs, declared, data));
 }
 
 /**

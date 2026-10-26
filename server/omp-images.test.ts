@@ -255,10 +255,11 @@ describe("omp's pictures reach the chat", () => {
     forgetTranscriptState();
     // work between two turns of the loop, counted in buffers taken rather than in time: a window read is
     // one, a record judged is one or two
-    let since = 0, sinceLarge = 0, most = 0, mostLarge = 0;
+    let since = 0, sinceLarge = 0, most = 0, mostLarge = 0, total = 0;
     const real = Buffer.alloc.bind(Buffer);
     const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => {
       since += 1;
+      total += 1;
       if (Number(args[0]) >= 1024 * 1024) sinceLarge += 1;
       return real(...args);
     }) as typeof Buffer.alloc);
@@ -278,6 +279,8 @@ describe("omp's pictures reach the chat", () => {
     }
     // a reader that judged every record, or scanned every window for clears, before the loop's next turn
     // would take thousands of buffers, or every window, in one stretch
+    // the count is live: judging 30,000 records takes far more buffers than any one stretch may
+    expect(total).toBeGreaterThan(30_000);
     expect(mostLarge).toBeLessThanOrEqual(2);
     expect(most).toBeLessThanOrEqual(400);
   });

@@ -251,9 +251,9 @@ describe("a Codex tool's pictures reach the chat", () => {
     const many = Array.from({ length: 30_000 }, () => ({ type: "response_item", timestamp: at, payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: words }] } }));
     const path = rollout(records(started, ...many, call("call_a"), output("call_a", [picture(png)])));
     // work between two turns of the loop, counted in buffers taken rather than in time
-    let since = 0, most = 0;
+    let since = 0, most = 0, total = 0;
     const real = Buffer.alloc.bind(Buffer);
-    const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => { since += 1; return real(...args); }) as typeof Buffer.alloc);
+    const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => { since += 1; total += 1; return real(...args); }) as typeof Buffer.alloc);
     let looking = true;
     const turn = () => { most = Math.max(most, since); since = 0; if (looking) setImmediate(turn); };
     try {
@@ -261,6 +261,8 @@ describe("a Codex tool's pictures reach the chat", () => {
       expect((await codexToolImage(path, "codex-tool:call_a:0", home))?.mediaType).toBe("image/png");
     } finally { looking = false; most = Math.max(most, since); counting.mockRestore(); }
     // a reader that judged every record before the loop's next turn would take thousands in one stretch
+    // the count is live: judging 30,000 records takes far more buffers than any one stretch may
+    expect(total).toBeGreaterThan(30_000);
     expect(most).toBeLessThanOrEqual(400);
   });
 
