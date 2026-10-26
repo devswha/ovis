@@ -451,6 +451,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // followed from before the first key: the send's own message can be announced before Enter returns
       watch = startOpenCodeWatch(context.pane, command, options.openCodeStateDir);
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
+      // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
+      await stillInFront(paneId, context.identity.processPid);
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
