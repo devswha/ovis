@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
@@ -1047,5 +1047,69 @@ describe("bridge verification failures", () => {
 
   it("tunnels only to the PC's loopback, whatever address a descriptor names", async () => {
     expect((await unanswered({ host: "203.0.113.99" })).forwards).toEqual([[18472]]);
+  });
+});
+
+// A crash can leave machines.json its old length in NULs (#2044): the app must still start.
+describe("saved PCs that cannot be read", () => {
+  const offline = async () => { throw new Error("local offline"); };
+  const dirs: string[] = [];
+  afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+  const directory = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-machines-state-")); dirs.push(dir); return dir; };
+
+  it("sets a file of NULs aside and starts without the PCs it held", () => {
+    const dir = directory();
+    const zeros = Buffer.alloc(353);
+    writeFileSync(join(dir, "machines.json"), zeros);
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let manager: MachineManager | undefined;
+    try {
+      manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+      const aside = readdirSync(dir).filter((name) => name.startsWith("machines.json.corrupt-"));
+      expect(aside).toHaveLength(1);
+      expect(aside[0]).not.toContain(":");
+      expect(readFileSync(join(dir, aside[0]!))).toEqual(zeros);
+      expect(existsSync(join(dir, "machines.json"))).toBe(false);
+      expect(manager.list().map((machine) => machine.kind)).toEqual(["local"]);
+      expect(manager.settings()).toEqual({ auto_update_bridges: true, set_aside: aside });
+      expect(String(error.mock.calls[0]?.[0])).toContain(aside[0]!);
+      // the next save makes a readable file again
+      (manager as unknown as { persist(): void }).persist();
+      expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))).toEqual([]);
+    } finally { manager?.stop(); error.mockRestore(); }
+  });
+
+  it("sets aside herdr's approvals that are not JSON, and says so with the PCs' settings", () => {
+    const dir = directory();
+    writeFileSync(join(dir, "herdr-profile-state.json"), Buffer.alloc(120));
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let manager: MachineManager | undefined;
+    try {
+      manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+      expect(manager.settings().set_aside).toEqual([expect.stringMatching(/^herdr-profile-state\.json\.corrupt-/)]);
+    } finally { manager?.stop(); error.mockRestore(); }
+  });
+
+  it("still refuses to start on JSON that is not a list of PCs, leaving it in place", () => {
+    const dir = directory();
+    writeFileSync(join(dir, "machines.json"), "{}");
+    expect(() => new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline)).toThrow("Invalid machines.json");
+    expect(readFileSync(join(dir, "machines.json"), "utf8")).toBe("{}");
+    expect(readdirSync(dir).filter((name) => name.includes("corrupt"))).toEqual([]);
+  });
+
+  it("does not rewrite saved PCs that have not changed since they were read", () => {
+    const dir = directory();
+    const id = "0b9d6a52-7a5e-4f8e-9a51-2f3c4d5e6f70";
+    const path = join(dir, "machines.json");
+    const text = JSON.stringify([{ id, name: "macbook", enabled: false, target: { destination: "macbook" }, snapshot: null }]);
+    writeFileSync(path, text);
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+    try {
+      (manager as unknown as { persist(): void }).persist();
+      expect(readFileSync(path, "utf8")).toBe(text);
+      manager.patch(id, { name: "laptop" });
+      expect(JSON.parse(readFileSync(path, "utf8"))[0].name).toBe("laptop");
+    } finally { manager.stop(); }
   });
 });
