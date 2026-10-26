@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { answersOnLoopback, descriptorLive, loopbackRelay, registerBridge, type BridgeDescriptor } from "./bridge.ts";
+import type { Socket } from "bun";
+import { answersOnLoopback, descriptorLive, loopbackRelay, registerBridge, RELAY_CLIENT_AHEAD_BYTES, type BridgeDescriptor } from "./bridge.ts";
 import { guardLibrary, guardPath, OwnerGuardReleaseFailed } from "./owner-guard.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
@@ -259,6 +260,64 @@ describe("loopback relay", () => {
     expect(await done.promise).toBe(size);
   });
 
+  /** a client sending `total` bytes through the relay to a server that reads nothing */
+  async function stuckUpstream(total: number): Promise<{ client: Socket; relay: { stop(): void }; written: Promise<void>; clientClosed: Promise<void>; upstreamClosed: Promise<void> }> {
+    const upstreamClosed = Promise.withResolvers<void>();
+    const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { socket.pause(); },
+      data() {},
+      close() { upstreamClosed.resolve(); },
+    } });
+    stops.push(() => server.stop(true));
+    const relay = loopbackRelay("127.0.0.1", server.port);
+    stops.push(() => relay.stop());
+    const written = Promise.withResolvers<void>();
+    const clientClosed = Promise.withResolvers<void>();
+    const chunk = new Uint8Array(1024 * 1024).fill(3);
+    let sent = 0;
+    const push = (socket: Socket) => {
+      while (sent < total) {
+        const want = Math.min(chunk.byteLength, total - sent);
+        const accepted = socket.write(chunk.subarray(0, want));
+        if (accepted <= 0) return;
+        sent += accepted;
+        if (accepted < want) return;
+      }
+      written.resolve();
+    };
+    const client = await Bun.connect({ hostname: "127.0.0.1", port: relay.port, socket: { open: push, drain: push, data() {}, close() { clientClosed.resolve(); } } });
+    return { client, relay, written: written.promise, clientClosed: clientClosed.promise, upstreamClosed: upstreamClosed.promise };
+  }
+
+  it("lets go of a server that reads nothing once its client leaves", async () => {
+    const { client, written, upstreamClosed } = await stuckUpstream(16 * 1024 * 1024);
+    await written;
+    client.terminate();
+    await upstreamClosed;
+  });
+
+  it("lets go of a server that reads nothing when it stops", async () => {
+    const { relay, written, upstreamClosed } = await stuckUpstream(16 * 1024 * 1024);
+    await written;
+    relay.stop();
+    await upstreamClosed;
+  });
+
+  it("cuts off a client that gets too far ahead of a server that reads nothing", async () => {
+    const { clientClosed, upstreamClosed } = await stuckUpstream(RELAY_CLIENT_AHEAD_BYTES + 16 * 1024 * 1024);
+    await Promise.all([clientClosed, upstreamClosed]);
+  });
+
+  // macOS gives its loopback interface 127.0.0.1 alone
+  it.skipIf(process.platform === "darwin")("reaches a server on another loopback address", async () => {
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.2", fetch: () => new Response("two") });
+    stops.push(() => server.stop(true));
+    expect(answersOnLoopback("127.0.0.2")).toBe(false);
+    const relay = loopbackRelay("127.0.0.2", server.port!);
+    stops.push(() => relay.stop());
+    expect(await (await fetch(`http://127.0.0.1:${relay.port}/`)).text()).toBe("two");
+  });
+
   it("closes a connection when nothing listens behind it", async () => {
     const gone = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     const closed = gone.port;
@@ -267,7 +326,7 @@ describe("loopback relay", () => {
   });
 
   it("is needed only where the server does not answer on 127.0.0.1", () => {
-    expect(["127.0.0.1", "127.0.0.2", "0.0.0.0", "::", "[::]"].map(answersOnLoopback)).toEqual([true, true, true, true, true]);
-    expect(["100.64.0.7", "::1", "localhost", "fd7a:115c:a1e0::7", "pc.example"].map(answersOnLoopback)).toEqual([false, false, false, false, false]);
+    expect(["127.0.0.1", "0.0.0.0", "::", "[::]"].map(answersOnLoopback)).toEqual([true, true, true, true]);
+    expect(["127.0.0.2", "100.64.0.7", "::1", "localhost", "fd7a:115c:a1e0::7", "pc.example"].map(answersOnLoopback)).toEqual([false, false, false, false, false, false]);
   });
 });

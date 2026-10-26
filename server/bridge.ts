@@ -7,6 +7,7 @@ import { HerdrError, herdrSocketPath, ping } from "./herdr/client.ts";
 import { OwnerGuardUnavailable, withOwnerGuard } from "./owner-guard.ts";
 import { newOwnerRecord, ownerGone, probeProcess, type ProcessBirth } from "./process-owner.ts";
 import type { Socket } from "bun";
+import { MAX_IMAGE_BODY_BYTES } from "./paste.ts";
 import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
 
 /**
@@ -112,32 +113,36 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   };
 }
 
-/** a 127/8 address or a wildcard: a server bound there already answers on 127.0.0.1 */
+/** 127.0.0.1 or a wildcard: a server bound there already answers on 127.0.0.1 (one on 127.0.0.2 does not) */
 export function answersOnLoopback(hostname: string): boolean {
   const name = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
-  return name === "0.0.0.0" || name === "::" || /^127(?:\.\d{1,3}){3}$/.test(name);
+  return name === "127.0.0.1" || name === "0.0.0.0" || name === "::";
 }
 
-/** `queue`: what this socket has not taken yet; `ending`: the other side closed, so this one ends once its queue is sent */
-interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; closed?: boolean; ending?: boolean }
 /**
- * Writes `chunk` after what the socket has not taken yet, and stops reading the other side while
- * there is any: the sender then feels the slow reader as its own backpressure, as it would without
- * the relay (the server's output-stall checks read it), instead of the relay holding it all.
+ * How far a client may get ahead of a server that is not reading before the relay cuts both off: the
+ * largest request body the server reads (a picture at the attachment limit), twice over.
  */
-function send(socket: Socket<Relayed>, chunk: Uint8Array): void {
-  if (socket.data.queue.length) { socket.data.queue.push(chunk); return; }
-  const written = socket.write(chunk);
-  if (written < chunk.byteLength) {
-    socket.data.queue.push(chunk.subarray(Math.max(written, 0)));
-    socket.data.peer?.pause();
+export const RELAY_CLIENT_AHEAD_BYTES = 2 * MAX_IMAGE_BODY_BYTES;
+/** `queue`: what this socket has not taken yet, `queued` bytes; `ending`: the other side closed, so this one ends once its queue is sent */
+interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; queued: number; closed?: boolean; ending?: boolean }
+/** writes `chunk` after what the socket has not taken yet (`drain` sends the rest); the bytes it holds now */
+function send(socket: Socket<Relayed>, chunk: Uint8Array): number {
+  if (!socket.data.queue.length) {
+    const written = Math.max(socket.write(chunk), 0);
+    if (written === chunk.byteLength) return 0;
+    chunk = chunk.subarray(written);
   }
+  socket.data.queue.push(chunk);
+  socket.data.queued += chunk.byteLength;
+  return socket.data.queued;
 }
 function drain(socket: Socket<Relayed>): void {
   while (socket.data.queue.length) {
     const chunk = socket.data.queue[0]!;
-    const written = socket.write(chunk);
-    if (written < chunk.byteLength) { socket.data.queue[0] = chunk.subarray(Math.max(written, 0)); return; }
+    const written = Math.max(socket.write(chunk), 0);
+    socket.data.queued -= written;
+    if (written < chunk.byteLength) { socket.data.queue[0] = chunk.subarray(written); return; }
     socket.data.queue.shift();
   }
   if (socket.data.ending) socket.end();
@@ -155,31 +160,42 @@ function endAfterQueue(socket: Socket<Relayed> | undefined): void {
  * is another address does not answer on the PC's loopback, where the app's SSH tunnel always goes:
  * it registers this port as its bridge instead. The tunnel then never reaches past the PC's loopback,
  * whatever a descriptor says, and a request through it still arrives from that address, not loopback.
+ *
+ * A client slow to read pauses the server's side, so the server feels it as its own backpressure (its
+ * output-stall checks read it) instead of the relay holding it all. The client's side is never paused:
+ * a paused socket would not see its client leave. A client more than RELAY_CLIENT_AHEAD_BYTES ahead of
+ * a server that is not reading is cut off instead.
  */
 export function loopbackRelay(hostname: string, port: number): { port: number; stop(): void } {
   const target = hostname.replace(/^\[(.*)\]$/, "$1");
   const listener = Bun.listen<Relayed>({ hostname: "127.0.0.1", port: 0, socket: {
     open(client) {
-      client.data = { queue: [] };
+      client.data = { queue: [], queued: 0 };
       // read nothing from the client until the server's side is there to take it
       client.pause();
-      void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [] }, socket: {
+      void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [], queued: 0 }, socket: {
         open(peer) {
           if (client.data.closed) { peer.end(); return; }
           peer.data.peer = client;
           client.data.peer = peer;
           client.resume();
         },
-        data(peer, chunk) { send(client, chunk); },
+        data(peer, chunk) { if (send(client, chunk)) peer.pause(); },
         drain,
         close() { endAfterQueue(client); },
         error() { endAfterQueue(client); },
       } }).catch(() => client.end());
     },
-    data(client, chunk) { if (client.data.peer) send(client.data.peer, chunk); },
+    data(client, chunk) {
+      const peer = client.data.peer;
+      if (peer && send(peer, chunk) > RELAY_CLIENT_AHEAD_BYTES) { client.terminate(); peer.terminate(); }
+    },
     drain,
-    close(client) { client.data.closed = true; endAfterQueue(client.data.peer); },
-    error(client) { client.data.closed = true; endAfterQueue(client.data.peer); },
+    // nothing a departed client sent still matters, and a server that reads nothing would hold the
+    // queue forever: its side goes at once (a server's own close still lets the client read the rest)
+    close(client) { client.data.closed = true; client.data.peer?.terminate(); },
+    error(client) { client.data.closed = true; client.data.peer?.terminate(); },
   } });
+  // stopping closes every client, and each client's close takes its server's side with it
   return { port: listener.port, stop: () => listener.stop(true) };
 }
