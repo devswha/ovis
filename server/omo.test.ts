@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoPanes, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
+import { heldOmoProcess, heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoPanes, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
 import * as client from "./herdr/client.ts";
+import * as omoModule from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -479,6 +480,24 @@ it("fails closed on distinct holder claims while duplicates of one claim still b
   expect(pending.ids).toEqual([]);
   expect(pending.claims).toEqual([{ id: "one", store: "/b/sessions" }]);
   expect(selectOmoTranscript("a", [fileA], [pending], 20_000)).toBeNull();
+});
+
+it("names the OmO process holding a session, not the bundled SDK child beside it (#1545)", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-held-pid-")));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const pid = process.pid;
+  const start = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_792_000_000_000);
+  const environ = spyOn(omoModule, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
+  try {
+    holdRecord(join(agentDir, "sessions", omoSessionFolder(cwd)), "sess-1", pid, { pid, processStartedAtMs: 1_792_000_000_000, cwd });
+    // an argv-silent custom OmO, known by its holder alone, and the SDK child it runs a turn in
+    const parent = { pid, argv: ["/opt/team-ai/bin/run"], cwd };
+    const sdk = { pid: pid + 1, argv: [`${OMO_AI}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`], cwd };
+    expect(await heldOmoProcess([parent, sdk], root)).toBe(pid);
+    expect(await heldOmoProcess([sdk, parent], root)).toBe(pid);
+    expect(await heldOmoProcess([sdk], root)).toBeNull();
+  } finally { start.mockRestore(); environ.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 
 // every OmO status refresh reads these, so every snapshot a pending message is checked against does (#1545)

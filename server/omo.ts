@@ -359,6 +359,20 @@ async function processStarts(infos: Iterable<ProcessInfo>): Promise<(pid: number
   return (pid) => starts.get(pid) ?? null;
 }
 
+/**
+ * The pid of the foreground OmO process that holds a session, as typing picks it (paneProcessRoots), or null: an
+ * argv-silent custom OmO is known only by its holder, and its bundled Claude SDK child, listed after it, looks like
+ * omo by its path but comes and goes with each turn. Starts are read without holding the event loop.
+ */
+export async function heldOmoProcess(
+  foreground: readonly { pid: number; argv?: readonly string[] | null; cwd?: string | null }[],
+  home = process.env["HOME"] ?? "",
+): Promise<number | null> {
+  const processes: OmoForeground[] = foreground.map(({ pid, argv, cwd }) => ({ pid, ...(argv ? { argv: [...argv] } : {}), ...(cwd ? { cwd } : {}) }));
+  const startOf = await processStarts([{ process_info: { foreground_processes: processes } }]);
+  return processes.find((entry) => omoProcessIdentity(entry, "", home, processEnviron, startOf)?.held === true)?.pid ?? null;
+}
+
 type OmoForeground = { pid: number; argv?: string[]; cwd?: string };
 
 /** The pane's own directory evidence: herdr's foreground cwd, then the cwd the pane started in. */

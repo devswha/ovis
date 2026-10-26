@@ -19,6 +19,15 @@ describe("the agent process in front", () => {
     expect(agentProcessInFront(info(launcher, { ...native, pid: 102 }), "claude", native.pid)?.pid).toBe(102);
   });
 
+  it("takes the OmO process holding a session over its SDK child, while it is listed and nothing is bound", () => {
+    const parent = { pid: 200, argv: ["/opt/team-ai/bin/run"] };
+    const sdk = { pid: 201, argv: ["/opt/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
+    expect(agentProcessInFront(info(parent, sdk), "omo")?.pid).toBe(sdk.pid);
+    expect(agentProcessInFront(info(parent, sdk), "omo", null, parent.pid)?.pid).toBe(parent.pid);
+    expect(agentProcessInFront(info(parent, sdk), "omo", sdk.pid, parent.pid)?.pid).toBe(sdk.pid);
+    expect(agentProcessInFront(info(sdk), "omo", null, parent.pid)?.pid).toBe(sdk.pid);
+  });
+
   it("names none where herdr names no agent or none of its programs runs", () => {
     expect(agentProcessInFront(info(launcher, native), null)).toBeNull();
     expect(agentProcessInFront(info({ pid: 7, argv: ["pwsh.exe"] }), "codex")).toBeNull();

@@ -36,6 +36,7 @@ import { piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
+import { heldOmoProcess } from "../omo.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, type OpenCodeWatch, skillsNotAttached } from "../opencode-native.ts";
 import { herdrSkillAttachIo, type PromptPiece, typeWithSkills } from "../opencode-skill-attach.ts";
 
@@ -316,8 +317,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * process is the agent's in front of the pane, as a command outcome picks it (agentProcessInFront): `bound`
    * (the process a message was bound to, or its launch reported) while it is among those in front, else the
    * agent's own program, so a wrapper that does not exec its agent (a shim, a launcher, `sh -c` with more to run)
-   * and stays listed before it is not taken for it. While herdr names no agent, or none of its programs runs
-   * there, the first process in front. Its birth is read without holding the event loop (no `ps` on it on macOS).
+   * and stays listed before it is not taken for it. For OmO, the process holding its session (heldOmoProcess), as
+   * typing picks it, so a custom OmO is not taken for its SDK child. While herdr names no agent, or none of its
+   * programs runs there, the first process in front. Its birth is read without holding the event loop (no `ps` on
+   * it on macOS).
    */
   async function currentIdentity(paneId: string, bound: number | null = null): Promise<{ pane: HerdrPane; identity: PendingIdentity; shellPid: number | null; processes: ProcessInfo | undefined }> {
     // The same normalized snapshot the client sees includes a known Codex finish that
@@ -326,7 +329,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
     const info = await paneProcessInfo(paneId);
     const base = pendingIdentity(pane);
-    const pid = agentProcessInFront(info, base.agent, bound)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
+    const held = base.agent === "omo" ? await heldOmoProcess(info?.foreground_processes ?? []) : null;
+    const pid = agentProcessInFront(info, base.agent, bound, held)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
     return { pane, shellPid: info?.shell_pid ?? null, processes: info, identity: {
       ...base, processPid: pid, processBirth: pid === null ? null : await processStartedAtAsync(pid),
       omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
