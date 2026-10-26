@@ -175,6 +175,8 @@ export async function paneFiles(cwd: string, query = "", limit = 20): Promise<st
 const walked = new Map<string, { expires: number; files: string[] }>();
 /** One listing per folder at a time: lookups that arrive while it runs share it rather than start their own git. */
 const listing = new Map<string, Promise<string[]>>();
+/** Raised by clearFileCache: a listing begun before it neither fills the cache nor removes a later listing. */
+let generation = 0;
 
 /**
  * The files under `cwd` whose path ends in `name` (a bare `demo.mp4`, or `screenshots/demo.mp4`),
@@ -190,14 +192,18 @@ export async function filesNamed(cwd: string, name: string, limit = 10, anyForm 
   if (files === undefined) {
     let shared = listing.get(cwd);
     if (shared === undefined) {
+      const begun = generation;
       // not cut to MAX_GIT_ENTRIES: a name is matched against every path
-      shared = gitFiles(cwd, Infinity).then((listed) => {
+      const pending: Promise<string[]> = gitFiles(cwd, Infinity).then((listed) => {
         const found = [...new Set([...listed ?? [], ...walkFiles(cwd)])];
-        walked.set(cwd, { expires: Date.now() + CACHE_MS, files: found });
-        if (walked.size > 16) walked.delete(walked.keys().next().value!);
+        if (begun === generation) {
+          walked.set(cwd, { expires: Date.now() + CACHE_MS, files: found });
+          if (walked.size > 16) walked.delete(walked.keys().next().value!);
+        }
         return found;
-      }).finally(() => listing.delete(cwd));
-      listing.set(cwd, shared);
+      }).finally(() => { if (listing.get(cwd) === pending) listing.delete(cwd); });
+      shared = pending;
+      listing.set(cwd, pending);
     }
     files = await shared;
   }
@@ -211,4 +217,5 @@ export function clearFileCache(): void {
   cache.clear();
   walked.clear();
   listing.clear();
+  generation += 1;
 }

@@ -420,4 +420,23 @@ describe("git inventories", () => {
       spawn.mockRestore();
     }
   });
+
+  it("keeps a listing begun before clearFileCache out of the cache it cleared", async () => {
+    const root = fixture();
+    // the old git answers only once released; the new one answers at once
+    const slow = fakeGit((dir) => `read _ < "${dir}/go"\nprintf 'old-name\\0'`);
+    expect(Bun.spawnSync(["mkfifo", join(slow.folder, "go")]).exitCode).toBe(0);
+    const fast = fakeGit(() => `printf 'new-name\\0'`);
+    setGitListOptions({ git: slow.git });
+    // filesNamed starts its git before its first await, so the old listing is under way here
+    const old = filesNamed(root, "old-name");
+    clearFileCache();
+    setGitListOptions({ git: fast.git });
+    expect(await within(filesNamed(root, "new-name"), 5_000, "the new lookup")).toEqual(["new-name"]);
+    await within(writeFile(join(slow.folder, "go"), "\n"), 5_000, "the old git's release");
+    // the old lookup still answers its caller, but leaves the newer listing in the cache
+    expect(await within(old, 5_000, "the old lookup")).toEqual(["old-name"]);
+    expect(await filesNamed(root, "old-name")).toEqual([]);
+    expect(await filesNamed(root, "new-name")).toEqual(["new-name"]);
+  });
 });
