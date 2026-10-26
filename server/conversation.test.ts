@@ -2670,9 +2670,12 @@ describe("a Codex pane that reported no session yet", () => {
     const children: Bun.Subprocess[] = [];
     let codexes: { pid: number; argv: string[] }[] = [];
     // each one says it runs before it is asked about: until its exec, the OS shows the environment it was forked with
-    const started = async (...homes: string[]) => {
+    // a string is the CODEX_HOME it starts with; an object sets (or, as undefined, drops) its variables
+    const started = async (...homes: (string | Record<string, string | undefined>)[]) => {
       codexes = await Promise.all(homes.map(async (home) => {
-        const child = Bun.spawn([process.execPath, "-e", "console.log('ready'); setTimeout(() => {}, 60_000)"], { cwd: root, env: { ...process.env, CODEX_HOME: home }, stdout: "pipe" });
+        const set = typeof home === "string" ? { CODEX_HOME: home } : home;
+        const env = Object.fromEntries(Object.entries({ ...process.env, ...set }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+        const child = Bun.spawn([process.execPath, "-e", "console.log('ready'); setTimeout(() => {}, 60_000)"], { cwd: root, env, stdout: "pipe" });
         children.push(child);
         const reader = child.stdout.getReader();
         let said = "";
@@ -2702,17 +2705,32 @@ describe("a Codex pane that reported no session yet", () => {
       // a relative CODEX_HOME: Codex places it under its folder, where a conversation has begun
       const relative = join(root, "rel");
       mkdirSync(relative);
-      const db = new Database(join(relative, "state_5.sqlite"));
-      const now = Math.floor(Date.now() / 1000);
-      db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT, first_user_message TEXT)");
-      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, first_user_message) VALUES ('begun', '/nowhere.jsonl', ?, 'cli', ?, ?, 'hi')").run(root, now, now);
-      db.close();
+      const begun = (store: string) => {
+        const db = new Database(join(store, "state_5.sqlite"));
+        const now = Math.floor(Date.now() / 1000);
+        db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT, first_user_message TEXT)");
+        db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, first_user_message) VALUES ('begun', '/nowhere.jsonl', ?, 'cli', ?, ?, 'hi')").run(root, now, now);
+        db.close();
+      };
+      begun(relative);
       await started("rel");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       // a CODEX_HOME that is no directory, or a second Codex whose home cannot be placed
       await started(join(root, "missing"));
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       await started(own, "rel");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // no CODEX_HOME: the store is .codex in the HOME the Codex runs with, never the server's own
+      const user = join(root, "user");
+      mkdirSync(join(user, ".codex"), { recursive: true });
+      await started({ CODEX_HOME: undefined, HOME: user });
+      expect(await ask()).toMatchObject({ history_id: expect.stringMatching(/^unwritten:codex:/) });
+      begun(join(user, ".codex"));
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // with no HOME, or a relative one, there is no telling where it is
+      await started({ CODEX_HOME: undefined, HOME: undefined });
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      await started({ CODEX_HOME: undefined, HOME: "user" });
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
     } finally {
       if (serverHome === undefined) delete process.env["CODEX_HOME"]; else process.env["CODEX_HOME"] = serverHome;

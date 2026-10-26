@@ -410,26 +410,33 @@ async function psEnvironmentLine(pid: number): Promise<string | null> {
 
 /**
  * The store a process's Codex writes to, only as far as its environment tells it for certain
- * (#1191): the CODEX_HOME directory it names, ~/.codex when it names none, or null. Null covers
- * an environment that cannot be read (another user's process, a gone one, Windows), a CODEX_HOME
- * that is relative or no directory (Codex places one itself, while paneCodexHome falls back to
- * the default store for it), and on macOS a command line that spells CODEX_HOME= itself, which
- * `ps -E` cannot tell from the environment.
+ * (#1191): the CODEX_HOME directory it names, else .codex in the HOME it names, or null. Null
+ * covers an environment that cannot be read (another user's process, a gone one, Windows), a
+ * CODEX_HOME that is relative or no directory (Codex places one itself, while paneCodexHome falls
+ * back to the default store for it), no HOME or a relative one, and on macOS a command line that
+ * spells CODEX_HOME= or HOME= itself, which `ps -E` cannot tell from the environment. Never this
+ * server's own home: the pane's Codex may run with another HOME.
  */
 async function certainProcessCodexHome(pid: number, argv: readonly string[]): Promise<string | null> {
   let named: string | null = null;
+  let home: string | null = null;
   try {
     if (process.platform === "linux") {
-      named = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) ?? "";
-    } else if (process.platform === "darwin" && !argv.some((word) => word.includes("CODEX_HOME="))) {
+      const environment = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
+      named = environment.find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) ?? "";
+      home = environment.find((entry) => entry.startsWith("HOME="))?.slice(5) ?? null;
+    } else if (process.platform === "darwin" && !argv.some((word) => word.includes("HOME="))) {
+      // ps draws another user's process without its environment, and then names no HOME either
       const line = await psEnvironmentLine(pid);
-      // ps draws another user's process without its environment, and Codex always has a HOME in it
-      if (line !== null && /\sHOME=/.test(line)) named = codexHomeInPsLine(line) ?? "";
+      if (line !== null) {
+        named = codexHomeInPsLine(line) ?? "";
+        home = [...line.matchAll(/(?:^|\s)HOME=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|\s*$)/g)].at(-1)?.[1] ?? null;
+      }
     }
   } catch { return null; }
   if (named === null) return null;
-  // Codex reads an empty CODEX_HOME as none
-  if (named === "") return join(homedir(), ".codex");
+  // Codex reads an empty CODEX_HOME as none, and then keeps its store in the HOME it runs with
+  if (named === "") return home !== null && isAbsolute(home) ? join(home, ".codex") : null;
   return (await isCodexHomeDir(named)) ? named : null;
 }
 
