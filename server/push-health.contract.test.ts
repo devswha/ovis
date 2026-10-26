@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PushSubscriptionStatus } from "../shared/protocol.ts";
+import { DEVICE_COOKIE } from "./auth.ts";
 import { DeviceStore } from "./devices.ts";
 import { createServer } from "./index.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
@@ -45,7 +46,7 @@ it("answers a paired device, a token sign-in and a watching device about their o
     };
     const a = { cookie: (await pair("A")).cookie };
     const b = { cookie: (await pair("B")).cookie };
-    const watching = { cookie: `herdr_web_device=${watch.token}` };
+    const watching = { cookie: `${DEVICE_COOKIE}=${watch.token}` };
 
     // the paired owner: registered, then the test push it sent is its last success
     expect((await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: { ...guard, ...a }, body: JSON.stringify({ subscription: phone.subscription }) })).status).toBe(204);
