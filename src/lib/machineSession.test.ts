@@ -233,4 +233,42 @@ describe("PC connection ownership", () => {
     expect(seen).toEqual([{ lifetime: "unproven-herdr-a", text: null }, { lifetime: null, text: null }]);
     session.close();
   });
+  it("brings a PC's own drafts back once its connection names its herdr again, and leaves what was typed with no proof to recovery (#1608)", () => {
+    const data = new Map<string, string>();
+    const storage = {
+      get length() { return data.size; },
+      key: (index: number) => [...data.keys()][index] ?? null,
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => { data.set(key, value); },
+      removeItem: (key: string) => { data.delete(key); },
+      clear: () => { data.clear(); },
+    };
+    const window = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } });
+    try {
+      const { session, socket } = setup("ingress-pc");
+      const draft = (pane: string): string => `ovis:composer-draft:${paneStorageId("ingress-pc", pane)}`;
+      const bare = { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [] };
+      session.connect();
+      socket.receive({ type: "snapshot", snapshot: { ...bare, herdr_lifetime: "ingress-herdr-a" } });
+      paneLifetimes.paneStorage.setItem(draft("w1:p1"), "A's own draft");
+      // the connection comes back with a snapshot that proves no herdr
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "snapshot", snapshot: bare });
+      expect(paneLifetimes.paneStorage.getItem(draft("w1:p1"))).toBeNull();
+      // typed meanwhile, in a pane that had no draft
+      paneLifetimes.paneStorage.setItem(draft("w1:p2"), "unidentified new draft");
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "snapshot", snapshot: { ...bare, herdr_lifetime: "ingress-herdr-a" } });
+      expect(paneLifetimes.paneStorage.getItem(draft("w1:p1"))).toBe("A's own draft");
+      expect(paneLifetimes.paneStorage.getItem(draft("w1:p2"))).toBeNull();
+      expect(paneLifetimes.unsent().filter((item) => item.machine_id === "ingress-pc").map((item) => `${item.pane_id}=${item.text}`)).toEqual(["w1:p2=unidentified new draft"]);
+      session.close();
+    } finally {
+      if (window) Object.defineProperty(globalThis, "window", window);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
 });
