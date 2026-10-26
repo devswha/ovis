@@ -33,7 +33,7 @@ const PHONE = { width: 390, height: 844 };
 const DESKTOP = { width: 1440, height: 900 };
 const NOTICE = '[data-testid="push-health-notice"]';
 const HINT = '[data-testid="push-health-hint"]';
-const QA_KEY = "herdr-web-ui:push-health-qa";
+const QA_KEY = "ovis:push-health-qa";
 
 /**
  * Lent to the page after the demo transport: a PushManager whose subscriptions are the fixtures
@@ -145,7 +145,7 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   const tag = `${width} ${theme} ${language}`;
   const open = async (mode: string) => {
     const context = await browser.newContext({ viewport, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: language === "ko" ? "ko-KR" : "en-US", permissions: ["notifications"] });
-    await context.addInitScript(([settings, key, state]) => { localStorage.setItem("herdr-web-ui:settings", settings); localStorage.setItem(key, state); }, [JSON.stringify({ language, theme, alertsOn: true }), QA_KEY, mode] as const);
+    await context.addInitScript(([settings, key, state]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, state); }, [JSON.stringify({ language, theme, alertsOn: true }), QA_KEY, mode] as const);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
