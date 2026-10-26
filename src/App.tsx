@@ -305,7 +305,7 @@ export function App() {
   // a server that repaints the pane's screen instead (terminal_mirror) has a terminal lens too
   const terminalAttach = targetHerdr?.terminal_attach !== false || targetHerdr?.terminal_mirror === true;
 
-  const { lenses, view } = usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek });
+  const { lenses, view } = usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek });
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, contentReady } = usePaneCoverage({ contentKey });

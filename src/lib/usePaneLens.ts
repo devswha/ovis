@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { PaneLenses } from "./paneLens.ts";
@@ -48,7 +48,7 @@ export function usePaneLensState() {
   return { lens, setLens, viewPicks, setViewPicks };
 }
 
-export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
+export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
   settings: Settings;
   selectedPaneId: string | null;
   selectedMachineId: string;
@@ -56,6 +56,7 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   selectedAgent: HerdrPane["agent"] | null;
   terminalAttach: boolean;
   notificationViewTarget: NotificationTarget | null;
+  setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   lens: { key: string; view: PaneView };
   setLens: Dispatch<SetStateAction<{ key: string; view: PaneView }>>;
   viewPicks: ReadonlyMap<string, PaneView>;
@@ -70,7 +71,16 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   // another herdr behind the PC is a new start for its panes' lenses, in the render that draws it
   const lifetime = useSyncExternalStore(paneLifetimes.subscribe, () => paneLifetimes.generation(selectedMachineId));
   const lensKey = JSON.stringify([selectedPaneId, selectedMachineId, lifetime ?? null, selectedPane !== null, selectedAgent !== null, terminalAttach, settings.defaultView]);
-  const notificationView = notificationViewForPane(notificationViewTarget, selectedMachineId, selectedPaneId);
+  // a link's or an alert's lens was for the pane it named under the herdr then: a pane ID another
+  // herdr gave out again is not that pane, so the lens it named goes with that herdr
+  const drawnUnder = useRef({ machineId: selectedMachineId, lifetime });
+  const replaced = drawnUnder.current.machineId === selectedMachineId && typeof drawnUnder.current.lifetime === "string"
+    && typeof lifetime === "string" && drawnUnder.current.lifetime !== lifetime;
+  useEffect(() => {
+    if (replaced) setNotificationViewTarget(null);
+    drawnUnder.current = { machineId: selectedMachineId, lifetime };
+  }, [replaced, selectedMachineId, lifetime, setNotificationViewTarget]);
+  const notificationView = replaced ? null : notificationViewForPane(notificationViewTarget, selectedMachineId, selectedPaneId);
   let view = lens.view;
   if (lens.key !== lensKey) {
     if (selectedPaneId !== null) view = storedView(lenses, viewPicks, selectedPaneId, selectedMachineId, selectedPane ? selectedAgent !== null : null, terminalAttach);
