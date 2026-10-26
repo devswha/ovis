@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
-import { codexImageParts, codexTranscriptImage, imageType } from "./codex-images.ts";
+import { codexImageParts, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, imageType, inlineImageType, InlinePictureScan } from "./codex-images.ts";
 import { parseCodexTranscript } from "./codex.ts";
 import { codexToolImage, forgetTranscriptState, transcriptPage } from "./conversation.ts";
 
@@ -215,6 +215,16 @@ describe("a Codex tool's pictures reach the chat", () => {
     expect(codexToolImage(fn, "codex-tool:call_f:0", home)?.mediaType).toBe("image/png");
   });
 
+  it("counts a picture before the one it serves as the parser does, its text written with escapes", () => {
+    const large = Buffer.alloc(2 * 1024 * 1024, 7);
+    png.copy(large);
+    // a JSON writer may escape every `/`, and the first picture's text crosses the endpoint's windows
+    const path = rollout(records(started, call("call_a"), output("call_a", [picture(large), picture(Buffer.from("<svg/>"), "image/svg+xml"), picture(gif, "image/gif")])).replaceAll("/", "\\/"));
+    expect(pictures(path)).toEqual(["image/png codex-tool:call_a:0", "image/gif codex-tool:call_a:1"]);
+    expect(Buffer.from(codexToolImage(path, "codex-tool:call_a:0", home)!.bytes).equals(large)).toBe(true);
+    expect(sha(path, "codex-tool:call_a:1")).toBe(`image/gif ${createHash("sha256").update(gif).digest("hex")}`);
+  });
+
   it("reads a call id however JSON writes it, as the parser does", () => {
     const path = rollout(ROLLOUT.replaceAll(`"call_id":"${VIEWED}"`, `"call_id":"\\u0063all_${VIEWED.slice(5)}"`));
     expect(readFileSync(path, "utf8")).toContain("\\u0063all_");
@@ -234,4 +244,53 @@ describe("a Codex tool's pictures reach the chat", () => {
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
     } finally { alloc.mockRestore(); }
   });
+});
+
+it("checks a picture's text a piece at a time exactly as it checks the whole", () => {
+  const head = (bytes: number[]) => Buffer.from(bytes).toString("base64");
+  const pngHead = head([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  const texts = [pngHead, pngHead + "AAAA", `${pngHead}A=`, `${pngHead}==`, `${pngHead}A==`, "PHN2Zz4=", "", "iVBO", `${pngHead}*bad`, `${pngHead}=A`, `${pngHead}===`];
+  const urls = [...texts.map((text) => `data:image/png;base64,${text}`), `data:image/svg+xml;base64,${pngHead}`, `data:image/png;base64;${pngHead}`, `https://host/x.png`, `data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7`, `xdata:image/png;base64,${pngHead}`];
+  // every way of cutting the text into two or three pieces
+  const splits = (text: string): string[][] => {
+    const out: string[][] = [[text]];
+    for (let a = 0; a <= text.length; a += 1) {
+      out.push([text.slice(0, a), text.slice(a)]);
+      for (let b = a; b <= text.length; b += 3) out.push([text.slice(0, a), text.slice(a, b), text.slice(b)]);
+    }
+    return out;
+  };
+  for (const declared of ["image/png", "image/gif", "image/svg+xml"]) {
+    for (const text of texts) {
+      for (const pieces of splits(text)) {
+        const scan = new InlinePictureScan();
+        for (const piece of pieces) scan.push(piece);
+        expect([declared, text, scan.type(declared)]).toEqual([declared, text, inlineImageType(declared, text)]);
+      }
+    }
+  }
+  for (const url of urls) {
+    for (const pieces of splits(url)) {
+      const scan = new DataUrlPictureScan();
+      for (const piece of pieces) scan.push(piece);
+      expect([url, scan.type()]).toEqual([url, codexOutputPicture({ type: "input_image", image_url: url })?.mediaType ?? null]);
+    }
+  }
+  // at the 8 MiB edge the padding decides: "==" takes exactly the most the endpoint serves, so a
+  // text cut inside its padding must still be read as ending in both
+  const edge = `${pngHead}${"A".repeat(11_184_814 - pngHead.length - 2)}==`;
+  for (const text of [edge, `${edge.slice(0, -2)}A=`]) {
+    for (const at of [text.length - 1, text.length - 2, text.length - 3]) {
+      const scan = new InlinePictureScan();
+      scan.push(text.slice(0, at));
+      scan.push(text.slice(at));
+      expect(scan.type("image/png")).toBe(inlineImageType("image/png", text));
+      const url = new DataUrlPictureScan();
+      url.push(`data:image/png;base64,${text.slice(0, at)}`);
+      url.push(text.slice(at));
+      expect(url.type()).toBe(codexOutputPicture({ type: "input_image", image_url: `data:image/png;base64,${text}` })?.mediaType ?? null);
+    }
+  }
+  expect(inlineImageType("image/png", edge)).toBe("image/png");
+  expect(inlineImageType("image/png", `${edge.slice(0, -2)}A=`)).toBeNull();
 });

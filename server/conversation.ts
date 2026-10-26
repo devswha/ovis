@@ -42,7 +42,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, MAX_IMAGE_BYTES, ompBlobImageType, ompBlobPicture, inlineImageType } from "./codex-images.ts";
+import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobDigest, ompBlobPicture } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -722,6 +722,7 @@ export function forgetTranscriptState(): void {
   forgetGjcState();
   forgetSubagents();
   forgetOpencodeState();
+  forgetOmpBlobTypes();
   liveScans.clear();
   settledTurns.clear();
   liveTranscriptTurns.clear();
@@ -1842,12 +1843,25 @@ function isHexDigit(byte: number): boolean {
  * decodes to more than `limit` characters.
  */
 function wholeString(stream: TranscriptStream, shape: RecordShape, value: string, limit: number): string | null {
+  let whole = "";
+  return scanString(stream, shape, value, limit, (piece) => { whole += piece; }) ? whole : null;
+}
+
+/**
+ * A string of a record's shape as JSON decodes it, handed to `visit` a window's piece at a time and
+ * never held whole; false when it decodes to more than `limit` characters.
+ */
+function scanString(stream: TranscriptStream, shape: RecordShape, value: string, limit: number, visit: (piece: string) => void): boolean {
   const at = value.lastIndexOf(shape.mark);
   const range = at === -1 ? undefined : shape.cut[Number(value.slice(at + shape.mark.length))];
-  if (range === undefined) return value;
+  if (range === undefined) {
+    if (value.length > limit) return false;
+    visit(value);
+    return true;
+  }
   // a BOM at a string's start is its text, as Buffer#toString keeps it for the page
   const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-  let whole = "";
+  let length = 0;
   let pending = "";
   for (let position = range[0]; position <= range[1]; position += IMAGE_SEARCH_WINDOW) {
     const last = position + IMAGE_SEARCH_WINDOW >= range[1];
@@ -1864,12 +1878,14 @@ function wholeString(stream: TranscriptStream, shape: RecordShape, value: string
         split = index;
       }
     }
-    whole += JSON.parse(`"${text.slice(0, split)}"`) as string;
+    const piece = JSON.parse(`"${text.slice(0, split)}"`) as string;
     pending = text.slice(split);
-    if (whole.length > limit) return null;
+    length += piece.length;
+    if (length > limit) return false;
+    visit(piece);
     if (last) break;
   }
-  return whole;
+  return true;
 }
 
 /** A tool call's id as the parser keys it: its text (a number's too), read whole; null past what the endpoint reads. */
@@ -2172,34 +2188,33 @@ export function ompTranscriptImage(path: string, ref: string): { mediaType: stri
 }
 
 /**
- * The `nth` picture among an omp record's content blocks, counted as the parser counts them (piImageOf):
- * blocks the same check takes for a picture, inline or in `blobs`. Only one picture's text is held at
- * a time.
+ * The picture at place `nth` among an omp record's content blocks, placed as the parser places them
+ * (piPictures): an inline picture that passes the check, and a blob ref in omp's form whatever its blob
+ * holds. A blob at that place is read now, and gives nothing when it is no picture now rather than the
+ * next one. A picture only counted is checked a window at a time; only the one served is held whole.
  */
 function ompPicture(stream: TranscriptStream, shape: RecordShape, content: unknown, blobs: string | null, nth: number): { mediaType: string; bytes: Buffer } | null {
-  let seen = 0;
+  let place = 0;
   for (const value of Array.isArray(content) ? content : []) {
     const block = value as { type?: unknown; mimeType?: unknown; media_type?: unknown; data?: unknown } | null;
     if (block?.type !== "image" || typeof block.data !== "string") continue;
     const declared = typeof block.mimeType === "string" ? block.mimeType : block.media_type;
-    let picture: { mediaType: string; bytes: Buffer } | null = null;
-    if (blobs && block.data.startsWith("blob:")) picture = seen === nth ? ompBlobPicture(blobs, declared, block.data) : ompBlobImageTypeOf(blobs, declared, block.data);
-    else {
-      const data = wholeString(stream, shape, block.data, PICTURE_TEXT_BYTES);
-      const mediaType = data === null ? null : inlineImageType(declared, data);
-      if (mediaType !== null) picture = { mediaType, bytes: seen === nth ? Buffer.from(data!, "base64") : Buffer.alloc(0) };
+    if (blobs && block.data.startsWith("blob:")) {
+      if (ompBlobDigest(declared, block.data) === null) continue;
+      if (place === nth) return ompBlobPicture(blobs, declared, block.data);
+      place += 1;
+      continue;
     }
-    if (picture === null) continue;
-    if (seen === nth) return picture;
-    seen += 1;
+    const scan = new InlinePictureScan();
+    const mediaType = scanString(stream, shape, block.data, PICTURE_TEXT_BYTES, (piece) => scan.push(piece)) ? scan.type(declared) : null;
+    if (mediaType === null) continue;
+    if (place === nth) {
+      const data = wholeString(stream, shape, block.data, PICTURE_TEXT_BYTES);
+      return data === null ? null : { mediaType, bytes: Buffer.from(data, "base64") };
+    }
+    place += 1;
   }
   return null;
-}
-
-/** Whether an omp blob ref names a picture, as the parser asks it (ompBlobImageType), for a picture only counted. */
-function ompBlobImageTypeOf(blobs: string, declared: unknown, data: string): { mediaType: string; bytes: Buffer } | null {
-  const mediaType = ompBlobImageType(blobs, declared, data);
-  return mediaType === null ? null : { mediaType, bytes: Buffer.alloc(0) };
 }
 
 /**
@@ -2228,16 +2243,20 @@ export function codexToolImage(path: string, ref: string, codexHome: string): { 
       if (payload.type === "function_call" || payload.type === "custom_tool_call") { open = true; continue; }
       if ((payload.type !== "function_call_output" && payload.type !== "custom_tool_call_output") || !open) continue;
       open = false;
-      let seen = 0;
+      let place = 0;
       for (const value of Array.isArray(payload.output) ? payload.output : []) {
         const part = value as { type?: unknown; image_url?: unknown } | null;
         if (part?.type !== "input_image" || typeof part.image_url !== "string") continue;
-        // a data URL is the picture's text and its type, a few bytes longer than the longest picture
-        const url = wholeString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64);
-        const picture = url === null ? null : codexOutputPicture({ type: "input_image", image_url: url });
-        if (picture === null) continue;
-        if (seen === Number(nth)) return { mediaType: picture.mediaType, bytes: new Uint8Array(Buffer.from(picture.data, "base64")) };
-        seen += 1;
+        // a data URL is the picture's text and its type, a few bytes longer than the longest picture;
+        // one only counted is checked a window at a time, and only the one served is held whole
+        const scan = new DataUrlPictureScan();
+        if (!scanString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64, (piece) => scan.push(piece)) || scan.type() === null) continue;
+        if (place === Number(nth)) {
+          const url = wholeString(stream, shape, part.image_url, PICTURE_TEXT_BYTES + 64);
+          const picture = url === null ? null : codexOutputPicture({ type: "input_image", image_url: url });
+          return picture === null ? null : { mediaType: picture.mediaType, bytes: new Uint8Array(Buffer.from(picture.data, "base64")) };
+        }
+        place += 1;
       }
     }
   } catch { return null; }

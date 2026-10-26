@@ -3,7 +3,7 @@ import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../share
 import type { SubagentDetail, TaskNotification } from "./claude-subagents.ts";
 import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
-import { inlineImageType, ompBlobImageType } from "./codex-images.ts";
+import { inlineImageType, ompBlobDigest, ompBlobImageType } from "./codex-images.ts";
 
 type Row = Record<string, unknown>;
 export const record = (value: unknown): Row => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
@@ -74,31 +74,39 @@ export function piMessage(value: unknown): Row | null {
  * One entry's tool results, with the images each carries. pi reads a picture into a tool
  * result as inline base64 beside the text it returns, so only the position is carried in the
  * page: the bytes stay in the file and are fetched when the row is opened, the same way a
- * user-pasted image is. `index` counts the images of that one result, which is what the
- * page's ref quotes, so a fetch never has to agree with the parse about anything else.
+ * user-pasted image is. `images` holds one entry per place among that result's pictures (piPictures),
+ * the type it shows as or null for a place shown empty, and a ref quotes its place, so a fetch never
+ * has to agree with the parse about anything else.
  */
-export function piResults(message: Row, blobs?: string | null): { id: string; text: string; error: boolean; images: string[] }[] {
+export function piResults(message: Row, blobs?: string | null): { id: string; text: string; error: boolean; images: (string | null)[] }[] {
   const blocks = message.role === "toolResult" ? [message] : Array.isArray(message.content) ? message.content.filter((block) => record(block).type === "toolResult") : [];
   return blocks.flatMap((value) => {
     const block = record(value);
     if (typeof block.toolCallId !== "string") return [];
-    const images = (Array.isArray(block.content) ? block.content : []).map((value) => piImageOf(value, blobs)).filter((image): image is { media_type: string; data: string } => image !== null).map((image) => image.media_type);
+    const images = piPictures(block.content, blobs).map((image) => image.media_type);
     return [{ id: block.toolCallId, text: resultText(block.content), error: block.isError === true, images }];
   });
 }
 
 /**
- * A picture pi holds inline, by the type its bytes announce (inlineImageType: the same check the
- * image endpoint makes). pi names the type `mimeType` where Claude names it `media_type`. omp moves
- * a picture's bytes to the blob store `blobs` and writes `blob:sha256:<digest>` in their place
- * (ompBlobImageType: the same check, on the stored bytes); `data` is then that ref.
+ * The pictures among a record's content blocks, one per place a ref can quote, in order. pi holds a
+ * picture inline, by the type its bytes announce (inlineImageType: the same check the image endpoint
+ * makes); pi names the type `mimeType` where Claude names it `media_type`. omp moves a picture's bytes
+ * to the blob store `blobs` and writes `blob:sha256:<digest>` in their place: such a block takes its
+ * place by what the transcript says (ompBlobDigest), and shows as the type its stored bytes announce
+ * now (ompBlobImageType: the endpoint's check), or as nothing (`media_type` null) when they are no
+ * picture, so a blob that goes missing never moves the next picture into its place. `data` is the
+ * inline text or the blob ref.
  */
-function piImageOf(value: unknown, blobs?: string | null): { media_type: string; data: string } | null {
-  const image = record(value);
-  if (image.type !== "image") return null;
-  const declared = typeof image.mimeType === "string" ? image.mimeType : image.media_type;
-  const type = blobs && typeof image.data === "string" && image.data.startsWith("blob:") ? ompBlobImageType(blobs, declared, image.data) : inlineImageType(declared, image.data);
-  return type === null ? null : { media_type: type, data: image.data as string };
+function piPictures(content: unknown, blobs?: string | null): { media_type: string | null; data: string }[] {
+  return (Array.isArray(content) ? content : []).flatMap((value) => {
+    const image = record(value);
+    if (image.type !== "image" || typeof image.data !== "string") return [];
+    const declared = typeof image.mimeType === "string" ? image.mimeType : image.media_type;
+    if (blobs && image.data.startsWith("blob:")) return ompBlobDigest(declared, image.data) === null ? [] : [{ media_type: ompBlobImageType(blobs, declared, image.data), data: image.data }];
+    const type = inlineImageType(declared, image.data);
+    return type === null ? [] : [{ media_type: type, data: image.data }];
+  });
 }
 
 /** A picture in a pi prompt: the entry it was sent in, and its place among that prompt's pictures. */
@@ -116,10 +124,9 @@ export const PI_IMAGE_REF = /^pi:([A-Za-z0-9_:.|\-]{1,128}):(\d{1,3})$/;
 export function piPromptImages(entry: unknown, message: Row, blobs?: string | null): { media_type: string; ref: string; data: string }[] {
   const id = record(entry).id;
   if (message.role !== "user" || !Array.isArray(message.content) || typeof id !== "string") return [];
-  const shown = message.content.map((value) => piImageOf(value, blobs)).filter((image): image is { media_type: string; data: string } => image !== null);
-  return shown.flatMap((image, index) => {
+  return piPictures(message.content, blobs).flatMap(({ media_type, data }, index) => {
     const ref = `pi-prompt:${id}:${index}`;
-    return PI_PROMPT_IMAGE_REF.test(ref) ? [{ ...image, ref }] : [];
+    return media_type !== null && PI_PROMPT_IMAGE_REF.test(ref) ? [{ media_type, data, ref }] : [];
   });
 }
 
@@ -135,8 +142,8 @@ export function piImageBlock(message: Row, toolCallId: string, index: number): {
   const blocks = message.role === "toolResult" ? [message] : (Array.isArray(message.content) ? message.content : []).filter((block) => record(block).type === "toolResult");
   const block = blocks.map(record).find((value) => value.toolCallId === toolCallId);
   if (block === undefined) return null;
-  const images = (Array.isArray(block.content) ? block.content : []).map((value) => piImageOf(value)).filter((image): image is { media_type: string; data: string } => image !== null);
-  return index >= 0 ? images[index] ?? null : null;
+  const image = index >= 0 ? piPictures(block.content)[index] : undefined;
+  return image?.media_type ? { media_type: image.media_type, data: image.data } : null;
 }
 
 /** Enough turns for a conversation. */
@@ -363,7 +370,7 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
             // addressed by the call it answers: a nested result shares its entry with other
             // blocks, so the entry id alone could not say which one an image came from
             // named only as the image endpoint takes a ref, so none is named that it cannot answer
-            const named = result.images.map((media_type, index) => ({ media_type, ref: `pi:${result.id}:${index}` })).filter(({ ref }) => PI_IMAGE_REF.test(ref));
+            const named = result.images.flatMap((media_type, index) => media_type === null ? [] : [{ media_type, ref: `pi:${result.id}:${index}` }]).filter(({ ref }) => PI_IMAGE_REF.test(ref));
             if (named.length > 0) tool.images = named;
           }
         }

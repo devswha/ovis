@@ -7,6 +7,7 @@ import type { ConversationPart } from "../shared/protocol.ts";
 import { ompBlobPicture } from "./codex-images.ts";
 import { forgetTranscriptState, ompTranscriptImage, transcriptPage } from "./conversation.ts";
 import { ompBlobStore } from "./omp.ts";
+import { parseOmpTranscript } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
 
 // A real omp 18.8.7 session (`omp -p --model openai-codex/gpt-6-luna:medium` in /tmp/omp-pictures):
@@ -114,10 +115,68 @@ describe("omp's pictures reach the chat", () => {
       { type: "image", data: `blob:sha256:${DIGEST.toUpperCase()}`, mimeType: "image/webp" },
       picture(),
     ]), answer("a1", "two")), { [DIGEST]: BLOB, [svg.digest]: svg.bytes, [exact.digest]: exact.bytes, [over.digest]: over.bytes });
-    // each refused one takes no place, so a ref can never point aside
-    expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/webp pi-prompt:u1:1"], []]);
-    expect(ompTranscriptImage(path, "pi-prompt:u1:0")?.bytes.length).toBe(8 * 1024 * 1024);
-    expect(served(path, "pi-prompt:u1:1")).toEqual({ mediaType: "image/webp", same: true });
+    // a blob ref in omp's form keeps its place whatever its blob holds, shown as nothing when that is
+    // no picture; a block naming no blob omp writes, or no raster, takes none
+    expect(refs(path)).toEqual([["image/png pi-prompt:u1:2", "image/webp pi-prompt:u1:3"], []]);
+    expect(ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
+    expect(ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
+    expect(ompTranscriptImage(path, "pi-prompt:u1:2")?.bytes.length).toBe(8 * 1024 * 1024);
+    expect(served(path, "pi-prompt:u1:3")).toEqual({ mediaType: "image/webp", same: true });
+    expect(ompTranscriptImage(path, "pi-prompt:u1:4")).toBeNull();
+  });
+
+  it("keeps a picture's place when its blob goes or changes, and serves nothing in its place", () => {
+    const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+    const gifDigest = createHash("sha256").update(gif).digest("hex");
+    const text = jsonl(prompt("u1", [{ type: "text", text: "two" }, picture(), picture(gifDigest, "image/gif")]), answer("a1", "both"));
+    const { path, blobs } = store("blob-gone", text, { [DIGEST]: BLOB, [gifDigest]: gif });
+    // parsed again as a poll does, through the answers the parser keeps for each blob
+    const parsed = () => parseOmpTranscript(text, Infinity, { images: true, blobs }).map((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [`${part.media_type} ${part.ref}`] : []));
+    expect(refs(path)).toEqual([["image/webp pi-prompt:u1:0", "image/gif pi-prompt:u1:1"], []]);
+    expect(parsed()).toEqual(refs(path));
+    // the first blob goes while the bridge runs: its place stays, empty, and the gif keeps its own
+    rmSync(join(blobs, DIGEST));
+    expect(parsed()).toEqual([["image/gif pi-prompt:u1:1"], []]);
+    expect(ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
+    expect(ompTranscriptImage(path, "pi-prompt:u1:1")?.mediaType).toBe("image/gif");
+    // the gif's blob becomes a link to the same bytes: no longer a blob omp wrote, so neither names it
+    writeFileSync(join(root, "gif-elsewhere"), gif);
+    rmSync(join(blobs, gifDigest));
+    symlinkSync(join(root, "gif-elsewhere"), join(blobs, gifDigest));
+    expect(parsed()).toEqual([[], []]);
+    expect(ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
+  });
+
+  it("checks a blob it does not serve a window at a time, and holds only the served one whole", () => {
+    const big = (fill: number) => { const bytes = Buffer.alloc(3 * 1024 * 1024, fill); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes); return bytes; };
+    const [first, second] = [big(1), big(2)];
+    const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    const { path } = store("blob-large", jsonl(prompt("u1", [{ type: "text", text: "two large" }, picture(digest(first), "image/png"), picture(digest(second), "image/png")]), answer("a1", "both")),
+      { [digest(first)]: first, [digest(second)]: second });
+    const alloc = spyOn(Buffer, "alloc");
+    try {
+      forgetTranscriptState();
+      expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/png pi-prompt:u1:1"], []]);
+      expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
+      forgetTranscriptState();
+      alloc.mockClear();
+      expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:1")!.bytes).equals(second)).toBe(true);
+      // the served picture is the one allocation past a window
+      expect(alloc.mock.calls.map(([size]) => Number(size)).filter((size) => size > 1024 * 1024)).toEqual([second.length]);
+    } finally { alloc.mockRestore(); }
+  });
+
+  it("counts an inline picture before the one it serves as the parser does, its text written with escapes", () => {
+    const png = (fill: number, size: number) => { const bytes = Buffer.alloc(size, fill); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes); return bytes; };
+    const first = png(1, 2 * 1024 * 1024);
+    const second = png(2, 1000);
+    const inline = (bytes: Buffer) => ({ type: "image", mimeType: "image/png", data: bytes.toString("base64") });
+    // a JSON writer may escape every `/`, and the first picture's text crosses the endpoint's windows
+    const text = jsonl(prompt("u1", [{ type: "text", text: "two inline" }, inline(first), { type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" }, inline(second)]), answer("a1", "both")).replaceAll("/", "\\/");
+    const { path } = store("inline-escaped", text);
+    expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/png pi-prompt:u1:1"], []]);
+    expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:0")!.bytes).equals(first)).toBe(true);
+    expect(Buffer.from(ompTranscriptImage(path, "pi-prompt:u1:1")!.bytes).equals(second)).toBe(true);
     expect(ompTranscriptImage(path, "pi-prompt:u1:2")).toBeNull();
   });
 

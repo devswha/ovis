@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, createReadStream, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, createReadStream, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -26,13 +26,95 @@ export function base64Size(data: string): number {
  * endpoint refuses.
  */
 export function inlineImageType(declared: unknown, data: unknown): string | null {
-  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
-  if (base64Size(data) > MAX_IMAGE_BYTES) return null;
-  return imageType(Buffer.from(data.slice(0, 16), "base64"));
+  if (typeof data !== "string") return null;
+  return inlineType(declared, data.length, data.slice(0, 16), data.slice(-2));
+}
+
+/** inlineImageType from what it reads of the text: its length, its first 16 and its last 2 characters. */
+function inlineType(declared: unknown, length: number, head: string, tail: string): string | null {
+  if (typeof declared !== "string" || !RASTER_TYPES.has(declared)) return null;
+  if (Math.floor(length * 3 / 4) - (tail.endsWith("==") ? 2 : tail.endsWith("=") ? 1 : 0) > MAX_IMAGE_BYTES) return null;
+  return imageType(Buffer.from(head, "base64"));
+}
+
+/**
+ * inlineImageType asked of a text seen a piece at a time and never held whole: `push` each piece in
+ * order, then `type` gives the answer inlineImageType gives for the whole text. A picture the endpoint
+ * only counts on its way to the one it serves is checked so, in a window's memory.
+ */
+export class InlinePictureScan {
+  #head = "";
+  #tail = "";
+  #length = 0;
+  push(piece: string): void {
+    if (this.#head.length < 16) this.#head += piece.slice(0, 16 - this.#head.length);
+    this.#tail = (this.#tail + piece.slice(-2)).slice(-2);
+    this.#length += piece.length;
+  }
+  type(declared: unknown): string | null {
+    return inlineType(declared, this.#length, this.#head, this.#tail);
+  }
+}
+
+/** The start of a data URL codexOutputPicture takes: `data:<raster type>;base64,`. */
+const DATA_IMAGE_PREFIX = /^data:(image\/(?:png|jpeg|gif|webp));base64,/;
+
+/**
+ * codexOutputPicture's check of a data URL seen a piece at a time and never held whole: `push` each
+ * piece in order, then `type` gives the type codexOutputPicture gives for the whole URL, or null.
+ */
+export class DataUrlPictureScan {
+  #prefix = "";
+  #declared: string | undefined;
+  #body = new InlinePictureScan();
+  #padding = 0;
+  #valid = true;
+  push(piece: string): void {
+    if (!this.#valid) return;
+    let rest = piece;
+    if (this.#declared === undefined) {
+      const seen = this.#prefix + piece;
+      const prefix = DATA_IMAGE_PREFIX.exec(seen);
+      if (prefix === null) {
+        // the longest prefix is 23 characters: past that, no URL it could start
+        if (seen.length >= 32) this.#valid = false;
+        else this.#prefix = seen;
+        return;
+      }
+      this.#declared = prefix[1]!;
+      this.#prefix = "";
+      rest = seen.slice(prefix[0].length);
+    }
+    // base64 letters, then at most two `=` that end it, as DATA_IMAGE takes it
+    if (this.#padding > 0) {
+      if (!/^=*$/.test(rest) || this.#padding + rest.length > 2) { this.#valid = false; return; }
+      this.#padding += rest.length;
+    } else {
+      const letters = /^[A-Za-z0-9+/]*/.exec(rest)![0].length;
+      const padding = rest.slice(letters);
+      if (!/^={0,2}$/.test(padding)) { this.#valid = false; return; }
+      this.#padding = padding.length;
+    }
+    this.#body.push(rest);
+  }
+  type(): string | null {
+    return this.#valid && this.#declared !== undefined ? this.#body.type(this.#declared) : null;
+  }
 }
 
 /** A picture omp moved out of its transcript: `blob:sha256:<digest of its bytes>`, its bytes in the agent's blob store. */
 const OMP_BLOB_REF = /^blob:sha256:([a-f0-9]{64})$/;
+
+/**
+ * The digest an omp image block names its picture by, when it is one the chat could show: a raster
+ * declared as one, and a ref in omp's own form. Such a block takes a place among its record's
+ * pictures whatever its blob holds now, so a blob that goes missing leaves its place empty rather
+ * than moving the next picture into it. Null for anything else.
+ */
+export function ompBlobDigest(declared: unknown, data: unknown): string | null {
+  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
+  return OMP_BLOB_REF.exec(data)?.[1] ?? null;
+}
 
 /**
  * The picture an omp blob ref names in the store `blobs`, read and checked as inlineImageType checks
@@ -42,9 +124,8 @@ const OMP_BLOB_REF = /^blob:sha256:([a-f0-9]{64})$/;
  * never names a path outside the store, and a link there is not followed. Null for anything else.
  */
 export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
-  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
-  const digest = OMP_BLOB_REF.exec(data)?.[1];
-  if (digest === undefined) return null;
+  const digest = ompBlobDigest(declared, data);
+  if (digest === null) return null;
   let fd: number;
   try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
   try {
@@ -58,23 +139,62 @@ export function ompBlobPicture(blobs: string, declared: unknown, data: unknown):
   } catch { return null; } finally { closeSync(fd); }
 }
 
-/** What ompBlobPicture answered for a blob it found to be a picture: omp names a blob by its bytes, so the answer stays. */
-const ompBlobTypes = new Map<string, string>();
+/** How much of a blob ompBlobType holds at a time while it checks one it does not serve. */
+const BLOB_CHECK_WINDOW = 1024 * 1024;
 
 /**
- * The type of the picture an omp blob ref names (ompBlobPicture), for a parser naming it: a blob
- * once found to be a picture is not read again, a missing or refused one is asked again next time.
+ * ompBlobPicture's answer for a blob, without holding it: read a window at a time, hashed as it goes,
+ * its type from its leading bytes. The type, or null when ompBlobPicture would refuse it.
+ */
+function ompBlobType(blobs: string, digest: string): string | null {
+  let fd: number;
+  try { fd = openSync(join(blobs, digest), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_IMAGE_BYTES) return null;
+    const window = Buffer.alloc(Math.min(stat.size, BLOB_CHECK_WINDOW));
+    const hash = createHash("sha256");
+    let type: string | null = null;
+    for (let at = 0; at < stat.size;) {
+      const got = readSync(fd, window, 0, Math.min(window.length, stat.size - at), at);
+      if (got === 0) return null;
+      if (at === 0) type = imageType(window.subarray(0, got));
+      hash.update(window.subarray(0, got));
+      at += got;
+    }
+    return hash.digest("hex") === digest ? type : null;
+  } catch { return null; } finally { closeSync(fd); }
+}
+
+/** What ompBlobType answered for a blob, a picture or not, and the file it answered for. */
+const ompBlobTypes = new Map<string, { file: string; type: string | null }>();
+
+/**
+ * The type of the picture an omp blob ref names now (ompBlobPicture), for a parser naming it. The
+ * answer is kept for as long as the blob is the same file, so a page polled again reads a blob once,
+ * whether it was a picture or not; a blob that is gone or changed is asked again.
  */
 export function ompBlobImageType(blobs: string, declared: unknown, data: unknown): string | null {
-  if (typeof declared !== "string" || !RASTER_TYPES.has(declared) || typeof data !== "string") return null;
-  const key = `${blobs}\0${data}`;
+  const digest = ompBlobDigest(declared, data);
+  if (digest === null) return null;
+  let file: string;
+  try {
+    const stat = lstatSync(join(blobs, digest));
+    file = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.mode}`;
+  } catch { return null; }
+  const key = `${blobs}\0${digest}`;
   const known = ompBlobTypes.get(key);
-  if (known !== undefined) return known;
-  const picture = ompBlobPicture(blobs, declared, data);
-  if (picture === null) return null;
-  if (ompBlobTypes.size >= 4096) ompBlobTypes.delete(ompBlobTypes.keys().next().value!);
-  ompBlobTypes.set(key, picture.mediaType);
-  return picture.mediaType;
+  if (known?.file === file) return known.type;
+  const type = ompBlobType(blobs, digest);
+  ompBlobTypes.delete(key);
+  ompBlobTypes.set(key, { file, type });
+  if (ompBlobTypes.size > 4096) ompBlobTypes.delete(ompBlobTypes.keys().next().value!);
+  return type;
+}
+
+/** Forget every blob answer kept (forgetTranscriptState). */
+export function forgetOmpBlobTypes(): void {
+  ompBlobTypes.clear();
 }
 
 /**

@@ -46,25 +46,36 @@ const page = (source: "omp-transcript" | "codex-transcript", path: string): Conv
 };
 const served: string[] = [];
 
+/**
+ * The size of every picture `selector` matches, once Chrome has decoded each one: loading="lazy"
+ * defers a fetch until the picture is near the viewport, and naturalWidth only settles once what came
+ * back is decoded. Throws when one is not decoded in time, a 404 or a broken picture included.
+ */
 async function decoded(view: Page, selector: string): Promise<number[][]> {
-  // loading="lazy" defers the fetch until a picture is near the viewport, and naturalWidth only
-  // settles once Chrome has decoded what came back
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (await view.locator(selector).evaluateAll((imgs) => imgs.length > 0 && imgs.every((img) => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0))) break;
-    await new Promise((done) => setTimeout(done, 50));
-  }
+  await view.waitForFunction((matched) => {
+    const imgs = [...document.querySelectorAll<HTMLImageElement>(matched)];
+    return imgs.length > 0 && imgs.every((img) => img.complete && img.naturalWidth > 0);
+  }, selector, { timeout: 10_000 });
   return view.locator(selector).evaluateAll((imgs) => imgs.map((img) => [(img as HTMLImageElement).naturalWidth, (img as HTMLImageElement).naturalHeight]));
 }
+
+const pageErrors = new Map<Page, string[]>();
 
 async function open(conversation: ConversationResponse, viewport: { width: number; height: number }, mobile = false): Promise<Page> {
   const context = await browser!.newContext({ viewport, isMobile: mobile, hasTouch: mobile, locale: "en-US" });
   const view = await context.newPage();
   const errors: string[] = [];
+  pageErrors.set(view, errors);
   view.on("pageerror", (error) => errors.push(error.message));
   await view.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
   await view.goto(`http://127.0.0.1:${server!.port}/`);
-  view.on("close", () => assert.deepEqual(errors, []));
   return view;
+}
+
+/** Closes a page opened with `open`, once it threw nothing. */
+async function close(view: Page): Promise<void> {
+  assert.deepEqual(pageErrors.get(view), [], "the page threw nothing");
+  await view.context().close();
 }
 
 try {
@@ -106,7 +117,8 @@ try {
   assert.equal(await ompView.locator(".work-block-head").first().getAttribute("aria-expanded"), "false");
   const ompLine = ompView.locator(".work-block-line .work-images");
   assert.equal(await ompLine.count(), 1);
-  assert.equal((await decoded(ompView, ".work-block-line .work-image img")).length, 1);
+  const lineSizes = await decoded(ompView, ".work-block-line .work-image img");
+  assert.ok(lineSizes.length === 1 && lineSizes[0]![0]! > 1, `Chrome decoded the read's picture on the line: ${JSON.stringify(lineSizes)}`);
   assert.ok(served.some((ref) => /^pi:call_[0-9a-f]+\|fc_[0-9a-f]+:0$/.test(ref)), "the read's picture is fetched by its call, `|` and all");
   await ompLine.locator(".work-image").first().click();
   const viewer = ompView.getByRole("dialog", { name: "Image viewer" });
@@ -115,7 +127,7 @@ try {
   await viewer.waitFor({ state: "detached" });
   await ompView.mouse.move(5, 5);
   if (evidence) await ompView.screenshot({ path: join(evidence, "omp-pictures-desktop.png"), fullPage: true });
-  await ompView.context().close();
+  await close(ompView);
   console.log("PASS omp's read picture on its folded work line, decoded, and opens the viewer");
 
   // Codex: the exec tool's picture loads only once its row is opened (its refs are served no-store)
@@ -125,25 +137,28 @@ try {
   await codexView.getByText("Blue").waitFor();
   assert.deepEqual(await decoded(codexView, ".chat-turn-user .chat-user-images img"), [[32, 32]], "the prompt's attachment, as before");
   const before = served.length;
+  // folded, the page holds no element that could fetch the tool's picture, so none is fetched later
   assert.equal(await codexView.locator(".work-block-line .work-images").count(), 0, "a Codex picture stays off the folded line");
-  assert.equal(served.slice(before).filter((ref) => ref.startsWith("codex-tool:")).length, 0, "nothing is fetched while the row is folded");
+  assert.equal(await codexView.locator('img[src*="codex-tool%3A"]').count(), 0, "no picture element asks for the tool's picture while its row is folded");
+  assert.equal(served.filter((ref) => ref.startsWith("codex-tool:")).length, 0, "nothing was fetched while the row is folded");
   await codexView.locator(".work-block-head").last().click();
   const row = codexView.locator(".work-row-head").filter({ hasText: "exec" });
   await row.first().click();
   assert.deepEqual(await decoded(codexView, ".chat-tool-images img"), [[32, 32]], "Chrome decoded view_image's 32x32 PNG from the endpoint's bytes");
   assert.deepEqual(served.slice(before).filter((ref) => ref.startsWith("codex-tool:")), ["codex-tool:call_c14dcc9fd54946c7bc093bac1ec706fd:0"]);
   if (evidence) await codexView.screenshot({ path: join(evidence, "codex-tool-picture-desktop.png"), fullPage: true });
-  await codexView.context().close();
+  await close(codexView);
   console.log("PASS a Codex tool's picture loads once its row is opened, decoded from the endpoint's bytes");
 
   // a phone: the same prompts and line fit the screen
   const phone = await open(omp, { width: 390, height: 844 }, true);
   await phone.getByText("The same red square.").waitFor();
-  assert.equal((await decoded(phone, ".chat-turn-user .chat-user-images img")).length, 3);
+  const phoneSizes = await decoded(phone, ".chat-turn-user .chat-user-images img");
+  assert.ok(phoneSizes.length === 3 && phoneSizes.every(([width]) => width! > 1), `the prompts' pictures decode on a phone: ${JSON.stringify(phoneSizes)}`);
   const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert.ok(overflow <= 0, `nothing spills past a 390px screen (${overflow}px)`);
   if (evidence) await phone.screenshot({ path: join(evidence, "omp-pictures-phone.png"), fullPage: true });
-  await phone.context().close();
+  await close(phone);
   console.log("PASS omp and Codex pictures: browser OK (3 omp prompt pictures and its read's, a Codex tool's on open, phone width)");
 } finally {
   await browser?.close();
