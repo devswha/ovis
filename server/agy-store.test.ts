@@ -53,6 +53,46 @@ it("re-validates a resolved lock with one call per refresh and rescans within a 
   } finally { Date.now = realNow; }
 });
 
+it("keeps each unresolved pid's backoff while other panes scan in between", async () => {
+  resetWindowsScanCacheForTest();
+  const realNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  try {
+    const scans: number[] = [];
+    const holders = (path: string) => { if (path === "A") scans.push(now); return []; };
+    // two panes without a lock poll in turn every six seconds
+    for (now = 0; now <= 120_000; now += 6_000) await windowsHeldPaths(now % 12_000 === 0 ? 4242 : 4243, holders, () => ["A", "B"]);
+    expect(scans.length).toBeLessThan(15);
+  } finally { Date.now = realNow; }
+});
+
+it("proves nothing from a scan whose owners moved before they were confirmed", async () => {
+  resetWindowsScanCacheForTest();
+  let bCalls = 0, moved = false;
+  // the pid holds A and B; B's hold moves to C after the pass read C and before B is confirmed
+  const holders = (path: string) => {
+    if (path === "B" && ++bCalls === 2) moved = true;
+    return path === "A" || (path === "B" && !moved) || (path === "C" && moved) ? [4242] : [];
+  };
+  expect(await windowsHeldPaths(4242, holders, () => ["A", "B", "C"])).not.toHaveLength(1);
+  expect(await windowsHeldPaths(4242, holders, () => ["A", "B", "C"])).not.toHaveLength(1);
+});
+
+it("proves nothing from a scan in which a holder query failed", async () => {
+  resetWindowsScanCacheForTest();
+  const failing: RestartManagerApi = {
+    symbols: {
+      RmStartSession: (session: Buffer) => { session.writeUInt32LE(1, 0); return 0; },
+      RmRegisterResources: () => 0,
+      RmGetList: () => 29, // ERROR_WRITE_FAULT
+      RmEndSession: () => 0,
+    },
+  };
+  expect(windowsHolders("B", failing)).toBeNull();
+  expect(await windowsHeldPaths(4242, (path) => path === "A" ? [4242] : windowsHolders(path, failing), () => ["A", "B"])).toEqual([]);
+});
+
 it("does not accept singleton evidence from an overflowing candidate listing", async () => {
   resetWindowsScanCacheForTest();
   const root = mkdtempSync(join(tmpdir(), "agy-overflow-"));

@@ -33,7 +33,9 @@ it.skipIf(!onWindows)("finds this process holding an open file through Restart M
     expect(windowsHolders(path)).toContain(process.pid);
     closeSync(fd);
     fd = undefined;
-    expect(windowsHolders(path)).not.toContain(process.pid);
+    const after = windowsHolders(path);
+    expect(after).not.toBeNull();
+    expect(after!).not.toContain(process.pid);
   } finally {
     if (fd !== undefined) closeSync(fd);
     rmSync(root, { recursive: true, force: true });

@@ -71,32 +71,37 @@ export type RestartManagerApi = {
   };
 };
 
-/** Every process the Restart Manager names for this file; empty when the file is not held. */
-export function windowsHolders(path: string, api?: RestartManagerApi): number[] {
+/**
+ * Every process the Restart Manager names for this file; empty when the file is not held, null when
+ * the query failed (a failed query proves nothing about who holds the file).
+ */
+export function windowsHolders(path: string, api?: RestartManagerApi): number[] | null {
   const restartManager = api ?? windowsApi().restartManager;
   const session = Buffer.alloc(4);
   // CCH_RM_SESSION_KEY (32) + NUL, in WCHARs = 66 bytes.
-  if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(68)) !== 0) return [];
+  if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(68)) !== 0) return null;
   const handle = session.readUInt32LE(0);
   try {
     // Keep the UTF-16 path in the same allocation as the pointer array passed to the native call.
     const files = Buffer.alloc(8 + Buffer.byteLength(`${path}\0`, "utf16le"));
     files.write(`${path}\0`, 8, "utf16le");
     files.writeBigUInt64LE(BigInt(ptr(files.subarray(8))), 0);
-    if (restartManager.symbols.RmRegisterResources(handle, 1, files, 0, null, 0, null) !== 0) return [];
+    if (restartManager.symbols.RmRegisterResources(handle, 1, files, 0, null, 0, null) !== 0) return null;
     const needed = Buffer.alloc(4), count = Buffer.alloc(4), reasons = Buffer.alloc(4);
     let status = restartManager.symbols.RmGetList(handle, needed, count, null, reasons);
     let list: Buffer | null = null;
     let allocatedSlots = 0;
     for (let retry = 0; retry < 4 && status === 234; retry += 1) {
       const total = needed.readUInt32LE(0);
-      if (total === 0 || total > MAX_WINDOWS_CANDIDATES) return [];
+      if (total === 0 || total > MAX_WINDOWS_CANDIDATES) return null;
       list = Buffer.alloc(RM_PROCESS_INFO_SIZE * total);
       allocatedSlots = total;
       count.writeUInt32LE(total, 0);
       status = restartManager.symbols.RmGetList(handle, needed, count, list, reasons);
     }
-    if (status !== 0 || !list) return [];
+    if (status !== 0) return null;
+    // a complete answer to the first call: nothing holds the file
+    if (!list) return [];
     const returnedCount = Math.min(count.readUInt32LE(0), allocatedSlots);
     const owners: number[] = [];
     for (let index = 0; index < returnedCount; index += 1) owners.push(list.readUInt32LE(RM_PROCESS_INFO_SIZE * index));
@@ -116,7 +121,10 @@ export function windowsLockCandidates(env: Record<string, string | undefined> = 
   return candidates.length > MAX_WINDOWS_CANDIDATES ? [] : candidates;
 }
 
-interface WindowsScan { at: number; candidates: string; owners: Map<number, string[]> }
+/** `complete` is false when a holder query failed: such a pass names no pid's only lock. */
+interface WindowsScan { at: number; candidates: string; owners: Map<number, string[]>; complete: boolean }
+type WindowsHolders = (path: string) => number[] | null;
+const holds = (getHolders: WindowsHolders, path: string, pid: number): boolean => getHolders(path)?.includes(pid) ?? false;
 let windowsScan: WindowsScan | null = null;
 let windowsScanning: Promise<WindowsScan> | null = null;
 let windowsScanId = 0;
@@ -140,7 +148,7 @@ export function resetWindowsScanCacheForTest(): void {
  * so the pass yields between them: a scan takes a few seconds without stalling the server.
  */
 function windowsScanAll(
-  getHolders: (path: string) => number[] = windowsHolders,
+  getHolders: WindowsHolders = windowsHolders,
   getCandidates: () => string[] = windowsLockCandidates,
 ): Promise<WindowsScan> {
   const known = windowsScan;
@@ -150,12 +158,15 @@ function windowsScanAll(
     windowsScanning = (async () => {
       const owners = new Map<number, string[]>();
       const candidates = getCandidates();
+      let complete = true;
       for (const path of candidates) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (windowsScanId !== id) break;
-        for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
+        const holders = getHolders(path);
+        if (holders === null) complete = false;
+        for (const pid of holders ?? []) owners.set(pid, [...(owners.get(pid) ?? []), path]);
       }
-      const scan = { at: Date.now(), candidates: JSON.stringify([...candidates].sort()), owners };
+      const scan = { at: Date.now(), candidates: JSON.stringify([...candidates].sort()), owners, complete };
       if (windowsScanId !== id) return windowsScanAll(getHolders, getCandidates);
       windowsScan = scan;
       return scan;
@@ -164,8 +175,11 @@ function windowsScanAll(
   return windowsScanning;
 }
 
-/** Unresolved pids retry at 5, 10, 20, 40, then 60 seconds while the listing stays unchanged. */
-const windowsNegative = new Map<number, { scan: WindowsScan; delay: number; next: number }>();
+/**
+ * Unresolved pids retry at 5, 10, 20, 40, then 60 seconds while the listing stays unchanged, each
+ * on its own deadline: another pane's scan in between is read, never a reason to scan again.
+ */
+const windowsNegative = new Map<number, { listing: string; scanAt: number; delay: number; next: number }>();
 
 /**
  * A pid's one held lock and when a scan proved it the only one: a resolved pane costs one call per
@@ -181,14 +195,14 @@ function rememberHeld(pid: number, path: string, proven: number): void {
 /** The locks this pid holds: one known path is re-validated, a new or moved session is scanned. */
 export async function windowsHeldPaths(
   pid: number,
-  getHolders: (path: string) => number[] = windowsHolders,
+  getHolders: WindowsHolders = windowsHolders,
   getCandidates: () => string[] = windowsLockCandidates,
 ): Promise<string[]> {
   const known = windowsHeld.get(pid);
   if (known !== undefined) {
     const newer = windowsScan !== null && windowsScan.at > known.proven ? windowsScan.owners.get(pid) ?? [] : null;
     const stillOnly = newer === null || (newer.length === 1 && newer[0] === known.path);
-    if (stillOnly && Date.now() - known.proven < WINDOWS_HELD_MAX_AGE_MS && getHolders(known.path).includes(pid)) return [known.path];
+    if (stillOnly && Date.now() - known.proven < WINDOWS_HELD_MAX_AGE_MS && holds(getHolders, known.path, pid)) return [known.path];
     windowsHeld.delete(pid);
     // a newer scan that disagrees already stands; otherwise the next answer needs a new pass
     if (stillOnly) invalidateWindowsScan();
@@ -201,31 +215,35 @@ export async function windowsHeldPaths(
       windowsNegative.clear();
     }
     const negative = windowsNegative.get(pid);
-    if (negative && negative.scan === windowsScan && Date.now() < negative.next) return [];
+    if (negative && negative.listing === listing && Date.now() < negative.next) return [];
     getCandidates = () => candidates;
   }
   // Only a fresh, complete scan establishes singleton evidence; confirm it on every refresh.
   const seen = windowsScan?.owners.get(pid);
-  if (windowsScan && Date.now() - windowsScan.at < WINDOWS_SCAN_TTL_MS && seen?.length === 1) {
-    if (getHolders(seen[0]!).includes(pid)) { rememberHeld(pid, seen[0]!, windowsScan.at); return seen; }
+  if (windowsScan?.complete && Date.now() - windowsScan.at < WINDOWS_SCAN_TTL_MS && seen?.length === 1) {
+    if (holds(getHolders, seen[0]!, pid)) { rememberHeld(pid, seen[0]!, windowsScan.at); return seen; }
     invalidateWindowsScan();
   }
   const scan = await windowsScanAll(getHolders, getCandidates);
   const scanned = scan.owners.get(pid) ?? [];
-  const held = scanned.filter((path) => getHolders(path).includes(pid));
-  if (held.length !== scanned.length) invalidateWindowsScan();
-  if (held.length === 1) {
+  const held = scanned.filter((path) => holds(getHolders, path, pid));
+  if (held.length !== scanned.length) {
+    // ownership moved during the pass: a lock it never saw may be held too, so nothing is proven
+    invalidateWindowsScan();
+    return [];
+  }
+  if (held.length === 1 && scan.complete) {
     windowsNegative.delete(pid);
     rememberHeld(pid, held[0]!, scan.at);
-  } else {
-    const previous = windowsNegative.get(pid);
-    if (previous?.scan !== scan) {
-      const delay = Math.min((previous?.delay ?? WINDOWS_SCAN_TTL_MS / 2) * 2, 60_000);
-      windowsNegative.set(pid, { scan, delay, next: scan.at + delay });
-      if (windowsNegative.size > 64) windowsNegative.delete(windowsNegative.keys().next().value!);
-    }
+    return held;
   }
-  return held;
+  const previous = windowsNegative.get(pid);
+  if (previous?.scanAt !== scan.at) {
+    const delay = Math.min((previous?.delay ?? WINDOWS_SCAN_TTL_MS / 2) * 2, 60_000);
+    windowsNegative.set(pid, { listing: scan.candidates, scanAt: scan.at, delay, next: scan.at + delay });
+    if (windowsNegative.size > 64) windowsNegative.delete(windowsNegative.keys().next().value!);
+  }
+  return scan.complete ? held : [];
 }
 
 /** Stable process birth identity; elapsed-time estimates drift between reads on macOS. */
