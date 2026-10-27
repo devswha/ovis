@@ -114,6 +114,18 @@ the existing RPC input path. Legacy unattached mirror input remains serialized w
 Clients talking to an older bridge use its first output, after capabilities are known, as the
 compatibility signal. A screen frame alone does not establish readiness on a new bridge.
 
+A client that joins an attachment whose stream ended after it was ready (the replacement attach has
+not taken yet) first gets `{type:"output-recovering", pane_id}`, then the retained replay, and no
+`input-ready`. The client treats that replay as the screen from before: it does not present it as
+the pane's current screen (so it does not count as reading the agent's finish) or read the agent's
+input row from it, until the next attach takes (`input-ready`) and new output arrives. The replay's
+output credit is still acknowledged as usual. The wait belongs to that pane: another pane's output
+is its own; a reconnect drops it, and so does a terminal that leaves the pane (herdr could not
+restore it), as a rejoin is told again while the attachment still recovers. A replaced terminal of
+the same pane keeps it until its new attach answers: `output-recovering` again (the replay that
+follows it is still the screen from before), or a replay without it, which joined an attachment
+that recovered meanwhile and is the current screen. Queued input still waits for `input-ready`.
+
 `input_not_ready` reports a rejected PTY input. `input_failed` reports an RPC or local sidecar
 write failure; the UI displays it outside the terminal stream. These are not acknowledgements
 that the application consumed individual keystrokes. Failed input is never automatically retried.
@@ -176,6 +188,10 @@ trips and pane changes on those keyboards before claiming universal IME compatib
 - [Termux's text input view](https://github.com/termux/termux-tools/blob/master/doc/termux.1.md.in#text-input-view)
   supports retaining an editable input surface alongside direct terminal input. Its
   [composition preview PR](https://github.com/termux/termux-app/pull/5242) is still unmerged.
+- [xterm #6036](https://github.com/xtermjs/xterm.js/issues/6036): a Linux input method that
+  shows no in-app preedit (fcitx4 with Sogou Pinyin) loses a candidate picked with a digit key.
+  [PR #6037](https://github.com/xtermjs/xterm.js/pull/6037) defers every digit and Space on Linux
+  for up to 50 ms and is unmerged. The 5.5.0 patch here takes a smaller step, below.
 - Mosh-style speculative local echo is not added. It addresses network responsiveness and needs
   a separate reconciliation design; it does not repair text lost before transmission.
 
@@ -364,6 +380,23 @@ Afterwards the same taps delivered `한글 `, `abc한글 `, `하 ` (Backspace in
 one DEL. The iPad simulator's on-screen keyboard already composed.
 `scripts/terminal-ipad-ime-regression.ts` replays the trace under an iPhone user agent and
 platform with `keyCode` 0.
+
+### Native Linux check: a candidate picked with a digit (#1649)
+
+Updated: 2026-10-22
+
+On Ubuntu 20.04 (X11) with Chrome 155 and fcitx4 running Sogou Pinyin, which draws its pinyin
+in its own window and not at the cursor, `de` then `2` sent `2` to an owned raw-mode PTY and lost
+the candidate; `de` then Space sent `的`. A plain textarea traced why: the pinyin keys reach the
+page only as keyups, and the key that picks keeps its own `key` and `keyCode` in keydown (not
+229, `isComposing:false`). A keypress whose `charCode` is the candidate and an `insertText`
+input follow. Stock xterm sends a printable digit from keydown, then ignores that keypress and
+input as already handled; it sends Space from keypress, so Space worked. The patch leaves a
+plain digit on Linux to its keypress and input, as Space is: a typed digit still arrives from
+its keypress, and a picked candidate replaces it. Afterwards the same keys with the physical
+IME delivered the candidates. `scripts/terminal-linux-ime-regression.ts` replays the trace and
+fails without the patch. A word picked with a digit was not traced: the replay assumes Chrome
+sends no keypress for more than one character.
 
 ### Native Android/Gboard check
 

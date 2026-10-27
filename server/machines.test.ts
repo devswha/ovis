@@ -502,8 +502,9 @@ describe("a first connect that finds a bridge of another version", () => {
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("sends a newer bridge of an independently managed web server to that server's own Settings", async () => {
-    const independent = { ...descriptor, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: String(Number(REMOTE_BUNDLE_VERSION) + 1), managed_remote: false };
+  it("tells this app to update itself when an independently managed web server is newer", async () => {
+    const newer = String(Number(REMOTE_BUNDLE_VERSION) + 1);
+    const independent = { ...descriptor, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: newer, managed_remote: false };
     SshConnection.prototype.start = async () => {};
     SshConnection.prototype.run = (async (script: string) => {
       if (script.includes("uname")) return `Linux\nx86_64\n/home/u\n/home/u/.config\n\n${JSON.stringify(independent)}\n`;
@@ -518,9 +519,13 @@ describe("a first connect that finds a bridge of another version", () => {
       const started = manager.setup({ destination: "independent-pc" });
       for (let i = 0; i < 100 && !["failed", "connected"].includes(manager.job(started.id)?.phase ?? ""); i += 1) await Bun.sleep(25);
       const job = manager.job(started.id)!;
-      // this app cannot update that server, so "update this app" is not the way out here
+      // this app cannot update that server, and that server is already the newer one: this app is
+      // the side that is behind (a Mac on 0.4.13 met a PC already on 0.4.16 and was sent to the PC)
       expect(job).toMatchObject({ phase: "failed", action_required: "setup" });
       expect(job.error).toContain("independently managed");
+      expect(job.error).toContain(`(v${newer})`);
+      expect(job.error).toContain("Update this app");
+      expect(job.error).not.toContain("its own Settings");
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -662,6 +667,51 @@ describe("a bridge update on a PC that cannot be reached", () => {
       expect(view()).toMatchObject({ state: "error", action_required: "update_bridge", updating: null });
       await Bun.sleep(50);
       expect(internals.jobs.size).toBe(1);
+    } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // A MacBook that slept through a few tries wakes to a delay of up to a minute: the chat the
+  // user opens then asks for the PC, and that ask is what starts the next try.
+  it("tries a waiting PC again when a chat asks for it, at most once per interval", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-retry-now-"));
+    writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "macbook", enabled: false, target: { destination: "macbook" }, snapshot: null }]));
+    let starts = 0;
+    SshConnection.prototype.start = async () => { starts += 1; throw new Error("ssh: connect to host macbook port 22: Network is unreachable"); };
+    SshConnection.prototype.close = () => {};
+    let clock = 0;
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); }, { now: () => clock });
+    type Waiting = { machine: { enabled: boolean; state: string }; attempts: number; retry?: unknown };
+    const internals = manager as unknown as { machines: Map<string, Waiting>; retryLater(runtime: Waiting): void; jobs: Map<string, { finished: Promise<void> }> };
+    const runtime = internals.machines.get(id)!;
+    runtime.machine.enabled = true;
+    // six failed tries already: the next waits a minute
+    runtime.attempts = 6;
+    internals.retryLater(runtime);
+    const conversation = () => handleMachineRequest(new Request(`http://127.0.0.1/api/machines/${id}/pane/conversation?pane_id=w1%3Ap1`), manager);
+    const waitingAgain = async () => { for (let i = 0; i < 100 && runtime.retry === undefined; i += 1) await Promise.resolve(); expect(runtime.retry).toBeDefined(); };
+    try {
+      expect((await conversation()).status).toBe(503);
+      expect(starts).toBe(1);
+      await waitingAgain();
+      // the try failed and the PC waits again; another read within the interval starts none
+      expect((await conversation()).status).toBe(503);
+      expect(starts).toBe(1);
+      clock += 5000;
+      expect((await conversation()).status).toBe(503);
+      expect(starts).toBe(2);
+      await waitingAgain();
+      // a bridge update that could not reach the PC was a try as well: the next read waits the interval
+      clock += 5000;
+      await internals.jobs.get(manager.updateBridge(id).id)!.finished;
+      expect(starts).toBe(3);
+      expect(runtime.retry).toBeDefined();
+      expect((await conversation()).status).toBe(503);
+      expect(starts).toBe(3);
+      // a PC that is switched off is never tried
+      runtime.machine.enabled = false;
+      clock += 5000;
+      await conversation();
+      expect(starts).toBe(3);
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -835,6 +885,17 @@ describe("bridge verification failures", () => {
     const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
     return verify(ssh, descriptor, socket).then(() => "verified", (error: Error) => error.message);
   }
+  /** what verifying `fields` says when nothing answers at the end of the tunnel, and the arguments forward() got */
+  async function unanswered(fields: Record<string, unknown>): Promise<{ told: string; forwards: unknown[][] }> {
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    const forwards: unknown[][] = [];
+    const ssh = { forward: async (...args: unknown[]) => { forwards.push(args.slice(1)); } } as unknown as SshConnection;
+    const descriptor = { port: 18472, token: TOKEN, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "", ...fields } as BridgeDescriptor;
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    const told = await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message);
+    return { told, forwards };
+  }
 
   // Evaluate the entrypoint's actual socket setup without starting its daemon.
   const entryLines = readFileSync(new URL("./remote-entry.ts", import.meta.url), "utf8").split("\n");
@@ -951,5 +1012,40 @@ describe("bridge verification failures", () => {
     expect(await told(answering(500, JSON.stringify({ error: { code: "internal_error", message: "EACCES: permission denied, stat '/home/u/x'" } })))).toBe(GENERIC(500));
     expect(await told(answering(503, "<html>proxy</html>"))).toBe(GENERIC(503));
     expect(await told(answering(500, "null"))).toBe(GENERIC(500));
+  });
+
+  // #1960: an Ovis older than its loopback relay, with HOST set to another address, answers nothing on the PC's 127.0.0.1
+  it("says what to change when nothing answers on the PC's loopback, not the connection's raw error", async () => {
+    expect((await unanswered({})).told).toBe("This PC's Ovis does not answer at 127.0.0.1:18472 through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.");
+    expect((await unanswered({ managed_remote: true })).told).toBe("The bridge on this PC does not answer at 127.0.0.1:18472 through SSH. Reconnect after checking the remote bridge.");
+  });
+
+  it("says a bridge that did not answer in time timed out, without HOST advice", async () => {
+    const timedOut = spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("The operation timed out.", "TimeoutError"));
+    try {
+      expect((await unanswered({})).told).toBe("This PC's Ovis did not answer at 127.0.0.1:18472 through SSH within 15 seconds. Reconnect after checking that it runs.");
+    } finally { timedOut.mockRestore(); }
+  });
+
+  it("says a bridge that stops halfway through its answer timed out", async () => {
+    // the deadline is what is tested: 200 ms here, not 15 s
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const short = spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(200));
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    // its headers and the start of a body, then nothing
+    const ssh = { forward: async (local: number) => {
+      const stalled = Bun.listen({ hostname: "127.0.0.1", port: local, socket: { data(socket) { socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"pid\""); } } });
+      stops.push(() => stalled.stop(true));
+    } } as unknown as SshConnection;
+    const descriptor = { port: 18472, token: TOKEN, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "" } as BridgeDescriptor;
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    try {
+      expect(await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message)).toBe("This PC's Ovis did not answer at 127.0.0.1:18472 through SSH within 15 seconds. Reconnect after checking that it runs.");
+    } finally { short.mockRestore(); }
+  });
+
+  it("tunnels only to the PC's loopback, whatever address a descriptor names", async () => {
+    expect((await unanswered({ host: "203.0.113.99" })).forwards).toEqual([[18472]]);
   });
 });

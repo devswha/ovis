@@ -1,6 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
-import { ANSI_RE, onePerPass, KEY, PI_MODEL_HINT_RE, PI_ROW_RE, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, piModelRows, wrapped } from "./shared.ts";
+import { ANSI_RE, onePerPass, KEY, PI_MODEL_HINT_RE, PI_ROW_RE, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, piModelRows, wrapped } from "./shared.ts";
 
 /**
  * pi draws one menu widget for its dialogs — an extension's `ctx.ui.select`, `confirm` and
@@ -107,8 +107,8 @@ function parsePiModel(screen: string): ParsedPrompt | null {
   // should know what they are switching from; pi's tick is the only mark that says so
   const current = rows.find((row) => row.current);
   const question = current
-    ? `Select model (currently ${current.label.replace(PI_MODEL_DEFAULT_RE, "")})`
-    : "Select model";
+    ? own("Select model (currently {model})", { model: current.label.replace(PI_MODEL_DEFAULT_RE, "") })
+    : own("Select model");
   return finishPrompt("pi", {
     kind: "question",
     title: "",
@@ -119,6 +119,38 @@ function parsePiModel(screen: string): ParsedPrompt | null {
     custom_option_index: null,
   }, {
     responder: "pi-model", menuLabels: labels, selectedIndex, checkedOptionIndices: [], customMenuIndex: null,
+    rejectWithEscapeIndex: null,
+  });
+}
+
+export const PI_THINKING_HINT_LINES = 6;
+
+/** Thinking uses the model selector's footer, but only visibly offered level rows are choices. */
+function parsePiThinking(screen: string): ParsedPrompt | null {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const hintIndex = findLastIndex(lines, (_, index) => PI_MODEL_HINT_RE.test(wrapped(lines, index, PI_THINKING_HINT_LINES)));
+  if (hintIndex < 0) return null;
+  const headingIndex = findLastIndex(lines.slice(0, hintIndex), (line) => cleanLine(line) === "Thinking Level");
+  if (headingIndex < 0) return null;
+  const filterIndex = lines.findIndex((line, index) => index > headingIndex && index < hintIndex && /^[>›❯](?:\s|$)/.test(cleanLine(line)));
+  if (filterIndex < 0) return null;
+  const rows: { label: string; description: string | null; cursor: boolean; current: boolean }[] = [];
+  for (const line of lines.slice(filterIndex + 1, hintIndex)) {
+    if (!line.trim()) continue;
+    // Arrow = highlight, tick = session level; `· default` belongs to the description only.
+    const row = line.match(/^([→ ]) ([✓ ]) (off|minimal|low|medium|high|xhigh|max)(?: +(.+))?\s*$/);
+    if (!row || rows.some((other) => other.label === row[3])) return null;
+    rows.push({ label: row[3]!, description: row[4]?.trim() || null, cursor: row[1] === "→", current: row[2] === "✓" });
+  }
+  if (rows.length === 0 || rows.filter((row) => row.cursor).length !== 1 || rows.filter((row) => row.current).length > 1) return null;
+  const current = rows.find((row) => row.current);
+  return finishPrompt("pi", {
+    kind: "question", title: "", question: current ? own("Select thinking level (currently {level})", { level: current.label }) : own("Select thinking level"),
+    body: null, options: rows.map(({ label, description }) => ({ label, description })),
+    multi_select: false, custom_option_index: null,
+  }, {
+    responder: "pi-thinking", menuLabels: rows.map((row) => row.label),
+    selectedIndex: rows.findIndex((row) => row.cursor), checkedOptionIndices: [], customMenuIndex: null,
     rejectWithEscapeIndex: null,
   });
 }
@@ -135,7 +167,7 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
     const text = (words: string[]) => ({ title: restOf(words) ?? "", question: ownLine(words) });
     return finishPrompt("pi", {
       kind: "question", ...text(block.title), body: null,
-      options: [{ label: "Type your answer", description: null }], multi_select: false, custom_option_index: 0,
+      options: [{ label: own("Type your answer"), description: null }], multi_select: false, custom_option_index: 0,
     }, { responder: "pi-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0, rejectWithEscapeIndex: null },
     text(uncounted(block.title)));
   }
@@ -177,6 +209,14 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
 const dialogRead = onePerPass((screen) => parsePiDialog(screen));
 
 export const readers: readonly DialogReader[] = [
+  {
+    id: "pi-thinking", agents: ["pi"], priority: 10,
+    reread: "before-commit", list: "none",
+    interaction: (parsed) => pickerPlan(parsed, parsePiThinking,
+      parsed.options.map((_, index) => keySteps([...navigationKeys(index - parsed.selectedIndex), KEY.enter])),
+      (shown, cursor) => shown.options[cursor]?.label),
+    parse: (screen) => parsePiThinking(screen),
+  },
   {
     id: "pi-model", agents: ["pi"], priority: 10,
     reread: "before-commit", list: "none",

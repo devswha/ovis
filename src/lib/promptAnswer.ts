@@ -6,6 +6,7 @@
  */
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { t } from "./i18n.ts";
+import { promptWords } from "./promptText.ts";
 
 export type TypedAnswer = Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">;
 
@@ -41,10 +42,11 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   const numbered = byNumber(value);
   if (numbered !== null) return { option_index: numbered };
   const lower = value.toLowerCase();
-  const named = valid.find((index) => {
-    const label = prompt.options[index]!.label;
-    return label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
-  });
+  // a label the bridge wrote is named as the card shows it, in the user's language, or in English
+  const words = promptWords(prompt);
+  const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
+  // an option's own words first: a translated label never takes the words another option shows
+  const named = valid.find((index) => names(prompt.options[index]!.label)) ?? valid.find((index) => names(words.label(index)));
   if (named !== undefined) return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }
@@ -52,6 +54,13 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
 function range(prompt: InteractivePrompt): string {
   const numbers = choices(prompt).map((index) => index + 1);
   return numbers.length > 1 ? `${numbers[0]}–${numbers.at(-1)}` : String(numbers[0] ?? 1);
+}
+
+/** Pi switches native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
+export function blocksStepNavigation(prompt: InteractivePrompt, selected: ReadonlySet<number>, custom: string): boolean {
+  if (prompt.agent !== "pi" || !prompt.steps?.some(step => step.can_navigate)) return false;
+  return custom !== (prompt.default_custom_text ?? "") || prompt.multi_select
+    && JSON.stringify([...selected].sort((a, b) => a - b)) !== JSON.stringify(prompt.default_option_indices ?? []);
 }
 
 /** How a typed message answers this prompt: the composer's placeholder while it waits. */

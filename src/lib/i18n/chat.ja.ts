@@ -2,7 +2,7 @@
  * Japanese for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx,
+ * components/BackgroundAgentDetail.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
@@ -87,6 +87,8 @@ export const CHAT_JA: Record<string, string> = {
   "Couldn't load the terminal output": "ターミナル出力を読み込めませんでした",
   "Jump to latest": "最新に移動",
   "Open image": "画像を開く",
+  "Pictures from this work": "この作業で得た画像",
+  "All {count} pictures": "{count} 枚の画像をすべて表示",
   "Attached image": "添付画像",
   "Conversation compacted": "会話を圧縮しました",
   "{n} earlier turn on a branch you navigated away from": "移動で離れたブランチの以前の話 {n}件",
@@ -107,7 +109,6 @@ export const CHAT_JA: Record<string, string> = {
   "Original delivery": "元のメッセージ",
   "This is the first part of a longer result": "長い結果の最初の部分です",
   "Accepted": "受け付け済み",
-  "Waiting for your answer": "回答待ち",
   "Done · {evidence}": "完了 · {evidence}",
   "transcript": "会話ログ",
   "card answered": "カードで回答",
@@ -148,6 +149,7 @@ export const CHAT_JA: Record<string, string> = {
   "No background tasks to show yet": "表示できるバックグラウンドタスクはまだありません",
   "Running": "実行中",
   "{n} recently ended": "最近終了 {n} 件",
+  "{n} more running": "ほか {n} 件実行中",
   "Nothing running right now": "現在実行中のものはありません",
   "{done} of {total} done": "{total} 件中 {done} 件完了",
   "{n} running": "{n} 件実行中",
@@ -179,7 +181,6 @@ export const CHAT_JA: Record<string, string> = {
   "Work so far": "これまでの作業",
   "blocked": "ブロック中",
   "paused": "一時停止",
-  "Goal": "目標",
   "complete": "完了",
   "out of budget": "予算切れ",
   "Used so far: {spent}": "これまでの使用量: {spent}",
@@ -201,4 +202,6 @@ export const CHAT_JA: Record<string, string> = {
   "Conversation turns": "会話のターン",
   "Go to turn {n}": "ターン {n} へ移動",
   "Show full message": "メッセージ全体を表示",
+  "Open link": "リンクを開く",
+  "Share link": "リンクを共有",
 };

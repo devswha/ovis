@@ -87,6 +87,8 @@ export interface ComposerProps {
   metadata?: ConversationMetadata | null;
   /** replaces the placeholder: how a message answers the agent's waiting prompt */
   answerHint?: string | null;
+  /** a typed pick waiting in the card above for Confirm: Enter in the empty box confirms it, Escape cancels it */
+  waitingAnswer?: { confirm(): Promise<boolean | string>; cancel(): void } | null;
   /** what the agent suggests typing next (Claude's grey input text): the placeholder, taken with Tab */
   suggestion?: string | null;
   /** a cancelled send the agent put back in its input box: the empty box takes it again, for editing and resending */
@@ -242,6 +244,7 @@ export function Composer({
   backgroundWait = false,
   metadata,
   answerHint = null,
+  waitingAnswer = null,
   suggestion = null,
   restored = null,
   greeting = null,
@@ -262,7 +265,7 @@ export function Composer({
   activeRef.current = active;
   const machineId = useMachineId();
   const { fetchPaneFiles } = useMachineApi();
-  const { settings } = useSettings();
+  const { settings, resolvedLanguage } = useSettings();
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   const usageEnabled = settings.showUsage && !mobile && machineId === "local" && providerForAgent(agent) !== null;
   const { report: usageReport } = useUsage(usageEnabled);
@@ -419,7 +422,8 @@ export function Composer({
   useEffect(() => {
     const frame = requestAnimationFrame(sizeTextarea);
     return () => cancelAnimationFrame(frame);
-  }, [sizeTextarea, settings.chatFontSize, settings.density]);
+  // the UI language orders Noto's CJK families in an interface font (lib/typography.ts)
+  }, [sizeTextarea, settings.chatFontSize, settings.chatFontFamily, settings.uiFontFamily, resolvedLanguage, settings.density]);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -492,7 +496,7 @@ export function Composer({
   useEffect(() => {
     const frame = requestAnimationFrame(fitStatus);
     return () => cancelAnimationFrame(frame);
-  }, [fitStatus, settings.uiFontSize,
+  }, [fitStatus, settings.uiFontSize, settings.uiFontFamily,
     settings.chatFontSize, settings.chatFontFamily, settings.density]);
 
   // the card's own width decides, not the window's: a sidebar or a narrow lane shrinks the card
@@ -807,8 +811,10 @@ export function Composer({
     if (terminalTyped?.name === "resume" && onOpenHistory) { setMenuDismissed(true); onOpenHistory(); return true; }
     const sent = text;
     const sentAttachments = attachments;
+    let sendId: number | undefined;
     const settle = (result: boolean | string | DraftRefusal): void => {
-      const acknowledged = result === true ? composerDrafts.settle(draftKey, sent) : null;
+      // a send for a pane another herdr has replaced since leaves the new pane's box alone (#1608)
+      const acknowledged = result === true ? composerDrafts.settle(draftKey, sent, sendId) : null;
       if (!mounted.current) return;
       if (typeof result !== "boolean") setNote(result);
       if (acknowledged === null) return;
@@ -823,14 +829,15 @@ export function Composer({
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     if (!composerDrafts.begin(draftKey, sent)) return false;
+    sendId = composerDrafts.sendOf(draftKey);
     // a polish landing before the acknowledgement would count as an edit and keep the sent message here
     dictation.forget();
     try {
       const result = onSend(text, clearDraft, sendAnyway);
-      if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey); return true; }
-      void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey));
+      if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey, sendId); return true; }
+      void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey, sendId));
     } catch {
-      composerDrafts.end(draftKey);
+      composerDrafts.end(draftKey, sendId);
       if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again."));
     }
     return true;
@@ -898,8 +905,8 @@ export function Composer({
     }
   }, [awaitCommit, clearCommitWait, t]);
 
-  /** A quick reply follows the same delivery policy as Send, and leaves the box alone. */
-  const sendQuick = useCallback((reply: string) => {
+  /** A quick reply, or a typed pick's Confirm, follows the same delivery policy as Send, and leaves the box alone. */
+  const sendBeside = useCallback((deliver: () => ReturnType<typeof onSend>) => {
     if (!connected || sending) return;
     setNote(null);
     // a quick reply is not the box's text, so its note offers no send over a draft
@@ -909,15 +916,17 @@ export function Composer({
       }
     };
     if (!composerDrafts.begin(draftKey)) return;
+    const sendId = composerDrafts.sendOf(draftKey);
     try {
-      const result = onSend(reply);
-      if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey); return; }
-      void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey));
+      const result = deliver();
+      if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey, sendId); return; }
+      void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey, sendId));
     } catch {
-      composerDrafts.end(draftKey);
+      composerDrafts.end(draftKey, sendId);
       if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again."));
     }
-  }, [connected, draftKey, onSend, sending]);
+  }, [connected, draftKey, sending]);
+  const sendQuick = useCallback((reply: string) => sendBeside(() => onSend(reply)), [onSend, sendBeside]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -961,15 +970,29 @@ export function Composer({
         setTextAndCaret(offered, offered.length);
         return;
       }
-      if (event.key !== "Enter") return;
-      const shouldSend = settings.enterSends
+      const shouldSend = event.key === "Enter" && (settings.enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
-        : (event.metaKey || event.ctrlKey) && !event.shiftKey;
+        : (event.metaKey || event.ctrlKey) && !event.shiftKey);
+      // a typed pick waits in the card above: the empty box's Enter is its Confirm and Escape its
+      // Cancel, so the keyboard alone answers, as it does in the agent's own menu. A held Enter's
+      // repeats confirm nothing: its first press was the pick
+      if (waitingAnswer !== null && textRef.current === "") {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          waitingAnswer.cancel();
+          return;
+        }
+        if (shouldSend) {
+          event.preventDefault();
+          if (!event.repeat) sendBeside(waitingAnswer.confirm);
+          return;
+        }
+      }
       if (!shouldSend) return;
       event.preventDefault();
       send();
     },
-    [agentStatus, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, setTextAndCaret, settings.enterSends, trigger],
+    [agentStatus, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, settings.enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(
@@ -1348,7 +1371,7 @@ export function Composer({
               <MessageSquarePlus aria-hidden="true" />
             </button>
           )}
-          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={agent === "omo"} claude={agent === "claude"} plan={plan} />
+          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={agent === "omo"} subagents={agent === "claude" || agent === "opencode"} plan={plan} />
         </div>
         {/* between the two control groups of the card's last row. The agent's name, its separator and the
             state word are read, not drawn: the mark and the header name the agent, and Stop, the live row and

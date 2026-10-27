@@ -2,7 +2,7 @@
  * Korean for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx,
+ * components/BackgroundAgentDetail.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
@@ -87,6 +87,8 @@ export const CHAT_KO: Record<string, string> = {
   "Couldn't load the terminal output": "터미널 출력을 불러오지 못했습니다",
   "Jump to latest": "최신 메시지로 이동",
   "Open image": "이미지 열기",
+  "Pictures from this work": "이 작업에서 나온 이미지",
+  "All {count} pictures": "이미지 {count}개 모두 보기",
   "Attached image": "첨부한 이미지",
   "Conversation compacted": "대화가 압축됨",
   "{n} earlier turn on a branch you navigated away from": "이동으로 떠난 브랜치의 이전 대화 {n}개",
@@ -107,7 +109,6 @@ export const CHAT_KO: Record<string, string> = {
   "Original delivery": "원본 메시지",
   "This is the first part of a longer result": "긴 결과의 앞부분만 표시합니다",
   "Accepted": "접수됨",
-  "Waiting for your answer": "답변을 기다리는 중",
   "Done · {evidence}": "완료 · {evidence}",
   "transcript": "대화 기록",
   "card answered": "카드로 답변함",
@@ -148,6 +149,7 @@ export const CHAT_KO: Record<string, string> = {
   "No background tasks to show yet": "아직 보여줄 백그라운드 작업이 없습니다",
   "Running": "실행 중",
   "{n} recently ended": "최근 끝난 작업 {n}개",
+  "{n} more running": "그 밖에 {n}개 실행 중",
   "Nothing running right now": "지금 실행 중인 작업이 없습니다",
   "{done} of {total} done": "{total}개 중 {done}개 완료",
   "{n} running": "{n}개 실행 중",
@@ -179,7 +181,6 @@ export const CHAT_KO: Record<string, string> = {
   "Work so far": "지금까지의 작업",
   "blocked": "막힘",
   "paused": "일시 중지",
-  "Goal": "목표",
   "complete": "완료",
   "out of budget": "예산 소진",
   "Used so far: {spent}": "지금까지 사용: {spent}",
@@ -201,4 +202,6 @@ export const CHAT_KO: Record<string, string> = {
   "Conversation turns": "대화 턴",
   "Go to turn {n}": "{n}번째 턴으로 이동",
   "Show full message": "전체 메시지 보기",
+  "Open link": "링크 열기",
+  "Share link": "링크 공유",
 };

@@ -2,7 +2,7 @@
  * Simplified Chinese for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx,
+ * components/BackgroundAgentDetail.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
@@ -87,6 +87,8 @@ export const CHAT_ZH: Record<string, string> = {
   "Couldn't load the terminal output": "无法加载终端输出",
   "Jump to latest": "跳转到最新",
   "Open image": "打开图片",
+  "Pictures from this work": "此次工作得到的图片",
+  "All {count} pictures": "查看全部 {count} 张图片",
   "Attached image": "附加的图片",
   "Conversation compacted": "对话已压缩",
   "{n} earlier turn on a branch you navigated away from": "你离开的分支上有 {n} 条更早的对话",
@@ -107,7 +109,6 @@ export const CHAT_ZH: Record<string, string> = {
   "Original delivery": "原始消息",
   "This is the first part of a longer result": "这是较长结果的开头部分",
   "Accepted": "已接受",
-  "Waiting for your answer": "等待你的回答",
   "Done · {evidence}": "已完成 · {evidence}",
   "transcript": "对话记录",
   "card answered": "已在卡片中回答",
@@ -148,6 +149,7 @@ export const CHAT_ZH: Record<string, string> = {
   "No background tasks to show yet": "暂时没有可显示的后台任务",
   "Running": "运行中",
   "{n} recently ended": "最近结束 {n} 个",
+  "{n} more running": "另有 {n} 个正在运行",
   "Nothing running right now": "当前没有正在运行的任务",
   "{done} of {total} done": "已完成 {done}/{total}",
   "{n} running": "{n} 个运行中",
@@ -179,7 +181,6 @@ export const CHAT_ZH: Record<string, string> = {
   "Work so far": "目前的工作",
   "blocked": "受阻",
   "paused": "已暂停",
-  "Goal": "目标",
   "complete": "已完成",
   "out of budget": "预算用尽",
   "Used so far: {spent}": "目前已用：{spent}",
@@ -201,4 +202,6 @@ export const CHAT_ZH: Record<string, string> = {
   "Conversation turns": "对话轮次",
   "Go to turn {n}": "跳到第 {n} 轮",
   "Show full message": "显示完整消息",
+  "Open link": "打开链接",
+  "Share link": "分享链接",
 };

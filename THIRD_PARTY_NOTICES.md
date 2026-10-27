@@ -28,6 +28,14 @@ the test sequences of
 2026 Nathan Brake. The MIT license text below applies. Ovis asserts them against its own xterm
 preedit and commit handling, not that project's hidden-input model.
 
+## Collie Muse record mapping
+
+`server/muse.ts` adapts the choice of Muse Code session records that carry a conversation, and
+the reading of a tool result's JSON envelope and `tool denied:` / `tool failed:` verdicts, from
+[`AltanS/collie`](https://github.com/AltanS/collie), `bridge/journal/muse.ts`, under MIT,
+Copyright (c) 2026 Altan Sarisin. The MIT license text below applies. The session binding in
+`server/muse-store.ts` is Ovis's own.
+
 ## Theme palettes
 
 The CSS theme colors adapt herdr's pinned palettes, with readability adjustments recorded in
@@ -108,7 +116,8 @@ The sidebar's label filter (`src/lib/sidebarFilter.ts`) adapts the idea of
 `web/src/components/sidebar/filterGroups.ts` at revision
 `b3141c8a310338dedf87ebbd13a0d67ecd69030d`, that a sidebar row survives a typed filter when it, a
 header over it or a row under it matches; its substring matcher, facets and sunk/trash semantics are
-not taken over. Under the MIT License printed above, with this copyright notice:
+not taken over. `src/lib/pushHealth.ts` adapts its push health classifier (`web/src/lib/pushHealth.ts`)
+at the same revision. Under the MIT License printed above, with this copyright notice:
 
 ```
 Copyright (c) 2026 Nathan Brake

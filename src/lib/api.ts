@@ -12,6 +12,7 @@ import type {
   CreateWorktreeRequest,
   CreateTabRequest,
   CreateWorkspaceRequest,
+  DevicesRevokedAll,
   DirectoryCreated,
   DirectoryListing,
   FileInfo,
@@ -19,9 +20,12 @@ import type {
   HealthAuth,
   IntegrationsResponse,
   LanExposure,
+  SecuritySummary,
   InteractivePrompt,
   MoveTabRequest,
+  MoveTabToWorkspaceRequest,
   TabMoved,
+  TabMovedToWorkspace,
   OmoActivity,
   PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
@@ -47,6 +51,7 @@ import type {
   ProjectFavicon,
   PromptAnswer,
   PushKey,
+  PushSubscriptionStatus,
   PortalStatus,
   RemoteAccess,
   RemoveWorktreeRequest,
@@ -384,6 +389,8 @@ export interface HealthInfo {
   auth?: HealthAuth;
   /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
+  /** authenticated only; absent from an older server, which the summary shows as unavailable */
+  security?: SecuritySummary;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {
@@ -426,6 +433,15 @@ export async function renameDevice(id: string, label: string): Promise<PairedDev
 
 export async function revokeDevice(id: string): Promise<void> {
   await sendJson(`/api/devices/${encodeURIComponent(id)}`, "DELETE", {});
+}
+
+/**
+ * POST /api/devices/revoke-all: every paired device loses its pairing access in one durable step,
+ * this browser's own included (the answer clears its device cookie). The access token, the PC
+ * itself and its Tailscale login get in as before.
+ */
+export async function revokeAllDevices(): Promise<DevicesRevokedAll> {
+  return (await sendJson("/api/devices/revoke-all", "POST", {})).json();
 }
 
 /** DELETE /api/auth: clears the session and device cookies, so the next health check reports the gate again. */
@@ -585,10 +601,11 @@ export async function swapPane(paneId: string, direction: PaneDirection, machine
   return (await response.json()) as PaneSwapped;
 }
 
-/** POST /api/pane/swap: swap this pane with an explicit pane, keeping herdr's same-tab rule. */
+/** POST /api/pane/swap: an explicit same-tab swap; leave its temporary focus events to the caller. */
 export async function swapPaneWith(paneId: string, targetPaneId: string, machineId = "local"): Promise<PaneSwapped> {
-  const response = await sendJson(machinePath(machineId, "pane/swap"), "POST", { pane_id: paneId, target_pane_id: targetPaneId } satisfies SwapPaneRequest);
-  return (await response.json()) as PaneSwapped;
+  const request = sendJson(machinePath(machineId, "pane/swap"), "POST", { pane_id: paneId, target_pane_id: targetPaneId } satisfies SwapPaneRequest)
+    .then(async (response) => (await response.json()) as PaneSwapped);
+  return movingHerdrFocus(machineId, request);
 }
 
 /** POST /api/layout/ratio: set the split identified by its binary path to the dragged ratio. */
@@ -781,6 +798,13 @@ export async function moveTab(tabId: string, insertIndex: number, machineId = "l
   return (await response.json()) as TabMoved;
 }
 
+/** A one-pane tab into a new tab of another workspace; its pane answers under its new ID. */
+export async function moveTabToWorkspace(tabId: string, workspaceId: string, machineId = "local"): Promise<TabMovedToWorkspace> {
+  const request: MoveTabToWorkspaceRequest = { tab_id: tabId, workspace_id: workspaceId };
+  const response = await sendJson(machinePath(machineId, "tab/move-to-workspace"), "POST", request);
+  return (await response.json()) as TabMovedToWorkspace;
+}
+
 /** POST /api/tab/close: the tab and every pane in it; a workspace's last tab takes the workspace with it. */
 export async function closeTab(tabId: string, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "tab/close"), "POST", { tab_id: tabId });
@@ -826,10 +850,10 @@ export async function fetchAgentCommands(agent: string, cwd: string | null, mach
 }
 
 /** GET /api/pane/omo-tasks: the background tasks and workflows the pane's OmO session started, and that PC's clock. */
-export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<{ tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null }> {
+export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<{ tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null; moreRunning: number }> {
   const activity = await getJson<Partial<OmoActivity>>(machinePath(machineId, `pane/omo-tasks?pane_id=${encodeURIComponent(paneId)}`));
-  // a bridge from before workflows answers tasks only
-  return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null };
+  // a bridge from before workflows answers tasks only; one from before the running list was cut, every running one
+  return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null, moreRunning: typeof activity.more_running === "number" && activity.more_running > 0 ? activity.more_running : 0 };
 }
 
 /**
@@ -893,6 +917,21 @@ export async function unregisterPushSubscription(endpoint: string): Promise<void
 /** One confirmation push to this device only; ApiError 502 `push_failed` when the push service refused it. */
 export async function sendTestPush(endpoint: string): Promise<void> {
   await sendJson("/api/push/test", "POST", { endpoint });
+}
+
+/**
+ * POST /api/push/status: what the server knows of this browser's own subscription (the one its
+ * PushManager holds, never the selected PC's), once it has proven the keys. `null` when the
+ * server does not know it: another owner's, a stranger's or never registered are one answer.
+ * A server from before the route throws its 404 `not_found` (`routeMissing`).
+ */
+export async function fetchPushSubscriptionStatus(subscription: PushSubscriptionJSON): Promise<PushSubscriptionStatus | null> {
+  try {
+    return await (await sendJson("/api/push/status", "POST", { subscription })).json() as PushSubscriptionStatus;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "subscription_not_found") return null;
+    throw error;
+  }
 }
 
 export function fetchBridgeHealth(): Promise<BridgeHealth> { return getJson("/api/health?scope=bridge"); }
