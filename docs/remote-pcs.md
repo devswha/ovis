@@ -94,8 +94,9 @@ PC registrations and last snapshots persist in `<stateDir>/machines.json`; `OVIS
 A PC set up at another SSH address (destination, port or session) in its dialog moves there only once
 that setup connects. Until then, and after a setup there that is cancelled or fails, the PC keeps the
 address it had: `machines.json`, its reconnects and its updates that ask nobody use only that one, and
-it tries it again. Nothing of this app's is installed or started at the new address unless that
-setup's own approval allowed it.
+it tries it again. Its card keeps its own panes, herdr version and update offer; what the setup finds
+at the new address is shown in its dialog only. Nothing of this app's is installed or started at the
+new address unless that setup's own approval allowed it.
 
 SSH commands ignore configured `LocalForward`, `RemoteForward` and `DynamicForward`
 tunnels. The app adds only its own loopback forward through the existing control socket, without
