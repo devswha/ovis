@@ -1,5 +1,5 @@
 import type { HealthAuth } from "../../shared/protocol.ts";
-import { signOut, signOutOfPortal } from "./api.ts";
+import { fetchHealth, signOut, signOutOfPortal } from "./api.ts";
 
 /**
  * Whether this browser can end the sign-in it got in with: a token it typed or a paired device's,
@@ -16,12 +16,14 @@ export function canSignOut(auth: HealthAuth | null): boolean {
  * Ends this browser's sign-in the way it got in, and says whether the page must reload to show
  * what follows: Portal answers every request without its session with its own sign-in page, so
  * a browser Portal signed in loads that; the others ask the app, which then shows its own gate.
+ * A browser can hold the app's sign-in and Portal's at once, and the app's is the one that counts
+ * first: when Portal's is what is left once it is gone, the same click ends that too.
  */
 export async function endSignIn(via: HealthAuth["via"]): Promise<{ reload: boolean }> {
-  if (via === "portal") {
-    await signOutOfPortal();
-    return { reload: true };
+  if (via !== "portal") {
+    await signOut();
+    if ((await fetchHealth()).auth?.via !== "portal") return { reload: false };
   }
-  await signOut();
-  return { reload: false };
+  await signOutOfPortal();
+  return { reload: true };
 }
