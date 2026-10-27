@@ -1,4 +1,4 @@
-import { chmodSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 /**
@@ -60,20 +60,18 @@ function keepAs(path: string, aside: string): boolean {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
-  chmodSync(aside, 0o600);
+  try { chmodSync(aside, 0o600); }
+  catch (error) { rmSync(aside, { force: true }); throw error; }
   return true;
 }
 
 /**
- * The file at `path` as a store last saw it, or null when it is absent or cannot be read: a store
- * that skips writing an unchanged document checks the file is still the one it wrote, so a file
- * deleted or replaced on disk since is written again.
+ * Whether the JSON file at `path` holds `text` (compact JSON.stringify): a store that skips writing
+ * an unchanged document checks the file still holds it, so a file deleted or replaced on disk since
+ * is written again. A file that is absent or not JSON holds nothing.
  */
-export function fileStamp(path: string): string | null {
-  try {
-    const stat = statSync(path, { bigint: true });
-    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-  } catch { return null; }
+export function holdsDocument(path: string, text: string): boolean {
+  try { return JSON.stringify(JSON.parse(readFileSync(path, "utf8"))) === text; } catch { return false; }
 }
 
 /**

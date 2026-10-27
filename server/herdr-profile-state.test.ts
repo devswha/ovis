@@ -111,6 +111,11 @@ it("writes unchanged approvals again when their file was deleted or replaced on 
   store.approve("id", { destination: "BuildBox" });
   store.flush();
   expect(readFileSync(path, "utf8")).toBe(saved);
+  // the same length, other bytes
+  writeFileSync(path, saved.replace('"id"', '"xx"'));
+  store.approve("id", { destination: "BuildBox" });
+  store.flush();
+  expect(readFileSync(path, "utf8")).toBe(saved);
 });
 it("writes durably, and only when the document changed", () => {
   const dir = directory();

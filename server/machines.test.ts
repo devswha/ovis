@@ -1104,6 +1104,10 @@ describe("saved PCs that cannot be read", () => {
       writeFileSync(path, "[]");
       persist();
       expect(readFileSync(path, "utf8")).toBe(saved);
+      // the same length, other bytes
+      writeFileSync(path, saved.replace("Saved PC", "Other PC"));
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
     } finally { manager.stop(); }
   });
 
