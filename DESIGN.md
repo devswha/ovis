@@ -937,7 +937,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   action is **Revoke all**; a refused write stays in it as a sentence that says nothing was revoked
   and to try again, naming the server's log reference (never a file name). A device that only
   watches reads a sentence that says who can do it, with no button (a disabled one would only be a
-  fainter dead control); an empty list has no row. After a yes the
+  fainter dead control); an empty list has no row. A browser Portal's own sign-in let in reads the
+  list under a dim line, **Signed in as {name} with {method}.**, and a hint that pairing and
+  revoking are for the token or a paired device; it has no Pair, Rename, Revoke or Revoke all. After a yes the
   list and the row are gone and one `role="status"` line says every device went and what still
   gets in. No keep-this-device choice: the one action the owner needs when a credential is lost
   is the one that ends them all. The design follows this app's own paired-device model (the
@@ -2930,12 +2932,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   disabled, dim, and says why in `.settings-condition`. Under the chosen one: its allow-list as
   chips (`--bg-input`, `--radius-pill`, mono) with a text field and Add that check each entry as
   Portal does and say what is wrong in `.portal-warning` (`--status-blocked` border,
-  `--danger-tint`); for Google or company login also a Google/Other choice, the client ID, the
-  redirect address to register (copyable) and where the secret is read from, with a warning
-  while it is not set. While Portal runs the same choice is a read-only summary, since changing it
-  means stopping Portal; a private-link Portal adds **Invite someone** (name or a select of the
-  listed names, 1, 7, 30 or 90 days, Create link), which shows the link once in a bearer-secret
-  warning with Copy and Done. No coding-agent app offers a public address with a sign-in, so the
+  `--danger-tint`); a chip's remove button keeps its `--chip-h` look and reaches 24px under a
+  mouse through an invisible expander, and under a finger the chip itself is `--touch-target`
+  tall (chips one line apart would overlap their expanders). For Google or company login also a
+  Google/Other choice, the client ID and where the secret is read from, with a warning while it is
+  not set, and a line saying the redirect address shows once Portal has started. While Portal
+  runs the same choice is a read-only summary, since changing it means stopping Portal; for Google
+  or company login it carries the redirect address to register with the provider (copyable, in
+  `.phone-command`), which only exists once Portal is up. A private-link Portal adds **Invite
+  someone** (name or a `SettingsSelect` of the listed names, 1, 7, 30 or 90 days, Create link),
+  which shows the link once in a bearer-secret warning with Copy and Done; its selectable link
+  keeps the global focus ring and `.input`'s size on a phone. A browser Portal let in has no
+  Start, Stop or Invite (the server refuses them), as a watching device has none. No coding-agent app offers a public address with a sign-in, so the
   design follows an operational one: Cloudflare Access's allow rules (emails and email domains)
   and login methods. It differs on purpose: one method at a time, chosen where Portal starts.
 - A Portal that was serving and ends on its own is started again once by the server, on the same

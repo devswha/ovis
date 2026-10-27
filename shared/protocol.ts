@@ -121,10 +121,10 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/portal/stop               -> 202 { accepted: true }; 409 portal_unsupported
  *  POST   /api/portal/invite             -> PortalInvite, no-store; body { name, days }: a private link for `name`
  *         that lasts 1, 7, 30 or 90 days, issued while Portal runs with the private-link sign-in. 400
- *         invalid_invite / invite_name_not_listed, 403 owner_only (a visitor signed in through Portal itself may
- *         not issue links), 409 portal_not_credential, 502 portal_invite_failed
+ *         invalid_invite / invite_name_not_listed, 409 portal_not_credential, 502 portal_invite_failed
  *         Portal POSTs require X-Herdr-Update: 1 and same-origin, like the update POSTs:
- *         403 invalid_portal_request (or invalid_origin from the outer origin gate).
+ *         403 invalid_portal_request (or invalid_origin from the outer origin gate), and 403 owner_only to a
+ *         visitor Portal's own sign-in let in (see Access).
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
@@ -378,8 +378,13 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  the PC's own Tailscale login, as `tailscale serve` states it — or, where
  *  OVIS_TAILSCALE_SERVE_ONLY=1 declares serve the only ingress on a tailnet one login
  *  owns with no tagged node, a serve request that states no login; a paired device's cookie;
- *  the shared token (OVIS_TOKEN) as cookie or `Authorization: Bearer <token>`. With a
- *  token configured, only the last two count, this PC and its Tailscale login included. Without one, and while no
+ *  the shared token (OVIS_TOKEN) as cookie or `Authorization: Bearer <token>`; or, where Portal runs
+ *  with a sign-in of its own, a visitor it vouches for: X-Portal-User and X-Portal-Auth, believed only
+ *  beside the X-Portal-Proof of the Portal this server started, so with no token asked. With a
+ *  token configured, this PC and its Tailscale login stop counting: only the token, a paired device
+ *  and that visitor do. That visitor drives like a paired device but leaves no standing access behind: the
+ *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe and
+ *  POST /api/portal/* answer it 403 owner_only. Without a token, and while no
  *  device is paired, anything that reaches the server is let in as before (the startup
  *  warning says so). Refusals answer 401 `unauthorized` (403 `other_user` for another Tailscale
  *  login, when no token is configured); the upgrade is refused. Static files are always public.

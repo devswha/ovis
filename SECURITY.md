@@ -13,7 +13,7 @@ Include what you can of:
 
 - the version (Settings, under Updates, opens with `Running vX.Y.Z (commit)`) and, for a remote PC, its OS;
 - how the server was reached (localhost, SSH tunnel, `tailscale serve`, LAN, reverse proxy) and how
-  the client signed in (this PC, Tailscale login, paired device, token);
+  the client signed in (this PC, Tailscale login, paired device, token, Portal's own sign-in);
 - the steps to reproduce, and what an attacker needs beforehand;
 - the impact, with evidence from your own setup. Leave out real tokens, pairing codes and cookies.
 
@@ -31,8 +31,10 @@ by themselves with `OVIS_AUTO_UPDATE=1`). A fix in the remote-PC runtime ships a
 
 In scope, for example:
 
-- getting in without a matching token, a paired device, the PC's own Tailscale login or a local
-  connection (`server/access.ts`, `server/auth.ts`), including through a proxy or forged headers;
+- getting in without a matching token, a paired device, the PC's own Tailscale login, a local
+  connection or a visitor Portal's own sign-in vouches for with its proof (`server/access.ts`,
+  `server/auth.ts`, `server/portal.ts`), including through a proxy or forged headers; and a visitor
+  Portal let in leaving access behind, such as pairing a device or subscribing to push alerts;
 - pairing codes, device cookies and revocation (`server/devices.ts`); a revoked or observe-only
   device that can still type, send keys or resize;
 - reading files, transcripts or screens outside what the app shows a signed-in client;
@@ -52,7 +54,8 @@ Out of scope, as documented in [Access and safety](docs/guide.md#access-and-safe
   known. It is open to anyone who reaches it, and the server warns about it on startup. Getting past
   the gate once a token is set or a device is paired is in scope;
 - anything reached through `tailscale funnel`, which is unsupported;
-- people you gave access to (a paired device, the token, your tailnet login) using it;
+- people you gave access to (a paired device, the token, your tailnet login, a name or account on a
+  Portal sign-in list, a private link you sent) using it;
 - vulnerabilities in herdr, the agents, Tailscale or the browser themselves: report those upstream.
 
 Test only on PCs and accounts you own.
