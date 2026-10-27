@@ -1,0 +1,196 @@
+import { createHash } from "node:crypto";
+import { readdir, readlink, realpath, open, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
+import { answerVersion, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { processStartTicks } from "./omp-process.ts";
+import { trimOutput } from "./tool-output.ts";
+
+type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
+const unavailable = (): never => { throw new ConversationUnavailable("dsh_transcript_unavailable"); };
+const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/** A held lock binds the foreground process to its session; modification times do not. */
+export async function resolveDshTranscript(info: Processes | null | undefined): Promise<string> {
+  if (process.platform !== "linux") return unavailable();
+  const found = new Set<string>();
+  for (const proc of info?.foreground_processes ?? []) {
+    if (!proc.pid || !Array.isArray(proc.argv) || !proc.argv.some((word) => typeof word === "string" && (basename(word) === "dsh" || /@deepseek-ai\/dsh\/.*bin\.js$/.test(word)))) continue;
+    const start = processStartTicks(proc.pid);
+    if (!start) continue;
+    try {
+      if ((await stat(`/proc/${proc.pid}`)).uid !== process.getuid?.()) continue;
+      const candidates: string[] = [];
+      const descriptors = await readdir(`/proc/${proc.pid}/fd`);
+      if (descriptors.length > 4096) return unavailable();
+      for (const fd of descriptors) {
+        const target = await readlink(`/proc/${proc.pid}/fd/${fd}`).catch(() => "");
+        if (basename(target) !== "session.lock" || !/^[0-9a-f-]{36}$/i.test(basename(dirname(target)))) continue;
+        const folder = dirname(await realpath(target));
+        for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
+          const path = join(folder, name);
+          const s = await stat(path).catch(() => null);
+          if (s?.isFile() && s.uid === process.getuid?.()) { candidates.push(path); break; }
+        }
+      }
+      if (processStartTicks(proc.pid) === start) for (const path of candidates) found.add(path);
+    } catch { /* a process can exit during inspection */ }
+  }
+  if (found.size !== 1) return unavailable();
+  return [...found][0]!;
+}
+
+/** Ignore an unfinished final append, but reject malformed complete frames. */
+export function completeDshFrames(bytes: Buffer): number {
+  let end = 0;
+  while (end < bytes.length) {
+    let at = end;
+    if (bytes.length - at < 5) return end;
+    if (bytes.readUInt32LE(at) !== 0xfd2fb528) return unavailable();
+    const descriptor = bytes[at + 4]!;
+    if (descriptor & 24) return unavailable();
+    const flag = descriptor >>> 6;
+    const single = !!(descriptor & 32);
+    at += 5 + (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 3]! + (flag ? 1 << flag : single ? 1 : 0);
+    if (at > bytes.length) return end;
+    for (;;) {
+      if (bytes.length - at < 3) return end;
+      const block = bytes.readUIntLE(at, 3); at += 3;
+      const type = (block >>> 1) & 3;
+      if (type === 3) return unavailable();
+      at += type === 1 ? 1 : block >>> 3;
+      if (at > bytes.length) return end;
+      if (block & 1) break;
+    }
+    if (descriptor & 4) at += 4;
+    if (at > bytes.length) return end;
+    end = at;
+  }
+  return end;
+}
+
+async function readDsh(path: string): Promise<{ text: string; identity: string }> {
+  const file = await open(path, "r");
+  try {
+    const s = await file.stat();
+    if (!s.isFile() || s.uid !== process.getuid?.() || s.size > TRANSCRIPT_WINDOW_BYTES) return unavailable();
+    const bytes = Buffer.alloc(s.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) return unavailable();
+      offset += bytesRead;
+    }
+    let text: string;
+    if (path.endsWith(".zstd")) {
+      const complete = completeDshFrames(bytes);
+      if (!complete) return unavailable();
+      const reader = new Blob([bytes.subarray(0, complete)]).stream().pipeThrough(new DecompressionStream("zstd" as CompressionFormat)).getReader();
+      const chunks: Uint8Array[] = []; let size = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          size += value.length;
+          if (size > TRANSCRIPT_WINDOW_BYTES) { await reader.cancel(); return unavailable(); }
+          chunks.push(value);
+        }
+      } finally { reader.releaseLock(); }
+      text = Buffer.concat(chunks).toString("utf8");
+    } else text = bytes.toString("utf8");
+    return { text: text.slice(0, text.lastIndexOf("\n") + 1), identity: `${s.dev}:${s.ino}` };
+  } catch { return unavailable(); } finally { await file.close(); }
+}
+
+type Row = { type: string; seq?: number; time?: number; [key: string]: any };
+type Tool = Extract<ConversationPart, { kind: "tool" }>;
+export function projectDsh(text: string, identity: string, expectedSession?: string) {
+  let rows: Row[];
+  try { rows = text.trimEnd().split("\n").map((line) => JSON.parse(line)); } catch { return unavailable(); }
+  const header = rows.shift();
+  if (header?.type !== "session" || header.version !== 4 || typeof header.id !== "string" || (expectedSession && header.id !== expectedSession) || header.delegationDepth > 0) return unavailable();
+  const history = digest(`${identity}\0${header.id}`);
+  const turns: ConversationTurn[] = [];
+  const tools = new Map<string, Tool>();
+  const outputs = new Map<string, string>();
+  let assistant: ConversationTurn | undefined;
+  let model: string | null = null;
+  let reasoning: string | null = null;
+  const time = (row: Row) => typeof row.time === "number" && Number.isFinite(row.time) && Math.abs(row.time) <= 8.64e15 ? new Date(row.time).toISOString() : null;
+  const ensureAssistant = (row: Row) => assistant ??= (turns.push({ role: "assistant", ts: time(row), parts: [] }), turns.at(-1)!);
+  const blocks = (content: any): ConversationPart[] => {
+    if (!Array.isArray(content)) return unavailable();
+    return content.flatMap((block): ConversationPart[] => {
+      if (block.type === "text" && typeof block.text === "string") return [{ kind: "text", text: block.text }];
+      if (block.type === "reasoning" && typeof block.text === "string") return block.text ? [{ kind: "thinking", text: block.text }] : [];
+      if (block.type === "image" || block.type === "file") return [{ kind: "notice", text: `${block.type} attachment (view in terminal)` }];
+      if (block.type === "tool-call") return [];
+      return unavailable();
+    });
+  };
+  let seq = -1;
+  for (const row of rows) {
+    if (row.seq !== ++seq || typeof row.type !== "string") return unavailable();
+    const data = row.data;
+    if (row.type === "request/header") {
+      const config = data?.header?.config;
+      if (typeof config?.model === "string") model = config.model;
+      if (typeof config?.reasoningEffort === "string") reasoning = config.reasoningEffort;
+    } else if (row.type === "user/message") {
+      if (data?.source?.kind === "user") {
+        turns.push({ role: "user", ts: time(row), parts: blocks(data.content) }); assistant = undefined;
+      } else if (data?.source?.kind === "compact-checkpoint") {
+        ensureAssistant(row).parts.push({ kind: "compact", text: blocks(data.content).filter((p) => p.kind === "text").map((p) => p.text).join("\n") });
+      }
+    } else if (row.type === "assistant/message") {
+      if (data?.message?.role !== "assistant") return unavailable();
+      ensureAssistant(row).parts.push(...blocks(data.message.content));
+    } else if (row.type === "tool/call") {
+      if (typeof data?.callId !== "string" || typeof data.name !== "string" || typeof data.arguments !== "string" || tools.has(data.callId)) return unavailable();
+      const tool: Tool = { kind: "tool", name: data.name, summary: data.name, input: data.arguments, output: "", call_id: data.callId, state: "pending" };
+      tools.set(data.callId, tool); ensureAssistant(row).parts.push(tool);
+    } else if (row.type === "tool/result") {
+      const message = data?.message;
+      const tool = tools.get(message?.toolCallId);
+      if (!tool) return unavailable();
+      const output = blocks(message.content).map((part) => part.kind === "text" ? part.text : "[attachment]").join("\n");
+      const ref = digest(`${history}\0${message.toolCallId}`);
+      outputs.set(ref, output); trimOutput(tool, output, ref);
+      tool.error = message.isError === true; tool.state = tool.error ? "error" : "ok";
+    } else if (row.type === "turn/end") {
+      if (assistant) {
+        const ts = time(row); if (ts) assistant.end_ts = ts;
+        if (data?.reason?.kind === "completed") {
+          const part = [...assistant.parts].reverse().find((p) => p.kind === "text"); if (part?.kind === "text") part.phase = "final_answer";
+        } else assistant.parts.push({ kind: "notice", text: `Turn ended: ${typeof data?.reason?.kind === "string" ? data.reason.kind : "unknown"}` });
+      }
+      assistant = undefined;
+    } else if (row.surfaceOp !== undefined && row.type !== "system/message" && row.type !== "developer/message") {
+      return unavailable();
+    }
+  }
+  return { turns, history, outputs, metadata: { model, reasoning_effort: reasoning } };
+}
+
+export async function dshConversation(path: string, page: ConversationPage = {}): Promise<RecognizedConversation> {
+  const { text, identity } = await readDsh(path);
+  const projection = projectDsh(text, identity, basename(dirname(path)));
+  const { turns, history } = projection;
+  const cursor = (index: number) => `${history}:${index}:${digest(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
+  const parse = (value: string | undefined, fallback: number) => {
+    if (value === undefined) return fallback;
+    const index = Number(value.split(":")[1]);
+    if (!Number.isSafeInteger(index) || index < 0 || index > turns.length || value !== cursor(index)) throw new HistoryChanged();
+    return index;
+  };
+  const end = parse(page.before, turns.length);
+  const since = parse(page.since, 0);
+  const from = parse(page.from, Math.max(since, end - 50));
+  const start = Math.max(since, Math.min(from, end));
+  return { source: "dsh-transcript", turns: turns.slice(start, end), metadata: projection.metadata, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
+}
+
+export async function dshToolOutput(path: string, ref: string): Promise<string | null> {
+  const { text, identity } = await readDsh(path);
+  return projectDsh(text, identity, basename(dirname(path))).outputs.get(ref)?.slice(0, 1_000_000) ?? null;
+}

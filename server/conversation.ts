@@ -1,3 +1,4 @@
+import { resolveDshTranscript, dshConversation, dshToolOutput } from "./dsh.ts";
 /**
  * Agent session transcripts -> structured conversation turns.
  *
@@ -1330,7 +1331,8 @@ type ResolvedTranscript =
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
   | { source: "opencode-transcript"; path: string; session: string }
-  | { source: "hermes-transcript"; path: string; sessionId: string };
+  | { source: "hermes-transcript"; path: string; sessionId: string }
+  | { source: "dsh-transcript"; path: string };
 
 /** A native file or database session, resolved without parsing conversation turns. */
 export type NativeTranscript =
@@ -1370,6 +1372,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // session headers name the one they run in
   const sessionCwd = typeof pane.foreground_cwd === "string" && pane.foreground_cwd.length > 0 ? pane.foreground_cwd : cwd;
   try {
+    if (agent === "dsh") return { source: "dsh-transcript", path: await resolveDshTranscript(known === undefined ? await paneProcessInfo(paneId) : known) };
     if (agent === "copilot") return { source: "copilot-transcript", ...await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
       const found = await resolveGrokStore(pane, grokHome);
@@ -1584,6 +1587,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     }
     if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
     return await notBegun(launch.source, launch.historyId);
+  }
+  if (resolved.source === "dsh-transcript") {
+    rememberPaneRead(paneId, resolved.path);
+    return await dshConversation(resolved.path, page);
   }
   if (resolved.source === "devin-transcript") {
     try {
@@ -2326,6 +2333,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
     return output !== null && output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
   }
   rememberPaneRead(paneId, resolved.path);
+  if (resolved.source === "dsh-transcript") return await dshToolOutput(resolved.path, ref);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
   let nativeRef = ref;
   if (resolved.source === "copilot-transcript") {
