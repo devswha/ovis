@@ -144,9 +144,9 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       pendingMessages.refresh(owner);
       const message = pendingMessages.read(owner).find((item) => item.id === id);
       if (!message || message.state === "sending") return;
-      // Editing can only withdraw input that has not been transmitted. Uncertain Pi copies
-      // are receipts, not queued input, even when their text is still visible.
-      if (action === "edit" && (message.state !== "queued" && message.state !== "held" || message.resendInFlight)) return;
+      // Editing needs this connection's withdrawal authority, not just a saved held
+      // copy. Uncertain Pi copies are receipts, not queued input.
+      if (action === "edit" && (!message.serverOwned || message.state !== "queued" && message.state !== "held" || message.resendInFlight)) return;
       if (action === "steer" && (message.state === "uncertain" || !socket?.connected || heldRef.current || secretRef.current !== null || observeRef.current || ended || heldByOpenQueue || answering !== null)) return;
       if (message.serverOwned && !pendingMessages.isOwned(owner, id, scope)) return;
       // keys held back in the terminal draft would run in front of the message: the server pastes a
@@ -198,8 +198,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             off?.();
           }
           // Only the matching server removal receipt removes an authoritative item.
-        } else if (action === "discard" || action === "edit") {
-          if (action === "edit") composerDrafts.restorePending(`ovis:composer-draft:${owner}`, message.text);
+        } else if (action === "discard") {
           pendingMessages.removeCopy(owner, id);
         } else if (message.state === "held") {
           if (!pendingMessages.unconfirm(owner, id)) {
@@ -217,6 +216,9 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             pendingMessages.removeCopy(owner, id);
             if (answer.pending === undefined && !answer.unconfirmed) showSentCommand(pane, message.text, known, seen);
           }
+          // A concurrent Edit can remove storage while this copy is busy. Its exact
+          // withdrawal refusal settles that copy instead of recreating a held row.
+          else if (answer.code === "pending_discarded") pendingMessages.removeCopy(owner, id);
           else pendingMessages.fail(owner, id, { code: answer.code, message: answer.message }, !submitNotTyped(answer.code), message.resendGeneration ?? 0);
         }
       } catch {

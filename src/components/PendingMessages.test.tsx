@@ -22,6 +22,11 @@ const render = (code: string, message: string, languages: string[], serverOwned 
 };
 
 describe("a pending row's refusal note", () => {
+  it("does not offer Edit on another tab's saved held copy", () => {
+    const html = render("held_input", "held", ["en"], false);
+    expect(html).not.toContain("Edit queued message");
+    expect(html).toContain("pending-message-send");
+  });
   it("offers a labeled Edit only for unsent input, in every supported language", () => {
     for (const language of ["en", "ja", "ko", "zh"] as const) {
       const label = translate(language, "Edit queued message");

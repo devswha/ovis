@@ -61,6 +61,54 @@ afterAll(() => {
   mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
 });
 
+it.each(["delivery first", "withdrawal first"] as const)("serializes held-copy resend and Edit against one disposition: %s", async (order) => {
+  const frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+  const client = (): Client => {
+    const output: ServerMessage[] = [];
+    const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+      send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+    clients.add(owner); frames.set(owner, output); return owner;
+  };
+  const first = client(), second = client(), typed: string[] = [];
+  let queue = Promise.resolve<unknown>(undefined);
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => {
+    const next = queue.catch(() => {}).then(task); queue = next; return next;
+  };
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const delivery = createPendingDelivery({
+    options: {}, clients, attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: () => { throw new Error("withdrawal takes no input lease"); },
+    submitText: async (_pane, text) => { entered.resolve(); await release.promise; typed.push(text); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: null, agent_status: "idle" }] }) as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  const item = delivery.pending.enqueue(first, "p", 1, "held text", null, { agent: "claude", terminalId: "p", session: null }, true);
+  const resend = () => delivery.pendingFrames.submit(second, {
+    type: "submit", id: 2, pane_id: "p", text: item.message.text, payload: item.message.text, delivery: "immediate", resend_id: item.message.id,
+  });
+  const edit = () => delivery.pendingFrames["pending-action"](first, {
+    type: "pending-action", id: 3, pane_id: "p", pending_id: item.message.id, action: "discard",
+  });
+  if (order === "delivery first") {
+    const sending = resend();
+    await entered.promise;
+    const editing = edit();
+    release.resolve();
+    await Promise.all([sending, editing]);
+  } else {
+    await edit();
+    release.resolve();
+    await resend();
+  }
+  const removals = frames.get(first)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
+  expect(removals.length).toBeGreaterThan(0);
+  expect(removals.every((receipt) => receipt.id === item.message.id && receipt.outcome === (order === "delivery first" ? "sent" : "discarded"))).toBe(true);
+  expect(typed).toEqual(order === "delivery first" ? ["held text"] : []);
+  expect(frames.get(second)!.find((frame) => frame.type === "submit-result" && frame.id === 2)).toMatchObject({ ok: order === "delivery first" });
+  expect(delivery.pending.list(first, "p")).toEqual([]);
+});
+
 it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(
   "resumes only exact, authorized Pi presentation receipts: %s", async (when) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-resume-")); roots.push(root);

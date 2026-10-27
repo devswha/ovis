@@ -71,7 +71,7 @@ export function PendingMessages({ messages, active = true, connected, agent, blo
               const target = event.currentTarget, keyboard = event.detail === 0, stack = target.closest(".terminal-stack"), owner = stack?.getAttribute("data-pane-owner") ?? null;
               void onSendNow(message.id).finally(() => restoreFocus(keyboard, target, stack, owner));
             }}><ArrowUp aria-hidden="true" /><span>{t("Send now")}</span></button>}
-          {!uncertain && !sent && <button type="button" className="icon-button pending-message-action"
+          {!uncertain && !sent && message.serverOwned && <button type="button" className="icon-button pending-message-action"
             aria-label={`${t("Edit queued message")}: ${message.text}`} title={t("Edit queued message")}
             disabled={busy || message.resendInFlight || message.serverOwned && !connected} onClick={(event) => {
               const target = event.currentTarget, stack = target.closest(".terminal-stack"), owner = stack?.getAttribute("data-pane-owner");

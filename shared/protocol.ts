@@ -840,7 +840,10 @@ export type ClientMessage =
    * `clear_draft`.
    * `resend_id`: stable held-copy ID for immediate chat resends across connections; the bridge
    * shares the first outcome for 60 seconds after settlement. `resend_generation` defaults to 0;
-   * only a definitive no-input refusal permits the next attempt generation. Not with `send_anyway`:
+   * only a definitive no-input refusal permits the next attempt generation. A retained withdrawal
+   * overrides every generation with `pending_discarded`; the client drops that exact saved copy.
+   * Older clients treat this unknown refusal as uncertain and retain non-resendable text.
+   * Not with `send_anyway`:
    * that combination returns invalid_delivery before reserving or replaying an ID. No `clear_draft`.
    * Older peers ignore it. */
   | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number }
