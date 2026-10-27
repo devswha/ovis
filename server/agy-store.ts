@@ -141,6 +141,7 @@ function windowsScanAll(
         for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
       }
       const scan = { at: Date.now(), owners };
+      if (windowsScanId !== id) return windowsScanAll(getHolders, getCandidates);
       if (windowsScanId === id) windowsScan = scan;
       return scan;
     })().finally(() => { if (windowsScanId === id) windowsScanning = null; });

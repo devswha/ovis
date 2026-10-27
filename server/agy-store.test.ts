@@ -73,7 +73,11 @@ it("coalesces concurrent scans across panes without invalidating scan cache", as
   const lock2 = "C:\\path\\presence\\00000000-0000-4000-8000-000000000002.lock";
   const activeHolders: Record<string, number[]> = { [lock1]: [pid1], [lock2]: [pid2] };
   const mockHolders = (path: string) => activeHolders[path] ?? [];
-  const mockCandidates = () => [lock1, lock2];
+  let candidateCalls = 0;
+  const mockCandidates = () => {
+    candidateCalls += 1;
+    return [lock1, lock2];
+  };
 
   const [res1, res2] = await Promise.all([
     windowsHeldPaths(pid1, mockHolders, mockCandidates),
@@ -82,5 +86,7 @@ it("coalesces concurrent scans across panes without invalidating scan cache", as
 
   expect(res1).toEqual([lock1]);
   expect(res2).toEqual([lock2]);
+  expect(candidateCalls).toBe(1);
   expect(await windowsHeldPaths(pid1, mockHolders, mockCandidates)).toEqual([lock1]);
+  expect(candidateCalls).toBe(1);
 });
