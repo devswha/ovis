@@ -547,7 +547,7 @@ const BRANCH_HEAD_BYTES = 1024 * 1024;
 const MAX_BRANCH_DEPTH = 8;
 const MAX_BRANCH_PARENTS = 256;
 /** Transcript file → the session its copied records came from; a transcript's start never changes once written. */
-const branchParents = new Map<string, { dev: number; ino: number; parent: string | null }>();
+const branchParents = new Map<string, { dev: number; ino: number; size: number; parent: string | null }>();
 
 /**
  * The session `/branch` copied this transcript from: Claude Code (2.1.311) writes the conversation so far into a
@@ -562,7 +562,8 @@ async function branchedFrom(path: string): Promise<string | null> {
     const info = await file.stat();
     if (!info.isFile()) return null;
     const known = branchParents.get(path);
-    if (known && known.dev === info.dev && known.ino === info.ino) return known.parent;
+    // a file that shrank was written afresh, not appended to
+    if (known && known.dev === info.dev && known.ino === info.ino && info.size >= known.size) return known.parent;
     const bytes = Buffer.alloc(Math.min(info.size, BRANCH_HEAD_BYTES));
     let length = 0;
     while (length < bytes.length) {
@@ -570,6 +571,11 @@ async function branchedFrom(path: string): Promise<string | null> {
       if (bytesRead === 0) break;
       length += bytesRead;
     }
+    const remember = (parent: string | null): string | null => {
+      if (branchParents.size >= MAX_BRANCH_PARENTS) branchParents.delete(branchParents.keys().next().value!);
+      branchParents.set(path, { dev: info.dev, ino: info.ino, size: info.size, parent });
+      return parent;
+    };
     const text = bytes.subarray(0, length).toString("utf8");
     // only whole lines: the last one may still be being written, or cut by the cap
     for (const line of text.slice(0, text.lastIndexOf("\n") + 1).split("\n")) {
@@ -580,11 +586,10 @@ async function branchedFrom(path: string): Promise<string | null> {
       const answer = typeof parent === "string" && SESSION_ID.test(parent) ? parent
         : entry.type === "user" || entry.type === "assistant" ? null : undefined;
       if (answer === undefined) continue;
-      if (branchParents.size >= MAX_BRANCH_PARENTS) branchParents.delete(branchParents.keys().next().value!);
-      branchParents.set(path, { dev: info.dev, ino: info.ino, parent: answer });
-      return answer;
+      return remember(answer);
     }
-    return null;
+    // Claude only appends: a head that fills the cap without that record never gets one within it
+    return length === BRANCH_HEAD_BYTES ? remember(null) : null;
   } catch {
     return null;
   } finally { await file.close(); }

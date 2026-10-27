@@ -411,6 +411,7 @@ it.skipIf(!NATIVE)("follows a /branch the PID record names while Herdr's report 
     writeFileSync(path, JSON.stringify({ ...record, sessionId: ELSEWHERE }));
     expect((await read(hooked.pane)).turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${FIRST}` });
   } finally {
+    writeFileSync(path, JSON.stringify(record));
     rmSync(join(project, `${BRANCH}.jsonl`));
     rmSync(join(project, `${ELSEWHERE}.jsonl`));
   }
