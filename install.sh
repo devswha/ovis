@@ -27,6 +27,8 @@ PLUGIN="devswha.ovis"
 LEGACY_PLUGIN="devswha.herdr-web-ui"
 BIN_DIR="$HOME/.local/bin"
 NODE_DIR="$HOME/.local/share/ovis/node"
+# where an install from before the rename put it
+LEGACY_NODE_DIR="$HOME/.local/share/herdr-web-ui/node"
 # Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
 NODE_VERSION="v22.23.2"
 
@@ -239,8 +241,8 @@ install_node() {
   curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive" || { rm -rf "$tmp"; return 1; }
   [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; say "the Node download does not match its published SHA-256; nothing was installed"; return 1; }
   # unpacked beside the old one and swapped in only once it holds a node: a failed unpack leaves an
-  # existing install (and the link to it) as it was
-  mkdir -p "$tmp/node" "$BIN_DIR" || { rm -rf "$tmp"; return 1; }
+  # existing install as it was
+  mkdir -p "$tmp/node" || { rm -rf "$tmp"; return 1; }
   tar -xzf "$archive" -C "$tmp/node" --strip-components=1 || { rm -rf "$tmp"; return 1; }
   [ -x "$tmp/node/bin/node" ] || { rm -rf "$tmp"; say "the Node download holds no bin/node; nothing was installed"; return 1; }
   mkdir -p "$(dirname "$NODE_DIR")" || { rm -rf "$tmp"; return 1; }
@@ -248,8 +250,26 @@ install_node() {
   if [ -e "$NODE_DIR" ]; then mv "$NODE_DIR" "$NODE_DIR.old" || { rm -rf "$tmp"; return 1; }; fi
   mv "$tmp/node" "$NODE_DIR" || { [ ! -e "$NODE_DIR.old" ] || mv "$NODE_DIR.old" "$NODE_DIR"; rm -rf "$tmp"; return 1; }
   rm -rf "$NODE_DIR.old" "$tmp"
-  # an older node elsewhere on the PATH would still win in a new shell, so this one goes first in ours
-  [ -e "$BIN_DIR/node" ] || ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node" || return 1
+}
+
+# The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
+# first there and overrode the user's own Node (#596). A release whose server looks for it in
+# NODE_DIR itself (server/pty/sidecar.ts, in the code at $1) needs no link, so a link of ours goes
+# and anything else there stays. An older release finds Node on the PATH only: for it, a Node just
+# installed ($2 = installed) is linked as before.
+node_link() {
+  if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
+    [ -L "$BIN_DIR/node" ] || return 0
+    case "$(readlink "$BIN_DIR/node")" in
+      "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node") rm -f "$BIN_DIR/node" ;;
+    esac
+  elif [ "${2:-}" = installed ] && [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
+    if mkdir -p "$BIN_DIR" && ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node"; then
+      installed_here="$installed_here node"
+    else
+      say "could not link Node into $BIN_DIR, so this release's panes are mirrored until it is updated"
+    fi
+  fi
 }
 
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
@@ -304,7 +324,7 @@ main() {
   original_path="$PATH"
   installed_here=""
   new_install=0
-  PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$PATH"
+  PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$LEGACY_NODE_DIR/bin:$PATH"
   export PATH
 
   if ! command -v herdr >/dev/null 2>&1; then
@@ -376,8 +396,9 @@ main() {
     if herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1; then
       installed=1
     elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
-      # a release from before the Rust PTY host was the default still asks for Node in its first build step
-      installed_here="$installed_here node"
+      # a release from before the Rust PTY host was the default still asks for Node in its first build
+      # step, on herdr's PATH
+      node_link "" installed
       herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
     fi
     if [ "$installed" = 1 ]; then
@@ -416,12 +437,13 @@ main() {
     # optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
     if [ "${node_major:-0}" -lt 18 ]; then
       if ( install_node ); then
-        installed_here="$installed_here node"
+        node_link "$code" installed
       else
         say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
       fi
     fi
   fi
+  node_link "$code"
 
   if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
     # the action only queues the start (its output goes to herdr's plugin log), so wait for it here

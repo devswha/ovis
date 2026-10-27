@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,7 +16,7 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node"].map(fn).join("\n");
+const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "node_link"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-node-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -93,20 +93,20 @@ describe("install_node", () => {
     expect(existsSync(env["NODE_DIR"]!)).toBe(false);
   });
 
-  it("keeps an existing install and its link when the new unpack fails", () => {
+  it("keeps an existing install when the new unpack fails", () => {
     const env = { ...pc(download("x"), `mkdir -p "$4/bin" && : > "$4/bin/node"; exit 42`), platform: "fixture", node_sha: new Bun.CryptoHasher("sha256").update("x").digest("hex") };
     const nodeDir = env["NODE_DIR"]!;
     mkdirSync(join(nodeDir, "bin"), { recursive: true });
     writeFileSync(join(nodeDir, "bin", "node"), "old node");
-    mkdirSync(env["BIN_DIR"]!, { recursive: true });
-    symlinkSync(join(nodeDir, "bin", "node"), join(env["BIN_DIR"]!, "node"));
     expect(attempt(env).out).toContain("FAILED");
-    expect(readFileSync(join(env["BIN_DIR"]!, "node"), "utf8")).toBe("old node");
+    expect(readFileSync(join(nodeDir, "bin", "node"), "utf8")).toBe("old node");
   });
 
-  it("installs when every step succeeds", () => {
+  it("installs when every step succeeds, and puts no node on the user's PATH (#596)", () => {
     const env = { ...pc(download("x"), `mkdir -p "$4/bin" && : > "$4/bin/node" && chmod +x "$4/bin/node"`), platform: "fixture", node_sha: new Bun.CryptoHasher("sha256").update("x").digest("hex") };
     expect(attempt(env).out).toContain("INSTALLED");
+    expect(existsSync(join(env["NODE_DIR"]!, "bin", "node"))).toBe(true);
+    expect(existsSync(env["BIN_DIR"]!)).toBe(false);
   });
 
   it("fails when the download fails", () => {
@@ -117,5 +117,55 @@ describe("install_node", () => {
     const result = attempt(pc(download("not node"), "exit 0"));
     expect(result.out).toContain("FAILED");
     expect(result.out).toContain("does not match its published SHA-256");
+  });
+});
+
+describe("node_link", () => {
+  /** a PC whose ~/.local/bin/node is `bin`, and the running code: one that finds the app's Node itself (`finds`), or an older one */
+  function pc(finds: boolean, bin?: (env: Record<string, string>) => void): Record<string, string> {
+    const root = mkdtempSync(join(dir, "link-"));
+    const env = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "" };
+    mkdirSync(join(env.CODE, "server/pty"), { recursive: true });
+    // as the release's server/pty/sidecar.ts names the app's Node, or before it did
+    writeFileSync(join(env.CODE, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');
+    mkdirSync(join(env.NODE_DIR, "bin"), { recursive: true });
+    writeFileSync(join(env.NODE_DIR, "bin/node"), "app node", { mode: 0o755 });
+    mkdirSync(env.BIN_DIR);
+    bin?.(env);
+    return env;
+  }
+  const link = (env: Record<string, string>, args = "") => sh(`node_link "$CODE" ${args}\necho "[$installed_here]"`, env);
+  const node = (env: Record<string, string>) => join(env["BIN_DIR"]!, "node");
+
+  it("removes the link an older install.sh made, to its Node or to the one from before the rename", () => {
+    for (const target of ["NODE_DIR", "LEGACY_NODE_DIR"]) {
+      const env = pc(true, (e) => symlinkSync(join(e[target]!, "bin/node"), node(e)));
+      expect(link(env).code).toBe(0);
+      expect(lstatSync(node(env), { throwIfNoEntry: false })).toBeUndefined();
+    }
+  });
+
+  it("keeps a node of the user's own there, a link elsewhere or a file", () => {
+    const linked = pc(true, (e) => symlinkSync("/usr/bin/env", node(e)));
+    expect(link(linked).code).toBe(0);
+    expect(Bun.spawnSync(["readlink", node(linked)]).stdout.toString().trim()).toBe("/usr/bin/env");
+    const file = pc(true, (e) => writeFileSync(node(e), "user node"));
+    expect(link(file).code).toBe(0);
+    expect(readFileSync(node(file), "utf8")).toBe("user node");
+  });
+
+  it("links no Node it just installed for a release that finds it itself", () => {
+    const env = pc(true);
+    expect(link(env, "installed").out).toContain("[]");
+    expect(existsSync(node(env))).toBe(false);
+  });
+
+  it("links a Node it just installed for a release that finds Node on the PATH only, and only then", () => {
+    const untouched = pc(false);
+    expect(link(untouched).out).toContain("[]");
+    expect(existsSync(node(untouched))).toBe(false);
+    const installed = pc(false);
+    expect(link(installed, "installed").out).toContain("[ node]");
+    expect(readFileSync(node(installed), "utf8")).toBe("app node");
   });
 });
