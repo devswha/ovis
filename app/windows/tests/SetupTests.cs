@@ -68,8 +68,10 @@ namespace Ovis
                     Equal(Phase.Installed, Setup.Choose(plugin, UpdateReason.None, null));
                     // running, but not answering its version (a token): herdr's list is not taken for it
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(plugin, null, null, true, App));
-                    // a checkout herdr lists at or past the app is current whatever runs on it
-                    Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.19"))), null, null, true, App));
+                    // nor is a checkout herdr lists at or past the app: an older process may still run on it
+                    Equal(UpdateReason.VersionUnknown, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.22"))), null, "0.4.22", true, App));
+                    // stopped, the status line names what its start runs
+                    Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.22"))), null, "0.4.22", false, App));
                     bool exact;
                     Equal(new Version(0, 4, 15), Setup.ServerVersion(plugin, false, null, null, out exact));
                     Equal(false, exact);

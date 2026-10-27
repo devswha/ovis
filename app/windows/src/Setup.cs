@@ -181,9 +181,12 @@ namespace Ovis
             if (app == null) return UpdateReason.None;
             bool exact;
             var server = ServerVersion(plugin, running, runningVersion, statusVersion, out exact);
-            if (server != null && server >= app && !(server == app && exact && Prerelease(running ? runningVersion : statusVersion))) return UpdateReason.None;
-            if (server == null || !exact) return running || server == null ? UpdateReason.VersionUnknown : UpdateReason.None;
-            return UpdateReason.Older;
+            // a running server that does not say is unknown whatever herdr lists: its checkout may be newer than it
+            if (running && !exact) return UpdateReason.VersionUnknown;
+            if (server == null) return UpdateReason.VersionUnknown;
+            if (server >= app && !(server == app && exact && Prerelease(running ? runningVersion : statusVersion))) return UpdateReason.None;
+            // stopped and known only by herdr's lower bound: started first, as it may have updated itself
+            return exact ? UpdateReason.Older : UpdateReason.None;
         }
 
         /// <summary>"0.4.19-rc.1": a prerelease, older than the 0.4.19 it leads to.</summary>
