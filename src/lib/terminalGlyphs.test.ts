@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { displayText, glyphFit, iconScale, oversizedIcon, textPresentation } from "./terminalGlyphs.ts";
+import { coversAny, displayText, followLateFaces, glyphFit, iconScale, type LateFace, oversizedIcon, textPresentation } from "./terminalGlyphs.ts";
 
 // iPhone Safari at 13px: Menlo cells are 7.84px, Hangul from Apple SD Gothic Neo 11.24px
 const IOS_CELL = 7.8367;
@@ -81,5 +81,131 @@ describe("displayText", () => {
 
   it("keeps text without marks as it is", () => {
     expect(displayText("한글 ﾊﾝｶｸ ㄱㅏ abc")).toBe("한글 ﾊﾝｶｸ ㄱㅏ abc");
+  });
+});
+
+// PaneTerminal.css's faces, as FontFace gives them back (Chrome quotes the family, WebKit does not)
+const ICON_RANGE = "U+e000-f8ff, U+f0000-ffffd";
+const HANGUL_RANGE = "U+3131-318e, U+ac00-d7a3";
+const STACK = '"Symbols Nerd Font Mono", Pretendard Variable, Menlo, "Noto Sans Mono CJK KR", "Ovis Hangul Mono", monospace';
+
+describe("coversAny", () => {
+  it("finds a face for text with any character in its ranges", () => {
+    expect(coversAny(HANGUL_RANGE, "[나라]")).toBe(true);
+    expect(coversAny(HANGUL_RANGE, "ab ㄱ")).toBe(true);
+    expect(coversAny(HANGUL_RANGE, "abc 漢字")).toBe(false);
+  });
+
+  it("reads single code points, upper case and wildcards", () => {
+    expect(coversAny("u+7c", "a|b")).toBe(true);
+    expect(coversAny("U+AC00-D7A3", "한")).toBe(true);
+    expect(coversAny("U+4??", "\u04ff")).toBe(true);
+    expect(coversAny("U+4??", "\u0500")).toBe(false);
+  });
+
+  it("takes a face with no range for every character", () => {
+    expect(coversAny("U+0-10FFFF", "🙂")).toBe(true);
+  });
+});
+
+interface FakeFace extends LateFace {
+  status: string;
+  arrive(): void;
+  fail(): void;
+}
+
+const face = (family: string, unicodeRange: string, status = "unloaded"): FakeFace => {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const fake: FakeFace = {
+    family, unicodeRange, status, loaded: promise,
+    arrive: () => { fake.status = "loaded"; resolve(); },
+    fail: () => { fake.status = "error"; reject(new Error("network")); },
+  };
+  return fake;
+};
+
+/** A terminal's late faces, with its frames run by hand. */
+const follow = (faces: FakeFace[]) => {
+  const frames: (() => void)[] = [];
+  let arrivals = 0;
+  const late = followLateFaces(faces, (callback) => { frames.push(callback); }, () => { arrivals += 1; });
+  return { late, frames, arrivals: () => arrivals, runFrames: () => { for (const callback of frames.splice(0)) callback(); } };
+};
+
+// what follows each face ran before this: it was attached first
+const settled = (faces: FakeFace[]) => Promise.allSettled(faces.map((each) => each.loaded));
+
+describe("followLateFaces", () => {
+  it("measures again once for faces that arrive between two frames, and again for a later one", async () => {
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const regular = face("Ovis Hangul Mono", HANGUL_RANGE);
+    const bold = face("Ovis Hangul Mono", HANGUL_RANGE);
+    const { late, frames, arrivals, runFrames } = follow([icons, regular, bold]);
+    late.ask(STACK, "\uf07b 가");
+    icons.arrive();
+    regular.arrive();
+    await settled([icons, regular]);
+    expect(frames).toHaveLength(1);
+    runFrames();
+    expect(arrivals()).toBe(1);
+
+    bold.arrive();
+    await settled([bold]);
+    runFrames();
+    expect(arrivals()).toBe(2);
+  });
+
+  it("measures again for a chunk that arrived when another chunk of the text failed", async () => {
+    const first = face("Pretendard Variable", "U+ac00-b097");
+    const second = face("Pretendard Variable", "U+b098-d7a3");
+    const { late, arrivals, runFrames } = follow([first, second]);
+    late.ask(STACK, "가나");
+    first.fail();
+    second.arrive();
+    await settled([first, second]);
+    runFrames();
+    expect(arrivals()).toBe(1);
+  });
+
+  it("follows the face of a character drawn while another face of its family is loading", async () => {
+    const loading = face("Pretendard Variable", "U+ac00-b097", "loading");
+    const later = face("Pretendard Variable", "U+b098-d7a3");
+    const { late, arrivals, runFrames } = follow([loading, later]);
+    late.ask(STACK, "가");
+    late.ask(STACK, "a나");
+    loading.fail();
+    later.arrive();
+    await settled([loading, later]);
+    runFrames();
+    expect(arrivals()).toBe(1);
+  });
+
+  it("follows no face that loaded, failed, stands outside the stack or covers none of the text", async () => {
+    const faces = [
+      face("Ovis Hangul Mono", HANGUL_RANGE, "loaded"),
+      face("Ovis Hangul Mono", HANGUL_RANGE, "error"),
+      face('"JetBrains Mono Web"', "U+0-10ffff"),
+      face('"Symbols Nerd Font Mono"', ICON_RANGE),
+    ];
+    const { late, frames } = follow(faces);
+    late.ask(STACK, "가");
+    for (const each of faces) each.arrive();
+    await settled(faces);
+    expect(frames).toHaveLength(0);
+  });
+
+  it("measures nothing again for a terminal that stopped", async () => {
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const hangul = face("Ovis Hangul Mono", HANGUL_RANGE);
+    const { late, frames, arrivals, runFrames } = follow([icons, hangul]);
+    late.ask(STACK, "\uf07b가");
+    icons.arrive();
+    await settled([icons]);
+    late.stop();
+    runFrames();
+    hangul.arrive();
+    await settled([hangul]);
+    expect(frames).toHaveLength(0);
+    expect(arrivals()).toBe(0);
   });
 });
