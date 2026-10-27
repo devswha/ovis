@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 /**
@@ -31,15 +31,49 @@ export const damagedCopy = (path: string): string => `${path}.bad`;
  */
 export function setAsideDamaged(path: string, now = new Date()): string {
   // no ':' in a Windows file name
-  const aside = `${path}.corrupt-${now.toISOString().replace(/[:.]/g, "-")}`;
+  const name = `${path}.corrupt-${now.toISOString().replace(/[:.]/g, "-")}`;
+  let aside = name;
   try {
     chmodSync(path, 0o600);
-    renameSync(path, aside);
+    // a rename would replace a copy of the same name; a link or exclusive copy refuses to
+    for (let attempt = 1; !keepAs(path, aside); attempt += 1) {
+      if (attempt > 99) throw Object.assign(new Error("too many copies"), { code: "EEXIST" });
+      aside = `${name}-${attempt}`;
+    }
+    try { unlinkSync(path); } catch (error) { rmSync(aside, { force: true }); throw error; }
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
     throw new Error(`${basename(path)} is not JSON and cannot be set aside as ${basename(aside)} (${reason})`);
   }
   return aside;
+}
+
+/** Gives `path`'s bytes the name `aside` without replacing a file there: false when one is there. */
+function keepAs(path: string, aside: string): boolean {
+  try { linkSync(path, aside); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+  }
+  // a file system without hard links
+  try { copyFileSync(path, aside, constants.COPYFILE_EXCL); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+  chmodSync(aside, 0o600);
+  return true;
+}
+
+/**
+ * The file at `path` as a store last saw it, or null when it is absent or cannot be read: a store
+ * that skips writing an unchanged document checks the file is still the one it wrote, so a file
+ * deleted or replaced on disk since is written again.
+ */
+export function fileStamp(path: string): string | null {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch { return null; }
 }
 
 /**

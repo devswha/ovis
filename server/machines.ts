@@ -17,7 +17,7 @@ import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { sameSshSession, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { validateTarget } from "./machine-security.ts";
 import { writePrivateState } from "./private-state.ts";
-import { readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { fileStamp, readStateDocument, setAsideDamaged } from "./state-document.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner } from "./remote-host.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 import { SshConnection, sshClient } from "./ssh.ts";
@@ -204,8 +204,8 @@ export class MachineManager {
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
   private statePath: string;
-  /** machines.json as this manager last wrote it (persist) */
-  private written: string | undefined;
+  /** machines.json as this manager last wrote it (persist), and the file it wrote */
+  private written: { text: string; stamp: string | null } | undefined;
   /** the state files that were not JSON at startup, by the name they were moved to (settings) */
   private setAside: string[] = [];
   private sshDir: string;
@@ -453,7 +453,11 @@ export class MachineManager {
   private persist(): void {
     const data: StoredMachine[] = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
-    if (text !== this.written) { writePrivateState(this.statePath, data); this.written = text; }
+    const written = this.written;
+    if (written?.text !== text || written.stamp === null || fileStamp(this.statePath) !== written.stamp) {
+      writePrivateState(this.statePath, data);
+      this.written = { text, stamp: fileStamp(this.statePath) };
+    }
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);
     this.profileState.flush();
   }

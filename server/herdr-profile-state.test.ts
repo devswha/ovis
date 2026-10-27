@@ -97,6 +97,21 @@ it("sets aside approvals that are not JSON, bytes untouched, and starts without 
     expect(new HerdrProfileState(dir).approved("id", { destination: "BuildBox" })).toBe(true);
   } finally { error.mockRestore(); }
 });
+it("writes unchanged approvals again when their file was deleted or replaced on disk", () => {
+  const dir = directory(), path = join(dir, "herdr-profile-state.json");
+  const store = new HerdrProfileState(dir);
+  store.approve("id", { destination: "BuildBox" });
+  store.flush();
+  const saved = readFileSync(path, "utf8");
+  rmSync(path);
+  store.approve("id", { destination: "BuildBox" });
+  store.flush();
+  expect(readFileSync(path, "utf8")).toBe(saved);
+  writeFileSync(path, "[]");
+  store.approve("id", { destination: "BuildBox" });
+  store.flush();
+  expect(readFileSync(path, "utf8")).toBe(saved);
+});
 it("writes durably, and only when the document changed", () => {
   const dir = directory();
   const temporaries: string[] = [];

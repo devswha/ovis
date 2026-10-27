@@ -1090,6 +1090,23 @@ describe("saved PCs that cannot be read", () => {
     } finally { manager?.stop(); error.mockRestore(); }
   });
 
+  it("writes an unchanged list again when its file was deleted or replaced on disk", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    writeFileSync(path, JSON.stringify([{ id: "11111111-1111-1111-1111-111111111111", name: "Saved PC", target: { destination: "BuildBox" }, enabled: false, snapshot: null }]));
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+    try {
+      const persist = () => (manager as unknown as { persist(): void }).persist();
+      persist();
+      const saved = readFileSync(path, "utf8");
+      rmSync(path);
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
+      writeFileSync(path, "[]");
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
+    } finally { manager.stop(); }
+  });
+
   it("still refuses to start on JSON that is not a list of PCs, leaving it in place", () => {
     const dir = directory();
     writeFileSync(join(dir, "machines.json"), "{}");

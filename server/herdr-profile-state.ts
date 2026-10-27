@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { SshTarget } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { writePrivateState } from "./private-state.ts";
-import { readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { fileStamp, readStateDocument, setAsideDamaged } from "./state-document.ts";
 
 /** `retiring`: this binding's key removal was started and has not succeeded yet. */
 interface ProfileState { binding: string; approved: boolean; connectionApproved: boolean; snapshot: SessionSnapshot | null; retiring?: true }
@@ -22,8 +22,9 @@ export class HerdrProfileState {
   private entries = new Map<string, ProfileState>();
   private dirty = false;
   private path: string;
-  /** the document this store last wrote: a flush that would write the same bytes writes nothing */
-  private written: string | undefined;
+  /** the document this store last wrote, and the file it wrote: a flush that would write the same
+   * bytes over that same file writes nothing */
+  private written: { text: string; stamp: string | null } | undefined;
   /** where a file that was not JSON was moved at startup (setAsideDamaged), its approvals with it */
   readonly setAside: string | null = null;
   constructor(directory: string) {
@@ -102,7 +103,11 @@ export class HerdrProfileState {
     if (!this.dirty) return;
     const document = [...this.entries].map(([profile_id, state]) => ({ profile_id, ...state }));
     const text = JSON.stringify(document);
-    if (text !== this.written) { writePrivateState(this.path, document); this.written = text; }
+    const written = this.written;
+    if (written?.text !== text || written.stamp === null || fileStamp(this.path) !== written.stamp) {
+      writePrivateState(this.path, document);
+      this.written = { text, stamp: fileStamp(this.path) };
+    }
     this.dirty = false;
   }
 }

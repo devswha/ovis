@@ -31,6 +31,19 @@ describe("setAsideDamaged", () => {
     expect(kept.map((name) => readFileSync(join(dir, name), "utf8"))).toEqual(["first", "second"]);
   });
 
+  it("never replaces an earlier copy set aside at the same moment", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    const now = new Date("2026-10-26T07:06:23.123Z");
+    writeFileSync(path, "first");
+    const first = setAsideDamaged(path, now);
+    writeFileSync(path, "second");
+    const second = setAsideDamaged(path, now);
+    expect(second).not.toBe(first);
+    expect(readFileSync(first, "utf8")).toBe("first");
+    expect(readFileSync(second, "utf8")).toBe("second");
+    expect(readStateDocument(path)).toEqual({ kind: "missing" });
+  });
+
   it("throws, naming the file and why, when it cannot be moved", () => {
     const dir = directory();
     expect(() => setAsideDamaged(join(dir, "machines.json"))).toThrow(/^machines\.json is not JSON and cannot be set aside as machines\.json\.corrupt-\S+ \(ENOENT\)$/);
