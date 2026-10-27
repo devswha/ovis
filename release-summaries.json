@@ -10,7 +10,7 @@
       ],
       "improved": [
         "Korean in the terminal uses a coding font that matches the Latin.",
-        "With one PC, the sidebar drops its header and starts with workspaces.",
+        "With only the Host shown, the sidebar starts with its workspaces.",
         "The phone key bar can show or hide the keyboard in the terminal.",
         "Queued or held messages can be edited back in the message box.",
         "A device whose push alerts stopped is told why and can fix it."
@@ -29,13 +29,13 @@
         "Windows에서도 Antigravity 채팅을 씁니다.",
         "채팅에서 omp 세션과 Codex 도구의 그림을 보여 줍니다.",
         "OpenCode 하위 에이전트가 Claude Code처럼 백그라운드 작업으로 보입니다.",
-        "설정에서 연결된 기기를 한 번에 모두 해제할 수 있습니다."
+        "설정에서 페어링된 기기를 한 번에 모두 폐기할 수 있습니다."
       ],
       "improved": [
         "터미널의 한글이 영문과 어울리는 코딩 글꼴로 보입니다.",
-        "PC가 하나뿐이면 사이드바가 PC 머리글 없이 작업 공간부터 보여 줍니다.",
+        "호스트만 보일 때는 사이드바가 머리글 없이 작업 공간부터 보여 줍니다.",
         "휴대폰 키 바에서 터미널 키보드를 보이거나 숨길 수 있습니다.",
-        "대기 중이거나 보류된 메시지를 메시지 상자로 되돌려 고칠 수 있습니다.",
+        "대기 중이거나 보류된 메시지를 입력창으로 되돌려 고칠 수 있습니다.",
         "푸시 알림이 끊긴 기기에 그 이유를 알리고 다시 켤 수 있게 합니다."
       ],
       "fixed": [
@@ -52,11 +52,11 @@
         "Windows でも Antigravity のチャットが使えます。",
         "チャットで omp セッションと Codex ツールの画像を表示します。",
         "OpenCode のサブエージェントが Claude Code と同じくバックグラウンドタスクとして表示されます。",
-        "設定から、ペアリングしたデバイスをまとめて解除できます。"
+        "設定から、ペアリングしたデバイスをまとめて取り消せます。"
       ],
       "improved": [
         "ターミナルの韓国語が、英字に合うコーディング用フォントで表示されます。",
-        "PC が 1 台だけなら、サイドバーは PC の見出しなしでワークスペースから始まります。",
+        "ホストだけが表示されているときは、サイドバーが見出しなしでワークスペースから始まります。",
         "スマホのキーバーで、ターミナルのキーボードを表示・非表示にできます。",
         "待機中や保留中のメッセージを入力欄に戻して編集できます。",
         "プッシュ通知が止まったデバイスに理由を伝え、再びオンにできます。"
@@ -79,7 +79,7 @@
       ],
       "improved": [
         "终端里的韩文使用与英文相配的编程字体显示。",
-        "只有一台电脑时，侧边栏不再显示电脑标题，直接列出工作区。",
+        "只显示主机时，侧边栏不再显示标题，直接列出工作区。",
         "手机键栏可以在终端里显示或隐藏键盘。",
         "排队或暂存的消息可以放回输入框中编辑。",
         "推送通知停止的设备会被告知原因，并可重新开启。"
