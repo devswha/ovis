@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -49,6 +49,12 @@ interface Runtime {
   verification?: SourceCheck;
   /** the user cancelled this PC's bridge update: it is not started again on its own until the PC connects */
   updateCancelled?: boolean;
+  /**
+   * Whether the PC's own Ovis (an independently managed web server) serves this socket, as the PC last showed it:
+   * while none runs, the PC waits for that server instead of starting this app's bridge (prepare). A server that
+   * stops removes its descriptor, so this is all that tells a restarting one from a PC without a bridge.
+   */
+  ownOvis?: boolean;
 }
 interface JobState {
   update: boolean;
@@ -158,6 +164,11 @@ const ownInstallRunning = (status: Partial<Pick<UpdateStatus, "phase">> | null):
 const OWN_CHECK_WAIT_MS = 30_000;
 /** a check for releases that outlasts that wait: news soon, so the PC tries again on its own */
 const OWN_CHECK_RUNNING = "That PC's Ovis is still checking for updates; this PC tries again shortly.";
+/**
+ * The PC's own Ovis is not running (it restarts, updates itself, crashed, or its PC rebooted): it comes back by
+ * itself, so the PC tries again as one that cannot be reached does (#2047)
+ */
+const OWN_OVIS_AWAY = "This PC's own Ovis is not running; this PC tries again until it is back. If it stays away, start it on that PC.";
 /** the host an SSH destination names, without its user: where that PC's own Ovis is opened */
 function sshHost(destination: string): string { return destination.slice(destination.lastIndexOf("@") + 1); }
 /** a release version as a PC's updater tells it (`0.4.18`), or null */
@@ -165,7 +176,7 @@ const releaseVersion = (value: unknown): string | null => typeof value === "stri
 /** another PC's own words, kept to one short line */
 const remoteWords = (value: unknown): string | null => typeof value === "string" && value.trim() !== "" ? value.trim().replace(/\s+/g, " ").slice(0, 300) : null;
 /** An independently managed web server older than this app, which can install its own update: updating this PC asks it to. */
-const ownUpdateOffered = (offer: RemoteOvis): string => `This PC runs its own Ovis${offer.version ? ` v${offer.version}` : ""}, older than this app. Update it${offer.latest_version ? ` to v${offer.latest_version}` : ""} to reconnect; it updates itself, and herdr sessions keep running.`;
+const ownUpdateOffered = (offer: RemoteOvis): string => `${OWN_UPDATE_OFFER}${offer.version ? ` v${offer.version}` : ""}, older than this app. Update it${offer.latest_version ? ` to v${offer.latest_version}` : ""} to reconnect; it updates itself, and herdr sessions keep running.`;
 /** One that cannot: today's words, and why not. */
 const ownUpdateRefused = (offer: RemoteOvis): string => `${independentBridge(REMOTE_BUNDLE_VERSION)} It cannot be updated from here: ${offer.reason}`;
 
@@ -594,7 +605,9 @@ export class MachineManager {
         // network, or gone in the middle) learned nothing about its bridge: the PC waits as
         // offline, and the version check runs again once it answers. Read before disconnect
         // closes the connection.
-        const unreachable = ownsRuntime && job.update && !!existing && !(e instanceof MachineActionRequired) && (reached ? !ssh.connected() : !SSH_REFUSED.test(error));
+        // A PC whose own Ovis is away, or still checking for releases, waits the same way: both end by themselves.
+        const unreachable = ownsRuntime && job.update && !!existing && !(e instanceof MachineActionRequired)
+          && (error === OWN_OVIS_AWAY || error === OWN_CHECK_RUNNING || (reached ? !ssh.connected() : !SSH_REFUSED.test(error)));
         if (ownsRuntime) this.disconnect(runtime);
         // a cancelled update (its Cancel, a closed dialog, the setup's time limit) says nothing
         // about the bridge either: the PC tries again on its own, and only a version check on a PC
@@ -698,8 +711,14 @@ export class MachineManager {
     let stalePid: number | null = null;
     if (descriptor) {
       if (!Number.isInteger(descriptor.pid) || descriptor.pid < 1) throw new Error("Invalid bridge process identity");
+      // whose server this socket has, running or not: what the PC waits for while none runs
+      runtime.ownOvis = !descriptor.managed_remote;
       if (!(await host.alive(ssh, descriptor.pid))) { stalePid = descriptor.pid; descriptor = undefined; }
     }
+    // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
+    // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
+    // user reviews in its dialog may start this app's bridge there.
+    if (!descriptor && runtime.ownOvis && (!job || job.auto)) throw new Error(OWN_OVIS_AWAY);
     // Update is idempotent: another app may have finished it while this dialog was open.
     // Prove the live endpoint is compatible; a descriptor or installed directory alone is not enough.
     let update = job?.update === true;
@@ -783,9 +802,14 @@ export class MachineManager {
     if (ownUpdate && job && descriptor) {
       try { descriptor = await this.runOwnUpdate(job, ssh, host, descriptor, expectedSocket, ownUpdate); }
       catch (error) {
-        // it updated itself into a refusal (another version than this app's): what it offered no longer holds,
-        // and an update it can run is never told beside a setup (shared/machines.ts remote_ovis)
-        if (error instanceof MachineActionRequired) { runtime.machine.remote_ovis = null; job.public.remote_ovis = null; }
+        // it updated itself into a refusal (another version than this app's): no update is on offer any more, and
+        // an update it can run is never told beside a setup (shared/machines.ts remote_ovis). Where it answers stays,
+        // for the user to update it there; its versions from before the update do not
+        if (error instanceof MachineActionRequired) {
+          const refused: RemoteOvis = { ...ownUpdate, version: null, latest_version: null, updatable: false, reason: error.message };
+          job.public.remote_ovis = refused;
+          if (runtime.generation === generation) runtime.machine.remote_ovis = refused;
+        }
         throw error;
       }
     }
@@ -822,6 +846,7 @@ export class MachineManager {
       }
       if (!descriptor) throw new Error(`Bridge did not start. Check ${host.logHint} on the PC.`);
     }
+    runtime.ownOvis = !descriptor.managed_remote;
     const verified = currentBridge ?? await this.verify(ssh, descriptor, expectedSocket);
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     runtime.endpoint = verified.endpoint;
