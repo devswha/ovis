@@ -59,8 +59,11 @@ export function PortalAuthChoice({ status, draft, disabled, onChange }: { status
   );
 }
 
-/** What runs now, read-only: changing who may open an address means stopping it first. */
-export function PortalAuthSummary({ auth }: { auth: PortalAuth }) {
+/**
+ * What runs now, read-only: changing who may open an address means stopping it first. `url` is the
+ * address Portal serves, which a Google or company login needs to be told to send people back to.
+ */
+export function PortalAuthSummary({ auth, url }: { auth: PortalAuth; url: string | null }) {
   const t = useT();
   return (
     <div className="settings-item portal-auth">
@@ -69,7 +72,25 @@ export function PortalAuthSummary({ auth }: { auth: PortalAuth }) {
       {auth.issuer !== null && <p className="settings-hint portal-chip-text">{auth.issuer}</p>}
       {auth.method === "credential" && auth.allow.length === 0 && <p className="settings-hint">{t("Every unexpired link you issue opens it.")}</p>}
       {auth.allow.length > 0 && <ul className="portal-chips" aria-label={t("Allowed")}>{auth.allow.map((entry) => <li key={entry} className="portal-chip"><span className="portal-chip-text">{entry}</span></li>)}</ul>}
+      {auth.method === "oidc" && url !== null && <RedirectAddress url={url} />}
       <p className="settings-hint">{t("Stop Portal to change who can open it.")}</p>
+    </div>
+  );
+}
+
+/** Where the provider sends a person back after they sign in, to register with it before anyone can. */
+function RedirectAddress({ url }: { url: string }) {
+  const t = useT();
+  const addressRef = useRef<HTMLElement>(null);
+  const [copied, setCopied] = useState(false);
+  const redirect = redirectAddress(url);
+  return (
+    <div className="portal-field">
+      <span className="settings-label">{t("Redirect address to register with the provider")}</span>
+      <span className="phone-command">
+        <code ref={addressRef}>{redirect}</code>
+        <button type="button" className="btn" onClick={() => void copyText(redirect, addressRef.current).then((ok) => { if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1600); } })}>{t(copied ? "Copied" : "Copy")}</button>
+      </span>
     </div>
   );
 }
@@ -78,9 +99,6 @@ function OidcFields({ status, draft, onChange }: { status: PortalStatus; draft: 
   const t = useT();
   const id = useId();
   const [custom, setCustom] = useState(draft.issuer !== GOOGLE_ISSUER);
-  const addressRef = useRef<HTMLElement>(null);
-  const [copied, setCopied] = useState(false);
-  const redirect = status.url === null ? null : redirectAddress(status.url);
   return (
     <div className="portal-oidc">
       <Segmented label={t("Identity provider")} value={custom ? "custom" : "google"} options={[{ value: "google", label: "Google" }, { value: "custom", label: t("Other") }]}
@@ -101,12 +119,7 @@ function OidcFields({ status, draft, onChange }: { status: PortalStatus; draft: 
         onChange={(list) => onChange({ ...draft, allow: { ...draft.allow, oidc: list } })} />
       <div className="portal-field">
         <span className="settings-label">{t("Redirect address to register with the provider")}</span>
-        {redirect === null ? <span className="settings-hint">{t("It shows here once Portal has started.")}</span> : (
-          <span className="phone-command">
-            <code ref={addressRef}>{redirect}</code>
-            <button type="button" className="btn" onClick={() => void copyText(redirect, addressRef.current).then((ok) => { if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1600); } })}>{t(copied ? "Copied" : "Copy")}</button>
-          </span>
-        )}
+        <span className="settings-hint">{t("It shows here once Portal has started.")}</span>
       </div>
       <p className="settings-hint">{t("The client secret is not typed here: the app reads it from the environment variable {name} on this PC.", { name: PORTAL_OIDC_SECRET_VARIABLE })}</p>
       {status.oidc_secret

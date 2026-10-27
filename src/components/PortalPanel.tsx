@@ -38,7 +38,7 @@ export function PortalPanel({ readOnly = false, viaPortal = false }: { readOnly?
   if (on) {
     control = (
       <>
-        <PortalAuthSummary auth={status.auth} />
+        <PortalAuthSummary auth={status.auth} url={status.url} />
         {status.phase === "running" && status.auth.method === "credential" && !readOnly && !viaPortal && <PortalInvite auth={status.auth} />}
         <SettingsRow label={t("Relay")} description={status.relay ?? undefined}>
           <button type="button" className="btn" disabled={readOnly || pending || status.phase === "stopping"} onClick={() => void request("stop")}>{t("Stop")}</button>

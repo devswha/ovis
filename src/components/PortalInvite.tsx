@@ -7,7 +7,7 @@ import type { PortalAuth } from "../../shared/protocol.ts";
 import { issuePortalInvite } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
-import { Segmented } from "./SettingsControls.tsx";
+import { Segmented, SettingsSelect } from "./SettingsControls.tsx";
 
 /**
  * Settings → Phone & devices → Portal → Invite someone: a private link for a person, while Portal
@@ -46,9 +46,9 @@ export function PortalInvite({ auth }: { auth: PortalAuth }) {
           <div className="portal-field">
             <label className="settings-label" htmlFor={`${id}-name`}>{t("Link name")}</label>
             {listed ? (
-              <select id={`${id}-name`} className="select" value={who} disabled={busy} onChange={(event) => setName(event.currentTarget.value)}>
+              <SettingsSelect id={`${id}-name`} value={who} disabled={busy} onChange={(event) => setName(event.currentTarget.value)}>
                 {auth.allow.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
-              </select>
+              </SettingsSelect>
             ) : (
               <input id={`${id}-name`} className="input" value={name} placeholder="alice" maxLength={256} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} disabled={busy}
                 aria-invalid={name.trim() !== "" && "problem" in checked ? true : undefined} onChange={(event) => setName(event.currentTarget.value)} />

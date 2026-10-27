@@ -65,14 +65,14 @@ describe("the Portal panel's choice of who may open the address", () => {
     expect(named).toContain("Remove alice");
   });
 
-  it("names the redirect address and the variable that holds the secret, and warns when it is not set", () => {
-    const up = choice(status({ url: "https://herdr-test-0123.relay.example", auth: OIDC, phase: "running" }));
-    expect(up).toContain("https://herdr-test-0123.relay.example/_portal/auth/callback");
-    expect(up).toContain("OVIS_PORTAL_OIDC_CLIENT_SECRET");
-    expect(up).toContain("The secret is set on this PC.");
-    expect(up).toContain("me@example.com");
+  it("names the variable that holds the secret, and warns when it is not set", () => {
+    const set = choice(status({ auth: OIDC }));
+    expect(set).toContain("OVIS_PORTAL_OIDC_CLIENT_SECRET");
+    expect(set).toContain("The secret is set on this PC.");
+    expect(set).toContain("me@example.com");
     const idle = choice(status({ oidc_secret: false, auth: OIDC }));
     expect(idle).toContain("The secret is not set on this PC.");
+    // the address exists only once Portal runs: the choice before Start says so, and the summary shows it
     expect(idle).toContain("It shows here once Portal has started.");
     expect(idle).not.toContain("_portal/auth/callback");
     // the secret itself is never a field here
@@ -80,13 +80,25 @@ describe("the Portal panel's choice of who may open the address", () => {
   });
 
   it("summarizes what runs, read-only", () => {
-    const html = render(createElement(PortalAuthSummary, { auth: OIDC }));
+    const html = render(createElement(PortalAuthSummary, { auth: OIDC, url: null }));
     expect(html).toContain("Google or company login");
     expect(html).toContain("https://accounts.google.com");
     expect(html).toContain("@example.com");
     expect(html).toContain("Stop Portal to change who can open it.");
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<button");
-    expect(render(createElement(PortalAuthSummary, { auth: NO_PORTAL_AUTH }))).toContain("Token or paired device only");
+    expect(render(createElement(PortalAuthSummary, { auth: NO_PORTAL_AUTH, url: null }))).toContain("Token or paired device only");
+  });
+
+  it("shows a running Google or company login's redirect address to register, with Copy, and no other sign-in's", () => {
+    const url = "https://herdr-test-0123.relay.example";
+    const oidc = render(createElement(PortalAuthSummary, { auth: OIDC, url }));
+    expect(oidc).toContain("Redirect address to register with the provider");
+    expect(oidc).toContain("https://herdr-test-0123.relay.example/_portal/auth/callback");
+    expect(oidc.match(/<button/g)).toHaveLength(1);
+    expect(oidc).toContain("Copy");
+    for (const auth of [NO_PORTAL_AUTH, { method: "credential", allow: [], issuer: null, client_id: null } satisfies PortalAuth]) {
+      expect(render(createElement(PortalAuthSummary, { auth, url }))).not.toContain("_portal/auth/callback");
+    }
   });
 });

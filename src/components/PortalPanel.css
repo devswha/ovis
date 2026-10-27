@@ -137,6 +137,7 @@
 }
 
 .portal-chip-remove {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -149,6 +150,30 @@
   border-radius: var(--radius-pill);
   color: var(--text-dim);
   cursor: pointer;
+}
+
+/* the glyph keeps its --chip-h look and reaches the smallest hit area a mouse gets through an
+   invisible expander (the border is 0, so it is measured from the button's own box) */
+.portal-chip-remove::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--chip-h) - var(--pointer-target)) / 2);
+}
+
+/* a finger gets the target's size from the chip itself: expanders of chips one line apart would overlap */
+@media (pointer: coarse) {
+  .portal-chip:has(.portal-chip-remove) {
+    min-height: var(--touch-target);
+  }
+
+  .portal-chip-remove {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .portal-chip-remove::before {
+    content: none;
+  }
 }
 
 .portal-chip-remove svg {
@@ -181,12 +206,15 @@
   border: 0;
   color: var(--text-strong);
   font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-input);
   text-overflow: ellipsis;
 }
 
-.portal-link:focus {
-  outline: none;
+/* a field is read at --fs-input on a phone (a smaller one is zoomed into), as .input is */
+@media (min-width: 641px) {
+  .portal-link {
+    font-size: var(--fs-sm);
+  }
 }
 
 @media (max-width: 640px) {
