@@ -997,7 +997,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
                 dispatched = true;
                 return await dispatchPending(item, false, arrivedAt, true, client);
               } catch (error) { return { ok: false, ...pendingFault(error) }; }
-            }, message.resend_generation);
+            }, message.resend_generation, (code) => code === "submit_changed");
           // A saved copy may already have completed this ID on another connection.
           if (!dispatched && pending.get(client, item.paneId, item.message.id) === item && pending.claim(item, false))
             pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, reply.code === "submit_changed");

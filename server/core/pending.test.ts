@@ -384,3 +384,28 @@ it.each([
   expect(reasons().at(-1)).toBe(code);
   expect(calls).toEqual([]);
 });
+
+it("keeps the owner's held row sendable when its own Send now fails before anything is typed", async () => {
+  const output: ServerMessage[] = [];
+  const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+    send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+  owner.data.attached.set("p", { keepSize: false });
+  let queue = Promise.resolve<unknown>(undefined);
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const next = queue.catch(() => {}).then(task); queue = next; return next; };
+  const typed: string[] = [];
+  const delivery = createPendingDelivery({
+    options: {}, clients: new Set([owner]), attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: (): TerminalSighting => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }),
+    submitText: async (_pane, text) => { typed.push(text); },
+    authorizeSocket: () => {},
+    // herdr unreachable before any write: the dispatch's own answer says nothing was typed
+    clientSnapshot: async (): Promise<SessionSnapshot> => { throw new Error("herdr unreachable before any write"); },
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  const item = delivery.pending.enqueue(owner, "p", 1, "held text", null as never, { agent: null, terminalId: "p", session: null }, true);
+  await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 10, pane_id: "p", pending_id: item.message.id, action: "steer" });
+  expect(output.find((frame) => frame.type === "pending-result" && frame.id === 10)).toMatchObject({ ok: false, code: "submit_failed" });
+  expect(typed).toEqual([]);
+  expect(delivery.pending.list(owner, "p")[0]?.state).toBe("held");
+  expect(() => delivery.pending.enqueue(owner, "p", 2, "another", null as never, { agent: null, terminalId: "p", session: null })).not.toThrow();
+});

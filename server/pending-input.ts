@@ -71,7 +71,13 @@ export class PendingInputs<Owner, Lease> {
   ) {}
 
   /** Cross-connection held copies share one outcome; never evict an in-flight send. */
-  resend(paneId: string, id: string, fingerprint: string, task: () => Promise<HeldCopyReply>, generation = 0): Promise<HeldCopyReply> {
+  /**
+   * `ambiguous`: which failed reply may have typed input. A saved copy's resend from another
+   * connection only has the client's conservative list; the owner's own Send now knows the
+   * dispatch's real answer, where only `submit_changed` means input may have arrived.
+   */
+  resend(paneId: string, id: string, fingerprint: string, task: () => Promise<HeldCopyReply>, generation = 0,
+    ambiguous: (code: string) => boolean = (code) => !submitNotTyped(code)): Promise<HeldCopyReply> {
     const key = JSON.stringify([paneId, id, generation]);
     this.expireResends();
     // Withdrawal covers the stable ID, not just one retry generation, while its
@@ -97,7 +103,7 @@ export class PendingInputs<Owner, Lease> {
     const entry: { id: string; paneId: string; fingerprint: string; settledAt: number | null; uncertain: boolean; reply: Promise<HeldCopyReply> } = {
       id, paneId, fingerprint, settledAt: null, uncertain: false,
       reply: Promise.resolve().then(task).then((reply) => {
-        entry.uncertain = !reply.ok && !submitNotTyped(reply.code ?? ""); entry.settledAt = this.now();
+        entry.uncertain = !reply.ok && ambiguous(reply.code ?? ""); entry.settledAt = this.now();
         const item = this.records.get(id);
         if (reply.ok && item?.paneId === paneId) this.finish(item, "sent");
         else if (entry.uncertain && item?.paneId === paneId) {
