@@ -3,7 +3,7 @@ import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
 
 export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-type Removal = { id: string; outcome: "sent" | "discarded" | "consumed" };
+type Removal = { id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" };
 const PREFIX = "ovis:pending:";
 const piReceipt = (message: PendingMessage): boolean => message.id.startsWith("pi:")
   && (message.error?.code === "pi_transcript_pending" || message.error?.code === "transcript_unconfirmed");

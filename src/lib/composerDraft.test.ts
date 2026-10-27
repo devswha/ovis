@@ -7,6 +7,7 @@ import { paneLifetimes } from "./paneLifetime.ts";
 import { useComposerSends, type ComposerSendsDeps } from "./useComposerSends.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import type { HerdrSocket, SubmitResult } from "./ws.ts";
+import { PendingInputs } from "../../server/pending-input.ts";
 function fixture() {
   const data = new Map<string, string>();
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
@@ -49,7 +50,7 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
     for (const spy of spies) spy.mockRestore();
   }
 });
-it.each(["sent", "discarded"] as const)("restores an edited row only on its exact withdrawal receipt: %s", async (outcome) => {
+it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row only on its exact withdrawal receipt: %s", async (outcome) => {
   const data = new Map<string, string>(), storage = paneLifetimes.paneStorage;
   const spies = [
     spyOn(storage, "getItem").mockImplementation((key) => data.get(key) ?? null),
@@ -64,7 +65,7 @@ it.each(["sent", "discarded"] as const)("restores an edited row only on its exac
     pendingMessages.accept(owner, message, "scope");
     expect(other.read(owner)).toHaveLength(1);
     composerDrafts.set(key, "existing draft");
-    const socket = {
+    const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (pane: string, id: string, action: string) => {
         expect([pane, id, action]).toEqual(["p", message.id, "discard"]);
@@ -145,6 +146,65 @@ it("drops a busy saved copy when its delayed resend learns that another tab with
     reply.resolve({ ok: false, code: "pending_discarded", message: "This pending message was withdrawn" });
     await sending;
     pendingMessages.removeCopy(owner, message.id);
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+it("does not restore an already-editing row after another tab's ambiguous resend", async () => {
+  const data = new Map<string, string>(), storage = paneLifetimes.paneStorage;
+  const spies = [
+    spyOn(storage, "getItem").mockImplementation((key) => data.get(key) ?? null),
+    spyOn(storage, "setItem").mockImplementation((key, value) => { data.set(key, value); }),
+    spyOn(storage, "removeItem").mockImplementation((key) => { data.delete(key); }),
+  ];
+  const owner = "edit-ambiguous-resend", key = `ovis:composer-draft:${owner}`;
+  const listeners = new Set<(frame: ServerMessage) => void>(), removals: string[] = [];
+  const other = new PendingMessageStore(() => storage);
+  const server = new PendingInputs<string, null>((_owner, pane, messages, removed) => {
+    pendingMessages.publish(owner, messages, removed ?? [], "scope");
+    for (const receipt of removed ?? []) removals.push(receipt.outcome);
+    for (const listener of listeners) listener({ type: "pending-messages", pane_id: pane, messages, removed });
+  });
+  const item = server.enqueue("original", "p", 1, "ambiguous Enter", null, { agent: "claude", terminalId: "p", session: null }, true);
+  let deliveries = 0;
+  try {
+    expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
+    composerDrafts.set(key, "existing draft");
+    const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
+      on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      pendingAction: async (_pane, _id, _action, _generation, withdrawalOnly) => {
+        expect(withdrawalOnly).toBe(true);
+        // Edit has installed its listener, but its frame is delayed. The other
+        // tab's persisted resend marker cannot cancel an already-started Edit.
+        expect(other.unconfirm(owner, item.message.id)).toBe(true);
+        const reply = await server.resend("p", item.message.id, "fingerprint", async () => {
+          deliveries++; return { ok: false, code: "submit_changed", message: "Enter may have reached the terminal" };
+        });
+        other.fail(owner, item.message.id, { code: reply.code!, message: reply.message! }, true, 0);
+        return server.discard(item, withdrawalOnly) ? { ok: true } : { ok: false, code: "pending_uncertain", message: "Check the terminal" };
+      },
+    };
+    let actions!: ReturnType<typeof useComposerSends>;
+    function Composer() {
+      const deps: Partial<ComposerSendsDeps> = {
+        paneId: "p", paneRef: { current: "p" }, queueOwner: owner,
+        socketRef: { current: socket as HerdrSocket }, pendingScopeRef: { current: "scope" },
+        stillOpenRef: { current: null }, settings: { autoSendQueued: false }, answering: null, pendingAnswer: null,
+        knownOutcomes: () => [], inputRowNow: () => "ready",
+      };
+      actions = useComposerSends(deps as ComposerSendsDeps);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Composer));
+    await actions.actOnPending(item.message.id, "edit");
+    expect(deliveries).toBe(1);
+    expect(composerDrafts.read(key).text).toBe("existing draft");
+    expect(removals).not.toContain("discarded");
+    expect(server.list("original", "p")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+    expect(listeners.size).toBe(0);
+  } finally {
+    pendingMessages.publish(owner, [], [{ id: item.message.id, outcome: "discarded" }], "scope");
+    composerDrafts.set(key, "");
     for (const spy of spies) spy.mockRestore();
   }
 });

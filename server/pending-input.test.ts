@@ -46,6 +46,50 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it.each(["submit_changed", "submit_partial", "submit_failed", "disconnected", "timeout", "unknown_failure"])(
+    "retains ambiguous held-copy disposition across generations and dismissal: %s", async (code) => {
+      const f = fixture(), item = f.enqueue(1);
+      f.queue.hold("a");
+      let deliveries = 0;
+      await f.queue.resend("p1", item.message.id, "fingerprint", async () => { deliveries++; return { ok: false, code, message: "Check the terminal" }; });
+      expect(item.message).toMatchObject({ state: "uncertain", error: { code } });
+      expect(f.queue.claim(item, false)).toBe(false);
+      f.advance(60_001);
+      const send = async () => { deliveries++; return { ok: true }; };
+      expect(await f.queue.resend("p1", item.message.id, "fingerprint", send, 1)).toMatchObject({ ok: false, code: "pending_uncertain" });
+      expect(f.queue.discard(item, true)).toBe(false);
+      expect(f.queue.list("a", "p1")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+      expect(f.queue.discard(item)).toBe(true);
+      expect(f.queue.outcome("a", "p1", item.message.id)).toBe("dismissed");
+      expect(f.receipts.at(-1)?.removed).toEqual([{ id: item.message.id, outcome: "dismissed" }]);
+      expect(await f.queue.resend("p1", item.message.id, "fingerprint", send, 2)).toMatchObject({ ok: false, code: "pending_uncertain" });
+      expect(deliveries).toBe(1);
+    });
+  it("keeps an ambiguous disposition when its disconnected owner's row expires", async () => {
+    const f = fixture(), item = f.enqueue(1);
+    await f.queue.resend("p1", item.message.id, "fingerprint", async () => ({ ok: false, code: "submit_changed" }));
+    f.queue.close("a"); f.advance(60_001);
+    expect(f.queue.list("a", "p1")).toEqual([]);
+    expect(f.queue.outcome("a", "p1", item.message.id)).toBe("dismissed");
+    expect(await f.queue.resend("p1", item.message.id, "fingerprint", async () => ({ ok: true }), 1))
+      .toMatchObject({ ok: false, code: "pending_uncertain" });
+  });
+  it("keeps an ambiguous saved-only resend uncertain across generations without an original row", async () => {
+    const f = fixture();
+    await f.queue.resend("p1", "saved", "fingerprint", async () => ({ ok: false, code: "submit_changed" }));
+    let deliveries = 0;
+    expect(await f.queue.resend("p1", "saved", "fingerprint", async () => { deliveries++; return { ok: true }; }, 1))
+      .toMatchObject({ ok: false, code: "pending_uncertain" });
+    expect(deliveries).toBe(0);
+  });
+  it("leaves a definitively refused held copy withdrawable", async () => {
+    const f = fixture(), item = f.enqueue(1);
+    f.queue.hold("a");
+    await f.queue.resend("p1", item.message.id, "fingerprint", async () => ({ ok: false, code: "agent_blocked" }));
+    expect(item.message.state).toBe("held");
+    expect(f.queue.discard(item)).toBe(true);
+    expect(f.queue.outcome("a", "p1", item.message.id)).toBe("discarded");
+  });
   it("refuses withdrawal after another connection delivered the same held ID", async () => {
     const f = fixture(), item = f.enqueue(1);
     f.queue.hold("a");

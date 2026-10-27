@@ -84,7 +84,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   TYPED_SETTLE_MS: number;
 }) {
   const pendingAuthorities = new WeakMap<Client, Map<string, object>>();
-  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" }>>();
+  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" | "dismissed" }>>();
   /** the connections that could type into the pane now: attached, allowed to type, and with a ready lease */
   const typists = (paneId: string): Client[] => [...clients].filter((client) => {
     if (!client.data.attached.has(paneId)) return false;
@@ -955,6 +955,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (message.resend_generation !== undefined && (!Number.isSafeInteger(message.resend_generation) || message.resend_generation < 0)) {
         result({ ok: false, code: "invalid_pending_action", message: "A resend generation must be a nonnegative integer" }); return;
       }
+      if (message.withdrawal_only !== undefined && (message.withdrawal_only !== true || message.action !== "discard")) {
+        result({ ok: false, code: "invalid_pending_action", message: "Withdrawal-only applies to discarding unsent input" }); return;
+      }
       const arrivedAt = Date.now();
       try {
         authorizeSocket(client);
@@ -967,6 +970,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const piReceipt = client.data.attached.has(message.pane_id)
             ? piTyped.get(message.pane_id)?.find((candidate) => candidate.owner === client && candidate.message.id === message.pending_id) : undefined;
           if (piReceipt) {
+            if (message.withdrawal_only) return { ok: false, code: "pending_uncertain", message: "This receipt cannot prove withdrawal" };
             if (message.action === "steer") return { ok: false, code: "pending_sent", message: "This message was already sent to Pi" };
             return discardPiReceipt(client, message.pane_id, message.pending_id)
               ? { ok: true } : { ok: false, code: "pending_busy", message: "Pi transcript confirmation is still pending" };
@@ -976,7 +980,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             ?? (client.data.attached.has(message.pane_id) ? pending.get(FIRST_MESSAGE_OWNER, message.pane_id, message.pending_id) : undefined);
           if (!item) return replayPendingOutcome(client, message.pane_id, message.pending_id)
             ? { ok: true } : { ok: false, code: "pending_not_found", message: "This pending message does not belong to this connection" };
-          if (message.action === "discard") return pending.discard(item) ? { ok: true } : { ok: false, code: "pending_busy", message: "This message is already being sent" };
+          if (message.action === "discard") return pending.discard(item, message.withdrawal_only) ? { ok: true }
+            : item.message.state === "uncertain" ? { ok: false, code: "pending_uncertain", message: "Check the terminal before changing this message" }
+            : { ok: false, code: "pending_busy", message: "This message is already being sent" };
           if (item.message.state === "uncertain") return { ok: false, code: "pending_uncertain", message: "Check the terminal before sending this message again" };
           let dispatched = false;
           const reply = await pending.resend(item.paneId, item.message.id,

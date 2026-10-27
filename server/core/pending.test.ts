@@ -61,7 +61,8 @@ afterAll(() => {
   mock.module("../pi.ts", () => ({ ...pi, piTranscriptPath: originalTranscriptPath }));
 });
 
-it.each(["delivery first", "withdrawal first"] as const)("serializes held-copy resend and Edit against one disposition: %s", async (order) => {
+it.each(["delivery first", "withdrawal first", "ambiguous delivery first", "ambiguous plain discard"] as const)("serializes held-copy resend and Edit against one disposition: %s", async (order) => {
+  const ambiguous = order.startsWith("ambiguous");
   const frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
   const client = (): Client => {
     const output: ServerMessage[] = [];
@@ -78,7 +79,10 @@ it.each(["delivery first", "withdrawal first"] as const)("serializes held-copy r
   const delivery = createPendingDelivery({
     options: {}, clients, attachments: new Map(), serialize, lastTyped: new Map(),
     sight: () => { throw new Error("withdrawal takes no input lease"); },
-    submitText: async (_pane, text) => { entered.resolve(); await release.promise; typed.push(text); },
+    submitText: async (_pane, text) => {
+      entered.resolve(); await release.promise; typed.push(text);
+      if (ambiguous) throw new herdr.HerdrError("submit_changed", "Enter may have reached the terminal");
+    },
     authorizeSocket: () => {},
     clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: null, agent_status: "idle" }] }) as SessionSnapshot,
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
@@ -89,8 +93,9 @@ it.each(["delivery first", "withdrawal first"] as const)("serializes held-copy r
   });
   const edit = () => delivery.pendingFrames["pending-action"](first, {
     type: "pending-action", id: 3, pane_id: "p", pending_id: item.message.id, action: "discard",
+    ...(order !== "ambiguous plain discard" ? { withdrawal_only: true as const } : {}),
   });
-  if (order === "delivery first") {
+  if (order !== "withdrawal first") {
     const sending = resend();
     await entered.promise;
     const editing = edit();
@@ -102,11 +107,24 @@ it.each(["delivery first", "withdrawal first"] as const)("serializes held-copy r
     await resend();
   }
   const removals = frames.get(first)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
-  expect(removals.length).toBeGreaterThan(0);
-  expect(removals.every((receipt) => receipt.id === item.message.id && receipt.outcome === (order === "delivery first" ? "sent" : "discarded"))).toBe(true);
-  expect(typed).toEqual(order === "delivery first" ? ["held text"] : []);
+  if (ambiguous) {
+    expect(removals.some((receipt) => receipt.outcome === "discarded" || receipt.outcome === "sent")).toBe(false);
+    expect(frames.get(first)!.flatMap((frame) => frame.type === "pending-messages" ? frame.messages : []))
+      .toContainEqual(expect.objectContaining({ id: item.message.id, state: "uncertain", error: expect.objectContaining({ code: "submit_changed" }) }));
+  } else {
+    expect(removals.length).toBeGreaterThan(0);
+    expect(removals.every((receipt) => receipt.id === item.message.id && receipt.outcome === (order === "delivery first" ? "sent" : "discarded"))).toBe(true);
+  }
+  expect(typed).toEqual(order !== "withdrawal first" ? ["held text"] : []);
   expect(frames.get(second)!.find((frame) => frame.type === "submit-result" && frame.id === 2)).toMatchObject({ ok: order === "delivery first" });
-  expect(delivery.pending.list(first, "p")).toEqual([]);
+  if (order === "ambiguous delivery first") {
+    expect(removals).toEqual([]);
+    expect(delivery.pending.list(first, "p")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+    expect(frames.get(first)!.find((frame) => frame.type === "pending-result" && frame.id === 3)).toMatchObject({ ok: false, code: "pending_uncertain" });
+  } else {
+    expect(delivery.pending.list(first, "p")).toEqual([]);
+    if (ambiguous) expect(removals).toEqual([{ id: item.message.id, outcome: "dismissed" }]);
+  }
 });
 
 it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(

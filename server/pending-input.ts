@@ -1,4 +1,5 @@
 import type { AgentStatus, PendingMessage } from "../shared/protocol.ts";
+import { submitNotTyped } from "../shared/submit-outcome.ts";
 
 export interface PendingIdentity {
   agent: string | null;
@@ -32,7 +33,7 @@ export interface PendingRecord<Owner, Lease> {
 }
 type Fault = { code: string; message: string };
 interface HeldCopyReply { ok: boolean; code?: string; message?: string }
-type Removed = { id: string; outcome: "sent" | "discarded" };
+type Removed = { id: string; outcome: "sent" | "discarded" | "dismissed" };
 /** `by`: the message whose send opened the gate */
 interface TurnGate { by: string; committed: boolean; sawWorking: boolean; completed: boolean; deadline: number | null; restart?: "interruption" | "working" }
 const ready = (status: AgentStatus | undefined) => status === "idle" || status === "done";
@@ -58,7 +59,7 @@ export class PendingInputs<Owner, Lease> {
   private readonly gates = new Map<string, TurnGate>();
   private readonly closed = new Map<Owner, number>();
   private readonly removed = new Map<string, { owner: Owner; paneId: string; outcome: Removed["outcome"]; at: number }>();
-  private readonly resends = new Map<string, { id: string; fingerprint: string; reply: Promise<HeldCopyReply>; settledAt: number | null; sent: boolean }>();
+  private readonly resends = new Map<string, { id: string; paneId: string; fingerprint: string; reply: Promise<HeldCopyReply>; settledAt: number | null; uncertain: boolean }>();
 
   constructor(
     private readonly changed: (owner: Owner, paneId: string, messages: PendingMessage[], removed?: Removed[]) => void,
@@ -85,15 +86,29 @@ export class PendingInputs<Owner, Lease> {
     if (previous) {
       if (previous.fingerprint !== fingerprint) throw new PendingInputError("invalid_submit_id", "This resend id already belongs to another message");
     }
+    if (outcome?.paneId === paneId && outcome.outcome === "dismissed"
+      || this.records.get(id)?.paneId === paneId && this.records.get(id)?.message.state === "uncertain"
+      || [...this.resends.values()].some((entry) => entry.id === id && entry.paneId === paneId && entry.uncertain)) {
+      return Promise.resolve({ ok: false, code: "pending_uncertain", message: "Check the terminal before sending this message again" });
+    }
     if (outcome?.paneId === paneId) return Promise.resolve({ ok: true });
     if (previous) return previous.reply;
     if (this.resends.size >= MAX_PENDING_TOTAL) throw new PendingInputError("pending_limit", "Too many held-copy sends are still retained; try again later");
-    const entry: { id: string; fingerprint: string; settledAt: number | null; sent: boolean; reply: Promise<HeldCopyReply> } = {
-      id, fingerprint, settledAt: null, sent: false,
+    const entry: { id: string; paneId: string; fingerprint: string; settledAt: number | null; uncertain: boolean; reply: Promise<HeldCopyReply> } = {
+      id, paneId, fingerprint, settledAt: null, uncertain: false,
       reply: Promise.resolve().then(task).then((reply) => {
-        entry.sent = reply.ok; entry.settledAt = this.now();
+        entry.uncertain = !reply.ok && !submitNotTyped(reply.code ?? ""); entry.settledAt = this.now();
         const item = this.records.get(id);
         if (reply.ok && item?.paneId === paneId) this.finish(item, "sent");
+        else if (entry.uncertain && item?.paneId === paneId) {
+          // Another connection may have committed input. An Edit already waiting
+          // on its discard must see this uncertainty before it can withdraw.
+          item.message.state = "uncertain";
+          item.message.error = { code: reply.code ?? "pending_uncertain", message: reply.message ?? "Check the terminal before sending this message again" };
+          this.gates.delete(paneId);
+          this.holdPane(paneId, item.message.error);
+          this.publish(item.owner, paneId);
+        }
         return reply;
       }, (error) => { entry.settledAt = this.now(); throw error; }),
     };
@@ -103,7 +118,7 @@ export class PendingInputs<Owner, Lease> {
 
   private expireResends(): void {
     for (const [key, entry] of this.resends) {
-      if (entry.settledAt !== null && !(entry.sent && this.records.has(entry.id)) && this.now() - entry.settledAt >= CLOSED_RETENTION_MS) this.resends.delete(key);
+      if (entry.settledAt !== null && !(entry.uncertain && this.records.has(entry.id)) && this.now() - entry.settledAt >= CLOSED_RETENTION_MS) this.resends.delete(key);
     }
   }
 
@@ -208,10 +223,13 @@ export class PendingInputs<Owner, Lease> {
     this.publish(item.owner, item.paneId);
   }
 
-  discard(item: PendingRecord<Owner, Lease>): boolean {
+  discard(item: PendingRecord<Owner, Lease>, withdrawalOnly = false): boolean {
     if (this.records.get(item.message.id) !== item || item.inFlight
+      || withdrawalOnly && item.message.state !== "queued" && item.message.state !== "held"
       || [...this.resends.values()].some((entry) => entry.id === item.message.id && entry.settledAt === null)) return false;
-    this.finish(item, "discarded");
+    // Dismissing potentially delivered text is not proof of withdrawal. In
+    // particular, a racing Edit listener must never restore it into the draft.
+    this.finish(item, item.message.state === "uncertain" ? "dismissed" : "discarded");
     return true;
   }
 
@@ -302,7 +320,10 @@ export class PendingInputs<Owner, Lease> {
       }
     }
     for (const [owner, closedAt] of this.closed) if (this.now() - closedAt >= CLOSED_RETENTION_MS) {
-      for (const [id, item] of this.records) if (item.owner === owner && !item.inFlight) this.records.delete(id);
+      for (const [id, item] of this.records) if (item.owner === owner && !item.inFlight) {
+        if (item.message.state === "uncertain") this.finish(item, "dismissed");
+        else this.records.delete(id);
+      }
       if (![...this.records.values()].some((item) => item.owner === owner)) {
         this.closed.delete(owner);
         // Keep the bounded disposition history after its owner closes too: another

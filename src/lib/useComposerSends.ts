@@ -182,7 +182,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           try {
             const known = knownOutcomes(pane);
             const seen = inputRowNow() === "ready";
-            const result = socket?.pendingAction(pane, id, action === "edit" ? "discard" : action, message.resendGeneration ?? 0);
+            const result = socket?.pendingAction(pane, id, action === "edit" ? "discard" : action, message.resendGeneration ?? 0, action === "edit");
             // offline: no frame left (the row shows submitNote's wording, not this message)
             if (!result) {
               pendingMessages.fail(owner, id, { code: "not_transmitted", message: "the connection dropped before this message was sent" }, pendingActionUncertain("not_transmitted", message.state));

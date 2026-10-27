@@ -302,13 +302,19 @@ it("steers or discards an opaque pending ID once and waits for its action acknow
   const socket = FakeSocket.last;
   socket.open();
   socket.receive(snapshot(["submit", "pending-input"]));
-  for (const [index, action] of ["steer", "discard"].entries()) {
-    const result = client.pendingAction("w1:p1", "pending-1", action as "steer" | "discard");
-    for (let turn = 0; turn < 10 && socket.sent.filter((frame) => frame.type === "pending-action").length <= index; turn++) await Promise.resolve();
-    const frame = socket.sent.filter((frame) => frame.type === "pending-action")[index]!;
+  for (const [index, [action, withdrawalOnly]] of ([["steer", false], ["discard", false], ["discard", true]] as const).entries()) {
+    const sent = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("no pending-action frame")), 1_000);
+      socket.addEventListener("sent", (frame) => {
+        if (frame.type === "pending-action") { clearTimeout(timeout); resolve(frame); }
+      });
+    });
+    const result = client.pendingAction("w1:p1", "pending-1", action, undefined, withdrawalOnly);
+    const frame = await sent;
     // launch_ended: this client tells a launch that ended apart, so the bridge answers it with that code (#1547)
-    expect(frame).toEqual({ type: "pending-action", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", action, launch_ended: true });
-    socket.receive({ type: "pending-result", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", ok: index === 0, ...(index === 1 ? { code: "pending_not_found", message: "already sent" } : {}) });
+    expect(frame).toEqual({ type: "pending-action", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", action, launch_ended: true,
+      ...(withdrawalOnly ? { withdrawal_only: true } : {}) });
+    socket.receive({ type: "pending-result", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", ok: index === 0, ...(index > 0 ? { code: "pending_not_found", message: "already sent" } : {}) });
     expect(await result).toEqual(index === 0 ? { ok: true } : { ok: false, code: "pending_not_found", message: "already sent" });
   }
   client.close();

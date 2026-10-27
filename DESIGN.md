@@ -2387,7 +2387,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   with an explicit labeled button for touch and keyboard access instead of an empty-input Up shortcut.
   Edit is available only for a row this connection owns on the bridge, not another tab's saved
   held copy. Delivery winning the serialized withdrawal race, including a held-copy resend from
-  another tab, leaves the draft unchanged; withdrawal removes the shared saved copy. Stable-ID
+  another tab, leaves the draft unchanged; withdrawal removes the shared saved copy. An ambiguous
+  resend makes the original row uncertain across retry generations. Edit's withdrawal-only
+  request then keeps that row and leaves the draft unchanged. Plain Discard dismisses an uncertain
+  copy without proving withdrawal. An older server ignores the optional withdrawal-only flag
+  and retains its existing discard behaviour.
+  Stable-ID
   dispositions survive connection loss and retry generations in a bounded 1024-entry history,
   retained for at least the resend receipt's 60-second window. New pending input is refused if all
   those slots are recent or reserved for accepted rows. After history eviction or bridge restart,
