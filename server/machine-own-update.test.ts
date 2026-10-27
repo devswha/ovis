@@ -32,6 +32,8 @@ interface Remote {
   redirect?: { path: string; to: string };
   /** the pid its new bridge registers with */
   replacementPid?: unknown;
+  /** the bundle version its new bridge registers with; this app's when unset */
+  replacementBundle?: string;
   access?: Record<string, unknown>;
   bundle?: string;
   /** what its status says once asked to install, one answer per read (the last repeats); it restarts on the new version after `restartAfter` reads, never without */
@@ -52,7 +54,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   let installed = false, readsSinceInstall = 0, readsBefore = 0, installAttempts = 0, restarted = false, listingsSinceRestart = 0;
   const probes: string[] = [];
   const listedAfterRestart = Promise.withResolvers<void>();
-  const restart = () => { restarted = true; descriptor = { ...descriptor, pid: (remote.replacementPid ?? 4343) as number, token: NEW_TOKEN, bundle_version: REMOTE_BUNDLE_VERSION }; };
+  const restart = () => { restarted = true; descriptor = { ...descriptor, pid: (remote.replacementPid ?? 4343) as number, token: NEW_TOKEN, bundle_version: remote.replacementBundle ?? REMOTE_BUNDLE_VERSION }; };
   const relays: ReturnType<typeof Bun.serve>[] = [];
   const real = { start: SshConnection.prototype.start, run: SshConnection.prototype.run, close: SshConnection.prototype.close, forward: SshConnection.prototype.forward, connected: SshConnection.prototype.connected };
   const bundle = spyOn(posixHost, "installBundle").mockImplementation(async () => { operations.push("install-bundle"); });
@@ -193,6 +195,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     const stopped = await until((machine) => !machine.updating && /\(307\)/.test(machine.error ?? ""));
     expect(stopped.state).toBe("error");
     expect(hits).toEqual([]);
+  });
+
+  it("tells an update that ended on another version as a setup, with no update on offer beside it", async () => {
+    const { installs, until } = pc({ status: managedOffer(), replacementBundle: "36" }, { ownUpdate: { pollMs: 5 } });
+    const waiting = await until((machine) => machine.action_required === "setup" && !machine.updating);
+    expect(waiting.error).toContain("still differs from this app's (v36");
+    expect(waiting.remote_ovis ?? null).toBeNull();
+    expect(installs).toEqual([{ expected_revision: OFFERED }]);
   });
 
   it("takes only a process id from its new bridge's descriptor into a command on that PC", async () => {

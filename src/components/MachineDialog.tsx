@@ -6,7 +6,7 @@ import { hostKeyFingerprints } from "../lib/hostKey.ts";
 import { sshOutputParts } from "../lib/sshOutput.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText } from "../lib/userError.ts";
-import { BridgeUpdateProgress, OwnOvisAddress } from "./MachineSidebar.tsx";
+import { BridgeUpdateProgress, OwnOvisAddress, ownOvisAction } from "./MachineSidebar.tsx";
 import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
 
@@ -29,7 +29,7 @@ export function MachineDialog({ machine, updateRemote = false, onClose, onConnec
   const secretAllowed = window.isSecureContext;
   const needsBridgeUpdate = job?.phase === "failed" && job.action_required === "update_bridge";
   // the PC's own Ovis, older than this app: the update asks it to update itself, or it cannot be from here
-  const own = job?.remote_ovis ?? (job ? null : machine?.remote_ovis ?? null);
+  const own = job?.remote_ovis ?? (job || !machine ? null : ownOvisAction(machine));
   const ownUpdate = own?.updatable === true;
 
   // closing cancels a job that still waits on this dialog (a question, an approval); an

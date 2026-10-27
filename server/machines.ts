@@ -780,7 +780,15 @@ export class MachineManager {
         try { await proof.start(); await (host.kind === "windows" ? proof.runPowerShell("Write-Output ok") : proof.run("true")); } finally { proof.close(); }
       }
     }
-    if (ownUpdate && job && descriptor) descriptor = await this.runOwnUpdate(job, ssh, host, descriptor, expectedSocket, ownUpdate);
+    if (ownUpdate && job && descriptor) {
+      try { descriptor = await this.runOwnUpdate(job, ssh, host, descriptor, expectedSocket, ownUpdate); }
+      catch (error) {
+        // it updated itself into a refusal (another version than this app's): what it offered no longer holds,
+        // and an update it can run is never told beside a setup (shared/machines.ts remote_ovis)
+        if (error instanceof MachineActionRequired) { runtime.machine.remote_ovis = null; job.public.remote_ovis = null; }
+        throw error;
+      }
+    }
     if (update && job && descriptor) {
       if (!descriptor.managed_remote) throw new Error("This socket uses an independently managed web server. Update it through its own Settings; it was left running.");
       const verified = await this.verify(ssh, descriptor, expectedSocket, true);
