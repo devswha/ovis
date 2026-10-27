@@ -1014,6 +1014,7 @@ function noticeLabel(t: ReturnType<typeof useT>, notice: Extract<ConversationPar
 // a turn that did not change keeps its object across polls: skip re-rendering it
 export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThinking, skills = null, userSkills = null, outcome = null, outcomeActions = null, onRewindInTerminal = null }: TurnProps) {
   const t = useT();
+  const memory = useContext(ChatRowMemoryContext);
   // under the turn, not in its meta row: that row fades out once the pointer and focus leave
   const [copyFailed, setCopyFailed] = useChatRowToggle("copy-failed", false);
   const copyError = copyFailed && <p className="chat-copy-error" role="alert">{t("Couldn't copy. Select the text and copy it manually.")}</p>;
@@ -1087,8 +1088,11 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
   const block = (run: WorkSegment | null) => {
     const isHead = run === null || run === head;
     // a run is named by its first part, so it keeps its block and fold when an earlier run splits
-    // or grows; the stand-in by the part that will start the turn's first run, which takes its place
-    const key = `work:${run?.start ?? turn.parts.length}`;
+    // or grows; the stand-in by the part that will start the turn's first run, which takes its place.
+    // Words before its tools can join a run later (a record marks them commentary, a blank one is
+    // filled in): it keeps the name of its part the row's memory holds a fold for (#2063)
+    const remembered = run?.parts.map((part) => `work:${work.at.get(part)}`).find((name) => memory?.toggles.has(name) === true);
+    const key = remembered ?? `work:${run?.start ?? turn.parts.length}`;
     return <WorkBlockView key={key} paneId={paneId} parts={run?.parts ?? []} work={work} memoryKey={key}
       duration={isHead ? formatWorkDuration(turn.ts, turn.end_ts ?? null) : null} live={live && isHead} waiting={waiting && isHead}
       // a settled turn folds its work, unless words the agent said last are in its final run

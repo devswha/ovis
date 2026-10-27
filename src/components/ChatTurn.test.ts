@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { ConversationPart, ConversationTurn } from "../../shared/protocol.ts";
+import { ChatRowMemoryContext, type ChatRowMemory } from "../lib/chatRowState.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
 import { Turn } from "./ChatView.tsx";
 
@@ -47,6 +49,49 @@ describe("an agent turn's work blocks", () => {
     expect(titles(live)).toEqual(["Worked", "Working…"]);
     expect(expanded(live)).toEqual([false, true]);
     expect(titles(render(parts, { live: true, waiting: true }))).toEqual(["Worked", "Needs you"]);
+  });
+
+  it("keeps a block folded when the words before its tools join it (#2063)", async () => {
+    const commentary = (value: string): ConversationPart => ({ kind: "text", text: value, phase: "commentary" });
+    const view = (parts: ConversationPart[], memory: ChatRowMemory) => createElement(ChatRowMemoryContext.Provider, { value: memory, children: createElement(SettingsProvider, { children: createElement(Turn, {
+      paneId: "w1:p1", turn: { role: "assistant", ts: "2026-01-01T12:00:00Z", parts }, rowKey: "turn:1", live: true, waiting: false, showThinking: false,
+    }) }) });
+    const heads = (renderer: ReactTestRenderer) => renderer.root.findAll((node) => node.props.className === "work-block-head").map((node) => node.props["aria-expanded"] as boolean);
+    const actEnvironment = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    const globals = new Map(["window", "document", "getComputedStyle"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    const listeners = { addEventListener() {}, removeEventListener() {} };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...listeners, matchMedia: () => ({ matches: false, ...listeners }) } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { ...listeners, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } } });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    try {
+      // a later Codex record marks the words commentary; an empty commentary record is filled in
+      for (const [before, after] of [[text("Checking."), commentary("Checking.")], [commentary(""), commentary("Checking.")]]) {
+        const memory: ChatRowMemory = { toggles: new Map(), outputs: new Map() };
+        let renderer!: ReactTestRenderer;
+        await act(async () => { renderer = create(view([before!, tool("ls")], memory)); });
+        await act(async () => { renderer.root.find((node) => node.props.className === "work-block-head").props.onClick(); });
+        expect(heads(renderer)).toEqual([false]);
+        await act(async () => { renderer.update(view([after!, tool("ls")], memory)); });
+        expect(heads(renderer)).toEqual([false]);
+        await act(async () => { renderer.unmount(); });
+        // the row scrolled away and back: its memory still names the block
+        await act(async () => { renderer = create(view([after!, tool("ls")], memory)); });
+        expect(heads(renderer)).toEqual([false]);
+        await act(async () => { renderer.unmount(); });
+      }
+    } finally {
+      if (actEnvironment) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actEnvironment);
+      else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      if (languages) Object.defineProperty(navigator, "languages", languages);
+      else Reflect.deleteProperty(navigator, "languages");
+      for (const [key, descriptor] of globals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
   });
 
   it("keeps one block for tools followed by the answer", () => {
