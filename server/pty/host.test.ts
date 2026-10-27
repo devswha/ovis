@@ -256,6 +256,8 @@ describe.skipIf(process.platform === "win32")("PtySession Rust fallback", () => 
     resetPtyHostForTests();
     previous = { ...process.env };
     process.env["OVIS_PTY_SIDECAR"] = "rust";
+    // a home without the app's own Node (server/pty/sidecar.ts looks there first), whatever this PC has
+    process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
   });
   afterEach(() => {
     for (const key of ["OVIS_PTY_SIDECAR", "OVIS_PTY_SIDECAR_BIN", "PATH", "HOME"]) {
@@ -512,12 +514,17 @@ function parity(host: "node" | "rust") {
     beforeEach(resetPtyHostForTests);
     const run = (command: string, args: string[], extra: Partial<PtySessionOptions> = {}) => runOn(host, command, args, extra);
     const previous = process.env["OVIS_PTY_SIDECAR"];
+    const home = process.env["HOME"];
     beforeAll(() => {
       process.env["OVIS_PTY_SIDECAR"] = host;
+      // a home without the app's own Node, so the Node host is the one on PATH whatever this PC has
+      process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
     });
     afterAll(() => {
       if (previous === undefined) delete process.env["OVIS_PTY_SIDECAR"];
       else process.env["OVIS_PTY_SIDECAR"] = previous;
+      if (home === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = home;
     });
 
     it("starts that host and hands the command its environment without the bridge token", async () => {

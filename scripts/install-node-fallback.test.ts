@@ -145,6 +145,13 @@ describe("node_link", () => {
     }
   });
 
+  it("takes this checkout's own server for one that finds the app's Node itself", () => {
+    // the real server/pty/sidecar.ts, not a stand-in: a server that stops naming the app's Node must fail here
+    const env = { ...pc(true, (e) => symlinkSync(join(e["NODE_DIR"]!, "bin/node"), node(e))), CODE: join(import.meta.dir, "..") };
+    expect(link(env).code).toBe(0);
+    expect(lstatSync(node(env), { throwIfNoEntry: false })).toBeUndefined();
+  });
+
   it("keeps a node of the user's own there, a link elsewhere or a file", () => {
     const linked = pc(true, (e) => symlinkSync("/usr/bin/env", node(e)));
     expect(link(linked).code).toBe(0);
