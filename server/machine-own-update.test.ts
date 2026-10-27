@@ -100,8 +100,8 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
     operations.push(script);
     throw new Error(`Unexpected remote command: ${script}`);
   };
-  /** the next roster read at an SSH destination waits for its release, which answers it or fails it with a status */
-  const heldSessions = new Map<string, { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<number>> }>();
+  /** the next roster read at an SSH destination waits for its release, which answers it, fails it with a status, or gives another roster */
+  const heldSessions = new Map<string, { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<number | object>> }>();
   SshConnection.prototype.forward = async function (this: SshConnection, local: number, port: number) {
     expect(port).toBe(REGISTERED_PORT);
     // what answers there tells which address it is: the PC's own, or another its dialog was given
@@ -136,8 +136,9 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       if (path === "/api/bridge") return Response.json({ ...descriptor, ...(restarted && remote.replacementLiveBundle ? { bundle_version: remote.replacementLiveBundle } : {}), socket_id: "fixture:1", herdr: { version: at === "fixture@pc.invalid" ? "0.9.3" : "0.9.4", protocol: 22 } });
       if (path === "/api/session" && heldSessions.has(at)) {
         const held = heldSessions.get(at)!; heldSessions.delete(at); held.reached.resolve();
-        const status = await held.gate.promise;
-        if (status !== 200) return new Response("unavailable", { status });
+        const answer = await held.gate.promise;
+        if (typeof answer === "object") return Response.json({ snapshot: answer });
+        if (answer !== 200) return new Response("unavailable", { status: answer });
       }
       if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [], fixture_at: at } });
       if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
@@ -159,12 +160,12 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
     },
   };
   const session = {
-    /** hold the next roster read at `at` until `release`, which answers it, or fails it with `status` */
+    /** hold the next roster read at `at` until `release`, which answers it, fails it with a status, or answers another roster */
     hold(at: string) {
-      const held = { reached: Promise.withResolvers<void>(), gate: Promise.withResolvers<number>() };
+      const held = { reached: Promise.withResolvers<void>(), gate: Promise.withResolvers<number | object>() };
       heldSessions.set(at, held);
       cleanups.push(() => held.gate.resolve(200));
-      return { reached: held.reached.promise, release: (status = 200) => held.gate.resolve(status) };
+      return { reached: held.reached.promise, release: (answer: number | object = 200) => held.gate.resolve(answer) };
     },
   };
   mkdirSync(dir, { recursive: true });
@@ -194,6 +195,8 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       if (last && done(last)) { clearTimeout(timer); queueMicrotask(() => stop()); resolve(structuredClone(last)); }
     });
   });
+  /** machines.json can no longer be written: a directory stands in its place */
+  const unsavable = () => { rmSync(join(dir, "machines.json")); mkdirSync(join(dir, "machines.json")); };
   /** what machines.json holds for the PC, and its SSH address there */
   const stored = () => (JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown; snapshot?: unknown }[]).find((m) => m.id === MACHINE_ID);
   const saved = () => stored()?.target;
@@ -204,7 +207,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   };
   /** the PC as the roster shows it now */
   const now = () => manager.list().find((machine) => machine.id === MACHINE_ID)!;
-  return { manager, requests, installs, operations, probes, destinations, saved, stored, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, shown };
+  return { manager, requests, installs, operations, probes, destinations, saved, stored, unsavable, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, shown };
 }
 
 describe("a PC whose own Ovis is away (#2047)", () => {
@@ -349,14 +352,39 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     expect(now()).toMatchObject({ enabled: false, target: { destination: "fixture@pc.invalid" }, action_required: "update_bridge", remote_ovis: offered.remote_ovis! });
   });
 
+  // A move is all or nothing: one that cannot take what it found there, or cannot be saved, leaves the PC where it was
+  for (const fault of ["a roster it cannot read", "a move it cannot save"] as const) {
+    it(`stays at its own address when a setup at another address connects there but ends on ${fault}, and tries only its own again`, async () => {
+      let clock = 0;
+      const { manager, session, operations, destinations, unsavable, settled, now, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready" }, { now: () => clock });
+      await until((machine) => machine.state === "connected");
+      const held = session.hold("other@second.invalid");
+      const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid" });
+      await held.reached;
+      if (fault === "a roster it cannot read") held.release({ panes: null, workspaces: [] }); else { unsavable(); held.release(); }
+      expect((await settled(job)).phase).toBe("failed");
+      expect(now()).toMatchObject({ target: { destination: "fixture@pc.invalid" }, herdr: { version: "0.9.3" }, snapshot: { fixture_at: "fixture@pc.invalid" } });
+      // its next try is at its own address, which connects as before, and nothing is started anywhere
+      destinations.length = 0;
+      clock += 10_000; manager.retryNow(MACHINE_ID);
+      await until((machine) => machine.state === "connected");
+      expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
+      expect(operations).toEqual([]);
+    });
+  }
+
   it("moves to another address once a setup connects there, with that address's herdr, roster and own Ovis", async () => {
     let clock = 0;
     const { manager, ovis, operations, destinations, stored, settled, now, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready" }, { now: () => clock });
     await until((machine) => machine.state === "connected");
+    // its connection there was lost, which its card says, and it is set up at the other address before it tries again
+    ovis.stop("removed");
+    await until((machine) => machine.state === "reconnecting" && machine.error === "SSH bridge connection interrupted");
+    ovis.start();
     // the other address runs its own Ovis of this app's version: nothing to approve there
     expect((await settled(manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid" }))).phase).toBe("connected");
     const moved = { target: { destination: "other@second.invalid" }, snapshot: { fixture_at: "other@second.invalid" } };
-    expect(now()).toMatchObject({ ...moved, state: "connected", herdr: { version: "0.9.4" } });
+    expect(now()).toMatchObject({ ...moved, state: "connected", herdr: { version: "0.9.4" }, error: null });
     expect(stored()).toMatchObject(moved);
     // its own Ovis there goes away: the PC waits for it at that address, starting nothing in its place
     ovis.stop("removed");

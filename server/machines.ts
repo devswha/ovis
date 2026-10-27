@@ -599,20 +599,32 @@ export class MachineManager {
         this.machines.set(machineId, runtime);
         await this.observe(runtime);
         if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-        // connected there: the PC moves to the address it was set up at, with what this setup learnt there
-        runtime.machine.target = target;
+        // connected there: the PC moves to the address it was set up at, with what this setup learnt there. A move is
+        // all or nothing: one that cannot be completed or saved leaves the PC as it was, trying its own address (#2075)
         const move = runtime.move;
         runtime.move = undefined;
-        if (move) {
-          if (move.herdr) runtime.machine.herdr = move.herdr;
-          if (move.ownOvisAt === null) delete runtime.ownOvisAt; else if (move.ownOvisAt) runtime.ownOvisAt = move.ownOvisAt;
-          if (move.snapshot) this.publish(runtime, move.snapshot);
+        const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt };
+        try {
+          runtime.machine.target = target;
+          if (move) {
+            // what went wrong at the address it left is not this one's: a read there clears it as any read does
+            runtime.machine.error = null;
+            if (move.herdr) runtime.machine.herdr = move.herdr;
+            if (move.ownOvisAt === null) delete runtime.ownOvisAt; else if (move.ownOvisAt) runtime.ownOvisAt = move.ownOvisAt;
+            if (move.snapshot) this.publish(runtime, move.snapshot);
+          }
+          if (runtime.machine.herdr_profile_id) {
+            this.profileState.allowConnection(runtime.machine.herdr_profile_id, target);
+            if (job.installationApproved) this.profileState.approve(runtime.machine.herdr_profile_id, target);
+          }
+          this.persist();
+        } catch (error) {
+          if (move) {
+            Object.assign(runtime.machine, { target: left.target, error: left.error, herdr: left.herdr, snapshot: left.snapshot });
+            if (left.ownOvisAt) runtime.ownOvisAt = left.ownOvisAt; else delete runtime.ownOvisAt;
+          }
+          throw error;
         }
-        if (runtime.machine.herdr_profile_id) {
-          this.profileState.allowConnection(runtime.machine.herdr_profile_id, target);
-          if (job.installationApproved) this.profileState.approve(runtime.machine.herdr_profile_id, target);
-        }
-        this.persist();
         this.stage(job, "connected", "Connected");
         this.emit();
       } catch (e) {
