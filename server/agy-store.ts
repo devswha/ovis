@@ -108,11 +108,16 @@ let windowsScan: WindowsScan | null = null;
 let windowsScanning: Promise<WindowsScan> | null = null;
 let windowsScanId = 0;
 
-/** Reset scan and holder caches between tests. */
-export function resetWindowsScanCacheForTest(): void {
+/** Invalidate in-flight and completed candidate scans so the next lookup rescans. */
+function invalidateWindowsScan(): void {
   windowsScan = null;
   windowsScanning = null;
   windowsScanId += 1;
+}
+
+/** Reset scan and holder caches between tests. */
+export function resetWindowsScanCacheForTest(): void {
+  invalidateWindowsScan();
   windowsHeld.clear();
 }
 
@@ -126,17 +131,20 @@ function windowsScanAll(
 ): Promise<WindowsScan> {
   const known = windowsScan;
   if (known && Date.now() - known.at < WINDOWS_SCAN_TTL_MS) return Promise.resolve(known);
-  const id = ++windowsScanId;
-  windowsScanning ??= (async () => {
-    const owners = new Map<number, string[]>();
-    for (const path of getCandidates()) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
-    }
-    const scan = { at: Date.now(), owners };
-    if (windowsScanId === id) windowsScan = scan;
-    return scan;
-  })().finally(() => { if (windowsScanId === id) windowsScanning = null; });
+  if (!windowsScanning) {
+    const id = ++windowsScanId;
+    windowsScanning = (async () => {
+      const owners = new Map<number, string[]>();
+      for (const path of getCandidates()) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (windowsScanId !== id) break;
+        for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
+      }
+      const scan = { at: Date.now(), owners };
+      if (windowsScanId === id) windowsScan = scan;
+      return scan;
+    })().finally(() => { if (windowsScanId === id) windowsScanning = null; });
+  }
   return windowsScanning;
 }
 
@@ -153,9 +161,7 @@ export async function windowsHeldPaths(
   if (known !== undefined) {
     if (getHolders(known).includes(pid)) return [known];
     windowsHeld.delete(pid);
-    windowsScan = null;
-    windowsScanning = null;
-    windowsScanId += 1;
+    invalidateWindowsScan();
   }
   // A scan already names every owner, so a pane it saw costs one confirmation instead of a pass.
   const seen = windowsScan?.owners.get(pid);
@@ -165,12 +171,12 @@ export async function windowsHeldPaths(
       if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
       return seen;
     }
-    windowsScan = null;
-    windowsScanning = null;
-    windowsScanId += 1;
+    invalidateWindowsScan();
   }
   const scan = await windowsScanAll(getHolders, getCandidates);
-  const held = (scan.owners.get(pid) ?? []).filter((path) => getHolders(path).includes(pid));
+  const scanned = scan.owners.get(pid) ?? [];
+  const held = scanned.filter((path) => getHolders(path).includes(pid));
+  if (held.length !== scanned.length) invalidateWindowsScan();
   if (held.length === 1) {
     windowsHeld.set(pid, held[0]!);
     if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);

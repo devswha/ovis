@@ -64,3 +64,23 @@ it("drops held lock when the process releases its session lock without acquiring
 
   expect(await windowsHeldPaths(pid, mockHolders, mockCandidates)).toEqual([]);
 });
+
+it("coalesces concurrent scans across panes without invalidating scan cache", async () => {
+  resetWindowsScanCacheForTest();
+  const pid1 = 4242;
+  const pid2 = 4243;
+  const lock1 = "C:\\path\\presence\\00000000-0000-4000-8000-000000000001.lock";
+  const lock2 = "C:\\path\\presence\\00000000-0000-4000-8000-000000000002.lock";
+  const activeHolders: Record<string, number[]> = { [lock1]: [pid1], [lock2]: [pid2] };
+  const mockHolders = (path: string) => activeHolders[path] ?? [];
+  const mockCandidates = () => [lock1, lock2];
+
+  const [res1, res2] = await Promise.all([
+    windowsHeldPaths(pid1, mockHolders, mockCandidates),
+    windowsHeldPaths(pid2, mockHolders, mockCandidates),
+  ]);
+
+  expect(res1).toEqual([lock1]);
+  expect(res2).toEqual([lock2]);
+  expect(await windowsHeldPaths(pid1, mockHolders, mockCandidates)).toEqual([lock1]);
+});
