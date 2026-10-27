@@ -52,10 +52,14 @@ export function MachineSidebar(props: Props) {
     if (branches.size === 0) next.delete(machineId); else next.set(machineId, branches);
     return next;
   }), []);
-  const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels]);
+  // one PC shown, and it is the Host: there is no other PC to tell it from, so its group is drawn without its
+  // header (MachineGroup), and its name, which no row then shows, is not searched
+  const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
+  const unnamed = useMemo(() => new Set(loneHost === null ? [] : [loneHost]), [loneHost]);
+  const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
-  const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels), [props.machines, branchLabels]);
+  const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed), [props.machines, branchLabels, unnamed]);
   const clearFilter = () => { setQuery(""); filterInput.current?.focus(); };
   // Escape in the field clears it; an empty field's Escape is left to the page (a phone's drawer closes on it)
   const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -73,8 +77,9 @@ export function MachineSidebar(props: Props) {
   // a PC whose roster has not come was not searched: the line says the answer is only of the PCs that answered
   const unanswered = props.machines.some((machine) => machine.snapshot === null);
   const noMatchWords = useAnnouncedText(filter.active && filter.matches === 0 && props.machines.length > 0 ? `${t(unanswered ? "No workspaces or agents match on the PCs that answered" : "No workspaces or agents match")}\n${t("Try other words, or clear the filter.")}` : null);
-  // no top bar: a workspace starts from its PC's header, and Add PC lives in Settings → Remote PCs. The
-  // filter above the lists is a row of the same grid, one field and its clear, never taller than a row.
+  // no top bar: a workspace starts from its PC's header (the lone Host's New workspace row), and Add PC lives in
+  // Settings → Remote PCs. The filter above the lists is a row of the same grid, one field and its clear, never
+  // taller than a row.
   return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div className="sidebar-shell">
     <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       <label className="sidebar-filter-label" htmlFor={filterId}>{t("Filter")}</label>
@@ -84,7 +89,7 @@ export function MachineSidebar(props: Props) {
     </div>
     <div className="machine-list" aria-label={t("PCs and workspaces")}>
       <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
-      {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} />)}
+      {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} />)}
       <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
       {/* a PC kept out on this device is said, with the way to show it again */}
       {hiddenCount > 0 && <button type="button" className="machine-hidden-note" title={t("Choose the PCs this device shows")} onClick={() => { requestSettingsPage({ page: "remote", section: "sidebar-pcs" }); props.actions.openSettings(); }}>{hiddenCount === 1 ? t("1 PC hidden on this device") : t("{n} PCs hidden on this device", { n: hiddenCount })}</button>}
@@ -102,7 +107,10 @@ export function MachineSidebar(props: Props) {
   </div></SidebarFilterProvider></SidebarActivityProvider>;
 }
 
-function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
+/** `headerless`: the sidebar's lone Host, drawn without its header. What the header held is elsewhere: the state
+ *  and its notice are lines of their own, the + is the New workspace row under the workspaces, and nothing is
+ *  folded with no caret to open it. A Host has no manage panel; Add PC is in Settings and the palette. */
+function MachineGroup({ machine, headerless = false, ...props }: Props & { machine: Machine; headerless?: boolean }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(`ovis:pc-collapsed:${machine.id}`) === "1"; } catch { return false; } });
   const [editing, setEditing] = useState(false);
@@ -151,7 +159,7 @@ function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
   const hidden = filtered !== null && !filtered.shown;
   const matched = filtered !== null && (filtered.matched || filtered.matchedWorkspaces.size > 0 || filtered.matchedPanes.size > 0);
   const kept = filtered !== null && (matched || filtered.workspaces.size > 0 || filtered.panes.size > 0);
-  const folded = filtered === null ? collapsed : filterFold ?? (collapsed && !kept);
+  const folded = headerless ? false : filtered === null ? collapsed : filterFold ?? (collapsed && !kept);
   const context = filtered !== null && !matched;
   const toggle = () => {
     if (filtered !== null) { setFilterFold(!folded); return; }
@@ -159,8 +167,8 @@ function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
     try { localStorage.setItem(`ovis:pc-collapsed:${machine.id}`, collapsed ? "0" : "1"); } catch {}
   };
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
-  return <section className={`machine-group${props.selectedMachineId === machine.id ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
-    <header className="machine-header">
+  return <section className={`machine-group${props.selectedMachineId === machine.id ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
+    {!headerless && <header className="machine-header">
       <div className="machine-title">
         <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
         <span className="machine-name">{machine.name}</span>
@@ -172,7 +180,7 @@ function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
       {/* the fold over this PC's workspaces sits beside the + */}
       <button className="sidebar-row-action machine-toggle" aria-expanded={!folded} aria-label={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} title={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
       <button className="sidebar-row-action machine-new" disabled={!online} aria-label={t("New workspace on {name}", { name: machine.name })} title={t("New workspace")} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
-    </header>
+    </header>}
     {/* connected is the norm and says nothing new; every other state is spelled out */}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
     <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role="status" title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
@@ -196,6 +204,9 @@ function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
     {(!folded || filtered !== null) && <div className={online ? "" : "machine-offline"} inert={!online} hidden={folded}>
       {!online && !machine.snapshot ? <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p> : <MachineContext.Provider value={machine.id}><Sidebar snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} watching={props.watching} /></MachineContext.Provider>}
     </div>}
+    {/* the header's +, as the list's last row: an empty roster has its own New workspace, and a filtered list
+        shows only what was looked for */}
+    {headerless && online && (machine.snapshot?.workspaces.length ?? 0) > 0 && !filter.active && <button type="button" className="machine-new-row" onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span><span className="machine-new-row-label">{t("New workspace")}</span></button>}
   </section>;
 }
 
