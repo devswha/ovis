@@ -2108,6 +2108,14 @@ ${rule60}
       // both calls fit the line, split at either separator: no card rather than the wrong one
       expect(read(`${actual}\n${decoy}`, separator), separator).toBeNull();
     }
+    // a cut that leaves only one call's header still counts against the other call
+    const cut = (separator: string) => screen.replace(/\? Question pending[^\n]*\n[^\n]*\n[^\n]*\n/,
+      `? 2 questions pending · 30m\n  P - Deploy${separator}...\n[ Continue ]  [ Cancel ]  [ own answer\u2026 ]\n`);
+    const cutActual = call("cut-actual", "P - Deploy", "Choose deployment target?", ["Continue", "Cancel"]);
+    const cutDecoy = call("cut-decoy", "P", "Deploy - Choose another target?", ["Continue", "Cancel"]);
+    for (const separator of [" - ", " \u2014 "]) {
+      expect(parseInteractivePrompt("pi", cut(separator), null, false, openOmoAsks(`${cutActual}\n${cutDecoy}`)), separator).toBeNull();
+    }
   });
 
   for (const count of ["one", "two"]) for (const width of ["wide", "narrow"]) {

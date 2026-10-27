@@ -424,14 +424,18 @@ function parseOmoPending(screen: string, pending: readonly OmoAsk[]): ParsedProm
   const unanswered = OMO_PENDING_STATUS_RE.exec(cleanLine(lines[statusIndex]!))![1];
   const line = cleanLine(lines[statusIndex + 1] ?? "");
   // a header may hold the separator itself, so each place it occurs is a split to try; the line
-  // is cut at the pane's edge
-  const splits = [...line.matchAll(OMO_PENDING_SEPARATOR_RE)].flatMap((separator) => {
-    const start = comparable(line.slice(separator.index + separator[0].length + 1).replace(/(?:…|\.\.\.)$/, ""));
-    return start ? [{ header: line.slice(0, separator.index), start }] : [];
-  });
-  const matches = pending.filter((ask) => ask.wait === false).flatMap((ask) => ask.questions.flatMap((question, index) =>
-    splits.some((split) => sameHeader(split.header, question.header) && comparable(question.question).startsWith(split.start)) ? [{ ask, index }] : []));
-  if (matches.length !== 1) return null;
+  // is cut at the pane's edge. A split with nothing after it still counts against the others:
+  // the cut may have left only that question's header, so a question it fits makes the line
+  // ambiguous. It never names a question on its own.
+  const splits = [...line.matchAll(OMO_PENDING_SEPARATOR_RE)].map((separator) => ({
+    header: line.slice(0, separator.index),
+    start: comparable(line.slice(separator.index + separator[0].length + 1).replace(/(?:…|\.\.\.)$/, "")),
+  }));
+  const matches = pending.filter((ask) => ask.wait === false).flatMap((ask) => ask.questions.flatMap((question, index) => {
+    const fits = splits.filter((split) => sameHeader(split.header, question.header) && comparable(question.question).startsWith(split.start));
+    return fits.length > 0 ? [{ ask, index, named: fits.some((split) => split.start !== "") }] : [];
+  }));
+  if (matches.length !== 1 || !matches[0]!.named) return null;
   const { ask, index } = matches[0]!;
   const asked = ask.questions[index]!;
   const tabs = cutSteps(ask, index, false, unanswered === undefined ? null : ask.questions.length - Number(unanswered));
