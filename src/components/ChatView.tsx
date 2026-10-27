@@ -32,7 +32,7 @@ import { copyText } from "../lib/clipboard.ts";
 import { attachmentFileName, mentionFileName, type GalleryImage } from "../lib/imageViewer.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import { toTranscriptMessages, type TranscriptMessage } from "../lib/transcript.ts";
-import { isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, splitTurn, todoGroups, visibleWorkParts, workFailed, workStartsOpen, workSummary, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
+import { isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, splitTurn, turnSegments, todoGroups, visibleWorkParts, workFailed, workStartsOpen, workSummary, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
 import { phaseRows, planRows, taskRows, todoRows, type ChecklistRow } from "../lib/checklist.ts";
 import { isTodoTool, parseTodoAnswer, todoCallSummary, type TodoItem, type TodoStatus } from "../lib/todos.ts";
 import { formatGoalTime, turnGoal, type GoalState, type GoalStatus } from "../lib/goals.ts";
@@ -675,9 +675,9 @@ function PendingWorkHead({ title, className = "" }: { title: string; className?:
   </div>;
 }
 
-function WorkBlockView({ paneId, parts, turnParts, rowKey, duration, live, waiting, defaultOpen, showThinking, pendingHead }: { paneId: string; parts: ConversationPart[]; turnParts: ConversationPart[]; rowKey: string; duration: string | null; live: boolean; waiting: boolean; defaultOpen: boolean; showThinking: boolean; pendingHead: boolean }) {
+function WorkBlockView({ paneId, parts, turnParts, rowKey, memoryKey = "work", duration, live, waiting, defaultOpen, showThinking, pendingHead }: { paneId: string; parts: ConversationPart[]; turnParts: ConversationPart[]; rowKey: string; memoryKey?: string; duration: string | null; live: boolean; waiting: boolean; defaultOpen: boolean; showThinking: boolean; pendingHead: boolean }) {
   const t = useT();
-  const [chosenOpen, setOpen] = useChatRowToggle("work", null);
+  const [chosenOpen, setOpen] = useChatRowToggle(memoryKey, null);
   const open = chosenOpen ?? defaultOpen;
   // reading or working inside the block is a choice to keep it: the fold at the end of the turn
   // must not take the rows from under the reader's focus or close the row they opened
@@ -685,7 +685,8 @@ function WorkBlockView({ paneId, parts, turnParts, rowKey, duration, live, waiti
   // runs of todo updates, found in the turn's own order before anything is hidden
   const groups = useMemo(() => todoGroups(turnParts, rowKey), [turnParts, rowKey]);
   const grouped = new Set([...groups.values()].flatMap((group) => group.attempts.slice(1).map((attempt) => attempt.part)));
-  const toolKey = (part: ConversationPart) => `tool:${parts.indexOf(part)}`;
+  // by the part's place in the turn: a turn draws one block per run of work (turnSegments)
+  const toolKey = (part: ConversationPart) => `tool:${turnParts.indexOf(part)}`;
   const images = useMemo(() => linePictures(parts), [parts]);
   const visible = visibleWorkParts(parts, showThinking);
   if (visible.length === 0) return live && !waiting && pendingHead ? <PendingWorkHead title={t("Working…")} /> : null;
@@ -708,7 +709,7 @@ function WorkBlockView({ paneId, parts, turnParts, rowKey, duration, live, waiti
     {/* the rows open and fold at the block's measured height; folded and settled, they are not drawn */}
     <AnimatedHeight open={open} animateContent={false}>
       <div className="work-block-rows" onFocus={keepOpen} onClick={keepOpen}>{visible.map((part, index) =>
-        part.kind === "thinking" ? <ThinkingRow key={index} stateKey={`thinking:${parts.indexOf(part)}`} text={part.text} />
+        part.kind === "thinking" ? <ThinkingRow key={index} stateKey={`thinking:${turnParts.indexOf(part)}`} text={part.text} />
           : part.kind === "text" ? <div key={index} className="work-narration"><Markdown>{part.text}</Markdown></div>
             : part.kind === "tool" ? groups.has(part) ? <TodoGroupRow key={groups.get(part)!.id} paneId={paneId} group={groups.get(part)!} stateKeyOf={toolKey} />
               : grouped.has(part) ? null : <WorkRow key={index} stateKey={toolKey(part)} paneId={paneId} part={part} /> : null)}
@@ -1055,15 +1056,30 @@ const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThink
       <SkillActivityList parts={turn.parts} />
     </article>;
   }
-  const { work, answer } = splitTurn(turn.parts);
+  const { answer } = splitTurn(turn.parts);
   const answerText = answer.map((part) => part.text).join("\n\n");
   const goal = turnGoal(turn.parts);
+  // in the agent's own order, as the terminal shows it: words written before a tool stay above it
+  const segments = turnSegments(turn.parts);
+  const runs = segments.flatMap((segment, index) => segment.kind === "work" ? [index] : []);
+  // the turn's head is its last run that draws a row: it reads Working… while the turn runs and
+  // carries the turn's duration once it settles; the runs before it are done and read Worked
+  const head = runs.filter((index) => visibleWorkParts(segments[index]!.parts, showThinking).length > 0).at(-1) ?? runs.at(-1);
+  // a settled turn folds its work, unless words the agent said last are in its final run
+  const block = (parts: ConversationPart[], index: number | null) => {
+    const isHead = index === head;
+    return <WorkBlockView key={`work:${index}`} paneId={paneId} parts={parts} turnParts={turn.parts} rowKey={rowKey} memoryKey={index === null || index === runs[0] ? "work" : `work:${index}`}
+      duration={isHead ? formatWorkDuration(turn.ts, turn.end_ts ?? null) : null} live={live && isHead} waiting={waiting && isHead}
+      defaultOpen={live || (index === segments.length - 1 && workStartsOpen(false, turn.parts))}
+      showThinking={showThinking} pendingHead={isHead && answer.length === 0} />;
+  };
   return <article className="chat-turn chat-turn-agent">
     <SkillActivityList parts={turn.parts} />
     {goal !== null && <GoalActivity goal={goal} />}
     {/* the pending head stands only above no answer: one above words would leave a gap when the turn ends */}
-    {(work.length > 0 || (live && answer.length === 0)) && <WorkBlockView paneId={paneId} parts={work} turnParts={turn.parts} rowKey={rowKey} duration={formatWorkDuration(turn.ts, turn.end_ts ?? null)} live={live} waiting={waiting} defaultOpen={workStartsOpen(live, turn.parts)} showThinking={showThinking} pendingHead={answer.length === 0} />}
-    {answer.map((part, index) => <Markdown key={index} skills={skills}>{part.text}</Markdown>)}
+    {head === undefined && live && answer.length === 0 && block([], null)}
+    {segments.map((segment, index) => segment.kind === "work" ? block(segment.parts, index)
+      : segment.parts.map((part, at) => <Markdown key={`answer:${index}:${at}`} skills={skills}>{part.text}</Markdown>))}
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>

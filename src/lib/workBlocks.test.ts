@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { formatWorkDuration, splitTurn, todoGroups, visibleWorkParts, workFailed, workStartsOpen, workSummary, type ToolPart } from "./workBlocks.ts";
+import { formatWorkDuration, splitTurn, todoGroups, turnSegments, visibleWorkParts, workFailed, workStartsOpen, workSummary, type ToolPart } from "./workBlocks.ts";
 import type { ConversationPart } from "../../shared/protocol.ts";
 
 const tool = (name: string, summary = name): Extract<ConversationPart, { kind: "tool" }> => ({ kind: "tool", name, summary, input: "{}", output: "" });
@@ -42,6 +42,29 @@ describe("splitTurn", () => {
     expect(splitTurn(parts)).toEqual({ work: [check], answer: [answer, closing] });
     expect(workStartsOpen(true, parts)).toBe(true);
     expect(workStartsOpen(false, parts)).toBe(false);
+  });
+});
+
+describe("turnSegments", () => {
+  it("keeps words written before a tool above it, and each run of work where it happened", () => {
+    const parts = [thinking("hm"), text("I'll check."), tool("eval"), tool("eval"), text("  \n"), text("Found it."), tool("edit"), text("Done.")];
+    expect(turnSegments(parts)).toEqual([
+      { kind: "work", parts: [thinking("hm")] },
+      { kind: "answer", parts: [text("I'll check.")] },
+      { kind: "work", parts: [tool("eval"), tool("eval")] },
+      { kind: "answer", parts: [text("Found it.")] },
+      { kind: "work", parts: [tool("edit")] },
+      { kind: "answer", parts: [text("Done.")] },
+    ]);
+  });
+
+  it("keeps commentary inside its run of work and a tools-then-answer turn as one run", () => {
+    const narration = { ...text("looking\u2026"), phase: "commentary" as const };
+    expect(turnSegments([tool("read"), narration, tool("edit"), text("done")])).toEqual([
+      { kind: "work", parts: [tool("read"), narration, tool("edit")] },
+      { kind: "answer", parts: [text("done")] },
+    ]);
+    expect(turnSegments([])).toEqual([]);
   });
 });
 

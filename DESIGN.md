@@ -1848,7 +1848,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   never behind the fold.
 - Space separates exchanges, not a rule: the transcript's gap is `--space-3`, so an answer sits
   close under its prompt, and a user turn that follows an assistant turn takes `--space-5` more.
-  The one rule of an exchange is the hairline under its folded work block.
+  The one rule of an exchange is the hairline under each of its folded work blocks.
 - Meta (time, copy) fades in on hover or focus and takes no click or tap while unseen; with any
   coarse pointer (a phone, or a touch screen beside a mouse) it is always visible. With a mouse and no touch screen (`(hover: hover) and
   (pointer: fine) and (not (any-pointer: coarse))`): from 481px a user turn's time and copy sit
@@ -2005,8 +2005,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   an open socket alone does not prove the conversation is current. No code or new controls are borrowed.
 
 ### Work block (`.work-block`, `.work-row`)
-- One per assistant turn: a `▸ Worked for 7s · 1 edit · 2 commands` header (duration = next turn's
-  timestamp minus this one's; "Working…" in `--status-working` behind a breathing dot while the agent runs;
+- One per run of work in an assistant turn, in the agent's own order as its terminal shows it:
+  words the agent wrote before a tool call stay above that call's block, and a turn that talks
+  between its tools has a block between each run of words (Claude app's order of tool groups and
+  prose). The turn's last block that draws a row is its head: a `▸ Worked for 7s · 1 edit · 2
+  commands` header (duration = next turn's timestamp minus this one's; the runs before it read
+  `Worked`; "Working…" in `--status-working` behind a breathing dot while the agent runs;
   "Needs you" in `--text-dim` behind a still `--status-blocked` dot while the
   agent is blocked, by the pane's status and not by whether a prompt card was parsed) over
   one-line rows on the header's own left edge, which is the prose edge too (the hover plate
