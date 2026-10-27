@@ -64,9 +64,19 @@ function windowsApi(): NonNullable<typeof windowsApis> {
   return windowsApis;
 }
 
+/** Minimal type definition for Win32 Restart Manager API symbols used by windowsHolders. */
+export type RestartManagerApi = {
+  symbols: {
+    RmStartSession: (pSessionHandle: Buffer, dwSessionFlags: number, strSessionKey: Buffer) => number;
+    RmRegisterResources: (dwSessionHandle: number, nFiles: number, rgsFilenames: Buffer, nApplications: number, rgApplications: unknown, nServices: number, rgsServiceNames: unknown) => number;
+    RmGetList: (dwSessionHandle: number, pnProcInfoNeeded: Buffer, pnProcInfo: Buffer, rgAffectedApps: Buffer | null, lpdwRebootReasons: Buffer) => number;
+    RmEndSession: (dwSessionHandle: number) => number;
+  };
+};
+
 /** Every process the Restart Manager names for this file; empty when the file is not held. */
-function windowsHolders(path: string): number[] {
-  const { restartManager } = windowsApi();
+export function windowsHolders(path: string, api?: RestartManagerApi): number[] {
+  const restartManager = api ?? windowsApi().restartManager;
   const session = Buffer.alloc(4);
   // CCH_RM_SESSION_KEY (32) + NUL, in WCHARs = 66 bytes.
   if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(68)) !== 0) return [];
@@ -78,15 +88,20 @@ function windowsHolders(path: string): number[] {
     if (restartManager.symbols.RmRegisterResources(handle, 1, files, 0, null, 0, null) !== 0) return [];
     const needed = Buffer.alloc(4), count = Buffer.alloc(4), reasons = Buffer.alloc(4);
     let status = restartManager.symbols.RmGetList(handle, needed, count, null, reasons);
-    const total = needed.readUInt32LE(0);
-    // ERROR_MORE_DATA carries the count; a complete answer in one call means no holders.
-    if (status !== 234 || total === 0 || total > MAX_WINDOWS_CANDIDATES) return [];
-    const list = Buffer.alloc(RM_PROCESS_INFO_SIZE * total);
-    count.writeUInt32LE(total, 0);
-    status = restartManager.symbols.RmGetList(handle, needed, count, list, reasons);
-    if (status !== 0) return [];
+    let list: Buffer | null = null;
+    let allocatedSlots = 0;
+    for (let retry = 0; retry < 4 && status === 234; retry += 1) {
+      const total = needed.readUInt32LE(0);
+      if (total === 0 || total > MAX_WINDOWS_CANDIDATES) return [];
+      list = Buffer.alloc(RM_PROCESS_INFO_SIZE * total);
+      allocatedSlots = total;
+      count.writeUInt32LE(total, 0);
+      status = restartManager.symbols.RmGetList(handle, needed, count, list, reasons);
+    }
+    if (status !== 0 || !list) return [];
+    const returnedCount = Math.min(count.readUInt32LE(0), allocatedSlots);
     const owners: number[] = [];
-    for (let index = 0; index < count.readUInt32LE(0); index += 1) owners.push(list.readUInt32LE(RM_PROCESS_INFO_SIZE * index));
+    for (let index = 0; index < returnedCount; index += 1) owners.push(list.readUInt32LE(RM_PROCESS_INFO_SIZE * index));
     return owners;
   } finally { restartManager.symbols.RmEndSession(handle); }
 }
@@ -144,7 +159,7 @@ function windowsScanAll(
       if (windowsScanId !== id) return windowsScanAll(getHolders, getCandidates);
       if (windowsScanId === id) windowsScan = scan;
       return scan;
-    })().finally(() => { if (windowsScanId === id) windowsScanning = null; });
+    })().finally(() => { windowsScanning = null; });
   }
   return windowsScanning;
 }
