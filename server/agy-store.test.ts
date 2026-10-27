@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,120 @@ import {
   windowsHolders,
   windowsLockCandidates,
 } from "./agy-store.ts";
+
+it("expires singleton evidence and reconciles a newer ambiguous scan", async () => {
+  resetWindowsScanCacheForTest();
+  const realNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  try {
+    let both = false;
+    const holders = (path: string) => path === "A" || both ? [4242] : [];
+    const candidates = () => ["A", "B"];
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
+    both = true;
+    now = 6_000;
+    // Another pane completes a scan before the original pane resolves again.
+    await windowsHeldPaths(4243, holders, candidates);
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A", "B"]);
+    now = 12_000;
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A", "B"]);
+  } finally { Date.now = realNow; }
+});
+
+it("re-validates a resolved lock with one call per refresh and rescans within a minute for a second lock", async () => {
+  resetWindowsScanCacheForTest();
+  const realNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  try {
+    let both = false;
+    const calls: string[] = [];
+    const holders = (path: string) => { calls.push(path); return path === "A" || both ? [4242] : []; };
+    const candidates = () => ["A", "B"];
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
+    for (now = 6_000; now < 60_000; now += 6_000) {
+      calls.length = 0;
+      expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
+      expect(calls).toEqual(["A"]);
+    }
+    both = true;
+    now = 61_000;
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A", "B"]);
+  } finally { Date.now = realNow; }
+});
+
+it("does not accept singleton evidence from an overflowing candidate listing", async () => {
+  resetWindowsScanCacheForTest();
+  const root = mkdtempSync(join(tmpdir(), "agy-overflow-"));
+  mkdirSync(join(root, "presence"));
+  try {
+    for (let i = 0; i < 4097; i += 1) {
+      writeFileSync(join(root, "presence", `00000000-0000-4000-8000-${i.toString().padStart(12, "0")}.lock`), "");
+    }
+    const candidates = () => windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root);
+    // The pid holds the first and last entries; a truncated scan sees only the first.
+    const names = readdirSync(join(root, "presence"));
+    const held = [join(root, "presence", names[0]!), join(root, "presence", names.at(-1)!)];
+    const holders = (path: string) => held.includes(path) ? [4242] : [];
+    expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 15_000);
+
+for (const ambiguous of [false, true]) {
+  it(`caps steady-state ${ambiguous ? "ambiguous" : "missing"} scan backoff at 60 seconds`, async () => {
+    resetWindowsScanCacheForTest();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const scans: number[] = [];
+      const candidates = () => ["A", "B"];
+      const holders = (path: string) => {
+        if (path === "A") scans.push(now);
+        return ambiguous ? [4242] : [];
+      };
+      // A poll every six seconds, driven entirely by the controlled clock.
+      for (now = 0; now <= 204_000; now += 6_000) await windowsHeldPaths(4242, holders, candidates);
+      // Ambiguous results confirm each held path after each scan as well.
+      expect([...new Set(scans)]).toEqual([0, 6_000, 18_000, 42_000, 84_000, 144_000, 204_000]);
+    } finally { Date.now = realNow; }
+  });
+
+  it(`backs off repeated ${ambiguous ? "ambiguous" : "missing"} holds and resets on listing or pid change`, async () => {
+    resetWindowsScanCacheForTest();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      let calls = 0;
+      let paths = ["A", "B"];
+      let held = ambiguous ? ["A", "B"] : [];
+      const holders = (path: string) => { calls += 1; return held.includes(path) ? [4242] : []; };
+      const candidates = () => paths;
+      await windowsHeldPaths(4242, holders, candidates);
+      now = 6_000;
+      await windowsHeldPaths(4242, holders, candidates);
+      const afterRetry = calls;
+      now = 12_000;
+      await windowsHeldPaths(4242, holders, candidates);
+      expect(calls).toBe(afterRetry);
+      paths = ["A", "B", "C"];
+      held = ["C"];
+      expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["C"]);
+      expect(calls).toBeGreaterThan(afterRetry);
+      const afterChange = calls;
+      now = 18_000;
+      await windowsHeldPaths(4243, holders, candidates);
+      expect(calls).toBeGreaterThan(afterChange);
+      // With no directory change, retries remain bounded rather than stopping discovery forever.
+      now = 80_000;
+      const beforeDeadline = calls;
+      await windowsHeldPaths(4242, holders, candidates);
+      expect(calls).toBeGreaterThan(beforeDeadline);
+    } finally { Date.now = realNow; }
+  });
+}
 
 it("reads only presence locks as candidates, never another file beside them", () => {
   const root = mkdtempSync(join(tmpdir(), "agy-store-"));

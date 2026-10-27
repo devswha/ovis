@@ -39,11 +39,8 @@ const RM_PROCESS_INFO_SIZE = 668; // RM_UNIQUE_PROCESS(12) + 256 WCHAR + 64 WCHA
 const MAX_WINDOWS_CANDIDATES = 4096;
 const WINDOWS_SCAN_TTL_MS = 5_000;
 
-/** Encode a UTF-8 string to a null-terminated UTF-16LE buffer for Win32 API calls. */
-function utf16(value: string): Buffer { return Buffer.from(`${value}\0`, "utf16le"); }
-
 /** Load rstrtmgr.dll via Bun FFI for querying file lock owners. */
-const openRestartManager = () => dlopen("rstrtmgr.dll", {
+const openRestartManager = () => dlopen(join(process.env["SystemRoot"] || process.env["windir"] || "C:\\Windows", "System32", "rstrtmgr.dll"), {
   RmStartSession: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.u32 },
   RmRegisterResources: { args: [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.u32 },
   RmGetList: { args: [FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.u32 },
@@ -51,7 +48,7 @@ const openRestartManager = () => dlopen("rstrtmgr.dll", {
 });
 
 /** Load kernel32.dll via Bun FFI for process inspection and handle management. */
-const openKernel = () => dlopen("kernel32.dll", {
+const openKernel = () => dlopen(join(process.env["SystemRoot"] || process.env["windir"] || "C:\\Windows", "System32", "kernel32.dll"), {
   OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
   GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
@@ -82,9 +79,10 @@ export function windowsHolders(path: string, api?: RestartManagerApi): number[] 
   if (restartManager.symbols.RmStartSession(session, 0, Buffer.alloc(68)) !== 0) return [];
   const handle = session.readUInt32LE(0);
   try {
-    const name = utf16(path);
-    const files = Buffer.alloc(8);
-    files.writeBigUInt64LE(BigInt(ptr(name)), 0);
+    // Keep the UTF-16 path in the same allocation as the pointer array passed to the native call.
+    const files = Buffer.alloc(8 + Buffer.byteLength(`${path}\0`, "utf16le"));
+    files.write(`${path}\0`, 8, "utf16le");
+    files.writeBigUInt64LE(BigInt(ptr(files.subarray(8))), 0);
     if (restartManager.symbols.RmRegisterResources(handle, 1, files, 0, null, 0, null) !== 0) return [];
     const needed = Buffer.alloc(4), count = Buffer.alloc(4), reasons = Buffer.alloc(4);
     let status = restartManager.symbols.RmGetList(handle, needed, count, null, reasons);
@@ -115,10 +113,10 @@ export function windowsLockCandidates(env: Record<string, string | undefined> = 
     try { names = readdirSync(join(root, "presence")); } catch { continue; }
     for (const name of names) if (LOCK.test(name)) candidates.push(join(root, "presence", name));
   }
-  return candidates.slice(0, MAX_WINDOWS_CANDIDATES);
+  return candidates.length > MAX_WINDOWS_CANDIDATES ? [] : candidates;
 }
 
-interface WindowsScan { at: number; owners: Map<number, string[]> }
+interface WindowsScan { at: number; candidates: string; owners: Map<number, string[]> }
 let windowsScan: WindowsScan | null = null;
 let windowsScanning: Promise<WindowsScan> | null = null;
 let windowsScanId = 0;
@@ -133,6 +131,7 @@ function invalidateWindowsScan(): void {
 /** Reset scan and holder caches between tests. */
 export function resetWindowsScanCacheForTest(): void {
   invalidateWindowsScan();
+  windowsNegative.clear();
   windowsHeld.clear();
 }
 
@@ -150,22 +149,34 @@ function windowsScanAll(
     const id = ++windowsScanId;
     windowsScanning = (async () => {
       const owners = new Map<number, string[]>();
-      for (const path of getCandidates()) {
+      const candidates = getCandidates();
+      for (const path of candidates) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (windowsScanId !== id) break;
         for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
       }
-      const scan = { at: Date.now(), owners };
+      const scan = { at: Date.now(), candidates: JSON.stringify([...candidates].sort()), owners };
       if (windowsScanId !== id) return windowsScanAll(getHolders, getCandidates);
-      if (windowsScanId === id) windowsScan = scan;
+      windowsScan = scan;
       return scan;
     })().finally(() => { windowsScanning = null; });
   }
   return windowsScanning;
 }
 
-/** Validated pid → held lock, so a resolved pane costs one call per refresh instead of a pass. */
-const windowsHeld = new Map<number, string>();
+/** Unresolved pids retry at 5, 10, 20, 40, then 60 seconds while the listing stays unchanged. */
+const windowsNegative = new Map<number, { scan: WindowsScan; delay: number; next: number }>();
+
+/**
+ * A pid's one held lock and when a scan proved it the only one: a resolved pane costs one call per
+ * refresh, and a full pass once a minute, or a newer scan from another pane, notices a second lock.
+ */
+const windowsHeld = new Map<number, { path: string; proven: number }>();
+const WINDOWS_HELD_MAX_AGE_MS = 60_000;
+function rememberHeld(pid: number, path: string, proven: number): void {
+  windowsHeld.set(pid, { path, proven });
+  if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
+}
 
 /** The locks this pid holds: one known path is re-validated, a new or moved session is scanned. */
 export async function windowsHeldPaths(
@@ -175,18 +186,28 @@ export async function windowsHeldPaths(
 ): Promise<string[]> {
   const known = windowsHeld.get(pid);
   if (known !== undefined) {
-    if (getHolders(known).includes(pid)) return [known];
+    const newer = windowsScan !== null && windowsScan.at > known.proven ? windowsScan.owners.get(pid) ?? [] : null;
+    const stillOnly = newer === null || (newer.length === 1 && newer[0] === known.path);
+    if (stillOnly && Date.now() - known.proven < WINDOWS_HELD_MAX_AGE_MS && getHolders(known.path).includes(pid)) return [known.path];
     windowsHeld.delete(pid);
-    invalidateWindowsScan();
+    // a newer scan that disagrees already stands; otherwise the next answer needs a new pass
+    if (stillOnly) invalidateWindowsScan();
   }
-  // A scan already names every owner, so a pane it saw costs one confirmation instead of a pass.
-  const seen = windowsScan?.owners.get(pid);
-  if (seen?.length === 1) {
-    if (getHolders(seen[0]!).includes(pid)) {
-      windowsHeld.set(pid, seen[0]!);
-      if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
-      return seen;
+  if (!windowsScanning && (!windowsScan || Date.now() - windowsScan.at >= WINDOWS_SCAN_TTL_MS)) {
+    const candidates = getCandidates();
+    const listing = JSON.stringify([...candidates].sort());
+    if (windowsScan && windowsScan.candidates !== listing) {
+      invalidateWindowsScan();
+      windowsNegative.clear();
     }
+    const negative = windowsNegative.get(pid);
+    if (negative && negative.scan === windowsScan && Date.now() < negative.next) return [];
+    getCandidates = () => candidates;
+  }
+  // Only a fresh, complete scan establishes singleton evidence; confirm it on every refresh.
+  const seen = windowsScan?.owners.get(pid);
+  if (windowsScan && Date.now() - windowsScan.at < WINDOWS_SCAN_TTL_MS && seen?.length === 1) {
+    if (getHolders(seen[0]!).includes(pid)) { rememberHeld(pid, seen[0]!, windowsScan.at); return seen; }
     invalidateWindowsScan();
   }
   const scan = await windowsScanAll(getHolders, getCandidates);
@@ -194,8 +215,15 @@ export async function windowsHeldPaths(
   const held = scanned.filter((path) => getHolders(path).includes(pid));
   if (held.length !== scanned.length) invalidateWindowsScan();
   if (held.length === 1) {
-    windowsHeld.set(pid, held[0]!);
-    if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
+    windowsNegative.delete(pid);
+    rememberHeld(pid, held[0]!, scan.at);
+  } else {
+    const previous = windowsNegative.get(pid);
+    if (previous?.scan !== scan) {
+      const delay = Math.min((previous?.delay ?? WINDOWS_SCAN_TTL_MS / 2) * 2, 60_000);
+      windowsNegative.set(pid, { scan, delay, next: scan.at + delay });
+      if (windowsNegative.size > 64) windowsNegative.delete(windowsNegative.keys().next().value!);
+    }
   }
   return held;
 }
