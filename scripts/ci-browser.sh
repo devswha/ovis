@@ -106,6 +106,7 @@ run_script scripts/gjc-status-browser-regression.ts
 run_script scripts/math-browser-qa.ts
 run_script scripts/claude-image-browser-qa.ts
 run_script scripts/pi-image-browser-qa.ts
+run_script scripts/omp-codex-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
@@ -141,6 +142,7 @@ run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/opencode-prompt-regression.ts
+run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts
 run_script scripts/background-agent-detail-demo-regression.ts
