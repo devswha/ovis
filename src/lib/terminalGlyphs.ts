@@ -87,6 +87,8 @@ const JOINS = /[\p{M}\u200d\ufe00-\ufe0f]/u;
 export const ICON_FAMILY = "Symbols Nerd Font Mono";
 
 const QUOTES = /["']/g;
+/** A family name as CSS matches it: unquoted, and without regard to case ("pretendard variable" typed in Settings draws with "Pretendard Variable"). */
+const familyKey = (name: string): string => name.replace(QUOTES, "").trim().toLowerCase();
 // a unicode-range as code point pairs, by the text FontFace.unicodeRange gives back
 const parsedRanges = new Map<string, [number, number][]>();
 
@@ -156,10 +158,10 @@ export function followLateFaces<Face extends LateFace>(fonts: Iterable<Face> | u
   return {
     ask(families, text) {
       if (!fonts || stopped) return;
-      const names = new Set(families.split(",").map((name) => name.replace(QUOTES, "").trim()));
+      const names = new Set(families.split(",").map(familyKey));
       for (const face of fonts) {
         if ((face.status !== "unloaded" && face.status !== "loading") || followed.has(face)) continue;
-        if (!names.has(face.family.replace(QUOTES, "").trim()) || !coversAny(face.unicodeRange, text)) continue;
+        if (!names.has(familyKey(face.family)) || !coversAny(face.unicodeRange, text)) continue;
         followed.add(face);
         whenLoaded(face, relay);
       }

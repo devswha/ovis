@@ -170,7 +170,8 @@ const FONT_LOAD_SAMPLE = "Mg가";
 export async function loadFontStack(stack: string, sizePx: number, timeoutMs = FONT_LOAD_TIMEOUT_MS): Promise<void> {
   const fonts = typeof document === "undefined" ? undefined : document.fonts;
   if (!fonts || typeof fonts.load !== "function") return;
-  const families = stack.split(",").map((name) => name.trim()).filter((name) => name !== HANGUL_FONT).join(", ");
+  // CSS matches family names without regard to case: "ovis hangul mono" typed in Settings is the bundled face too
+  const families = stack.split(",").map((name) => name.trim()).filter((name) => name.replace(QUOTES, "").toLowerCase() !== HANGUL_FAMILY.toLowerCase()).join(", ");
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([

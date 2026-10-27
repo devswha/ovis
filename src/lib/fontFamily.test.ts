@@ -133,6 +133,14 @@ describe("waiting for a font", () => {
     expect(asked[0]).toEndWith("monospace, \"Malgun Gothic\"");
   });
 
+  it("leaves the bundled Hangul face out whatever case it was typed in, as CSS matches it", async () => {
+    const asked: string[] = [];
+    withFonts(async (font) => { asked.push(font); return []; });
+    await loadFontStack(terminalFontStack("ovis hangul mono, D2Coding"), 13);
+    expect(asked[0]).toStartWith('13px "Symbols Nerd Font Mono", D2Coding, "JetBrains Mono"');
+    expect(asked[0]!.toLowerCase()).not.toContain(HANGUL_FAMILY.toLowerCase());
+  });
+
   it("resolves when the load fails, so the terminal goes on with its fallback", async () => {
     withFonts(() => Promise.reject(new SyntaxError("bad font")));
     await expect(loadFontStack("D2Coding", 13)).resolves.toBeUndefined();
