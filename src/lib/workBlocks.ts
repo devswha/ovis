@@ -25,7 +25,9 @@ export function splitTurn(parts: ConversationPart[]): SplitTurn {
   return { work: parts.filter(isWork), answer: parts.filter(isAnswer) };
 }
 
-export type TurnSegment = { kind: "work"; parts: ConversationPart[] } | { kind: "answer"; parts: TextPart[] };
+/** `start`: the index of the run's first part in the turn, which names the run while it grows */
+export type TurnSegment = { kind: "work"; start: number; parts: ConversationPart[] } | { kind: "answer"; start: number; parts: TextPart[] };
+export type WorkSegment = Extract<TurnSegment, { kind: "work" }>;
 
 /**
  * The turn in the agent's own order, as its terminal shows it: each run of work between two
@@ -34,16 +36,16 @@ export type TurnSegment = { kind: "work"; parts: ConversationPart[] } | { kind: 
  */
 export function turnSegments(parts: ConversationPart[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
-  for (const part of parts) {
+  parts.forEach((part, index) => {
     const last = segments.at(-1);
     if (isAnswer(part)) {
       if (last?.kind === "answer") last.parts.push(part);
-      else segments.push({ kind: "answer", parts: [part] });
+      else segments.push({ kind: "answer", start: index, parts: [part] });
     } else if (isWork(part)) {
       if (last?.kind === "work") last.parts.push(part);
-      else segments.push({ kind: "work", parts: [part] });
+      else segments.push({ kind: "work", start: index, parts: [part] });
     }
-  }
+  });
   return segments;
 }
 

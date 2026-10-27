@@ -224,6 +224,31 @@ try {
     assert.deepEqual(await rows(), ["Checking the catalog first.", "work Worked \u00b7 1 command", "Three books. Now the loans.", "work Working\u2026 \u00b7 1 command", "No book is on loan."], "while the turn runs, only its last run of work reads Working");
     assert.equal(await live.count(), 1, "one Working at a time");
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-runs-live.png") });
+    // An earlier run splits when its blank text gets words: every block keeps the fold it had.
+    const bash = (command: string) => ({ kind: "tool" as const, name: "Bash", summary: command, input: JSON.stringify({ command }), output: "" });
+    const said = (value: string) => ({ kind: "text" as const, text: value });
+    const shelves = (first: string): ConversationTurn[] => [
+      { role: "user", ts: null, parts: [said("List the shelves.")] },
+      { role: "assistant", ts: null, parts: [said("Three shelves.")] },
+      { role: "user", ts: null, parts: [said("Check each shelf.")] },
+      { role: "assistant", ts: null, parts: [bash("ls a"), said(first), bash("ls b"), said("Shelf b next."), bash("ls c")] },
+    ];
+    const heads = page.locator(".chat-turn-agent").last().locator(".work-block-head");
+    const opened = async () => Promise.all((await heads.all()).map(async (head) => await head.getAttribute("aria-expanded") === "true"));
+    turns = shelves("");
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    await page.getByText("Shelf b next.", { exact: true }).waitFor();
+    assert.deepEqual(await opened(), [false, true], "while the turn runs only its working run is open");
+    const headRows = page.locator(".chat-turn-agent").last().locator(".work-block").last().locator(".work-block-rows");
+    await heads.last().click();
+    await headRows.waitFor({ state: "hidden" });
+    assert.deepEqual(await opened(), [false, false], "the reader folds the working run");
+    turns = shelves("Shelf a is empty.");
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    await page.getByText("Shelf a is empty.", { exact: true }).waitFor();
+    assert.deepEqual(await opened(), [false, false, false], "a run that splits moves no fold to another block: the folded run stays folded");
+    await headRows.waitFor({ state: "hidden" });
+    if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-run-split.png") });
     await page.evaluate(() => window.chatFallbackQA.status(undefined));
     await live.waitFor({ state: "detached" });
     console.log("PASS words and runs of work keep the agent's order, settled and live");
