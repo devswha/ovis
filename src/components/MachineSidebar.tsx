@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, Download, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
 import type { Machine, MachineState, MachineUpdate, RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
@@ -16,6 +16,7 @@ import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterCon
 import { UsageMeters } from "./UsageMeters.tsx";
 import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
+import { useSettings } from "../lib/settings.ts";
 import { requestSettingsPage } from "../lib/paletteSettings.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway } from "../lib/userError.ts";
@@ -31,7 +32,7 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
 
 /** `activity`: App's live counters per PC and finishes looked at here; both sidebar lists draw from it.
  *  `machines` are the PCs this device shows; `hiddenCount` says how many it keeps out (Settings → Remote PCs) */
-interface Props { machines: Machine[]; hiddenCount?: number; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; /** a phone's drawer is out: closing it clears the filter */ drawerOpen?: boolean; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void }
+interface Props { machines: Machine[]; hiddenCount?: number; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; /** a phone's drawer is out: closing it clears the filter */ drawerOpen?: boolean; /** counts the command palette's Filter workspaces and agents: each new count shows the field and focuses it */ filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void }
 export function MachineSidebar(props: Props) {
   const t = useT();
   const { canInstall, installed, install, help } = useInstallPrompt();
@@ -60,17 +61,50 @@ export function MachineSidebar(props: Props) {
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
   const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed), [props.machines, branchLabels, unnamed]);
+  // Settings → Appearance → Sidebar filter off leaves the field out until the palette's Filter workspaces and
+  // agents asks for it (`filterRequest`); it stays while it holds words, and goes on its close, Escape in it
+  // empty, the focus leaving the sidebar from it empty, or the phone's drawer closing
+  const { settings } = useSettings();
+  const [filterAsked, setFilterAsked] = useState(false);
+  const closable = !settings.sidebarFilter && filterAsked;
+  const filterShown = settings.sidebarFilter || filterAsked || query !== "";
+  const filterRequest = props.filterRequest ?? 0;
+  const lastFilterRequest = useRef(filterRequest);
+  const focusFilter = useRef(false);
+  // a field the palette asked for while the setting was on is not kept open by turning it off
+  useEffect(() => { setFilterAsked(false); }, [settings.sidebarFilter]);
+  useEffect(() => {
+    if (filterRequest === lastFilterRequest.current) return;
+    lastFilterRequest.current = filterRequest;
+    focusFilter.current = true;
+    setFilterAsked(true);
+  }, [filterRequest]);
+  // the focus lands once the field is drawn
+  useEffect(() => {
+    if (!focusFilter.current || !filterShown) return;
+    focusFilter.current = false;
+    filterInput.current?.focus();
+  });
+  const closeFilter = () => { setQuery(""); setFilterAsked(false); };
   const clearFilter = () => { setQuery(""); filterInput.current?.focus(); };
-  // Escape in the field clears it; an empty field's Escape is left to the page (a phone's drawer closes on it)
+  // Escape in the field clears it; an empty field's Escape closes a field the palette opened, and is left to the
+  // page (a phone's drawer closes on it)
   const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Escape" || query === "" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (event.key !== "Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (query === "") { if (closable) closeFilter(); return; }
     event.preventDefault();
     event.stopPropagation();
     setQuery("");
   };
+  // a press on a row keeps the field (it would move the rows under the pointer); the focus going elsewhere does not
+  const onFilterBlur = (event: FocusEvent<HTMLInputElement>) => {
+    const next = event.relatedTarget;
+    if (!closable || query !== "" || next === null || event.currentTarget.closest(".sidebar-shell")?.contains(next)) return;
+    closeFilter();
+  };
   const drawerOpen = props.drawerOpen === true;
   const hiddenCount = props.hiddenCount ?? 0;
-  useEffect(() => { if (!drawerOpen) setQuery(""); }, [drawerOpen]);
+  useEffect(() => { if (!drawerOpen) { setQuery(""); setFilterAsked(false); } }, [drawerOpen]);
   // the roster's wait is a live region that is in the list from its first render, clipped while empty (never
   // display: none), and its words land a frame after it (lib/useAnnouncedText.ts)
   const loadingWords = useAnnouncedText(props.machines.length === 0 ? t("Loading PCs…") : null);
@@ -81,12 +115,13 @@ export function MachineSidebar(props: Props) {
   // Settings → Remote PCs. The filter above the lists is a row of the same grid, one field and its clear, never
   // taller than a row.
   return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div className="sidebar-shell">
-    <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
+    {filterShown && <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       <label className="sidebar-filter-label" htmlFor={filterId}>{t("Filter")}</label>
-      <input ref={filterInput} id={filterId} className="input sidebar-filter-input" type="search" value={query} aria-label={t("Filter workspaces and agents")} placeholder={t("Workspaces and agents")} list={suggestionsId} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} />
+      <input ref={filterInput} id={filterId} className="input sidebar-filter-input" type="search" value={query} aria-label={t("Filter workspaces and agents")} placeholder={t("Workspaces and agents")} list={suggestionsId} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} onBlur={onFilterBlur} />
       <datalist id={suggestionsId}>{suggestions.map((label) => <option key={label} value={label} />)}</datalist>
-      {query !== "" && <button type="button" className="sidebar-filter-clear" aria-label={t("Clear filter")} title={t("Clear filter")} onClick={clearFilter}><X aria-hidden="true" /></button>}
-    </div>
+      {query !== "" ? <button type="button" className="sidebar-filter-clear" aria-label={t("Clear filter")} title={t("Clear filter")} onClick={clearFilter}><X aria-hidden="true" /></button>
+        : closable && <button type="button" className="sidebar-filter-clear" aria-label={t("Close filter")} title={t("Close filter")} onClick={closeFilter}><X aria-hidden="true" /></button>}
+    </div>}
     <div className="machine-list" aria-label={t("PCs and workspaces")}>
       <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
       {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} />)}
