@@ -91,6 +91,12 @@ namespace Ovis
         {
             Retry = Update;
             var title = Lang.L("Updating the Ovis server…", "Ovis 서버를 업데이트하는 중…");
+            // a linked checkout or a fork is never moved or reinstalled (the screen offers no Update for one)
+            if (plugin != null && plugin.NotOurs)
+            {
+                await Refresh();
+                return;
+            }
             if (plugin == null || plugin.Id == Links.LegacyPluginId || AppVersion == null)
             {
                 await RunInstaller(title);
@@ -104,17 +110,18 @@ namespace Ovis
                 return;
             }
             Set(Phase.Working, title);
-            // the reinstall leaves the old files to a server that runs them, and the start would find it answering
-            if (!await Stop(plugin))
-            {
-                Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
-                return;
-            }
+            // the release is settled before the server stops, so a PC that cannot reach GitHub keeps it running
             var tags = await Run.Program("git", new[] { "ls-remote", "--tags", "--refs", Links.Repository, "v*" }, Append, true);
             var tag = Setup.UpdateTag(tags.Status == 0 ? tags.Output : null, AppVersion);
             if (tag == null)
             {
                 Fail(Lang.L("Could not read the Ovis releases from GitHub, so nothing was updated. Check the internet connection.", "GitHub에서 Ovis 릴리스를 읽지 못해 아무것도 업데이트하지 않았습니다. 인터넷 연결을 확인해 주세요."));
+                return;
+            }
+            // the reinstall leaves the old files to a server that runs them, and the start would find it answering
+            if (!await Stop(plugin))
+            {
+                Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
                 return;
             }
             var reinstall = new[] { "plugin", "install", Links.PluginSource, "--ref", tag, "--yes" };
@@ -332,13 +339,42 @@ namespace Ovis
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
                 {
-                    status.RunningVersion = Setup.UpdatesVersion(await client.GetStringAsync(status.Origin.TrimEnd('/') + "/api/updates"));
+                    var url = status.Origin.TrimEnd('/') + "/api/updates";
+                    var answer = await client.GetAsync(url);
+                    if (answer.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        // behind a token: the plugin's own settings hold it, as `plugin.ts` reads them
+                        var token = await PluginToken(plugin);
+                        answer.Dispose();
+                        if (token == null) return await WithAccess(status);
+                        var request = new HttpRequestMessage(HttpMethod.Get, url);
+                        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                        answer = await client.SendAsync(request);
+                    }
+                    using (answer)
+                    {
+                        if (answer.IsSuccessStatusCode) status.RunningVersion = Setup.UpdatesVersion(await answer.Content.ReadAsStringAsync());
+                    }
                 }
             }
-            catch (Exception exception) when (exception is HttpRequestException || exception is TaskCanceledException || exception is ArgumentException || exception is InvalidOperationException)
+            catch (Exception exception) when (exception is HttpRequestException || exception is TaskCanceledException || exception is ArgumentException || exception is InvalidOperationException || exception is System.IO.IOException || exception is UnauthorizedAccessException)
             {
-                // a server behind a token answers 401: its version comes from the status line or herdr instead
+                // no version from the server: one that runs is then one whose version cannot be read
             }
+            return await WithAccess(status);
+        }
+
+        private static async Task<string> PluginToken(Plugin plugin)
+        {
+            var dir = await Run.Program("herdr", new[] { "plugin", "config-dir", plugin.Id }, null, false);
+            var path = dir.Status == 0 ? (dir.Output.Split('\n').FirstOrDefault() ?? "").Trim() : "";
+            if (path.Length == 0) return null;
+            return Setup.EnvToken(new[] { "env", ".env" }.Select(name => System.IO.Path.Combine(path, name)).Where(System.IO.File.Exists).Select(file => System.IO.File.ReadAllText(file)));
+        }
+
+        /// <summary>The phone address and Tailscale's state, from GET /api/access.</summary>
+        private static async Task<Status> WithAccess(Status status)
+        {
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })

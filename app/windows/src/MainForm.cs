@@ -168,7 +168,7 @@ namespace Ovis
         private void Outdated()
         {
             body.Controls.Add(Heading(Lang.L("Update the Ovis server", "Ovis 서버를 업데이트해야 합니다")));
-            body.Controls.Add(Paragraph(Setup.UpdateMessage(model.UpdateReason, model.Plugin, model.Status == null ? null : model.Status.RunningVersion, model.Status == null ? null : model.Status.Version, Model.AppVersion)));
+            body.Controls.Add(Paragraph(Setup.UpdateMessage(model.UpdateReason, model.Plugin, model.Status != null && model.Status.Running, model.Status == null ? null : model.Status.RunningVersion, model.Status == null ? null : model.Status.Version, Model.AppVersion)));
             if (GitStep()) return;
             var update = Primary(Lang.L("Update", "업데이트"), () => model.Update());
             body.Controls.Add(Buttons(update, Button(Lang.L("Check again", "다시 확인"), () => model.Refresh())));

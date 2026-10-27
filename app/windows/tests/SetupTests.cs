@@ -27,7 +27,7 @@ namespace Ovis
                     var reason = Setup.Reason(plugin, null, null, false, App);
                     Equal(UpdateReason.LegacyId, reason);
                     Equal(Phase.Outdated, Setup.Choose(plugin, reason, new Version(0, 9, 3)));
-                    Contains(Setup.UpdateMessage(reason, plugin, null, null, App), "0.3.45");
+                    Contains(Setup.UpdateMessage(reason, plugin, false, null, null, App), "0.3.45");
                 }),
                 Case("the old id needs the move whatever its version, and in a build without a version", () =>
                 {
@@ -38,12 +38,14 @@ namespace Ovis
                 Case("a server that runs older than the app gets Update, naming both versions", () =>
                 {
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
-                    foreach (var reported in new[] { new[] { "0.4.15", null }, new[] { null, "0.4.15" } })
+                    // running, it says so itself; stopped, its status line names the release its start runs
+                    foreach (var running in new[] { true, false })
                     {
-                        var reason = Setup.Reason(plugin, reported[0], reported[1], true, App);
+                        var reported = running ? new[] { "0.4.15", null } : new[] { null, "0.4.15" };
+                        var reason = Setup.Reason(plugin, reported[0], reported[1], running, App);
                         Equal(UpdateReason.Older, reason);
                         Equal(Phase.Outdated, Setup.Choose(plugin, reason, new Version(0, 9, 5)));
-                        var message = Setup.UpdateMessage(reason, plugin, reported[0], reported[1], App);
+                        var message = Setup.UpdateMessage(reason, plugin, running, reported[0], reported[1], App);
                         Contains(message, "0.4.15");
                         Contains(message, "0.4.19");
                     }
@@ -54,18 +56,22 @@ namespace Ovis
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
                     Equal(UpdateReason.None, Setup.Reason(plugin, "0.4.22", null, true, App));
                     Equal(UpdateReason.None, Setup.Reason(plugin, null, "0.4.19", false, App));
-                    // a reinstalled checkout while the old server still runs: the running one decides
+                    // a reinstalled checkout while the old server still runs: the running one decides, and the status
+                    // line, which names the next start's release, never stands in for it
                     Equal(UpdateReason.Older, Setup.Reason(plugin, "0.4.15", "0.4.22", true, App));
+                    Equal(UpdateReason.VersionUnknown, Setup.Reason(plugin, null, "0.4.22", true, App));
                 }),
                 Case("a stopped server known only by herdr's list is started first, not reinstalled", () =>
                 {
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
                     Equal(UpdateReason.None, Setup.Reason(plugin, null, null, false, App));
                     Equal(Phase.Installed, Setup.Choose(plugin, UpdateReason.None, null));
-                    // running, but not answering its version (a token): herdr's list is all there is
-                    Equal(UpdateReason.Older, Setup.Reason(plugin, null, null, true, App));
+                    // running, but not answering its version (a token): herdr's list is not taken for it
+                    Equal(UpdateReason.VersionUnknown, Setup.Reason(plugin, null, null, true, App));
+                    // a checkout herdr lists at or past the app is current whatever runs on it
+                    Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.19"))), null, null, true, App));
                     bool exact;
-                    Equal(new Version(0, 4, 15), Setup.ServerVersion(plugin, null, null, out exact));
+                    Equal(new Version(0, 4, 15), Setup.ServerVersion(plugin, false, null, null, out exact));
                     Equal(false, exact);
                 }),
                 Case("the update installs the newest release, never one older than the app or than the server runs", () =>
@@ -94,14 +100,26 @@ namespace Ovis
                     var reason = Setup.Reason(plugin, null, null, false, App);
                     Equal(UpdateReason.VersionUnknown, reason);
                     Equal(Phase.Outdated, Setup.Choose(plugin, reason, null));
-                    var unknown = Setup.UpdateMessage(reason, plugin, null, null, App);
-                    if (unknown.Length == 0 || unknown == Setup.UpdateMessage(UpdateReason.Older, plugin, null, null, App)) throw new Exception("the unknown version has no words of its own: " + unknown);
+                    var unknown = Setup.UpdateMessage(reason, plugin, false, null, null, App);
+                    if (unknown.Length == 0 || unknown == Setup.UpdateMessage(UpdateReason.Older, plugin, false, null, null, App)) throw new Exception("the unknown version has no words of its own: " + unknown);
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "unknown"))), "", "", true, App));
                 }),
-                Case("a linked checkout, or an app built without a version, is never offered a reinstall", () =>
+                Case("a linked checkout or a fork, under either id, or an app built without a version, is never offered a reinstall", () =>
                 {
-                    Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.1", "local"))), "0.4.1", null, true, App));
+                    foreach (var id in new[] { Links.PluginId, Links.LegacyPluginId })
+                    {
+                        Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(id, "0.4.1", "local"))), "0.4.1", null, true, App));
+                        Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(id, "0.4.1", "github", "0.9.0", "someone"))), "0.4.1", null, true, App));
+                    }
+                    Equal(UpdateReason.Older, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.1", "github", "0.9.0", "DevSwha"))), "0.4.1", null, true, App));
                     Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.1"))), "0.4.1", null, true, null));
+                }),
+                Case("a prerelease of the app's version is older than it; a newer one is not", () =>
+                {
+                    var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
+                    Equal(UpdateReason.Older, Setup.Reason(plugin, "0.4.19-rc.1", null, true, App));
+                    Equal(UpdateReason.Older, Setup.Reason(plugin, null, "0.4.19-rc.1", false, App));
+                    Equal(UpdateReason.None, Setup.Reason(plugin, "0.4.20-rc.1", null, true, App));
                 }),
                 Case("a herdr older than the server needs gets the herdr screen, naming both", () =>
                 {
@@ -121,7 +139,7 @@ namespace Ovis
                     Equal(Links.PluginId, both.Id);
                     Equal(@"C:\Users\u\AppData\Roaming\herdr\plugins\" + Links.PluginId, both.Root);
                     Equal("0.9.0", both.MinHerdr);
-                    Equal(false, both.Linked);
+                    Equal(false, both.NotOurs);
                     Equal(null, Setup.ParsePlugin("herdr: unknown command"));
                     Equal(null, Setup.ParsePlugin("{\"result\":{\"plugins\":[{\"plugin_id\":\"devswha.ovis\"}]}}"));
                     Equal(null, Setup.ParsePlugin(List(Entry("someone.else", "1.0.0"))));
@@ -136,6 +154,14 @@ namespace Ovis
                     Equal(null, Setup.UpdatesVersion("{\"error\":{\"code\":\"unauthorized\"}}"));
                     Equal(null, Setup.UpdatesVersion("<html>"));
                 }),
+                Case("the token the plugin's settings give the server: .env wins over env, the new name over the old", () =>
+                {
+                    Equal("b", Setup.EnvToken(new[] { "OVIS_TOKEN=a\n", "# note\nOVIS_TOKEN=\"b\"\r\n" }));
+                    Equal("a", Setup.EnvToken(new[] { "OVIS_TOKEN=a\n", "PORT=1\n" }));
+                    Equal("new", Setup.EnvToken(new[] { "HERDR_WEB_TOKEN=old\nOVIS_TOKEN=new\n" }));
+                    Equal("old", Setup.EnvToken(new[] { "HERDR_WEB_TOKEN=old\n" }));
+                    Equal(null, Setup.EnvToken(new[] { "OVIS_TOKEN=\n", "PORT=1" }));
+                }),
                 Case("versions: X.Y.Z from herdr's, a tag's or a preview's spelling, and nothing else", () =>
                 {
                     Equal(new Version(0, 9, 3), Setup.ParseVersion("herdr 0.9.3"));
@@ -143,6 +169,7 @@ namespace Ovis
                     Equal(new Version(0, 9, 5), Setup.ParseVersion("0.9.5-preview.2"));
                     Equal(null, Setup.ParseVersion("0.4"));
                     Equal(null, Setup.ParseVersion("1.2.3.4"));
+                    Equal(null, Setup.ParseVersion("0.4.19-"));
                     Equal(null, Setup.ParseVersion(null));
                     Equal(new Version(0, 4, 19), Setup.AppVersion(new Version(0, 4, 19, 0)));
                     Equal(null, Setup.AppVersion(new Version(0, 0, 0, 0)));
@@ -171,11 +198,11 @@ namespace Ovis
         }
 
         /// <summary>One plugin as herdr's list prints it; a null version leaves the field out.</summary>
-        private static string Entry(string id, string version, string kind = "github", string minHerdr = "0.9.0")
+        private static string Entry(string id, string version, string kind = "github", string minHerdr = "0.9.0", string owner = "devswha")
         {
             var root = (@"C:\Users\u\AppData\Roaming\herdr\plugins\" + id).Replace(@"\", @"\\");
             return "{\"enabled\":true,\"manifest_path\":\"" + root + "\\\\herdr-plugin.toml\",\"min_herdr_version\":\"" + minHerdr + "\",\"name\":\"Ovis\",\"platforms\":[\"linux\",\"macos\",\"windows\"],\"plugin_id\":\"" + id +
-                   "\",\"plugin_root\":\"" + root + "\",\"source\":{\"kind\":\"" + kind + "\",\"owner\":\"devswha\",\"repo\":\"ovis\",\"requested_ref\":\"v" + (version ?? "0.4.14") + "\"}" +
+                   "\",\"plugin_root\":\"" + root + "\",\"source\":{\"kind\":\"" + kind + "\",\"owner\":\"" + owner + "\",\"repo\":\"ovis\",\"requested_ref\":\"v" + (version ?? "0.4.14") + "\"}" +
                    (version == null ? "" : ",\"version\":\"" + version + "\"") + ",\"actions\":[]}";
         }
 

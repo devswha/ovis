@@ -35,8 +35,11 @@ namespace Ovis
         /// <summary>The version of herdr's checkout, as herdr lists it; null when herdr does not say.</summary>
         public string Version;
         public string MinHerdr;
-        /// <summary>A plugin herdr says it did not install from GitHub (a linked checkout): a reinstall would be refused.</summary>
-        public bool Linked;
+        /// <summary>
+        /// Not this project's GitHub install: a linked checkout (herdr refuses a reinstall over it) or a fork, which a
+        /// reinstall from devswha/ovis would replace. The app offers neither the move nor the reinstall for it.
+        /// </summary>
+        public bool NotOurs;
     }
 
     /// <summary>What the window shows for what is on this PC; no process runs here, so tests read it all.</summary>
@@ -52,7 +55,11 @@ namespace Ovis
             var word = text.Trim().Split(' ').Last();
             if (word.StartsWith("v")) word = word.Substring(1);
             var end = word.IndexOfAny(new[] { '-', '+' });
-            if (end >= 0) word = word.Substring(0, end);
+            if (end >= 0)
+            {
+                if (end == word.Length - 1) return null;
+                word = word.Substring(0, end);
+            }
             Version version;
             if (!System.Version.TryParse(word, out version) || version.Build < 0 || version.Revision >= 0) return null;
             return version;
@@ -77,15 +84,21 @@ namespace Ovis
                 {
                     var found = listed.FirstOrDefault(p => Text(p, "plugin_id") == id);
                     if (found == null || Text(found, "plugin_root") == null) continue;
-                    object source;
-                    var kind = found.TryGetValue("source", out source) && source is Dictionary<string, object> ? Text((Dictionary<string, object>)source, "kind") : null;
+                    object value;
+                    var source = found.TryGetValue("source", out value) ? value as Dictionary<string, object> : null;
+                    var kind = source == null ? null : Text(source, "kind");
+                    var owner = source == null ? null : Text(source, "owner");
+                    var repo = source == null ? null : Text(source, "repo");
+                    // herdr 0.9.x names a GitHub install's owner and repo; one that does not is taken as ours
+                    var fork = kind == "github" && owner != null && repo != null &&
+                               !(string.Equals(owner, "devswha", StringComparison.OrdinalIgnoreCase) && (string.Equals(repo, "ovis", StringComparison.OrdinalIgnoreCase) || string.Equals(repo, "herdr-web-ui", StringComparison.OrdinalIgnoreCase)));
                     return new Plugin
                     {
                         Id = id,
                         Root = Text(found, "plugin_root"),
                         Version = Text(found, "version"),
                         MinHerdr = Text(found, "min_herdr_version"),
-                        Linked = kind != null && kind != "github",
+                        NotOurs = (kind != null && kind != "github") || fork,
                     };
                 }
             }
@@ -103,6 +116,30 @@ namespace Ovis
             return line == null ? null : line.Substring("version: ".Length).Trim();
         }
 
+        /// <summary>
+        /// The token the plugin's settings files give the server (scripts/plugin.ts reads `env`, then `.env`, which wins),
+        /// so the app can ask a server behind one for its version. Its old name counts where the new one is unset.
+        /// </summary>
+        public static string EnvToken(IEnumerable<string> files)
+        {
+            string token = null;
+            foreach (var text in files)
+            {
+                if (text == null) continue;
+                var vars = new Dictionary<string, string>();
+                foreach (var raw in text.Split('\n'))
+                {
+                    var line = raw.Trim();
+                    var eq = line.IndexOf('=');
+                    if (line.Length == 0 || line.StartsWith("#") || eq <= 0) continue;
+                    vars[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim().Trim('"', '\'');
+                }
+                string value;
+                if ((vars.TryGetValue("OVIS_TOKEN", out value) || vars.TryGetValue("HERDR_WEB_TOKEN", out value)) && value.Length > 0) token = value;
+            }
+            return token;
+        }
+
         /// <summary>`current_version` of GET /api/updates: the package.json of the build the answering server runs.</summary>
         public static string UpdatesVersion(string json)
         {
@@ -118,32 +155,41 @@ namespace Ovis
         }
 
         /// <summary>
-        /// The server's version and whether it is the one that runs: what the answering server reports (GET
-        /// /api/updates), else the status line (the release the next start runs), else herdr's list, which names the
-        /// checkout as first installed: Settings → Updates may run a newer release since, so that one is a lower bound.
+        /// The server's version and whether it is the one that runs. A running server is known only by what it reports
+        /// itself (GET /api/updates): the status line names the release the next start runs, which a reinstall under a
+        /// running server has already moved. A stopped one is known by that status line. herdr's list names the
+        /// checkout as first installed, and Settings → Updates may run a newer release since: it is a lower bound only.
         /// </summary>
-        public static Version ServerVersion(Plugin plugin, string runningVersion, string statusVersion, out bool exact)
+        public static Version ServerVersion(Plugin plugin, bool running, string runningVersion, string statusVersion, out bool exact)
         {
-            var known = ParseVersion(runningVersion) ?? ParseVersion(statusVersion);
+            var known = running ? ParseVersion(runningVersion) : ParseVersion(statusVersion);
             exact = known != null;
             return known ?? ParseVersion(plugin == null ? null : plugin.Version);
         }
 
         /// <summary>
-        /// Why the server needs an update. A stopped server known only by herdr's lower bound is started first, as it
-        /// may have updated itself; once it answers, its own version decides. An app without a version (a local build)
-        /// asks only the old id to move.
+        /// Why the server needs an update. herdr's list is never taken for the version that runs: a stopped server known
+        /// only by it is started first, as it may have updated itself, and a running one that does not say its version
+        /// (a token holds /api/updates) is one whose version cannot be read. The update then installs the newest
+        /// release, which no release that runs is newer than. An app without a version (a local build) asks only the
+        /// old id to move; a linked checkout or a fork is never touched.
         /// </summary>
         public static UpdateReason Reason(Plugin plugin, string runningVersion, string statusVersion, bool running, Version app)
         {
-            if (plugin == null) return UpdateReason.None;
+            if (plugin == null || plugin.NotOurs) return UpdateReason.None;
             if (plugin.Id == Links.LegacyPluginId) return UpdateReason.LegacyId;
-            if (app == null || plugin.Linked) return UpdateReason.None;
+            if (app == null) return UpdateReason.None;
             bool exact;
-            var server = ServerVersion(plugin, runningVersion, statusVersion, out exact);
-            if (server == null) return UpdateReason.VersionUnknown;
-            if (server >= app || (!exact && !running)) return UpdateReason.None;
+            var server = ServerVersion(plugin, running, runningVersion, statusVersion, out exact);
+            if (server != null && server >= app && !(server == app && exact && Prerelease(running ? runningVersion : statusVersion))) return UpdateReason.None;
+            if (server == null || !exact) return running || server == null ? UpdateReason.VersionUnknown : UpdateReason.None;
             return UpdateReason.Older;
+        }
+
+        /// <summary>"0.4.19-rc.1": a prerelease, older than the 0.4.19 it leads to.</summary>
+        private static bool Prerelease(string text)
+        {
+            return text != null && text.Trim().IndexOf('-') > 0;
         }
 
         /// <summary>The herdr the server needs: what the plugin asks for, and never less than install.ps1 takes.</summary>
@@ -161,10 +207,10 @@ namespace Ovis
             return herdr != null && herdr < RequiredHerdr(plugin) ? Phase.HerdrTooOld : Phase.Outdated;
         }
 
-        public static string UpdateMessage(UpdateReason reason, Plugin plugin, string runningVersion, string statusVersion, Version app)
+        public static string UpdateMessage(UpdateReason reason, Plugin plugin, bool running, string runningVersion, string statusVersion, Version app)
         {
             bool exact;
-            var server = ServerVersion(plugin, runningVersion, statusVersion, out exact);
+            var server = ServerVersion(plugin, running, runningVersion, statusVersion, out exact);
             var target = app == null ? Lang.L("the latest version", "최신 버전") : Short(app);
             var keeps = Lang.L(" herdr, your agents and your settings stay.", " herdr, 에이전트, 설정은 그대로 남습니다.");
             switch (reason)
