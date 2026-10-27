@@ -1,6 +1,6 @@
 # DeepSeek Harness conversations
 
-On Linux, the chat lens reads the native DeepSeek Harness v4 session log. It supports plain JSONL and concatenated Zstandard frames. It identifies the session through the `session.lock` file held open by the pane's foreground dsh process. It does not select a session by directory or modification time. Missing or ambiguous bindings use the terminal fallback.
+On Linux, the chat lens reads the native DeepSeek Harness v4 session log. It supports plain JSONL and concatenated Zstandard frames. It identifies the session through the `session.lock` file held open by the pane's foreground dsh process. It does not select a session by directory or modification time. A new idle dsh process with no session lock shows an empty chat until its first message creates the log. Explicit resume requests and processes previously observed holding a lock do not use this empty-chat state. Missing or ambiguous bindings use the terminal fallback.
 
 The reader shows human messages, assistant text and recorded reasoning, tool calls, tool results, and turn completion. System instructions and runtime user-message injections stay hidden. Compaction checkpoints appear as compaction markers; earlier chat remains available. Attachments appear as notices and can be viewed in the terminal.
 

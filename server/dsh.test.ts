@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { completeDshFrames, dshConversation, dshToolOutput, projectDsh, resolveDshTranscript } from "./dsh.ts";
-import { ConversationUnavailable, HistoryChanged } from "./conversation-shared.ts";
+import { ConversationNotStarted, ConversationUnavailable, HistoryChanged } from "./conversation-shared.ts";
 const id = "12345678-1234-1234-1234-123456789abc";
 const header = {type:"session",version:4,id,delegationDepth:0};
 const event = (type: string, data: unknown, seq: number) => ({type,data,seq,time:1700000000000+seq});
@@ -14,6 +14,10 @@ async function fixture(run: (path:string)=>Promise<void>) {
  try {await run(join(dir,"session.v4.jsonl.zstd"));} finally {await rm(root,{recursive:true,force:true});}
 }
 describe("native dsh conversation",()=>{
+ test("shows an unwritten new process as empty but does not guess a resumed session",async()=>{
+ await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--profile","tui"]}]})).rejects.toBeInstanceOf(ConversationNotStarted);
+ try {await resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--resume","missing"]}]});throw Error("unexpected binding");}catch(error){expect(error).toBeInstanceOf(ConversationUnavailable);expect(error).not.toBeInstanceOf(ConversationNotStarted);}
+ });
  test("shows human messages, reasoning and tools without runtime instructions",()=>{
  const p=projectDsh(log(event("user/message",message("hello"),0),event("user/message",{...message("hidden"),source:{kind:"agent-instructions"}},1),event("assistant/message",{message:{role:"assistant",content:[{type:"reasoning",text:"reason"},{type:"text",text:"answer"},{type:"tool-call",id:"t"}]}},2),event("tool/call",{callId:"t",name:"shell",arguments:"{}"},3),event("tool/result",{message:{toolCallId:"t",content:[{type:"text",text:"done"}]}},4),event("turn/end",{reason:{kind:"completed"}},5)),"inode",id);
  expect(p.turns).toHaveLength(2);expect(JSON.stringify(p.turns)).not.toContain("hidden");expect(p.turns[1]!.parts.map(p=>p.kind)).toEqual(["thinking","text","tool"]);

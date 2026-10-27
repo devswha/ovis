@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readlink, realpath, open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
-import { answerVersion, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { processStartTicks } from "./omp-process.ts";
 import { trimOutput } from "./tool-output.ts";
 
@@ -10,10 +10,14 @@ type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
 const unavailable = (): never => { throw new ConversationUnavailable("dsh_transcript_unavailable"); };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
+const boundProcesses = new Set<string>();
+
 /** A held lock binds the foreground process to its session; modification times do not. */
 export async function resolveDshTranscript(info: Processes | null | undefined): Promise<string> {
   if (process.platform !== "linux") return unavailable();
   const found = new Set<string>();
+  const fresh: string[] = [];
+  let inspected = 0;
   for (const proc of info?.foreground_processes ?? []) {
     if (!proc.pid || !Array.isArray(proc.argv) || !proc.argv.some((word) => typeof word === "string" && (basename(word) === "dsh" || /@deepseek-ai\/dsh\/.*bin\.js$/.test(word)))) continue;
     const start = processStartTicks(proc.pid);
@@ -21,11 +25,13 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
     try {
       if ((await stat(`/proc/${proc.pid}`)).uid !== process.getuid?.()) continue;
       const candidates: string[] = [];
+      let held = false;
       const descriptors = await readdir(`/proc/${proc.pid}/fd`);
       if (descriptors.length > 4096) return unavailable();
       for (const fd of descriptors) {
         const target = await readlink(`/proc/${proc.pid}/fd/${fd}`).catch(() => "");
         if (basename(target) !== "session.lock" || !/^[0-9a-f-]{36}$/i.test(basename(dirname(target)))) continue;
+        held = true;
         const folder = dirname(await realpath(target));
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
@@ -33,9 +39,19 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
           if (s?.isFile() && s.uid === process.getuid?.()) { candidates.push(path); break; }
         }
       }
-      if (processStartTicks(proc.pid) === start) for (const path of candidates) found.add(path);
+      if (processStartTicks(proc.pid) === start) {
+        inspected++;
+        const identity = `${proc.pid}:${start}`;
+        if (held) {
+          if (boundProcesses.size >= 256) boundProcesses.delete(boundProcesses.values().next().value!);
+          boundProcesses.add(identity);
+        }
+        for (const path of candidates) found.add(path);
+        if (!held && !boundProcesses.has(identity) && !proc.argv.some((word) => typeof word === "string" && /^(?:--resume|--fork|--session|-r)(?:=|$)/.test(word))) fresh.push(identity);
+      }
     } catch { /* a process can exit during inspection */ }
   }
+  if (found.size === 0 && inspected === 1 && fresh.length === 1) throw new ConversationNotStarted(fresh[0]!, "dsh-transcript", fresh[0]!);
   if (found.size !== 1) return unavailable();
   return [...found][0]!;
 }
