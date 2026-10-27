@@ -252,8 +252,8 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
     <button type="button" className="btn btn-primary" onClick={() => onSetup(machine, false)}>{t("Reconnect")}</button>
   </div>;
   // the PC's own Ovis, older than this app: it updates itself when asked, or the card says why it cannot
-  const own = machine.remote_ovis;
-  if (own && machine.action_required === "update_bridge" && own.updatable) return <div className="machine-action" role="alert">
+  const own = ownOvisAction(machine);
+  if (own?.updatable) return <div className="machine-action" role="alert">
     <p className="machine-action-text">
       <strong>{t("This PC's Ovis is older than this app")}</strong>
       <span>{t("It updates itself through its own updater, then this PC reconnects; herdr sessions keep running.")}</span>
@@ -264,7 +264,7 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
     </div>
     {error && <p className="machine-error" role="alert">{error}</p>}
   </div>;
-  if (own && machine.action_required === "setup" && !own.updatable) return <div className="machine-action is-setup" role="status">
+  if (own) return <div className="machine-action is-setup" role="status">
     <p className="machine-action-text">
       <strong>{t("Update this PC's Ovis on that PC")}</strong>
       <span>{t("It is older than this app and runs on its own, so it cannot be updated from here.")}</span>
@@ -311,6 +311,18 @@ export function OwnOvisAddress({ own }: { own: Pick<RemoteOvis, "address" | "url
   </div>;
 }
 
+/**
+ * The PC's own Ovis, when what it said matches what the PC waits for: an update it can run itself,
+ * or a setup because it cannot. Anything else (an update of it that ended in another refusal) is
+ * told the usual way, so the card and the line under the header never offer an action the PC is not
+ * waiting for.
+ */
+export function ownOvisAction(machine: Pick<Machine, "remote_ovis" | "action_required">): RemoteOvis | null {
+  const own = machine.remote_ovis;
+  if (!own) return null;
+  return (machine.action_required === "update_bridge" && own.updatable) || (machine.action_required === "setup" && !own.updatable) ? own : null;
+}
+
 function urlHost(url: string): string {
   try { return new URL(url).host; } catch { return url; }
 }
@@ -338,9 +350,10 @@ export function MachineActionBanner({ machines, onSetup }: { machines: Machine[]
   const conflict = first.action_required === "bridge_conflict";
   const update = first.action_required === "update_bridge";
   const others = waiting.length > 1 ? t(" (+{n} more)", { n: waiting.length - 1 }) : "";
+  const own = ownOvisAction(first);
   return <div className="update-notice" role="status">
-    <span>{first.remote_ovis ? t(first.remote_ovis.updatable ? "{name}'s own Ovis needs an update to reconnect{others}." : "{name}'s own Ovis needs an update on that PC{others}.", { name: first.name, others }) : t(conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
-    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST").catch(() => onSetup(first, true)) : onSetup(first, false)}>{first.remote_ovis ? t(first.remote_ovis.updatable ? "Update this PC's Ovis" : "Reconnect") : t(conflict ? "Reconnect" : update ? "Update bridge" : "Set up web access")}</button>
+    <span>{own ? t(own.updatable ? "{name}'s own Ovis needs an update to reconnect{others}." : "{name}'s own Ovis needs an update on that PC{others}.", { name: first.name, others }) : t(conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
+    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST").catch(() => onSetup(first, true)) : onSetup(first, false)}>{own ? t(own.updatable ? "Update this PC's Ovis" : "Reconnect") : t(conflict ? "Reconnect" : update ? "Update bridge" : "Set up web access")}</button>
     <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => { const next = [...dismissed, ...waiting.map(noticeKey)]; setDismissed(next); writeDismissed(next); }}><X /></button>
   </div>;
 }

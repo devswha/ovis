@@ -90,6 +90,15 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: `${shots}/refused-mobile.png` });
 
+  // an update of it that ended in a setup (it updated, but to another version than this app's) keeps no
+  // own-Ovis wording: neither the card nor the line under the header offers an update the PC does not wait for
+  roster = [local, { ...offered, action_required: "setup", error: "This PC's Ovis updated itself, but its version still differs from this app's (v36; this app requires v37). Update it on that PC (Settings → Updates), then reconnect; it was left running." }];
+  await page.reload();
+  await page.locator(".update-notice").getByText("QA remote needs web access setup.", { exact: true }).waitFor({ timeout: 10_000 });
+  await page.locator(".update-notice").getByRole("button", { name: "Set up web access", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /Update this PC's Ovis/ }).count(), 0);
+  assert.equal(await card.getByText("Setup needed", { exact: true }).count(), 1);
+
   // the https address it says Tailscale serves it at is the link
   await page.setViewportSize({ width: 1280, height: 900 });
   roster = [local, refused("https://home-server.example.ts.net")];
