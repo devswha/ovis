@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneCommands } from "../commands.ts";
-import { ancestorsToRepoRoot, createWalkBudget, customCommands, customCommandSteps, readFrontmatter, walkSkills, walkSkillSteps } from "./walk.ts";
+import { userHome, ancestorsToRepoRoot, createWalkBudget, customCommands, customCommandSteps, readFrontmatter, walkSkills, walkSkillSteps } from "./walk.ts";
 import { source as claude } from "./claude.ts";
 import { source as devin } from "./devin.ts";
 import type { WalkRules } from "./walk.ts";
@@ -295,6 +295,13 @@ describe("repository ancestors", () => {
     expect(ancestorsToRepoRoot(cwd)).toEqual([cwd]);
     expect(ancestorsToRepoRoot(home)).toEqual([]);
     expect(ancestorsToRepoRoot(join(home, ".."))).toEqual([]);
+  });
+
+  it("finds the user's home without HOME, as native Windows starts it", () => {
+    expect(userHome({ HOME: "/home/user", USERPROFILE: "C:\\Users\\user" }, "win32")).toBe("/home/user");
+    expect(userHome({ HOME: "", USERPROFILE: "C:\\Users\\user" }, "win32")).toBe("C:\\Users\\user");
+    expect(userHome({}, "win32")).toBe(homedir());
+    expect(userHome({}, "linux")).toBe("");
   });
 
   it("falls back to USERPROFILE when HOME is unset", () => {

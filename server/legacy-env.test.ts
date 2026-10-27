@@ -39,16 +39,6 @@ describe("settings under their names from before the rename", () => {
     expect(mergeEnvLayers([{ OVIS_TOKEN: "parent" }, { HERDR_WEB_TOKEN: "file" }])["OVIS_TOKEN"]).toBe("file");
     expect(mergeEnvLayers([{ HERDR_WEB_TOKEN: "parent" }, { OVIS_TOKEN: "file" }])["OVIS_TOKEN"]).toBe("file");
   });
-
-  it("populates process.env.HOME from USERPROFILE on Windows when adopt-legacy-env loads", () => {
-    if (process.platform !== "win32") return;
-    const run = Bun.spawnSync([
-      process.execPath,
-      "-e",
-      'delete process.env.HOME; process.env.USERPROFILE = "C:\\\\FakeHome"; import("./server/adopt-legacy-env.ts").then(() => console.log(process.env.HOME));',
-    ], { cwd: process.cwd() });
-    expect(run.stdout.toString().trim()).toBe("C:\\FakeHome");
-  });
 });
 
 describe("a supervisor started by the launcher of an install from before the rename", () => {

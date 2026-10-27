@@ -1,2 +1,3 @@
 ### Fixed
-- Skill discovery on Windows: resolve the user home directory from `USERPROFILE` or `homedir()` when `HOME` is unset, so global skills and prompts across agents (Pi, Antigravity, Claude, Codex, OMO) are discovered on native Windows.
+- Skills and prompts are found on native Windows when `HOME` is unset: discovery falls back to
+  `USERPROFILE`, then the user's home as Windows reports it.
