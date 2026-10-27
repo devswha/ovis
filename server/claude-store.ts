@@ -1126,12 +1126,19 @@ export async function claudeTranscriptFile(
   const seen = new Set<string>();
   const path = await follow(session, seen);
   if (path === null || live === null || !SESSION_ID.test(live) || seen.has(live)) return path;
-  let branch = await locate(live);
-  for (let depth = 0; branch !== null && dirname(branch) === dirname(path) && depth < MAX_BRANCH_DEPTH; depth++) {
+  // a branch stays in its project: only that folder is looked in, and what cannot be read there is no evidence of one
+  const inProject = async (id: string): Promise<string | null> => {
+    const candidate = join(dirname(path), `${id}.jsonl`);
+    try { return await isFile(candidate) ? candidate : null; } catch { return null; }
+  };
+  let branch = await inProject(live);
+  for (let depth = 0; branch !== null && depth < MAX_BRANCH_DEPTH; depth++) {
     const parent = await branchedFrom(branch);
     if (parent === null) return path;
-    if (seen.has(parent)) return await follow(live, seen) ?? path;
-    branch = await locate(parent);
+    if (seen.has(parent)) {
+      try { return await follow(live, seen) ?? path; } catch { return path; }
+    }
+    branch = await inProject(parent);
   }
   return path;
 }

@@ -745,6 +745,16 @@ describe("claudeTranscriptFile", () => {
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, "77777777-7777-4777-8777-777777777777")).toBe(original);
     });
 
+    it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("keeps the reported transcript when an unreadable project sits beside a live session with no file (regression)", async () => {
+      const { dir, projects, original } = setup();
+      const locked = join(projects, "-locked");
+      mkdirSync(locked);
+      chmodSync(locked, 0o000);
+      try {
+        expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), "77777777-7777-4777-8777-777777777777")).toBe(original);
+      } finally { chmodSync(locked, 0o700); }
+    });
+
     it("follows no branch whose first record is not all written, or not within the bytes it reads (control)", async () => {
       const { dir, folder, original } = setup();
       const store = join(dir, ".claude");
