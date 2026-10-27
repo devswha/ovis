@@ -11,10 +11,13 @@ import type { WalkRules } from "./walk.ts";
 
 const roots: string[] = [];
 const previousHome = process.env.HOME;
+const previousUserProfile = process.env.USERPROFILE;
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   if (previousHome === undefined) delete process.env.HOME;
   else process.env.HOME = previousHome;
+  if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = previousUserProfile;
 });
 function temp(): string {
   const root = mkdtempSync(join(tmpdir(), "skill-walk-"));
@@ -292,5 +295,17 @@ describe("repository ancestors", () => {
     expect(ancestorsToRepoRoot(cwd)).toEqual([cwd]);
     expect(ancestorsToRepoRoot(home)).toEqual([]);
     expect(ancestorsToRepoRoot(join(home, ".."))).toEqual([]);
+  });
+
+  it("falls back to USERPROFILE when HOME is unset", () => {
+    const home = temp();
+    delete process.env.HOME;
+    process.env.USERPROFILE = home;
+    const repo = join(home, "repo");
+    const cwd = join(repo, "sub");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(join(repo, ".git"));
+    expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
+    expect(ancestorsToRepoRoot(home)).toEqual([]);
   });
 });

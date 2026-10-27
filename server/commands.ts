@@ -54,7 +54,7 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
   return cached?.identity === catalogIdentity(pane) ? cached : undefined;
 }
 
-export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = globalThis.process.env.HOME ?? "", process: ProcessRoots = {}, version?: string | null): SlashCommand[] {
+export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = globalThis.process.env.HOME ?? globalThis.process.env.USERPROFILE ?? "", process: ProcessRoots = {}, version?: string | null): SlashCommand[] {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return [];
   const source = AGENT_SOURCES[agent];
   if (!source) return [];

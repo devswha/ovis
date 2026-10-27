@@ -381,8 +381,9 @@ export function piTemplates(root: string, source: SlashCommand["source"]): Slash
 /** The nearest repository boundary wins; the home directory is never a project ancestor. */
 export function ancestorsToRepoRoot(cwd: string): string[] {
   const start = resolve(cwd);
-  const home = resolve(process.env.HOME ?? "");
-  if (start === home || home.startsWith(start.endsWith(sep) ? start : start + sep)) return [];
+  const rawHome = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const home = rawHome ? resolve(rawHome) : null;
+  if (home !== null && (start === home || home.startsWith(start.endsWith(sep) ? start : start + sep))) return [];
   const result: string[] = [];
   for (let directory = start; directory !== home && directory !== dirname(directory); directory = dirname(directory)) {
     result.push(directory);
