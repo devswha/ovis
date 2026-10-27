@@ -2,7 +2,12 @@ import { expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isAgyProcessName, windowsLockCandidates } from "./agy-store.ts";
+import {
+  isAgyProcessName,
+  resetWindowsScanCacheForTest,
+  windowsHeldPaths,
+  windowsLockCandidates,
+} from "./agy-store.ts";
 
 it("reads only presence locks as candidates, never another file beside them", () => {
   const root = mkdtempSync(join(tmpdir(), "agy-store-"));
@@ -27,4 +32,35 @@ it("recognizes the agent's process name as herdr reports it on this platform", (
   expect(isAgyProcessName("bun")).toBe(false);
   expect(isAgyProcessName(undefined)).toBe(false);
   expect(isAgyProcessName("/usr/local/bin/agy")).toBe(win32);
+});
+
+it("updates held lock when the process switches from lock A to lock B on /new or /resume", async () => {
+  resetWindowsScanCacheForTest();
+  const pid = 4242;
+  const lockA = "C:\\path\\presence\\00000000-0000-4000-8000-000000000001.lock";
+  const lockB = "C:\\path\\presence\\00000000-0000-4000-8000-000000000002.lock";
+  let activeHolders: Record<string, number[]> = { [lockA]: [pid], [lockB]: [] };
+  const mockHolders = (path: string) => activeHolders[path] ?? [];
+  const mockCandidates = () => [lockA, lockB];
+
+  expect(await windowsHeldPaths(pid, mockHolders, mockCandidates)).toEqual([lockA]);
+
+  activeHolders = { [lockA]: [], [lockB]: [pid] };
+
+  expect(await windowsHeldPaths(pid, mockHolders, mockCandidates)).toEqual([lockB]);
+});
+
+it("drops held lock when the process releases its session lock without acquiring another", async () => {
+  resetWindowsScanCacheForTest();
+  const pid = 4242;
+  const lockA = "C:\\path\\presence\\00000000-0000-4000-8000-000000000001.lock";
+  let activeHolders: Record<string, number[]> = { [lockA]: [pid] };
+  const mockHolders = (path: string) => activeHolders[path] ?? [];
+  const mockCandidates = () => [lockA];
+
+  expect(await windowsHeldPaths(pid, mockHolders, mockCandidates)).toEqual([lockA]);
+
+  activeHolders = { [lockA]: [] };
+
+  expect(await windowsHeldPaths(pid, mockHolders, mockCandidates)).toEqual([]);
 });

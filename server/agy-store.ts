@@ -106,23 +106,37 @@ export function windowsLockCandidates(env: Record<string, string | undefined> = 
 interface WindowsScan { at: number; owners: Map<number, string[]> }
 let windowsScan: WindowsScan | null = null;
 let windowsScanning: Promise<WindowsScan> | null = null;
+let windowsScanId = 0;
+
+/** Reset scan and holder caches between tests. */
+export function resetWindowsScanCacheForTest(): void {
+  windowsScan = null;
+  windowsScanning = null;
+  windowsScanId += 1;
+  windowsHeld.clear();
+}
+
 /**
  * One pass over the candidates, shared by every caller and every pane. Each `RmGetList` call blocks,
  * so the pass yields between them: a scan takes a few seconds without stalling the server.
  */
-function windowsScanAll(): Promise<WindowsScan> {
+function windowsScanAll(
+  getHolders: (path: string) => number[] = windowsHolders,
+  getCandidates: () => string[] = windowsLockCandidates,
+): Promise<WindowsScan> {
   const known = windowsScan;
   if (known && Date.now() - known.at < WINDOWS_SCAN_TTL_MS) return Promise.resolve(known);
+  const id = ++windowsScanId;
   windowsScanning ??= (async () => {
     const owners = new Map<number, string[]>();
-    for (const path of windowsLockCandidates()) {
+    for (const path of getCandidates()) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      for (const pid of windowsHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
+      for (const pid of getHolders(path)) owners.set(pid, [...(owners.get(pid) ?? []), path]);
     }
     const scan = { at: Date.now(), owners };
-    windowsScan = scan;
+    if (windowsScanId === id) windowsScan = scan;
     return scan;
-  })().finally(() => { windowsScanning = null; });
+  })().finally(() => { if (windowsScanId === id) windowsScanning = null; });
   return windowsScanning;
 }
 
@@ -130,20 +144,33 @@ function windowsScanAll(): Promise<WindowsScan> {
 const windowsHeld = new Map<number, string>();
 
 /** The locks this pid holds: one known path is re-validated, a new or moved session is scanned. */
-async function windowsHeldPaths(pid: number): Promise<string[]> {
+export async function windowsHeldPaths(
+  pid: number,
+  getHolders: (path: string) => number[] = windowsHolders,
+  getCandidates: () => string[] = windowsLockCandidates,
+): Promise<string[]> {
   const known = windowsHeld.get(pid);
   if (known !== undefined) {
-    if (windowsHolders(known).includes(pid)) return [known];
+    if (getHolders(known).includes(pid)) return [known];
     windowsHeld.delete(pid);
+    windowsScan = null;
+    windowsScanning = null;
+    windowsScanId += 1;
   }
   // A scan already names every owner, so a pane it saw costs one confirmation instead of a pass.
   const seen = windowsScan?.owners.get(pid);
-  if (seen?.length === 1 && windowsHolders(seen[0]!).includes(pid)) {
-    windowsHeld.set(pid, seen[0]!);
-    if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
-    return seen;
+  if (seen?.length === 1) {
+    if (getHolders(seen[0]!).includes(pid)) {
+      windowsHeld.set(pid, seen[0]!);
+      if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
+      return seen;
+    }
+    windowsScan = null;
+    windowsScanning = null;
+    windowsScanId += 1;
   }
-  const held = (await windowsScanAll()).owners.get(pid) ?? [];
+  const scan = await windowsScanAll(getHolders, getCandidates);
+  const held = (scan.owners.get(pid) ?? []).filter((path) => getHolders(path).includes(pid));
   if (held.length === 1) {
     windowsHeld.set(pid, held[0]!);
     if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
