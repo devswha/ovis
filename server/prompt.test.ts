@@ -2113,7 +2113,8 @@ ${rule60}
       `? 2 questions pending · 30m\n  P - Deploy${separator}...\n[ Continue ]  [ Cancel ]  [ own answer\u2026 ]\n`);
     const cutActual = call("cut-actual", "P - Deploy", "Choose deployment target?", ["Continue", "Cancel"]);
     const cutDecoy = call("cut-decoy", "P", "Deploy - Choose another target?", ["Continue", "Cancel"]);
-    for (const separator of [" - ", " \u2014 "]) {
+    // one column narrower, the cut also takes the separator's space
+    for (const separator of [" - ", " \u2014 ", " -", " \u2014"]) {
       expect(parseInteractivePrompt("pi", cut(separator), null, false, openOmoAsks(`${cutActual}\n${cutDecoy}`)), separator).toBeNull();
     }
   });

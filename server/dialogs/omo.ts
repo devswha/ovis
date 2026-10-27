@@ -431,9 +431,15 @@ function parseOmoPending(screen: string, pending: readonly OmoAsk[]): ParsedProm
     header: line.slice(0, separator.index),
     start: comparable(line.slice(separator.index + separator[0].length + 1).replace(/(?:…|\.\.\.)$/, "")),
   }));
+  // A line cut at the pane's edge may have lost the separator itself, or its space: every question
+  // whose header and text begin with what is shown is a candidate too, so it can only make the
+  // line ambiguous.
+  const cut = /(?:\u2026|\.\.\.)$/.test(line);
+  const shown = comparable(line.replace(/(?:\u2026|\.\.\.)$/, ""));
   const matches = pending.filter((ask) => ask.wait === false).flatMap((ask) => ask.questions.flatMap((question, index) => {
     const fits = splits.filter((split) => sameHeader(split.header, question.header) && comparable(question.question).startsWith(split.start));
-    return fits.length > 0 ? [{ ask, index, named: fits.some((split) => split.start !== "") }] : [];
+    const fitsCut = cut && comparable(question.header + question.question).startsWith(shown);
+    return fits.length > 0 || fitsCut ? [{ ask, index, named: fits.some((split) => split.start !== "") }] : [];
   }));
   if (matches.length !== 1 || !matches[0]!.named) return null;
   const { ask, index } = matches[0]!;
