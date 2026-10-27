@@ -358,6 +358,7 @@ export function composerModelDraw(state: { modelClipped: boolean; effortClipped:
 /** Herdr agent ids are machine-friendly; the composer presents a short human label. */
 export function agentDisplayLabel(agent: string | null): string {
   if (!agent) return "Shell";
+  if (agent === "dsh") return "DeepSeek Harness";
   return agent
     .split(/[-_]/u)
     .filter(Boolean)
