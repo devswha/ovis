@@ -315,4 +315,16 @@ describe("repository ancestors", () => {
     expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
     expect(ancestorsToRepoRoot(home)).toEqual([]);
   });
+
+  it("treats home boundary case-insensitively on Windows", () => {
+    if (process.platform !== "win32") return;
+    const home = temp();
+    process.env.HOME = home.toLowerCase();
+    const repo = join(home.toUpperCase(), "repo");
+    const cwd = join(repo, "sub");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(join(repo, ".git"));
+    expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
+    expect(ancestorsToRepoRoot(home.toUpperCase())).toEqual([]);
+  });
 });

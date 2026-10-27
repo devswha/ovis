@@ -393,9 +393,12 @@ export function ancestorsToRepoRoot(cwd: string): string[] {
   const start = resolve(cwd);
   const rawHome = userHome();
   const home = rawHome ? resolve(rawHome) : null;
-  if (home !== null && (start === home || home.startsWith(start.endsWith(sep) ? start : start + sep))) return [];
+  const norm = (path: string): string => process.platform === "win32" ? path.toLowerCase() : path;
+  const normStart = norm(start);
+  const normHome = home !== null ? norm(home) : null;
+  if (normHome !== null && (normStart === normHome || normHome.startsWith(normStart.endsWith(sep) ? normStart : normStart + sep))) return [];
   const result: string[] = [];
-  for (let directory = start; directory !== home && directory !== dirname(directory); directory = dirname(directory)) {
+  for (let directory = start; (normHome === null || norm(directory) !== normHome) && directory !== dirname(directory); directory = dirname(directory)) {
     result.push(directory);
     if (existsSync(join(directory, ".git"))) return result;
   }
