@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -42,6 +43,51 @@ describe("setAsideDamaged", () => {
     expect(readFileSync(first, "utf8")).toBe("first");
     expect(readFileSync(second, "utf8")).toBe("second");
     expect(readStateDocument(path)).toEqual({ kind: "missing" });
+  });
+
+  // a file system without hard links: the copy is made with copyFileSync instead
+  const withoutLinks = () => spyOn(fs, "linkSync").mockImplementation(() => { throw Object.assign(new Error("no links"), { code: "EPERM" }); });
+
+  it("flushes a copy to disk before the damaged original goes", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    writeFileSync(path, "damaged");
+    const steps: string[] = [];
+    const links = withoutLinks();
+    const fsync = spyOn(fs, "fsyncSync").mockImplementation(() => { steps.push("fsync"); });
+    const unlink = spyOn(fs, "unlinkSync");
+    unlink.mockImplementation(((target: fs.PathLike) => { steps.push(`unlink ${basename(String(target))}`); unlink.mockRestore(); fs.unlinkSync(target); }) as typeof fs.unlinkSync);
+    try {
+      const aside = setAsideDamaged(path, new Date("2026-10-26T07:06:23.123Z"));
+      expect(readFileSync(aside, "utf8")).toBe("damaged");
+      expect(steps.indexOf("fsync")).toBeGreaterThanOrEqual(0);
+      expect(steps.indexOf("fsync")).toBeLessThan(steps.indexOf("unlink machines.json"));
+    } finally { links.mockRestore(); fsync.mockRestore(); unlink.mockRestore(); }
+  });
+
+  it("removes a copy that cannot be made private, leaving the original where it was", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    writeFileSync(path, "damaged");
+    const links = withoutLinks();
+    const chmod = spyOn(fs, "chmodSync");
+    chmod.mockImplementation(((target: fs.PathLike, mode: fs.Mode) => {
+      if (String(target).includes(".corrupt-")) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    }) as typeof fs.chmodSync);
+    try {
+      expect(() => setAsideDamaged(path)).toThrow(/\(EACCES\)$/);
+      expect(readdirSync(dir)).toEqual(["machines.json"]);
+      expect(readFileSync(path, "utf8")).toBe("damaged");
+    } finally { links.mockRestore(); chmod.mockRestore(); }
+  });
+
+  it("reports why the original could not be removed, even when the spare copy cannot be either", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    writeFileSync(path, "damaged");
+    const unlink = spyOn(fs, "unlinkSync").mockImplementation(() => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); });
+    const rm = spyOn(fs, "rmSync").mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EACCES" }); });
+    try {
+      expect(() => setAsideDamaged(path)).toThrow(/\(EBUSY\)$/);
+      expect(readFileSync(path, "utf8")).toBe("damaged");
+    } finally { unlink.mockRestore(); rm.mockRestore(); }
   });
 
   it("throws, naming the file and why, when it cannot be moved", () => {

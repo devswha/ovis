@@ -1,4 +1,5 @@
-import { chmodSync, constants, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncDirectory } from "./private-state.ts";
 import { basename, dirname } from "node:path";
 
 /**
@@ -40,7 +41,11 @@ export function setAsideDamaged(path: string, now = new Date()): string {
       if (attempt > 99) throw Object.assign(new Error("too many copies"), { code: "EEXIST" });
       aside = `${name}-${attempt}`;
     }
+    // the kept copy is on disk under its name before the original goes, so a second crash keeps one
+    try { flushFile(aside); } catch (error) { dropCopy(aside); throw error; }
+    syncDirectory(dirname(path), process.platform);
     try { unlinkSync(path); } catch (error) { dropCopy(aside); throw error; }
+    syncDirectory(dirname(path), process.platform);
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
     throw new Error(`${basename(path)} is not JSON and cannot be set aside as ${basename(aside)} (${reason})`);
@@ -63,6 +68,11 @@ function keepAs(path: string, aside: string): boolean {
   try { chmodSync(aside, 0o600); }
   catch (error) { dropCopy(aside); throw error; }
   return true;
+}
+
+function flushFile(path: string): void {
+  const fd = openSync(path, "r+");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 /** Removes a copy that is not kept; the error that made it unneeded is the one to report. */
