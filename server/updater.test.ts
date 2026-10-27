@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from "bun:test";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { isReleaseFolder, NOTES_FILE_LIMIT, readNotesFile, RELEASE_FOLDER_REASON, Updater, runCommand, type Release } from "./updater.ts";
 import { updateStateDir } from "./update-state.ts";
 import { spawnSync } from "node:child_process";
@@ -53,8 +53,12 @@ afterEach(() => {
   rmSync(directory, { recursive: true, force: true });
 });
 
-/** A real launcher + supervisor + bridge on a free port, serving the fixture checkout. */
-async function managedFixture(supervisor?: string, slowHealth = false) {
+/**
+ * A real launcher + supervisor + bridge on a free port, serving the fixture checkout. Given `home`,
+ * they run with it as $HOME and keep their state in the default dir under it, as an install not
+ * told OVIS_STATE_DIR does.
+ */
+async function managedFixture(supervisor?: string, slowHealth = false, home?: string) {
   updater.stop();
   mkdirSync(join(upstream, "server"), { recursive: true });
   const entry = `
@@ -83,6 +87,14 @@ async function managedFixture(supervisor?: string, slowHealth = false) {
   const headers = { authorization: "Bearer test-managed-token", "x-herdr-update": "1" };
   // what the launcher, the supervisor and the bridge print: a failed test prints it
   const log = join(directory, "managed.log");
+  // its own config home: the launcher links the default state dirs it finds there
+  const env: Record<string, string | undefined> = { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: stateDir,
+    XDG_CONFIG_HOME: join(directory, "config"), OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker") };
+  if (home !== undefined) {
+    for (const name of ["OVIS_STATE_DIR", "XDG_CONFIG_HOME"]) delete env[name];
+    // herdr's socket stays the test's: it is looked for under $HOME otherwise
+    Object.assign(env, { HOME: home, HERDR_SOCKET: process.env["HERDR_SOCKET"] || HERDR_SOCKET_PATH });
+  }
   const launch = () => {
     // one file for every launch of a test: a separator says which launch printed what
     appendFileSync(log, `--- launch at ${new Date().toISOString()} ---\n`);
@@ -90,10 +102,7 @@ async function managedFixture(supervisor?: string, slowHealth = false) {
     try {
       return Bun.spawn([process.execPath, "--eval",
         `import {runManaged} from ${JSON.stringify(join(import.meta.dir, "managed.ts"))}; await runManaged(${JSON.stringify(root)});`], {
-        // its own config home: the launcher links the default state dirs it finds there
-        env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: stateDir, XDG_CONFIG_HOME: join(directory, "config"),
-          OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker") },
-        stdout: output, stderr: output,
+        env, stdout: output, stderr: output,
       });
     } finally {
       closeSync(output);
@@ -133,6 +142,25 @@ const releaseSupervisor = (broken = false) => broken ? "process.exit(3);\n" : `
   const { runSupervisor } = await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))});
   await runSupervisor(process.env.OVIS_SOURCE_ROOT);
 `;
+/**
+ * The real supervisor and the files it imports, copied into the fixture's tree: an installed release
+ * then runs it from its own folder and finds its state from there, as a real one does.
+ */
+function copySupervisor(into: string) {
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const repo = resolve(import.meta.dir, "..");
+  const files = [join(import.meta.dir, "supervisor.ts")];
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    const copy = join(into, relative(repo, file));
+    mkdirSync(dirname(copy), { recursive: true });
+    writeFileSync(copy, source);
+    for (const { path } of transpiler.scanImports(source)) {
+      const imported = resolve(dirname(file), path);
+      if (path.startsWith(".") && !files.includes(imported)) files.push(imported);
+    }
+  }
+}
 const liveHerdr = existsSync(process.env["HERDR_SOCKET"] || HERDR_SOCKET_PATH);
 
 /** What `herdr plugin install` leaves behind: a depth-1 checkout of upstream's main. */
@@ -234,6 +262,24 @@ describe("managed source updates with real Git repositories and builds", () => {
     const resumed = new Updater(updater.options);
     expect((await resumed.initialize())?.revision).toBe(target);
     resumed.stop();
+  });
+
+  it("resumes a release recorded under either name of a state dir reached through a symlink (#2029)", async () => {
+    await release("second", "v0.2.0");
+    await updater.request("install");
+    expect(updater.status.error).toBeNull();
+    // the state dir through a link, as a symlinked $HOME gives it to the launcher, and under its real
+    // path, as Bun gives it to an installed release's supervisor: each resumes what the other recorded
+    const linked = join(directory, "linked-state");
+    symlinkSync(stateDir, linked);
+    const saved = JSON.parse(readFileSync(join(stateDir, "current.json"), "utf8")) as Release;
+    for (const [recordedUnder, resumedFrom] of [[stateDir, linked], [linked, stateDir]] as const) {
+      const recorded = join(recordedUnder, basename(saved.directory));
+      writeFileSync(join(stateDir, "current.json"), JSON.stringify({ ...saved, directory: recorded }));
+      const resumed = new Updater({ ...updater.options, stateDir: resumedFrom });
+      expect((await resumed.initialize())?.directory).toBe(recorded);
+      resumed.stop();
+    }
   });
 
   it("tells what an update brings from the release's own changelog, every release since the running one", async () => {
@@ -971,6 +1017,42 @@ describe("managed source updates with real Git repositories and builds", () => {
       await handle.exited;
     }
   }, 30_000);
+
+  // $HOME as /home/<user> -> /data00/home/<user>: the launcher names the state dir through the link,
+  // and Bun runs the installed release's supervisor from the real path (#2029)
+  it.skipIf(!liveHerdr)("keeps an update installed when $HOME is a symlink", async () => {
+    const volume = join(directory, "volume", "home");
+    mkdirSync(volume, { recursive: true });
+    const home = join(directory, "home");
+    symlinkSync(volume, home);
+    copySupervisor(upstream);
+    const { launch, readStatus, until, request, health, explain } = await managedFixture(undefined, false, home);
+    let handle = launch();
+    try {
+      await until(async () => (await readStatus())?.managed === true);
+      const target = await release("symlinked home", "v0.2.0");
+      await request("check");
+      await until(async () => (await readStatus())?.available === true);
+      await request("install");
+      // "idle" with the new revision only comes from the supervisor that keeps running it: the release's own
+      await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
+      expect((await health()).web_ui.revision).toBe(target);
+      // and the same update is not offered again
+      await request("check");
+      await until(async () => ((await readStatus())?.checked_at ?? null) !== null);
+      expect((await readStatus())?.available).toBe(false);
+
+      handle.kill("SIGTERM"); await handle.exited;
+      handle = launch();
+      await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
+      expect((await health()).web_ui.revision).toBe(target);
+    } catch (error) {
+      await explain(error);
+    } finally {
+      handle.kill("SIGTERM");
+      await handle.exited;
+    }
+  }, 45_000);
 
   it.skipIf(!liveHerdr)("installs an update asked for before the bridge's first health check has passed", async () => {
     const { launch, readStatus, until, request, health, explain } = await managedFixture(undefined, true);

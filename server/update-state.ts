@@ -15,10 +15,27 @@ export function defaultStateDir(env: Record<string, string | undefined> = proces
   if (supervisor) {
     const directory = resolve(supervisor.directory);
     const stateDir = resolve(directory, "../../..");
-    if (basename(directory).startsWith("release-") && dirname(directory) === updateStateDir(supervisor.root, supervisor.port, stateDir)) return stateDir;
+    if (basename(directory).startsWith("release-") && dirname(directory) === updateStateDir(supervisor.root, supervisor.port, stateDir)) {
+      // Bun runs a script from its real path, so a release reached through a symlinked $HOME or
+      // ~/.config is found under the real one here, where the launcher and the source checkout's
+      // supervisor name it through the link. The launcher's name is kept: a launcher from before
+      // this fix takes only a release recorded under its own (#2029).
+      const { legacy, next } = stateDirNames(env);
+      return [next, legacy].find((dir) => sameDir(dir, stateDir)) ?? stateDir;
+    }
   }
   const { legacy, next } = stateDirNames(env);
   return currentStateDir(legacy, next);
+}
+
+/**
+ * Whether `directory` is a release of the update state dir `stateDir` (`<stateDir>/release-*`),
+ * compared by real path: the two may be spelled one through a symlink and one not (#2029).
+ */
+export function isReleaseIn(stateDir: string, directory: string): boolean {
+  const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const release = real(directory);
+  return basename(release).startsWith("release-") && dirname(release) === real(stateDir);
 }
 
 /** The default state dir under its name from before the rename, and under its new one. */

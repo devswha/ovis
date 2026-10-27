@@ -316,3 +316,25 @@ describe("the state dir from before the rename", () => {
     expect(defaultStateDir({ XDG_CONFIG_HOME: config, OVIS_STATE_DIR: "/srv/ovis" })).toBe("/srv/ovis");
   });
 });
+
+describe("a state dir reached through a symlink", () => {
+  // $HOME as /home/<user> -> /data00/home/<user>: the launcher names the state dir through the
+  // link, and Bun runs the installed release's supervisor from the real path (#2029)
+  it("is named by an installed release's supervisor as the launcher names it", () => {
+    const base = realpathSync(configHome());
+    const volume = join(base, "volume", "home");
+    mkdirSync(volume, { recursive: true });
+    const home = join(base, "home");
+    symlinkSync(volume, home);
+    const config = join(home, ".config");
+    const next = join(config, "ovis");
+    const root = join(base, "checkout");
+    const port = 7317;
+    const release = join(updateStateDir(root, port, next), "release-next");
+    mkdirSync(release, { recursive: true });
+    // what the release's supervisor gets from import.meta.dir
+    const directory = realpathSync(release);
+    expect(directory).not.toBe(release);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { root, port, directory })).toBe(next);
+  });
+});

@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdt
 import { basename, dirname, join, resolve } from "node:path";
 import { CHECKOUT_CHANGED_REASON, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
+import { isReleaseIn } from "./update-state.ts";
 
 export interface Release {
   directory: string; revision: string; source_revision: string;
@@ -216,7 +217,7 @@ export class Updater {
           const saved = JSON.parse(readFileSync(join(this.options.stateDir, "current.json"), "utf8")) as Release;
           // Only directories created by this updater may be resumed.
           if (saved.source_revision === this.sourceRevision && SHA.test(saved.revision) &&
-              saved.directory.startsWith(join(this.options.stateDir, "release-")) &&
+              isReleaseIn(this.options.stateDir, saved.directory) &&
               await runCommand(saved.directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = saved;
         } catch { /* missing/stale release: use the source checkout */ }
       }
