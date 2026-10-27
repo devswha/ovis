@@ -255,20 +255,27 @@ install_node() {
 # The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
 # first there and overrode the user's own Node (#596). A release whose server looks for it in
 # NODE_DIR itself (server/pty/sidecar.ts, in the code at $1) needs no link, so a link of ours goes
-# and anything else there stays. An older release finds Node on the PATH only: for it, a Node just
-# installed ($2 = installed) is linked as before.
+# and anything else there stays. An older release finds Node on the PATH only: where it needs one
+# ($2 = needed: no Rust PTY host) and the user's PATH has no Node 18 or newer, our Node is linked as
+# before, the one from before the rename too.
 node_link() {
   if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
     [ -L "$BIN_DIR/node" ] || return 0
     case "$(readlink "$BIN_DIR/node")" in
       "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node") rm -f "$BIN_DIR/node" ;;
     esac
-  elif [ "${2:-}" = installed ] && [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
-    if mkdir -p "$BIN_DIR" && ln -s "$NODE_DIR/bin/node" "$BIN_DIR/node"; then
-      installed_here="$installed_here node"
-    else
-      say "could not link Node into $BIN_DIR, so this release's panes are mirrored until it is updated"
-    fi
+  elif [ "${2:-}" = needed ] && [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
+    user_major=$(PATH="${original_path:-}"; export PATH; node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
+    [ "${user_major:-0}" -lt 18 ] || return 0
+    for private in "$NODE_DIR" "$LEGACY_NODE_DIR"; do
+      [ -x "$private/bin/node" ] || continue
+      if mkdir -p "$BIN_DIR" && ln -s "$private/bin/node" "$BIN_DIR/node"; then
+        installed_here="$installed_here node"
+      else
+        say "could not link Node into $BIN_DIR, so this release's panes are mirrored until it is updated"
+      fi
+      return 0
+    done
   fi
 }
 
@@ -398,7 +405,7 @@ main() {
     elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
       # a release from before the Rust PTY host was the default still asks for Node in its first build
       # step, on herdr's PATH
-      node_link "" installed
+      node_link "" needed
       herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
     fi
     if [ "$installed" = 1 ]; then
@@ -432,18 +439,17 @@ main() {
   [ ! -f "$code/scripts/pty-sidecar.ts" ] || (cd "$code" && bun scripts/pty-sidecar.ts install </dev/null) || true
   # Node only where terminals would otherwise have no PTY host: a release without the Rust host (one
   # from before it, or a branch), or one whose host failed its checks here
+  needs_node=""
   if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
+    needs_node=needed
+    # our own Node counts here: on this PATH it goes before the user's
     node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
     # optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
-    if [ "${node_major:-0}" -lt 18 ]; then
-      if ( install_node ); then
-        node_link "$code" installed
-      else
-        say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
-      fi
+    if [ "${node_major:-0}" -lt 18 ] && ! ( install_node ); then
+      say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
     fi
   fi
-  node_link "$code"
+  node_link "$code" "$needs_node"
 
   if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
     # the action only queues the start (its output goes to herdr's plugin log), so wait for it here

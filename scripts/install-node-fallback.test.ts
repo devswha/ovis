@@ -121,16 +121,23 @@ describe("install_node", () => {
 });
 
 describe("node_link", () => {
-  /** a PC whose ~/.local/bin/node is `bin`, and the running code: one that finds the app's Node itself (`finds`), or an older one */
-  function pc(finds: boolean, bin?: (env: Record<string, string>) => void): Record<string, string> {
+  /**
+   * a PC whose ~/.local/bin/node is `bin`, our Node in `ours` (NODE_DIR, or LEGACY_NODE_DIR from before the rename), the
+   * user's own PATH holding a node answering `user` (none when unset), and the running code: one that finds the app's
+   * Node itself (`finds`), or an older one
+   */
+  function pc(finds: boolean, bin?: (env: Record<string, string>) => void, ours = "NODE_DIR", user?: string): Record<string, string> {
     const root = mkdtempSync(join(dir, "link-"));
-    const env = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "" };
-    mkdirSync(join(env.CODE, "server/pty"), { recursive: true });
+    const userPath = join(root, "user-path");
+    mkdirSync(userPath);
+    if (user !== undefined) writeFileSync(join(userPath, "node"), `#!/bin/sh\necho ${user}\n`, { mode: 0o755 });
+    const env: Record<string, string> = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "", original_path: `${userPath}:/usr/bin:/bin` };
+    mkdirSync(join(env["CODE"]!, "server/pty"), { recursive: true });
     // as the release's server/pty/sidecar.ts names the app's Node, or before it did
-    writeFileSync(join(env.CODE, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');
-    mkdirSync(join(env.NODE_DIR, "bin"), { recursive: true });
-    writeFileSync(join(env.NODE_DIR, "bin/node"), "app node", { mode: 0o755 });
-    mkdirSync(env.BIN_DIR);
+    writeFileSync(join(env["CODE"]!, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');
+    mkdirSync(join(env[ours]!, "bin"), { recursive: true });
+    writeFileSync(join(env[ours]!, "bin/node"), "app node", { mode: 0o755 });
+    mkdirSync(env["BIN_DIR"]!);
     bin?.(env);
     return env;
   }
@@ -161,18 +168,31 @@ describe("node_link", () => {
     expect(readFileSync(node(file), "utf8")).toBe("user node");
   });
 
-  it("links no Node it just installed for a release that finds it itself", () => {
+  it("links no Node for a release that finds it itself, even one that needs Node", () => {
     const env = pc(true);
-    expect(link(env, "installed").out).toContain("[]");
+    expect(link(env, "needed").out).toContain("[]");
     expect(existsSync(node(env))).toBe(false);
   });
 
-  it("links a Node it just installed for a release that finds Node on the PATH only, and only then", () => {
+  it("links our Node for a release that finds Node on the PATH only, when it needs one", () => {
     const untouched = pc(false);
     expect(link(untouched).out).toContain("[]");
     expect(existsSync(node(untouched))).toBe(false);
-    const installed = pc(false);
-    expect(link(installed, "installed").out).toContain("[ node]");
-    expect(readFileSync(node(installed), "utf8")).toBe("app node");
+    const needed = pc(false);
+    expect(link(needed, "needed").out).toContain("[ node]");
+    expect(readFileSync(node(needed), "utf8")).toBe("app node");
+  });
+
+  it("links the Node from before the rename back for such a release, and over a user's Node older than 18", () => {
+    // the link was removed, and nothing new was downloaded: our Node from before the rename already answered (#596 review)
+    const legacy = pc(false, undefined, "LEGACY_NODE_DIR", "v10.24.1");
+    expect(link(legacy, "needed").out).toContain("[ node]");
+    expect(Bun.spawnSync(["readlink", node(legacy)]).stdout.toString().trim()).toBe(join(legacy["LEGACY_NODE_DIR"]!, "bin/node"));
+  });
+
+  it("links nothing for such a release over a Node 18 or newer of the user's own", () => {
+    const env = pc(false, undefined, "NODE_DIR", "v20.11.0");
+    expect(link(env, "needed").out).toContain("[]");
+    expect(existsSync(node(env))).toBe(false);
   });
 });

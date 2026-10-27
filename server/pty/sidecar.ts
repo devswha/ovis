@@ -23,13 +23,15 @@ const MIN_NODE_MAJOR = 18;
 /**
  * `bun run` puts a `node` that is Bun itself first on PATH when the PC has none, and
  * node-pty must not load in Bun (oven-sh/bun#18546): only a `node` that is Node 18 or newer counts.
- * The probe is written for any Node, however old (no `??`), so an old one answers and is refused.
+ * Nor one built for another architecture than this server (an x64 Node under Rosetta on an arm64
+ * Mac): node-pty's prebuilt addon is installed for the server's. The probe is written for any
+ * Node, however old (no `??`), so an old one answers and is refused.
  */
 export function isRealNode(executable: string, env: Record<string, string | undefined> = process.env, timeoutMs = PROBE_TIMEOUT_MS): boolean {
   try {
-    const asked = Bun.spawnSync([executable, "-p", "process.versions.bun ? 'bun' : process.versions.node"], { env, windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs });
-    const major = /^(\d+)\./.exec(asked.stdout.toString().trim())?.[1];
-    return asked.success && major !== undefined && Number(major) >= MIN_NODE_MAJOR;
+    const asked = Bun.spawnSync([executable, "-p", "process.versions.bun ? 'bun' : process.versions.node + ' ' + process.arch"], { env, windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs });
+    const answer = /^(\d+)\.\S* (\S+)$/.exec(asked.stdout.toString().trim());
+    return asked.success && answer !== null && Number(answer[1]) >= MIN_NODE_MAJOR && answer[2] === process.arch;
   } catch {
     return false;
   }
