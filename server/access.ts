@@ -29,8 +29,9 @@
  * Portal's own sign-in (a private link, an Ethereum wallet, an OIDC account) is one more way in,
  * and the one exception to "a token is required of everything but a paired device": a visitor it let
  * in is let in like a paired device that may drive, with no token asked, and the PC's owner chose that
- * when starting Portal with it. Its X-Portal-User and X-Portal-Auth are believed only with the
- * proof Portal sends beside them (`portalLogin`).
+ * when starting Portal with it. It leaves no standing access behind, though: index.ts refuses it
+ * pairing, revoking, push subscriptions and Portal's own controls. Its X-Portal-User and
+ * X-Portal-Auth are believed only with the proof Portal sends beside them (`portalLogin`).
  */
 import { BlockList, isIP } from "node:net";
 import { PORTAL_SIGN_INS } from "../shared/portal.ts";

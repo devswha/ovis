@@ -387,19 +387,45 @@ describe("a Portal that signs its visitors in", () => {
     socket.close();
   });
 
-  it("does not let a visitor it signed in issue private links, while the owner's token may", async () => {
+  it("does not let a visitor it signed in decide who else gets in or leave access behind, while the owner's token may", async () => {
     const portal = serving();
     const proof = await portal.start(credential);
-    const issue = (headers: Record<string, string>) => fetch(`${portal.main}/api/portal/invite`, {
-      method: "POST", headers: { ...headers, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ name: "alice", days: 30 }),
-    });
-    const denied = await issue({ ...identity, "x-portal-proof": proof });
-    expect(denied.status).toBe(403);
-    expect(((await denied.json()) as { error: { code: string } }).error.code).toBe("owner_only");
-    // the same request without the proof is no visitor at all
-    expect((await issue(identity)).status).toBe(401);
-    const issued = await issue(portal.owner);
+    const visitor = { ...identity, "x-portal-proof": proof, "x-herdr-update": "1", "x-herdr-machine": "1", "content-type": "application/json" };
+    const send = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
+      fetch(`${portal.main}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const code = async (response: Response) => ((await response.json()) as { error: { code: string } }).error.code;
+    // what outlives the link or lets others in: links, Portal's own controls, pairing, revoking and push alerts
+    const standing: [string, string, unknown?][] = [
+      ["POST", "/api/portal/invite", { name: "alice", days: 30 }],
+      ["POST", "/api/portal/stop", {}],
+      ["POST", "/api/portal/start", { relay: "relay.example", auth: credential }],
+      ["POST", "/api/devices/pair/start", {}],
+      ["POST", "/api/devices/revoke-all", {}],
+      ["PATCH", "/api/devices/0123456789abcdef", { label: "mine" }],
+      ["DELETE", "/api/devices/0123456789abcdef"],
+      ["POST", "/api/push/subscribe", { subscription: { endpoint: "https://push.example/1", keys: { p256dh: "a", auth: "b" } } }],
+    ];
+    for (const [method, path, body] of standing) {
+      const refused = await send(method, path, visitor, body);
+      expect(refused.status, `${method} ${path}`).toBe(403);
+      expect(await code(refused), `${method} ${path}`).toBe("owner_only");
+    }
+    // reading stays open, and so does redeeming a pairing code the owner handed over (a wrong one is the code's own refusal)
+    expect((await send("GET", "/api/devices", visitor)).status).toBe(200);
+    expect((await send("GET", "/api/portal", visitor)).status).toBe(200);
+    const redeemed = await send("POST", "/api/devices/pair", visitor, { code: "000000" });
+    expect(redeemed.status).toBe(401);
+    expect(await code(redeemed)).toBe("invalid_code");
+    // none of that touched Portal
+    expect(((await (await send("GET", "/api/portal", portal.owner)).json()) as { phase: string }).phase).toBe("running");
+    // the same requests without the proof are no visitor at all
+    const { "x-portal-proof": _proof, ...anonymous } = visitor;
+    expect((await send("POST", "/api/portal/invite", anonymous, { name: "alice", days: 30 })).status).toBe(401);
+    // the owner's token may
+    const ownerHeaders = { ...portal.owner, "x-herdr-update": "1", "x-herdr-machine": "1", "content-type": "application/json" };
+    const issued = await send("POST", "/api/portal/invite", ownerHeaders, { name: "alice", days: 30 });
     expect(issued.status).toBe(200);
     expect(((await issued.json()) as { redeem_url: string }).redeem_url).toBe(`https://${HOST}/_portal/auth/login#credential=a-link`);
+    expect((await send("POST", "/api/devices/pair/start", ownerHeaders, {})).status).toBe(200);
   });
 });

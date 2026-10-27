@@ -133,6 +133,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Redirect address to register with the provider": "제공업체에 등록할 리디렉션 주소",
   "Remove {entry}": "{entry} 제거",
   "Signed in as {name} with {method}.": "{name} 계정으로 {method} 로그인했습니다.",
+  "A sign-in through Portal can read this list. Pairing and revoking devices are for the access token or a paired device.": "Portal 로그인으로 들어온 브라우저는 이 목록을 읽을 수만 있습니다. 기기 페어링과 해제는 접속 토큰이나 페어링된 기기에서 하세요.",
   "Stop Portal to change who can open it.": "누가 열 수 있는지 바꾸려면 Portal을 중지하세요.",
   "That one is already on the list.": "이미 목록에 있습니다.",
   "The client secret is not typed here: the app reads it from the environment variable {name} on this PC.": "클라이언트 시크릿은 여기에 입력하지 않습니다. 앱이 이 PC의 환경 변수 {name}에서 읽습니다.",

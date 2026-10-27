@@ -133,6 +133,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Redirect address to register with the provider": "プロバイダーに登録するリダイレクトアドレス",
   "Remove {entry}": "{entry} を削除",
   "Signed in as {name} with {method}.": "{method} で {name} としてサインインしています。",
+  "A sign-in through Portal can read this list. Pairing and revoking devices are for the access token or a paired device.": "Portal のサインインで入った場合、この一覧は読めますが、デバイスのペアリングと取り消しはできません。アクセストークンかペアリング済みのデバイスから行ってください。",
   "Stop Portal to change who can open it.": "誰が開けるかを変えるには、Portal を停止してください。",
   "That one is already on the list.": "すでにリストにあります。",
   "The client secret is not typed here: the app reads it from the environment variable {name} on this PC.": "クライアントシークレットはここでは入力しません。アプリがこの PC の環境変数 {name} から読み取ります。",

@@ -18,9 +18,10 @@ const PORTAL_INSTALL = "https://github.com/gosuda/portal-tunnel#quick-start";
  * Settings → Phone & devices → Portal: a public HTTPS address for this PC through a relay the
  * user picks, run by the `portal` installed there, and who may open it. Any device that can type
  * starts and stops it; the server refuses without a token. Hidden where the server offers none.
- * `viaPortal`: this browser is in through Portal's own sign-in, which may not issue private links.
+ * `readOnly`: this browser reads it and changes nothing: a device that only watches, or a visitor
+ * Portal's own sign-in let in, which the server refuses every action here.
  */
-export function PortalPanel({ readOnly = false, viaPortal = false }: { readOnly?: boolean; viaPortal?: boolean }) {
+export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();
   // what was typed; until then, the relay and the sign-in this PC used last
@@ -39,7 +40,7 @@ export function PortalPanel({ readOnly = false, viaPortal = false }: { readOnly?
     control = (
       <>
         <PortalAuthSummary auth={status.auth} url={status.url} />
-        {status.phase === "running" && status.auth.method === "credential" && !readOnly && !viaPortal && <PortalInvite auth={status.auth} />}
+        {status.phase === "running" && status.auth.method === "credential" && !readOnly && <PortalInvite auth={status.auth} />}
         <SettingsRow label={t("Relay")} description={status.relay ?? undefined}>
           <button type="button" className="btn" disabled={readOnly || pending || status.phase === "stopping"} onClick={() => void request("stop")}>{t("Stop")}</button>
         </SettingsRow>

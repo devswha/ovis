@@ -857,10 +857,9 @@ const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: 
 
 /**
  * /api/portal and its actions. What this server is (its port, token and serve-only setting) comes
- * from index.ts, and so does whether the request was let in by Portal's own sign-in: the visitors it
- * lets in may not issue links, or a link's holder could keep issuing new ones past its expiry.
+ * from index.ts, which also keeps a visitor Portal's own sign-in let in away from the actions.
  */
-export async function handlePortalRequest(request: Request, pathname: string, portal: PortalService | undefined, context: Omit<StartRequest, "relay">, throughPortal = false): Promise<Response> {
+export async function handlePortalRequest(request: Request, pathname: string, portal: PortalService | undefined, context: Omit<StartRequest, "relay">): Promise<Response> {
   const reply = (body: unknown, code = 200) => jsonResponse(body, code, { "cache-control": "no-store" });
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/portal" && request.method === "GET") {
@@ -879,7 +878,6 @@ export async function handlePortalRequest(request: Request, pathname: string, po
     try { portal.stop(); } catch (error) { return errorResponse(error); }
     return reply({ accepted: true }, 202);
   }
-  if (action === "invite" && throughPortal) return fail("owner_only", "A visitor signed in through Portal cannot issue links. Use the access token or a paired device.", 403);
   let body: unknown = null;
   try { body = await request.json(); } catch { /* checked below */ }
   if (action === "invite") {

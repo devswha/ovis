@@ -177,6 +177,8 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
   };
   /** a watching device reads this page and changes nothing on it */
   const watching = auth?.role === "watch";
+  /** so does a visitor Portal's own sign-in let in: the server refuses it every change here */
+  const guest = auth?.via === "portal";
 
   const spaced = code ? `${code.code.slice(0, 3)} ${code.code.slice(3)}` : "";
   const qrValue = code && pairUrl ? `${pairUrl.replace(/\/$/, "")}/?pair=${code.code}` : null;
@@ -185,6 +187,7 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
     <div className="devices-panel">
       {auth?.via !== undefined && <p className={auth.via === "open" ? "settings-hint devices-open" : "settings-description"}>{t(VIA[auth.via])}</p>}
       {auth?.portal !== undefined && <p className="settings-description devices-portal">{t("Signed in as {name} with {method}.", { name: auth.portal.user, method: methodName(auth.portal.method) })}</p>}
+      {guest && <p className="settings-hint">{t("A sign-in through Portal can read this list. Pairing and revoking devices are for the access token or a paired device.")}</p>}
       {auth?.via === "open" && <>
         <p className="settings-hint">{t("Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.")}</p>
         <div className="phone-actions"><button type="button" className="btn btn-primary" onClick={() => void pairSelf()} disabled={pairingSelf}>{t("Pair this device now")}</button></div>
@@ -211,13 +214,15 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
                     <span className="settings-label">{d.label}{d.current && <span className="devices-current">{t("this device")}</span>}</span>
                     <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>
                   </div>
-                  <div className="devices-actions">
-                    <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                    {/* one element across both steps, so focus stays on it when it asks to confirm */}
-                    <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
-                      <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
-                    </button>
-                  </div>
+                  {!guest && (
+                    <div className="devices-actions">
+                      <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
+                      {/* one element across both steps, so focus stays on it when it asks to confirm */}
+                      <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
+                        <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </li>
@@ -227,7 +232,7 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
       {justPaired !== null && <p className="settings-hint" role="status">{t("Paired: {name}.", { name: justPaired })}</p>}
       {revokedAll && <p className="settings-hint" role="status">{t("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before.")}</p>}
       {code === null ? (
-        <div className="phone-actions"><button type="button" className="btn btn-primary" onClick={() => void pair()} disabled={unavailable}>{t("Pair a device")}</button></div>
+        !guest && <div className="phone-actions"><button type="button" className="btn btn-primary" onClick={() => void pair()} disabled={unavailable}>{t("Pair a device")}</button></div>
       ) : (
         <div className="devices-pairing" role="status">
           {qrValue !== null && <QrCode value={qrValue} label={t("QR code that pairs a phone with code {code}", { code: code.code })} />}
@@ -251,7 +256,7 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
           </div>
         </div>
       )}
-      {devices !== null && devices.length > 0 && (
+      {devices !== null && devices.length > 0 && !guest && (
         <div className="devices-revoke-all">
           <SettingsRow label={t("Revoke every device")} description={t(watching
             ? "Every paired device, this one included, would lose its pairing access at once. A device that only watches cannot do it: use the PC or a device that can drive."

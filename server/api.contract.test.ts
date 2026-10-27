@@ -1074,6 +1074,7 @@ describe("Portal API", () => {
       expect((await fetch(url)).status).toBe(401);
       expect(await status()).toMatchObject({ supported: true, usable: true, blocked: null, phase: "idle" });
       expect((await post("start", {})).status).toBe(401);
+      expect((await post("invite", {})).status).toBe(401);
       expect((await post("start", signedIn)).status).toBe(202);
       const deadline = Date.now() + 10_000;
       let running = await status();

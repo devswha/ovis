@@ -396,6 +396,19 @@ export function createServer(
         setRequestRoute("watch-refusal");
         return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
       }
+      // A visitor Portal's own sign-in let in (a link that expires, a wallet or account on a list) uses the
+      // app like a device that may drive, and leaves nothing standing behind: only the link's expiry and
+      // Portal's list end that access, so no pairing code or revoking, no push subscription to alert a phone
+      // of theirs after it, no say over Portal itself. Redeeming a code the owner gave stays open.
+      const standingAccess = mutating && (
+        pathname.startsWith("/api/portal/")
+        || (pathname.startsWith("/api/devices/") && pathname !== "/api/devices/pair")
+        || (request.method === "POST" && pathname === "/api/push/subscribe")
+      );
+      if (access.level === "full" && access.via === "portal" && standingAccess) {
+        setRequestRoute("owner-refusal");
+        return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot change who else gets in or leave access behind. Use the access token or a paired device." } }, 403);
+      }
 
       // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return
       // its JSON result or timeout instead of Bun closing the socket at its default 10 s idle
@@ -501,7 +514,7 @@ export function createServer(
       }
       if (pathname === "/api/herdr/update") { setRequestRoute(pathname); return handleHerdrUpdateRequest(request, options.herdrUpdate); }
       if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
-        return handlePortalRequest(request, pathname, options.portal, { port: bunServer.port ?? DEFAULT_PORT, ...portalGuards() }, access.level === "full" && access.via === "portal");
+        return handlePortalRequest(request, pathname, options.portal, { port: bunServer.port ?? DEFAULT_PORT, ...portalGuards() });
       }
       if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
       if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }

@@ -133,6 +133,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Redirect address to register with the provider": "需在提供方登记的重定向地址",
   "Remove {entry}": "移除 {entry}",
   "Signed in as {name} with {method}.": "已通过{method}以 {name} 登录。",
+  "A sign-in through Portal can read this list. Pairing and revoking devices are for the access token or a paired device.": "通过 Portal 登录的浏览器只能查看这个列表。配对和撤销设备请使用访问 Token 或已配对的设备。",
   "Stop Portal to change who can open it.": "要更改谁能打开，请先停止 Portal。",
   "That one is already on the list.": "已在列表中。",
   "The client secret is not typed here: the app reads it from the environment variable {name} on this PC.": "客户端密钥不在这里输入：应用会从此 PC 的环境变量 {name} 读取。",

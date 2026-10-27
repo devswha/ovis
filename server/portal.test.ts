@@ -1029,8 +1029,8 @@ describe("the proof of a Portal with a sign-in", () => {
 describe("private links", () => {
   const own = { "x-herdr-update": "1", origin: "http://127.0.0.1:7317", "sec-fetch-site": "same-origin", "content-type": "application/json" };
   const server = { port: 7317, ...open };
-  const invite = (service: PortalService, body: unknown, through = false, headers: Record<string, string> = own) =>
-    handlePortalRequest(new Request("http://127.0.0.1:7317/api/portal/invite", { method: "POST", headers, body: JSON.stringify(body) }), "/api/portal/invite", service, server, through);
+  const invite = (service: PortalService, body: unknown, headers: Record<string, string> = own) =>
+    handlePortalRequest(new Request("http://127.0.0.1:7317/api/portal/invite", { method: "POST", headers, body: JSON.stringify(body) }), "/api/portal/invite", service, server);
   const code = async (response: Response) => (await response.json() as { error: { code: string } }).error.code;
   const running = async (auth: PortalAuth | undefined, options: Parameters<typeof standIn>[0] = {}) => {
     const portal = standIn(options);
@@ -1107,14 +1107,11 @@ describe("private links", () => {
     }
   });
 
-  it("refuses a visitor Portal signed in, and anything but this app's own controls, before issuing", async () => {
+  it("refuses anything but this app's own controls before issuing", async () => {
     const { portal, service } = await running(credential());
     try {
-      const through = await invite(service, { name: "alice", days: 30 }, true);
-      expect(through.status).toBe(403);
-      expect(await code(through)).toBe("owner_only");
       for (const headers of [{ ...own, "x-herdr-update": "0" }, { ...own, origin: "https://evil.example" }, { ...own, "sec-fetch-site": "cross-site" }]) {
-        expect(await code(await invite(service, { name: "alice", days: 30 }, false, headers))).toBe("invalid_portal_request");
+        expect(await code(await invite(service, { name: "alice", days: 30 }, headers))).toBe("invalid_portal_request");
       }
       expect(portal.issued()).toEqual([]);
     } finally {
