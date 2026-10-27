@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type Machine, type SetupJob } from "../shared/machines.ts";
@@ -10,6 +10,7 @@ import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
+import type { HerdrProfileState } from "./herdr-profile-state.ts";
 
 // A PC whose own Ovis (an independently managed web server, not a bridge this app started) is older
 // than this app: a real HTTP stand-in of that server behind a fake SSH host. Nothing is installed,
@@ -185,18 +186,36 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
    * deadline comes before the test runner's own (5 s), so a PC that never gets there fails with its state, and a
    * wait a failed test left behind ends with that test.
    */
-  const until = (done: (machine: Machine) => boolean): Promise<Machine> => new Promise((resolve, reject) => {
+  const watch = (on: MachineManager) => (done: (machine: Machine) => boolean): Promise<Machine> => new Promise((resolve, reject) => {
     let last: Machine | undefined;
     const timer = setTimeout(() => { stop(); reject(new Error(`PC never reached the state: ${JSON.stringify(last)}`)); }, 4000);
     cleanups.push(() => { clearTimeout(timer); stop(); });
-    const stop = manager.subscribe((event) => {
+    const stop = on.subscribe((event) => {
       if (event.type !== "machines") return;
       last = event.machines.find((machine) => machine.id === MACHINE_ID);
       if (last && done(last)) { clearTimeout(timer); queueMicrotask(() => stop()); resolve(structuredClone(last)); }
     });
   });
-  /** machines.json can no longer be written: a directory stands in its place */
-  const unsavable = () => { rmSync(join(dir, "machines.json")); mkdirSync(join(dir, "machines.json")); };
+  const until = watch(manager);
+  /**
+   * a document the PC's save writes can no longer be written, a directory standing in its place: its registrations
+   * (machines.json), or the herdr profiles' state (herdr-profile-state.json) with a change of an unrelated profile owed
+   */
+  const unsavable = (which: "registrations" | "profiles" = "registrations") => {
+    if (which === "profiles") (manager as unknown as { profileState: HerdrProfileState }).profileState.reconcile("unrelated-profile", { destination: "someone@elsewhere.invalid" });
+    const path = join(dir, which === "profiles" ? "herdr-profile-state.json" : "machines.json");
+    // what it held stays, as it does when a save's rename fails: writable again, it holds that once more
+    const held = existsSync(path) ? readFileSync(path) : null;
+    rmSync(path, { force: true }); mkdirSync(path);
+    return () => { rmSync(path, { recursive: true, force: true }); if (held) writeFileSync(path, held, { mode: 0o600 }); };
+  };
+  /** this app restarted on the same state, this manager stopped first: the new one, and a wait on its PC */
+  const reopen = () => {
+    manager.stop();
+    const next = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); }, options.now ? { now: options.now } : {});
+    cleanups.push(() => next.stop());
+    return { manager: next, until: watch(next), now: () => next.list().find((machine) => machine.id === MACHINE_ID)! };
+  };
   /** what machines.json holds for the PC, and its SSH address there */
   const stored = () => (JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown; snapshot?: unknown }[]).find((m) => m.id === MACHINE_ID);
   const saved = () => stored()?.target;
@@ -207,7 +226,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   };
   /** the PC as the roster shows it now */
   const now = () => manager.list().find((machine) => machine.id === MACHINE_ID)!;
-  return { manager, requests, installs, operations, probes, destinations, saved, stored, unsavable, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, shown };
+  return { manager, requests, installs, operations, probes, destinations, saved, stored, unsavable, reopen, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, shown };
 }
 
 describe("a PC whose own Ovis is away (#2047)", () => {
@@ -353,21 +372,34 @@ describe("a PC whose own Ovis is away (#2047)", () => {
   });
 
   // A move is all or nothing: one that cannot take what it found there, or cannot be saved, leaves the PC where it was
-  for (const fault of ["a roster it cannot read", "a move it cannot save"] as const) {
-    it(`stays at its own address when a setup at another address connects there but ends on ${fault}, and tries only its own again`, async () => {
+  for (const fault of ["a roster it cannot read", "a move it cannot save", "a save of the herdr profiles' state that fails"] as const) {
+    it(`stays at its own address when a setup at another address connects there but ends on ${fault}, also after a restart`, async () => {
       let clock = 0;
-      const { manager, session, operations, destinations, unsavable, settled, now, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready" }, { now: () => clock });
+      const remote: Remote = { status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready" };
+      const { manager, session, operations, destinations, unsavable, reopen, stored, settled, now, until } = pc(remote, { now: () => clock });
       await until((machine) => machine.state === "connected");
       const held = session.hold("other@second.invalid");
       const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid" });
       await held.reached;
-      if (fault === "a roster it cannot read") held.release({ panes: null, workspaces: [] }); else { unsavable(); held.release(); }
+      let writable = () => {};
+      if (fault === "a roster it cannot read") held.release({ panes: null, workspaces: [] });
+      else { writable = unsavable(fault === "a move it cannot save" ? "registrations" : "profiles"); held.release(); }
       expect((await settled(job)).phase).toBe("failed");
       expect(now()).toMatchObject({ target: { destination: "fixture@pc.invalid" }, herdr: { version: "0.9.3" }, snapshot: { fixture_at: "fixture@pc.invalid" } });
-      // its next try is at its own address, which connects as before, and nothing is started anywhere
+      // its next try is at its own address, which connects as before
       destinations.length = 0;
       clock += 10_000; manager.retryNow(MACHINE_ID);
       await until((machine) => machine.state === "connected");
+      expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
+      // nor is it there on disk: the other address's Ovis is gone now, leaving this app's runtime and a bridge's
+      // descriptor whose process is gone, so a restart that read it there would start this app's bridge unasked
+      writable();
+      expect(stored()).toMatchObject({ target: { destination: "fixture@pc.invalid" } });
+      remote.elsewhere = "stale-bridge";
+      destinations.length = 0;
+      const after = reopen();
+      expect(after.now().target).toEqual({ destination: "fixture@pc.invalid" });
+      await after.until((machine) => machine.state === "connected");
       expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
       expect(operations).toEqual([]);
     });

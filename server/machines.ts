@@ -507,10 +507,12 @@ export class MachineManager {
   private persist(): void {
     const data: StoredMachine[] = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
-    // the file on disk may have been deleted or replaced since this manager wrote it
-    if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
+    // the PCs' registrations are written last: a save that fails before them leaves them as they were on disk, so a
+    // PC moved to another address (setup) is saved there only when nothing else of its save can still fail (#2075)
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);
     this.profileState.flush();
+    // the file on disk may have been deleted or replaced since this manager wrote it
+    if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
   }
   job(id: string): SetupJob | undefined { return this.jobs.get(id)?.public; }
   settings(): MachineSettings { return { ...this.preferences, ...(this.setAside.length > 0 ? { set_aside: [...this.setAside] } : {}) }; }
