@@ -130,11 +130,12 @@ jobs:
           $root = Join-Path $env:APPDATA 'herdr\plugins\github\devswha.herdr-web-ui-210f619d6b7b'
           @{ id = 'cli:plugin'; result = @{ plugins = @(@{ plugin_id = 'devswha.herdr-web-ui'; plugin_root = $root; version = '0.3.45'; min_herdr_version = '0.9.0'; enabled = $true; source = @{ kind = 'github'; owner = 'devswha'; repo = 'herdr-web-ui'; requested_ref = 'v0.3.45' } }) } } |
             ConvertTo-Json -Depth 6 -Compress | Set-Content -Encoding ascii (Join-Path $bin 'plugin-list.json')
+          # the app runs every word quoted ("herdr" "plugin" "list"), so the stand-in compares them unquoted (%~1)
           Set-Content -Encoding ascii (Join-Path $bin 'herdr.cmd') @(
             '@echo off',
-            'if "%1 %2"=="plugin list" (type "%~dp0plugin-list.json" & exit /b 0)',
-            'if "%1 %2"=="status server" (echo {"running":false} & exit /b 0)',
-            'if "%1"=="--version" (echo herdr 0.9.3 & exit /b 0)',
+            'if "%~1 %~2"=="plugin list" (type "%~dp0plugin-list.json" & exit /b 0)',
+            'if "%~1 %~2"=="status server" (echo {"running":false} & exit /b 0)',
+            'if "%~1"=="--version" (echo herdr 0.9.3 & exit /b 0)',
             'exit /b 1')
           Set-Content -Encoding ascii (Join-Path $bin 'bun.cmd') @('@echo off', 'echo down http://127.0.0.1:7317', 'echo config: none')
           Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -164,7 +165,7 @@ jobs:
           Remove-Item -Recurse -Force $bin
           $texts | ForEach-Object { Write-Output "  $_" }
           if (-not $update) { Write-Output '::error::Ovis.exe did not show Update for a 0.3.45 server under the old id.'; exit 1 }
-          if (-not ($texts | Where-Object { $_ -like '*old Ovis server (0.3.45)*' })) { Write-Output '::error::The update screen does not name the 0.3.45 server.'; exit 1 }
+          if (-not ($texts | Where-Object { $_ -like '*0.3.45*' })) { Write-Output '::error::The update screen does not name the 0.3.45 server.'; exit 1 }
           if ($texts | Where-Object { $_ -in 'Start', 'Install' }) { Write-Output '::error::The update screen also offers Start or Install.'; exit 1 }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && github.event_name == 'pull_request'

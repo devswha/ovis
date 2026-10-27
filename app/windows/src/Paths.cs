@@ -14,6 +14,8 @@ namespace Ovis
         public const string LegacyPluginId = "devswha.herdr-web-ui";
         /// <summary>What install.ps1 hands `herdr plugin install`.</summary>
         public const string PluginSource = "devswha/ovis";
+        /// <summary>Where the release tags are, as install.ps1 lists them.</summary>
+        public const string Repository = "https://github.com/devswha/ovis.git";
         public const string InstallCommand = "irm https://ovis.sh/install.ps1 | iex";
         public const string Support = "https://ovis.sh/support/";
         public const string GitDownload = "https://git-scm.com/download/win";

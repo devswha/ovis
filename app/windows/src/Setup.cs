@@ -103,18 +103,47 @@ namespace Ovis
             return line == null ? null : line.Substring("version: ".Length).Trim();
         }
 
+        /// <summary>`current_version` of GET /api/updates: the package.json of the build the answering server runs.</summary>
+        public static string UpdatesVersion(string json)
+        {
+            try
+            {
+                var root = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                return root == null ? null : Text(root, "current_version");
+            }
+            catch (Exception exception) when (exception is ArgumentException || exception is InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
         /// <summary>
-        /// Why the server needs an update. The status's version wins over herdr's: Settings → Updates runs newer
-        /// releases than the checkout herdr lists. An app without a version (a local build) asks only the old id to move.
+        /// The server's version and whether it is the one that runs: what the answering server reports (GET
+        /// /api/updates), else the status line (the release the next start runs), else herdr's list, which names the
+        /// checkout as first installed: Settings → Updates may run a newer release since, so that one is a lower bound.
         /// </summary>
-        public static UpdateReason Reason(Plugin plugin, string statusVersion, Version app)
+        public static Version ServerVersion(Plugin plugin, string runningVersion, string statusVersion, out bool exact)
+        {
+            var known = ParseVersion(runningVersion) ?? ParseVersion(statusVersion);
+            exact = known != null;
+            return known ?? ParseVersion(plugin == null ? null : plugin.Version);
+        }
+
+        /// <summary>
+        /// Why the server needs an update. A stopped server known only by herdr's lower bound is started first, as it
+        /// may have updated itself; once it answers, its own version decides. An app without a version (a local build)
+        /// asks only the old id to move.
+        /// </summary>
+        public static UpdateReason Reason(Plugin plugin, string runningVersion, string statusVersion, bool running, Version app)
         {
             if (plugin == null) return UpdateReason.None;
             if (plugin.Id == Links.LegacyPluginId) return UpdateReason.LegacyId;
             if (app == null || plugin.Linked) return UpdateReason.None;
-            var server = ParseVersion(statusVersion) ?? ParseVersion(plugin.Version);
+            bool exact;
+            var server = ServerVersion(plugin, runningVersion, statusVersion, out exact);
             if (server == null) return UpdateReason.VersionUnknown;
-            return server < app ? UpdateReason.Older : UpdateReason.None;
+            if (server >= app || (!exact && !running)) return UpdateReason.None;
+            return UpdateReason.Older;
         }
 
         /// <summary>The herdr the server needs: what the plugin asks for, and never less than install.ps1 takes.</summary>
@@ -132,26 +161,53 @@ namespace Ovis
             return herdr != null && herdr < RequiredHerdr(plugin) ? Phase.HerdrTooOld : Phase.Outdated;
         }
 
-        public static string UpdateMessage(UpdateReason reason, Plugin plugin, string statusVersion, Version app)
+        public static string UpdateMessage(UpdateReason reason, Plugin plugin, string runningVersion, string statusVersion, Version app)
         {
-            var server = ParseVersion(statusVersion) ?? ParseVersion(plugin == null ? null : plugin.Version);
+            bool exact;
+            var server = ServerVersion(plugin, runningVersion, statusVersion, out exact);
             var target = app == null ? Lang.L("the latest version", "최신 버전") : Short(app);
             var keeps = Lang.L(" herdr, your agents and your settings stay.", " herdr, 에이전트, 설정은 그대로 남습니다.");
             switch (reason)
             {
                 case UpdateReason.LegacyId:
                     return (server == null
-                        ? Lang.L("This PC has an old Ovis server, from before its new name. Update it to " + target + ".", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버가 있습니다. " + target + "(으)로 업데이트하세요.")
-                        : Lang.L("This PC has an old Ovis server (" + Short(server) + "), from before its new name. Update it to " + target + ".", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버(" + Short(server) + ")가 있습니다. " + target + "(으)로 업데이트하세요.")) + keeps;
+                        ? Lang.L("This PC has an old Ovis server, from before its new name. Update it to " + target + " or newer.", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버가 있습니다. " + target + " 이상으로 업데이트하세요.")
+                        : Lang.L("This PC has an old Ovis server (" + Short(server) + "), from before its new name. Update it to " + target + " or newer.", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버(" + Short(server) + ")가 있습니다. " + target + " 이상으로 업데이트하세요.")) + keeps;
                 case UpdateReason.Older:
-                    return Lang.L("This PC has Ovis server " + Short(server) + ", older than this app (" + target + "). Update it to " + target + ".",
-                                  "이 PC의 Ovis 서버(" + Short(server) + ")가 이 앱(" + target + ")보다 오래됐습니다. " + target + "(으)로 업데이트하세요.") + keeps;
+                    // known only by herdr's list, the server may have updated itself since: say what herdr knows
+                    return (exact
+                        ? Lang.L("This PC has Ovis server " + Short(server) + ", older than this app (" + target + "). Update it to " + target + " or newer.",
+                                 "이 PC의 Ovis 서버(" + Short(server) + ")가 이 앱(" + target + ")보다 오래됐습니다. " + target + " 이상으로 업데이트하세요.")
+                        : Lang.L("This PC's Ovis server was installed at " + Short(server) + ", older than this app (" + target + "). Update it to " + target + " or newer so they match.",
+                                 "이 PC의 Ovis 서버는 " + Short(server) + "로 설치됐고, 이 앱(" + target + ")보다 오래됐습니다. 서로 맞도록 " + target + " 이상으로 업데이트하세요.")) + keeps;
                 case UpdateReason.VersionUnknown:
-                    return Lang.L("Ovis cannot read which version of the Ovis server this PC has. Update it to " + target + " so it matches this app.",
-                                  "이 PC에 있는 Ovis 서버의 버전을 읽지 못했습니다. 이 앱과 맞도록 " + target + "(으)로 업데이트하세요.") + keeps;
+                    return Lang.L("Ovis cannot read which version of the Ovis server this PC has. Update it to " + target + " or newer so it matches this app.",
+                                  "이 PC에 있는 Ovis 서버의 버전을 읽지 못했습니다. 이 앱과 맞도록 " + target + " 이상으로 업데이트하세요.") + keeps;
                 default:
                     return "";
             }
+        }
+
+        /// <summary>
+        /// The tag the update installs: the newest release `git ls-remote --tags` lists, never older than this app. A
+        /// server that updated itself past this app keeps its version: reinstalled older, it would run the older
+        /// checkout, since its installed release is tied to the checkout it replaced. Without the list (null) there is
+        /// no tag: the app's own could be older than what runs.
+        /// </summary>
+        public static string UpdateTag(string lsRemote, Version app)
+        {
+            if (lsRemote == null) return null;
+            var newest = app;
+            foreach (var line in (lsRemote ?? "").Split('\n'))
+            {
+                var at = line.LastIndexOf("refs/tags/v", StringComparison.Ordinal);
+                if (at < 0) continue;
+                var name = line.Substring(at + "refs/tags/".Length).Trim();
+                if (name.IndexOfAny(new[] { '-', '+' }) >= 0) continue;
+                var version = ParseVersion(name);
+                if (version != null && (newest == null || version > newest)) newest = version;
+            }
+            return newest == null ? null : "v" + newest.ToString(3);
         }
 
         public static string HerdrMessage(Plugin plugin, Version herdr)

@@ -19,6 +19,8 @@ namespace Ovis
         public string Tailscale;
         /// <summary>The `version:` line of the status, from a release that prints it.</summary>
         public string Version;
+        /// <summary>The version the answering server reports itself (GET /api/updates); null when it does not answer.</summary>
+        public string RunningVersion;
     }
 
     /// <summary>
@@ -68,7 +70,7 @@ namespace Ovis
                 return;
             }
             Status = await ReadStatus(plugin);
-            UpdateReason = Setup.Reason(plugin, Status.Version, AppVersion);
+            UpdateReason = Setup.Reason(plugin, Status.RunningVersion, Status.Version, Status.Running, AppVersion);
             HerdrVersion = UpdateReason == UpdateReason.None ? null : Setup.ParseVersion((await Run.Program("herdr", new[] { "--version" }, null, false)).Output.Split('\n').FirstOrDefault());
             Set(Setup.Choose(plugin, UpdateReason, HerdrVersion));
         }
@@ -82,7 +84,8 @@ namespace Ovis
         /// <summary>
         /// Brings an old server up to this app's release in place; herdr, Bun, the settings and the app's state stay.
         /// Under the old id, install.ps1 moves it to the new one (its settings and token come along); under the new id,
-        /// herdr reinstalls it at this app's tag, keeping its config and state dirs. Then it starts, as Start does.
+        /// herdr reinstalls it at the newest release (never older than this app), keeping its config and state dirs.
+        /// Then it starts, as Start does.
         /// </summary>
         public async Task Update()
         {
@@ -107,10 +110,19 @@ namespace Ovis
                 Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
                 return;
             }
-            var reinstall = new[] { "plugin", "install", Links.PluginSource, "--ref", "v" + AppVersion.ToString(3), "--yes" };
+            var tags = await Run.Program("git", new[] { "ls-remote", "--tags", "--refs", Links.Repository, "v*" }, Append, true);
+            var tag = Setup.UpdateTag(tags.Status == 0 ? tags.Output : null, AppVersion);
+            if (tag == null)
+            {
+                Fail(Lang.L("Could not read the Ovis releases from GitHub, so nothing was updated. Check the internet connection.", "GitHub에서 Ovis 릴리스를 읽지 못해 아무것도 업데이트하지 않았습니다. 인터넷 연결을 확인해 주세요."));
+                return;
+            }
+            var reinstall = new[] { "plugin", "install", Links.PluginSource, "--ref", tag, "--yes" };
             if ((await Run.Program("herdr", reinstall, Append, true, 45 * 60)).Status != 0)
             {
-                Fail(Lang.L("herdr could not update the Ovis server.", "herdr가 Ovis 서버를 업데이트하지 못했습니다."));
+                // herdr keeps the old install when its reinstall fails: start that one again rather than leave it stopped
+                if (await HerdrRunning()) await Run.Program("herdr", new[] { "plugin", "action", "invoke", plugin.Id + ".start-windows" }, Append);
+                Fail(Lang.L("herdr could not update the Ovis server; the version it had is kept.", "herdr가 Ovis 서버를 업데이트하지 못했습니다. 원래 버전은 그대로입니다."));
                 return;
             }
             plugin = await FindPlugin() ?? plugin;
@@ -316,6 +328,17 @@ namespace Ovis
             var words = (result.Output.Split('\n').FirstOrDefault() ?? "").Split(' ');
             var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output) };
             if (!status.Running || status.Origin == null) return status;
+            try
+            {
+                using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+                {
+                    status.RunningVersion = Setup.UpdatesVersion(await client.GetStringAsync(status.Origin.TrimEnd('/') + "/api/updates"));
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException || exception is TaskCanceledException || exception is ArgumentException || exception is InvalidOperationException)
+            {
+                // a server behind a token answers 401: its version comes from the status line or herdr instead
+            }
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
