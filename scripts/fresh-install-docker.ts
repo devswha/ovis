@@ -63,7 +63,7 @@ try {
 /** install.sh as `curl … | sh` runs it, before herdr ever ran; then herdr's startup hook starts the app */
 async function oneLineInstall(): Promise<void> {
   await docker(["cp", "install.sh", `${name}:/tmp/install.sh`]);
-  const out = await step("install.sh: herdr, Bun, Node and the plugin", () => asUser(`cat /tmp/install.sh | OVIS_REF=${ref} sh 2>&1; echo "exit=$?"`));
+  const out = await step("install.sh: herdr, Bun, the plugin, and Node where the Rust PTY host cannot run", () => asUser(`cat /tmp/install.sh | OVIS_REF=${ref} sh 2>&1; echo "exit=$?"`));
   assert.match(out, /exit=0/, `install.sh failed:\n${out.slice(-2500)}`);
   assert.match(out, /Installed /, `the plugin install did not finish:\n${out.slice(-2500)}`);
   assert.doesNotMatch(out, /gyp ERR|node-gyp/, "nothing compiled");
