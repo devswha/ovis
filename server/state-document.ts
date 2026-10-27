@@ -40,7 +40,7 @@ export function setAsideDamaged(path: string, now = new Date()): string {
       if (attempt > 99) throw Object.assign(new Error("too many copies"), { code: "EEXIST" });
       aside = `${name}-${attempt}`;
     }
-    try { unlinkSync(path); } catch (error) { rmSync(aside, { force: true }); throw error; }
+    try { unlinkSync(path); } catch (error) { dropCopy(aside); throw error; }
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
     throw new Error(`${basename(path)} is not JSON and cannot be set aside as ${basename(aside)} (${reason})`);
@@ -61,8 +61,13 @@ function keepAs(path: string, aside: string): boolean {
     throw error;
   }
   try { chmodSync(aside, 0o600); }
-  catch (error) { rmSync(aside, { force: true }); throw error; }
+  catch (error) { dropCopy(aside); throw error; }
   return true;
+}
+
+/** Removes a copy that is not kept; the error that made it unneeded is the one to report. */
+function dropCopy(aside: string): void {
+  try { rmSync(aside, { force: true }); } catch { /* the caller's error says why */ }
 }
 
 /**
