@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { DeviceStore } from "./devices.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
-import { adoptLegacyDir, defaultStateDir, linkLegacyRegistry, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
+import { adoptLegacyDir, defaultStateDir, linkLegacyRegistry, moveLegacyStateDir, releaseIn, updateStateDir } from "./update-state.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -336,5 +336,34 @@ describe("a state dir reached through a symlink", () => {
     const directory = realpathSync(release);
     expect(directory).not.toBe(release);
     expect(defaultStateDir({ XDG_CONFIG_HOME: config }, { root, port, directory })).toBe(next);
+  });
+
+  it("holds a release recorded under either of its names, named as the state dir is", () => {
+    const base = realpathSync(configHome());
+    const state = join(base, "volume", "state");
+    mkdirSync(join(state, "release-a"), { recursive: true });
+    const linked = join(base, "state");
+    symlinkSync(state, linked);
+    expect(releaseIn(linked, join(state, "release-a"))).toBe(join(linked, "release-a"));
+    expect(releaseIn(state, join(linked, "release-a"))).toBe(join(state, "release-a"));
+    expect(releaseIn(state, join(state, "release-a"))).toBe(join(state, "release-a"));
+  });
+
+  it("holds no directory outside it, however the recorded name reaches it", () => {
+    const base = realpathSync(configHome());
+    const state = join(base, "state");
+    const outside = join(base, "outside");
+    for (const dir of [join(state, "release-good"), join(outside, "release-good"), join(outside, "child"), join(`${state}-other`, "release-x")]) mkdirSync(dir, { recursive: true });
+    // a release-* name that links outside
+    symlinkSync(join(outside, "release-good"), join(state, "release-link"));
+    expect(releaseIn(state, join(state, "release-link"))).toBeNull();
+    // a link and then `..`: a process started there runs in outside/release-good, not state/release-good
+    symlinkSync(join(outside, "child"), join(state, "alias"));
+    expect(releaseIn(state, [state, "alias", "..", "release-good"].join(sep))).toBeNull();
+    expect(releaseIn(state, [state, ".", "release-good"].join(sep))).toBeNull();
+    expect(releaseIn(state, relative(process.cwd(), join(state, "release-good")))).toBeNull();
+    expect(releaseIn(state, join(`${state}-other`, "release-x"))).toBeNull();
+    expect(releaseIn(state, join(state, "release-missing"))).toBeNull();
+    expect(releaseIn(state, join(state, "release-good"))).toBe(join(state, "release-good"));
   });
 });

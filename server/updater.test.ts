@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from "bun:test";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { releaseSupervisor as launcherSupervisor } from "./managed.ts";
 import { isReleaseFolder, NOTES_FILE_LIMIT, readNotesFile, RELEASE_FOLDER_REASON, Updater, runCommand, type Release } from "./updater.ts";
 import { updateStateDir } from "./update-state.ts";
 import { spawnSync } from "node:child_process";
@@ -274,12 +275,59 @@ describe("managed source updates with real Git repositories and builds", () => {
     symlinkSync(stateDir, linked);
     const saved = JSON.parse(readFileSync(join(stateDir, "current.json"), "utf8")) as Release;
     for (const [recordedUnder, resumedFrom] of [[stateDir, linked], [linked, stateDir]] as const) {
-      const recorded = join(recordedUnder, basename(saved.directory));
-      writeFileSync(join(stateDir, "current.json"), JSON.stringify({ ...saved, directory: recorded }));
+      writeFileSync(join(stateDir, "current.json"), JSON.stringify({ ...saved, directory: join(recordedUnder, basename(saved.directory)) }));
       const resumed = new Updater({ ...updater.options, stateDir: resumedFrom });
-      expect((await resumed.initialize())?.directory).toBe(recorded);
+      // named as its own state dir names it
+      expect((await resumed.initialize())?.directory).toBe(join(resumedFrom, basename(saved.directory)));
       resumed.stop();
     }
+  });
+
+  it("keeps the release it replaces when that one was recorded under the other name of its state dir (#2029)", async () => {
+    await release("second", "v0.2.0");
+    await updater.request("install");
+    // recorded under the real path; resumed through a link to it
+    const replaced = updater.release!.directory;
+    const linked = join(directory, "linked-state");
+    symlinkSync(stateDir, linked);
+    const resumed = new Updater({ ...updater.options, stateDir: linked });
+    expect((await resumed.initialize())?.revision).toBe(updater.release!.revision);
+    const target = await release("third", "v0.3.0");
+    await resumed.request("install");
+    expect(resumed.status.error).toBeNull();
+    expect(resumed.status.current_revision).toBe(target);
+    // the launcher falls back to the replaced release's supervisor when the new one cannot start
+    expect(existsSync(join(replaced, "package.json"))).toBe(true);
+    resumed.stop();
+  });
+
+  it("resumes no release whose recorded name leaves the state dir, nor one recorded relative (#2029)", async () => {
+    await release("second", "v0.2.0");
+    await updater.request("install");
+    const saved = JSON.parse(readFileSync(join(stateDir, "current.json"), "utf8")) as Release;
+    const name = basename(saved.directory);
+    mkdirSync(join(saved.directory, "server"));
+    writeFileSync(join(saved.directory, "server", "supervisor.ts"), "");
+    // state/alias -> outside/child, and a copy of the release at outside/<name>: a process started at
+    // state/alias/../<name> runs in the copy, while that name, read as text, is inside the state dir
+    const outside = join(directory, "outside");
+    mkdirSync(join(outside, "child"), { recursive: true });
+    cpSync(saved.directory, join(outside, name), { recursive: true });
+    symlinkSync(join(outside, "child"), join(stateDir, "alias"));
+    const aliased = [stateDir, "alias", "..", name].join(sep);
+    expect(await runCommand(aliased, ["pwd", "-P"])).toBe(realpathSync(join(outside, name)));
+    for (const recorded of [aliased, relative(process.cwd(), saved.directory)]) {
+      writeFileSync(join(stateDir, "current.json"), JSON.stringify({ ...saved, directory: recorded }));
+      const resumed = new Updater(updater.options);
+      expect((await resumed.initialize())?.directory).toBe(root);
+      resumed.stop();
+      expect(launcherSupervisor(root, stateDir)).toBeNull();
+    }
+    writeFileSync(join(stateDir, "current.json"), JSON.stringify(saved));
+    const resumed = new Updater(updater.options);
+    expect((await resumed.initialize())?.directory).toBe(saved.directory);
+    resumed.stop();
+    expect(launcherSupervisor(root, stateDir)).toBe(join(saved.directory, "server", "supervisor.ts"));
   });
 
   it("tells what an update brings from the release's own changelog, every release since the running one", async () => {

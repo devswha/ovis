@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 type SupervisorRelease = { readonly root: string; readonly port: number; readonly directory: string };
 
@@ -29,13 +29,19 @@ export function defaultStateDir(env: Record<string, string | undefined> = proces
 }
 
 /**
- * Whether `directory` is a release of the update state dir `stateDir` (`<stateDir>/release-*`),
- * compared by real path: the two may be spelled one through a symlink and one not (#2029).
+ * The release `directory` names when it is one of the update state dir `stateDir`'s
+ * (`<stateDir>/release-*`), named under `stateDir`; null when it is not. The two are compared by real
+ * path, since one may be spelled through a symlink and the other not (#2029). Only an absolute path
+ * with no `.` or `..` segment qualifies: the real path of `<stateDir>/link/../release-x` drops the
+ * `..` first, where a process started there follows the link first and runs somewhere else. The
+ * name returned is the one to check and run, so both reach the directory that was compared.
  */
-export function isReleaseIn(stateDir: string, directory: string): boolean {
-  const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
-  const release = real(directory);
-  return basename(release).startsWith("release-") && dirname(release) === real(stateDir);
+export function releaseIn(stateDir: string, directory: string): string | null {
+  if (!isAbsolute(directory) || resolve(directory) !== directory) return null;
+  try {
+    const release = realpathSync(directory);
+    return basename(release).startsWith("release-") && dirname(release) === realpathSync(stateDir) ? join(stateDir, basename(release)) : null;
+  } catch { return null; }
 }
 
 /** The default state dir under its name from before the rename, and under its new one. */
