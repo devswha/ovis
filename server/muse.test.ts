@@ -216,7 +216,9 @@ describe("Muse session log", () => {
       expect(transcriptPage("muse-transcript", path).history_id).toBe(before.history_id);
       for (const [bytes] of hash.mock.calls) digested += (bytes as Uint8Array).length;
     } finally { hash.mockRestore(); }
-    // the last chunk of the window read before is digested again only as far as that read went
+    // every byte at least once (main hashed with SHA-256 instead), and the last chunk of the window
+    // read before again only as far as that read went
+    expect(digested).toBeGreaterThanOrEqual(readFileSync(path).length);
     expect(digested).toBeLessThanOrEqual(readFileSync(path).length + 64 * 1024);
   });
 
@@ -231,7 +233,8 @@ describe("Muse session log", () => {
     const path = logAt(RECORDED, recorded);
     const before = transcriptPage("muse-transcript", path);
     const name = `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`;
-    appendFileSync(path, name.repeat(Math.ceil((16 * 1024 * 1024 + 1) / name.length)));
+    // past the window and the up to 64 KiB its start can go back to a chunk boundary
+    appendFileSync(path, name.repeat(Math.ceil((16 * 1024 * 1024 + 64 * 1024 + 1) / name.length)));
     const grown = transcriptPage("muse-transcript", path);
     expect(grown.history_id).not.toBe(before.history_id);
     // appends that slide the window past a chunk, then one that does not, keep the history
@@ -241,10 +244,39 @@ describe("Muse session log", () => {
     expect(transcriptPage("muse-transcript", path).history_id).toBe(grown.history_id);
     // a name changed at the start of the window read last, which the next append slides past
     const log = readFileSync(path);
-    const start = Math.ceil((log.length - 16 * 1024 * 1024) / (64 * 1024)) * 64 * 1024;
+    const start = Math.floor((log.length - 16 * 1024 * 1024) / (64 * 1024)) * 64 * 1024;
     log.write("neat-tucanb", log.indexOf("neat-tucana", start));
     writeFileSync(path, Buffer.concat([log, Buffer.from(name.repeat(Math.ceil(64 * 1024 / name.length) + 1))]));
     expect(transcriptPage("muse-transcript", path).history_id).not.toBe(grown.history_id);
+  });
+
+  test("a rewrite before the first chunk boundary of the newest page is seen", () => {
+    const name = `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`;
+    // name records of exactly `bytes` bytes in all: the last one's name takes the rest
+    const filler = (bytes: number): string => {
+      if (bytes === 0) return "";
+      const count = Math.floor(bytes / name.length) - 1;
+      return name.repeat(count) + name.replace("neat-tucana", `neat-tucana${"x".repeat(bytes - (count + 1) * name.length)}`);
+    };
+    const window = 16 * 1024 * 1024, chunk = 64 * 1024;
+    const bytes = Buffer.from(recorded);
+    const prompt = bytes.indexOf(recorded.split("\n").find((line) => line.includes('"runtime.user_intent.accepted"') && line.includes("tell me in one sentence"))!);
+    // the last 16 MiB start 2,000 bytes before the first prompt, one byte past a chunk boundary
+    let head = (((1 - (prompt - 2000)) % chunk) + chunk) % chunk;
+    if (head > 0 && head < name.length) head += chunk;
+    const path = logAt(RECORDED, filler(head) + recorded + filler(prompt - 2000 + window - bytes.length));
+    expect((readFileSync(path).length - window) % chunk).toBe(1);
+    const before = transcriptPage("muse-transcript", path);
+    expect(JSON.stringify(before.turns)).toContain("tell me in one sentence");
+    const log = readFileSync(path);
+    // the prompt's text, twice in its record
+    for (let at = log.indexOf("one sentence", head + prompt); at >= 0 && at < log.indexOf("\n", head + prompt); at = log.indexOf("one sentence", at)) log.write("two", at);
+    writeFileSync(path, Buffer.concat([log, Buffer.from(name)]));
+    const after = transcriptPage("muse-transcript", path);
+    expect(after.history_id).not.toBe(before.history_id);
+    expect(JSON.stringify(after.turns)).toContain("tell me in two sentence");
+    forgetTranscriptState();
+    expect(transcriptPage("muse-transcript", path).turns).toEqual(after.turns);
   });
 
   test("a prompt of pictures alone shows Muse's own name for each", () => {

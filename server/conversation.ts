@@ -179,7 +179,8 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // come from; digest the whole log if a rewrite further back matters.
   let window = previous?.identity === identity ? previous.window : undefined;
   if (checkWindow && (window === undefined || stat.size !== previous!.size || changed !== previous!.changed)) {
-    const start = windowStart(stat.size);
+    // the chunk boundary at or before the last 16 MiB, so the newest page is checked from its first byte
+    const start = Math.max(0, Math.floor((stat.size - TRANSCRIPT_WINDOW_BYTES) / WINDOW_CHUNK_BYTES) * WINDOW_CHUNK_BYTES);
     if (window !== undefined && window.end <= start) rewritten = true;
     const check = rewritten ? undefined : window;
     const from = check?.start ?? start;
