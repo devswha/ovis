@@ -114,6 +114,8 @@ const headers = (page: Page) => page.locator(".machine-list .machine-header");
 const newRow = (page: Page) => page.locator(".machine-list .machine-new-row");
 const filterRow = (page: Page) => page.locator(".sidebar-filter");
 const filterFocused = (page: Page) => page.evaluate(() => document.activeElement?.classList.contains("sidebar-filter-input") ?? false);
+/** Where the focus is after the field went: never the body, so a keyboard keeps its place. */
+const focusHeld = (page: Page) => page.evaluate(() => { const active = document.activeElement; return active !== null && active !== document.body && active.isConnected ? active.className || active.tagName : null; });
 const shownWorkspaces = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".machine-list .workspace-group")].filter((row) => !row.closest("[hidden]")).map((row) => row.querySelector(".workspace-name")?.textContent ?? "").sort());
 
 /** The demo's one PC, the Host: no header, nothing lost. */
@@ -242,10 +244,32 @@ async function filterHidden(browser: Browser, scene: Scene): Promise<void> {
     await page.getByRole("button", { name: "Close filter", exact: true }).click();
     await filterRow(page).waitFor({ state: "detached" });
     assert.deepEqual(await shownWorkspaces(page), LABELS, "every row is back");
+    assert.ok(await focusHeld(page), "Close filter gives the focus back, not to the body");
     if (!scene.phone) {
       await paletteFilter(page);
+      await page.keyboard.type("zz");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator(".sidebar-filter-input").inputValue(), "", "Escape with words clears them");
+      assert.ok(await filterFocused(page), "and keeps the field, focused");
+      await page.evaluate(() => { const seen = window as unknown as { escapesSeen: number }; seen.escapesSeen = 0; window.addEventListener("keydown", (event) => { if (event.key === "Escape") seen.escapesSeen++; }); });
       await page.keyboard.press("Escape");
       await filterRow(page).waitFor({ state: "detached" });
+      assert.ok(await focusHeld(page), "Escape in the empty field gives the focus back, not to the body");
+      assert.equal(await page.evaluate(() => (window as unknown as { escapesSeen: number }).escapesSeen), 0, "the Escape that closed it goes no further");
+      // the focus moving inside the sidebar keeps it, from the field or a row; leaving the sidebar takes it
+      await paletteFilter(page);
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close filter");
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement?.closest(".machine-list") !== null), true, "Tab goes on into the list");
+      assert.equal(await filterRow(page).count(), 1, "a row taking the focus keeps the field");
+      await page.locator(".machine-list .workspace-select").nth(1).click();
+      assert.equal(await filterRow(page).count(), 1, "a press on a row keeps it");
+      const header = await page.locator("header.app-header.is-zoned").boundingBox();
+      assert.ok(header, "the app header is drawn");
+      await page.mouse.click(header.x + header.width / 2, header.y + header.height / 2);
+      await filterRow(page).waitFor({ state: "detached" });
+      assert.deepEqual(await shownWorkspaces(page), LABELS);
     } else {
       await paletteFilter(page);
       await page.getByRole("button", { name: "Close workspace list", exact: true }).click();

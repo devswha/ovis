@@ -1052,9 +1052,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sidebar and focuses it. Settings → Appearance → **Sidebar filter** (on by default, this device's choice, kept in its own
   `ovis:sidebar-filter` key as the PC fold is) leaves the row out, so the lists start at the top, as the Codex and
   Claude apps keep search in the palette alone; that palette entry then draws the row, focused, for the filter's time.
-  It stays while it holds words, and goes on its **Close filter** (its X while it is empty), Escape in it empty, the
-  focus leaving the sidebar from it empty (a press on a row keeps it, so the rows never move under the pointer), or
-  the drawer closing. The matcher is the command palette's fuzzy one
+  It stays while it holds words, and goes on its **Close filter** (its X while it is empty), Escape in it empty (that
+  Escape goes no further), leaving the sidebar while it is empty: a press outside it, or the keyboard's focus going
+  out from the field or any row (a press inside keeps it, also when the row it picks moves the focus to its pane, so
+  the rows never move under the pointer), or the drawer closing. Going while it holds the focus, it gives the focus back to what had it when it
+  came, else to the list's first row, never to the page, as `useFocusReturn` does for a closing dialog. Turning the
+  setting off while the field holds words keeps it, as one the palette opened. The matcher is the command palette's fuzzy one
   (`matchesQuery`, lib/paletteSearch.ts), its membership alone, never its rank: rows keep herdr's
   order, their PC, their group, their card and their pins (lib/sidebarFilter.ts). It reads only what
   a row shows: the PC's name, a workspace's name and the branch under it, an agent row's title, its
@@ -1098,7 +1101,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the error are lines of their own and stay; the group is never folded (a fold stored before is ignored, since no
   caret could open it); its `+` is a **New workspace** row (`.machine-new-row`) after the workspaces, on the rows'
   grid with the `+` in the folders' cell and its words in `--text-dim`, left out while a filter is on, while the PC is
-  offline and while the empty box offers the same; the group keeps the PC's name as its accessible name, and the
+  offline and while the empty box offers the same, and there while the PC's first roster loads; the group keeps the PC's name as its accessible name, and the
   filter neither searches nor suggests a name no row shows. The Claude and Codex apps put their New button at the top;
   here it closes the list, so the workspaces come first. A Host has no manage panel, and Add PC is in Settings and the
   palette. A lone PC that is not the Host keeps its header: its name says which PC this is, and its manage panel has

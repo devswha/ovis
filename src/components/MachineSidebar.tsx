@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, Download, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
 import type { Machine, MachineState, MachineUpdate, RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
@@ -63,16 +63,18 @@ export function MachineSidebar(props: Props) {
   const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed), [props.machines, branchLabels, unnamed]);
   // Settings → Appearance → Sidebar filter off leaves the field out until the palette's Filter workspaces and
   // agents asks for it (`filterRequest`); it stays while it holds words, and goes on its close, Escape in it
-  // empty, the focus leaving the sidebar from it empty, or the phone's drawer closing
+  // empty, the focus leaving the sidebar while it is empty, or the phone's drawer closing
   const { settings } = useSettings();
+  const shell = useRef<HTMLDivElement>(null);
   const [filterAsked, setFilterAsked] = useState(false);
   const closable = !settings.sidebarFilter && filterAsked;
   const filterShown = settings.sidebarFilter || filterAsked || query !== "";
   const filterRequest = props.filterRequest ?? 0;
   const lastFilterRequest = useRef(filterRequest);
   const focusFilter = useRef(false);
-  // a field the palette asked for while the setting was on is not kept open by turning it off
-  useEffect(() => { setFilterAsked(false); }, [settings.sidebarFilter]);
+  // turning the setting off keeps a field that holds words, as one the palette opened, so its clear does not take it
+  // away from under the focus; an empty one goes
+  useEffect(() => { setFilterAsked(query !== ""); }, [settings.sidebarFilter]);
   useEffect(() => {
     if (filterRequest === lastFilterRequest.current) return;
     lastFilterRequest.current = filterRequest;
@@ -87,20 +89,53 @@ export function MachineSidebar(props: Props) {
   });
   const closeFilter = () => { setQuery(""); setFilterAsked(false); };
   const clearFilter = () => { setQuery(""); filterInput.current?.focus(); };
+  // a field the palette opened that goes while it holds the focus gives it back, as useFocusReturn does
+  // (lib/useFocusTrap.ts): to what had it when the field came, else to the sidebar's first row
+  useLayoutEffect(() => {
+    if (!closable) return;
+    const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    const sidebar = shell.current;
+    return () => {
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) return;
+      const back = opener?.isConnected && sidebar?.querySelector(".sidebar-filter")?.contains(opener) !== true ? opener : sidebar?.querySelector<HTMLElement>(".machine-list button:not([disabled])");
+      back?.focus({ preventScroll: true });
+    };
+  }, [closable]);
   // Escape in the field clears it; an empty field's Escape closes a field the palette opened, and is left to the
-  // page (a phone's drawer closes on it)
+  // page otherwise (a phone's drawer closes on it first, lib/useSidebarLayout.ts)
   const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-    if (query === "") { if (closable) closeFilter(); return; }
+    if (query === "" && !closable) return;
     event.preventDefault();
     event.stopPropagation();
-    setQuery("");
+    if (query === "") closeFilter(); else setQuery("");
   };
-  // a press on a row keeps the field (it would move the rows under the pointer); the focus going elsewhere does not
-  const onFilterBlur = (event: FocusEvent<HTMLInputElement>) => {
+  // leaving the sidebar takes an empty field the palette opened with it: a press outside it, or the keyboard's focus
+  // going out from the field or any row. A press inside keeps it, also when what it picked takes the focus to its
+  // pane (a row would move under the pointer), until a key is pressed. A move with no destination (another window
+  // taking the focus) is decided once the focus settles
+  const pressedInside = useRef(false);
+  const emptyField = useRef(true);
+  emptyField.current = query === "";
+  useEffect(() => {
+    if (!closable) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      pressedInside.current = event.target instanceof Node && shell.current?.contains(event.target) === true;
+      if (!pressedInside.current && emptyField.current) closeFilter();
+    };
+    const onKeyDown = (): void => { pressedInside.current = false; };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => { window.removeEventListener("pointerdown", onPointerDown, true); window.removeEventListener("keydown", onKeyDown, true); };
+  }, [closable]);
+  const onSidebarBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!closable || query !== "" || pressedInside.current) return;
+    const sidebar = event.currentTarget;
     const next = event.relatedTarget;
-    if (!closable || query !== "" || next === null || event.currentTarget.closest(".sidebar-shell")?.contains(next)) return;
-    closeFilter();
+    if (next instanceof Node && sidebar.contains(next)) return;
+    if (next !== null) { closeFilter(); return; }
+    requestAnimationFrame(() => { if (!sidebar.contains(document.activeElement)) closeFilter(); });
   };
   const drawerOpen = props.drawerOpen === true;
   const hiddenCount = props.hiddenCount ?? 0;
@@ -114,10 +149,10 @@ export function MachineSidebar(props: Props) {
   // no top bar: a workspace starts from its PC's header (the lone Host's New workspace row), and Add PC lives in
   // Settings → Remote PCs. The filter above the lists is a row of the same grid, one field and its clear, never
   // taller than a row.
-  return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div className="sidebar-shell">
+  return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div ref={shell} className="sidebar-shell" onBlur={onSidebarBlur}>
     {filterShown && <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       <label className="sidebar-filter-label" htmlFor={filterId}>{t("Filter")}</label>
-      <input ref={filterInput} id={filterId} className="input sidebar-filter-input" type="search" value={query} aria-label={t("Filter workspaces and agents")} placeholder={t("Workspaces and agents")} list={suggestionsId} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} onBlur={onFilterBlur} />
+      <input ref={filterInput} id={filterId} className="input sidebar-filter-input" type="search" value={query} aria-label={t("Filter workspaces and agents")} placeholder={t("Workspaces and agents")} list={suggestionsId} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} />
       <datalist id={suggestionsId}>{suggestions.map((label) => <option key={label} value={label} />)}</datalist>
       {query !== "" ? <button type="button" className="sidebar-filter-clear" aria-label={t("Clear filter")} title={t("Clear filter")} onClick={clearFilter}><X aria-hidden="true" /></button>
         : closable && <button type="button" className="sidebar-filter-clear" aria-label={t("Close filter")} title={t("Close filter")} onClick={closeFilter}><X aria-hidden="true" /></button>}
@@ -239,9 +274,9 @@ function MachineGroup({ machine, headerless = false, ...props }: Props & { machi
     {(!folded || filtered !== null) && <div className={online ? "" : "machine-offline"} inert={!online} hidden={folded}>
       {!online && !machine.snapshot ? <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p> : <MachineContext.Provider value={machine.id}><Sidebar snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} watching={props.watching} /></MachineContext.Provider>}
     </div>}
-    {/* the header's +, as the list's last row: an empty roster has its own New workspace, and a filtered list
-        shows only what was looked for */}
-    {headerless && online && (machine.snapshot?.workspaces.length ?? 0) > 0 && !filter.active && <button type="button" className="machine-new-row" onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span><span className="machine-new-row-label">{t("New workspace")}</span></button>}
+    {/* the header's +, as the list's last row, also while the roster loads: an empty roster has its own New
+        workspace, and a filtered list shows only what was looked for */}
+    {headerless && online && machine.snapshot?.workspaces.length !== 0 && !filter.active && <button type="button" className="machine-new-row" onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span><span className="machine-new-row-label">{t("New workspace")}</span></button>}
   </section>;
 }
 
