@@ -93,8 +93,8 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
     XDG_CONFIG_HOME: join(directory, "config"), OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker") };
   if (home !== undefined) {
     for (const name of ["OVIS_STATE_DIR", "XDG_CONFIG_HOME"]) delete env[name];
-    // herdr's socket stays the test's: it is looked for under $HOME otherwise
-    Object.assign(env, { HOME: home, HERDR_SOCKET: process.env["HERDR_SOCKET"] || HERDR_SOCKET_PATH });
+    // herdr's socket stays the test session's (scripts/test-herdr.ts sets it): it is looked for under $HOME otherwise
+    Object.assign(env, { HOME: home, HERDR_SOCKET: process.env["HERDR_SOCKET"] });
   }
   const launch = () => {
     // one file for every launch of a test: a separator says which launch printed what
@@ -1068,7 +1068,8 @@ describe("managed source updates with real Git repositories and builds", () => {
 
   // $HOME as /home/<user> -> /data00/home/<user>: the launcher names the state dir through the link,
   // and Bun runs the installed release's supervisor from the real path (#2029)
-  it.skipIf(!liveHerdr)("keeps an update installed when $HOME is a symlink", async () => {
+  // only with a socket named for the test: falling back to the default one would reach the user's own herdr
+  it.skipIf(!liveHerdr || !process.env["HERDR_SOCKET"])("keeps an update installed when $HOME is a symlink", async () => {
     const volume = join(directory, "volume", "home");
     mkdirSync(volume, { recursive: true });
     const home = join(directory, "home");
@@ -1086,8 +1087,9 @@ describe("managed source updates with real Git repositories and builds", () => {
       await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
       expect((await health()).web_ui.revision).toBe(target);
       // and the same update is not offered again
+      const checked = (await readStatus())?.checked_at ?? null;
       await request("check");
-      await until(async () => ((await readStatus())?.checked_at ?? null) !== null);
+      await until(async () => { const s = await readStatus(); return (s?.checked_at ?? null) !== checked && s?.phase === "idle"; });
       expect((await readStatus())?.available).toBe(false);
 
       handle.kill("SIGTERM"); await handle.exited;
