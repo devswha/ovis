@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type Machine, type SetupJob } from "../shared/machines.ts";
@@ -34,6 +34,8 @@ interface Remote {
   replacementPid?: unknown;
   /** the bundle version its new bridge registers with; this app's when unset */
   replacementBundle?: string;
+  /** the bundle version its new bridge answers with, when it differs from the one it registered (a replacement race) */
+  replacementLiveBundle?: string;
   access?: Record<string, unknown>;
   bundle?: string;
   /** what its status says once asked to install, one answer per read (the last repeats); it restarts on the new version after `restartAfter` reads, never without */
@@ -42,6 +44,8 @@ interface Remote {
   runtime?: "bundle-ready" | "bundle-older" | null;
   /** a bridge this app started serves the socket, not the PC's own Ovis */
   managed?: boolean;
+  /** what another SSH address than the PC's own lists: a bridge of this app's whose process is gone */
+  elsewhere?: "stale-bridge";
 }
 const managedOffer = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true,
   current_version: "0.4.16", latest_version: "0.4.18", current_revision: "c".repeat(40), latest_revision: OFFERED, revision_bound_install: true, ...patch });
@@ -59,6 +63,8 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   const operations: string[] = [];
   let installed = false, readsSinceInstall = 0, readsBefore = 0, installAttempts = 0, restarted = false, listingsSinceRestart = 0;
   const probes: string[] = [];
+  /** the SSH destination of every command run, in order: the PC's own address or another one its dialog was given */
+  const destinations: string[] = [];
   /** its Ovis stopped: it removed its descriptor, as a server that stops does, or left it naming a process that is gone */
   let away: "removed" | "stale" | null = null;
   const sockets = new Set<{ close(): void }>();
@@ -77,13 +83,15 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   SshConnection.prototype.close = () => {};
   // the PC still answers: a failed update is that update's, not a PC gone off the network
   SshConnection.prototype.connected = () => true;
-  SshConnection.prototype.run = async (script: string) => {
+  SshConnection.prototype.run = async function (this: SshConnection, script: string) {
+    destinations.push(this.target.destination);
     const runtime = remote.runtime === undefined ? "bundle-older" : remote.runtime;
-    const listed = away === "removed" ? "" : JSON.stringify(descriptor);
+    const elsewhere = remote.elsewhere && this.target.destination !== "fixture@pc.invalid";
+    const listed = elsewhere ? JSON.stringify({ ...descriptor, pid: 5151, managed_remote: true }) : away === "removed" ? "" : JSON.stringify(descriptor);
     if (script.includes("uname")) return `Linux\nx86_64\n/home/fixture\n/home/fixture/.config\n/usr/bin/herdr\n${runtime ? `${runtime}\n` : ""}${listed}\n`;
     if (script.includes("socket=")) return SOCKET;
     if (script.includes("--version")) return "herdr 0.9.3";
-    if (script.includes("kill -0")) { probes.push(script); return away === "stale" ? "" : "live"; }
+    if (script.includes("kill -0")) { probes.push(script); return elsewhere || away === "stale" ? "" : "live"; }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) {
       if (restarted && ++listingsSinceRestart === 2) listedAfterRestart.resolve();
       return listed;
@@ -121,7 +129,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
         return Response.json({ accepted: true }, { status: 202 });
       }
       if (path === "/api/bridge" && heldBridge) { const held = heldBridge; heldBridge = null; held.reached.resolve(); await held.gate.promise; }
-      if (path === "/api/bridge") return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { version: "0.9.3", protocol: 22 } });
+      if (path === "/api/bridge") return Response.json({ ...descriptor, ...(restarted && remote.replacementLiveBundle ? { bundle_version: remote.replacementLiveBundle } : {}), socket_id: "fixture:1", herdr: { version: "0.9.3", protocol: 22 } });
       if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [] } });
       if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
       return new Response("not found", { status: 404 });
@@ -168,7 +176,9 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       if (last && done(last)) { clearTimeout(timer); queueMicrotask(() => stop()); resolve(structuredClone(last)); }
     });
   });
-  return { manager, requests, installs, operations, probes, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, shown };
+  /** the SSH address machines.json holds for the PC */
+  const saved = () => (JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown }[]).find((m) => m.id === MACHINE_ID)?.target;
+  return { manager, requests, installs, operations, probes, destinations, saved, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, shown };
 }
 
 describe("a PC whose own Ovis is away (#2047)", () => {
@@ -195,21 +205,78 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     });
   }
 
-  it("forgets it when the PC is set up at another SSH address, which then asks for setup as any PC without a bridge", async () => {
+  // A setup at another SSH address is the user's to review there: the PC moves only once it connects there, and one
+  // cancelled or failed leaves it at its own address, where it waits for its own Ovis (#2075)
+  for (const runtime of ["bundle-ready", null] as const) {
+    it(`${runtime ? "a ready runtime" : "nothing of this app's"} at another address, cancelled at approval, starts nothing and leaves the PC at its own`, async () => {
+      let clock = 0;
+      const { manager, ovis, operations, destinations, saved, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime }, { now: () => clock });
+      await until((machine) => machine.state === "connected");
+      ovis.stop("removed");
+      await until((machine) => machine.state === "reconnecting");
+      // the PC's dialog, at another address that has herdr and no bridge, with or without this app's runtime; cancelled at the approval
+      const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid", update_remote: true });
+      await until((machine) => machine.updating?.step === "Review the changes on this PC");
+      manager.action(job.id, { action: "cancel" });
+      await until((machine) => machine.state === "reconnecting" && !machine.updating);
+      destinations.length = 0;
+      clock += 10_000; manager.retryNow(MACHINE_ID);
+      // the cancel cleared the PC's error: the next one is how that try ended
+      const waiting = await until((machine) => !!machine.error && !machine.updating);
+      expect(operations).toEqual([]);
+      // its next try was at its own address, and waits there for its own Ovis
+      expect(waiting).toMatchObject({ state: "reconnecting", target: { destination: "fixture@pc.invalid" }, error: expect.stringContaining("own Ovis is not running") });
+      expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
+      manager.patch(MACHINE_ID, { name: "Home server" });
+      expect(saved()).toEqual({ destination: "fixture@pc.invalid" });
+    });
+  }
+
+  it("keeps knowing of its own Ovis when a setup at another address, which ran this app's bridge, is cancelled", async () => {
     let clock = 0;
-    const { manager, ovis, operations, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: null }, { now: () => clock });
+    const { manager, ovis, operations, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready", elsewhere: "stale-bridge" }, { now: () => clock });
     await until((machine) => machine.state === "connected");
     ovis.stop("removed");
     await until((machine) => machine.state === "reconnecting");
-    // the PC's dialog, at another address, which has herdr but no bridge or runtime of this app's; cancelled at the approval
+    // what that address ran tells of that address, once the PC moves there; this one never did
     const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid", update_remote: true });
     await until((machine) => machine.updating?.step === "Review the changes on this PC");
     manager.action(job.id, { action: "cancel" });
     await until((machine) => machine.state === "reconnecting" && !machine.updating);
     clock += 10_000; manager.retryNow(MACHINE_ID);
-    const waiting = await until((machine) => machine.action_required === "setup");
-    expect(waiting).toMatchObject({ state: "error", target: { destination: "other@second.invalid" }, error: "Remote setup needs approval. Use Reconnect / setup on this PC." });
+    const waiting = await until((machine) => !!machine.error && !machine.updating);
     expect(operations).toEqual([]);
+    expect(waiting).toMatchObject({ state: "reconnecting", error: expect.stringContaining("own Ovis is not running") });
+  });
+
+  it("leaves the PC at its own address when a setup at another one fails after its approval, and tries only its own again", async () => {
+    let clock = 0;
+    const { manager, ovis, operations, destinations, saved, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION, runtime: "bundle-ready" }, { now: () => clock });
+    await until((machine) => machine.state === "connected");
+    ovis.stop("removed");
+    await until((machine) => machine.state === "reconnecting");
+    const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid", update_remote: true });
+    await until((machine) => machine.updating?.step === "Review the changes on this PC");
+    manager.action(job.id, { action: "approve" });
+    // the bridge start approved there fails: the fixture runs nothing that changes a PC
+    const left = await until((machine) => !machine.updating && machine.state !== "connecting");
+    expect(manager.job(job.id)).toMatchObject({ phase: "failed", error: expect.stringContaining("Unexpected remote command") });
+    // what was approved there, and only that: the runtime's install, then the start that failed
+    expect(operations).toEqual(["install-bundle", expect.stringContaining("remote-entry.ts")]);
+    const approved = [...operations];
+    // the dialog tells why; the PC was never moved, and tries its own address again
+    expect(left).toMatchObject({ state: "reconnecting", target: { destination: "fixture@pc.invalid" } });
+    expect(left.action_required ?? null).toBeNull();
+    destinations.length = 0;
+    clock += 10_000; manager.retryNow(MACHINE_ID);
+    await until((machine) => machine.state === "reconnecting" && /own Ovis is not running/.test(machine.error ?? ""));
+    // an update that asks nobody goes there too
+    manager.updateBridge(MACHINE_ID);
+    await until((machine) => !machine.updating && /own Ovis is not running/.test(machine.error ?? ""));
+    expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
+    expect(operations).toEqual(approved);
+    manager.patch(MACHINE_ID, { name: "Home server" });
+    expect(saved()).toEqual({ destination: "fixture@pc.invalid" });
   });
 
   it("is not unlearnt by an update cancelled before it answered: once that Ovis is away, the PC waits for it", async () => {
@@ -345,6 +412,17 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(waiting.remote_ovis ?? null).toBeNull();
     expect(manager.job(running.updating!.job_id)).toMatchObject({ phase: "failed", action_required: "setup", remote_ovis: null });
     expect(installs).toEqual([{ expected_revision: OFFERED }]);
+  });
+
+  it("keeps where it answers when its updated bridge answers an older version than it registered", async () => {
+    const { manager, until } = pc({ status: managedOffer(), replacementLiveBundle: String(Number(REMOTE_BUNDLE_VERSION) - 1), access: { port: OWN_PORT, tailscale: { serving_url: "https://home-server.example.ts.net" } } }, { ownUpdate: { pollMs: 5 } });
+    const running = await until((machine) => !!machine.updating);
+    const waiting = await until((machine) => machine.action_required === "setup" && !machine.updating);
+    expect(waiting.error).toContain("Update it through its own Settings");
+    // it is that server that is behind: the card and the dialog say where to update it
+    const refused = { version: null, latest_version: null, updatable: false, reason: waiting.error, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" };
+    expect(waiting.remote_ovis).toEqual(refused);
+    expect(manager.job(running.updating!.job_id)).toMatchObject({ phase: "failed", action_required: "setup", remote_ovis: refused });
   });
 
   it("takes only a process id from its new bridge's descriptor into a command on that PC", async () => {
