@@ -9,15 +9,6 @@ using System.Web.Script.Serialization;
 
 namespace Ovis
 {
-    internal enum Phase
-    {
-        Checking,
-        NotInstalled,
-        Working,
-        Failed,
-        Installed,
-    }
-
     internal sealed class Status
     {
         public bool Running;
@@ -26,12 +17,8 @@ namespace Ovis
         public string PhoneUrl;
         /// <summary>"missing", "stopped" or "running", as /api/access reports Tailscale.</summary>
         public string Tailscale;
-    }
-
-    internal sealed class Plugin
-    {
-        public string Id;
-        public string Root;
+        /// <summary>The `version:` line of the status, from a release that prints it.</summary>
+        public string Version;
     }
 
     /// <summary>
@@ -49,6 +36,12 @@ namespace Ovis
         public Status Status { get; private set; }
         public bool GitMissing { get; private set; }
         public bool CanUseWinget { get; private set; }
+        public UpdateReason UpdateReason { get; private set; }
+        public Version HerdrVersion { get; private set; }
+        public Plugin Plugin { get { return plugin; } }
+
+        /// <summary>This app's release, which an update installs; null for a local build.</summary>
+        public static readonly Version AppVersion = Setup.AppVersion(typeof(Model).Assembly.GetName().Version);
 
         /// <summary>The action that failed, for Try again.</summary>
         public Func<Task> Retry { get; private set; }
@@ -70,16 +63,36 @@ namespace Ovis
             if (plugin == null)
             {
                 Status = null;
+                UpdateReason = UpdateReason.None;
                 Set(Phase.NotInstalled);
                 return;
             }
             Status = await ReadStatus(plugin);
-            Set(Phase.Installed);
+            UpdateReason = Setup.Reason(plugin, Status.Version, AppVersion);
+            HerdrVersion = UpdateReason == UpdateReason.None ? null : Setup.ParseVersion((await Run.Program("herdr", new[] { "--version" }, null, false)).Output.Split('\n').FirstOrDefault());
+            Set(Setup.Choose(plugin, UpdateReason, HerdrVersion));
         }
 
-        public async Task Install()
+        public Task Install()
         {
             Retry = Install;
+            return RunInstaller(Lang.L("Installing herdr, Bun and the Ovis server…", "herdr, Bun, Ovis 서버를 설치하는 중…"));
+        }
+
+        /// <summary>
+        /// Brings an old server up to this app's release in place; herdr, Bun, the settings and the app's state stay.
+        /// Under the old id, install.ps1 moves it to the new one (its settings and token come along); under the new id,
+        /// herdr reinstalls it at this app's tag, keeping its config and state dirs. Then it starts, as Start does.
+        /// </summary>
+        public async Task Update()
+        {
+            Retry = Update;
+            var title = Lang.L("Updating the Ovis server…", "Ovis 서버를 업데이트하는 중…");
+            if (plugin == null || plugin.Id == Links.LegacyPluginId || AppVersion == null)
+            {
+                await RunInstaller(title);
+                return;
+            }
             ClearLog();
             Paths.RefreshPath();
             if (Paths.Which("git") == null)
@@ -87,7 +100,62 @@ namespace Ovis
                 await Refresh();
                 return;
             }
-            Set(Phase.Working, Lang.L("Installing herdr, Bun and the Ovis server…", "herdr, Bun, Ovis 서버를 설치하는 중…"));
+            Set(Phase.Working, title);
+            // the reinstall leaves the old files to a server that runs them, and the start would find it answering
+            if (!await Stop(plugin))
+            {
+                Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
+                return;
+            }
+            var reinstall = new[] { "plugin", "install", Links.PluginSource, "--ref", "v" + AppVersion.ToString(3), "--yes" };
+            if ((await Run.Program("herdr", reinstall, Append, true, 45 * 60)).Status != 0)
+            {
+                Fail(Lang.L("herdr could not update the Ovis server.", "herdr가 Ovis 서버를 업데이트하지 못했습니다."));
+                return;
+            }
+            plugin = await FindPlugin() ?? plugin;
+            if (!LoginStart()) return;
+            if (await HerdrRunning())
+            {
+                if ((await Run.Program("herdr", new[] { "plugin", "action", "invoke", plugin.Id + ".start-windows" }, Append)).Status != 0)
+                {
+                    Fail(Lang.L("Could not start the Ovis server.", "Ovis 서버를 시작하지 못했습니다."));
+                    return;
+                }
+            }
+            else
+            {
+                Run.Detached("herdr", new[] { "server" });
+            }
+            await WaitUntilRunning();
+            await Refresh();
+        }
+
+        /// <summary>herdr set up from a terminal has no login start yet: add it, as Install does.</summary>
+        private bool LoginStart()
+        {
+            try
+            {
+                if (!LoginItem.Installed) LoginItem.Install();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Fail(Lang.L("Could not set herdr to start at login.", "로그인할 때 herdr가 켜지도록 설정하지 못했습니다."), exception.Message);
+                return false;
+            }
+        }
+
+        private async Task RunInstaller(string title)
+        {
+            ClearLog();
+            Paths.RefreshPath();
+            if (Paths.Which("git") == null)
+            {
+                await Refresh();
+                return;
+            }
+            Set(Phase.Working, title);
             Environment.SetEnvironmentVariable("OVIS_NO_OPEN", "1");
             var result = await Run.Program("powershell", PowerShell(Links.InstallCommand), Append, true, 45 * 60);
             if (result.Status != 0)
@@ -126,7 +194,8 @@ namespace Ovis
                     : Lang.L("Git for Windows did not install.", "Git for Windows를 설치하지 못했습니다."));
                 return;
             }
-            await Install();
+            // the Git step shows on the Update screen too, where the update is what goes on
+            await (plugin == null ? Install() : Update());
         }
 
         public async Task Restart()
@@ -151,16 +220,7 @@ namespace Ovis
             }
             else
             {
-                // herdr set up from a terminal has no login start yet: add it, as Install does
-                try
-                {
-                    if (!LoginItem.Installed) LoginItem.Install();
-                }
-                catch (Exception exception)
-                {
-                    Fail(Lang.L("Could not set herdr to start at login.", "로그인할 때 herdr가 켜지도록 설정하지 못했습니다."), exception.Message);
-                    return;
-                }
+                if (!LoginStart()) return;
                 Run.Detached("herdr", new[] { "server" });
             }
             await WaitUntilRunning();
@@ -246,30 +306,7 @@ namespace Ovis
         internal static async Task<Plugin> FindPlugin()
         {
             var result = await Run.Program("herdr", new[] { "plugin", "list", "--json" }, null, false);
-            if (result.Status != 0) return null;
-            try
-            {
-                var json = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
-                object answer, list;
-                var plugins = json != null && json.TryGetValue("result", out answer) && answer is Dictionary<string, object> && ((Dictionary<string, object>)answer).TryGetValue("plugins", out list)
-                    ? list as System.Collections.ArrayList
-                    : null;
-                if (plugins == null) return null;
-                var listed = plugins.OfType<Dictionary<string, object>>().ToList();
-                foreach (var id in new[] { Links.PluginId, Links.LegacyPluginId })
-                {
-                    var found = listed.FirstOrDefault(p => p.ContainsKey("plugin_id") && (p["plugin_id"] as string) == id);
-                    if (found != null && found.ContainsKey("plugin_root") && found["plugin_root"] is string)
-                    {
-                        return new Plugin { Id = id, Root = (string)found["plugin_root"] };
-                    }
-                }
-            }
-            catch (Exception exception) when (exception is ArgumentException || exception is InvalidOperationException || exception is KeyNotFoundException || exception is InvalidCastException)
-            {
-                return null; // not the JSON this herdr is expected to print: treated as no plugin
-            }
-            return null;
+            return result.Status != 0 ? null : Setup.ParsePlugin(result.Output);
         }
 
         /// <summary>`plugin.ts status` knows the port the plugin settled on: "running http://127.0.0.1:7317 (pid 1)" or "down …".</summary>
@@ -277,7 +314,7 @@ namespace Ovis
         {
             var result = await Run.Program("bun", new[] { PluginScript(plugin), "status" }, null, false);
             var words = (result.Output.Split('\n').FirstOrDefault() ?? "").Split(' ');
-            var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null };
+            var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output) };
             if (!status.Running || status.Origin == null) return status;
             try
             {
