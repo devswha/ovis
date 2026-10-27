@@ -50,11 +50,12 @@ interface Runtime {
   /** the user cancelled this PC's bridge update: it is not started again on its own until the PC connects */
   updateCancelled?: boolean;
   /**
-   * Whether the PC's own Ovis (an independently managed web server) serves this socket, as the PC last showed it:
-   * while none runs, the PC waits for that server instead of starting this app's bridge (prepare). A server that
-   * stops removes its descriptor, so this is all that tells a restarting one from a PC without a bridge.
+   * The SSH address (destination, port, session) whose socket the PC's own Ovis (an independently managed web
+   * server) serves, as that PC last showed it: while none runs there, the PC waits for that server instead of
+   * starting this app's bridge (prepare). A server that stops removes its descriptor, so this is all that tells a
+   * restarting one from a PC without a bridge. Another address, set up in the PC's dialog, is not told by it.
    */
-  ownOvis?: boolean;
+  ownOvisAt?: SshTarget;
 }
 interface JobState {
   update: boolean;
@@ -693,7 +694,14 @@ export class MachineManager {
   private async prepare(runtime: Runtime, job?: JobState): Promise<void> {
     const generation = runtime.generation;
     const ssh = runtime.ssh!;
-    const session = runtime.machine.target!.session;
+    const target = runtime.machine.target!;
+    const session = target.session;
+    // only this try, at this address, tells whose server the PC runs: a cancelled or superseded one (another
+    // connection, or its dialog moving the PC to another address, since it looked) writes nothing
+    const learnServer = (seen: BridgeDescriptor) => {
+      if (runtime.generation !== generation || job?.abort.signal.aborted || this.stopped) return;
+      if (seen.managed_remote) delete runtime.ownOvisAt; else runtime.ownOvisAt = { ...target };
+    };
     const { host, inspection } = await detectHost(ssh, session);
     const { platform, expectedSocket } = inspection;
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
@@ -712,13 +720,13 @@ export class MachineManager {
     if (descriptor) {
       if (!Number.isInteger(descriptor.pid) || descriptor.pid < 1) throw new Error("Invalid bridge process identity");
       // whose server this socket has, running or not: what the PC waits for while none runs
-      runtime.ownOvis = !descriptor.managed_remote;
+      learnServer(descriptor);
       if (!(await host.alive(ssh, descriptor.pid))) { stalePid = descriptor.pid; descriptor = undefined; }
     }
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
-    if (!descriptor && runtime.ownOvis && (!job || job.auto)) throw new Error(OWN_OVIS_AWAY);
+    if (!descriptor && runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target) && (!job || job.auto)) throw new Error(OWN_OVIS_AWAY);
     // Update is idempotent: another app may have finished it while this dialog was open.
     // Prove the live endpoint is compatible; a descriptor or installed directory alone is not enough.
     let update = job?.update === true;
@@ -846,8 +854,18 @@ export class MachineManager {
       }
       if (!descriptor) throw new Error(`Bridge did not start. Check ${host.logHint} on the PC.`);
     }
-    runtime.ownOvis = !descriptor.managed_remote;
-    const verified = currentBridge ?? await this.verify(ssh, descriptor, expectedSocket);
+    learnServer(descriptor);
+    let verified: Awaited<ReturnType<MachineManager["verify"]>>;
+    try { verified = currentBridge ?? await this.verify(ssh, descriptor, expectedSocket); }
+    catch (error) {
+      // its own update ended on a version newer than this app's: as with any newer server, this app is the one to
+      // update, and that server's own update is offered neither there nor here (shared/machines.ts remote_ovis)
+      if (ownUpdate && job && error instanceof MachineActionRequired) {
+        job.public.remote_ovis = null;
+        if (runtime.generation === generation) runtime.machine.remote_ovis = null;
+      }
+      throw error;
+    }
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     runtime.endpoint = verified.endpoint;
     runtime.machine.herdr = verified.identity.herdr;

@@ -130,9 +130,12 @@ an app update to install here, and it is not asked about its updates.
 While such a server is away (it restarts, updates itself, crashed, or its PC rebooted; a server that
 stops removes its bridge descriptor), the PC shows **Reconnecting…** with that reason and keeps
 retrying, as a PC that cannot be reached does, and reconnects once that server registers again. The
-connection server remembers which PCs run their own server from the descriptors it has seen, and
-while one is away neither a reconnect nor an update that asks nobody installs or starts this app's
-bridge in its place; only a setup reviewed in its dialog may. A remembered server that never comes
+connection server remembers, for the SSH address (destination, port and session) it learned it at,
+that a PC runs its own server, and while that server is away neither a reconnect nor an update that
+asks nobody installs or starts this app's bridge in its place; only a setup reviewed in its dialog
+may. A PC set up at another address in its dialog is not told by what the old one ran. An own
+update that ends on a version newer than this app's is told as an update of this app, as for any
+newer server. A remembered server that never comes
 back (a PC whose own Ovis was removed) is set up the same way, through **Reconnect / setup**.
 
 On Windows, extraction always uses `%SystemRoot%\System32\tar.exe`, so Git
