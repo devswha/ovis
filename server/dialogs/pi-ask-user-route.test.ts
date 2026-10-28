@@ -39,6 +39,8 @@ async function withBridgedPane(run: (pane: {
   screen?: string;
   /** the pane's foreground pids as herdr reports them; unless set, `foreground` and the other pis */
   foregroundList?: number[];
+  /** the foreground processes' argv as herdr reports it */
+  argv?: string[];
   /** further foreground pis with the extension, each answering with its own state */
   others: Map<number, PiAskBridgeState>;
   bridge: Bridge;
@@ -79,7 +81,7 @@ async function withBridgedPane(run: (pane: {
   }));
   const pane = {
     status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, keys: [] as string[],
-    onScreen: undefined as (() => void) | undefined, screen: undefined as string | undefined, foregroundList: undefined as number[] | undefined, others, bridge, session, root,
+    onScreen: undefined as (() => void) | undefined, screen: undefined as string | undefined, foregroundList: undefined as number[] | undefined, argv: undefined as string[] | undefined, others, bridge, session, root,
     read: async (): Promise<InteractivePrompt | null> => {
       const url = new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${id}`);
       const response = (await handlePromptRequest(new Request(url), url))!;
@@ -109,7 +111,7 @@ async function withBridgedPane(run: (pane: {
         return reply({ read: { text: pane.screen ?? fixture.screen } });
       }
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: (pane.foregroundList ?? [pane.foreground, ...others.keys()]).map((pid) => ({ pid, argv: ["fictional-shell"] })) } });
+      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: (pane.foregroundList ?? [pane.foreground, ...others.keys()]).map((pid) => ({ pid, argv: pane.argv ?? ["fictional-shell"] })) } });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
         pane.keys.push(...(request.params?.keys ?? [`text:${request.params?.text}`]));
         return reply({});
@@ -466,6 +468,17 @@ test("a pi pane gets no generic card of guessed keys at all", async () => {
     if (card) await pane.answer(card.id, { option_index: 0 });
     expect(card).toBeNull();
     expect(pane.keys).toEqual([]);
+  }, { bridge: false });
+});
+
+test("an OmO pane herdr labels pi keeps the generic card other agents get", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    // herdr names an OmO pane `pi` while OmO waits; its process tree says OmO
+    pane.argv = ["bun", "/home/u/lib/node_modules/omo-ai/bin/omo.js"];
+    const card = await pane.read();
+    expect(card?.fallback).toBe(true);
   }, { bridge: false });
 });
 
