@@ -67,6 +67,24 @@ describe("parseFocusFrame", () => {
   });
 });
 
+describe("herdr liveness", () => {
+  it("says herdr is live from the lifecycle subscription's start until it closes (#2257)", async () => {
+    const herdr = fakeHerdr([]);
+    const live: boolean[] = [];
+    const collector = startStatusCollector({ ...recorder().handlers, onHerdrLive: (now) => live.push(now) }, herdr.deps);
+    try {
+      expect(live).toEqual([]);
+      herdr.lifecycle().start();
+      expect(live).toEqual([true]);
+      // herdr went away: the connection closed, whatever its socket file still says
+      herdr.lifecycle().drop("socket_error");
+      expect(live).toEqual([true, false]);
+    } finally {
+      collector.stop();
+    }
+  });
+});
+
 describe("lifecycle invalidations", () => {
   it("tells when the lifecycle subscription is live, also when only a reopened one starts", async () => {
     // a structure change before this is not heard of: a caller that creates a workspace waits for it
