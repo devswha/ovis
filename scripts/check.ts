@@ -1385,13 +1385,21 @@ export async function main(groupSeams: GroupSeams & {
     }
     saveReport();
   }
+  // a FAILED line in the summary already says why its step failed
+  const covered = new Set<string>();
   if (report.steps.length > 1) {
     console.log("");
     for (const step of report.steps) {
       const result = step.status === "success" ? "ok    " : step.status === "skipped" ? "SKIP  " : step.status === "not-run" ? "--    " : "FAILED";
       console.log(`${result} ${step.name}${step.durationMs === null ? "" : ` (${(step.durationMs / 1000).toFixed(1)}s)`}`);
+      if (step.status === "failure") covered.add(`${step.name} exited with code ${step.exitCode}`).add(`${step.name} terminated by ${step.signal}`);
     }
   }
+  // the rest (a source or dist that changed mid-run, a report that could not be saved, ...) would
+  // otherwise end the run with every step ok and only an exit code (#1921)
+  const reasons = report.errors.filter((error) => !covered.has(error));
+  for (const reason of reasons) console.error(`check: ${reason}`);
+  if (reasons.length > 0) console.error(`check: report ${paths.reportPath}`);
   process.exit(code);
 }
 
