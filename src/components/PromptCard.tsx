@@ -12,6 +12,7 @@ import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
+import { InlineMarkdown, Markdown } from "./Markdown.tsx";
 
 /**
  * One card is one occurrence of a prompt on one pane: its owner mounts a new card (a `key`) for
@@ -146,6 +147,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
   const hasChoices = prompt.options.some((_, index) => index !== prompt.custom_option_index);
   // the bridge's own words in the user's language, the agent's as written
   const words = promptWords(prompt, t);
+  const markdown = prompt.text_format === "markdown";
   const openFile = useContext(OpenFileContext);
   const planFile = prompt.plan_file;
   const navigationBlocked = blocksStepNavigation(prompt, selected, custom);
@@ -232,7 +234,10 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
         </div>
       )}
       {/* a Claude approval's heading is its question too: said once */}
-      {prompt.question !== prompt.title && <p className="prompt-card-question">{words.question}</p>}
+      {/* omp's own Markdown (text_format): its links open from the question, never from an option, which answers when clicked */}
+      {prompt.question !== prompt.title && (markdown
+        ? <Markdown className="prompt-card-question">{words.question}</Markdown>
+        : <p className="prompt-card-question">{words.question}</p>)}
       {prompt.queued && (
         <p className="prompt-card-hint">
           {prompt.queued === "open"
@@ -269,8 +274,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
             const description = words.description(index);
             const content = (
               <span className="prompt-card-option-text">
-                <span className="prompt-card-option-label">{text}{recommended && <> <span className="prompt-card-tag">{t("Recommended")}</span></>}</span>
-                {description !== null && <span className="prompt-card-option-description">{description}</span>}
+                <span className="prompt-card-option-label">{markdown ? <InlineMarkdown>{text}</InlineMarkdown> : text}{recommended && <> <span className="prompt-card-tag">{t("Recommended")}</span></>}</span>
+                {description !== null && <span className="prompt-card-option-description">{markdown ? <InlineMarkdown>{description}</InlineMarkdown> : description}</span>}
               </span>
             );
             // the key the user can type, drawn as a keycap; the option's name keeps the menu's "1."

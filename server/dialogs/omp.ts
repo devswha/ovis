@@ -59,11 +59,12 @@ function parseOmpRows(lines: string[], startDivider: number, endDivider: number)
   return rows;
 }
 
-function ompQuestionText(lines: string[], startDivider: number, hasQuestionTabs: boolean): string | null {
+/** The question, and how many rows it takes in the panel (0 when it is not read from the panel's header). */
+function ompQuestionText(lines: string[], startDivider: number, hasQuestionTabs: boolean): { text: string | null; rows: number } {
   const panelTop = findLastIndex(lines, (_, index) => index < startDivider && /^\s*╭/.test(lines[index]!));
   const headerDivider = panelTop >= 0 ? panelTop
     : findLastIndex(lines, (_, index) => index < startDivider && isDivider(lines[index]!));
-  if (headerDivider < 0) return nearestQuestion(lines, startDivider);
+  if (headerDivider < 0) return { text: nearestQuestion(lines, startDivider), rows: 0 };
   const headerRows = lines.slice(headerDivider + 1, startDivider);
   // With question navigation, OMP draws its tab bar before the question title. Drop its leading
   // rows by position and the tab cells' extra left padding, not by their text: the strip can wrap
@@ -80,7 +81,10 @@ function ompQuestionText(lines: string[], startDivider: number, hasQuestionTabs:
   const header = headerRows.map((line, index) => ({ line: cleanLine(line), index })).filter(({ line, index }) => line
     && !(hasQuestionTabs && index >= firstHeaderRow && index < firstHeaderRow + tabRows)
     && !/^[←→].*Submit/i.test(line) && !/^[☐☑✔]\s+\S/.test(line) && !/^Question \d+\/\d+/i.test(line)).map(({ line }) => line);
-  return header.length > 0 ? normalizeText(header.join(" ")) : nearestQuestion(lines, startDivider);
+  if (header.length === 0) return { text: nearestQuestion(lines, startDivider), rows: 0 };
+  const shown = headerRows.slice(Math.max(firstHeaderRow, 0) + tabRows);
+  while (shown.length > 0 && !cleanLine(shown.at(-1)!)) shown.pop();
+  return { text: normalizeText(header.join(" ")), rows: shown.length };
 }
 
 /** The panel adds one space; TabBar cells start with one space, plus a wrapped separator when present. */
@@ -197,7 +201,7 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
   const hint = wrapped(lines, hintIndex);
   const multiSelect = OMP_MULTI_HINT_RE.test(hint) || OMP_MULTI_CLIPPED_HINT_RE.test(hint);
   const currentMulti = /(?:space|␠|␣)\s+toggle.*(?:enter|⏎)\s+(?:submit|next)/i.test(hint);
-  const question = ompQuestionText(lines, startDivider, OMP_TABS_HINT_RE.test(hint));
+  const { text: question, rows: questionRows } = ompQuestionText(lines, startDivider, OMP_TABS_HINT_RE.test(hint));
   if (!question || selectedIndex < 0 || optionRows.length === 0 || customIndex !== rows.length - 1
     || (hintIndex === clippedHintIndex && !ompRowsHaveAlignedMarkers(lines, rows))) return null;
   return finishPrompt("omp", {
@@ -205,7 +209,7 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
     options: optionRows.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: row.description ?? null })),
     multi_select: multiSelect, custom_option_index: multiSelect ? null : optionRows.length,
   }, {
-    responder: "omp-question", menuLabels: rows.map((row) => row.label), selectedIndex,
+    responder: "omp-question", menuLabels: rows.map((row) => row.label), selectedIndex, ompQuestionRows: questionRows,
     checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []),
     customMenuIndex: customIndex, rejectWithEscapeIndex: null,
     // OMP's Other row opens its own text prompt on Enter. The ordinary Enter in

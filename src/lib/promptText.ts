@@ -1,5 +1,5 @@
 import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
-import { askedQuestions } from "./askQuestions.ts";
+import { askedQuestions } from "../../shared/askQuestions.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
 /** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */

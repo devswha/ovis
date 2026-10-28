@@ -38,6 +38,25 @@ process.stdin.on("data", (data) => {
 });
 draw(generating);
 `;
+// omp 18.13.2's Ask with Markdown in its question and options as recorded (server/fixtures/omp-ask-18.13.2-md-*):
+// a stand-in draws the screen and notes every key it gets; the session file holds the call it draws
+const askSession = join(slug, "2026-10-28T06-38-25-019Z_omp-ask.jsonl");
+const askMarker = join(root, "ask-keys");
+const ASK = `
+const { appendFileSync, readFileSync } = require("node:fs");
+const [screen, moved, marker] = process.argv.slice(2);
+const draw = (file) => process.stdout.write("\\x1b[2J\\x1b[H" + readFileSync(file, "utf8").replace(/\\n$/, "").split("\\n").join("\\r\\n"));
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.on("data", (data) => {
+  appendFileSync(marker, data);
+  if (data.includes(0x0d)) process.stdout.write("\\x1b[2J\\x1b[HAnswered.\\r\\n");
+  else if (/\\x1b(?:\\[|O)B/.test(data.toString("latin1"))) draw(moved);
+});
+draw(screen);
+`;
+let askWorkspaceId: string | undefined;
+let askPaneId: string;
 let server: ReturnType<typeof createServer>;
 let seq = Date.now() * 1000;
 
@@ -78,6 +97,23 @@ beforeAll(async () => {
   }
   await herdrRpc("pane.report_agent", { pane_id: handoffPaneId, source: "herdr:omp", agent: "omp", state: "idle", seq: ++seq });
   await herdrRpc("pane.report_agent_session", { pane_id: handoffPaneId, source: "herdr:omp", agent: "omp", seq: ++seq, agent_session_path: handoffSession, session_start_source: "startup" });
+  writeFileSync(askSession, readFileSync(new URL("./fixtures/omp-ask-18.13.2-md-open.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line).type === "session" ? JSON.stringify({ ...JSON.parse(line), cwd: root }) : line).join("\n") + "\n");
+  writeFileSync(join(root, "ask.js"), ASK);
+  const asking = await workspaceCreate({ cwd: root, label: "ovis-test-omp-ask-contract" });
+  askWorkspaceId = asking.workspace.workspace_id;
+  askPaneId = asking.root_pane.pane_id;
+  const askScreen = fileURLToPath(new URL("./fixtures/omp-ask-18.13.2-md-single-60.txt", import.meta.url));
+  // omp moves its cursor (`\u276f`) to the next row on Down
+  const movedScreen = join(root, "ask-moved.txt");
+  writeFileSync(movedScreen, readFileSync(askScreen, "utf8").replace("\u2502 \u276f \u25cb Use local socket", "\u2502   \u25cb Use local socket").replace("\u2502   \u25cb Remote relay", "\u2502 \u276f \u25cb Remote relay"));
+  await herdrRpc("pane.send_text", { pane_id: askPaneId, text: `HOME='${root}' exec '${join(handoffBin, "omp")}' '${join(root, "ask.js")}' '${askScreen}' '${movedScreen}' '${askMarker}'\n` });
+  for (const deadline = Date.now() + 5_000; (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === askPaneId)?.agent !== "omp";) {
+    if (Date.now() > deadline) throw new Error("the stand-in omp did not start in the Ask pane");
+    await Bun.sleep(50);
+  }
+  await herdrRpc("pane.report_agent", { pane_id: askPaneId, source: "herdr:omp", agent: "omp", state: "blocked", seq: ++seq });
+  await herdrRpc("pane.report_agent_session", { pane_id: askPaneId, source: "herdr:omp", agent: "omp", seq: ++seq, agent_session_path: askSession, session_start_source: "startup" });
   process.env["HOME"] = root;
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state") });
 });
@@ -87,6 +123,7 @@ afterAll(async () => {
   if (originalHome === undefined) delete process.env["HOME"];
   else process.env["HOME"] = originalHome;
   if (workspaceId) await workspaceClose(workspaceId);
+  if (askWorkspaceId) await workspaceClose(askWorkspaceId);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -110,10 +147,10 @@ it("answers a session omp has not written yet as an empty conversation, then fol
 });
 
 /** The pane's card once `wanted` holds for it, within a deadline. */
-async function promptWhen(wanted: (prompt: InteractivePrompt | null) => boolean): Promise<InteractivePrompt | null> {
+async function promptWhen(wanted: (prompt: InteractivePrompt | null) => boolean, pane = handoffPaneId): Promise<InteractivePrompt | null> {
   let last: InteractivePrompt | null = null;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline; await Bun.sleep(50)) {
-    const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(handoffPaneId)}`);
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`);
     expect(response.status).toBe(200);
     last = (await response.json() as { prompt: InteractivePrompt | null }).prompt;
     if (wanted(last)) return last;
@@ -148,6 +185,38 @@ it("cancels omp's /handoff from its card, and keeps the same conversation when a
   const after = await read(handoffPaneId);
   expect(after.history_id).toBe(before.history_id);
   expect(after.turns.slice(0, before.turns.length)).toEqual(before.turns);
+});
+
+it("shows an omp Ask card in the open call's Markdown, answered by the keys of the menu on screen (#1644)", async () => {
+  const card = await promptWhen((prompt) => prompt?.text_format === "markdown", askPaneId);
+  expect(card).toMatchObject({
+    agent: "omp", text_format: "markdown", custom_option_index: 2,
+    question: "Which **route** should carry the `fixture` session? See [the guide](https://example.com/guide).",
+    options: [
+      { label: "Use `local` socket", description: "Keeps the **session** on *this* PC." },
+      { label: "Remote relay", description: "Goes through [the relay](https://example.com/relay) with `ssh`." },
+    ],
+  });
+
+  // the call answered in the terminal: the same screen is no longer that call's, and its card is as drawn
+  const open = readFileSync(askSession, "utf8");
+  appendFileSync(askSession, JSON.stringify({ type: "message", id: "r1", parentId: "c328f4b1", timestamp: new Date().toISOString(), message: { role: "toolResult", toolCallId: "omp-md-ask", toolName: "ask", content: [{ type: "text", text: "answered" }] } }) + "\n");
+  const drawn = await promptWhen((prompt) => prompt !== null && prompt.text_format === undefined, askPaneId);
+  expect(drawn).toMatchObject({ question: "Which route should carry the fixture session? See the guide (https://example.com/guide).", options: [{ label: "Use local socket" }, { label: "Remote relay" }] });
+  writeFileSync(askSession, open);
+
+  // the Markdown card answers as the screen's card: its id, and Down then Enter to the second row
+  const rich = await promptWhen((prompt) => prompt?.text_format === "markdown", askPaneId);
+  expect(rich!.id).toBe(card!.id);
+  const answered = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pane_id: askPaneId, prompt_id: rich!.id, option_index: 1 }),
+  });
+  expect(answered.status, await answered.text()).toBe(200);
+  for (const deadline = Date.now() + 10_000; !existsSync(askMarker) || !readFileSync(askMarker).includes(0x0d); await Bun.sleep(50)) {
+    if (Date.now() > deadline) throw new Error("the stand-in omp got no Enter");
+  }
+  expect(readFileSync(askMarker, "latin1")).toMatch(/^\x1b(?:\[|O)B\r$/);
 });
 
 // omp 18.8.7's pictures as recorded (server/fixtures/omp-pictures-18.8.7-*): the bytes sit in the blob

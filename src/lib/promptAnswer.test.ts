@@ -65,6 +65,13 @@ describe("answering a prompt from the chat", () => {
     }
   });
 
+  it("takes an omp option in Markdown by the words its card shows (#1644)", () => {
+    const question = { ...prompt(["Use `local` socket", "Go through **[the relay](https://example.com)**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(question, "use local socket")).toEqual({ option_index: 0 });
+    expect(answerFromText(question, "Go through the relay")).toEqual({ option_index: 1 });
+    expect(answerFromText(question, "Use `local` socket")).toEqual({ option_index: 0 });
+    expect(answerFromText(question, "use a local socket")).toEqual({ custom_text: "use a local socket" });
+  });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);
     expect(answerFromText(freeForm, "1")).toEqual({ custom_text: "1" });

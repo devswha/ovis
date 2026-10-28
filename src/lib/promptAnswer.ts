@@ -7,6 +7,7 @@
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { t } from "./i18n.ts";
 import { promptWords } from "./promptText.ts";
+import { parseInline, type InlineNode } from "./markdown.ts";
 
 export type TypedAnswer = Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">;
 
@@ -18,6 +19,12 @@ function choices(prompt: InteractivePrompt): number[] {
 /** "Yes, proceed (y)" binds y; "No, and tell Codex what to do differently (esc)" binds nothing typeable. */
 function boundLetter(label: string): string | null {
   return label.match(/\(([a-z])\)$/i)?.[1]?.toLowerCase() ?? null;
+}
+
+/** A Markdown label's words as the card shows them (`Use \`local\` socket` is "Use local socket"), which is what a user types. */
+function shownWords(nodes: InlineNode[]): string {
+  return nodes.map((node) => node.type === "text" || node.type === "code" || node.type === "math" ? node.value
+    : node.type === "image" ? node.alt : shownWords(node.children)).join("");
 }
 
 function bareLabel(label: string): string {
@@ -46,7 +53,9 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   const words = promptWords(prompt);
   const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
   // an option's own words first: a translated label never takes the words another option shows
-  const named = valid.find((index) => names(prompt.options[index]!.label)) ?? valid.find((index) => names(words.label(index)));
+  const named = valid.find((index) => names(prompt.options[index]!.label))
+    ?? (prompt.text_format === "markdown" ? valid.find((index) => names(shownWords(parseInline(prompt.options[index]!.label, false)))) : undefined)
+    ?? valid.find((index) => names(words.label(index)));
   if (named !== undefined) return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }
