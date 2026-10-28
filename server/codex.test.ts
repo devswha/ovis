@@ -909,11 +909,11 @@ describe("Codex rollout resolution", () => {
 
   it("reads short answers in bounded time however many unclosed links the answers hold", () => {
     const screen = Array.from({ length: 400 }, () => "q".repeat(120)).join("\n");
-    // answers of 4,000 characters, all unclosed "](", against answers as long with one closed link:
-    // about 1.5 times the CPU time as written, over 100 when cutting at /\]\([^)\s]*\)/ rescans from
+    // answers of 8,000 characters, all unclosed "](", against answers as long with one closed link:
+    // about 1.5 times the CPU time as written, over 400 when cutting at /\]\([^)\s]*\)/ rescans from
     // every unclosed "]("
     const { result, ratio } = cpuRatio((unclosed: boolean) => {
-      const text = unclosed ? "](".repeat(2000) : `](${"a".repeat(3997)})`;
+      const text = unclosed ? "](".repeat(4000) : `](${"a".repeat(7997)})`;
       const many = answered(...Array.from({ length: 5 }, () => text));
       const candidates = Array.from({ length: 32 }, (_, index) => ({ path: `unclosed-${index}`, text: many }));
       return () => matchShortCodexAnswers(screen, candidates);
