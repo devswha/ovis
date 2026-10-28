@@ -33,7 +33,6 @@ import { checkTabOverflow } from "./tab-overflow-regression.ts";
 import { checkAlertSound } from "./alert-sound-regression.ts";
 import { checkBackgroundTabKeepsTerminalSize, checkChatKeepsTerminalSize, checkFocusedWindowReclaimsTerminalSize, checkPaneSwitchKeepsTerminalSize } from "./chat-size-regression.ts";
 import { checkUpdateNotice } from "./update-notice-regression.ts";
-import { checkTelemetrySettings } from "./telemetry-regression.ts";
 import { chromePath } from "./chrome-path.ts";
 
 async function timed(name: string, check: () => Promise<void>): Promise<void> {
@@ -119,7 +118,6 @@ export async function runUiContextChecks(): Promise<void> {
     await timed("checkBackgroundTabKeepsTerminalSize", () => checkBackgroundTabKeepsTerminalSize(browser!, origin));
     await timed("checkFocusedWindowReclaimsTerminalSize", () => checkFocusedWindowReclaimsTerminalSize(browser!, origin));
     await timed("checkUpdateNotice", () => checkUpdateNotice(browser!, origin));
-    await timed("checkTelemetrySettings", () => checkTelemetrySettings(browser!));
   } catch (error) {
     failed = true;
     failure = error;

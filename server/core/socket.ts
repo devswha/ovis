@@ -21,7 +21,7 @@ export type FrameHandlers = { [K in Exclude<ClientMessage["type"], "presence">]:
 /** The frames of the connection itself: its liveness, its watches and its role. */
 type ConnectionFrame = "ping" | "watch" | "unwatch" | "role";
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, browserSnapshot, countVisit, drainOutput, frames }: {
+export function createSocket({ clients, present, stopped, admit, setRole, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, browserSnapshot, drainOutput, frames }: {
   clients: Set<Client>;
   present: Set<Client>;
   stopped: () => boolean;
@@ -35,7 +35,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watchP
   clientSnapshot: () => Promise<SessionSnapshot>;
   /** a snapshot as a browser is told it: without the token values the sidebar rows hide (server/herdr-sidebar.ts) */
   browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot;
-  countVisit: (snapshot?: Promise<SessionSnapshot>) => void;
   drainOutput: (client: Client) => void;
   /** every other frame type's handler, from the module that owns what it changes */
   frames: Omit<FrameHandlers, ConnectionFrame>;
@@ -101,7 +100,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watchP
       if (client.data.relay) { client.data.relay.bind(client as ServerWebSocket<unknown>); return; }
       clients.add(client);
       const snapshot = clientSnapshot();
-      countVisit(snapshot);
       try {
         const read = await snapshot;
         send(client, { type: "snapshot", snapshot: client.data.bridge ? read : browserSnapshot(read), features: SERVER_FEATURES, connection: client.data.connectionId });
@@ -117,7 +115,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watchP
       const presence = presenceOf(raw);
       if (presence === true) {
         present.add(client);
-        if (!client.data.relay) countVisit();
       } else if (presence === false) present.delete(client);
       if (client.data.relay) { client.data.relay.message(raw); return; }
       if (presence !== null) return;
