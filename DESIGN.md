@@ -558,6 +558,14 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   that arrive before the next frame (both weights from the cache, or an icon with Korean) are
   measured for once, and one face that fails holds back none of the others. It is
   `font-display: block`, since WebKit reports a swap face failed while it still loads.
+- A wide glyph that fills less than 90% of its two cells (a 1em syllable beside Menlo's 0.6em
+  cell) is widened to fill them, not enlarged (`glyphFit`, `lib/terminalGlyphs.ts`): a horizontal
+  stretch of up to 1.1x, as Korean typesetting's horizontal scaling (jangpyeong) does, and a larger
+  font size only past that. The row is as tall as the Latin font's line, and a syllable enlarged
+  1.084x to fill two Menlo cells grew to 13.5px of a 15px row, so Korean lines nearly touched. Widened,
+  it keeps the height D2Coding draws it at, the same gap between lines as a terminal set in D2Coding,
+  with no row given up. Terminal.app and iTerm2 draw a fallback syllable at its own size and leave
+  the gap beside it; this keeps its height and closes the gap.
 - Except in Ovis for Mac's window: WebKit there draws a font the user installed, but its canvas,
   which xterm and the glyph fit measure with, sees only the system's fonts. The terminal leaves
   such a font out of its stack (`measurableFontStack`) and draws what Safari draws, Menlo with
