@@ -1,5 +1,6 @@
 ### Maintenance
 - Three tests that failed on busy hosts with nothing wrong in the code now measure what the code
-  controls: the browser lane's stubbed runs get a hang guard instead of a 5 s limit (#2110), the
-  Codex matcher's bounded-time cases count this thread's CPU time and fail on a quadratic scan
-  (#2142), and the OpenCode first-key gap is measured from the send's own last request (#2143).
+  controls: the browser lane's stubbed runs get a 60 s hang guard that ends the lane's whole process
+  group instead of a 5 s limit (#2110), the Codex matcher's bounded-time cases compare the CPU time
+  of two input sizes, which a quadratic scan fails on any processor (#2142), and the OpenCode
+  first-key gap is measured from the last thing that send itself waited on (#2143).

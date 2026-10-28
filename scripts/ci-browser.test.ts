@@ -29,7 +29,9 @@ source "$1"
 /**
  * A hang guard, not a speed check: the stubbed lane still forks a few processes for every browser
  * script, and took up to 5 s on a host at load 100 of 128 cores, where a 5 s limit killed it (#2110).
- * Each lane test gets the guard and room to report what the lane printed.
+ * Each lane test gets the guard and room to report what the lane printed. The guard ends the lane's
+ * whole process group: ending only its bash leaves the script's pipeline holding the output open, so
+ * a hung lane would wait for the test's own timeout and outlive it.
  */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
@@ -40,9 +42,16 @@ async function lane(fail = "", kept = false, ci = "") {
     const child = Bun.spawn(["bash", "-c", stub, "stub", join(import.meta.dir, "ci-browser.sh")], {
       cwd: dir,
       env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
-      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: LANE_HANG_MS,
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true,
     });
-    const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    let hung = false;
+    const guard = setTimeout(() => {
+      hung = true;
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group already ended */ }
+    }, LANE_HANG_MS);
+    const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      .finally(() => clearTimeout(guard));
+    if (hung) throw new Error(`the stubbed lane did not finish within ${LANE_HANG_MS / 1000} s; its output so far:\n${text}`);
     expect(error).toBe("");
     const demo = text.match(/^\[[^\]]+\] DEMO_DIR=(.+)$/m)?.[1];
     expect(demo).toBeDefined();
