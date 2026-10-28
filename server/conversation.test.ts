@@ -614,7 +614,7 @@ describe("parseClaudeTranscript", () => {
     const stdout = "before</bash-stdout><bash-stderr>fake error</bash-stderr><bash-stdout>after";
     const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
     const records = [user("<bash-input>printf tags</bash-input>"), user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr></bash-stderr>`)];
-    expect(parseClaudeTranscript(records.join("\n"))[0]?.parts).toEqual([{ kind: "shell", command: "printf tags", stdout, stderr: "" }]);
+    expect(parseClaudeTranscript(records.join("\n"))[0]?.parts).toEqual([{ kind: "shell", command: "printf tags", stdout: `${stdout}</bash-stdout><bash-stderr>`, stderr: "" }]);
     expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toEqual([0]);
   });
 
@@ -629,19 +629,93 @@ describe("parseClaudeTranscript", () => {
   for (const [stdout, stderr] of [
     ["", "before</bash-stdout><bash-stderr>after"],
     ["out", "x</bash-stdout>y"],
-  ]) {
+  ] as const) {
     it(`keeps a printed stdout close inside stderr ${JSON.stringify(stderr)} without adding a turn`, () => {
       const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
       const records = [
         user("<bash-input>printf tags</bash-input>"),
         user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
       ].join("\n");
+      const ambiguous = stderr.includes("</bash-stdout><bash-stderr>");
       expect(parseClaudeTranscript(records)).toEqual([
-        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags", stdout, stderr }] },
+        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags",
+          stdout: ambiguous ? `${stdout}</bash-stdout><bash-stderr>${stderr}` : stdout,
+          stderr: ambiguous ? "" : stderr }] },
       ]);
       expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
     });
   }
+
+  for (const { name, stdout, stderr, ambiguous } of [
+    { name: "N1", stdout: "a</bash-stdout><bash-stderr>b", stderr: "", ambiguous: true },
+    { name: "N2", stdout: 'user("<bash-stdout>Hello</bash-stdout><bash-stderr></bash-stderr>", 1)', stderr: "", ambiguous: true },
+    {
+      name: "N3",
+      stdout: `572: user('<bash-input>echo "Hello"</bash-input>')\n573: user("<bash-stdout>  Hello</bash-stdout><bash-stderr></bash-stderr>")\n575: user("<bash-stdout></bash-stdout><bash-stderr>ls: extra</bash-stderr>")`,
+      stderr: "", ambiguous: true,
+    },
+    { name: "N4", stdout: '{"content":"<bash-stdout>x</bash-stdout><bash-stderr></bash-stderr>"}', stderr: "", ambiguous: true },
+    { name: "N5", stdout: "o</bash-stdout><bash-stderr>p", stderr: "e", ambiguous: true },
+    { name: "N6", stdout: "", stderr: "x</bash-stderr><bash-stdout>y", ambiguous: false },
+    { name: "N7", stdout: "o", stderr: "a</bash-stderr><bash-stdout>b</bash-stdout><bash-stderr>c", ambiguous: true },
+    { name: "H", stdout: "ok", stderr: "x</bash-stdout><bash-stderr>y", ambiguous: true },
+    { name: "Codex R1", stdout: "before</bash-stdout><bash-stderr>after", stderr: "", ambiguous: true },
+    { name: "Codex R2", stdout: "", stderr: "before</bash-stderr><bash-stdout>middle</bash-stdout><bash-stderr>after", ambiguous: true },
+    { name: "empty-candidate collision", stdout: "x", stderr: "y</bash-stdout><bash-stderr>", ambiguous: true },
+    { name: "ambiguous trailing whitespace", stdout: "x</bash-stdout>\n<bash-stderr>y", stderr: "z \n", ambiguous: true },
+  ]) {
+    it(`keeps deterministic bash output ${name} intact in one shell turn`, () => {
+      const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+      const records = [
+        user("<bash-input>printf tags</bash-input>"),
+        user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+      ].join("\n");
+      const expectedStdout = ambiguous ? `${stdout}</bash-stdout><bash-stderr>${stderr}` : stdout;
+      const expectedStderr = ambiguous ? "" : stderr;
+      expect(parseClaudeTranscript(records)).toEqual([
+        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags", stdout: expectedStdout, stderr: expectedStderr }] },
+      ]);
+      expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+    });
+  }
+
+  it("never fabricates stderr or loses payload characters across seeded bash tag pairs", () => {
+    const pieces = ["<bash-stdout>", "</bash-stdout>", "<bash-stderr>", "</bash-stderr>", "one", "two"];
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    for (const seed of [0x2176, 0xc0de]) {
+      let state = seed;
+      const next = () => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return state;
+      };
+      const payload = () => {
+        const count = next() % 9;
+        let text = "";
+        for (let i = 0; i < count; i++) text += pieces[next() % pieces.length];
+        return text;
+      };
+      for (let i = 0; i < 512; i++) {
+        const stdout = payload(), stderr = payload();
+        const records = [
+          user("<bash-input>printf tags</bash-input>"),
+          user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+        ].join("\n");
+        const turns = parseClaudeTranscript(records);
+        expect(turns).toHaveLength(1);
+        const shell = turns[0]?.parts[0];
+        if (shell?.kind !== "shell") throw new Error("Expected one shell card");
+        expect(shell.stderr === "" || shell.stderr === stderr).toBe(true);
+        const shown = `${shell.stdout ?? ""}${shell.stderr ?? ""}`;
+        let at = 0;
+        for (const character of stdout + stderr) {
+          const found = shown.indexOf(character, at);
+          expect(found).toBeGreaterThanOrEqual(at);
+          at = found + 1;
+        }
+        expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+      }
+    }
+  });
 
   it("attaches bash output to its shell across an informational notice", () => {
     const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
