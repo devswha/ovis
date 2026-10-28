@@ -147,8 +147,11 @@ describe("node_link", () => {
   it("removes the link an older install.sh made, to its Node or to the one from before the rename", () => {
     for (const target of ["NODE_DIR", "LEGACY_NODE_DIR"]) {
       const env = pc(true, (e) => symlinkSync(join(e[target]!, "bin/node"), node(e)));
-      expect(link(env).code).toBe(0);
+      const result = link(env);
+      expect(result.code).toBe(0);
       expect(lstatSync(node(env), { throwIfNoEntry: false })).toBeUndefined();
+      // never silently: it may have been the user's only node
+      expect(result.out).toContain(`Ovis: removed ${node(env)}`);
     }
   });
 
@@ -161,7 +164,9 @@ describe("node_link", () => {
 
   it("keeps a node of the user's own there, a link elsewhere or a file", () => {
     const linked = pc(true, (e) => symlinkSync("/usr/bin/env", node(e)));
-    expect(link(linked).code).toBe(0);
+    const kept = link(linked);
+    expect(kept.code).toBe(0);
+    expect(kept.out).not.toContain("removed");
     expect(Bun.spawnSync(["readlink", node(linked)]).stdout.toString().trim()).toBe("/usr/bin/env");
     const file = pc(true, (e) => writeFileSync(node(e), "user node"));
     expect(link(file).code).toBe(0);

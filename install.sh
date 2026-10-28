@@ -263,7 +263,11 @@ node_link() {
   if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
     [ -L "$BIN_DIR/node" ] || return 0
     case "$(readlink "$BIN_DIR/node")" in
-      "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node") rm -f "$BIN_DIR/node" ;;
+      "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node")
+        rm -f "$BIN_DIR/node"
+        # it may have been the only node on the user's PATH, so say so
+        say "removed $BIN_DIR/node, the link to Ovis's own Node that an earlier install made: Ovis finds that Node itself now, and your shells use your own Node (install one if you need node outside Ovis)"
+        ;;
     esac
   elif [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
     case "${2:-}" in
