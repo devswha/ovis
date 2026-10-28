@@ -171,6 +171,12 @@ namespace Ovis
                     Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317\nconfig: none (settings go in C:\\x (pid 9)\\env)\n"));
                     Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317 (pid x)\n"));
                     Equal((int?)null, Setup.StatusPid(null));
+                    // what the plugin's own stop says when it ended a server it verified, in every release's words
+                    Equal(true, Setup.StoppedServer("stopped Ovis (pid 4)\r\n"));
+                    Equal(true, Setup.StoppedServer("stopped herdr web ui (pid 4)\n"));
+                    Equal(false, Setup.StoppedServer("Ovis is not running\n"));
+                    Equal(false, Setup.StoppedServer("herdr web ui is not running\n"));
+                    Equal(false, Setup.StoppedServer(null));
                     // the app's own bridge health, which needs no herdr, and not another program's answer on the port
                     Equal(true, Setup.BridgeHealth("{\"ok\":true,\"auth\":{\"required\":false,\"authenticated\":true},\"bridge_protocol\":1}"));
                     Equal(false, Setup.BridgeHealth("{\"ok\":true}"));

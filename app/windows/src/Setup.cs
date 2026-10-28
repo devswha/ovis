@@ -205,6 +205,15 @@ namespace Ovis
             return end > at && int.TryParse(first.Substring(at + 5, end - at - 5), out pid) && pid > 0 ? pid : (int?)null;
         }
 
+        /// <summary>
+        /// `plugin.ts stop` ended a server: "stopped Ovis (pid N)", or "stopped herdr web ui (pid N)" before the rename. It
+        /// prints that only after it verified the process as the plugin's own and saw it exit; "… is not running" otherwise.
+        /// </summary>
+        public static bool StoppedServer(string output)
+        {
+            return (output ?? "").Split('\n').Select(line => line.Trim()).Any(line => line.StartsWith("stopped ", StringComparison.Ordinal) && line.Contains("(pid "));
+        }
+
         /// <summary>The bridge health's answer is the app's own: `ok: true` with an integer `bridge_protocol` (server/index.ts).</summary>
         public static bool BridgeHealth(string json)
         {

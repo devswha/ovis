@@ -127,16 +127,21 @@ namespace Ovis
                 Fail(Lang.L("Could not read the Ovis releases from GitHub, so nothing was updated. Check the internet connection.", "GitHub에서 Ovis 릴리스를 읽지 못해 아무것도 업데이트하지 않았습니다. 인터넷 연결을 확인해 주세요."));
                 return;
             }
+            // the server stops here, under either id, before anything is replaced: the reinstall leaves the old files to a
+            // server that runs them, and the start would find it answering. Its own stop says when it ended a verified
+            // Ovis process, which a probe of the port can miss (a PORT edited since it started): that one is started again
+            // if the update fails.
+            var stop = await Run.Program("bun", new[] { PluginScript(plugin), "stop" }, Append);
+            if (stop.Status != 0)
+            {
+                Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
+                return;
+            }
+            wasRunning = wasRunning || Setup.StoppedServer(stop.Output);
             if (plugin.Id == Links.LegacyPluginId)
             {
                 // install.ps1 moves the old id; pinned to that release, so an OVIS_REF the PC inherited cannot take it back
                 await RunInstaller(title, tag, wasRunning);
-                return;
-            }
-            // the reinstall leaves the old files to a server that runs them, and the start would find it answering
-            if (!await Stop(plugin))
-            {
-                Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
                 return;
             }
             var reinstall = new[] { "plugin", "install", Links.PluginSource, "--ref", tag, "--yes" };
