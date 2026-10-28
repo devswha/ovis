@@ -65,7 +65,7 @@ interface Runtime {
    * app's bridge), kept off the PC until that setup connects there, when the PC takes it with that address (setup).
    * Ends with the connection (disconnect): a cancelled, failed or superseded setup leaves the PC as it was (#2075).
    */
-  move?: { herdr?: Machine["herdr"]; snapshot?: SessionSnapshot; ownOvisAt?: SshTarget | null };
+  move?: { herdr?: Machine["herdr"]; snapshot?: SessionSnapshot; snapshotServer?: string; ownOvisAt?: SshTarget | null };
   /** which of the PC's herdr runs this server knows have ended (finishEnded) */
   finishes: FinishEpochLedger;
 }
@@ -652,7 +652,7 @@ export class MachineManager {
             if (move.ownOvisAt === null) delete runtime.ownOvisAt; else if (move.ownOvisAt) runtime.ownOvisAt = move.ownOvisAt;
             // a roster of the address it left is not this one's: until one read here is taken (one held for this
             // server's health is published once that proves it), the PC has none, on its card or on disk (#2080)
-            if (move.snapshot) this.publish(runtime, move.snapshot); else runtime.machine.snapshot = null;
+            if (move.snapshot) this.publish(runtime, move.snapshot, false, move.snapshotServer); else runtime.machine.snapshot = null;
           }
           if (runtime.machine.herdr_profile_id) {
             this.profileState.allowConnection(runtime.machine.herdr_profile_id, target);
@@ -1404,7 +1404,7 @@ export class MachineManager {
    * (FinishEpochLedger.settle). Otherwise `server`: the one known to have named its finish epoch, if any.
    */
   private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false, server?: string): void {
-    if (runtime.move) { runtime.move.snapshot = snapshot; return; }
+    if (runtime.move) { runtime.move.snapshot = snapshot; runtime.move.snapshotServer = settled ? snapshot.order_epoch : server; return; }
     runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
