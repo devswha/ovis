@@ -40,9 +40,10 @@ export function openHeldDirectory(path: string): Held {
   return process.platform === "darwin" ? new DarwinHeld(fd) : new LinuxHeld(fd);
 }
 
-/** One entry's own name: never a path, a parent, or (on Windows) a stream of a file. */
+/** One entry's own name: never a path or a parent, and on Windows no stream of a file (`:`) either. */
 function entryName(name: string): string {
-  if (name === "" || name === "." || name === ".." || /[/\\:\0]/.test(name)) throw new Error(`not an entry name: ${JSON.stringify(name)}`);
+  const separators = process.platform === "win32" ? /[/\\:\0]/ : /[/\0]/;
+  if (name === "" || name === "." || name === ".." || separators.test(name)) throw new Error(`not an entry name: ${JSON.stringify(name)}`);
   return name;
 }
 
@@ -90,7 +91,7 @@ function openLibSystem() {
   // go in registers on arm64 and x86_64 alike
   return dlopen("/usr/lib/libSystem.B.dylib", {
     openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
-    fgetattrlist: { args: [FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32], returns: FFIType.i32 },
+    fgetattrlist: { args: [FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u64], returns: FFIType.i32 },
   }).symbols;
 }
 
@@ -123,6 +124,8 @@ const FILE_SHARE_ALL = 0x7; // read, write, delete: omp goes on writing and remo
 const OPEN_EXISTING = 3, FILE_FLAG_BACKUP_SEMANTICS = 0x0200_0000, FILE_FLAG_OPEN_REPARSE_POINT = 0x0020_0000;
 const FILE_OPEN = 1, FILE_DIRECTORY_FILE = 0x1, FILE_SYNCHRONOUS_IO_NONALERT = 0x20, FILE_NON_DIRECTORY_FILE = 0x40, FILE_OPEN_REPARSE_POINT = 0x20_0000;
 const OBJ_CASE_INSENSITIVE = 0x40;
+/** x64 sizes of OBJECT_ATTRIBUTES and UNICODE_STRING. */
+const OBJECT_ATTRIBUTES_SIZE = 48, UNICODE_STRING_SIZE = 16;
 const FILE_ATTRIBUTE_DIRECTORY = 0x10, FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 const FILE_TYPE_DISK = 1;
 const INVALID_HANDLE_VALUE = -1n;
@@ -198,17 +201,20 @@ class WindowsHeld implements Held {
 
   open(name: string, as: "directory" | "file"): Held {
     const units = Buffer.from(entryName(name), "utf16le");
-    // UNICODE_STRING { USHORT Length, USHORT MaximumLength, PWSTR Buffer }
-    const objectName = Buffer.alloc(16);
-    objectName.writeUInt16LE(units.byteLength, 0);
-    objectName.writeUInt16LE(units.byteLength, 2);
-    objectName.writeBigUInt64LE(BigInt(ptr(units)), 8);
+    // one allocation, passed to the call itself, holds the structures and the name they point into:
+    // a pointer written into a buffer keeps nothing alive, so a separate name could be collected first
+    const attributes = Buffer.alloc(OBJECT_ATTRIBUTES_SIZE + UNICODE_STRING_SIZE + units.byteLength);
+    const base = BigInt(ptr(attributes));
+    units.copy(attributes, OBJECT_ATTRIBUTES_SIZE + UNICODE_STRING_SIZE);
     // OBJECT_ATTRIBUTES { ULONG Length, HANDLE RootDirectory, PUNICODE_STRING ObjectName, ULONG Attributes, ... }
-    const attributes = Buffer.alloc(48);
-    attributes.writeUInt32LE(48, 0);
+    attributes.writeUInt32LE(OBJECT_ATTRIBUTES_SIZE, 0);
     attributes.writeBigInt64LE(this.handle, 8);
-    attributes.writeBigUInt64LE(BigInt(ptr(objectName)), 16);
+    attributes.writeBigUInt64LE(base + BigInt(OBJECT_ATTRIBUTES_SIZE), 16);
     attributes.writeUInt32LE(OBJ_CASE_INSENSITIVE, 24);
+    // then UNICODE_STRING { USHORT Length, USHORT MaximumLength, PWSTR Buffer }
+    attributes.writeUInt16LE(units.byteLength, OBJECT_ATTRIBUTES_SIZE);
+    attributes.writeUInt16LE(units.byteLength, OBJECT_ATTRIBUTES_SIZE + 2);
+    attributes.writeBigUInt64LE(base + BigInt(OBJECT_ATTRIBUTES_SIZE + UNICODE_STRING_SIZE), OBJECT_ATTRIBUTES_SIZE + 8);
     const opened = Buffer.alloc(8), status = Buffer.alloc(16);
     const directory = as === "directory";
     const result = windowsApi().ntdll.NtCreateFile(opened, (directory ? FILE_LIST_DIRECTORY | FILE_TRAVERSE : FILE_READ_DATA) | FILE_READ_ATTRIBUTES | SYNCHRONIZE,

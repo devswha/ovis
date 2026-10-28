@@ -295,6 +295,14 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
   });
 
+  // a `:` names a file's stream only on Windows: elsewhere it is a name like any other
+  it.skipIf(process.platform === "win32")("anchors the store of a session whose file name holds a colon", () => {
+    const { path, blobs } = store("colon-name", jsonl(prompt("u1", [picture()]), answer("a1", "a webp")));
+    const named = join(path, "..", "named:session.jsonl");
+    renameSync(path, named);
+    expect(ompAuthorizedTranscript(authorizedTranscript(named, join(blobs, "..", "sessions"))!)).toEqual({ path: named, blobs: ompBlobAnchor(blobs)!.identity });
+  });
+
   it("reads no omp blob where no directory can be held and opened through, and shows the inline pictures still", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
     const { path } = store("no-descriptor-open", jsonl(prompt("u1", [{ type: "text", text: "two" }, { type: "image", mimeType: "image/png", data: png.toString("base64") }, picture()]), answer("a1", "both")));
