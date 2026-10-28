@@ -14,6 +14,7 @@ import { SidebarActivityProvider, type SidebarActivity } from "../lib/sidebarAct
 import { filterSuggestions, machineFilter, sidebarFilter, type SidebarBranchLabels } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { UsageMeters } from "./UsageMeters.tsx";
+import { rowMenuAnchor } from "./RowMenu.tsx";
 import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -120,13 +121,18 @@ export function MachineSidebar(props: Props) {
   // leaving the sidebar takes an empty field the palette opened with it: a press outside it, or the keyboard's focus
   // going out from the field or any row. A press inside keeps it, also when what it picked takes the focus to its
   // pane (a row would move under the pointer), until a key is pressed. A row's menu is drawn outside the sidebar
-  // (RowMenu) and is still inside it. A move with no destination (another window taking the focus) is decided once
+  // (RowMenu) and is still inside it; a tab's menu is not. A move with no destination (another window taking the focus) is decided once
   // the focus settles, on the field as it is then
   const pressedInside = useRef(false);
   const emptyField = useRef(true);
   emptyField.current = query === "";
-  const insideSidebar = (node: EventTarget | null): boolean => node instanceof Node
-    && (shell.current?.contains(node) === true || (node instanceof Element ? node : node.parentElement)?.closest(".row-menu, .row-sheet") instanceof Element);
+  const insideSidebar = (node: EventTarget | null): boolean => {
+    if (!(node instanceof Node)) return false;
+    if (shell.current?.contains(node) === true) return true;
+    const element = node instanceof Element ? node : node.parentElement;
+    const anchor = element === null ? null : rowMenuAnchor(element);
+    return anchor !== null && shell.current?.contains(anchor) === true;
+  };
   const settleFrame = useRef(0);
   useEffect(() => {
     if (!closable) return;

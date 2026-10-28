@@ -330,8 +330,20 @@ async function filterEdges(browser: Browser, scene: Scene): Promise<void> {
     await page.locator(".workspace-rename-input").waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Close filter", exact: true }).click();
     await filterRow(page).waitFor({ state: "detached" });
-    // an empty field's blur to nowhere is decided a frame later, on the words the field holds then: focus back,
-    // words typed and the focus gone again before that frame keeps them
+    // an empty field's blur to nowhere (another window taking the focus) takes it once the focus settles, also
+    // right after the press that closed it last
+    await paletteFilter(page);
+    await page.evaluate(() => document.querySelector<HTMLInputElement>(".sidebar-filter-input")!.blur());
+    await filterRow(page).waitFor({ state: "detached" });
+    // a tab's menu is not the sidebar's: the focus going into it takes the empty field
+    await paletteFilter(page);
+    await page.locator(".tab-strip-tab").first().evaluate((element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await page.waitForFunction(() => document.activeElement?.closest(".row-menu") !== null);
+    await filterRow(page).waitFor({ state: "detached" });
+    await page.keyboard.press("Escape");
+    await page.locator(".row-menu").waitFor({ state: "detached" });
+    // that blur is decided a frame later, on the words the field holds then: focus back, words typed and the focus
+    // gone again before that frame keeps them
     await paletteFilter(page);
     const late = await page.evaluate(async () => {
       const input = document.querySelector<HTMLInputElement>(".sidebar-filter-input")!;
@@ -348,7 +360,7 @@ async function filterEdges(browser: Browser, scene: Scene): Promise<void> {
     assert.ok(late.committed, "the words were in the field before it lost the focus again");
     assert.equal(late.value, "zz", "a blur's late check keeps words typed after it");
     assert.deepEqual(errors, []);
-    console.log(`PASS ${sceneName(scene)}: the asked-for field gives the focus to a row, keeps a row's menu as the sidebar, and keeps later words`);
+    console.log(`PASS ${sceneName(scene)}: the asked-for field gives the focus to a row, keeps a row's menu as the sidebar and no tab's, and keeps later words`);
   } finally { await context.close(); }
 }
 
