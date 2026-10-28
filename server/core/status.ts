@@ -92,7 +92,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** `done` for agents herdr loses track of (server/completion.ts), kept across restarts */
   const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"));
   const finishes = new Finishes(options.herdrIdentity);
-  /** the herdr identity read when the lifecycle subscription last started; null while it is closed (currentHerdrLifetime) */
+  /** the herdr identity that answered the lifecycle subscription, bound to that connection; null while it is closed (currentHerdrLifetime) */
   let liveHerdr: string | null = null;
   /** OmO panes get their status from OmO's session files: herdr reports none for them (server/omo-status.ts) */
   const omo = new OmoStatus({
@@ -484,8 +484,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   const collector = startStatusCollector({
     onStatus,
-    // the herdr identity this server's lifecycle subscription was answered under, while that subscription is open
-    onHerdrLive: (live) => { liveHerdr = live ? finishes.herdrIdentity() : null; },
+    // the herdr this server's lifecycle subscription was answered by, while that subscription is open
+    herdrLive: { identity: () => finishes.herdrIdentity(), onChange: (identity) => { liveHerdr = identity; } },
     // a finish reported as done, now in front at herdr's terminal: seen, idle again
     onFocus: (paneId) => {
       // The split canvas follows herdr's focused pane (also the sole visible pane while zoomed).

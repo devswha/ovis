@@ -68,29 +68,46 @@ describe("parseFocusFrame", () => {
 });
 
 describe("herdr liveness", () => {
-  it("says herdr is live from the lifecycle subscription's start until it closes (#2257)", async () => {
+  /** a collector whose stood-in herdr's socket reads as `socket.now`, and what it said answers on it */
+  function watched() {
     const herdr = fakeHerdr([]);
-    const live: boolean[] = [];
-    const collector = startStatusCollector({ ...recorder().handlers, onHerdrLive: (now) => live.push(now) }, herdr.deps);
+    const socket: { now: string | null } = { now: "herdr-a" };
+    const said: (string | null)[] = [];
+    const collector = startStatusCollector({ ...recorder().handlers, herdrLive: { identity: () => socket.now, onChange: (identity) => said.push(identity) } }, herdr.deps);
+    return { herdr, socket, said, collector };
+  }
+
+  it("names the herdr that answers the lifecycle subscription, until it closes (#2257)", () => {
+    const { herdr, said, collector } = watched();
     try {
-      expect(live).toEqual([]);
+      expect(said).toEqual([]);
       herdr.lifecycle().start();
-      expect(live).toEqual([true]);
+      expect(said).toEqual(["herdr-a"]);
       // herdr went away: the connection closed, whatever its socket file still says
       herdr.lifecycle().drop("socket_error");
-      expect(live).toEqual([true, false]);
+      expect(said).toEqual(["herdr-a", null]);
     } finally {
       collector.stop();
     }
   });
 
-  it("says herdr is no longer live once the collector stops, whose own close reports none (#2257)", () => {
-    const herdr = fakeHerdr([]);
-    const live: boolean[] = [];
-    const collector = startStatusCollector({ ...recorder().handlers, onHerdrLive: (now) => live.push(now) }, herdr.deps);
+  it("names no herdr when its socket was replaced between the attempt and the answer (#2257)", () => {
+    const { herdr, socket, said, collector } = watched();
+    try {
+      // attempted to herdr-a; by the time an answer is read, the socket is another herdr's
+      socket.now = "herdr-b";
+      herdr.lifecycle().start();
+      expect(said).toEqual([null]);
+    } finally {
+      collector.stop();
+    }
+  });
+
+  it("names none once the collector stops, whose own close reports none (#2257)", () => {
+    const { herdr, said, collector } = watched();
     herdr.lifecycle().start();
     collector.stop();
-    expect(live.at(-1)).toBe(false);
+    expect(said).toEqual(["herdr-a", null]);
   });
 });
 
