@@ -11,7 +11,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, pa
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader } from "./omo-ask.ts";
-import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
+import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
@@ -661,17 +661,14 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
 
 /**
- * Whether no key may go into the pi pane now: the pane's pi has a pi-ask form open, or cannot be
- * shown not to (piAskActivity), or, with no extension to ask, its session file holds an open
- * ask_user call. The extension's live answer outranks the file, which a /tree move can leave
- * behind. pi-ask takes no typed keys (its docs/remote-events.md). `transcript`: piTranscriptPath's
- * answer when already read.
+ * Whether no key may go into the pi pane: the web UI's pi-ask extension serves the pane's pi (its
+ * socket answers, or cannot be read), so a pi-ask form can open there at any moment, between any
+ * check and the key that follows it. pi-ask takes no typed keys (its docs/remote-events.md): such a
+ * pane gets no key-driven card at all, pi's own dialogs included, and the terminal answers them.
+ * The pi-ask card answers through the extension instead. A pi without the extension is as on main.
  */
-async function piAskRefusesKeys(paneId: string, transcript?: Awaited<ReturnType<typeof piTranscriptPath>>, signal?: AbortSignal): Promise<boolean> {
-  const activity = await piAskActivity(paneId, signal);
-  if (activity !== "absent") return activity !== "inactive";
-  const session = transcript === undefined ? await piTranscriptPath(paneId).catch(() => null) : transcript;
-  return !!session && "path" in session && piAskUserOpen(session.path);
+async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<boolean> {
+  return await piAskActivity(paneId, signal) !== "absent";
 }
 
 /** A pi-ask form opened under a key-driven answer: nothing more is sent. */
@@ -909,7 +906,7 @@ async function readKnownPrompt(
   // OmO pane `pi` while OmO waits: told apart by its process tree, it keeps the card other agents get
   if (agent === "pi" && (prompt === null || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))
     && !(await paneRunsOmo(paneId).catch(() => false))) return { prompt: null, screen, suppressFallback: true };
-  if (agent === "pi" && await piAskRefusesKeys(paneId, piTranscript, signal)) return { prompt: null, screen, suppressFallback: true };
+  if (agent === "pi" && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
@@ -1308,7 +1305,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
             send: async key => {
-              if (await piAskRefusesKeys(body.pane_id, undefined, deadline)) throw new PiAskFormOpen();
+              if (await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
               await paneSendKeys(body.pane_id, [key]);
             },
             read: async () => {
@@ -1444,7 +1441,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
           // right before each key: a pi-ask form that opened since the read takes none of them
-          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, undefined, deadline)) throw new PiAskFormOpen();
+          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
           const first = !move && !committed;
           if (!move) committed = true;
           try {

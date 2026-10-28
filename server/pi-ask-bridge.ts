@@ -13,11 +13,10 @@
  * pi-ask takes every answer at once, so the card asks one question per step and keeps the earlier
  * steps' answers here until the last one is given, as OpenCode's form does (prompt.ts).
  */
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   PI_ASK_BRIDGE_DIRECTORY,
-  piAskOpenCalls,
   type PiAskBridgeState,
   type PiAskFlow,
   type PiAskQuestion,
@@ -29,8 +28,6 @@ import type { PromptAnswer } from "../shared/protocol.ts";
 import { finishPrompt, own, type ParsedPrompt, type PromptDraft } from "./dialogs/shared.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
 import { badRequest, jsonResponse } from "./http.ts";
-import { OmoAskReader, type OmoAskEntry, type OmoAsks } from "./omo-ask.ts";
-import { piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { piPaneAgentDirs, piTranscriptPath } from "./pi.ts";
 
 const STATE_READ_MS = 1_000;
@@ -50,46 +47,6 @@ export interface PiAskUserForm {
   flow: PiAskFlow;
   stepIndex: number;
   revision: number;
-}
-
-/** pi-ask's own rule for an open ask_user call (src/pending-ask.ts in 1.2.0). */
-export function piAskUserAsksAfter(open: OmoAsks, entry: OmoAskEntry): OmoAsks {
-  return piAskOpenCalls(open.map((call) => call.id), entry).map((id) => open.find((call) => call.id === id) ?? { id, wait: true, args: undefined });
-}
-
-/** Every ask_user call the file ever recorded, on any branch: read incrementally, so a session without one costs no branch read. */
-const everAsked = new OmoAskReader((seen, entry) => {
-  const calls = piAskUserAsksAfter([], entry);
-  return calls.length ? [...seen, ...calls].slice(-64) : seen;
-});
-const branchAsks = new Map<string, { size: number; mtime: number; open: OmoAsks | null }>();
-
-/**
- * The ask_user calls pi-ask waits on, as it finds them: on the session's active branch only
- * (pi-ask reads `getBranch()`; a /tree away from a call leaves it on another branch, and a result
- * on another branch does not answer it). Null when the branch cannot be read.
- */
-function openAsks(transcript: string): OmoAsks | null {
-  try {
-    if (everAsked.read(transcript).length === 0) return [];
-    const { size, mtimeMs } = statSync(transcript);
-    const cached = branchAsks.get(transcript);
-    if (cached && cached.size === size && cached.mtime === mtimeMs) return cached.open;
-    let open: OmoAsks | null = null;
-    if (piBranchSegments(transcript, size) !== null) {
-      open = [];
-      for (const line of piBranchRecords(transcript, size)) {
-        if (!/ask_user|toolResult|ask:pending-dismissed/.test(line)) continue;
-        try { open = piAskUserAsksAfter(open, JSON.parse(line)); } catch { /* a torn record answers nothing */ }
-      }
-    }
-    branchAsks.delete(transcript);
-    branchAsks.set(transcript, { size, mtime: mtimeMs, open });
-    if (branchAsks.size > 64) branchAsks.delete(branchAsks.keys().next().value!);
-    return open;
-  } catch {
-    return null;
-  }
 }
 
 const isString = (value: unknown, max = MAX_TEXT): value is string => typeof value === "string" && value.length <= max;
@@ -182,10 +139,6 @@ async function foregroundPids(paneId: string): Promise<number[]> {
     .flatMap((process) => typeof process.pid === "number" ? [process.pid] : []);
 }
 
-/** Whether the session has an ask_user call pi-ask still waits on (its own rule, as for the card). */
-export function piAskUserOpen(transcript: string): boolean {
-  return (openAsks(transcript)?.length ?? 0) > 0;
-}
 
 /**
  * Whether the pane's foreground pi has a pi-ask form open, as its extension says, with no session
@@ -205,10 +158,8 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
   const directories = agentDirs.map((agentDir) => join(agentDir, PI_ASK_BRIDGE_DIRECTORY)).filter((directory) => existsSync(directory));
   if (directories.length === 0) return "absent";
   if (pids === null) return "unknown";
-  // the strongest answer wins: active, then unknown, then a pi that could not say (the session
-  // file decides), and only then a pi that answered none open
+  // the strongest answer wins: active, then unknown, then inactive; absent only when no socket answered
   let unknown = false;
-  let undecided = false;
   let answered = false;
   for (const directory of directories) {
     for (const pid of pids) {
@@ -218,15 +169,14 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
       const state = await bridgeState(socket, signal);
       if (!state || state.pid !== pid) unknown = true;
       else if (state.flows.length > 0 || Array.isArray(state.openCalls) && state.openCalls.length > 0) return "active";
-      else if (Array.isArray(state.openCalls)) answered = true;
-      else undecided = true;
+      else answered = true;
     }
   }
   if (unknown) return "unknown";
   // the answer is for the pis in front when the reads began: another one in front now is not known
   const after = await foregroundPids(paneId).catch(() => null);
   if (after === null || [...new Set(after)].sort().join() !== [...new Set(pids)].sort().join()) return "unknown";
-  return undecided || !answered ? "absent" : "inactive";
+  return answered ? "inactive" : "absent";
 }
 
 /**

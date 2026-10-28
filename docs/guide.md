@@ -223,9 +223,11 @@ step, its options and **Type your own answer**. The card shows only when the pan
 answers on that socket, writes the session herdr reports for the pane, has one form open and
 that form's `ask_user` call is still unanswered on pi's current branch (after a `/tree` move
 too); anything else, a form opened by `/answer` or `/ask:replay`, Windows, and pi without the
-extension use Terminal. A pi pane never gets the generic card of guessed keys that other
-agents get for a prompt no reader knows, and pi's own dialogs show no card while a pi-ask form is
-open: pi-ask is never answered with typed keys, and the terminal answers instead. Notes and
+extension use Terminal. pi-ask is never answered with typed keys: a pi pane never gets the
+generic card of guessed keys that other agents get for a prompt no reader knows, and where the
+extension serves the pane's pi, pi's own dialogs (select, confirm, input) show no card either, since
+a pi-ask form can open there at any moment. The terminal answers those; without the extension,
+pi's own dialogs keep their cards as before. Notes and
 **Elaborate** stay in Terminal. Checked with pi 1.4.0 and pi-ask 1.2.0.
 
 Command Code chat needs the session herdr reports for the pane. Command Code sends that report

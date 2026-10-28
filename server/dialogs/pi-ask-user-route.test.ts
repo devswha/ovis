@@ -381,17 +381,13 @@ test("a pi-ask form that opens during the read or before the keys gets none of t
   if (!posix) return;
   await withBridgedPane(async (pane) => {
     noCall(pane);
-    const form = answerForm(pane.bridge.state);
-    pane.bridge.state.flows = [];
-    // with no form open, pi's own dialog keeps its card
+    // a pi with no extension in front: its own dialog keeps its card, as on main
     pane.screen = PI_SELECT;
+    pane.foregroundList = [PID + 50];
     const card = (await pane.read())!;
     expect(card).toMatchObject({ question: "Choose a color" });
-    // the form opens while the answer is on its way, after its own read of the pane
-    let reads = 0;
-    const before = await (async () => { let n = 0; pane.onState = () => { n++; }; await pane.read(); pane.onState = undefined; return n; })();
-    // the answer's own read finds no form; it opens before the first key goes out
-    pane.onState = () => { if (++reads === before + 1) pane.bridge.state.flows = [form]; };
+    // while the answer reads the pane, a pi the extension serves comes in front
+    pane.onScreen = () => { pane.foregroundList = [PID]; };
     expect((await pane.answer(card.id, { option_index: 0 })).body.error?.code).toBe("prompt_changed");
     expect(pane.keys).toEqual([]);
   });
@@ -405,33 +401,42 @@ test("a pi-ask form that opens during the read or before the keys gets none of t
   });
 });
 
-test("pi's own dialogs keep their cards, except while a pi-ask form holds the keys", async () => {
+test("pi's own dialogs keep their cards only where no pi-ask extension serves the pane's pi", async () => {
   if (!posix) return;
+  // no extension: pi's select dialog is a card, answered by keys as on main, whatever the session file holds
   await withBridgedPane(async (pane) => {
-    noCall(pane);
-    pane.screen = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
-    pane.bridge.state.flows = [];
-    // no pi-ask form open: pi's select dialog is a card, answered by keys as on main
-    expect(await pane.read()).toMatchObject({ question: "Choose a color", options: [{ label: "Red" }, { label: "Blue" }] });
-    // a pi-ask form open: no card that every answer would refuse; the terminal answers
-    pane.bridge.state.flows = [answerForm(pane.bridge.state)];
-    expect(await pane.read()).toBeNull();
-    expect(pane.keys).toEqual([]);
-  });
-});
-
-test("pi's own dialog answers by keys when the extension says no form is open, whatever the session file says", async () => {
-  if (!posix) return;
-  await withBridgedPane(async (pane) => {
-    // the session file still holds the ask_user call (a /tree move away from it writes nothing),
-    // but pi's live state, through the extension, has no pi-ask form open
-    pane.bridge.state.flows = [];
-    pane.bridge.state.openCalls = [];
-    pane.screen = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
+    pane.screen = PI_SELECT;
     const card = (await pane.read())!;
-    expect(card).toMatchObject({ question: "Choose a color" });
+    expect(card).toMatchObject({ question: "Choose a color", options: [{ label: "Red" }, { label: "Blue" }] });
     expect((await pane.answer(card.id, { option_index: 0 })).status).toBe(200);
     expect(pane.keys).toEqual(["enter"]);
+  }, { bridge: false });
+  // the extension serves the pane's pi, with or without a form open: no card that answers by keys
+  for (const open of [false, true]) {
+    await withBridgedPane(async (pane) => {
+      noCall(pane);
+      pane.screen = PI_SELECT;
+      pane.bridge.state.flows = open ? [answerForm(pane.bridge.state)] : [];
+      expect(await pane.read()).toBeNull();
+      expect(pane.keys).toEqual([]);
+    });
+  }
+});
+
+test("a pi-ask form the same pi opens during the last check gets no key", async () => {
+  if (!posix) return;
+  // the second reviewer's probe (ec2a5392): pi A's own dialog, its extension answering "no form",
+  // and an /answer form opening in the same pi A while the last check re-reads the foreground
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    pane.screen = PI_SELECT;
+    pane.bridge.state.flows = [];
+    const card = await pane.read();
+    pane.onState = () => { pane.bridge.state.flows = [answerForm(pane.bridge.state)]; };
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    // the extension serves pi A, so its dialog had no card to answer by keys in the first place
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
   });
 });
 
@@ -482,24 +487,18 @@ test("an OmO pane herdr labels pi keeps the generic card other agents get", asyn
   }, { bridge: false });
 });
 
-test("a key never goes to a pi that came in front while the last check read another", async () => {
+test("a key never goes to a pi that came in front while the answer was on its way", async () => {
   if (!posix) return;
   await withBridgedPane(async (pane) => {
     noCall(pane);
     pane.screen = PI_SELECT;
-    pane.bridge.state.flows = [];
-    // pi B, with a pi-ask form open, is not in front yet
+    // pi B, which the extension serves and which has a form open, is not in front yet
     pane.others.get(PID + 9)!.flows = [answerForm(pane.bridge.state)];
-    pane.foregroundList = [PID];
+    pane.foregroundList = [PID + 50];
     const card = (await pane.read())!;
     expect(card).toMatchObject({ question: "Choose a color" });
-    let n = 0;
-    pane.onState = () => { n++; };
-    await pane.read();
-    const perRead = n;
-    let reads = 0;
-    // while the last check before the Enter reads pi A's state ("no form"), herdr's foreground becomes pi B
-    pane.onState = () => { if (++reads === perRead + 1) pane.foregroundList = [PID + 9]; };
+    // herdr's foreground becomes pi B while the answer reads the pane
+    pane.onScreen = () => { pane.foregroundList = [PID + 9]; };
     const sent = await pane.answer(card.id, { option_index: 0 });
     expect(pane.keys).toEqual([]);
     expect(sent.status).toBe(409);
