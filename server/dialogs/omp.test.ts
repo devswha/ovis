@@ -182,6 +182,13 @@ describe("omp tool approval (#2059)", () => {
       expect(steps(own, 0), approve).toEqual([{ keys: [KEY.enter] }]);
       expect(steps(own, 2), approve).toEqual([{ keys: [KEY.escape] }]);
     }
+    // so is a Deny bound to Ctrl+M or Ctrl+J, which would take the highlighted Approve
+    for (const deny of ["Ctrl+M", "Ctrl+J"]) {
+      const own = parseInteractivePrompt("omp", redraw(approval("18.13.2-unicode-wide"), hintOf(approval("18.13.2-unicode-wide")),
+        `\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+Q approve \u00b7 ${deny} deny \u00b7 Ctrl+O details \u00b7 type to deny and steer`));
+      expect(steps(own, 0), deny).toEqual([{ keys: ["ctrl+q"] }]);
+      expect(steps(own, 2), deny).toEqual([{ keys: [KEY.down] }, { keys: [KEY.down] }, { keys: [KEY.enter] }]);
+    }
   });
 
   it("leaves to the terminal a panel it cannot read in full or a key it cannot send", () => {
