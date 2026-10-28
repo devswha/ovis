@@ -1362,7 +1362,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
     history.current = undefined; setHistoryId(undefined);
-    pagingAway.current = false; stickToBottom.current = true; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1465,7 +1465,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           else { if (history.current !== undefined) navigated(); dropOlder(); }
           generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
-          if (!continued) { pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false); }
+          if (!continued) { pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; setNewMessages(false); setAway(false); }
         }
         // a 304 hands back the answer already shown: nothing to compare or lay out again
         if (conversation === lastAnswer.current) { setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); return; }
@@ -1855,7 +1855,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
-    const previousTop = lastScrollTop.current;
     lastScrollTop.current = node.scrollTop;
     // A pointer press alone is not intent: a drag must also move the transcript up. A held scrollbar
     // thumb's move is decided when it is let go (the pointerup above): while it rests, the layout
@@ -1888,10 +1887,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     lastScrollHeight.current = node.scrollHeight;
     // Without input, a move up while the transcript got shorter is the layout's, however far: the
     // list holding the rows and the browser keeping the view inside the transcript can both move it
-    // for one shrink. Over a transcript that did not shrink it is the reader's past the layout
-    // allowance, as a move from the end is. Growth never excuses a move up.
+    // for one shrink. Over a transcript that did not shrink it is the reader's once the view is past
+    // the layout allowance from the end, however many small moves took it there. Growth never
+    // excuses a move up.
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
-    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || previousTop - node.scrollTop <= LAYOUT_ALLOWANCE_PX);
+    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
@@ -1899,8 +1899,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
-    // the layout's move left a reader still following short of the end: they go on there
-    if (heldInPlace && stickToBottom.current && !pagingAway.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+    // the layout's move left a reader still following short of the end: they go on there, unless
+    // what they just clicked is laid out where they are (ChatTimeline manualLayout)
+    if (heldInPlace && stickToBottom.current && !pagingAway.current && !manualLayout.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
       else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
     }

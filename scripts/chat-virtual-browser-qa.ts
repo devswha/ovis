@@ -357,6 +357,26 @@ try {
     }
     console.log(`PASS ${width} ${theme}: a row above folding or growing during the follow glide keeps following, as does a fold at the end; an upward wheel stops it`);
 
+    // A scroll that sends no input this page sees (a screen reader's, a Firefox scrollbar's), in small
+    // steps over a transcript that does not shrink: past the layout allowance from the end, following
+    // stops however small each step was (#1902).
+    await page.locator(".chat-view").evaluate(async (node) => {
+      const delivered = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      for (const step of [30, 30]) {
+        node.scrollTop -= step;
+        node.dispatchEvent(new Event("scroll"));
+        await delivered();
+      }
+    });
+    revision++;
+    await update(page);
+    await page.getByText(`REVISION-${revision}`, { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "New messages" }).count(), 1, "small steps without input past the allowance stop following");
+    assert.ok((await metrics(page)).bottom > 48, "output leaves the reader where the steps took them");
+    await page.getByRole("button", { name: "New messages" }).click();
+    await settleBottom(page);
+    console.log(`PASS ${width} ${theme}: small upward steps without input past the layout allowance stop following`);
+
     const height = width === 390 ? 844 : 900;
     await page.evaluate((height) => window.chatQa.resize(height - 180), height);
     await page.waitForFunction((height) => document.querySelector(".terminal-stack")?.getBoundingClientRect().height === height - 180, height);
