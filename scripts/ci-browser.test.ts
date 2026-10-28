@@ -30,9 +30,11 @@ source "$1"
  * A hang guard, not a speed check: the stubbed lane still forks a few processes for every browser
  * script, and took up to 5 s on a host at load 100 of 128 cores, where a 5 s limit killed it (#2110).
  * Each lane test gets the guard and room to report what the lane printed. The guard ends the lane and
- * every process under it: ending only its bash leaves the script's pipeline holding the output open,
- * so a hung lane would wait for the test's own timeout and outlive it. The lane stays in the test's
- * own process group, which scripts/ci-tests.ts ends when the file finishes or the run is interrupted.
+ * every process under it (ending only its bash leaves the script's pipeline running), then stops
+ * reading and fails with what was printed: it never waits for the output to close, which a process
+ * the lane left behind can hold open. The lane stays in the test's own process group, which
+ * scripts/ci-tests.ts ends when the file finishes or the run is interrupted, so such a process goes
+ * with it.
  */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
@@ -66,14 +68,28 @@ async function lane(fail = "", kept = false, ci = "") {
       env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
       stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
+    // read as it comes, so what the lane printed is there even when the guard stops reading
+    const readers = [child.stdout.getReader(), child.stderr.getReader()];
+    const printed = ["", ""];
+    const drained = Promise.all(readers.map(async (reader, index) => {
+      const decoder = new TextDecoder();
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) printed[index] += decoder.decode(chunk.value, { stream: true });
+    }));
+    const ended = Promise.withResolvers<void>();
     let hung = false;
     const guard = setTimeout(() => {
       hung = true;
-      void endTree(child.pid);
+      // only a lane whose bash still runs: once it has exited, its pid may name another process
+      const running = child.exitCode === null && child.signalCode === null;
+      void (running ? endTree(child.pid) : Promise.resolve()).finally(() => {
+        for (const reader of readers) reader.cancel().catch(() => {});
+        ended.resolve();
+      });
     }, LANE_HANG_MS);
-    const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-      .finally(() => clearTimeout(guard));
-    if (hung) throw new Error(`the stubbed lane did not finish within ${LANE_HANG_MS / 1000} s; its output so far:\n${text}`);
+    await Promise.race([Promise.all([drained, child.exited]), ended.promise]).finally(() => clearTimeout(guard));
+    const [text, error] = printed as [string, string];
+    if (hung) throw new Error(`the stubbed lane's output did not end within ${LANE_HANG_MS / 1000} s; what it printed:\n${text}`);
+    const code = await child.exited;
     expect(error).toBe("");
     const demo = text.match(/^\[[^\]]+\] DEMO_DIR=(.+)$/m)?.[1];
     expect(demo).toBeDefined();
