@@ -144,7 +144,6 @@ const openKernel = () => dlopen(join(system32(), "kernel32.dll"), {
   GetFileInformationByHandle: { args: [FFIType.i64, FFIType.ptr], returns: FFIType.i32 },
   GetFileType: { args: [FFIType.i64], returns: FFIType.u32 },
   GetFinalPathNameByHandleW: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.u32], returns: FFIType.u32 },
-  GetLongPathNameW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.u32 },
   ReadFile: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   CloseHandle: { args: [FFIType.i64], returns: FFIType.i32 },
 }).symbols;
@@ -155,27 +154,15 @@ let windows: { kernel: ReturnType<typeof openKernel>; ntdll: ReturnType<typeof o
 const windowsApi = () => windows ??= { kernel: openKernel(), ntdll: openNtdll() };
 
 /**
- * `path` with every short 8.3 component spelled long (GetLongPathNameW): the same entries by the same
- * names, no link followed, so a junction on the way stays the junction's own name. Null when it is gone.
+ * An absolute Windows path as its root (`C:\`, or a share's `\\server\share\`) and the names below it,
+ * a `\\?\` prefix taken off; null for any other form (a relative or device path).
  */
-function longPath(path: string): string | null {
-  const answer = Buffer.alloc(FINAL_PATH_UNITS * 2);
-  const units = windowsApi().kernel.GetLongPathNameW(Buffer.from(`${path}\0`, "utf16le"), answer, FINAL_PATH_UNITS);
-  return units === 0 || units >= FINAL_PATH_UNITS ? null : answer.toString("utf16le", 0, units * 2);
-}
-
-/**
- * Whether two Windows paths spell the same names but for letter case, one UTF-16 unit against one: a
- * case mapping that changes a name's length (`\u00df` to `SS`) never makes two names one.
- */
-function sameWindowsPath(left: string, right: string): boolean {
-  if (left.length !== right.length) return false;
-  for (let at = 0; at < left.length; at += 1) {
-    if (left[at] === right[at]) continue;
-    const [one, other] = [left[at]!.toUpperCase(), right[at]!.toUpperCase()];
-    if (one.length !== 1 || one !== other) return false;
-  }
-  return true;
+function windowsPathParts(path: string): { root: string; names: string[] } | null {
+  const plain = path.startsWith("\\\\?\\UNC\\") ? `\\\\${path.slice(8)}` : path.startsWith("\\\\?\\") ? path.slice(4) : path;
+  const drive = /^([A-Za-z]:)\\(.*)$/s.exec(plain);
+  const share = drive === null ? /^\\\\([^\\]+)\\([^\\]+)(?:\\(.*))?$/s.exec(plain) : null;
+  const [root, rest] = drive !== null ? [`${drive[1]}\\`, drive[2]!] : share !== null ? [`\\\\${share[1]}\\${share[2]}\\`, share[3] ?? ""] : [null, ""];
+  return root === null ? null : { root, names: rest.split("\\").filter((name) => name !== "") };
 }
 
 /** BY_HANDLE_FILE_INFORMATION: attributes, volume serial, size and file index, of the handle itself. */
@@ -230,11 +217,23 @@ class WindowsHeld implements Held {
     return named.startsWith("\\\\?\\") ? named.slice(4) : named;
   }
 
+  /**
+   * Windows names one directory several ways (a short 8.3 name, another letter case), so the path is
+   * walked rather than compared: from its root, each name opened through the directory before it and
+   * refused as a reparse point (a junction, a symbolic link, a mount point), down to the very object
+   * held (its volume and file index). The system resolves each name as any open would, in that
+   * directory's own case rules, and no spelling can stand in for another directory.
+   */
   isAt(path: string): boolean {
-    // the handle's own path has every junction on the way resolved: one there makes the two differ
-    const held = this.path();
-    const named = longPath(path);
-    return held !== null && named !== null && sameWindowsPath(held, named);
+    const parts = windowsPathParts(path);
+    if (parts === null) return false;
+    const walked: Held[] = [];
+    try {
+      let at: Held = WindowsHeld.directory(parts.root);
+      walked.push(at);
+      for (const name of parts.names) { at = at.open(name, "directory"); walked.push(at); }
+      return at.stat().identity === this.stat().identity;
+    } catch { return false; } finally { for (const entry of walked) entry.close(); }
   }
 
   open(name: string, as: "directory" | "file"): Held {

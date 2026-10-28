@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
 import { aroundBlobOpenForTests, blobPlatformForTests, ompBlobAnchor, ompBlobPicture } from "./codex-images.ts";
 import { betweenAuthorizationForTests, forgetTranscriptState, ompAuthorizedTranscript, ompTranscriptImage, transcriptPage } from "./conversation.ts";
-import { heldOpenPlatform } from "./held-open.ts";
+import { spawnSync } from "node:child_process";
+import { heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -26,6 +27,13 @@ const CALL = (JSON.parse(FIXTURE.split("\n").find((line) => line.includes('"tool
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omp-images-")));
 /** A link to the directory `target` at `path`: on Windows a junction, which anyone can make there. */
 const linkDirectory = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+/** A Windows directory whose names differ by letter case (fsutil's per-directory flag), or null where this Windows makes none. */
+const caseSensitive = ((): string | null => {
+  if (process.platform !== "win32") return null;
+  const dir = join(root, "case-sensitive");
+  mkdirSync(dir);
+  return spawnSync("fsutil", ["file", "setCaseSensitiveInfo", dir, "enable"]).status === 0 ? dir : null;
+})();
 afterAll(() => { rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
 
 /** An omp agent directory holding one session of `text` and the blobs given, as omp lays them out. */
@@ -314,9 +322,22 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const short = answer.toString("utf16le", 0, units * 2);
     // a volume that makes no short names gives the path back as it is
     expect(short === blobs || short.includes("~")).toBe(true);
-    for (const spelling of [short, blobs.toUpperCase(), blobs.toLowerCase()]) {
+    // only this test's own ASCII name changes case: the temporary directory keeps its spelling
+    const cased = (name: string) => blobs.replace("a-store-of-a-long-name", name);
+    for (const spelling of [short, cased("A-STORE-OF-A-LONG-NAME"), cased("A-Store-Of-A-Long-Name")]) {
       expect([spelling, ompBlobPicture(spelling, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType]).toEqual([spelling, "image/webp"]);
     }
+  });
+
+  it.skipIf(caseSensitive === null)("holds a store to its own name where letter case tells two directories apart", () => {
+    const dir = caseSensitive!;
+    mkdirSync(join(dir, "Box"));
+    mkdirSync(join(dir, "box"));
+    // a junction whose name differs from its target's only by case
+    mkdirSync(join(dir, "AGENT", "blobs"), { recursive: true });
+    linkDirectory(join(dir, "AGENT"), join(dir, "agent"));
+    const isAt = (held: string, named: string) => { const store = openHeldDirectory(held); try { return store.isAt(named); } finally { store.close(); } };
+    expect([isAt(join(dir, "box"), join(dir, "box")), isAt(join(dir, "box"), join(dir, "Box")), isAt(join(dir, "AGENT", "blobs"), join(dir, "agent", "blobs"))]).toEqual([true, false, false]);
   });
 
   it("reads no omp blob where no directory can be held and opened through, and shows the inline pictures still", async () => {
