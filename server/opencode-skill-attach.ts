@@ -270,7 +270,8 @@ export async function typeWithSkills(text: string, skills: readonly string[], al
           if (switched !== null && late) {
             throw new HerdrError("submit_changed", `Tab switched OpenCode's agent from ${JSON.stringify(from)} to ${JSON.stringify(switched)}. Nothing more was typed.`);
           }
-          accepted = switched === null && skillAccepted(screen, id, box.agent, box.inputFg);
+          // a model-only row cannot show a switch from a named agent: it is taken only once the wait is up
+          accepted = switched === null && (from === null || state?.agent != null || late) && skillAccepted(screen, id, box.agent, box.inputFg);
           insertedSpace ||= accepted;
           if (accepted || late) break;
           lastAgent = state?.agent ?? null;

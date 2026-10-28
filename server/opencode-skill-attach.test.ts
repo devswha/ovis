@@ -349,6 +349,14 @@ describe("typeWithSkills", () => {
     expect(io.entered()).toBe(false);
   });
 
+  it("refuses a switch that shows only after a first model-only read", async () => {
+    const io = simulatedInput((now) => now === 0 ? narrow("accepted") : ansi("accepted").replace("Build", "Plan "), "@effect ");
+    const delivery = typeWithSkills("@effect go", ["effect"], () => true, io, async () => {}).then(async () => { await io.sendKeys(["Enter"], () => true); });
+    await expect(delivery).rejects.toMatchObject({ code: "submit_changed", message: expect.stringContaining(JSON.stringify("Plan")) });
+    expect(io.writes).toEqual(["text:@effect", `keys:${OPENCODE_SKILL_ACCEPT_KEY}`]);
+    expect(io.entered()).toBe(false);
+  });
+
   it("accepts after a transient other agent is named back before a model-only redraw", async () => {
     const screens = [ansi("accepted").replace("Build", "Plan "), withoutDropdown(ansi("first-selected")), narrow("accepted")];
     const io = pane((writes) => writes.includes(`keys:${OPENCODE_SKILL_ACCEPT_KEY}`) ? screens.shift() ?? narrow("accepted") : ansi("first-selected"));
