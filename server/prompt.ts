@@ -11,7 +11,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, pa
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader } from "./omo-ask.ts";
-import { answerPiAskUser, boundPiAskFlow, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
+import { answerPiAskUser, bindPiAsk, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
@@ -815,9 +815,11 @@ async function readKnownPrompt(
   if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
+  let piAskActive = false;
   if (piTranscript && "path" in piTranscript) {
-    const bound = await boundPiAskFlow(paneId, piTranscript, signal);
-    if (bound) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, bound)) };
+    const bound = await bindPiAsk(paneId, piTranscript, signal);
+    if (bound.card) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, bound.card)) };
+    piAskActive = bound.active;
   }
   let screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
@@ -881,10 +883,11 @@ async function readKnownPrompt(
   const prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
-  // pi-ask's form with no bound card: pi-ask takes no typed keys (its docs/remote-events.md), so no
-  // generic card guesses them; the terminal answers it. Read only where a fallback card could show.
-  const fallbackCard = prompt ? parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback") === true : pane.agent_status === "blocked";
-  if (fallbackCard && piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path)) return { prompt: null, screen, suppressFallback: true };
+  // pi-ask's form with no card: pi-ask takes no typed keys (its docs/remote-events.md), so no generic
+  // card guesses them; the terminal answers it. The pane's pi says so through the extension (any
+  // open form, a card or not); without it, an open ask_user call in the session does
+  const fallbackCard = !prompt || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback") === true;
+  if (fallbackCard && (piAskActive || (piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path)))) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };

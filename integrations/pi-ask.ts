@@ -10,6 +10,7 @@ import {
   PI_ASK_EVENTS,
   PI_ASK_SOCKET_PATH_MAX,
   PI_ASK_SUBMIT_TIMEOUT_MS,
+  piAskOpenCalls,
   type PiAskBridgeState,
   type PiAskFlow,
   type PiAskSubmitReply,
@@ -22,7 +23,7 @@ export interface PiEventBus {
 
 export interface PiSessionContext {
   hasUI?: boolean;
-  sessionManager?: { getSessionFile(): unknown };
+  sessionManager?: { getSessionFile(): unknown; getBranch?(): unknown };
 }
 
 export interface PiExtensionAPI {
@@ -110,6 +111,14 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
     } catch { return null; }
   };
 
+  /** pi-ask's own rule, on the branch pi is on now: what it reopens on resume and what /tree changes. */
+  const openCalls = (): string[] | null => {
+    try {
+      const branch = context?.sessionManager?.getBranch?.();
+      return Array.isArray(branch) ? branch.reduce<string[]>(piAskOpenCalls, []) : null;
+    } catch { return null; }
+  };
+
   const submit = async (body: unknown): Promise<{ status: number; reply: PiAskSubmitReply }> => {
     if (!isRecord(body) || typeof body["flowId"] !== "string" || typeof body["createdAt"] !== "number" || typeof body["sessionFile"] !== "string" || !isRecord(body["response"])) {
       return { status: 400, reply: { ok: false, error: "invalid_request", message: "flowId, createdAt, sessionFile and response are required." } };
@@ -149,7 +158,7 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     try {
       if (request.url === "/v1/state" && request.method === "GET") {
-        send(response, 200, { version: PI_ASK_BRIDGE_VERSION, pid, sessionFile: sessionFile(), flows: [...flows.values()] } satisfies PiAskBridgeState);
+        send(response, 200, { version: PI_ASK_BRIDGE_VERSION, pid, sessionFile: sessionFile(), flows: [...flows.values()], openCalls: openCalls() } satisfies PiAskBridgeState);
         return;
       }
       if (request.url === "/v1/submit" && request.method === "POST") {

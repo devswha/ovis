@@ -338,6 +338,7 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     multi_select: parsed.multi_select,
     ...(parsed.optional ? { optional: true as const } : {}),
     ...(parsed.checks_with_text ? { checks_with_text: true as const } : {}),
+    ...(parsed.drafts_saved ? { drafts_saved: true as const } : {}),
     custom_option_index: parsed.custom_option_index,
     ...(parsed.queued ? { queued: parsed.queued } : {}),
     ...(parsed.steps ? { steps: parsed.steps } : {}),

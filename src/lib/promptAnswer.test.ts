@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
-import { answerFromText, answerHint, answerRefusal, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin } from "./promptAnswer.ts";
+import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
   id: "p", agent: "claude", kind: "question", title: "Question", question: "?", body: null,
@@ -18,6 +18,13 @@ describe("a multi-select's checks and typed answer", () => {
     expect(sendsChecksWithText({ ...multi, agent: "pi" })).toBe(false);
     expect(sendsChecksWithText({ ...multi, agent: "opencode", fallback: true })).toBe(false);
     expect(sendsChecksWithText({ ...prompt(["A", "B"], 1), agent: "pi", checks_with_text: true })).toBe(false);
+  });
+
+  it("never hold a step button back on a card that saves its edits as it moves", () => {
+    const card = { ...prompt(["A", "B"], 1), agent: "pi", steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: true, current: false, can_navigate: true }] };
+    // pi's own tabs drop edits that were not sent, so the button waits for them
+    expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
+    expect(blocksStepNavigation({ ...card, drafts_saved: true }, new Set(), "typed")).toBe(false);
   });
 });
 

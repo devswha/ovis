@@ -1,5 +1,5 @@
 {
-  "recorded": "2026-10-28, Linux: pi 1.4.0 (@earendil-works/pi-coding-agent) + @eko24ive/pi-ask 1.2.0 + integrations/pi-ask.ts installed by scripts/install-pi-integration.ts. pi resumed a session whose last assistant message holds an unanswered ask_user call, so pi-ask reopened its form (source ask:resume). `started`, `submit-result` and `completed` are pi-ask's own events as a recorder extension saw them; `state` is GET /v1/state from the bridge's socket while the form was open; `refused` and `accepted` are POST /v1/submit replies. `transcript` is the session file after the answer, header paths replaced. `screen` is the pane's text while the form was open (the 120-column terminal's last rows).",
+  "recorded": "2026-10-28, Linux: pi 1.4.0 (@earendil-works/pi-coding-agent) + @eko24ive/pi-ask 1.2.0 + integrations/pi-ask.ts installed by scripts/install-pi-integration.ts. pi resumed a session whose last assistant message holds an unanswered ask_user call, so pi-ask reopened its form (source ask:resume). `started`, `submit-result` and `completed` are pi-ask's own events as a recorder extension saw them; `state` is GET /v1/state from the bridge's socket while the form was open (`openCalls` from pi's getBranch()); `refused` and `accepted` are the POST /v1/submit exchanges, envelopes as sent; `<session>` stands for the session file's path. `transcript` is the session file after the answer, header cwd replaced. `screen` is the pane's text while the form was open (the 120-column terminal's last rows).",
   "started": {
     "version": 1,
     "flowId": "tool:toolu_feat1202ask",
@@ -68,7 +68,7 @@
         ]
       }
     ],
-    "createdAt": 1793169634712
+    "createdAt": 1793173155865
   },
   "state": {
     "version": 1,
@@ -142,13 +142,18 @@
             ]
           }
         ],
-        "createdAt": 1793169634712
+        "createdAt": 1793173155865
       }
+    ],
+    "openCalls": [
+      "toolu_feat1202ask"
     ]
   },
   "refused": {
     "request": {
       "flowId": "tool:toolu_feat1202ask",
+      "createdAt": 1793173155865,
+      "sessionFile": "<session>",
       "response": {
         "kind": "answer",
         "mode": "submit",
@@ -170,6 +175,8 @@
   "accepted": {
     "request": {
       "flowId": "tool:toolu_feat1202ask",
+      "createdAt": 1793173155865,
+      "sessionFile": "<session>",
       "response": {
         "kind": "answer",
         "mode": "submit",
@@ -272,14 +279,14 @@
         }
       }
     },
-    "completedAt": 1793169650123
+    "completedAt": 1793173164344
   },
   "transcript": [
     {
       "type": "session",
       "version": 3,
-      "id": "268a1f60-5ac8-45fa-8ecc-5a6b3a0ecdd7",
-      "timestamp": "2026-10-28T06:40:21.815Z",
+      "id": "2c990717-c91b-4ec8-8a37-7d0ac97ea774",
+      "timestamp": "2026-10-28T07:39:14.410Z",
       "cwd": "<cwd>"
     },
     {
@@ -392,9 +399,9 @@
     },
     {
       "type": "thinking_level_change",
-      "id": "eb4305bd",
+      "id": "e2b4930b",
       "parentId": "a0000001",
-      "timestamp": "2026-10-28T06:40:34.523Z",
+      "timestamp": "2026-10-28T07:39:15.702Z",
       "thinkingLevel": "off"
     },
     {
@@ -403,9 +410,9 @@
       "data": {
         "toolCallId": "toolu_feat1202ask"
       },
-      "id": "87149a9c",
-      "parentId": "eb4305bd",
-      "timestamp": "2026-10-28T06:40:50.124Z"
+      "id": "a9b4afd6",
+      "parentId": "e2b4930b",
+      "timestamp": "2026-10-28T07:39:24.345Z"
     }
   ],
   "screen": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n Release plan\n\n ←  ☐ Scope   ☐ Checks   ☐ Tone   ☰ Review  →\n\n Which part should ship first?\n\n❯ 1. Server\n     (recommended) | Bridge and prompt route\n  2. Client\n     Card polish only\n  3. Type your own\n\n t question type · Enter confirm · N/Shift+N note · Esc dismiss · ? settings\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n~/.cache/feat-1202-tmp/proj\n0.0%/0 (auto)                                                                                                    unknown"

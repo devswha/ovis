@@ -25,6 +25,10 @@ interface Bridge {
  */
 async function withBridgedPane(run: (pane: {
   status: string;
+  /** the pane's foreground pid, as herdr reports it */
+  foreground: number;
+  /** called on each read of the bridge's state, before it answers */
+  onState?: () => void;
   bridge: Bridge;
   session: string;
   root: string;
@@ -38,14 +42,17 @@ async function withBridgedPane(run: (pane: {
   const session = join(store, "2026-10-28T06-40-21-815Z_268a1f60-5ac8-45fa-8ecc-5a6b3a0ecdd7.jsonl");
   // the session up to the open call; the recorded dismissal is what pi-ask writes once answered
   writeFileSync(session, fixture.transcript.slice(0, 4).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-  const bridge: Bridge = { state: { ...fixture.state, pid: PID, sessionFile: session } as PiAskBridgeState, reply: fixture.accepted.reply as PiAskSubmitReply, submits: [] };
+  const bridge: Bridge = { state: { ...structuredClone(fixture.state), pid: PID, sessionFile: session } as PiAskBridgeState, reply: fixture.accepted.reply as PiAskSubmitReply, submits: [] };
   const served = options.bridge === false ? null : (() => {
     mkdirSync(join(root, "herdr-web-ui-ask"), { mode: 0o700 });
     return Bun.serve({
       unix: join(root, "herdr-web-ui-ask", `${PID}.sock`),
       fetch: async (request) => {
         const url = new URL(request.url);
-        if (url.pathname === "/v1/state") return Response.json(bridge.state);
+        if (url.pathname === "/v1/state") {
+          pane.onState?.();
+          return Response.json(bridge.state);
+        }
         bridge.submits.push(await request.json() as PiAskSubmitRequest);
         return Response.json(bridge.reply);
       },
@@ -53,7 +60,7 @@ async function withBridgedPane(run: (pane: {
   })();
 
   const pane = {
-    status: "blocked", bridge, session, root,
+    status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, bridge, session, root,
     read: async (): Promise<InteractivePrompt | null> => {
       const url = new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${id}`);
       const response = (await handlePromptRequest(new Request(url), url))!;
@@ -80,7 +87,7 @@ async function withBridgedPane(run: (pane: {
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
       if (request.method === "pane.read") return reply({ read: { text: fixture.screen } });
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: PID, argv: ["fictional-shell"] }] } });
+      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: pane.foreground, argv: ["fictional-shell"] }] } });
       if (request.method === "agent.get") return reply({ agent: { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: session } } });
       socket.end(JSON.stringify({ id: request.id, error: { code: "unexpected_fixture_rpc", message: `Unexpected test RPC ${request.method}` } }) + "\n");
     });
@@ -204,6 +211,9 @@ test("questions can be skipped, a typed answer survives Back, and an answered qu
     expect((await pane.answer(checks.id, { step_back: true, draft: { option_indices: [], custom_text: "typecheck" } })).status).toBe(200);
     const scope = (await pane.read())!;
     expect(scope.steps!.map((step) => step.answered)).toEqual([false, true, false]);
+    // with no Back on the first question, the saved second one is still a button, and the card keeps edits as it moves
+    expect(scope.steps!.map((step) => step.can_navigate ?? false)).toEqual([false, true, false]);
+    expect(scope.drafts_saved).toBe(true);
     // and the answered second question is one click away again
     expect((await pane.answer(scope.id, { step_index: 1 })).status).toBe(200);
     expect(await pane.read()).toMatchObject({ question: "Which checks should run before the push?", default_custom_text: "typecheck" });
@@ -217,18 +227,17 @@ test("questions can be skipped, a typed answer survives Back, and an answered qu
   });
 });
 
-test("the card follows pi's active branch, as pi-ask does", async () => {
+test("the card follows pi's live branch, which a /tree move changes without writing to the session", async () => {
   if (!posix) return;
   await withBridgedPane(async (pane) => {
-    // Given the call answered on a branch, then /tree back to before the answer and a new entry:
-    // pi-ask finds the call open again on the branch in play
-    const [, , call, level, dismissed] = fixture.transcript as { id: string; parentId: string | null }[];
-    appendFileSync(pane.session, JSON.stringify(dismissed) + "\n");
-    appendFileSync(pane.session, JSON.stringify({ ...level, id: "b0000001", parentId: call!.id }) + "\n");
+    // Given the session file ending in the call's dismissal, but pi's leaf moved back before it
+    // (a /tree move appends nothing): pi-ask has reopened the form, and the extension says the call is open
+    appendFileSync(pane.session, JSON.stringify(fixture.transcript[4]) + "\n");
+    pane.bridge.state.flows[0]!.createdAt += 1;
+    pane.bridge.state.openCalls = ["toolu_feat1202ask"];
     expect(await pane.read()).toMatchObject({ question: "Which part should ship first?", title: "Release plan", steps: [{ label: "Scope" }, { label: "Checks" }, { label: "Tone" }] });
-    // and a call left open on an abandoned branch neither shows a card nor holds back others
-    appendFileSync(pane.session, JSON.stringify({ type: "message", id: "b0000002", parentId: "b0000001", timestamp: "2026-10-28T06:50:00.000Z", message: { role: "toolResult", toolCallId: "toolu_feat1202ask", toolName: "ask_user", content: [], isError: false, timestamp: 1 } }) + "\n");
-    pane.status = "idle";
+    // and once pi's branch has the call settled, the card goes, with no card of guessed keys while the form is still up
+    pane.bridge.state.openCalls = [];
     expect(await pane.read()).toBeNull();
   });
 });
@@ -265,6 +274,55 @@ test("pi-ask's form with no extension is never a card of guessed keys, even whil
   }, { bridge: false });
 });
 
+test("an open pi-ask form that is no card is never a card of guessed keys", async () => {
+  if (!posix) return;
+  // a blocked pane whose pi has a form from /answer (no tool call) open
+  await withBridgedPane(async (pane) => {
+    writeFileSync(pane.session, fixture.transcript.slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    pane.bridge.state.flows = [{ ...pane.bridge.state.flows[0]!, flowId: "flow:answer", toolCallId: undefined, source: "answer" }];
+    pane.bridge.state.openCalls = [];
+    expect(await pane.read()).toBeNull();
+  });
+  // or a form for a session the pane's report does not name
+  await withBridgedPane(async (pane) => {
+    pane.bridge.state.sessionFile = join(pane.root, "other.jsonl");
+    expect(await pane.read()).toBeNull();
+  });
+});
+
+test("an answer never leaves for a pi the pane no longer has in front", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    pane.bridge.state.flows[0]!.questions = [pane.bridge.state.flows[0]!.questions[0]!];
+    const card = (await pane.read())!;
+    let reads = 0;
+    // the pane's foreground changes while the last step reads the bridge again: the old pi, still
+    // running behind it, answers its socket with its own session and form
+    pane.onState = () => { if (++reads === 2) pane.foreground = PID + 1; };
+    const sent = await pane.answer(card.id, { option_index: 0 });
+    expect(sent.status).toBe(409);
+    expect(pane.bridge.submits).toEqual([]);
+  });
+});
+
+test("question ids that name object properties keep their answers", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    const [scope, checks] = pane.bridge.state.flows[0]!.questions;
+    pane.bridge.state.flows[0]!.questions = [{ ...scope!, id: "__proto__" }, { ...checks!, id: "constructor" }];
+    const first = (await pane.read())!;
+    expect(first.steps!.map((step) => step.answered)).toEqual([false, false]);
+    expect((await pane.answer(first.id, { option_index: 0 })).status).toBe(200);
+    const second = (await pane.read())!;
+    expect(second.default_option_indices).toBeUndefined();
+    expect((await pane.answer(second.id, { option_indices: [1] })).status).toBe(200);
+    const answers = (pane.bridge.submits[0]!.response as { answers: Record<string, unknown> }).answers;
+    expect(Object.hasOwn(answers, "__proto__")).toBe(true);
+    expect(answers["__proto__"]).toEqual({ values: ["server"] });
+    expect(answers["constructor"]).toEqual({ values: ["browser"] });
+  });
+});
+
 test("no card without every fact the extension and the session agree on", async () => {
   if (!posix) return;
   const unbridged = async (change: (pane: { bridge: Bridge; session: string; root: string }) => void, options?: { bridge?: boolean }) => {
@@ -282,14 +340,15 @@ test("no card without every fact the extension and the session agree on", async 
   expect(await unbridged((pane) => { pane.bridge.state.sessionFile = join(pane.root, "other.jsonl"); })).toBeNull();
   // a socket answering for another process
   expect(await unbridged((pane) => { pane.bridge.state.pid = PID + 1; })).toBeNull();
-  // two forms at once, each with its call open in the session
+  // two forms at once, each with its call open on pi's branch
   expect(await unbridged((pane) => {
     pane.bridge.state.flows = [pane.bridge.state.flows[0]!, { ...pane.bridge.state.flows[0]!, flowId: "tool:other", toolCallId: "other" }];
-    const call = fixture.transcript[2] as { id: string; message: { content: { id: string }[] } };
-    appendFileSync(pane.session, JSON.stringify({ ...call, id: "a0000002", parentId: (fixture.transcript[3] as { id: string }).id, message: { ...call.message, content: [{ ...call.message.content[0], id: "other" }] } }) + "\n");
+    pane.bridge.state.openCalls = ["toolu_feat1202ask", "other"];
   })).toBeNull();
-  // the call already settled in the session file
-  expect(await unbridged((pane) => { appendFileSync(pane.session, JSON.stringify(fixture.transcript[4]) + "\n"); })).toBeNull();
+  // the call already settled on pi's branch
+  expect(await unbridged((pane) => { pane.bridge.state.openCalls = []; })).toBeNull();
+  // pi could not say which calls are open
+  expect(await unbridged((pane) => { pane.bridge.state.openCalls = null; })).toBeNull();
   // a socket directory other users can enter: anyone who can write there could speak for pi
   expect(await unbridged((pane) => { chmodSync(join(pane.root, "herdr-web-ui-ask"), 0o755); })).toBeNull();
   // a form with no tool call behind it (pi-ask's /answer and /ask:replay)

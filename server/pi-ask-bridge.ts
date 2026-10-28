@@ -17,6 +17,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   PI_ASK_BRIDGE_DIRECTORY,
+  piAskOpenCalls,
   type PiAskBridgeState,
   type PiAskFlow,
   type PiAskQuestion,
@@ -30,6 +31,7 @@ import { paneProcessInfo } from "./herdr/client.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { OmoAskReader, type OmoAskEntry, type OmoAsks } from "./omo-ask.ts";
 import { piBranchRecords, piBranchSegments } from "./pi-tree.ts";
+import { piTranscriptPath } from "./pi.ts";
 
 const STATE_READ_MS = 1_000;
 /** The extension gives pi-ask 3 s to confirm; this covers that and the socket round trip. */
@@ -52,17 +54,7 @@ export interface PiAskUserForm {
 
 /** pi-ask's own rule for an open ask_user call (src/pending-ask.ts in 1.2.0). */
 export function piAskUserAsksAfter(open: OmoAsks, entry: OmoAskEntry): OmoAsks {
-  const without = (id: unknown): OmoAsks => typeof id === "string" ? open.filter((call) => call.id !== id) : open;
-  if (entry.type === "custom") return entry.customType === "ask:pending-dismissed" ? without((entry.data as { toolCallId?: unknown } | null)?.toolCallId) : open;
-  const message = entry.type === "message" ? entry.message : undefined;
-  if (message?.role === "toolResult") return without(message.toolCallId);
-  if (message?.role !== "assistant" || message.stopReason !== "toolUse" || !Array.isArray(message.content)) return open;
-  const calls = (message.content as Record<string, unknown>[])
-    .filter((part) => part?.["type"] === "toolCall" && part["name"] === "ask_user" && typeof part["id"] === "string")
-    .map((part) => ({ id: part["id"] as string, wait: true, args: part["arguments"] }));
-  if (calls.length === 0) return open;
-  const ids = new Set(calls.map((call) => call.id));
-  return [...open.filter((call) => !ids.has(call.id)), ...calls];
+  return piAskOpenCalls(open.map((call) => call.id), entry).map((id) => open.find((call) => call.id === id) ?? { id, wait: true, args: undefined });
 }
 
 /** Every ask_user call the file ever recorded, on any branch: read incrementally, so a session without one costs no branch read. */
@@ -184,45 +176,62 @@ async function submit(socket: string, request: PiAskSubmitRequest, signal: Abort
 
 export interface BoundPiAskFlow { socket: string; pid: number; sessionFile: string; flow: PiAskFlow }
 
+/**
+ * What the pane's pi says through the extension. `active`: it has a pi-ask form open, a card or
+ * not (a form from `/answer`, one for another session): no key-driven card may answer it.
+ * `card`: the one form the card answers, when every fact agrees.
+ */
+export interface PiAskBinding { active: boolean; card: BoundPiAskFlow | null }
+
+async function foregroundPids(paneId: string): Promise<number[]> {
+  return ((await paneProcessInfo(paneId).catch(() => undefined))?.foreground_processes ?? [])
+    .flatMap((process) => typeof process.pid === "number" ? [process.pid] : []);
+}
+
 /** Whether the session has an ask_user call pi-ask still waits on (its own rule, as for the card). */
 export function piAskUserOpen(transcript: string): boolean {
   return (openAsks(transcript)?.length ?? 0) > 0;
 }
 
 /**
- * The pane's open pi-ask form, or null. `transcript`: the pane's session file and the agent
- * directory of its pi process (piTranscriptPath); `pids`, for tests, the pane's foreground pids.
+ * The pane's pi-ask forms, as the pane's pi tells the extension. `transcript`: the pane's session
+ * file and the agent directory of its pi process (piTranscriptPath).
  */
-export async function boundPiAskFlow(
+export async function bindPiAsk(
   paneId: string,
   transcript: { path: string; agentDir: string | null },
   signal?: AbortSignal,
-  pids?: readonly number[],
-): Promise<BoundPiAskFlow | null> {
-  if (process.platform === "win32" || transcript.agentDir === null) return null;
+): Promise<PiAskBinding> {
+  const none: PiAskBinding = { active: false, card: null };
+  if (process.platform === "win32" || transcript.agentDir === null) return none;
   const directory = join(transcript.agentDir, PI_ASK_BRIDGE_DIRECTORY);
   // without the extension, nothing more is asked of herdr
-  if (!existsSync(directory)) return null;
-  const foreground = pids ?? ((await paneProcessInfo(paneId).catch(() => undefined))?.foreground_processes ?? [])
-    .flatMap((process) => typeof process.pid === "number" ? [process.pid] : []);
-  const sockets = [...new Set(foreground)].map((pid) => ({ pid, socket: join(directory, `${pid}.sock`) })).filter(({ socket }) => ownSocket(socket));
-  if (sockets.length !== 1) return null;
+  if (!existsSync(directory)) return none;
+  const sockets = [...new Set(await foregroundPids(paneId))].map((pid) => ({ pid, socket: join(directory, `${pid}.sock`) })).filter(({ socket }) => ownSocket(socket));
+  if (sockets.length !== 1) return none;
   const { pid, socket } = sockets[0]!;
   const state = await bridgeState(socket, signal);
-  if (!state || state.pid !== pid || typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, transcript.path)) return null;
-  const open = openAsks(transcript.path);
-  if (open === null) return null;
-  // only a form whose call pi-ask still waits on counts: one it dropped without a completed event
-  // has its call settled, and one with no call (`/answer`, `/ask:replay`) is never a card
+  if (!state || state.pid !== pid) return none;
+  const active = state.flows.length > 0;
+  if (typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, transcript.path) || !Array.isArray(state.openCalls)) return { active, card: null };
+  // pi's live branch, not the file's last line: a /tree move writes nothing. Only a form whose call
+  // pi-ask still waits on there counts: one it dropped without a completed event has its call
+  // settled, and one with no call (`/answer`, `/ask:replay`) is never a card
+  const open = state.openCalls;
   const waiting = state.flows.filter((flow) => {
     const toolCallId = (flow as { toolCallId?: unknown } | null)?.toolCallId;
-    return typeof toolCallId === "string" && open.some((call) => call.id === toolCallId);
+    return typeof toolCallId === "string" && open.includes(toolCallId);
   });
   const flow = waiting.length === 1 ? validFlow(waiting[0]) : null;
-  return flow ? { socket, pid, sessionFile: state.sessionFile, flow } : null;
+  return { active, card: flow ? { socket, pid, sessionFile: state.sessionFile, flow } : null };
 }
 
 interface Draft { flowId: string; identity: string; stepIndex: number; answers: Record<string, PiAskRemoteAnswer>; revision: number }
+
+/** Answers by question id with no prototype: an id like `__proto__` is an answer, not a setter. */
+function answerMap(from?: Record<string, PiAskRemoteAnswer>): Record<string, PiAskRemoteAnswer> {
+  return Object.assign(Object.create(null) as Record<string, PiAskRemoteAnswer>, from);
+}
 
 /** Each pane's answers to the steps before the one the card asks. */
 const drafts = new Map<string, Draft>();
@@ -232,7 +241,7 @@ export function piAskUserPrompt(paneId: string, transcript: string, bound: Bound
   let draft = drafts.get(paneId);
   const identity = `${flow.createdAt}:${JSON.stringify([flow.title ?? null, flow.questions])}`;
   if (!draft || draft.flowId !== flow.flowId || draft.identity !== identity) {
-    draft = { flowId: flow.flowId, identity, stepIndex: 0, answers: {}, revision: (draft?.revision ?? 0) + 1 };
+    draft = { flowId: flow.flowId, identity, stepIndex: 0, answers: answerMap(), revision: (draft?.revision ?? 0) + 1 };
     drafts.delete(paneId);
     drafts.set(paneId, draft);
     if (drafts.size > 64) drafts.delete(drafts.keys().next().value!);
@@ -247,7 +256,7 @@ export function piAskUserPrompt(paneId: string, transcript: string, bound: Bound
   // pi-ask adds "Type your own" to every question (src/state/create.ts)
   options.push({ label: own("Type your own answer"), description: null });
   const custom = options.length - 1;
-  const saved = draft.answers[question.id];
+  const saved = Object.hasOwn(draft.answers, question.id) ? draft.answers[question.id] : undefined;
   const indices = (saved?.values ?? []).map((value) => question.options.findIndex((option) => option.value === value)).filter((index) => index >= 0);
   const multi = question.type === "multi";
   return finishPrompt(
@@ -262,9 +271,12 @@ export function piAskUserPrompt(paneId: string, transcript: string, bound: Bound
       // pi-ask takes checks and typed text together, and never requires an answer (`required` is advisory)
       ...(multi ? { checks_with_text: true as const } : {}),
       optional: true,
+      drafts_saved: true,
       custom_option_index: custom,
       steps: flow.questions.length > 1
-        ? flow.questions.map((step, index) => ({ label: step.label || own("Question {n}", { n: index + 1 }), answered: draft.answers[step.id] !== undefined, current: index === stepIndex }))
+        ? flow.questions.map((step, index) => ({ label: step.label || own("Question {n}", { n: index + 1 }), answered: Object.hasOwn(draft.answers, step.id), current: index === stepIndex,
+          // every question answerPiAskUser lets the card reach: any earlier one, and an answered later one
+          ...(index !== stepIndex && (index < stepIndex || Object.hasOwn(draft.answers, step.id)) ? { can_navigate: true } : {}) }))
         : undefined,
       can_step_back: stepIndex > 0,
       default_option_index: !multi && indices.length === 1 ? indices[0]! : null,
@@ -323,7 +335,7 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
     const target = body.step_index ?? form.stepIndex - 1;
     // back to any earlier question, or forward to one already answered (the card's step buttons)
     const reachable = Number.isInteger(target) && target >= 0 && target < form.flow.questions.length && target !== form.stepIndex
-      && (target < form.stepIndex || draft.answers[form.flow.questions[target]!.id] !== undefined);
+      && (target < form.stepIndex || Object.hasOwn(draft.answers, form.flow.questions[target]!.id));
     if (!reachable) return done(invalid("Invalid question to navigate to."));
     if (body.draft !== undefined) {
       if (typeof body.draft !== "object" || body.draft === null || !Array.isArray(body.draft.option_indices) || typeof body.draft.custom_text !== "string") return done(invalid("Invalid draft."));
@@ -348,14 +360,14 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
   } else {
     // a typed answer alone (the composer, or an older card's Send) keeps the checks the card shows as saved
     const saved = question.type === "multi" && body.option_indices === undefined
-      ? (draft.answers[question.id]?.values ?? []).map((value) => question.options.findIndex((option) => option.value === value)).filter((index) => index >= 0)
+      ? ((Object.hasOwn(draft.answers, question.id) ? draft.answers[question.id]!.values : undefined) ?? []).map((value) => question.options.findIndex((option) => option.value === value)).filter((index) => index >= 0)
       : body.option_indices;
     answer = body.option_indices !== undefined && question.type !== "multi"
       ? "This question takes one choice."
       : stepAnswer(question, saved, body.custom_text);
   }
   if (typeof answer === "string") return done(invalid(answer));
-  const answers = { ...draft.answers };
+  const answers = answerMap(draft.answers);
   if (answer === null) delete answers[question.id];
   else answers[question.id] = answer;
   if (JSON.stringify(answers).length > MAX_ANSWERS_JSON) return done(invalid("The form answers are too large."));
@@ -367,12 +379,14 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
     return done(jsonResponse({ ok: true }));
   }
 
-  // the card was read a moment ago: the same process must still hold the same form
-  const state = ownSocket(form.socket) ? await bridgeState(form.socket, signal) : null;
-  if (!state || state.pid !== form.pid || typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, form.transcript)
-    // pi-ask names a form by its tool call: one reopened for the same call keeps the flowId, so the
-    // card must be the very form it was read from, not only one with its name
-    || !state.flows.some((flow) => sameFlow(validFlow(flow), form.flow))) {
+  // the card was read a moment ago: bind it again from the pane, as a read does. The same session
+  // herdr reports for the pane, the same pi in its foreground and the very form the card was read
+  // from (pi-ask reopens a call's form under the same flowId); a pi pushed into the background
+  // still answers on its socket with its own form and session, so the foreground is read again
+  // last, right before the answer leaves
+  const transcript = await piTranscriptPath(paneId).catch(() => null);
+  const card = transcript && "path" in transcript && sameFile(transcript.path, form.transcript) ? (await bindPiAsk(paneId, transcript, signal)).card : null;
+  if (!card || card.socket !== form.socket || card.pid !== form.pid || !sameFlow(card.flow, form.flow) || !(await foregroundPids(paneId)).includes(form.pid)) {
     drafts.delete(paneId);
     return done(changed());
   }

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PI_ASK_EVENTS, type PiAskBridgeState } from "../shared/pi-ask-bridge.ts";
 import { createPiAskBridge, piAgentDir, type PiAskBridge, type PiEventBus } from "./pi-ask.ts";
+import fixture from "../server/fixtures/pi-ask-user-1.2.0-bridge.json";
 
 const posix = process.platform !== "win32";
 const roots: string[] = [];
@@ -32,7 +33,7 @@ function socketPath(): string {
   return join(root, "ask", "4242.sock");
 }
 
-const ui = (file = "/sessions/one.jsonl") => ({ hasUI: true, sessionManager: { getSessionFile: () => file } });
+const ui = (file = "/sessions/one.jsonl", branch: () => unknown = () => []) => ({ hasUI: true, sessionManager: { getSessionFile: () => file, getBranch: branch } });
 const started = { version: 1, flowId: "tool:call-1", toolCallId: "call-1", source: "tool", title: "Pick", questions: [{ id: "q", prompt: "Which?", options: [{ value: "a", label: "A" }] }], createdAt: 1 };
 
 async function state(path: string): Promise<PiAskBridgeState> {
@@ -56,7 +57,7 @@ describe("pi-ask bridge extension", () => {
 
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(join(path, "..")).mode & 0o777).toBe(0o700);
-    expect(await state(path)).toEqual({ version: 1, pid: 4242, sessionFile: "/sessions/one.jsonl", flows: [] });
+    expect(await state(path)).toEqual({ version: 1, pid: 4242, sessionFile: "/sessions/one.jsonl", flows: [], openCalls: [] });
     events.emit(PI_ASK_EVENTS.started, started);
     const { version: _version, ...flow } = started;
     expect((await state(path)).flows).toEqual([flow]);
@@ -138,6 +139,33 @@ describe("pi-ask bridge extension", () => {
 
     expect((await submit(path, { flowId: "tool:call-1", createdAt: 1, sessionFile: "/sessions/one.jsonl", response: { kind: "cancel" } })).body).toMatchObject({ ok: false, error: "flow_not_found" });
     expect((await state(path)).flows).toEqual([]);
+  });
+
+  it("reports the ask_user calls open on pi's live branch, which a /tree move changes", async () => {
+    if (!posix) return;
+    const path = socketPath();
+    // the recorded session: the call, then pi-ask's dismissal once answered
+    const entries = fixture.transcript.slice(1);
+    let leaf = 2;
+    const bridge = createPiAskBridge({ events: bus(), socketPath: path, pid: 4242 });
+    bridges.push(bridge);
+    await bridge.start(ui("/sessions/one.jsonl", () => entries.slice(0, leaf + 1)));
+
+    expect((await state(path)).openCalls).toEqual(["toolu_feat1202ask"]);
+    leaf = entries.length - 1;
+    expect((await state(path)).openCalls).toEqual([]);
+    // back before the dismissal, as /tree does without writing to the file
+    leaf = 2;
+    expect((await state(path)).openCalls).toEqual(["toolu_feat1202ask"]);
+  });
+
+  it("says nothing of open calls when pi cannot tell its branch", async () => {
+    if (!posix) return;
+    const path = socketPath();
+    const bridge = createPiAskBridge({ events: bus(), socketPath: path, pid: 4242 });
+    bridges.push(bridge);
+    await bridge.start(ui("/sessions/one.jsonl", () => { throw new Error("no branch"); }));
+    expect((await state(path)).openCalls).toBeNull();
   });
 
   it("answers timeout when pi-ask never confirms", async () => {

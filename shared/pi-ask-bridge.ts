@@ -59,6 +59,31 @@ export interface PiAskBridgeState {
   /** The session file pi is writing, or null before it has one. */
   sessionFile: string | null;
   flows: PiAskFlow[];
+  /**
+   * The ask_user calls pi-ask still waits on, read from pi's live branch (`getBranch()`): a /tree
+   * move changes it without writing to the session file. Null when pi could not say.
+   */
+  openCalls: string[] | null;
+}
+
+/**
+ * pi-ask's own rule for an open ask_user call (src/pending-ask.ts in 1.2.0), one session entry at a
+ * time: opened by an assistant message that stopped for tool use, closed by its tool result or an
+ * `ask:pending-dismissed` record.
+ */
+export function piAskOpenCalls(open: readonly string[], entry: unknown): string[] {
+  if (typeof entry !== "object" || entry === null) return [...open];
+  const { type, customType, data, message } = entry as { type?: unknown; customType?: unknown; data?: unknown; message?: unknown };
+  const without = (id: unknown): string[] => open.filter((call) => call !== id);
+  if (type === "custom") return customType === "ask:pending-dismissed" ? without((data as { toolCallId?: unknown } | null)?.toolCallId) : [...open];
+  if (type !== "message" || typeof message !== "object" || message === null) return [...open];
+  const { role, toolCallId, stopReason, content } = message as { role?: unknown; toolCallId?: unknown; stopReason?: unknown; content?: unknown };
+  if (role === "toolResult") return without(toolCallId);
+  if (role !== "assistant" || stopReason !== "toolUse" || !Array.isArray(content)) return [...open];
+  const calls = (content as Record<string, unknown>[])
+    .filter((part) => part?.["type"] === "toolCall" && part["name"] === "ask_user" && typeof part["id"] === "string")
+    .map((part) => part["id"] as string);
+  return calls.length ? [...open.filter((call) => !calls.includes(call)), ...calls] : [...open];
 }
 
 export interface PiAskRemoteAnswer {
