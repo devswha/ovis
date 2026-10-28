@@ -179,7 +179,7 @@ describe("a claude attach pane's job (#1645)", () => {
       expect(claudeAttachArgs(["claude", "attach", "release", ...after])).toEqual(first("release"));
     }
     // anything else after it keeps the terminal
-    for (const after of [["--verbose"], ["--setting-sources"], ["--debug", "api", "notes"], ["--model", "opus"]]) {
+    for (const after of [["--verbose"], ["--setting-sources"], ["--debug", "api", "notes"], ["-d", "--verbose"], ["--model", "opus"]]) {
       expect(claudeAttachArgs(["claude", "attach", "release", ...after])).toEqual(first("release", false));
     }
     // root options before it, each with the values it takes
