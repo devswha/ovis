@@ -12,6 +12,7 @@ import type {
   CreateWorktreeRequest,
   CreateTabRequest,
   CreateWorkspaceRequest,
+  DevicesRevokedAll,
   DirectoryCreated,
   DirectoryListing,
   FileInfo,
@@ -19,10 +20,14 @@ import type {
   HealthAuth,
   IntegrationsResponse,
   LanExposure,
+  SecuritySummary,
   InteractivePrompt,
   MoveTabRequest,
+  MoveTabToWorkspaceRequest,
   TabMoved,
+  TabMovedToWorkspace,
   OmoActivity,
+  PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
   PairedDevice,
   PairingCode,
@@ -32,8 +37,10 @@ import type {
   PanePromptResponse,
   PaneReadResult,
   PaneResized,
+  RepoBranchComparison,
   RepoDiffFileList,
   RepoDiffFilePatch,
+  RepoDiffRefs,
   RepoDiffScope,
   PaneSplit,
   PaneSwapped,
@@ -44,6 +51,7 @@ import type {
   ProjectFavicon,
   PromptAnswer,
   PushKey,
+  PushSubscriptionStatus,
   PortalStatus,
   RemoteAccess,
   RemoveWorktreeRequest,
@@ -80,6 +88,7 @@ import type { VoiceConfigUpdate, VoiceStatus } from "../../shared/voice.ts";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
+import { movingHerdrFocus } from "./followFocus.ts";
 import type { UsageLoginAccounts, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
@@ -280,7 +289,7 @@ export async function fetchPaneTranscript(paneId: string, lines: number, machine
 }
 
 /** Which turns (ConversationResponse.cursor): the page `before` a cursor, not past `since`; the newest ones `from` a held start. */
-export type ConversationPageQuery = { before?: string; since?: string; from?: string; /** Revalidate a new finish without borrowing another key's 304. */ fresh?: boolean };
+export type ConversationPageQuery = { before?: string; since?: string; from?: string; /** History currently displayed, even if its cached response was evicted. */ history_id?: string; /** Revalidate a new finish without borrowing another key's 304. */ fresh?: boolean };
 
 /**
  * The last answer per newest-page conversation URL and its ETag. The chat reads it again on
@@ -350,12 +359,19 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   const url = conversationUrl(paneId, machineId, page);
   const polled = page.before === undefined;
   const known = polled ? conversationAnswers.get(url) : undefined;
+  const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
   const { response, body } = await withChatReadDeadline(async (signal) => {
-    const response = await fetch(url, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
+    const response = await fetch(requestUrl, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
     if (response.status === 304 && known) return { response, body: known.body };
     if (!response.ok) throw await errorFrom(url, response);
     return { response, body: (await response.json()) as ConversationResponse };
-  }, chatReadDeadlineMs(machineId));
+  }, chatReadDeadlineMs(machineId)).catch((cause: unknown) => {
+    if (cause instanceof ApiError && cause.status === 409) {
+      conversationAnswers.delete(url);
+      conversationAnswers.delete(conversationUrl(paneId, machineId, {}));
+    }
+    throw cause;
+  });
   // Cache changes occur after the bounded read: a late, aborted answer cannot replace it.
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
@@ -380,6 +396,8 @@ export interface HealthInfo {
   auth?: HealthAuth;
   /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
+  /** authenticated only; absent from an older server, which the summary shows as unavailable */
+  security?: SecuritySummary;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {
@@ -422,6 +440,15 @@ export async function renameDevice(id: string, label: string): Promise<PairedDev
 
 export async function revokeDevice(id: string): Promise<void> {
   await sendJson(`/api/devices/${encodeURIComponent(id)}`, "DELETE", {});
+}
+
+/**
+ * POST /api/devices/revoke-all: every paired device loses its pairing access in one durable step,
+ * this browser's own included (the answer clears its device cookie). The access token, the PC
+ * itself and its Tailscale login get in as before.
+ */
+export async function revokeAllDevices(): Promise<DevicesRevokedAll> {
+  return (await sendJson("/api/devices/revoke-all", "POST", {})).json();
 }
 
 /** DELETE /api/auth: clears the session and device cookies, so the next health check reports the gate again. */
@@ -559,12 +586,14 @@ export async function renameAgent(paneId: string, name: string | null, machineId
 
 /**
  * POST /api/pane/split: a new pane beside this one in herdr (its prefix+v / prefix+-), answered as
- * herdr lists it. herdr's focus stays put unless `focus` asks for the new pane; the sidebar and the
- * tab strip learn of it from the server's session-changed broadcast.
+ * herdr lists it. herdr's focus stays put unless `focus` asks for the new pane, which the caller then
+ * opens itself (movingHerdrFocus); the sidebar and the tab strip learn of it from the server's
+ * session-changed broadcast.
  */
 export async function splitPane(paneId: string, direction: SplitPaneDirection, focus = false, machineId = "local"): Promise<PaneInfo> {
-  const response = await sendJson(machinePath(machineId, "pane/split"), "POST", { pane_id: paneId, direction, ...(focus ? { focus: true } : {}) } satisfies SplitPaneRequest);
-  return ((await response.json()) as PaneSplit).pane;
+  const request = sendJson(machinePath(machineId, "pane/split"), "POST", { pane_id: paneId, direction, ...(focus ? { focus: true } : {}) } satisfies SplitPaneRequest)
+    .then(async (response) => ((await response.json()) as PaneSplit).pane);
+  return focus ? movingHerdrFocus(machineId, request) : request;
 }
 
 /** POST /api/pane/zoom: herdr's prefix+z on that pane; `zoomed` is the tab's state after it. */
@@ -579,10 +608,11 @@ export async function swapPane(paneId: string, direction: PaneDirection, machine
   return (await response.json()) as PaneSwapped;
 }
 
-/** POST /api/pane/swap: swap this pane with an explicit pane, keeping herdr's same-tab rule. */
+/** POST /api/pane/swap: an explicit same-tab swap; leave its temporary focus events to the caller. */
 export async function swapPaneWith(paneId: string, targetPaneId: string, machineId = "local"): Promise<PaneSwapped> {
-  const response = await sendJson(machinePath(machineId, "pane/swap"), "POST", { pane_id: paneId, target_pane_id: targetPaneId } satisfies SwapPaneRequest);
-  return (await response.json()) as PaneSwapped;
+  const request = sendJson(machinePath(machineId, "pane/swap"), "POST", { pane_id: paneId, target_pane_id: targetPaneId } satisfies SwapPaneRequest)
+    .then(async (response) => (await response.json()) as PaneSwapped);
+  return movingHerdrFocus(machineId, request);
 }
 
 /** POST /api/layout/ratio: set the split identified by its binary path to the dragged ratio. */
@@ -656,25 +686,36 @@ export function fileUrl(path: string, paneId: string | null, machineId = "local"
 
 /**
  * Which repository and which two of its states: the pane's folder (or `directory`, read when the
- * pane is gone), and the working tree against the index, the index against HEAD, or two commits.
+ * pane is gone), and the working tree against the index, the index against HEAD, two commits, or
+ * the working tree against the merge base of a chosen base and HEAD.
  */
 export interface RepoDiffQuery {
   paneId: string | null;
   directory: string | null;
   scope: RepoDiffScope;
-  /** `commit` only: the list's hashes, so a file is read from the same comparison */
+  /** `commit`: the list's hashes, so a file is read from the same comparison; `branch`: the base to list from */
   base: string | null;
   head: string | null;
+  /** `branch` only: the identity the list answered with, which a patch is read from instead of the base's name */
+  comparison: RepoBranchComparison | null;
 }
 
 function repoDiffQuery(query: RepoDiffQuery): URLSearchParams {
+  const pinned = query.scope === "branch" && query.comparison !== null;
   return new URLSearchParams({
     ...(query.paneId ? { pane_id: query.paneId } : {}),
     ...(query.directory ? { directory: query.directory } : {}),
     scope: query.scope,
-    ...(query.scope === "commit" && query.base ? { base: query.base } : {}),
+    ...((query.scope === "commit" || query.scope === "branch") && !pinned && query.base ? { base: query.base } : {}),
     ...(query.scope === "commit" && query.head ? { head: query.head } : {}),
+    ...(pinned ? { comparison: JSON.stringify(query.comparison) } : {}),
   });
+}
+
+/** GET /api/workspace/diff/refs: the repository's branches, for choosing a base; nothing is fetched. */
+export async function fetchRepoDiffRefs(query: Pick<RepoDiffQuery, "paneId" | "directory">, machineId = "local"): Promise<RepoDiffRefs> {
+  const params = new URLSearchParams({ ...(query.paneId ? { pane_id: query.paneId } : {}), ...(query.directory ? { directory: query.directory } : {}) });
+  return getJson<RepoDiffRefs>(machinePath(machineId, `workspace/diff/refs?${params.toString()}`));
 }
 
 /** GET /api/workspace/diff/files: the files a comparison changed, with their status and counts. */
@@ -764,6 +805,13 @@ export async function moveTab(tabId: string, insertIndex: number, machineId = "l
   return (await response.json()) as TabMoved;
 }
 
+/** A one-pane tab into a new tab of another workspace; its pane answers under its new ID. */
+export async function moveTabToWorkspace(tabId: string, workspaceId: string, machineId = "local"): Promise<TabMovedToWorkspace> {
+  const request: MoveTabToWorkspaceRequest = { tab_id: tabId, workspace_id: workspaceId };
+  const response = await sendJson(machinePath(machineId, "tab/move-to-workspace"), "POST", request);
+  return (await response.json()) as TabMovedToWorkspace;
+}
+
 /** POST /api/tab/close: the tab and every pane in it; a workspace's last tab takes the workspace with it. */
 export async function closeTab(tabId: string, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "tab/close"), "POST", { tab_id: tabId });
@@ -809,10 +857,21 @@ export async function fetchAgentCommands(agent: string, cwd: string | null, mach
 }
 
 /** GET /api/pane/omo-tasks: the background tasks and workflows the pane's OmO session started, and that PC's clock. */
-export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<{ tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null }> {
+export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<{ tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null; moreRunning: number }> {
   const activity = await getJson<Partial<OmoActivity>>(machinePath(machineId, `pane/omo-tasks?pane_id=${encodeURIComponent(paneId)}`));
-  // a bridge from before workflows answers tasks only
-  return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null };
+  // a bridge from before workflows answers tasks only; one from before the running list was cut, every running one
+  return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null, moreRunning: typeof activity.more_running === "number" && activity.more_running > 0 ? activity.more_running : 0 };
+}
+
+/**
+ * GET /api/pane/background-agent: what a running Claude Code subagent's own transcript holds now,
+ * read-only and bounded (its dispatch prompt, its prose and the tools it called), for the
+ * background-task list's detail sheet. The PC resolves the session and the files: the caller
+ * names a pane and the agent id the list gave it, nothing else.
+ */
+export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
+  const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
+  return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */
@@ -865,6 +924,21 @@ export async function unregisterPushSubscription(endpoint: string): Promise<void
 /** One confirmation push to this device only; ApiError 502 `push_failed` when the push service refused it. */
 export async function sendTestPush(endpoint: string): Promise<void> {
   await sendJson("/api/push/test", "POST", { endpoint });
+}
+
+/**
+ * POST /api/push/status: what the server knows of this browser's own subscription (the one its
+ * PushManager holds, never the selected PC's), once it has proven the keys. `null` when the
+ * server does not know it: another owner's, a stranger's or never registered are one answer.
+ * A server from before the route throws its 404 `not_found` (`routeMissing`).
+ */
+export async function fetchPushSubscriptionStatus(subscription: PushSubscriptionJSON): Promise<PushSubscriptionStatus | null> {
+  try {
+    return await (await sendJson("/api/push/status", "POST", { subscription })).json() as PushSubscriptionStatus;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "subscription_not_found") return null;
+    throw error;
+  }
 }
 
 export function fetchBridgeHealth(): Promise<BridgeHealth> { return getJson("/api/health?scope=bridge"); }

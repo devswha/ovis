@@ -1,5 +1,5 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, type AnswerStep, KEY, type ParsedPrompt, findLastIndex, finishPrompt, keySteps, navigationKeys } from "./shared.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, KEY, type ParsedPrompt, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
 
 /**
  * Hermes's clarify question, as its Ink TUI draws it (ui-tui/src/components/prompts.tsx):
@@ -41,15 +41,15 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   const member: string[] = [];
   for (let i = end; i < block.length && indent(block[i]!) > base; i += 1) member.push(block[i]!.trim());
   const [answered, total] = lines[hintIndex]!.trim().match(HERMES_HINT_RE)!.slice(1).map(Number);
-  const body = total! > 1 ? `${answered}/${total} answered` : null;
+  const body = total! > 1 ? own("{answered}/{total} answered", { answered: answered!, total: total! }) : null;
   // text already on the `>` line (typed in the terminal, or a typed answer Tab brought back)
   // would join the answer: the line is emptied first, after the cursor and before it (its
   // TextInput's ctrl+k and ctrl+u, on every platform)
   const typed = (text: string): AnswerStep[] => [...keySteps(["ctrl+k", "ctrl+u"]), { text }, ...keySteps([KEY.enter])];
   if (member[0]?.startsWith(">")) {
     return finishPrompt("hermes", {
-      kind: "question", title: "Question", question, body,
-      options: [{ label: "Type your answer", description: null }], multi_select: false, custom_option_index: 0,
+      kind: "question", title: own("Question"), question, body,
+      options: [{ label: own("Type your answer"), description: null }], multi_select: false, custom_option_index: 0,
     }, {
       responder: "hermes-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0,
       rejectWithEscapeIndex: null, customSteps: typed,
@@ -71,7 +71,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   if (!multi && choices.some((row) => row.box)) return null;
   const checked = choices.flatMap((row, index) => row.checked ? [index] : []);
   return finishPrompt("hermes", {
-    kind: "question", title: "Question", question, body,
+    kind: "question", title: own("Question"), question, body,
     options: choices.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: null })),
     // typed text on a multi-select question joins the ticks, which the card has no way to say
     multi_select: multi, custom_option_index: multi ? null : choices.length,
@@ -116,19 +116,6 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
  * A result counts only when it is complete: its layout's own lines are all there, and the CLI has
  * moved on, back at its idle `❯` prompt or on to the next command's echo.
  */
-export interface HermesResult {
-  /** the reader whose layout it is */
-  reader: HermesResultReader;
-  /** the command as echoed */
-  command: string;
-  /** the screen line of the echo */
-  echoLine: number;
-  /** the block under the echo, as shown */
-  lines: string[];
-  /** a reload that succeeded */
-  catalogChanged?: true;
-}
-
 type HermesResultReader = "hermes-help" | "hermes-status" | "hermes-version" | "hermes-profile" | "hermes-reload-skills";
 
 export const HERMES_ECHO_RE = /^⚙\uFE0F?\s+(\/\S+)$/;
@@ -222,17 +209,6 @@ function blockAt(lines: string[], start: number, layout: (typeof HERMES_LAYOUTS)
 
 const screenLines = (screen: string): string[] => screen.replace(ANSI_RE, "").split(/\r?\n/);
 
-/** Every complete result block on a Hermes screen, top to bottom. */
-export function hermesResults(screen: string): HermesResult[] {
-  const lines = screenLines(screen);
-  return lines.flatMap((line, echoLine) => {
-    const command = HERMES_ECHO_RE.exec(line.trimEnd())?.[1];
-    const layout = HERMES_LAYOUTS.find((candidate) => command !== undefined && candidate.names.includes(command));
-    const block = layout ? blockAt(lines, echoLine + 1, layout) : null;
-    return layout && block ? [{ reader: layout.reader, command: command!, echoLine, ...block }] : [];
-  });
-}
-
 /**
  * A result reader is given what is below this send's own echo (server/outcome.ts) and the text sent:
  * the block must start there. Its card shows what Hermes printed and closes with Dismiss, which
@@ -248,7 +224,7 @@ function parseHermesResult(below: string, sent: string | null, reader: HermesRes
   return {
     ...finishPrompt("hermes", {
       kind: "menu", title: command, question: command, body: text,
-      options: [{ label: "Dismiss", description: null }], multi_select: false, custom_option_index: null,
+      options: [{ label: own("Dismiss"), description: null }], multi_select: false, custom_option_index: null,
     }, {
       responder: reader, menuLabels: ["Dismiss"], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: null,
       rejectWithEscapeIndex: null, optionSteps: [[]],
@@ -290,20 +266,22 @@ const resultReader = (id: HermesResultReader): DialogReader => ({
   parse: (below, ctx) => parseHermesResult(below, ctx.sent, id),
 });
 
+const clarifyRead = onePerPass((screen) => parseHermesClarify(screen));
+
 export const readers: readonly DialogReader[] = [
   {
     id: "hermes-question", agents: ["hermes"], priority: 10,
     reread: "none", list: "none",
-    parse: (screen) => {
-      const parsed = parseHermesClarify(screen);
+    parse: (screen, ctx) => {
+      const parsed = clarifyRead(screen, ctx);
       return parsed?.responder === "hermes-question" ? parsed : null;
     },
   },
   {
     id: "hermes-input", agents: ["hermes"], priority: 10,
     reread: "none", list: "none",
-    parse: (screen) => {
-      const parsed = parseHermesClarify(screen);
+    parse: (screen, ctx) => {
+      const parsed = clarifyRead(screen, ctx);
       return parsed?.responder === "hermes-input" ? parsed : null;
     },
   },

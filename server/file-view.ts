@@ -1,19 +1,29 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { type BigIntStats, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, read, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import type { FileInfo, FileKind } from "../shared/protocol.ts";
+import { fileTask } from "./file-pool.ts";
+import type { OpenedFile, RenderedPage } from "./file-tasks.ts";
 import { filesNamed } from "./files.ts";
+import { jsonResponse } from "./http.ts";
 
 /**
  * Opening a file from the browser: the files agents write (a screenshot, a demo video, a
  * PDF, a log) seen on a phone that has no terminal to open them with.
  *
- * Nothing is read into memory to serve a file: the response is `Bun.file`, which Bun
- * streams from disk (sendfile where it can) and answers Range requests for, so a video
- * plays and seeks without the server holding more than its socket buffers. Only the
- * first bytes of a file are read, to tell text from binary.
+ * A file is served with Range answered (`byteRange`) and its content-length: a body of at most
+ * one read (`STREAM_CHUNK_BYTES`) is read whole before its headers are sent; a larger one is sent
+ * as a file, which Bun reads from disk as the client takes it, so a video plays and seeks without
+ * the server holding more than its socket buffers. From a disk that answered slowly a larger body
+ * is streamed from its descriptor instead, without a content-length (`file-tasks.ts` `open`). Only the first bytes of a file are
+ * read, to tell text from binary. A rendered page's own files and the videos it plays are read
+ * only from a descriptor whose opened file was shown to lie where the page may reach
+ * (`openAuthorized`). Finding, describing, rendering and opening a file for `/api/fs/stat`,
+ * `/api/fs/file` and `/api/fs/favicon` run on a file thread (`file-pool.ts`), so a slow disk or a
+ * large page holds that thread, not the server's; a rendered page's media address
+ * (`pageMediaResponse`) is still opened and checked on the server's thread.
  *
  * It opens what this server's user can read, which is no more than the terminal the same
  * browser can already type into.
@@ -57,7 +67,7 @@ function kindOf(mime: string, path: string): FileKind {
 const MAX_NAME_MATCHES = 10;
 
 /** The same visible name may be stored composed or decomposed, one folder at a time. */
-function pathsByName(path: string): string[] {
+export function pathsByName(path: string): string[] {
   if (!/[^\x00-\x7f]/.test(path)) return [];
   const root = parse(path).root;
   let paths = [root];
@@ -87,52 +97,50 @@ function pathsByName(path: string): string[] {
  * file under the pane's folder whose path ends in it (agents often name `demo.mp4` without
  * `docs/screenshots/`). Several such files come back as candidates to choose from.
  */
-export function locateFile(input: string, cwd: string | null, anyForm = false): { info: FileInfo } | { candidates: string[] } | null {
+export async function locateFile(input: string, cwd: string | null, anyForm = false): Promise<{ info: FileInfo } | { candidates: string[] } | null> {
   const path = resolveFilePath(input, cwd);
-  const info = anyForm || path === null ? null : fileInfo(path);
+  const info = anyForm || path === null ? null : await fileTask<FileInfo | null>({ op: "info", path });
   if (info !== null) return { info };
   if (anyForm && path !== null) {
-    const matches = pathsByName(path).map(fileInfo).filter((match) => match !== null);
+    const matches = await fileTask<FileInfo[]>({ op: "named", path });
     if (matches.length === 1) return { info: matches[0]! };
     if (matches.length > 1) return { candidates: matches.map((match) => match.path) };
   }
   const relative = input.trim();
   if (cwd === null || relative === "" || isAbsolute(relative) || relative.startsWith("~") || relative.startsWith("../")) return null;
   if (anyForm && !/[^\x00-\x7f]/.test(relative)) return null;
-  const found = filesNamed(cwd, relative, 10, anyForm).map((match) => resolve(cwd, match));
+  const found = (await filesNamed(cwd, relative, 10, anyForm)).map((match) => resolve(cwd, match));
   if (found.length === 1) {
-    const only = fileInfo(found[0]!);
+    const only = await fileTask<FileInfo | null>({ op: "info", path: found[0]! });
     return only === null ? null : { info: only };
   }
   return found.length > 1 ? { candidates: found } : null;
 }
 
 /** A relative fallback stays in its own folder, including after following symlinks. */
-export function locateFileInFolder(input: string, folder: string, anyForm = false): ReturnType<typeof locateFile> {
+export async function locateFileInFolder(input: string, folder: string, anyForm = false): ReturnType<typeof locateFile> {
   const relative = input.trim();
   if (isAbsolute(relative) || relative.startsWith("~") || !resolve(folder, relative).startsWith(resolve(folder) + sep)) return null;
-  const found = locateFile(relative, folder, anyForm);
+  const found = await locateFile(relative, folder, anyForm);
   if (found === null) return null;
-  try {
-    const root = realpathSync(folder) + sep;
-    const paths = "info" in found ? [found.info.path] : found.candidates;
-    return paths.every((path) => realpathSync(path).startsWith(root)) ? found : null;
-  } catch { return null; /* a missing or unreadable target is not a fallback */ }
+  // a missing or unreadable target is not a fallback
+  const paths = "info" in found ? [found.info.path] : found.candidates;
+  return await fileTask<boolean>({ op: "within", paths, folder }) ? found : null;
 }
 
 /** Try every exact place before opening a name stored in another form. */
-export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>): Promise<ReturnType<typeof locateFile>> {
-  const exact = locateFile(input, cwd);
+export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>): ReturnType<typeof locateFile> {
+  const exact = await locateFile(input, cwd);
   if (exact !== null) return exact;
   let folder: string | null = null;
   if (cwd !== null && !isAbsolute(input.trim()) && !input.trim().startsWith("~")) {
     folder = await scratchFolder();
     if (folder !== null) {
-      const scratch = locateFileInFolder(input, folder);
+      const scratch = await locateFileInFolder(input, folder);
       if (scratch !== null) return scratch;
     }
   }
-  const found = locateFile(input, cwd, true);
+  const found = await locateFile(input, cwd, true);
   if (found !== null) return found;
   return folder === null ? null : locateFileInFolder(input, folder, true);
 }
@@ -216,29 +224,81 @@ export const PAGE_MEDIA_PER_RENDER = 50;
 export interface PageMediaOwner { client: string | null; device: string | null }
 /** What a page may play from here: the policy's media source and who rendered it. */
 export interface PageMedia extends PageMediaOwner { source: string }
-/** What an address serves: the file as its render found it, symlinks resolved, which file that was and in what state, and for whom. */
-interface PageMediaEntry extends PageMediaOwner { file: string; mime: string; expires: number; dev: number; ino: number; size: number; mtimeMs: number }
+/** What an address serves: the path its render asked for, under the folders it was allowed then, which file that led to and in what state, and for whom. */
+export interface PageMediaEntry extends PageMediaOwner { requested: string; roots: readonly string[]; mime: string; expires: number; dev: bigint; ino: bigint; size: number; mtimeNs: bigint }
 /** In mint order, which with a fixed lifetime is also expiry order. */
 const pageMediaFiles = new Map<string, PageMediaEntry>();
 
-/** A new address (its token) for `file` (a resolved path), for this render only; null when the file is gone. */
-function pageMediaUrl(file: string, mime: string, owner: PageMediaOwner, now = Date.now()): string | null {
-  let stat;
-  try { stat = statSync(file); } catch { return null; }
-  if (!stat.isFile()) return null;
-  for (const [old, entry] of pageMediaFiles) {
-    if (entry.expires > now && pageMediaFiles.size < PAGE_MEDIA_ADDRESSES) break;
-    pageMediaFiles.delete(old);
+/** A new address: its token, and what it serves. */
+export type PageMediaGrant = [token: string, entry: PageMediaEntry];
+
+/** A new address for a file opened and authorized for this render (`openAuthorized`), for this render only. */
+function grantPageMedia(file: Authorized, owner: PageMediaOwner, now = Date.now()): PageMediaGrant {
+  return [randomBytes(24).toString("base64url"), { requested: file.requested, roots: file.roots, mime: file.mime, expires: now + PAGE_MEDIA_LIFETIME_MS, dev: file.dev, ino: file.ino, size: file.size, mtimeNs: file.mtimeNs, client: owner.client, device: owner.device }];
+}
+
+type MediaOwnerKey = { device: string } | { client: string | null };
+const ownedBy = (entry: PageMediaOwner, owner: MediaOwnerKey): boolean => "device" in owner ? entry.device === owner.device : entry.client === owner.client;
+
+/**
+ * Every `forgetPageMedia` so far, numbered, kept for as long as a request that began before it may
+ * still keep page media (`watchPageMedia`): one no such request is left for can concern none.
+ */
+let forgets = 0;
+const forgotten: { at: number; owner: MediaOwnerKey }[] = [];
+/** How many requests under way noted each point of the forgetting. */
+const watching = new Map<number, number>();
+
+function pruneForgotten(): void {
+  const oldest = watching.size === 0 ? forgets : Math.min(...watching.keys());
+  while (forgotten.length > 0 && forgotten[0]!.at <= oldest) forgotten.shift();
+}
+
+/**
+ * Where the forgetting stands, noted by a request that may render a page before anything else it
+ * awaits (finding the file, rendering it on a file thread), for `keepPageMedia`; `done` ends it.
+ */
+export function watchPageMedia(): { since: number; done: () => void } {
+  const since = forgets;
+  watching.set(since, (watching.get(since) ?? 0) + 1);
+  let ended = false;
+  return {
+    since,
+    done: () => {
+      if (ended) return;
+      ended = true;
+      const left = watching.get(since)! - 1;
+      if (left === 0) watching.delete(since);
+      else watching.set(since, left);
+      pruneForgotten();
+    },
+  };
+}
+
+/**
+ * The addresses a render gave out, kept where `pageMediaResponse` answers them: on the server's
+ * thread, whichever thread rendered the page. One for a device or client address forgotten since
+ * its request began (`since`, from `watchPageMedia`: it was revoked or signed out while the file
+ * was found or the page drawn on a file thread) is not kept.
+ */
+export function keepPageMedia(grants: readonly PageMediaGrant[], now = Date.now(), since = forgets): void {
+  for (const [token, entry] of grants) {
+    if (forgotten.some((forget) => forget.at > since && ownedBy(entry, forget.owner))) continue;
+    for (const [old, kept] of pageMediaFiles) {
+      if (kept.expires > now && pageMediaFiles.size < PAGE_MEDIA_ADDRESSES) break;
+      pageMediaFiles.delete(old);
+    }
+    pageMediaFiles.set(token, entry);
   }
-  const token = randomBytes(24).toString("base64url");
-  pageMediaFiles.set(token, { file, mime, expires: now + PAGE_MEDIA_LIFETIME_MS, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, client: owner.client, device: owner.device });
-  return token;
 }
 
 /** Drop the addresses a device was given (it was revoked or signed out), or those a client address was given. */
-export function forgetPageMedia(owner: { device: string } | { client: string | null }): void {
+export function forgetPageMedia(owner: MediaOwnerKey): void {
+  forgets += 1;
+  forgotten.push({ at: forgets, owner });
+  pruneForgotten();
   for (const [token, entry] of pageMediaFiles) {
-    if ("device" in owner ? entry.device === owner.device : entry.client === owner.client) pageMediaFiles.delete(token);
+    if (ownedBy(entry, owner)) pageMediaFiles.delete(token);
   }
 }
 
@@ -255,11 +315,15 @@ export function pageMediaSource(host: string | null, secure: boolean, forwardedH
 }
 
 /**
- * The file behind a page's media address (with Range, as any file), or null when this server
- * never gave it out, it lapsed, another client asks for it, or the file is not the one its
- * render checked.
+ * The file behind a page's media address, or null when this server never gave it out, it lapsed,
+ * another client asks for it, or the file is not the one its render checked. Each request opens
+ * the path its render asked for again, authorizes what it opened as the render did
+ * (`openAuthorized`), and plays it only while it is still the file, size and modification time
+ * the render saw: a folder on the way swapped for a symlink since, the file replaced or written
+ * over in place would otherwise serve another one under the address (a new render gives a new
+ * address). It is sent from that descriptor (`descriptorBody`), with `request`'s Range.
  */
-export function pageMediaResponse(token: string, client: string | null, now = Date.now()): Response | null {
+export function pageMediaResponse(token: string, client: string | null, request: Request | null = null, now = Date.now()): Response | null {
   const entry = pageMediaFiles.get(token);
   if (entry === undefined) return null;
   if (entry.expires <= now) {
@@ -268,21 +332,132 @@ export function pageMediaResponse(token: string, client: string | null, now = Da
   }
   // an address the page passed on plays nowhere else, answered like an address that never existed
   if (entry.client !== client) return null;
-  // still the file its render checked: a folder on the way swapped for a symlink since, the file
-  // replaced or written over in place would serve another one under the address (a new render gives a new address)
-  try {
-    if (realpathSync(entry.file) !== entry.file) return null;
-    const stat = statSync(entry.file);
-    if (!stat.isFile() || stat.dev !== entry.dev || stat.ino !== entry.ino || stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs) return null;
-  } catch { return null; }
+  const file = openAuthorized(entry.requested, entry.roots);
+  if (file === null) return null;
+  if (file.dev !== entry.dev || file.ino !== entry.ino || file.size !== entry.size || file.mtimeNs !== entry.mtimeNs) {
+    release(file.fd);
+    return null;
+  }
   // no CORS and no Cross-Origin-Resource-Policy: the page that plays it has no origin, and its script cannot read it
-  return new Response(Bun.file(entry.file, { type: entry.mime }), { headers: {
+  const headers = new Headers({
+    "content-type": entry.mime,
+    "accept-ranges": "bytes",
     "content-disposition": "inline",
     "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
     "content-security-policy": "sandbox; default-src 'none'",
-  } });
+  });
+  // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
+  const range = request?.method === "GET" ? byteRange(request.headers.get("range"), request.headers.has("if-range"), file.size) : null;
+  if (range === "unsatisfiable") {
+    release(file.fd);
+    headers.set("content-range", `bytes */${file.size}`);
+    return new Response(null, { status: 416, headers });
+  }
+  const [start, end] = range ?? [0, file.size - 1];
+  headers.set("content-length", String(end - start + 1));
+  if (range !== null) headers.set("content-range", `bytes ${start}-${end}/${file.size}`);
+  const status = range === null ? 200 : 206;
+  if (request?.method === "HEAD") {
+    release(file.fd);
+    return new Response(null, { status, headers });
+  }
+  return new Response(descriptorBody(file.fd, start, end - start + 1, file), { status, headers });
 }
+
+/**
+ * The one range a `Range` header asks for, inclusive, within `size` bytes (RFC 9110 section 14):
+ * null for the whole file, which is the answer to no header, to one that comes with `If-Range`
+ * (this answer names no validator it could match), and to one this server does not serve (another
+ * unit, several ranges, one it cannot read); "unsatisfiable" for a range that starts past the end.
+ * An end past the last byte means the last byte.
+ */
+export function byteRange(header: string | null, ifRange: boolean, size: number): [number, number] | "unsatisfiable" | null {
+  // an empty file has no byte to send a range of: the whole of it is the answer
+  if (header === null || ifRange || size === 0) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+  if (match === null) return null;
+  const [first, last] = [match[1]!, match[2]!];
+  if (first === "" && last === "") return null;
+  if (first === "") {
+    const suffix = Number(last);
+    return suffix === 0 ? "unsatisfiable" : [Math.max(0, size - suffix), size - 1];
+  }
+  const start = Number(first);
+  if (last !== "" && Number(last) < start) return null;
+  if (start >= size) return "unsatisfiable";
+  return [start, last === "" ? size - 1 : Math.min(Number(last), size - 1)];
+}
+
+export const STREAM_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * `length` bytes of an open file from `start`, read from its descriptor a chunk at a time as the
+ * client takes them, never the whole file in memory, and never on the server's thread: each read
+ * is asynchronous. With `unchanged` (an authorized file, `openAuthorized`), each chunk is followed
+ * by a look at the descriptor: a file written over in place since it was authorized (another size
+ * or modification time) ends the stream with an error. That cannot see a write that keeps both, nor
+ * take back bytes already sent. Any file that ends before `length` ends the stream with an error.
+ * The descriptor is closed once: at the end, on an error, or when the client goes away (after a
+ * read under way returns, so the number is never reused under it).
+ */
+function descriptorBody(fd: number, start: number, length: number, unchanged: { size: number; mtimeNs: bigint } | null): ReadableStream<Uint8Array> {
+  let position = start;
+  let left = length;
+  let reading = false;
+  let cancelled = false;
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    release(fd);
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (left === 0) {
+        finish();
+        controller.close();
+        return;
+      }
+      const buffer = Buffer.allocUnsafe(Math.min(STREAM_CHUNK_BYTES, left));
+      reading = true;
+      let read: number;
+      try {
+        read = await (pageFileHooks.read ?? readAt)(fd, buffer, position);
+        if (read === 0) throw new Error("the file ended before it was read");
+        if (unchanged !== null) {
+          const now = (pageFileHooks.fstat ?? fstatBig)(fd);
+          if (now.size !== BigInt(unchanged.size) || now.mtimeNs !== unchanged.mtimeNs) throw new Error("the file changed while it was read");
+        }
+      } catch (error) {
+        reading = false;
+        finish();
+        if (!cancelled) controller.error(error);
+        return;
+      }
+      reading = false;
+      if (cancelled) {
+        finish();
+        return;
+      }
+      position += read;
+      left -= read;
+      controller.enqueue(buffer.subarray(0, read));
+      if (left === 0) {
+        finish();
+        controller.close();
+      }
+    },
+    cancel() {
+      cancelled = true;
+      if (!reading) finish();
+    },
+  }, { highWaterMark: 0 });
+}
+
+const readAt = (fd: number, buffer: Buffer, position: number): Promise<number> => new Promise((done, fail) => {
+  read(fd, buffer, 0, buffer.length, position, (error, bytes) => { if (error) fail(error); else done(bytes); });
+});
 
 /** A page's relative URL as a path, decoded; null for a URL with a scheme, a host or a rooted path. */
 function pageRelative(ref: string): string | null {
@@ -310,18 +485,151 @@ function pageTarget(ref: string, folder: string): string | null {
 const hiddenBelow = (folder: string, path: string): boolean => path.slice(folder.length + 1).split(sep).some((part) => part.startsWith("."));
 
 /**
- * The file a page names by a relative URL, when it is a file in the page's folder or below,
- * symlinks resolved, with no hidden name on the way (`.ssh/`, `.env`); null for a URL with a
- * scheme, a host or a rooted path, or anything outside.
+ * The first of `roots` (resolved folders) that `file` (a resolved path) lies in, when it has no
+ * hidden name below that folder (`.ssh/`, `.env`).
  */
-function pageFile(ref: string, folder: string): string | null {
-  const target = pageTarget(ref, folder);
-  if (target === null) return null;
+function rootOf(file: string, roots: readonly string[]): string | undefined {
+  const root = roots.find((candidate) => file.startsWith(candidate.endsWith(sep) ? candidate : candidate + sep));
+  if (root === undefined || hiddenBelow(root.endsWith(sep) ? root.slice(0, -1) : root, file)) return undefined;
+  return root;
+}
+
+/**
+ * Test seams for the steps of `openAuthorized` and the descriptors it hands out, and for the page's
+ * own folder (`pageWithLocalFiles`); never set outside tests. `platform` and `uid` stand in for the
+ * process's own, `fstat`, `readlink` and `read` for the filesystem calls they name, and the other
+ * hooks run at the moment they name.
+ */
+export const pageFileHooks: {
+  platform?: NodeJS.Platform;
+  uid?: () => number | undefined;
+  pageFolder?: (folder: string) => void;
+  pageOpened?: (fd: number) => void;
+  afterResolve?: (file: string) => void;
+  afterOpen?: (file: string) => void;
+  beforeIdentity?: (file: string) => void;
+  afterAuthorize?: (requested: string) => void;
+  fstat?: (fd: number) => BigIntStats;
+  readlink?: (path: string) => string;
+  read?: (fd: number, buffer: Buffer, position: number) => Promise<number>;
+  /** the synchronous read a file thread serves a file with (`file-tasks.ts` `open`) */
+  readSync?: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number) => number;
+  /** how quickly a disk must answer for a large file to be sent whole (`FAST_DISK_MS`); -1 streams every one */
+  fastDiskMs?: number;
+  opened?: (fd: number) => void;
+  closed?: (fd: number) => void;
+} = {};
+
+const fstatBig = (fd: number): BigIntStats => fstatSync(fd, { bigint: true });
+/** O_NONBLOCK, so a FIFO put where a file was is not waited on; O_NOFOLLOW, so a link put there since the check is not followed. */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+
+export function release(fd: number): void {
+  closeSync(fd);
+  pageFileHooks.closed?.(fd);
+}
+
+/** A file a page may read, open: its descriptor, what it was asked as and allowed under, and the file's type, identity, size and modification time. */
+interface Authorized { fd: number; requested: string; file: string; roots: readonly string[]; mime: string; dev: bigint; ino: bigint; size: number; mtimeNs: bigint }
+
+/**
+ * `requested` opened for a page to read, when what was opened is a file in one of `roots` with no
+ * hidden name below it; null for anything else. The checks of the path before it is opened only
+ * refuse early: a folder on the way can be swapped between any check of a path and the next, so
+ * what decides is the opened file. The path is resolved and checked again once it is open, and it
+ * must still name the opened file (the same device and inode), but these are samples of a path
+ * too, which a swap timed around each of them passes. So each platform proves it as it can:
+ * - Linux: the kernel's own path of the opened file (`/proc/self/fd`) must lie in `roots`, with no
+ *   hidden name; a descriptor whose path cannot be read, or whose file was deleted, is refused.
+ * - macOS: every folder from the root the file lies in down to its own folder must be a folder,
+ *   not a link, owned by this server's user and writable by no group or other user, so only this
+ *   user's own processes can swap them, and those can already read what a swap would expose. It
+ *   is not a proof against this user's own processes.
+ * - Windows: the second resolution and identity check only, and no look at the folders' access
+ *   lists: anyone allowed to write to a folder on the way can race them. That is outside the one
+ *   user this server serves.
+ * - Anywhere else, nothing is authorized.
+ * The caller reads only from the descriptor and closes it (`release`).
+ */
+function openAuthorized(requested: string, roots: readonly string[]): Authorized | null {
+  const hooks = pageFileHooks;
+  let file: string;
   try {
-    const file = realpathSync(target);
-    if (!file.startsWith(folder + sep) || hiddenBelow(folder, file)) return null;
-    return statSync(file).isFile() ? file : null;
+    file = realpathSync(requested);
+    if (rootOf(file, roots) === undefined || !statSync(file).isFile()) return null;
   } catch { return null; }
+  hooks.afterResolve?.(file);
+  let fd: number;
+  try { fd = openSync(file, OPEN_FLAGS); } catch { return null; }
+  hooks.opened?.(fd);
+  let kept = false;
+  try {
+    const opened = (hooks.fstat ?? fstatBig)(fd);
+    if (!opened.isFile() || opened.ino === 0n) return null;
+    hooks.afterOpen?.(file);
+    const again = realpathSync(requested);
+    const root = rootOf(again, roots);
+    if (root === undefined) return null;
+    hooks.beforeIdentity?.(again);
+    const named = statSync(again, { bigint: true });
+    if (named.dev !== opened.dev || named.ino !== opened.ino) return null;
+    if (!openedWithin(fd, again, root, roots)) return null;
+    hooks.afterAuthorize?.(requested);
+    // what is handed out (an address's size, a HEAD's length) is the file as it is once authorized:
+    // one written over in place since it was first looked at is refused, not described by that look
+    const settled = (hooks.fstat ?? fstatBig)(fd);
+    if (settled.dev !== opened.dev || settled.ino !== opened.ino || settled.size !== opened.size || settled.mtimeNs !== opened.mtimeNs) return null;
+    kept = true;
+    return { fd, requested, file: again, roots, mime: mimeOf(again), dev: opened.dev, ino: opened.ino, size: Number(opened.size), mtimeNs: opened.mtimeNs };
+  } catch {
+    return null;
+  } finally {
+    if (!kept) release(fd);
+  }
+}
+
+/** This platform's proof that the file open at `fd` (found at `file`, under `root`) lies in `roots` (`openAuthorized`). */
+function openedWithin(fd: number, file: string, root: string, roots: readonly string[]): boolean {
+  const platform = pageFileHooks.platform ?? process.platform;
+  if (platform === "linux") {
+    let opened: string;
+    try { opened = (pageFileHooks.readlink ?? readlinkSync)(`/proc/self/fd/${fd}`); } catch { return false; }
+    return !opened.endsWith(" (deleted)") && rootOf(opened, roots) !== undefined;
+  }
+  if (platform === "darwin") return ownedFolders(root, file, pageFileHooks.uid ? pageFileHooks.uid() : process.getuid?.());
+  return platform === "win32";
+}
+
+/**
+ * Whether the page open at `fd` (whose identity is `opened`) is `file`, its path resolved once before
+ * it was opened: on Linux the kernel's path of the descriptor is that path (one that cannot be read, or
+ * was deleted, is not); elsewhere that path is a file, not a link, with the descriptor's device and
+ * inode, and still resolves to itself (no folder on the way became a link): samples, like the other
+ * platforms' checks (`openAuthorized`).
+ */
+function pageOpenedAs(fd: number, file: string, opened: BigIntStats): boolean {
+  if ((pageFileHooks.platform ?? process.platform) === "linux") {
+    let path: string;
+    try { path = (pageFileHooks.readlink ?? readlinkSync)(`/proc/self/fd/${fd}`); } catch { return false; }
+    return path === file;
+  }
+  const named = lstatSync(file, { bigint: true });
+  return named.isFile() && named.dev === opened.dev && named.ino === opened.ino && realpathSync(file) === file;
+}
+
+/** Every folder from `root` to `file`'s own is a folder (not a link), owned by `uid`, and writable by no group or other user. */
+function ownedFolders(root: string, file: string, uid: number | undefined): boolean {
+  if (uid === undefined) return false;
+  const base = root.endsWith(sep) ? root.slice(0, -1) : root;
+  const below = dirname(file).slice(base.length).split(sep).filter(Boolean);
+  let folder = base === "" ? sep : base;
+  for (let index = 0; ; index += 1) {
+    let stat;
+    try { stat = lstatSync(folder); } catch { return false; }
+    if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o022) !== 0) return false;
+    if (index === below.length) return true;
+    folder = join(folder, below[index]!);
+  }
 }
 
 /**
@@ -330,7 +638,8 @@ function pageFile(ref: string, folder: string): string | null {
  * None by default: a page that came with its own symlinks (an unpacked archive, a cloned
  * repository) could otherwise name any of this PC's videos, and whether one plays would tell it
  * that the file exists; in a folder named here, any page may learn that. Read on every render, so
- * a share mounted later counts.
+ * a share mounted later counts. On macOS a share owned by another user, or one its group or anyone
+ * else may write to, plays nothing (`openAuthorized`).
  */
 function mediaRoots(): string[] {
   const roots: string[] = [];
@@ -343,22 +652,16 @@ function mediaRoots(): string[] {
 }
 
 /**
- * A video or sound a page names by a relative URL with no hidden name in it, that is a file in
- * its folder or in one of `roots`, again with no hidden name below that: what decides is where the
- * file lies, whether a symlink beside the page leads there or the URL climbs out of its folder
- * (`../clips/take.mp4`). Without `roots` the URL stays in its folder. Null for anything else.
+ * Where a video or sound a page names by a relative URL may be looked for: a URL with no hidden
+ * name in it, in the page's folder, or with `roots` anywhere (`openAuthorized` then decides by
+ * where the file lies, whether a symlink beside the page leads there or the URL climbs out of its
+ * folder, `../clips/take.mp4`). Without `roots` the URL stays in its folder. Null for anything else.
  */
-function pageStreamFile(ref: string, folder: string, roots: readonly string[]): string | null {
+function pageStreamTarget(ref: string, folder: string, roots: readonly string[]): string | null {
   const relative = pageRelative(ref);
   if (relative === null || relative.split(/[\\/]/).some((part) => part.startsWith(".") && part !== "." && part !== "..")) return null;
   const target = resolve(folder, relative);
-  if (!target.startsWith(folder + sep) && roots.length === 0) return null;
-  try {
-    const file = realpathSync(target);
-    const root = [folder, ...roots].find((candidate) => file.startsWith(candidate.endsWith(sep) ? candidate : candidate + sep));
-    if (root === undefined || hiddenBelow(root.endsWith(sep) ? root.slice(0, -1) : root, file)) return null;
-    return statSync(file).isFile() && PLAYS(mimeOf(file)) ? file : null;
-  } catch { return null; }
+  return target.startsWith(folder + sep) || roots.length > 0 ? target : null;
 }
 
 /** The page's script can read what is put into it, so each element takes only its own kind of
@@ -371,37 +674,124 @@ const STYLE = (mime: string) => mime === "text/css";
 /** a script element that runs (no type, a JavaScript type, or a module); a data block (`type="text/plain"`) takes no file */
 const RUNS = (type: string | null) => type === null || /^\s*(?:module|(?:text|application)\/(?:x-)?(?:java|ecma)script)?\s*$/i.test(type);
 
+/** All of an open file's bytes as its descriptor read them, or null when it is not the size and modification time it was authorized at, before or after. */
+function readWhole(fd: number, size: number, mtimeNs: bigint): Buffer | null {
+  const buffer = Buffer.alloc(size);
+  for (let at = 0; at < size;) {
+    const read = readSync(fd, buffer, at, size - at, at);
+    if (read === 0) return null;
+    at += read;
+  }
+  const after = (pageFileHooks.fstat ?? fstatBig)(fd);
+  return after.size === BigInt(size) && after.mtimeNs === mtimeNs ? buffer : null;
+}
+
+/** A page's own file as the page found it: its type and size, and its bytes once one of its elements took it. */
+interface PageAsset { target: string; mime: string; size: number; data: string | null }
+
 /**
- * The page with the pictures, media, stylesheets and scripts it takes from its own folder put
- * into it as data: URLs, so the element keeps its attributes (`defer`, `type="module"`, a
- * stylesheet's `media`): the sandbox may ask this server for nothing, and on a paired phone it
+ * The page at `path` (any file this server's user can read, as every file the viewer opens), read
+ * from one descriptor, with the pictures, media, stylesheets and scripts it takes from its own
+ * folder put into it as data: URLs, so the element keeps its attributes (`defer`, `type="module"`,
+ * a stylesheet's `media`): the sandbox may ask this server for nothing, and on a paired phone it
  * could not anyway (the device cookie is SameSite=Strict, and a sandboxed page has no origin).
- * Nothing outside the page's folder is read; a URL is resolved once however often it is named.
- * With `media`, a video or sound that does not fit is given an address to play from instead
- * (`PAGE_MEDIA_PATH`, up to `PAGE_MEDIA_PER_RENDER` files), the one thing this server answers the page.
+ * Nothing outside the page's folder is read, and each file only from a descriptor
+ * `openAuthorized` let through; a URL is resolved once however often it is named. With `media`,
+ * a video or sound that does not fit is given an address to play from instead
+ * (`PAGE_MEDIA_PATH`, up to `PAGE_MEDIA_PER_RENDER` files), the one thing this server answers the
+ * page; each address is handed to `grant` (by default kept at once, `keepPageMedia`). Null when
+ * the page is not a file of at most `EMBED_PAGE_BYTES`, or changed while it was read.
  */
-export function pageWithLocalFiles(path: string, media: PageMedia | null = null): string {
-  const folder = realpathSync(dirname(path));
+export function pageWithLocalFiles(path: string, media: PageMedia | null = null, grant: (given: PageMediaGrant) => void = (given) => keepPageMedia([given])): string | null {
+  // the page's path is resolved once, before the page is opened (a page that is a link, to the file it
+  // leads to), and the page read must be that file, proven from its descriptor (`pageOpenedAs`), never by
+  // looking a path up again; its files come from that file's folder: a folder swapped for a link between
+  // two lookups would otherwise serve another folder's page, or make it the folder the page's files come from
+  let file: string;
+  try { file = realpathSync(path); } catch { return null; }
+  const folder = dirname(file);
+  pageFileHooks.pageFolder?.(folder);
+  let html: string;
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+  pageFileHooks.pageOpened?.(fd);
+  try {
+    const page = fstatBig(fd);
+    if (!page.isFile() || page.size > BigInt(EMBED_PAGE_BYTES) || !pageOpenedAs(fd, file, page)) return null;
+    // and the asked path still leads there: a folder that was a link only while it was looked up, put
+    // back since, made that lookup another folder's page
+    if (realpathSync(path) !== file) return null;
+    const bytes = readWhole(fd, Number(page.size), page.mtimeNs);
+    if (bytes === null) return null;
+    html = bytes.toString("utf8");
+  } catch {
+    return null;
+  } finally { closeSync(fd); }
   let left = EMBED_TOTAL_BYTES;
-  const resolved = new Map<string, string | null>();
+  const resolved = new Map<string, PageAsset | null>();
   const streamed = new Map<string, string | null>();
   const roots = media !== null ? mediaRoots() : [];
   // one address per file in this render, however the page names it
   const addresses = new Map<string, string | null>();
   let granted = 0;
   const lookups = () => resolved.size + streamed.size;
-  const take = (ref: string | null, accepts: (mime: string) => boolean): string | null => {
-    if (ref === null) return null;
-    if (!resolved.has(ref)) resolved.set(ref, lookups() < EMBED_REFS ? pageFile(ref, folder) : null);
-    const file = resolved.get(ref) ?? null;
-    if (file === null || !accepts(mimeOf(file))) return null;
-    const size = statSync(file).size;
-    if (size > EMBED_FILE_BYTES || size > left) return null;
-    left -= size;
-    return file;
+  /** the file at `target`, and its bytes when `accepts` takes its type and it fits what is left */
+  const asset = (target: string, accepts: (mime: string) => boolean): PageAsset | null => {
+    const file = openAuthorized(target, [folder]);
+    if (file === null) return null;
+    try {
+      const found: PageAsset = { target, mime: file.mime, size: file.size, data: null };
+      if (!accepts(file.mime) || file.size > EMBED_FILE_BYTES || file.size > left) return found;
+      // written over since it was authorized: left as the page names it
+      const bytes = readWhole(file.fd, file.size, file.mtimeNs);
+      if (bytes === null) return null;
+      found.data = bytes.toString("base64");
+      return found;
+    } finally { release(file.fd); }
   };
-  const play = (ref: string): string | null => {
-    if (!streamed.has(ref)) streamed.set(ref, lookups() < EMBED_REFS ? pageStreamFile(ref, folder, roots) : null);
+  const take = (ref: string | null, accepts: (mime: string) => boolean): PageAsset | null => {
+    if (ref === null) return null;
+    if (!resolved.has(ref)) {
+      const target = lookups() < EMBED_REFS ? pageTarget(ref, folder) : null;
+      resolved.set(ref, target === null ? null : asset(target, accepts));
+    }
+    let found = resolved.get(ref) ?? null;
+    if (found === null || !accepts(found.mime) || found.size > EMBED_FILE_BYTES || found.size > left) return null;
+    // first named by an element that takes another kind of file: read now
+    if (found.data === null) {
+      found = asset(found.target, accepts);
+      resolved.set(ref, found);
+      if (found?.data == null) return null;
+    }
+    left -= found.size;
+    return found;
+  };
+  const play = (ref: string, owner: PageMedia): string | null => {
+    if (!streamed.has(ref)) {
+      const target = lookups() < EMBED_REFS ? pageStreamTarget(ref, folder, roots) : null;
+      const file = target === null ? null : openAuthorized(target, [folder, ...roots]);
+      let address: string | null = null;
+      if (file !== null) {
+        try {
+          if (PLAYS(file.mime)) {
+            const key = `${file.dev}:${file.ino}`;
+            if (!addresses.has(key)) {
+              let token: string | null = null;
+              if (granted < PAGE_MEDIA_PER_RENDER) {
+                const given = grantPageMedia(file, owner);
+                grant(given);
+                token = given[0];
+                granted += 1;
+              }
+              // absolute, from the same host as the policy's media source, so the two never disagree
+              addresses.set(key, token === null ? null : owner.source + token);
+            }
+            address = addresses.get(key) ?? null;
+          }
+        } finally { release(file.fd); }
+      }
+      streamed.set(ref, address);
+    }
     return streamed.get(ref) ?? null;
   };
   const embed = (attribute: string, accepts: (mime: string) => boolean, when: (element: HTMLRewriterTypes.Element) => boolean = () => true, streams = false) => ({
@@ -409,18 +799,10 @@ export function pageWithLocalFiles(path: string, media: PageMedia | null = null)
       if (!when(element)) return;
       const ref = element.getAttribute(attribute);
       const file = take(ref, accepts);
-      if (file !== null) element.setAttribute(attribute, `data:${mimeOf(file)};base64,${readFileSync(file).toString("base64")}`);
+      if (file !== null) element.setAttribute(attribute, `data:${file.mime};base64,${file.data}`);
       else if (media !== null && streams && ref !== null) {
-        const far = play(ref);
-        if (far === null) return;
-        if (!addresses.has(far)) {
-          // vanished since it was looked up: the src stays as the page wrote it
-          const token = granted < PAGE_MEDIA_PER_RENDER ? pageMediaUrl(far, mimeOf(far), media) : null;
-          if (token !== null) granted += 1;
-          // absolute, from the same host as the policy's media source, so the two never disagree
-          addresses.set(far, token === null ? null : media.source + token);
-        }
-        const address = addresses.get(far) ?? null;
+        // gone or refused since it was looked up: the src stays as the page wrote it
+        const address = play(ref, media);
         if (address !== null) element.setAttribute(attribute, address);
       }
     },
@@ -433,7 +815,7 @@ export function pageWithLocalFiles(path: string, media: PageMedia | null = null)
     .on("audio[src]", embed("src", MEDIA, undefined, true))
     .on("script[src]", embed("src", SCRIPT, (element) => RUNS(element.getAttribute("type"))))
     .on('link[rel~="stylesheet" i][href]', embed("href", STYLE))
-    .transform(readFileSync(path, "utf8"));
+    .transform(html);
 }
 
 /**
@@ -460,8 +842,12 @@ export function isHtmlPage(info: FileInfo): boolean {
  * text is served as plain text whatever its extension says it runs as. `render` asks for an
  * HTML page as a page (`pagePolicy`); any other file ignores it. `media`
  * (`pageMediaSource` and who asked) lets that page play its videos too large to put into it.
+ * `request` gives the method and Range: a HEAD sends no body, a GET a Range asks for gets that
+ * range (`byteRange`). The page is rendered, and the file opened, on a file thread (`file-pool.ts`).
+ * `watched`: a `watchPageMedia` the caller began before it looked for the file, so a revocation
+ * meanwhile counts too (without it, one begun here).
  */
-export function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null): Response {
+export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>): Promise<Response> {
   const name = encodeURIComponent(info.name);
   const headers = new Headers({
     "content-disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${name}`,
@@ -475,10 +861,46 @@ export function fileResponse(info: FileInfo, download: boolean, render = false, 
   else if (info.kind !== "pdf") headers.set("content-security-policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'");
   // text shows as text, whatever its extension says it runs as
   const type = page ? "text/html; charset=utf-8" : info.kind === "text" && info.mime !== "image/svg+xml" ? "text/plain; charset=utf-8" : info.mime;
+  const gone = () => jsonResponse({ error: { code: "not_found", message: "no readable file at that path" } }, 404);
   if (page && info.size <= EMBED_PAGE_BYTES) {
+    const watch = media === null ? null : (watched ?? watchPageMedia());
+    let rendered: RenderedPage;
+    try {
+      rendered = await fileTask<RenderedPage>({ op: "render", path: info.path, media }, request?.signal);
+      // gone, grown past the page limit or written over since it was found
+      if (rendered.html === null) return gone();
+      if (watch !== null) keepPageMedia(rendered.grants, Date.now(), watch.since);
+    } finally {
+      // one this request began is ended by it; one its caller began, by the caller
+      if (watched === undefined) watch?.done();
+    }
     headers.set("content-type", type);
-    return new Response(pageWithLocalFiles(info.path, media), { headers });
+    return new Response(rendered.html, { headers });
   }
-  const file = Bun.file(info.path, { type });
-  return new Response(file, { headers });
+  // everything before the headers (opening, the range, a small body) is one task, bounded by its
+  // deadline and ended by the client going away; only a larger body is streamed after them
+  const head = request?.method === "HEAD";
+  // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
+  const get = head ? null : { range: request?.method === "GET" ? request.headers.get("range") : null, ifRange: request?.headers.has("if-range") ?? false };
+  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, fastDiskMs: pageFileHooks.fastDiskMs }, request?.signal);
+  if (opened === null) return gone();
+  headers.set("content-type", type);
+  headers.set("accept-ranges", "bytes");
+  if (opened.range === "unsatisfiable") {
+    headers.set("content-range", `bytes */${opened.size}`);
+    return new Response(null, { status: 416, headers });
+  }
+  const [start, end] = opened.range ?? [0, opened.size - 1];
+  const length = end - start + 1;
+  headers.set("content-length", String(length));
+  if (opened.range !== null) headers.set("content-range", `bytes ${start}-${end}/${opened.size}`);
+  const status = opened.range === null ? 200 : 206;
+  if (head) return new Response(null, { status, headers });
+  if (opened.bytes !== null) return new Response(opened.bytes, { status, headers });
+  if (opened.fast) {
+    // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once)
+    headers.delete("content-length");
+    return new Response(Bun.file(info.path, { type }).slice(start, end + 1, type), { status, headers });
+  }
+  return new Response(descriptorBody(opened.fd!, start, length, null), { status, headers });
 }

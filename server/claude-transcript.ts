@@ -4,11 +4,14 @@ import { claudeCommandEcho } from "./skill-invocations/claude.ts";
 import { agentTaskResult, claudePeerId, claudePeerNotice, isContextClear, MAX_TURNS, toolSummary, type TranscriptParser } from "./transcript-records.ts";
 import { taskNotification, type SubagentDetail } from "./claude-subagents.ts";
 import { trimOutput } from "./tool-output.ts";
+import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 
 /** Slash-command and bookkeeping entries Claude logs as user turns — not conversations. */
-export function isCommandEntry(text: string): boolean {
+export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
-  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-");
+  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
+    // bash-mode output, only as the whole entry: the parser joins it to its command
+    || (!("origin" in entry) && !("permissionMode" in entry) && text.trimStart().startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
 /**
@@ -19,35 +22,71 @@ export function isCommandEntry(text: string): boolean {
 const LOCAL_COMMAND_MAX_CHARS = 4000;
 
 function localCommandOutput(content: unknown): string {
-  if (typeof content !== "string") return "";
+  return capNotice((taggedStreams(content, "local-command") ?? []).map(({ text }) => text.trim()).filter((text) => text.length > 0).join("\n"));
+}
+
+/** Bash payloads are opaque: only an unambiguous boundary identifies stderr. */
+function bashStreams(content: string): { stream: "stdout" | "stderr"; text: string }[] | null {
+  const envelope = content.trim();
+  if (envelope.startsWith("<bash-stdout>") && envelope.endsWith("</bash-stderr>")) {
+    const inner = envelope.slice("<bash-stdout>".length, -"</bash-stderr>".length);
+    const candidates = [...inner.matchAll(/<\/bash-stdout>\s*<bash-stderr>/g)];
+    const first = candidates[0];
+    if (first === undefined) return null;
+    if (candidates.length === 1) {
+      return [
+        { stream: "stdout", text: stripTerminalControls(inner.slice(0, first.index)).trimEnd() },
+        { stream: "stderr", text: stripTerminalControls(inner.slice(first.index + first[0].length)).trimEnd() },
+      ];
+    }
+    // Multiple boundaries never establish stderr: retain every inner character verbatim.
+    return [{ stream: "stdout", text: stripTerminalControls(inner) }];
+  }
+  // Older records can carry a single stream, but not reordered or partial envelopes.
+  const single = /^<bash-(stdout|stderr)>([\s\S]*)<\/bash-\1>$/.exec(envelope);
+  const stream = single?.[1], text = single?.[2];
+  return (stream === "stdout" || stream === "stderr") && text !== undefined
+    ? [{ stream, text: stripTerminalControls(text).trimEnd() }] : null;
+}
+
+/**
+ * The streams a whole entry holds, `<{tag}-stdout>…</{tag}-stdout>` and `<{tag}-stderr>…`, in order and with
+ * terminal controls stripped; ambiguous bash output stays verbatim in stdout. Null when the entry
+ * holds anything else.
+ */
+function taggedStreams(content: unknown, tag: "local-command" | "bash"): { stream: "stdout" | "stderr"; text: string }[] | null {
+  if (typeof content !== "string") return null;
+  if (tag === "bash") return bashStreams(content);
   // the whole entry is the output, one stream after another: a tag quoted inside an echo's
   // arguments is not an answer
-  const streams: string[] = [];
+  const streams: { stream: "stdout" | "stderr"; text: string }[] = [];
   let at = 0;
   for (;;) {
     while (at < content.length && /\s/.test(content[at]!)) at++;
     if (at === content.length) break;
-    const stream = content.startsWith("<local-command-stdout>", at) ? "stdout" : content.startsWith("<local-command-stderr>", at) ? "stderr" : null;
-    if (stream === null) return "";
-    const start = at + `<local-command-${stream}>`.length;
+    const stream = content.startsWith(`<${tag}-stdout>`, at) ? "stdout" : content.startsWith(`<${tag}-stderr>`, at) ? "stderr" : null;
+    if (stream === null) return null;
+    const start = at + `<${tag}-${stream}>`.length;
     // a closing tag the output prints itself ends nothing: the stream's own one is at the end of
     // the entry or before the next stream. Each candidate looks only at the whitespace after it.
-    const close = `</local-command-${stream}>`;
+    const close = `</${tag}-${stream}>`;
     let end = content.indexOf(close, start);
     let next = 0;
     while (end !== -1) {
       next = end + close.length;
       while (next < content.length && /\s/.test(content[next]!)) next++;
-      if (next === content.length || content.startsWith("<local-command-stdout>", next) || content.startsWith("<local-command-stderr>", next)) break;
+      if (next === content.length || content.startsWith(`<${tag}-stdout>`, next) || content.startsWith(`<${tag}-stderr>`, next)) break;
       end = content.indexOf(close, end + close.length);
     }
-    if (end === -1) return "";
-    const text = stripTerminalControls(content.slice(start, end)).trim();
-    if (text.length > 0) streams.push(text);
+    if (end === -1) return null;
+    streams.push({ stream, text: stripTerminalControls(content.slice(start, end)) });
     at = next;
   }
-  return capNotice(streams.join("\n"));
+  return streams;
 }
+
+/** The command of a bash-mode entry (`!` in Claude Code): the whole entry is `<bash-input>…</bash-input>`. */
+const BASH_INPUT = /^\s*<bash-input>([\s\S]*)<\/bash-input>\s*$/;
 
 /** Lines of one notice Claude Code writes as separate entries, a moment apart. */
 const NOTICE_JOIN_MS = 1000;
@@ -145,6 +184,8 @@ export interface TranscriptEntry {
   parentUuid?: string | null;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  origin?: unknown;
+  permissionMode?: unknown;
   /** "updates": Claude Code shows the entry's thinking text as a progress message, not as reasoning */
   thinkingDisplay?: unknown;
   message?: { role?: string; content?: unknown; stop_reason?: unknown };
@@ -157,8 +198,50 @@ export function claudeResultText(output: unknown): string {
       : "";
 }
 
-/** The image types a chat shows; anything else stays out of the page. */
-export const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/**
+ * A Claude image's ref: the entry, the block, and for a picture a tool returned its place in the
+ * result. The parser names only what transcriptImage can read back by it.
+ */
+export const CLAUDE_IMAGE_REF = /^([0-9a-f-]{8,64}):(\d{1,3})(?::(\d{1,3}))?$/i;
+
+/**
+ * The type of a picture Claude Code holds inline (pasted into a prompt, or a Read of an image
+ * file), by its leading bytes: a raster the chat shows, within the size the image endpoint serves.
+ * Null for anything else, so the page and the endpoint agree on what is a picture.
+ */
+export function claudeImageType(block: unknown): string | null {
+  const image = block as { type?: unknown; source?: { type?: unknown; media_type?: unknown; data?: unknown } } | null | undefined;
+  if (image?.type !== "image" || image.source?.type !== "base64") return null;
+  return inlineImageType(image.source.media_type, image.source.data);
+}
+
+/**
+ * A record with its inline pictures cut to what claudeImageType reads of them: their first bytes,
+ * or none past the size the endpoint serves. A screenshot can make a prompt megabytes long, and its
+ * bytes say nothing of where the record hangs in the session.
+ */
+export function withoutPictureBytes(text: string): string {
+  return text.replace(/("(?:data|base64)"\s*:\s*")([A-Za-z0-9+/]*={0,2})"/g,
+    (_whole: string, key: string, data: string) => `${key}${base64Size(data) > MAX_IMAGE_BYTES ? "" : data.slice(0, 16)}"`);
+}
+
+function claudeImageRef(uuid: unknown, ...at: number[]): string | null {
+  if (typeof uuid !== "string") return null;
+  const ref = [uuid, ...at].join(":");
+  return CLAUDE_IMAGE_REF.test(ref) ? ref : null;
+}
+
+/**
+ * The pictures among blocks, each named by the entry, the places that lead to the blocks (none for a
+ * prompt's own, the result's for a tool's) and its own: named here, fetched only when shown.
+ */
+export function claudeImages(uuid: unknown, blocks: readonly unknown[], ...at: number[]): { media_type: string; ref: string }[] {
+  return blocks.flatMap((block, index) => {
+    const mediaType = claudeImageType(block);
+    const ref = mediaType === null ? null : claudeImageRef(uuid, ...at, index);
+    return mediaType === null || ref === null ? [] : [{ media_type: mediaType, ref }];
+  });
+}
 
 interface ClaudeTranscriptOptions {
   subagents?: ReadonlyMap<string, SubagentDetail>;
@@ -265,7 +348,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     const queued = entry.type === "attachment" ? entry.attachment : undefined;
     if (queued?.commandMode === "task-notification" && typeof queued.prompt === "string" && notified(queued.prompt, entry.timestamp ?? null)) return;
     if (queued?.type === "queued_command" && queued.commandMode === "prompt" && queued.origin?.kind === "human") {
-      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim())) {
+      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim(), queued)) {
         turns.push({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(queued.prompt) }] });
       }
       return;
@@ -308,7 +391,22 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: invocation.text }, { kind: "skill", skill: invocation.skill }] }, entry);
         return;
       }
-      if (isCommandEntry(content)) return;
+      // bash mode: the command opens a turn like a prompt, and the entry after it holds what it printed
+      const own = !("origin" in entry) && !("permissionMode" in entry);
+      const command = own ? BASH_INPUT.exec(content)?.[1] : undefined;
+      if (command !== undefined) {
+        pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "shell", command }] }, entry);
+        return;
+      }
+      const printed = own ? taggedStreams(content, "bash") : null;
+      const shell = state.lastPrompt?.turn.parts[0];
+      if (printed !== null && shell?.kind === "shell" && shell.stdout === undefined) {
+        const of = (stream: "stdout" | "stderr") => capNotice(printed.filter((part) => part.stream === stream).map(({ text }) => text).join("\n"));
+        shell.stdout = of("stdout");
+        shell.stderr = of("stderr");
+      }
+      if (printed !== null) return;
+      if (isCommandEntry(content, entry)) return;
       pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(content) }] }, entry);
       return;
     }
@@ -325,9 +423,9 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           invocations.push({ kind: "skill", skill: invocation.skill });
           return [invocation.text];
         }
-        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim()) ? [part.text] : [];
+        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim(), entry) ? [part.text] : [];
       }).join("\n");
-      for (const block of content) {
+      for (const [index, block] of content.entries()) {
         if (typeof block !== "object" || block === null) continue;
         const result = block as { type?: string; tool_use_id?: string; content?: unknown; is_error?: unknown };
         if (result.type !== "tool_result" || typeof result.tool_use_id !== "string") continue;
@@ -336,14 +434,14 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         pending.delete(result.tool_use_id);
         trimOutput(tool, claudeResultText(result.content), result.tool_use_id);
         if (result.is_error === true) tool.error = true;
+        // the result's flag, and only it, says how the call went: an empty result is still a success
+        if (tool.call_id !== undefined) tool.state = result.is_error === true ? "error" : "ok";
         if (tool.skill) tool.skill.status = result.is_error === true ? "failed" : "loaded";
+        // a picture the tool returned (a Read of an image file) sits inside its result
+        const pictures = Array.isArray(result.content) ? claudeImages(entry.uuid, result.content, index) : [];
+        if (pictures.length > 0) tool.images = pictures;
       }
-      // an image pasted into the prompt: named here, fetched only when shown
-      const images: ConversationPart[] = typeof entry.uuid !== "string" ? [] : content.flatMap((block: unknown, index: number) => {
-        const image = block as { type?: unknown; source?: { type?: unknown; media_type?: unknown } } | null;
-        if (image?.type !== "image" || image.source?.type !== "base64" || typeof image.source.media_type !== "string" || !IMAGE_TYPES.has(image.source.media_type)) return [];
-        return [{ kind: "image" as const, media_type: image.source.media_type, ref: `${entry.uuid}:${index}` }];
-      });
+      const images = claudeImages(entry.uuid, content).map((image) => ({ kind: "image" as const, ...image }));
       if (prompt.trim() || images.length > 0) pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [...images, ...(prompt.trim() ? [{ kind: "text" as const, text: unwrapPastes(prompt) }] : []), ...invocations] }, entry);
       return;
     }
@@ -378,8 +476,11 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           };
           const skill = invokedSkill(b.name, input);
           if (skill) { part.skill = skill; part.summary = skill.name; }
+          const id = (block as { id?: unknown }).id;
+          // the native id, and pending until a tool_result answers it
+          if (typeof id === "string" && id.length > 0) { part.call_id = id; part.state = "pending"; }
           turn.parts.push(part);
-          pending.set(String((block as { id?: unknown }).id ?? ""), part);
+          pending.set(String(id ?? ""), part);
         }
         // unsupported transcript blocks are intentionally ignored
       }

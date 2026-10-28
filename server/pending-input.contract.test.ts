@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneRead, paneScrollInfo, sessionSnapshot } from "./herdr/client.ts";
@@ -12,6 +12,7 @@ import * as pendingInput from "./pending-input.ts";
 import { OmoStatus } from "./omo-status.ts";
 import * as claudeStore from "./claude-store.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
+import * as piModule from "./pi.ts";
 
 type PendingUpdate = Extract<ServerMessage, { type: "pending-messages" }>;
 
@@ -23,16 +24,38 @@ const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
 // Without a hold they go straight to herdr; this file runs in a process of its own (ci-tests.ts).
 const sendText = herdrClient.paneSendText;
 const sendKeys = herdrClient.paneSendKeys;
+const processInfo = herdrClient.paneProcessInfo;
+const failedPiIdentityLookups = new Set<string>();
 let connectHold: { rpc: "text" | "keys"; reached: () => void; release: Promise<void> } | null = null;
 const holding = async (rpc: "text" | "keys"): Promise<void> => {
   const hold = connectHold;
   if (hold?.rpc !== rpc) return;
   connectHold = null; hold.reached(); await hold.release;
 };
+/** Each text, key (a draft clear's among them) and agent.prompt write the bridge asks herdr for, as `<kind> <pane>`. */
+const herdrWrites: string[] = [];
+const agentPrompt = herdrClient.agentPrompt;
 mock.module("./herdr/client.ts", () => ({
   ...herdrClient,
-  paneSendText: async (...args: Parameters<typeof sendText>) => { if (args[1].startsWith("\u001b[200~")) await holding("text"); return sendText(...args); },
-  paneSendKeys: async (...args: Parameters<typeof sendKeys>) => { await holding("keys"); return sendKeys(...args); },
+  agentPrompt: async (...args: Parameters<typeof agentPrompt>) => { herdrWrites.push(`prompt ${args[0]}`); return agentPrompt(...args); },
+  paneSendText: async (...args: Parameters<typeof sendText>) => { herdrWrites.push(`text ${args[0]}`); if (args[1].startsWith("\u001b[200~")) await holding("text"); return sendText(...args); },
+  paneSendKeys: async (...args: Parameters<typeof sendKeys>) => { herdrWrites.push(`keys ${args[0]}`); await holding("keys"); return sendKeys(...args); },
+  paneProcessInfo: async (...args: Parameters<typeof processInfo>) => {
+    if (failedPiIdentityLookups.has(args[0])) throw new Error("transient process lookup failure");
+    return processInfo(...args);
+  },
+}));
+const fakePiTranscripts = new Map<string, string>();
+const unavailablePiTranscripts = new Set<string>();
+const realPiTranscriptPath = piModule.piTranscriptPath;
+mock.module("./pi.ts", () => ({
+  ...piModule,
+  piTranscriptPath: async (paneId: string, ...args: any[]) => {
+    if (unavailablePiTranscripts.has(paneId)) return null;
+    const path = fakePiTranscripts.get(paneId);
+    return path ? existsSync(path) ? { path } : { unwritten: { id: basename(path, ".jsonl"), path } }
+      : realPiTranscriptPath(paneId, ...args as Parameters<typeof realPiTranscriptPath> extends [string, ...infer Rest] ? Rest : never);
+  },
 }));
 // The create routes' launch, for the first-message cases: nothing is started (an agent kind may be a
 // real program on this PC); the case starts its recorder in the pane itself, after the route answered,
@@ -99,9 +122,9 @@ class Socket {
   /** this connection's id, from its first snapshot: what a create request names as `first_message_connection` */
   async connection(): Promise<string> { return (await this.wait((frame) => frame.type === "snapshot")).connection; }
   /** `chat`: as the chat lens attaches, over a covered grid */
-  async attach(pane: string, chat = false) {
+  async attach(pane: string, chat = false, receiptResumeId?: string) {
     await this.wait((frame) => frame.type === "snapshot");
-    this.send({ type: "attach", pane_id: pane, cols: 100, rows: 30, ...(chat ? { keep_size: true } : {}) });
+    this.send({ type: "attach", pane_id: pane, cols: 100, rows: 30, ...(chat ? { keep_size: true } : {}), ...(receiptResumeId ? { receipt_resume_id: receiptResumeId } : {}) });
     await this.wait((frame) => frame.type === "input-ready" && frame.pane_id === pane && frame.ready !== false);
   }
   close() { this.ws.close(); }
@@ -112,32 +135,50 @@ beforeAll(() => {
   // The recorder polls its screen file: fs.watch can drop the change that follows writeFileSync's
   // truncation, leaving the cleared screen it read in between up for good.
   writeFileSync(join(root, "record.cjs"), `const fs=require("node:fs");const out=process.argv[2];process.stdin.setRawMode(true);process.stdin.resume();process.stdout.write("\\x1b[?2004h"+(process.argv[3]||"").replace(/\\\\x1b/g,"\\x1b"),()=>fs.writeFileSync(out,""));process.stdin.on("data",c=>fs.appendFileSync(out,JSON.stringify(c.toString("utf8"))+"\\n"));let shown="";setInterval(()=>{const next=fs.readFileSync(process.argv[4],"utf8");if(next!==shown){shown=next;process.stdout.write("\\x1b[2J\\x1b[H"+next);}},20);`);
-  for (const name of ["claude", "codex", "omp", "plain"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
+  for (const name of ["claude", "codex", "omp", "pi", "plain", "node"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
+  // an npm-style launcher (`node .../bin/claude`) that does not exec its agent: it stays in front, listed before the
+  // native agent it starts, and starts SESSION2 once SESSION1 exits. On SIGUSR1 it starts SESSION2 first and ends
+  // SESSION1 only once SESSION2 runs: a replacement with an agent in front throughout, which no read can take for
+  // the launched agent having left (the launcher alone in front between the two)
+  mkdirSync(join(root, "launcher"));
+  writeFileSync(join(root, "launcher", "claude"), `const{spawn}=require("node:child_process");const[agent,recorder,log,screen,screenFile,replacementLog]=process.argv.slice(2);const run=(args,then)=>spawn(agent,[recorder,...args],{stdio:"inherit"}).on("exit",then);const second=()=>run([replacementLog,"SESSION2",screenFile],()=>process.exit(0));let replaced=false;const first=run([log,screen,screenFile],()=>{if(!replaced)second();});process.on("SIGUSR1",()=>{if(replaced)return;replaced=true;second().once("spawn",()=>first.kill("SIGKILL"));});`);
 });
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
+  fakePiTranscripts.clear();
+  unavailablePiTranscripts.clear();
+  failedPiIdentityLookups.clear();
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable = false) {
+async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable: boolean | "launcher" = false, piTranscript?: string) {
   const id = ++next;
   const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
   // registered before anything below can throw, so afterEach closes the workspace of a setup that failed
   const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
   const pane = created.root_pane.pane_id;
+  let piSeq = 1;
   const log = join(root, `${id}.jsonl`);
   const screenFile = join(root, `${id}.screen`);
   writeFileSync(screenFile, "");
   const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'`;
   // The shell immediately starts SESSION2 once SESSION1 exits, preserving terminal and lease.
   const replacementLog = join(root, `${id}-replacement.jsonl`);
-  await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable
+  await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable === "launcher"
+    ? `exec '${join(root, "node")}' '${join(root, "launcher", "claude")}' '${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}' '${replacementLog}'\n`
+    : replaceable
     ? `${command}; exec '${join(root, agent)}' '${join(root, "record.cjs")}' '${replacementLog}' 'SESSION2' '${screenFile}'\n`
     : `exec ${command}\n` });
   const deadline = Date.now() + 10_000;
   while (!existsSync(log)) { if (Date.now() > deadline) throw new Error("recorder did not start"); await Bun.sleep(25); }
   // "plain" is a program herdr knows as no agent
-  if (agent !== "plain") await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
+  if (agent !== "plain") {
+    if (agent === "pi" && piTranscript) {
+      fakePiTranscripts.set(pane, piTranscript);
+      await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
+      await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:pi", agent, seq: piSeq++, agent_session_path: piTranscript, session_start_source: "startup" });
+    } else await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
+  }
   const server = createServer({ ...options, port: 0, stateDir: join(root, `state-${id}`) });
   entry.stop = server.stop;
   const socket = new Socket(server.port); entry.sockets.push(socket);
@@ -149,7 +190,9 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   };
   const state = async (value: string, reader = socket) => {
     const from = reader.seen.length;
-    await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: value });
+    await herdrRpc("pane.report_agent", agent === "pi" && piTranscript
+      ? { pane_id: pane, source: "herdr:pi", agent, state: value, seq: piSeq++, agent_session_path: piTranscript }
+      : { pane_id: pane, source: "manual", agent, state: value });
     await reader.wait((frame) => frame.type === "pane-status" && frame.pane_id === pane && (value === "idle" || value === "unknown" ? ["idle", "done"].includes(frame.agent_status) : frame.agent_status === value), from);
   };
   // `ending`: what the screen ends with once drawn, for a text taller than the pane
@@ -166,12 +209,250 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   };
   const queue = async (id: number, text: string): Promise<PendingMessage> => {
     socket.send({ type: "submit", id, pane_id: pane, text, payload: "unused\r", delivery: "queue" });
-    const answer = await socket.result(id); expect(answer.ok).toBe(true); expect(answer.pending?.request_id).toBe(id); return answer.pending;
+    const answer = await socket.result(id); expect(answer.ok, JSON.stringify(answer)).toBe(true); expect(answer.pending?.request_id).toBe(id); return answer.pending;
   };
   const removed = (id: string, outcome = "sent", reader = socket) => reader.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane && frame.removed?.some((entry: any) => entry.id === id && entry.outcome === outcome));
   const another = async (attach = true, chat = false) => { const reader = new Socket(server.port); entry.sockets.push(reader); if (attach) await reader.attach(pane, chat); else await reader.wait((frame) => frame.type === "snapshot"); return reader; };
   return { screenFile, pane, port: server.port, server, socket, bytes, waitBytes, state, showScreen, queue, removed, another, replacementLog };
 }
+
+describe("Ovis-origin Pi transcript receipts", () => {
+  const piLine = (id: string, parentId: string | null, role: string, text: string) => JSON.stringify({
+    type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role, content: [{ type: "text", text }], timestamp: Date.now() },
+  }) + "\n";
+  const piFile = (name: string) => {
+    const path = join(root, `${name}-${crypto.randomUUID()}.jsonl`);
+    writeFileSync(path, JSON.stringify({ type: "session", version: 3, id: crypto.randomUUID(), timestamp: new Date().toISOString(), cwd: root }) + "\n"
+      + piLine("a0", null, "assistant", "working"));
+    return path;
+  };
+
+  it.each(["before disconnect", "after disconnect"] as const)("resumes an exact Pi receipt consumed %s without typing again", async (when) => {
+    const transcript = piFile("pi-resume");
+    const f = await setup("pi-resume", "pi", "› Message\n", {}, false, transcript);
+    const token = crypto.randomUUID(), from = f.socket.seen.length;
+    f.socket.send({ type: "attach", pane_id: f.pane, cols: 100, rows: 30, receipt_resume_id: token });
+    await f.socket.wait((frame) => frame.type === "input-ready" && frame.pane_id === f.pane, from);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    f.socket.send({ type: "submit", id: 899, pane_id: f.pane, text: "same", payload: "same", delivery: "immediate" });
+    expect((await f.socket.result(899)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages"
+      && frame.messages.some((item: PendingMessage) => item.error?.code === "pi_transcript_pending"));
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "pi_transcript_pending");
+    await f.waitBytes(`${paste("same")}\r`);
+    const bytes = f.bytes();
+    if (when === "before disconnect") {
+      appendFileSync(transcript, piLine("ours", "a0", "user", "same"));
+      await f.removed(receipt.id, "consumed");
+    }
+    await f.socket.disconnect();
+    if (when === "after disconnect") appendFileSync(transcript, piLine("ours", "a0", "user", "same"));
+    const resumed = await f.another(false);
+    await resumed.attach(f.pane, true, token);
+    await f.removed(receipt.id, "consumed", resumed);
+    expect(resumed.seen.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])
+      .filter((item: { id: string }) => item.id === receipt.id)).toHaveLength(1);
+    expect(f.bytes()).toBe(bytes);
+  }, 20_000);
+
+  it("binds a production-shaped unwritten filename to its later header UUID", async () => {
+    const id = crypto.randomUUID();
+    const transcript = join(root, `2026-10-24T01-34-00-000Z_${id}.jsonl`);
+    const f = await setup("pi-unwritten", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "submit", id: 900, pane_id: f.pane, text: "first", payload: "first", delivery: "immediate" });
+    expect((await f.socket.result(900)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages"
+      && frame.messages.some((item: PendingMessage) => item.error?.code === "pi_transcript_pending" && item.text === "first"));
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "pi_transcript_pending");
+    writeFileSync(transcript, JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: root }) + "\n"
+      + piLine("u1", null, "user", "first"));
+    // Opening Chat after creation starts the transcript watch. Its immediate initial poll must
+    // reconcile the receipt even though no watcher observed the missing-to-written transition.
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    await f.socket.wait((frame) => frame.type === "pending-messages"
+      && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+
+  it("keeps an automatic follow-up visible after Enter until the bound Pi JSONL user append", async () => {
+    const transcript = piFile("pi-follow-up");
+    const f = await setup("pi-follow-up", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    const queued = await f.queue(901, "follow after work");
+    const from = f.socket.seen.length;
+    await f.state("idle");
+    await f.waitBytes(`${paste("follow after work")}\r`);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.error?.code === "pi_transcript_pending" && item.text === "follow after work"), from);
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "pi_transcript_pending");
+    expect(receipt.id).not.toBe(queued.id);
+    expect(f.socket.seen.some((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"))).toBe(false);
+    appendFileSync(transcript, piLine("u1", "a0", "user", "follow after work"));
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"), from);
+  }, 20_000);
+
+  it("keeps explicit Send now non-resendable while Pi works", async () => {
+    const transcript = piFile("pi-send-now");
+    const f = await setup("pi-send-now", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    f.socket.send({ type: "submit", id: 903, pane_id: f.pane, text: "steer now", payload: "unused", delivery: "hold" });
+    const held = (await f.socket.result(903)).pending as PendingMessage;
+    const from = f.socket.seen.length;
+    f.socket.send({ type: "pending-action", id: 904, pane_id: f.pane, pending_id: held.id, action: "steer" });
+    expect((await f.socket.action(904)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.error?.code === "pi_transcript_pending" && item.text === "steer now"), from);
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "pi_transcript_pending");
+    f.socket.send({ type: "pending-action", id: 905, pane_id: f.pane, pending_id: receipt.id, action: "steer" });
+    expect(await f.socket.action(905)).toMatchObject({ ok: false, code: "pending_sent" });
+    appendFileSync(transcript, piLine("u1", "a0", "user", "steer now"));
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"), from);
+  }, 20_000);
+
+  it("keeps an idle-status immediate send private to its originating connection", async () => {
+    const transcript = piFile("pi-compaction");
+    const f = await setup("pi-compaction", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    await f.state("idle");
+    const from = f.socket.seen.length;
+    f.socket.send({ type: "submit", id: 902, pane_id: f.pane, text: "during compaction", payload: "during compaction", delivery: "immediate" });
+    expect((await f.socket.result(902)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.error?.code === "pi_transcript_pending" && item.text === "during compaction"), from);
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "pi_transcript_pending");
+    const other = await f.another(true, true);
+    const barrier = other.seen.length;
+    other.send({ type: "ping", id: 9903 });
+    await other.wait((frame) => frame.type === "pong" && frame.id === 9903, barrier);
+    expect(other.seen.some((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.id === receipt.id))).toBe(false);
+    appendFileSync(transcript, piLine("u1", "a0", "user", "during compaction"));
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+
+  it("checks active Pi receipt capacity per connection before typing", async () => {
+    const transcript = piFile("pi-capacity");
+    const f = await setup("pi-capacity", "pi", "› Message\n", { piReceiptLimit: 1 }, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    f.socket.send({ type: "submit", id: 910, pane_id: f.pane, text: "owner one", payload: "owner one", delivery: "immediate" });
+    expect((await f.socket.result(910)).ok).toBe(true);
+    const ownerSent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.text === "owner one"));
+    const ownerReceipt = ownerSent.messages.find((item: PendingMessage) => item.text === "owner one");
+
+    const other = await f.another(true, true);
+    other.send({ type: "submit", id: 911, pane_id: f.pane, text: "other owner", payload: "other owner", delivery: "immediate" });
+    expect((await other.result(911)).ok).toBe(true);
+    await other.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.text === "other owner"));
+
+    const before = f.bytes();
+    f.socket.send({ type: "submit", id: 912, pane_id: f.pane, text: "over limit", payload: "over limit", delivery: "immediate" });
+    expect(await f.socket.result(912)).toMatchObject({ ok: false, code: "pending_limit" });
+    expect(f.bytes()).toBe(before);
+
+    const replacement = piFile("pi-capacity-replacement");
+    fakePiTranscripts.set(f.pane, replacement);
+    const mismatch = await f.another(true, true);
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.text === "owner one" && item.error?.code === "pi_transcript_target_changed"));
+    mismatch.send({ type: "ping", id: 9912 });
+    await mismatch.wait((frame) => frame.type === "pong" && frame.id === 9912);
+    f.socket.send({ type: "submit", id: 916, pane_id: f.pane, text: "while unavailable", payload: "while unavailable", delivery: "immediate" });
+    expect(await f.socket.result(916)).toMatchObject({ ok: true });
+    f.socket.send({ type: "pending-action", id: 917, pane_id: f.pane, pending_id: ownerReceipt.id, action: "discard" });
+    expect((await f.socket.action(917)).ok).toBe(true);
+    f.socket.send({ type: "submit", id: 918, pane_id: f.pane, text: "after discard", payload: "after discard", delivery: "immediate" });
+    expect(await f.socket.result(918)).toMatchObject({ ok: false, code: "pending_limit" });
+  }, 20_000);
+
+  it("keeps the second identical send pending after only one transcript append", async () => {
+    const transcript = piFile("pi-duplicate-reconcile");
+    const f = await setup("pi-duplicate-reconcile", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    for (const id of [923, 924]) {
+      f.socket.send({ type: "submit", id, pane_id: f.pane, text: "same", payload: "same", delivery: "immediate" });
+      expect((await f.socket.result(id)).ok).toBe(true);
+    }
+    const sent = await f.socket.event((frame) => frame.messages.some((item) => item.request_id === 924));
+    const first = sent.messages.find((item) => item.request_id === 923)!;
+    const second = sent.messages.find((item) => item.request_id === 924)!;
+    const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === first.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u1", "a0", "user", "same"));
+    await consumed;
+    // Attaching schedules another reconciliation before the serialized action below.
+    await f.another(true, true);
+    f.socket.send({ type: "pending-action", id: 925, pane_id: f.pane, pending_id: second.id, action: "steer" });
+    expect(await f.socket.action(925)).toMatchObject({ ok: false, code: "pending_sent" });
+    const secondConsumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === second.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u2", "u1", "user", "same"));
+    await secondConsumed;
+  }, 20_000);
+
+  it("releases capacity for confirmation-unavailable receipts", async () => {
+    const transcript = join(root, `not-a-production-session-${crypto.randomUUID()}.jsonl`);
+    const f = await setup("pi-unconfirmed-capacity", "pi", "› Message\n", { piReceiptLimit: 1 }, false, transcript);
+    f.socket.send({ type: "submit", id: 919, pane_id: f.pane, text: "unconfirmed", payload: "unconfirmed", delivery: "immediate" });
+    expect((await f.socket.result(919)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.error?.code === "transcript_unconfirmed"));
+    const receipt = sent.messages.find((item: PendingMessage) => item.error?.code === "transcript_unconfirmed");
+    f.socket.send({ type: "submit", id: 920, pane_id: f.pane, text: "over unconfirmed", payload: "over unconfirmed", delivery: "immediate" });
+    expect(await f.socket.result(920)).toMatchObject({ ok: true });
+    f.socket.send({ type: "pending-action", id: 921, pane_id: f.pane, pending_id: receipt.id, action: "discard" });
+    expect((await f.socket.action(921)).ok).toBe(true);
+    f.socket.send({ type: "submit", id: 922, pane_id: f.pane, text: "after unconfirmed discard", payload: "after unconfirmed discard", delivery: "immediate" });
+    expect((await f.socket.result(922)).ok).toBe(true);
+  }, 20_000);
+
+  it("keeps a receipt pending through transient identity and transcript lookup failures", async () => {
+    const transcript = piFile("pi-transient");
+    const f = await setup("pi-transient", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    f.socket.send({ type: "submit", id: 913, pane_id: f.pane, text: "survive lookup", payload: "survive lookup", delivery: "immediate" });
+    expect((await f.socket.result(913)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.text === "survive lookup"));
+    const receipt = sent.messages.find((item: PendingMessage) => item.text === "survive lookup");
+
+    failedPiIdentityLookups.add(f.pane);
+    const identityBarrier = await f.another(true, true);
+    identityBarrier.send({ type: "ping", id: 9913 });
+    await identityBarrier.wait((frame) => frame.type === "pong" && frame.id === 9913);
+    expect(f.socket.seen.some((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.id === receipt.id && item.error?.code === "pi_transcript_target_changed"))).toBe(false);
+    failedPiIdentityLookups.delete(f.pane);
+
+    unavailablePiTranscripts.add(f.pane);
+    const pathBarrier = await f.another(true, true);
+    pathBarrier.send({ type: "ping", id: 9914 });
+    await pathBarrier.wait((frame) => frame.type === "pong" && frame.id === 9914);
+    expect(f.socket.seen.some((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.id === receipt.id && item.error?.code === "pi_transcript_target_changed"))).toBe(false);
+    unavailablePiTranscripts.delete(f.pane);
+
+    appendFileSync(transcript, piLine("u1", "a0", "user", "survive lookup"));
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+
+  it("tracks a maximum-length message with the space closing its file mention", async () => {
+    const transcript = piFile("pi-best-effort");
+    const f = await setup("pi-best-effort", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    // The closing space is Pi-facing framing, outside the composer's message limit.
+    const text = `${"x".repeat(19_994)} @file`;
+    f.socket.send({ type: "submit", id: 914, pane_id: f.pane, text, payload: text, delivery: "immediate" });
+    expect(await f.socket.result(914)).toMatchObject({ ok: true });
+    const sent = await f.socket.event((frame) => frame.messages.some((item) => item.request_id === 914));
+    const receipt = sent.messages.find((item) => item.request_id === 914)!;
+    expect(receipt.text).toBe(`${text} `);
+    const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === receipt.id && item.outcome === "consumed") === true);
+    appendFileSync(transcript, piLine("u1", "a0", "user", `${text} `));
+    await consumed;
+  }, 20_000);
+
+  it("matches the exact Pi-facing text after closing a trailing file mention", async () => {
+    const transcript = piFile("pi-facing-text");
+    const f = await setup("pi-facing-text", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    f.socket.send({ type: "submit", id: 915, pane_id: f.pane, text: "inspect @file", payload: "inspect @file", delivery: "immediate" });
+    expect((await f.socket.result(915)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 915));
+    const receipt = sent.messages.find((item: PendingMessage) => item.request_id === 915);
+    expect(receipt.text).toBe("inspect @file ");
+    appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file "));
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+});
 
 describe("connection-owned pending input", () => {
   it.each([
@@ -230,6 +511,37 @@ describe("connection-owned pending input", () => {
     expect(bytes).not.toContain("MSG-FOR-SESSION-1"); // regression: SESSION2 receives nothing
   }, 30_000);
 
+  it("holds a queued message when the agent behind a launcher listed before it is replaced (#1545)", async () => {
+    const f = await setup("launcher-replaced", "claude", "SESSION1", {}, "launcher");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    const launcher = foreground.find((entry) => entry.argv?.[1] === join(root, "launcher", "claude"));
+    const agent = foreground.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    if (!launcher || !agent) throw new Error(`SESSION1 has no launcher and agent in front: ${JSON.stringify(foreground)}`);
+    // control: herdr lists the launcher first, where taking the first process in front binds the launcher
+    expect(foreground.indexOf(launcher)).toBeLessThan(foreground.indexOf(agent));
+    const message = await f.queue(1545, "MSG-FOR-SESSION-1");
+    const started = new Promise<void>((resolve, reject) => {
+      const watcher = watch(root, () => {
+        if (!existsSync(f.replacementLog)) return;
+        clearTimeout(timeout); watcher.close(); resolve();
+      });
+      const timeout = setTimeout(() => { watcher.close(); reject(new Error("SESSION2 did not start")); }, 10_000);
+    });
+    globalThis.process.kill(agent.pid, "SIGKILL");
+    await started;
+    const after = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    expect(after.some((entry) => entry.pid === launcher.pid)).toBe(true); // control: the launcher still runs in front
+    expect(after.find((entry) => entry.argv?.[0] === join(root, "claude"))?.pid).not.toBe(agent.pid); // control: the agent changed
+    const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id)
+      || frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
+    await f.state("idle");
+    const outcome = await settled;
+    expect(outcome.messages).toContainEqual(expect.objectContaining({
+      id: message.id, state: "held", error: expect.objectContaining({ code: "pending_target_changed" }),
+    }));
+    expect(readFileSync(f.replacementLog, "utf8")).not.toContain("MSG-FOR-SESSION-1");
+  }, 30_000);
+
   it("delivers to the same hookless process with unchanged pid and birth (control #540)", async () => {
     const f = await setup("same-process");
     const before = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
@@ -253,10 +565,10 @@ describe("connection-owned pending input", () => {
       const process = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
       if (!process) throw new Error("No foreground recorder");
       let reading = 100_000;
-      const birth = processStart.processStartedAt;
+      const birth = processStart.processStartedAtAsync;
       const compare = pendingInput.samePendingIdentity;
       // Supply macOS's two observations without changing the real recorder, RPCs or delivery.
-      const startedAt = spyOn(processStart, "processStartedAt").mockImplementation((pid) => pid === process.pid ? reading : birth(pid));
+      const startedAt = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => pid === process.pid ? reading : await birth(pid));
       const platform = spyOn(pendingInput, "samePendingIdentity").mockImplementation((before, after) => compare(before, after, "darwin"));
       try {
         const message = await f.queue(544, `darwin birth ${drift}`);
@@ -829,6 +1141,76 @@ describe("connection-owned pending input", () => {
     expect(f.bytes()).toBe(""); expect(f.socket.seen.some((frame) => frame.type === "pending-messages")).toBe(false);
   }, 30_000);
 
+  for (const mirror of [false, true]) it(`rejects malformed immediate framing on shell and mirror paths (${mirror ? "mirror" : "attached shell"})`, async () => {
+    const f = await setup(mirror ? "framing-mirror" : "framing-shell", "plain", "$ ", mirror ? { terminalAttach: false } : {});
+    const writes = () => herdrWrites.filter((write) => write.endsWith(` ${f.pane}`)).length;
+    const sentinel = "touch /tmp/herdr-web-ui-framing-sentinel";
+    const forged = [
+      // its own terminator, then a CR that would run the line after it
+      { text: `ok\u001b[201~\r${sentinel}`, payload: `${paste("ok")}\r${sentinel}\u001b[201~` },
+      { text: "ok", payload: `${paste("ok")}\r${sentinel}` },
+      // a payload its text does not name, and markers twice over
+      { text: "ls", payload: sentinel },
+      { text: "ls", payload: paste(paste("ls")) },
+      { text: "ls", payload: `\u001b[201~ls\u001b[200~` },
+      // a hidden trailing CR: an Enter of its own besides the bridge's
+      { text: "ls", payload: "ls\r" },
+    ];
+    let id = 100;
+    const refused = async (frame: Record<string, unknown>, code = "invalid_submit_text", socket = f.socket) => {
+      socket.send({ type: "submit", id: ++id, pane_id: f.pane, ...frame });
+      expect(await socket.result(id), JSON.stringify(frame).slice(0, 120)).toMatchObject({ ok: false, code });
+    };
+    for (const typed of [false, true]) for (const frame of forged) await refused({ ...frame, ...(typed ? { typed: true } : {}) });
+    // a forged send over a named draft clears nothing; one under a held-copy id reserves nothing
+    await refused({ text: "ls", payload: "ls\r", clear_draft: "old draft" });
+    await refused({ text: "ls", payload: "ls\r", resend_id: "forged-copy" });
+    // over either cap, by one character
+    await refused({ text: "x".repeat(20_001), payload: "x".repeat(20_001) });
+    await refused({ text: "x".repeat(32_769), payload: "x".repeat(32_769), typed: true });
+    // an observing connection is refused for its role, forged or not
+    const watcher = await f.another();
+    watcher.send({ type: "role", mode: "observe" }); await watcher.wait((frame) => frame.type === "role-ack" && frame.mode === "observe");
+    await refused({ text: "ls", payload: "ls" }, "read_only", watcher);
+    await refused(forged[0]!, "read_only", watcher);
+    expect(writes(), "no text, key or draft-clear write").toBe(0);
+    expect(f.bytes()).toBe("");
+
+    // ordinary keys still go as typed
+    f.socket.send({ type: "input", pane_id: f.pane, text: "\u001b[A" }); await f.waitBytes("\u001b[A");
+    f.socket.send({ type: "input", pane_id: f.pane, text: "\u001b" }); await f.waitBytes("\u001b[A\u001b");
+    // and the caps take what they allow: chat 20000, the input line 20001 and 32768
+    let expected = "\u001b[A\u001b";
+    for (const [length, typed] of [[20_000, false], [20_001, true], [32_768, true]] as const) {
+      const text = "x".repeat(length);
+      f.socket.send({ type: "submit", id: ++id, pane_id: f.pane, text, payload: text, ...(typed ? { typed: true } : {}) });
+      expect(await f.socket.result(id)).toMatchObject({ ok: true });
+      expected += `${text}\r`; await f.waitBytes(expected);
+    }
+    // a canonical multiline paste goes as one paste and one Enter
+    f.socket.send({ type: "submit", id: ++id, pane_id: f.pane, text: "첫 줄\tone\nsecond ✓", payload: paste("첫 줄\tone\rsecond ✓"), typed: true });
+    expect(await f.socket.result(id)).toMatchObject({ ok: true });
+    expected += `${paste("첫 줄\tone\rsecond ✓")}\r`; await f.waitBytes(expected);
+
+    // a sender that leaves while its submits wait behind earlier input: the forged one types nothing, the one
+    // the bridge had already taken goes once, and nothing is typed again when another connection comes
+    const keeper = await f.another();
+    const hold = holdConnect("keys");
+    keeper.send({ type: "submit", id: 1, pane_id: f.pane, text: "barrier", payload: "barrier", typed: true });
+    await hold.reached;
+    f.socket.send({ type: "submit", id: ++id, pane_id: f.pane, ...forged[0]!, typed: true });
+    f.socket.send({ type: "submit", id: ++id, pane_id: f.pane, text: "taken once", payload: "taken once", typed: true });
+    await f.socket.disconnect();
+    hold.release();
+    expect(await keeper.result(1)).toMatchObject({ ok: true });
+    const later = await f.another();
+    later.send({ type: "submit", id: 2, pane_id: f.pane, text: "after reconnect", payload: "after reconnect", typed: true });
+    expect(await later.result(2)).toMatchObject({ ok: true });
+    expected += "barrier\rtaken once\rafter reconnect\r"; await f.waitBytes(expected);
+    expect(f.bytes()).toBe(expected);
+    expect(f.bytes()).not.toContain(sentinel);
+  }, 60_000);
+
   for (const stop of [false, true]) it(`checks a new blocked state after the ${stop ? "composer's Stop" : "typed ESC"}'s settling gap, before pasting`, async () => {
     const f = await setup(stop ? "stop-gap-intent" : "stop-gap"); const message = await f.queue(1, "must not paste");
     f.socket.send(stop ? { type: "input", pane_id: f.pane, text: "\u001b", stop: true } : { type: "input", pane_id: f.pane, text: "\u001b" });
@@ -1149,9 +1531,13 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("is bound to the agent process it was queued under: a replacement of the same kind in its terminal gets it held with pending_target_changed", async () => {
-    const f = await setup("first-replaced", "claude", "SESSION1", {}, true);
-    const first = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.name === "claude");
-    if (!first) throw new Error("SESSION1 has no foreground claude process");
+    // SESSION2 starts before SESSION1 ends (the launcher's SIGUSR1): with a shell or launcher alone in front between
+    // them, a read in that gap rightly finds the launched agent gone (first_message_launch_ended)
+    const f = await setup("first-replaced", "claude", "SESSION1", {}, "launcher");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    const launcher = foreground.find((entry) => entry.argv?.[1] === join(root, "launcher", "claude"));
+    const first = foreground.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    if (!launcher || !first) throw new Error(`SESSION1 has no launcher and agent in front: ${JSON.stringify(foreground)}`);
     const message = await f.server.queueFirstMessage(f.pane, "FIRST-FOR-SESSION-1", "claude", await f.socket.connection());
     const started = new Promise<void>((resolve, reject) => {
       const watcher = watch(root, () => {
@@ -1160,9 +1546,15 @@ describe("a create request's first message", () => {
       });
       const timeout = setTimeout(() => { watcher.close(); reject(new Error("SESSION2 did not start")); }, 10_000);
     });
-    globalThis.process.kill(first.pid, "SIGKILL");
+    globalThis.process.kill(launcher.pid, "SIGUSR1");
     await started;
-    const replacement = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.name === "claude");
+    // the launcher ends SESSION1 once SESSION2 runs: the replacement is complete once herdr no longer lists SESSION1
+    for (const deadline = Date.now() + 10_000; (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.some((entry) => entry.pid === first.pid);) {
+      if (Date.now() > deadline) throw new Error("SESSION1 did not end");
+      await Bun.sleep(25);
+    }
+    const replacement = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    expect(replacement).toBeDefined(); // control: SESSION2 is a live foreground agent
     expect(replacement?.pid).not.toBe(first.pid); // control: the process really changed, in the same terminal
     const held = listed(f.socket, f.pane, message.id, "held");
     await f.state("idle");
@@ -1376,16 +1768,17 @@ describe("a create request's first message", () => {
     const held = listed(page, pane, tab.first_message.id, "held");
     await page.attach(pane);
     const message = (await held).messages.find((item: PendingMessage) => item.id === tab.first_message.id);
-    expect(message.error.code).toBe("pending_target_changed");
+    // its own reason, apart from a terminal or session that changed
+    expect(message.error.code).toBe("first_message_launch_ended");
     // Send now refuses it, Discard ends it, and nothing was ever typed
-    page.send({ type: "pending-action", id: 21, pane_id: pane, pending_id: tab.first_message.id, action: "steer" });
-    expect(await page.action(21)).toMatchObject({ ok: false, code: "pending_target_changed" });
+    page.send({ type: "pending-action", id: 21, pane_id: pane, pending_id: tab.first_message.id, action: "steer", launch_ended: true });
+    expect(await page.action(21)).toMatchObject({ ok: false, code: "first_message_launch_ended" });
     page.send({ type: "pending-action", id: 22, pane_id: pane, pending_id: tab.first_message.id, action: "discard" });
     expect(await page.action(22)).toMatchObject({ ok: true });
     expect(readFileSync(log, "utf8")).toBe("");
   }, 30_000);
 
-  it("held from the start, still learns its launched agent: once that agent came up and quit, Send now answers pending_target_changed, not that it is not up yet", async () => {
+  it("held from the start, still learns its launched agent: once that agent came up and quit, Send now answers first_message_launch_ended, not that it is not up yet", async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-quit", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-quit") });
@@ -1418,14 +1811,14 @@ describe("a create request's first message", () => {
     globalThis.process.kill(launched.pid, "SIGKILL");
     await quit;
     await herdrRpc("pane.release_agent", { pane_id: pane, source: "manual", agent: "claude" });
-    device.send({ type: "pending-action", id: 31, pane_id: pane, pending_id: tab.first_message.id, action: "steer" });
-    expect(await device.action(31)).toMatchObject({ ok: false, code: "pending_target_changed" });
+    device.send({ type: "pending-action", id: 31, pane_id: pane, pending_id: tab.first_message.id, action: "steer", launch_ended: true });
+    expect(await device.action(31)).toMatchObject({ ok: false, code: "first_message_launch_ended" });
     device.send({ type: "pending-action", id: 32, pane_id: pane, pending_id: tab.first_message.id, action: "discard" });
     expect(await device.action(32)).toMatchObject({ ok: true });
     expect(readFileSync(log, "utf8")).toBe("");
   }, 30_000);
 
-  it("held from the start, says pending_target_changed instead of the page being gone once its launched agent quit, and Send now answers the same", async () => {
+  it("held from the start, says first_message_launch_ended instead of the page being gone once its launched agent quit, and Send now answers the same and keeps that reason", async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-reason", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-reason") });
@@ -1459,12 +1852,18 @@ describe("a create request's first message", () => {
     await herdrRpc("pane.release_agent", { pane_id: pane, source: "manual", agent: "claude" });
     // the card's reason follows the hold's: a connection attaching the pane drains it, as any event of the pane does
     const reason = device.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane
-      && frame.messages.some((item: PendingMessage) => item.id === tab.first_message.id && item.state === "held" && item.error?.code === "pending_target_changed"));
+      && frame.messages.some((item: PendingMessage) => item.id === tab.first_message.id && item.state === "held" && item.error?.code === "first_message_launch_ended"));
     const probe = new Socket(server.port); entry.sockets.push(probe);
     await probe.attach(pane);
     await reason;
-    device.send({ type: "pending-action", id: 41, pane_id: pane, pending_id: tab.first_message.id, action: "steer" });
-    expect(await device.action(41)).toMatchObject({ ok: false, code: "pending_target_changed" });
+    device.send({ type: "pending-action", id: 41, pane_id: pane, pending_id: tab.first_message.id, action: "steer", launch_ended: true });
+    expect(await device.action(41)).toMatchObject({ ok: false, code: "first_message_launch_ended" });
+    // an older client, which takes a code it does not know as maybe typed, is answered the code it knows
+    device.send({ type: "pending-action", id: 42, pane_id: pane, pending_id: tab.first_message.id, action: "steer" });
+    expect(await device.action(42)).toMatchObject({ ok: false, code: "pending_target_changed" });
+    // and only its answer says so: the card, which every connection sees, still gives the launch's end
+    const latest = device.seen.filter((frame) => frame.type === "pending-messages" && frame.pane_id === pane).at(-1);
+    expect(latest.messages.find((item: PendingMessage) => item.id === tab.first_message.id).error.code).toBe("first_message_launch_ended");
     expect(readFileSync(log, "utf8")).toBe("");
   }, 30_000);
 
@@ -1540,7 +1939,7 @@ describe("a create request's first message", () => {
     expect(f.bytes()).toBe(`${paste("MARKER")}\r`);
   }, 30_000);
 
-  it("queued for a launch that died before any event saw it, is held when an agent of the same kind the user starts comes up, never typed into it", async () => {
+  it("queued for a launch that died before any event saw it, is held as its launched agent having ended, and never typed into an agent of the same kind the user starts", async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-died", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-died") });
@@ -1571,7 +1970,8 @@ describe("a create request's first message", () => {
     const held = listed(device, pane, tab.first_message.id, "held");
     await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state: "working" });
     await learned(server, device, pane, "claude", before, entry.sockets);
-    expect((await held).messages.find((item: PendingMessage) => item.id === tab.first_message.id).error.code).toBe("pending_target_changed");
+    // the launch's own process ended before the pane's first event: that is the reason it is held (#1547)
+    expect((await held).messages.find((item: PendingMessage) => item.id === tab.first_message.id).error.code).toBe("first_message_launch_ended");
     // its page attaches and the agent rests: nothing is typed into the user's agent
     await page.attach(pane);
     await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state: "idle" });

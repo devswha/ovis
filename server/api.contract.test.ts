@@ -1,12 +1,13 @@
 import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
+import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
 import { Database } from "bun:sqlite";
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, readdirSync, realpathSync, openSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, copyFileSync, mkdirSync, mkdtempSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, openSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
 import { createServer } from "./index.ts";
-import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, PushKey, RemoteAccess, SessionSnapshot, TabMoved, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
+import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -17,18 +18,21 @@ import { Telemetry } from "./telemetry.ts";
 import { NOTICE_VERSION, telemetryHarnesses, type TelemetryActive, type TelemetryEvent, type TelemetryStatus } from "../shared/telemetry.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "../src/lib/settings.ts";
 import { HerdrSocket } from "../src/lib/ws.ts";
-import { HerdrError, herdrRpc, paneRead, ping, sessionSnapshot, subscribeEvents, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
+import { HerdrError, herdrRpc, paneRead, paneSplit, ping, sessionSnapshot, subscribeEvents, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { descriptorPath, type BridgeDescriptor } from "./bridge.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import type { RepoDiffFileList, RepoDiffFilePatch, SessionHistoryResponse, SessionResumeResponse } from "../shared/protocol.ts";
+import type { RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, SessionHistoryResponse, SessionResumeResponse } from "../shared/protocol.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { testShellEnv } from "../scripts/test-shell.ts";
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
 import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-agent.ts";
+import { DeviceStore } from "./devices.ts";
+import type { MachineEvent, MachineSettings } from "../shared/machines.ts";
+import { MAX_MUTED_PANES, type SharedPreferences } from "../shared/preferences.ts";
 
 /**
  * Contract test for Ovis's HTTP + WS surface.
@@ -232,6 +236,82 @@ describe("Agy conversation API", () => {
   }, 20_000);
 });
 
+describe("Muse conversation API", () => {
+  it.skipIf(process.platform === "win32")("binds the session whose lock names the pane's Muse process, and follows a switch to another session", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-muse-contract-"));
+    // the session Muse 1.4.13 recorded, live: without the `session.end` that its /exit wrote
+    const recorded = readFileSync(join(import.meta.dir, "fixtures", "muse", "recorded-1.4.13.jsonl"), "utf8").split("\n");
+    const end = recorded.at(-2)!;
+    const live = `${recorded.slice(0, -2).join("\n")}\n`;
+    const sessions = join(root, "data", "sessions", "2026", "10", "25");
+    // each session's folder is named after it, as Muse names it
+    const first = join(sessions, "01a17441-bc95-7e23-b488-988dceb829cd");
+    const second = join(sessions, "01a17445-0000-7000-8000-000000000002");
+    mkdirSync(first, { recursive: true }); mkdirSync(second);
+    // a link, not a copy: macOS kills a copied system binary, and argv keeps the name it was run by
+    const executable = join(root, "muse");
+    symlinkSync("/bin/sleep", executable);
+    const created = await workspaceCreate({ cwd: root, label: "ovis-test-muse-api" });
+    let app: ReturnType<typeof createServer> | undefined;
+    try {
+      const paneId = created.root_pane.pane_id;
+      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} 600\n` });
+      let pid: number | undefined;
+      for (const deadline = Date.now() + 10_000;;) {
+        const pane = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+        const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid: number; argv?: string[] }[] } }>("pane.process_info", { pane_id: paneId });
+        pid = info.process_info?.foreground_processes?.find((process) => process.argv?.[0] === executable)?.pid;
+        if (pane?.agent === "muse" && pid !== undefined) break;
+        if (Date.now() > deadline) throw new Error(`fixture Muse process did not start: ${pane?.agent} ${JSON.stringify(info.process_info?.foreground_processes)}`);
+        await Bun.sleep(50);
+      }
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), museData: join(root, "data") });
+      const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`;
+      // a session no lock ties to this process is never shown, whatever its folder or age
+      writeFileSync(join(first, "session.jsonl"), live);
+      writeFileSync(join(first, ".session.lock"), `pid=${pid! + 1}\nhost=${hostname()}\n`);
+      expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
+      writeFileSync(join(first, ".session.lock"), `pid=${pid}\nhost=${hostname()}\n`);
+      // the scan that found nothing stands for 2 s, as for a fresh Muse that has written no log yet
+      let response: Response, body;
+      for (const deadline = Date.now() + 5000;;) {
+        response = await fetch(url); body = await response.json();
+        if (body.source === "muse-transcript" || Date.now() > deadline) break;
+        await Bun.sleep(100);
+      }
+      expect(body.source).toBe("muse-transcript");
+      expect(body.turns.map((turn: { role: string }) => turn.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+      expect(body.metadata.model).toBe("muse-spark-1.2");
+      expect((await fetch(url, { headers: { "if-none-match": response.headers.get("etag")! } })).status).toBe(304);
+      const outputUrl = `http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${new URLSearchParams({ pane_id: paneId, ref: "call_01a1744243497078923c0e3306f4900d" })}`;
+      expect(await (await fetch(outputUrl)).text()).toBe("ls: missing-folder: No such file or directory\n");
+      // the TUI switches sessions: the one left behind ends, the new one holds a lock for the same pid
+      appendFileSync(join(first, "session.jsonl"), `${end}\n`);
+      const prompt = recorded.find((line) => line.includes('"runtime.user_intent.accepted"'))!.replace("01a17441-bc95-7e23-b488-988dceb829cd", "01a17445-0000-7000-8000-000000000002");
+      writeFileSync(join(second, "session.jsonl"), `${prompt}\n`);
+      writeFileSync(join(second, ".session.lock"), `pid=${pid}\nhost=${hostname()}\n`);
+      const switched = await (await fetch(url)).json();
+      expect(switched.turns).toHaveLength(1);
+      expect(switched.history_id).not.toBe(body.history_id);
+      expect((await fetch(outputUrl)).status).toBe(404);
+      // a record in a shape the reader does not know, or a log it cannot read, shows Terminal
+      const log = join(second, "session.jsonl");
+      appendFileSync(log, `${prompt.replace('"runtime.user_intent.accepted"', '"runtime.user_intent.renamed"')}\n`);
+      expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
+      writeFileSync(log, `${prompt}\n`);
+      expect((await (await fetch(url)).json()).source).toBe("muse-transcript");
+      // root reads a file whatever its mode
+      if (process.getuid?.() !== 0) {
+        chmodSync(log, 0);
+        expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [] });
+      }
+    } finally {
+      app?.stop(); await workspaceClose(created.workspace.workspace_id);
+      forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
 describe("single-pane context lookup", () => {
   for (const route of ["commands", "files"] as const) {
     it(`rejects an unknown pane on /api/pane/${route} with the shared error envelope`, async () => {
@@ -287,6 +367,155 @@ describe("Devin conversation API", () => {
       rmSync(state, { recursive: true, force: true });
     }
   });
+});
+
+describe("native tool call id and state on GET /api/pane/conversation", () => {
+  it.skipIf(process.platform !== "linux")("carries Claude's id and recorded outcome, Codex's id and pending only, and neither for another agent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-call-state-contract-"));
+    const cwd = realpathSync(root);
+    const originalHome = process.env["HOME"];
+    const claudeId = "6f1c2a9e-0b7d-4c3e-8a51-2d9f0e7b4c11";
+    const claudeFile = join(cwd, ".claude", "projects", claudeProjectDir(cwd), `${claudeId}.jsonl`);
+    const codexHome = join(cwd, "codex");
+    const codexFile = join(codexHome, "sessions", "2026", "10", "21", "rollout-2026-10-21T09-00-00-00000000-0000-4000-8000-000000000014.jsonl");
+    const ompFile = join(cwd, ".omp", "agent", "sessions", "-call-state", "2026-10-21T00-00-00-000Z_omp-call-state.jsonl");
+    for (const file of [claudeFile, codexFile, ompFile]) mkdirSync(join(file, ".."), { recursive: true });
+    const line = (record: unknown) => `${JSON.stringify(record)}\n`;
+    const todos = { todos: [{ content: "Read", status: "completed", activeForm: "Reading" }] };
+    const claudeUse = (id: string) => line({ type: "assistant", timestamp: "2026-10-21T09:00:01.000Z", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name: "TodoWrite", input: todos }] } });
+    const claudeResult = (id: string, content: string, isError?: boolean) => line({ type: "user", timestamp: "2026-10-21T09:00:02.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(isError === undefined ? {} : { is_error: isError }) }] } });
+    writeFileSync(claudeFile, line({ type: "user", timestamp: "2026-10-21T09:00:00.000Z", message: { role: "user", content: "plan it" } }) + claudeUse("toolu_ok") + claudeUse("toolu_err") + claudeUse("toolu_wait"));
+    const codexCall = (id: string, kind: "function_call" | "custom_tool_call") => line({ type: "response_item", timestamp: "2026-10-21T09:00:01.000Z", payload: kind === "function_call"
+      ? { type: kind, call_id: id, name: "update_plan", arguments: JSON.stringify({ plan: [{ step: "Read", status: "completed" }] }) }
+      : { type: kind, call_id: id, name: "apply_patch", input: "*** Begin Patch\n*** End Patch" } });
+    const codexOutput = (id: string, kind: "function_call_output" | "custom_tool_call_output", output: string) => line({ type: "response_item", timestamp: "2026-10-21T09:00:02.000Z", payload: { type: kind, call_id: id, output } });
+    writeFileSync(codexFile, line({ type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000014", timestamp: "2026-10-21T09:00:00.000Z", cwd, source: "cli" } })
+      + line({ type: "event_msg", timestamp: "2026-10-21T09:00:00.000Z", payload: { type: "user_message", message: "plan it" } })
+      + codexCall("call_fn", "function_call") + codexCall("call_custom", "custom_tool_call") + codexCall("call_fail_text", "function_call"));
+    writeFileSync(ompFile, [
+      { type: "session", version: 3, id: "omp-call-state", cwd },
+      { type: "message", id: "u1", parentId: null, timestamp: "2026-10-21T09:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "plan it" }] } },
+      { type: "message", id: "a1", parentId: "u1", timestamp: "2026-10-21T09:00:01.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "omp_call_1", name: "todo", arguments: { op: "init", list: [{ phase: "Plan", items: ["Read"] }] } }] } },
+      { type: "message", id: "r1", parentId: "a1", timestamp: "2026-10-21T09:00:02.000Z", message: { role: "toolResult", toolCallId: "omp_call_1", toolName: "todo", isError: false, content: [{ type: "text", text: "Overall: 0/1 done.\n  Plan:\n    - [ ] Read" }] } },
+    ].map(line).join(""));
+    const workspaces: string[] = [];
+    let app: ReturnType<typeof createServer> | undefined;
+    let seq = Date.now() * 1000;
+    const agentPane = async (agent: string, session: Record<string, string>): Promise<string> => {
+      const created = await workspaceCreate({ cwd, label: `herdr-web-ui-test-call-state-${agent}` });
+      workspaces.push(created.workspace.workspace_id);
+      const paneId = created.root_pane.pane_id;
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent, state: "idle" });
+      await herdrRpc("pane.report_agent_session", { pane_id: paneId, source: `herdr:${agent}`, agent, seq: ++seq, ...session });
+      return paneId;
+    };
+    try {
+      process.env["HOME"] = cwd;
+      forgetTranscriptState();
+      const claude = await agentPane("claude", { agent_session_id: claudeId });
+      // Codex is found by the rollout its process holds open: a native stand-in that only sleeps
+      const codexExe = join(cwd, "bin", "codex");
+      mkdirSync(join(cwd, "bin"));
+      copyFileSync("/bin/sleep", codexExe); chmodSync(codexExe, 0o755);
+      const codexCreated = await workspaceCreate({ cwd, label: "herdr-web-ui-test-call-state-codex" });
+      workspaces.push(codexCreated.workspace.workspace_id);
+      const codex = codexCreated.root_pane.pane_id;
+      await herdrRpc("pane.send_text", { pane_id: codex, text: `${codexExe} 600 3<${codexFile}\n` });
+      for (const deadline = Date.now() + 10_000;;) {
+        if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === codex)?.agent === "codex") break;
+        if (Date.now() > deadline) throw new Error("fixture Codex process did not start");
+        await Bun.sleep(50);
+      }
+      // omp's session report is taken for a pane herdr sees running omp: the same kind of stand-in
+      const ompExe = join(cwd, "bin", "omp");
+      copyFileSync("/bin/sleep", ompExe); chmodSync(ompExe, 0o755);
+      const ompCreated = await workspaceCreate({ cwd, label: "herdr-web-ui-test-call-state-omp" });
+      workspaces.push(ompCreated.workspace.workspace_id);
+      const omp = ompCreated.root_pane.pane_id;
+      // omp keeps its sessions under its own home, which the bridge reads from the process (#1898)
+      await herdrRpc("pane.send_text", { pane_id: omp, text: `HOME='${cwd}' exec '${ompExe}' 600\n` });
+      for (const deadline = Date.now() + 10_000;;) {
+        if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === omp)?.agent === "omp") break;
+        if (Date.now() > deadline) throw new Error("fixture omp process did not start");
+        await Bun.sleep(50);
+      }
+      await herdrRpc("pane.report_agent", { pane_id: omp, source: "herdr:omp", agent: "omp", state: "idle", seq: ++seq });
+      await herdrRpc("pane.report_agent_session", { pane_id: omp, source: "herdr:omp", agent: "omp", seq: ++seq, agent_session_path: ompFile, session_start_source: "startup" });
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(cwd, "state"), codexHome });
+      const tools = async (paneId: string, source: string) => {
+        const response = await fetch(`http://127.0.0.1:${app!.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as { source: string; turns: { parts: Record<string, unknown>[] }[] };
+        expect(body.source).toBe(source);
+        return body.turns.flatMap((turn) => turn.parts).filter((part) => part["kind"] === "tool");
+      };
+      const idState = (parts: Record<string, unknown>[]) => parts.map((part) => [part["call_id"], "state" in part ? part["state"] : "omitted"]);
+
+      // before any result: every native call is pending under its own id
+      expect(idState(await tools(claude, "claude-transcript"))).toEqual([["toolu_ok", "pending"], ["toolu_err", "pending"], ["toolu_wait", "pending"]]);
+      expect(idState(await tools(codex, "codex-transcript"))).toEqual([["call_fn", "pending"], ["call_custom", "pending"], ["call_fail_text", "pending"]]);
+
+      // results appended: Claude's flag decides (an empty result is ok); the next poll replaces the page
+      appendFileSync(claudeFile, claudeResult("toolu_ok", "") + claudeResult("toolu_err", "<tool_use_error>InputValidationError</tool_use_error>", true));
+      expect(idState(await tools(claude, "claude-transcript"))).toEqual([["toolu_ok", "ok"], ["toolu_err", "error"], ["toolu_wait", "pending"]]);
+      // Codex records no outcome: either output record ends pending, empty or failure-looking alike
+      appendFileSync(codexFile, codexOutput("call_fn", "function_call_output", "") + codexOutput("call_custom", "custom_tool_call_output", "applied")
+        + codexOutput("call_fail_text", "function_call_output", "Error: plan update failed\nProcess exited with code 1"));
+      expect(idState(await tools(codex, "codex-transcript"))).toEqual([["call_fn", "omitted"], ["call_custom", "omitted"], ["call_fail_text", "omitted"]]);
+
+      // another agent's parser fabricates neither, though its transcript has ids of its own
+      const ompTools = await tools(omp, "omp-transcript");
+      expect(ompTools).toHaveLength(1);
+      expect(["call_id" in ompTools[0]!, "state" in ompTools[0]!]).toEqual([false, false]);
+    } finally {
+      app?.stop();
+      for (const id of workspaces) await workspaceClose(id);
+      if (originalHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = originalHome;
+      forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe("a Claude bash-mode command on GET /api/pane/conversation", () => {
+  it("answers it as one shell part, and leaves out the streams Claude Code has not recorded yet", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-bash-mode-contract-"));
+    const cwd = realpathSync(root);
+    const originalHome = process.env["HOME"];
+    const id = "3b7e9c2a-5d14-4f8b-9a63-0c2e7f1d8b45";
+    const file = join(cwd, ".claude", "projects", claudeProjectDir(cwd), `${id}.jsonl`);
+    mkdirSync(join(file, ".."), { recursive: true });
+    const user = (content: string, second: number) => `${JSON.stringify({ type: "user", timestamp: `2026-10-27T03:00:0${second}.000Z`, message: { role: "user", content } })}\n`;
+    writeFileSync(file, user('<bash-input>echo "Hello"</bash-input>', 0) + user("<bash-stdout>Hello</bash-stdout><bash-stderr></bash-stderr>", 1)
+      + user("<bash-input>ls missing</bash-input>", 2) + user("<bash-stdout></bash-stdout><bash-stderr>ls: missing: No such file or directory</bash-stderr>", 3)
+      + user("<bash-input>sleep 60</bash-input>", 4));
+    let app: ReturnType<typeof createServer> | undefined;
+    let workspace: string | undefined;
+    try {
+      process.env["HOME"] = cwd;
+      forgetTranscriptState();
+      const created = await workspaceCreate({ cwd, label: "herdr-web-ui-test-bash-mode" });
+      workspace = created.workspace.workspace_id;
+      const paneId = created.root_pane.pane_id;
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
+      await herdrRpc("pane.report_agent_session", { pane_id: paneId, source: "herdr:claude", agent: "claude", seq: Date.now() * 1000, agent_session_id: id });
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(cwd, "state") });
+      const response = await fetch(`http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { source: string; turns: { role: string; parts: unknown[] }[] };
+      expect(body.source).toBe("claude-transcript");
+      expect(body.turns.map((turn) => [turn.role, turn.parts])).toEqual([
+        ["user", [{ kind: "shell", command: 'echo "Hello"', stdout: "Hello", stderr: "" }]],
+        ["user", [{ kind: "shell", command: "ls missing", stdout: "", stderr: "ls: missing: No such file or directory" }]],
+        // no output entry yet: the JSON has neither stream, not empty ones
+        ["user", [{ kind: "shell", command: "sleep 60" }]],
+      ]);
+    } finally {
+      app?.stop();
+      if (workspace !== undefined) await workspaceClose(workspace);
+      if (originalHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = originalHome;
+      forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("usage API", () => {
@@ -521,6 +750,50 @@ describe("update API", () => {
         expect(response.status).toBe(401);
       }
     } finally { protectedServer.stop(); rmSync(protectedState, { recursive: true, force: true }); }
+  });
+
+  it("lets the connection server's bridge token read the update status and install the offer, and nothing else of it", async () => {
+    // this PC's own Ovis, gated by its own token, reached by another PC's app through SSH
+    const offered = "a".repeat(40);
+    const bridge = "b".repeat(64);
+    const requests: unknown[] = [];
+    const status: UpdateStatus = { ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, latest_revision: offered, latest_version: "9.9.9", revision_bound_install: true };
+    const ownState = mkdtempSync(join(tmpdir(), "herdr-update-bridge-"));
+    const own = createServer({ port: 0, stateDir: ownState, token: "own-token", bridgeToken: bridge,
+      updates: { status: () => status, notes: noUpdateNotes, installed: noInstalledNotes, request: (request) => { requests.push(request); } } });
+    const call = (path: string, authorization: string, body?: string) => fetch(`http://127.0.0.1:${own.port}${path}`, {
+      method: body === undefined && path !== "/api/updates/check" ? "GET" : "POST", ...(body === undefined ? {} : { body }),
+      headers: { authorization, "x-herdr-update": "1", "content-type": "application/json" },
+    });
+    try {
+      expect(await (await call("/api/updates", `Bearer ${bridge}`)).json()).toMatchObject({ managed: true, available: true, latest_revision: offered });
+      // where it answers comes with the status, to the bridge token only: /api/access stays its own token's (#2191)
+      const told = await (await call("/api/updates", `Bearer ${bridge}`)).json() as UpdateStatus;
+      expect(told.port).toBe(own.port);
+      expect(told.serving_url === null || typeof told.serving_url === "string").toBe(true);
+      expect((await call("/api/access", `Bearer ${bridge}`)).status).toBe(401);
+      const owner = await (await call("/api/updates", "Bearer own-token")).json() as UpdateStatus;
+      expect(owner).toMatchObject({ managed: true, latest_revision: offered });
+      expect("port" in owner || "serving_url" in owner).toBe(false);
+      // the install still names the offer, as from the app's own controls
+      expect((await call("/api/updates/install", `Bearer ${bridge}`, "{}")).status).toBe(400);
+      expect(requests).toEqual([]);
+      expect((await call("/api/updates/install", `Bearer ${bridge}`, JSON.stringify({ expected_revision: offered }))).status).toBe(202);
+      expect(requests).toEqual([{ command: "install", expected_revision: offered }]);
+      // a wrong bridge token is refused like any other, and the token opens no other update route
+      expect((await call("/api/updates", `Bearer ${"c".repeat(64)}`)).status).toBe(401);
+      for (const path of ["/api/updates/notes", "/api/updates/installed", "/api/updates/check", "/api/herdr/update"]) expect((await call(path, `Bearer ${bridge}`)).status).toBe(401);
+      // only the read and the install it grants, each by its own method and with no query (#2054)
+      const send = (method: string, path: string, body?: string) => fetch(`http://127.0.0.1:${own.port}${path}`, {
+        method, ...(body === undefined ? {} : { body }), headers: { authorization: `Bearer ${bridge}`, "x-herdr-update": "1", "content-type": "application/json" },
+      });
+      const install = JSON.stringify({ expected_revision: offered });
+      for (const [method, path, body] of [["GET", "/api/updates?anything=1"], ["HEAD", "/api/updates"], ["POST", "/api/updates", install], ["DELETE", "/api/updates"],
+        ["GET", "/api/updates/install"], ["PUT", "/api/updates/install", install], ["POST", "/api/updates/install?anything=1", install]] as const) {
+        expect({ method, path, status: (await send(method, path, body)).status }).toEqual({ method, path, status: 401 });
+      }
+      expect(requests).toHaveLength(1);
+    } finally { own.stop(); rmSync(ownState, { recursive: true, force: true }); }
   });
 
   it("offers no herdr update on a server started without the updater", async () => {
@@ -819,7 +1092,7 @@ describe("Portal API", () => {
 describe("mutation body validation", () => {
   it("rejects non-object JSON without touching herdr or losing the error envelope", async () => {
     for (const path of [
-      "/api/workspace/create", "/api/tab/create", "/api/tab/rename", "/api/tab/close", "/api/tab/move", "/api/workspace/rename", "/api/workspace/move", "/api/workspace/close",
+      "/api/workspace/create", "/api/tab/create", "/api/tab/rename", "/api/tab/close", "/api/tab/move", "/api/tab/move-to-workspace", "/api/workspace/rename", "/api/workspace/move", "/api/workspace/close",
       "/api/pane/rename", "/api/pane/input", "/api/pane/keys", "/api/pane/close", "/api/pane/image",
       "/api/pane/scroll", "/api/agent/rename",
     ]) {
@@ -964,6 +1237,68 @@ describe("tab reorder", () => {
   });
 });
 
+describe("tab to another workspace", () => {
+  const post = (body: unknown) => fetch(`${base()}/api/machines/local/tab/move-to-workspace`, {
+    method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify(body),
+  });
+  it("requires a tab and a workspace", async () => {
+    for (const [body, code] of [[{ workspace_id: "w1" }, "missing_tab_id"], [{ tab_id: "w1:t1", workspace_id: "" }, "missing_workspace_id"]] as const) {
+      const result = await post(body);
+      expect(result.status).toBe(400);
+      expect(((await result.json()) as ApiError).error.code).toBe(code);
+    }
+    const missing = await post({ tab_id: "unknown:t9", workspace_id: "w1" });
+    expect(missing.status).toBe(404);
+    expect(((await missing.json()) as ApiError).error.code).toBe("tab_not_found");
+  });
+  it("moves a one-pane tab with its label and process, and refuses a split tab", async () => {
+    const source = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-out" });
+    const target = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-in" });
+    const open = [source.workspace.workspace_id, target.workspace.workspace_id];
+    try {
+      const named = await tabCreate({ workspaceId: source.workspace.workspace_id, label: "build" });
+      await paneSplit(source.root_pane.pane_id, "right", false);
+      const split = await post({ tab_id: source.tab.tab_id, workspace_id: target.workspace.workspace_id });
+      expect(split.status).toBe(409);
+      expect(((await split.json()) as ApiError).error.code).toBe("multi_pane_tab");
+      const same = await post({ tab_id: named.tab.tab_id, workspace_id: source.workspace.workspace_id });
+      expect(((await same.json()) as ApiError).error.code).toBe("same_workspace");
+
+      const response = await post({ tab_id: named.tab.tab_id, workspace_id: target.workspace.workspace_id });
+      expect(response.status).toBe(200);
+      const moved = await response.json() as TabMovedToWorkspace;
+      const snapshot = await sessionSnapshot();
+      const pane = snapshot.panes.find((candidate) => candidate.pane_id === moved.pane_id);
+      expect(pane?.workspace_id).toBe(target.workspace.workspace_id);
+      expect(snapshot.tabs.find((tab) => tab.tab_id === moved.tab_id)?.label).toBe("build");
+      expect(snapshot.tabs.some((tab) => tab.tab_id === named.tab.tab_id)).toBe(false);
+      expect(snapshot.panes.some((candidate) => candidate.pane_id === named.root_pane.pane_id)).toBe(false);
+    } finally { for (const id of open) await workspaceClose(id).catch(() => {}); }
+  });
+  it("leaves the name herdr gave a tab by its place behind, though the tab's number differs", async () => {
+    const source = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-place-out" });
+    const target = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-place-in" });
+    const open = [source.workspace.workspace_id, target.workspace.workspace_id];
+    try {
+      await tabCreate({ workspaceId: source.workspace.workspace_id });
+      const third = await tabCreate({ workspaceId: source.workspace.workspace_id });
+      await tabCreate({ workspaceId: target.workspace.workspace_id });
+      // the first tab closes: the third keeps its number, and herdr names it by its new place
+      await herdrRpc("tab.close", { tab_id: source.tab.tab_id });
+      const before = (await sessionSnapshot()).tabs.find((tab) => tab.tab_id === third.tab.tab_id);
+      expect(before?.number).toBe(3);
+      expect(before?.label).toBe("2");
+      const response = await post({ tab_id: third.tab.tab_id, workspace_id: target.workspace.workspace_id });
+      expect(response.status).toBe(200);
+      const moved = await response.json() as TabMovedToWorkspace;
+      const row = (await sessionSnapshot()).tabs.filter((tab) => tab.workspace_id === target.workspace.workspace_id);
+      // third in its new row, and unnamed there: herdr names it by that place, not by the "2" it had
+      expect(row.map((tab) => tab.tab_id).indexOf(moved.tab_id)).toBe(2);
+      expect(row.find((tab) => tab.tab_id === moved.tab_id)?.label).toBe("3");
+    } finally { for (const id of open) await workspaceClose(id).catch(() => {}); }
+  });
+});
+
 describe("agent rename", () => {
   const post = (body: unknown) => fetch(`${base()}/api/agent/rename`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const nameOf = async (paneId: string): Promise<string | null> =>
@@ -1055,6 +1390,27 @@ describe("agent rename", () => {
       expect(Array.isArray(((await res.json()) as { commands: unknown[] }).commands)).toBeTrue();
     } finally {
       bridge.stop();
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
+  // #2044: a crash left machines.json its old length in NULs, and the server would not start
+  it("starts on saved PCs that are not JSON and names the file it set aside in the PC settings, read only", async () => {
+    const state = mkdtempSync(join(tmpdir(), "ovis-machines-set-aside-"));
+    writeFileSync(join(state, "machines.json"), Buffer.alloc(353));
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let app: ReturnType<typeof createServer> | undefined;
+    try {
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, tailscaleOwner: null });
+      const url = `http://127.0.0.1:${app.port}/api/machines/settings`;
+      const settings = await (await fetch(url)).json() as MachineSettings;
+      expect(settings).toEqual({ auto_update_bridges: true, set_aside: [expect.stringMatching(/^machines\.json\.corrupt-\S+$/)] });
+      expect(readdirSync(state)).toContain(settings.set_aside![0]!);
+      const patched = await fetch(url, { method: "PATCH", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ auto_update_bridges: false, set_aside: [] }) });
+      expect(patched.status).toBe(200);
+      expect(await patched.json()).toEqual({ auto_update_bridges: false, set_aside: settings.set_aside });
+    } finally {
+      app?.stop(); error.mockRestore();
       rmSync(state, { recursive: true, force: true });
     }
   });
@@ -1868,6 +2224,28 @@ describe("GET /api/session", () => {
     expect(body.snapshot.finish_epoch?.length).toBeGreaterThan(0);
     expect(body.snapshot.panes.every((pane) => Number.isSafeInteger(pane.finish_id))).toBe(true);
   });
+
+  it("names the herdr it read: the same from another server on it, another for another herdr, none it cannot prove", async () => {
+    const lifetime = async (origin: string): Promise<string | undefined> =>
+      ((await (await fetch(`${origin}/api/session`)).json()) as { snapshot: SessionSnapshot }).snapshot.herdr_lifetime;
+    const own = await lifetime(base());
+    expect(own).toMatch(/^[0-9a-f]{32}$/);
+    let identity: string | null = "a fake herdr";
+    const dirs = [mkdtempSync(join(tmpdir(), "ovis-lifetime-")), mkdtempSync(join(tmpdir(), "ovis-lifetime-"))];
+    const restarted = createServer({ port: 0, stateDir: dirs[0], machines: false });
+    const other = createServer({ port: 0, stateDir: dirs[1], machines: false, herdrIdentity: () => identity });
+    try {
+      expect(await lifetime(`http://127.0.0.1:${restarted.port}`)).toBe(own);
+      const fake = await lifetime(`http://127.0.0.1:${other.port}`);
+      expect(fake).toMatch(/^[0-9a-f]{32}$/);
+      expect(fake).not.toBe(own);
+      identity = null;
+      expect(await lifetime(`http://127.0.0.1:${other.port}`)).toBeUndefined();
+    } finally {
+      await Promise.all([restarted.stop(), other.stop()]);
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("POST /api/pane/find viewport results", () => {
@@ -2114,7 +2492,27 @@ describe("POST /api/pane/image", () => {
   afterAll(async () => {
     if (qaWorkspaceId) await herdrRpc("workspace.close", { workspace_id: qaWorkspaceId });
     if (qaCwd) rmSync(qaCwd, { recursive: true, force: true });
+    for (const project of gitProjects.splice(0)) {
+      await herdrRpc("workspace.close", { workspace_id: project.workspaceId });
+      rmSync(project.cwd, { recursive: true, force: true });
+    }
   });
+
+  /** A pane of its own whose cwd is a fresh Git project, so `git status` sees what an upload leaves. */
+  const gitProjects: { cwd: string; workspaceId: string }[] = [];
+  const gitProjectPane = async (label: string) => {
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-image-git-"));
+    expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0);
+    const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
+      "workspace.create",
+      { label, cwd, focus: false },
+    );
+    gitProjects.push({ cwd, workspaceId: created.workspace.workspace_id });
+    return { cwd, paneId: created.root_pane.pane_id };
+  };
+  const git = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+  const gitStatus = (cwd: string) => git(cwd, "status", "--porcelain", "--untracked-files=all").stdout.toString().split("\n").filter(Boolean);
+  const pathOf = async (res: Response) => ((await res.json()) as { path: string }).path;
 
   it("stores a pasted image under the pane cwd and returns its absolute path", async () => {
     const res = await post({ pane_id: qaPaneId, content_type: "image/png", data_base64: TINY_PNG_BASE64 });
@@ -2215,6 +2613,101 @@ describe("POST /api/pane/image", () => {
     // no name, or one without a usable extension: still stored, as .bin
     const bare = (await (await post({ pane_id: qaPaneId, content_type: "", data_base64: svg })).json()) as { path: string };
     expect(basename(bare.path)).toMatch(/^file-.*\.bin$/);
+  });
+
+  it("keeps a pasted image and a named file out of Git status, each readable by its returned path", async () => {
+    const { cwd, paneId } = await gitProjectPane("ovis-test-image-git");
+    const png = Buffer.from(TINY_PNG_BASE64, "base64");
+    const json = Buffer.from('{"tool":"herdr","ok":true}\n');
+    // both at once: whichever creates the folder's ignore file first, the other finds it there
+    const answers = await Promise.all([
+      post({ pane_id: paneId, content_type: "image/png", data_base64: png.toString("base64") }),
+      post({ pane_id: paneId, content_type: "application/json", data_base64: json.toString("base64"), name: "report.json" }),
+    ]);
+    expect(answers.map((res) => res.status)).toEqual([200, 200]);
+    const paths = await Promise.all(answers.map(pathOf));
+    expect(readFileSync(join(cwd, ".ovis", ".gitignore"), "utf8")).toBe("*\n");
+    expect(gitStatus(cwd)).toEqual([]);
+    for (const [index, path] of paths.entries()) {
+      const ignored = git(cwd, "check-ignore", path);
+      expect(ignored.exitCode).toBe(0);
+      expect(ignored.stdout.toString().trim()).toBe(path);
+      // ignored is not unreachable: the explicit path still opens, on disk and through the viewer's route
+      const bytes = index === 0 ? png : json;
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+      const opened = await fetch(`${base()}/api/fs/file?pane_id=${encodeURIComponent(paneId)}&path=${encodeURIComponent(path)}`);
+      expect(opened.status).toBe(200);
+      expect(Buffer.from(await opened.arrayBuffer()).equals(bytes)).toBe(true);
+    }
+  });
+
+  it("preserves an existing ignore file during concurrent uploads", async () => {
+    const upload = (paneId: string) => Promise.all(Array.from({ length: 6 }, (_, index) => post({
+      pane_id: paneId,
+      content_type: "application/json",
+      data_base64: Buffer.from(`{"n":${index}}`).toString("base64"),
+      name: `n${index}.json`,
+    })));
+    const own = await gitProjectPane("ovis-test-image-own-ignore");
+    mkdirSync(join(own.cwd, ".ovis"));
+    const rules = "# kept by hand\n*.png\n!keep.txt";
+    writeFileSync(join(own.cwd, ".ovis", ".gitignore"), rules);
+    expect((await upload(own.paneId)).map((res) => res.status)).toEqual(Array(6).fill(200));
+    expect(readFileSync(join(own.cwd, ".ovis", ".gitignore"), "utf8")).toBe(rules);
+    // the user's own rules still decide: they leave .json files, and the ignore file itself, visible
+    expect(gitStatus(own.cwd)).toHaveLength(7);
+    if (process.platform === "win32") return; // creating a symlink needs developer mode there
+    const outside = mkdtempSync(join(tmpdir(), "ovis-image-rules-"));
+    try {
+      writeFileSync(join(outside, "rules"), "shared\n");
+      for (const target of [join(outside, "rules"), join(outside, "missing")]) {
+        const linked = await gitProjectPane("ovis-test-image-linked-ignore");
+        mkdirSync(join(linked.cwd, ".ovis"));
+        symlinkSync(target, join(linked.cwd, ".ovis", ".gitignore"));
+        expect((await upload(linked.paneId)).map((res) => res.status)).toEqual(Array(6).fill(200));
+        expect(lstatSync(join(linked.cwd, ".ovis", ".gitignore")).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(join(linked.cwd, ".ovis", ".gitignore"))).toBe(target);
+      }
+      // nothing was written through either link
+      expect(readFileSync(join(outside, "rules"), "utf8")).toBe("shared\n");
+      expect(existsSync(join(outside, "missing"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("writes no ignore file into a OVIS_PASTE_DIR override, even one naming the default folder", async () => {
+    const { cwd, paneId } = await gitProjectPane("ovis-test-image-override");
+    const previous = process.env["OVIS_PASTE_DIR"];
+    const elsewhere = mkdtempSync(join(tmpdir(), "ovis-image-override-"));
+    try {
+      for (const override of [`  ${elsewhere}  `, join(cwd, ".ovis")]) {
+        process.env["OVIS_PASTE_DIR"] = override;
+        const answers = await Promise.all([0, 1].map(() => post({ pane_id: paneId, content_type: "image/png", data_base64: TINY_PNG_BASE64 })));
+        expect(answers.map((res) => res.status)).toEqual([200, 200]);
+        for (const path of await Promise.all(answers.map(pathOf))) expect(path.startsWith(join(override.trim(), "paste-"))).toBe(true);
+        expect(existsSync(join(override.trim(), ".gitignore"))).toBe(false);
+      }
+      // a folder the user picked shows in Git status like any other
+      expect(gitStatus(cwd)).toHaveLength(2);
+    } finally {
+      if (previous === undefined) delete process.env["OVIS_PASTE_DIR"]; else process.env["OVIS_PASTE_DIR"] = previous;
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("answers an error, not a path, when the ignore file cannot be created", async () => {
+    const { cwd, paneId } = await gitProjectPane("ovis-test-image-unwritable");
+    mkdirSync(join(cwd, ".ovis"));
+    chmodSync(join(cwd, ".ovis"), 0o500);
+    try {
+      const res = await post({ pane_id: paneId, content_type: "image/png", data_base64: TINY_PNG_BASE64 });
+      expect(res.status).toBe(500);
+      expect(((await res.json()) as { path?: string }).path).toBeUndefined();
+      expect(existsSync(join(cwd, ".ovis", ".gitignore"))).toBe(false);
+    } finally {
+      chmodSync(join(cwd, ".ovis"), 0o700);
+    }
   });
 
   it("stores a 20 MiB file whole (regression: 413 while the ceiling was 8 MiB)", async () => {
@@ -3632,6 +4125,39 @@ describe("pairing and identity", () => {
     expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
   });
 
+  it("revokes every device in one answer that clears the caller's own cookie, and takes revoke-all for no device id", async () => {
+    const pair = async (label: string) => {
+      const { code } = (await (await fetch(`${base()}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
+      const paired = await fetch(`${base()}/api/devices/pair`, { method: "POST", headers: { ...guard, ...proxied() }, body: JSON.stringify({ code, label }) });
+      expect(paired.status).toBe(204);
+      return paired.headers.get("set-cookie")!.split(";")[0]!;
+    };
+    const phone = await pair("Phone");
+    const tablet = await pair("Tablet");
+    expect(await auth({ ...proxied(), cookie: tablet })).toMatchObject({ authenticated: true, via: "device" });
+    // the route comes before the device ids: another method on it is refused as a method, never read as a device
+    const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
+    expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);
+    expect((await fetch(`${base()}/api/devices/revoke-all`, { method: "POST" })).status).toBe(403); // the mutation guard
+    // from a paired device: everything paired goes, that device's own pairing included, and its cookie with the answer
+    const revoked = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: { ...guard, ...proxied(), cookie: tablet } });
+    expect(revoked.status).toBe(200);
+    expect(revoked.headers.get("content-type")).toContain("application/json");
+    expect(revoked.headers.get("cache-control")).toBe("no-store");
+    expect(await revoked.json()).toEqual({ revoked: 2 });
+    expect(revoked.headers.getSetCookie()).toEqual([DEVICE_COOKIE_CLEARED, CLEAR_LEGACY_DEVICE_COOKIE]);
+    for (const cookie of [phone, tablet]) expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: false, reason: "pairing_required" });
+    expect(((await (await fetch(`${base()}/api/devices`)).json()) as { devices: unknown[] }).devices).toEqual([]);
+    // the gate stays shut to strangers; this PC and the PC's Tailscale login are in as before
+    expect(await auth(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
+    expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
+    expect(await auth(proxied(OWNER))).toMatchObject({ authenticated: true, via: "tailscale" });
+    // with nothing left to revoke the answer is the same shape, and still a durable write
+    const again = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard });
+    expect([again.status, await again.json()]).toEqual([200, { revoked: 0 }]);
+    expect(JSON.parse(readFileSync(join(openState, "devices.json"), "utf8"))).toEqual({ gate_closed_at: expect.any(String), devices: [] });
+  });
+
   it("the plugin script prints a code a headless PC's owner can hand to a phone", async () => {
     const configDir = mkdtempSync(join(tmpdir(), "herdr-pair-cli-"));
     try {
@@ -3951,7 +4477,8 @@ describe("PC management API", () => {
     let serve = () => new Response("{}");
     const peer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => serve() });
     const url = `http://127.0.0.1:${peer.port}`;
-    const manager = { endpoint: (id: string) => id === "capped-remote" ? { url, token: "contract-token" } : undefined, trackTerminal: () => () => {} } as unknown as MachineManager;
+    const retried: string[] = [];
+    const manager = { endpoint: (id: string) => id === "capped-remote" ? { url, token: "contract-token" } : undefined, trackTerminal: () => () => {}, retryNow: (id: string) => { retried.push(id); } } as unknown as MachineManager;
     const ask = (machine: string, path: string, readOnly = false) => handleMachineRequest(new Request(`http://127.0.0.1/api/machines/${machine}/${path}`), manager, undefined, undefined, readOnly);
     const logged: string[] = [];
     const error = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.join(" ")); });
@@ -3976,6 +4503,8 @@ describe("PC management API", () => {
       const offline = await ask("missing", "session");
       expect(offline.status).toBe(503);
       expect((await offline.json() as ApiError).error.code).toBe("machine_offline");
+      // and asked to try connecting now rather than after its retry delay
+      expect(retried).toEqual(["missing"]);
     } finally { error.mockRestore(); peer.stop(true); }
   });
   it("gates PC metadata, setup and SSE behind the existing token", async () => {
@@ -4090,6 +4619,59 @@ describe("repository diff of a pane's folder", () => {
     const posted = await fetch(`${base()}/api/workspace/diff/files?${pane}`, { method: "POST", headers: { "x-herdr-machine": "1" } });
     expect(posted.status).toBe(400);
     expect(((await posted.json()) as ApiError).error.code).toBe("method_not_allowed");
+
+    // the branch against a base: the refs for the picker, the list from the merge base, each patch from the list's identity
+    git("add", ".");
+    git("commit", "-q", "-m", "on main");
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(root, "b.txt"), "branch\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "branch work");
+    git("update-ref", "refs/remotes/origin/main", "main");
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    writeFileSync(join(root, "untracked.txt"), "new\n");
+    const mainOid = Bun.spawnSync(["git", "-C", root, "rev-parse", "main"], { stdout: "pipe" }).stdout.toString().trim();
+    const headOid = Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" }).stdout.toString().trim();
+    for (const prefix of ["", "machines/local/"]) {
+      const refs = await fetch(`${base()}/api/${prefix}workspace/diff/refs?${pane}`);
+      expect([prefix, refs.status]).toEqual([prefix, 200]);
+      const listed = (await refs.json()) as RepoDiffRefs;
+      expect(listed.refs).toEqual([{ name: "refs/heads/feature", oid: headOid }, { name: "refs/heads/main", oid: mainOid }, { name: "refs/remotes/origin/main", oid: mainOid }]);
+      expect(listed).toMatchObject({ truncated: false, limits: { max_refs: 200 } });
+      const branch = await fetch(`${base()}/api/${prefix}workspace/diff/files?${pane}&scope=branch&base=refs%2Fremotes%2Forigin%2Fmain`);
+      expect([prefix, branch.status]).toEqual([prefix, 200]);
+      const compared = (await branch.json()) as RepoDiffFileList;
+      expect(compared).toMatchObject({ scope: "branch", base: mainOid, head: headOid, comparison: { repository_root: root, head_oid: headOid, base_oid: mainOid, merge_base_oid: mainOid } });
+      expect(compared.files.map((file) => [file.path, file.status])).toEqual([["b.txt", "added"], ["untracked.txt", "untracked"]]);
+      const comparison = encodeURIComponent(JSON.stringify(compared.comparison));
+      const patch = await fetch(`${base()}/api/${prefix}workspace/diff/file?${pane}&scope=branch&path=untracked.txt&comparison=${comparison}`);
+      expect([prefix, patch.status]).toEqual([prefix, 200]);
+      const read = (await patch.json()) as RepoDiffFilePatch;
+      expect(read).toMatchObject({ scope: "branch", comparison: compared.comparison, file: { path: "untracked.txt", status: "untracked", binary: false }, unavailable: null });
+      expect(read.patch).toStartWith("diff --git a/untracked.txt b/untracked.txt\n");
+      // a malformed identity, one of another HEAD, and a patch asked by the base's name instead of the identity
+      for (const [search, status, code] of [
+        [`scope=branch&path=b.txt&comparison=${encodeURIComponent("{\"head_oid\":1}")}`, 400, "invalid_comparison"],
+        // a full git id is 40 or 64 hex digits: 41 is a malformed shape, not a moved HEAD or a missing commit
+        ...(["head_oid", "base_oid", "merge_base_oid"] as const).map((key) => [`scope=branch&path=b.txt&comparison=${encodeURIComponent(JSON.stringify({ ...compared.comparison, [key]: "a".repeat(41) }))}`, 400, "invalid_comparison"] as const),
+        [`scope=branch&path=b.txt&comparison=${encodeURIComponent(JSON.stringify({ ...compared.comparison, head_oid: "0".repeat(40) }))}`, 409, "comparison_changed"],
+        ["scope=branch&path=b.txt&base=main", 400, "invalid_comparison"],
+      ] as const) {
+        const refused = await fetch(`${base()}/api/${prefix}workspace/diff/file?${pane}&${search}`);
+        expect([prefix, search, refused.status]).toEqual([prefix, search, status]);
+        expect(((await refused.json()) as ApiError).error.code).toBe(code);
+      }
+      // a base that names no commit, and one that shares no history
+      const unknown = await fetch(`${base()}/api/${prefix}workspace/diff/files?${pane}&scope=branch&base=no-such-branch`);
+      expect(unknown.status).toBe(404);
+      expect(((await unknown.json()) as ApiError).error.code).toBe("revision_not_found");
+    }
+    // another site's page reads none of it
+    for (const route of ["refs", "files?scope=branch&base=main"]) {
+      const crossSite = await fetch(`${base()}/api/workspace/diff/${route.includes("?") ? route.replace("?", `?${pane}&`) : `${route}?${pane}`}`, { headers: { "sec-fetch-site": "cross-site" } });
+      expect([route, crossSite.status]).toEqual([route, 403]);
+      expect(((await crossSite.json()) as ApiError).error.code).toBe("cross_site");
+    }
   });
 });
 
@@ -4596,4 +5178,316 @@ setInterval(() => {}, 1 << 30);
       rmSync(bridgeState, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+// The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
+// are always in the document, the first mute is a change of the empty list, a watching device
+// reads and cannot write, and two tabs' changes land as two revisions with both kept.
+describe("shared preferences API", () => {
+  const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
+  /** the event stream as a page reads it: each `preferences` document, and a bounded wait for the next one that matches */
+  async function openEvents(base: string, headers: Record<string, string>, abort: AbortController) {
+    const response = await fetch(`${base}/api/machines/events`, { headers, signal: abort.signal });
+    expect(response.status).toBe(200);
+    const documents: SharedPreferences[] = [];
+    const listeners = new Set<() => void>();
+    void (async () => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          if (!frame.startsWith("data: ")) continue;
+          const event = JSON.parse(frame.slice(6)) as MachineEvent;
+          if (event.type === "preferences") { documents.push(event.preferences); for (const listener of [...listeners]) listener(); }
+        }
+      }
+    })().catch(() => undefined);
+    const next = (what: string, found: (document: SharedPreferences) => boolean): Promise<SharedPreferences> => new Promise((resolve, reject) => {
+      const check = () => { const hit = documents.find(found); if (hit) { listeners.delete(check); clearTimeout(timer); resolve(hit); } };
+      const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`timed out waiting for ${what}`)); }, 10_000);
+      listeners.add(check);
+      check();
+    });
+    return { documents, next };
+  }
+
+  it("advertises the mute list from the first document on, saves the first mute, and refuses what is not a list", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { ...guard, authorization: "Bearer test-preferences" };
+    const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
+    const abort = new AbortController();
+    try {
+      // a fresh store: the empty list is in the GET and in the stream's opening document
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      const events = await openEvents(base, headers, abort);
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      // the first mute: saved, answered whole, and told to every stream
+      const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      expect(await events.next("the first mute", (document) => document.revision === 1)).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      // malformed and oversized lists: refused unread into the document, which keeps its revision
+      for (const muted of ["w1:p1", [1], [""], [null], ["x".repeat(301)], Array.from({ length: MAX_MUTED_PANES + 1 }, (_, i) => `w1:p${i}`)]) {
+        const refused = await put({ settings: {}, muted_panes: muted });
+        expect([JSON.stringify(muted).slice(0, 24), refused.status, ((await refused.json()) as ApiError).error.code]).toEqual([JSON.stringify(muted).slice(0, 24), 400, "invalid_body"]);
+      }
+      const huge = await put({ settings: {}, muted_panes: Array.from({ length: 300 }, (_, i) => `${"k".repeat(290)}${i}`) });
+      expect([huge.status, ((await huge.json()) as ApiError).error.code]).toEqual([413, "too_large"]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 1, settings: {}, muted_panes: ["w1:p1"] });
+      // a change that names no list leaves it; an empty list clears it
+      expect(await (await put({ settings: { theme: "light" } })).json()).toEqual({ revision: 2, settings: { theme: "light" }, muted_panes: ["w1:p1"] });
+      expect(await (await put({ settings: {}, muted_panes: [] })).json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      await events.next("the cleared list", (document) => document.revision === 3);
+      expect(events.documents.map((document) => document.revision)).toEqual([0, 1, 2, 3]);
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a document from before the list as none muted, without a write, and takes the first mute of it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const stored = { revision: 4, settings: { theme: "dark" }, pins: ["local:w1:p1"] };
+    writeFileSync(join(root, "preferences.json"), JSON.stringify(stored));
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { ...guard, authorization: "Bearer test-preferences" };
+    const abort = new AbortController();
+    try {
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
+      const events = await openEvents(base, headers, abort);
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
+      expect(await first.json()).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
+      // the list has a document of its own, which an older release's whole rewrite of preferences.json cannot erase
+      expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });
+      expect(JSON.parse(readFileSync(join(root, "muted-panes.json"), "utf8"))).toEqual({ muted_panes: ["w1:p1"] });
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps both of two tabs' changes as two revisions, and lets a watching device read but not write", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-preferences-"));
+    const devices = new DeviceStore(root);
+    const watch = devices.pair(devices.startPairing().code, "Watch", "watch")!;
+    devices.match(watch.token);
+    const server = createServer({ port: 0, stateDir: root, token: "test-preferences", tailscaleOwner: null });
+    const base = `http://127.0.0.1:${server.port}`;
+    const driving = { ...guard, authorization: "Bearer test-preferences" };
+    const watching = { ...guard, cookie: `ovis_device=${watch.token}` };
+    const abort = new AbortController();
+    try {
+      const events = await openEvents(base, watching, abort);
+      await events.next("the opening document", (document) => document.revision === 0);
+      // tab A mutes while tab B picks a theme: each change lands on the document as it is then, and neither is lost
+      const [a, b] = await Promise.all([
+        fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) }),
+        fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: { theme: "light" } }) }),
+      ]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      const revisions = [((await a.json()) as SharedPreferences).revision, ((await b.json()) as SharedPreferences).revision].sort();
+      expect(revisions).toEqual([1, 2]);
+      const merged = await events.next("both changes", (document) => document.revision === 2);
+      expect(merged).toEqual({ revision: 2, settings: { theme: "light" }, muted_panes: ["w1:p1"] });
+      // tab B then clears the list tab A set: the last write wins, as for every field
+      const cleared = await fetch(`${base}/api/preferences`, { method: "PUT", headers: driving, body: JSON.stringify({ settings: {}, muted_panes: [] }) });
+      expect(await cleared.json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      // the watching device heard every document, and cannot write one: the revision stays
+      await events.next("the cleared list", (document) => document.revision === 3);
+      expect(events.documents.map((document) => document.revision)).toEqual([0, 1, 2, 3]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers: watching })).json()).toEqual({ revision: 3, settings: { theme: "light" }, muted_panes: [] });
+      const refused = await fetch(`${base}/api/preferences`, { method: "PUT", headers: watching, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
+      expect([refused.status, ((await refused.json()) as ApiError).error.code]).toEqual([403, "read_only"]);
+      expect(await (await fetch(`${base}/api/preferences`, { headers: driving })).json()).toMatchObject({ revision: 3, muted_panes: [] });
+    } finally {
+      abort.abort();
+      server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("access facts on /api/health", () => {
+  type Body = { auth: HealthAuth; lan_exposure?: LanExposure; security?: SecuritySummary };
+  const SECRET = "fictional-t0k3n-value";
+  const guard = { "content-type": "application/json", "x-herdr-machine": "1" };
+  /** a server of its own: a temp state dir, an empty token unless one is given, nothing from the runner's environment */
+  const serve = (options: { hostname?: string; token?: string; serveOnly?: boolean; owner?: string | null; seed?: (stateDir: string) => void } = {}) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "herdr-security-summary-"));
+    options.seed?.(stateDir);
+    const instance = createServer({ port: 0, hostname: options.hostname ?? "127.0.0.1", token: options.token ?? "", stateDir, tailscaleOwner: options.owner ?? null, tailscaleServeOnly: options.serveOnly ?? false });
+    const read = async (headers: Record<string, string> = {}, scope = "") => {
+      const response = await fetch(`http://127.0.0.1:${instance.port}/api/health${scope}`, { headers });
+      const text = await response.text();
+      return { status: response.status, cacheControl: response.headers.get("cache-control"), text, body: JSON.parse(text) as Body };
+    };
+    return { port: instance.port, stateDir, read, stop: () => { instance.stop(); rmSync(stateDir, { recursive: true, force: true }); } };
+  };
+
+  it("authenticated summary contains only safe facts", async () => {
+    const secured = serve({ token: SECRET });
+    try {
+      for (const scope of ["", "?scope=bridge"]) {
+        const answer = await secured.read({ authorization: `Bearer ${SECRET}` }, scope);
+        expect(answer.status).toBe(200);
+        expect(answer.body.security).toEqual({ token_configured: true, pairing_gate: "open", bind_scope: "loopback", observed_ingress: "direct", public_exposure: "unknown" });
+        expect(answer.cacheControl).toBe("no-store");
+        // no token, hash, login, address or path anywhere in the facts
+        const facts = JSON.stringify(answer.body.security);
+        for (const secret of [SECRET, secured.stateDir, "127.0.0.1", "token_hash", "@"]) expect(facts).not.toContain(secret);
+        expect(answer.text).not.toContain(SECRET);
+      }
+    } finally { secured.stop(); }
+    // another bind and a closed gate: the facts follow the configuration, not the request
+    const open = serve({ hostname: "0.0.0.0" });
+    try {
+      expect((await open.read()).body.security).toEqual({ token_configured: false, pairing_gate: "open", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" });
+      const { code } = (await (await fetch(`http://127.0.0.1:${open.port}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
+      const paired = await fetch(`http://127.0.0.1:${open.port}/api/devices/pair`, { method: "POST", headers: { ...guard, "x-forwarded-for": "100.64.0.9" }, body: JSON.stringify({ code, label: "Phone" }) });
+      const cookie = paired.headers.get("set-cookie")!.split(";")[0]!;
+      // the first use of the cookie confirms the pairing, which closes the gate for good
+      expect((await open.read({ cookie })).body.auth).toMatchObject({ authenticated: true, via: "device" });
+      const closed = (await open.read()).body;
+      expect(closed.security).toMatchObject({ pairing_gate: "closed", bind_scope: "other" });
+      expect(closed.lan_exposure).toBeUndefined();
+    } finally { open.stop(); }
+  });
+
+  it("anonymous health omits security", async () => {
+    const secured = serve({ token: SECRET, hostname: "0.0.0.0" });
+    try {
+      const anonymous: Record<string, string>[] = [{}, { authorization: "Bearer wrong" }, { "x-forwarded-for": "203.0.113.7", "tailscale-funnel-request": "?1" }];
+      for (const headers of anonymous) {
+        for (const scope of ["", "?scope=bridge"]) {
+          const answer = await secured.read(headers, scope);
+          expect(answer.body.auth.authenticated).toBe(false);
+          expect(answer.body.security).toBeUndefined();
+          for (const name of ["token_configured", "pairing_gate", "bind_scope", "observed_ingress", "public_exposure", "0.0.0.0"]) expect(answer.text).not.toContain(name);
+        }
+      }
+    } finally { secured.stop(); }
+  });
+
+  it("watch can read but not change access", async () => {
+    let token = "";
+    const secured = serve({ token: SECRET, seed: (stateDir) => {
+      const store = new DeviceStore(stateDir);
+      token = store.pair(store.startPairing().code, "Watch", "watch")!.token;
+      store.match(token);
+    } });
+    try {
+      const cookie = `ovis_device=${token}`;
+      const answer = await secured.read({ cookie, "x-forwarded-for": "192.168.0.20" });
+      expect(answer.body.auth).toMatchObject({ authenticated: true, via: "device", role: "watch" });
+      expect(answer.body.security).toEqual({ token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "proxy", public_exposure: "unknown" });
+      // the facts change nothing: pairing, renaming and revoking stay refused to a watching device
+      const list = (await (await fetch(`http://127.0.0.1:${secured.port}/api/devices`, { headers: { cookie } })).json()) as { devices: Array<{ id: string }> };
+      const id = list.devices[0]!.id;
+      for (const [method, path] of [["POST", "pair/start"], ["PATCH", id], ["DELETE", id]] as const) {
+        const response = await fetch(`http://127.0.0.1:${secured.port}/api/devices/${path}`, { method, headers: { ...guard, cookie }, body: method === "DELETE" ? undefined : "{}" });
+        expect([method, response.status]).toEqual([method, 403]);
+      }
+      expect((await secured.read({ cookie })).body.security).toMatchObject({ pairing_gate: "closed" });
+    } finally { secured.stop(); }
+  });
+
+  it("corrupt registry is unavailable and gated", async () => {
+    const damaged = serve({ hostname: "0.0.0.0", seed: (stateDir) => writeFileSync(join(stateDir, "devices.json"), "{ not json") });
+    try {
+      const answer = await damaged.read();
+      expect(answer.body.security).toEqual({ token_configured: false, pairing_gate: "unavailable", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" });
+      // a damaged registry is not a first installation: no open-LAN warning, and a stranger is refused
+      expect(answer.body.lan_exposure).toBeUndefined();
+      const stranger = await damaged.read({ "x-forwarded-for": "192.168.0.20" });
+      expect(stranger.body.auth).toMatchObject({ authenticated: false, reason: "pairing_required" });
+      expect(stranger.body.security).toBeUndefined();
+      expect(answer.text).not.toContain(damaged.stateDir);
+    } finally { damaged.stop(); }
+  });
+
+  it("auth via is not ingress", async () => {
+    const OWNER = "owner@example.com";
+    const bearer = { authorization: `Bearer ${SECRET}` };
+    const tailscaleShape = { ...bearer, "x-forwarded-for": "100.64.0.9", "tailscale-user-login": OWNER };
+    // the same token, three different ways in; Tailscale's header shape alone is no proof: any
+    // client on this PC can send it unless serve is declared the only ingress
+    const cases: Array<[boolean, Record<string, string>, SecuritySummary["observed_ingress"]]> = [
+      [false, bearer, "direct"],
+      [false, { ...bearer, "x-forwarded-for": "203.0.113.7" }, "proxy"],
+      [false, tailscaleShape, "unknown"],
+      [false, { ...bearer, "x-forwarded-for": "100.64.0.99", "tailscale-user-login": "unverified@example.test" }, "unknown"],
+      [true, tailscaleShape, "tailscale"],
+    ];
+    for (const [serveOnly, headers, ingress] of cases) {
+      const secured = serve({ token: SECRET, owner: OWNER, serveOnly });
+      try {
+        const body = (await secured.read(headers)).body;
+        expect(body.auth).toMatchObject({ authenticated: true, via: "token" });
+        expect([serveOnly, headers, body.security?.observed_ingress]).toEqual([serveOnly, headers, ingress]);
+      } finally { secured.stop(); }
+    }
+    // and a local sign-in is not "direct" because of its via: a rewritten Host is a proxy on this PC
+    const open = serve();
+    try {
+      const body = (await open.read({ host: "pc.example.com" })).body;
+      expect(body.auth).toMatchObject({ authenticated: true, via: "open" });
+      expect(body.security?.observed_ingress).toBe("proxy");
+    } finally { open.stop(); }
+  });
+
+  it("unknown proxy never means local only", async () => {
+    // a loopback bind behind some proxy on this PC: nothing proves where that proxy listens
+    const behind = serve();
+    try {
+      const answer = await behind.read({ "x-forwarded-for": "203.0.113.7", "x-forwarded-proto": "https" });
+      expect(answer.body.security).toEqual({ token_configured: false, pairing_gate: "open", bind_scope: "loopback", observed_ingress: "proxy", public_exposure: "unknown" });
+      expect(answer.body.lan_exposure).toBeUndefined();
+      // a Tailscale header nothing here could have written stays unknown, and so does exposure
+      const forged = await behind.read({ "x-forwarded-for": "203.0.113.7", "tailscale-user-login": "someone@example.com" });
+      expect(forged.body.security).toMatchObject({ observed_ingress: "unknown", public_exposure: "unknown" });
+    } finally { behind.stop(); }
+    // Funnel counts as public evidence only where serve is declared the only ingress
+    const funnelHeaders = { authorization: `Bearer ${SECRET}`, "x-forwarded-for": "203.0.113.7", "tailscale-funnel-request": "?1" };
+    const undeclared = serve({ token: SECRET, owner: "owner@example.com" });
+    try {
+      expect((await undeclared.read(funnelHeaders)).body.security).toMatchObject({ observed_ingress: "unknown", public_exposure: "unknown" });
+    } finally { undeclared.stop(); }
+    const declared = serve({ token: SECRET, owner: "owner@example.com", serveOnly: true });
+    try {
+      expect((await declared.read(funnelHeaders)).body.security).toMatchObject({ observed_ingress: "funnel", public_exposure: "observed" });
+    } finally { declared.stop(); }
+  });
+
+  it("bridge health does not require herdr", async () => {
+    const secured = serve({ token: SECRET });
+    const saved = process.env.HERDR_SOCKET;
+    const missing = join(secured.stateDir, "no-herdr.sock");
+    process.env.HERDR_SOCKET = missing;
+    try {
+      const bridge = await secured.read({ authorization: `Bearer ${SECRET}` }, "?scope=bridge");
+      expect(bridge.status).toBe(200);
+      expect(bridge.body.security).toEqual({ token_configured: true, pairing_gate: "open", bind_scope: "loopback", observed_ingress: "direct", public_exposure: "unknown" });
+      // the full answer needs herdr, and its failure carries no facts to be reused
+      const full = await secured.read({ authorization: `Bearer ${SECRET}` });
+      expect(full.status).not.toBe(200);
+      expect(full.body.security).toBeUndefined();
+      expect(full.text).not.toContain(SECRET);
+    } finally {
+      if (saved === undefined) delete process.env.HERDR_SOCKET; else process.env.HERDR_SOCKET = saved;
+      secured.stop();
+    }
+  });
 });

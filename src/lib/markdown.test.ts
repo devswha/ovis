@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { loadKatex, Markdown } from "../components/Markdown.tsx";
@@ -6,7 +7,7 @@ import { FILE_LINK_COUNT, FILE_LINK_LIMIT, linkFilePaths } from "../components/F
 import { HighlightedCode } from "../components/HighlightedCode.tsx";
 import { OpenFileContext } from "./filePaths.ts";
 import { SettingsProvider } from "./settings.ts";
-import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES, foldCode, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, trimUrl, type InlineNode, type ListBlock } from "./markdown.ts";
+import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES, foldCode, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
 
 describe("parseMarkdown", () => {
   it("renders inline and display math while leaving fenced code untouched", async () => {
@@ -239,13 +240,68 @@ describe("foldCode", () => {
   });
 });
 
+/**
+ * This thread's CPU time in milliseconds, where the system keeps a clock for it (Linux, macOS), or
+ * null. process.threadCpuUsage() counts in whole ticks of a millisecond, so a run of two read none
+ * on a busy runner, and the ratio was infinite.
+ */
+const threadClock = ((): (() => number) | null => {
+  const id = process.platform === "linux" ? 3 : process.platform === "darwin" ? 16 : null;
+  if (id === null) return null;
+  try {
+    const { symbols } = dlopen(process.platform === "linux" ? "libc.so.6" : "libSystem.B.dylib", { clock_gettime: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+    const time = new BigInt64Array(2);
+    return () => {
+      if (symbols.clock_gettime(id, ptr(time)) !== 0) throw new Error("clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+      return Number(time[0]!) * 1000 + Number(time[1]!) / 1e6;
+    };
+  } catch { return null; }
+})();
+
 describe("text no one wrote by hand", () => {
   // what an agent prints, or a changelog holds, is not always prose: the page parses it while it
   // draws, so a line that takes seconds freezes the tab, and one that nests without end crashes it
-  const within = (milliseconds: number, run: () => void): void => {
-    const start = performance.now();
-    run();
-    expect(performance.now() - start).toBeLessThan(milliseconds);
+  /**
+   * What `parse` makes of `text(size)`, having checked that it reads in linear time: ten times the
+   * text takes under thirty times as long (linear is ten, a search of the rest of the line from
+   * every character a hundred). A budget in milliseconds failed on GitHub's runners with nothing
+   * slower in the parser, so this counts the CPU time this thread spent, which a busy runner does
+   * not stretch as it does the clock (the process's time also counts the compiler's and the garbage
+   * collector's threads, and reached 32 on a busy runner, #2084). Small and large are timed in
+   * turn, up to five rounds, and the fastest of each are compared: being preempted or slowed only
+   * adds time, so the fastest run is the one closest to the parser's own work. A count of the
+   * parser's steps would not see what some of these cases guard against, a regular expression
+   * backtracking in one call.
+   */
+  const linear = <T,>(text: (size: number) => string, size: number, parse: (text: string) => T): T => {
+    const small = text(size / 10);
+    const large = text(size);
+    // both read once untimed, so the first timed run is not the one that compiles the parser
+    parse(small);
+    const read = parse(large);
+    const cpu = (): number => {
+      if (threadClock !== null) return threadClock();
+      const { user, system } = process.cpuUsage();
+      return (user + system) / 1000;
+    };
+    // a parse of microseconds is timed over as many runs as take two milliseconds; twenty where the
+    // process's clock may count in steps of milliseconds, so no run of the small text reads none
+    const shortest = threadClock === null ? 20 : 2;
+    let runs = 1;
+    const timed = (input: string): number => {
+      const start = cpu();
+      for (let run = 0; run < runs; run += 1) parse(input);
+      return cpu() - start;
+    };
+    while (timed(small) < shortest) runs *= 2;
+    let fastestSmall = Infinity;
+    let fastestLarge = Infinity;
+    for (let round = 0; round < 5 && !(fastestLarge / fastestSmall < 30); round += 1) {
+      fastestSmall = Math.min(fastestSmall, timed(small));
+      fastestLarge = Math.min(fastestLarge, timed(large));
+    }
+    expect(fastestLarge / fastestSmall).toBeLessThan(30);
+    return read;
   };
   /** every string of up to `length` of the `parts`, in order */
   const everyLine = (parts: string[], length: number): string[] => {
@@ -276,8 +332,9 @@ describe("text no one wrote by hand", () => {
     const urls = everyLine(["a", "(", ")", ".", "_"], 6).map((tail) => `https://x.dev/${tail}`);
     expect(urls.length).toBeGreaterThan(19_000);
     for (const url of urls) expect(trimUrl(url)).toBe(asBefore(url));
-    within(1000, () => expect(trimUrl(`https://x.dev/${")".repeat(48_000)}`)).toBe("https://x.dev/"));
-    within(1000, () => parseMarkdown(`https://x.dev/${")".repeat(48_000)}`));
+    const closing = (count: number): string => `https://x.dev/${")".repeat(count)}`;
+    expect(linear(closing, 48_000, trimUrl)).toBe("https://x.dev/");
+    linear(closing, 48_000, (text) => parseMarkdown(text));
   });
 
   it("knows a table's separator line as it did, cell by cell", () => {
@@ -293,16 +350,14 @@ describe("text no one wrote by hand", () => {
     expect(separators).toBeGreaterThan(100);
     for (const line of ["|---|---|", "---|---", " | :--- | ---: | :---: | ", "\t|---\t|\t---|\t", "|--|--|", "|---|:-:|-|"]) expect(isTableSeparator(line)).toBe(true);
     for (const line of ["", "---", "|---|", "||---|---", "|---|---||", "|---|:|", "|---|-x-|"]) expect(isTableSeparator(line)).toBe(false);
-    within(1000, () => parseMarkdown(`a|b\n${" ".repeat(96_000)}x`));
-    within(1000, () => parseMarkdown(`a|b\n---|---${" ".repeat(96_000)}x`));
+    linear((spaces) => `a|b\n${" ".repeat(spaces)}x`, 96_000, (text) => parseMarkdown(text));
+    linear((spaces) => `a|b\n---|---${" ".repeat(spaces)}x`, 96_000, (text) => parseMarkdown(text));
   });
 
   it("looks once for the end of a formula that never closes", () => {
-    within(1000, () => {
-      const blocks = parseMarkdown("\\[\n".repeat(32_000));
-      expect(blocks).toHaveLength(32_000);
-      expect(blocks.every((block) => block.type === "paragraph")).toBe(true);
-    });
+    const blocks = linear((lines) => "\\[\n".repeat(lines), 32_000, (text) => parseMarkdown(text));
+    expect(blocks).toHaveLength(32_000);
+    expect(blocks.every((block) => block.type === "paragraph")).toBe(true);
     // the search ends at a fence: what opens after it is looked for again
     expect(parseMarkdown("\\[ a\n\\[ b\n```\ncode\n```\n\\[ c \\]\n\\[ d").map((block) => block.type))
       .toEqual(["paragraph", "paragraph", "code", "math", "paragraph"]);
@@ -311,12 +366,12 @@ describe("text no one wrote by hand", () => {
   it("looks once for what closes a bracket, an inline formula or an underscore", () => {
     // a megabyte of each took from one minute to four: every one was searched from to the line's end
     for (const part of ["[a", "\\(", "_a ", "__a "]) {
-      const line = part.repeat(Math.ceil(1_000_000 / part.length));
-      within(1000, () => expect(parseInline(line)).toEqual([{ type: "text", value: line }]));
+      const line = (length: number): string => part.repeat(Math.ceil(length / part.length));
+      expect(linear(line, 200_000, (text) => parseInline(text))).toEqual([{ type: "text", value: line(200_000) }]);
     }
     // a label closed with an address that is not, and a `__` that only a `_` closes
-    within(1000, () => expect(parseInline("[a](b".repeat(200_000))).toHaveLength(1));
-    within(1000, () => expect(parseInline("__a b_ ".repeat(150_000))).toHaveLength(300_000));
+    expect(linear((count) => "[a](b".repeat(count), 40_000, (text) => parseInline(text))).toHaveLength(1);
+    expect(linear((count) => "__a b_ ".repeat(count), 30_000, (text) => parseInline(text))).toHaveLength(60_000);
     // the marks are the ones it found as one pattern, searching the whole line
     const asBefore = /(`[^`\n]+`|\\\(.+?\\\)|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|(?<![\w.@/-])www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}\p{M}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/gu;
     const found = (marks: Iterable<RegExpMatchArray>): string => [...marks].map((mark) => `${mark.index}:${mark[0]}`).join("\n");
@@ -332,11 +387,9 @@ describe("text no one wrote by hand", () => {
   });
 
   it("adds an item's lines to it without copying the item at every line", () => {
-    within(1000, () => {
-      const [list] = parseMarkdown(`- a\n${"  x\n".repeat(48_000)}`) as [ListBlock];
-      expect(list.items).toHaveLength(1);
-      expect(list.items[0]?.content).toHaveLength(96_001);
-    });
+    const [list] = linear((lines) => `- a\n${"  x\n".repeat(lines)}`, 48_000, (text) => parseMarkdown(text)) as [ListBlock];
+    expect(list.items).toHaveLength(1);
+    expect(list.items[0]?.content).toHaveLength(96_001);
   });
 
   it("stops nesting emphasis after a few levels, and keeps what is inside as text", () => {
@@ -347,12 +400,10 @@ describe("text no one wrote by hand", () => {
       }
       return levels;
     };
-    within(1000, () => {
-      const nodes = parseInline(`${"_".repeat(48_000)} x`);
-      expect(depth(nodes)).toBeLessThan(20);
-      // nothing is lost: what the levels left over hold is still there, as text
-      expect(JSON.stringify(nodes)).toContain("_".repeat(40_000));
-    });
+    const nodes = linear((count) => `${"_".repeat(count)} x`, 48_000, (text) => parseInline(text));
+    expect(depth(nodes)).toBeLessThan(20);
+    // nothing is lost: what the levels left over hold is still there, as text
+    expect(JSON.stringify(nodes)).toContain("_".repeat(40_000));
     // what people write nests as before
     expect(parseInline("**a _b ~~c~~_**")).toEqual([{ type: "strong", children: [{ type: "text", value: "a " },
       { type: "em", children: [{ type: "text", value: "b " }, { type: "del", children: [{ type: "text", value: "c" }] }] }] }]);
@@ -365,15 +416,11 @@ describe("text no one wrote by hand", () => {
 
   it("reads a heading or an item whose text holds a line separator, without trying every split of its spaces", () => {
     // U+2028 is not a line here (only \n is), and `.` stops at it unless told otherwise
-    within(1000, () => {
-      const [heading] = parseMarkdown(`# ${" ".repeat(48_000)}a\u2028b`);
-      expect(heading).toEqual({ type: "heading", level: 1, content: [{ type: "text", value: "a\u2028b" }] });
-    });
-    within(1000, () => {
-      const [list] = parseMarkdown(`- ${" ".repeat(48_000)}a\u2028b`) as [ListBlock];
-      expect(list.items).toEqual([{ content: [{ type: "text", value: "a\u2028b" }] }]);
-    });
-    within(1000, () => parseMarkdown(`1. ${" ".repeat(48_000)}\u2029`));
+    const [heading] = linear((spaces) => `# ${" ".repeat(spaces)}a\u2028b`, 48_000, (text) => parseMarkdown(text));
+    expect(heading).toEqual({ type: "heading", level: 1, content: [{ type: "text", value: "a\u2028b" }] });
+    const [list] = linear((spaces) => `- ${" ".repeat(spaces)}a\u2028b`, 48_000, (text) => parseMarkdown(text)) as [ListBlock];
+    expect(list.items).toEqual([{ content: [{ type: "text", value: "a\u2028b" }] }]);
+    linear((spaces) => `1. ${" ".repeat(spaces)}\u2029`, 48_000, (text) => parseMarkdown(text));
   });
 
   it("shows a formula nested beyond reason as its source, without asking KaTeX", async () => {
@@ -381,17 +428,18 @@ describe("text no one wrote by hand", () => {
     expect(mathNestsTooDeep("{".repeat(101))).toBe(true);
     const fractions = `${"\\frac{1}{".repeat(4000)}x${"}".repeat(4000)}`;
     expect(mathNestsTooDeep(fractions)).toBe(true);
-    await loadKatex();
+    const katex = await loadKatex();
+    const asked = spyOn(katex, "renderToString");
     const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
     Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
     try {
-      within(1000, () => {
-        const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(Markdown, { children: `\\[${fractions}\\]\n\n\\(\\frac{1}{2}\\)` }) }));
-        expect(html).toContain("\\frac{1}{\\frac{1}{");
-        // the formula beside it is still drawn
-        expect(html).toContain("katex-html");
-      });
+      const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(Markdown, { children: `\\[${fractions}\\]\n\n\\(\\frac{1}{2}\\)` }) }));
+      expect(html).toContain("\\frac{1}{\\frac{1}{");
+      // the formula beside it is still drawn, and it is the only one KaTeX was given
+      expect(html).toContain("katex-html");
+      expect(asked.mock.calls.map(([formula]) => formula)).toEqual(["\\frac{1}{2}"]);
     } finally {
+      asked.mockRestore();
       if (languages) Object.defineProperty(navigator, "languages", languages);
       else Reflect.deleteProperty(navigator, "languages");
     }
@@ -410,6 +458,20 @@ describe("numbered lists as agents write them", () => {
     }
   };
   const lists = (source: string) => parseMarkdown(source).map((block) => block.type === "list" ? { start: block.start ?? 1, items: block.items.length } : block.type);
+
+  it("tells the list how many digits its widest number has, as the browser numbers it (#1993)", () => {
+    const digits = (source: string) => render(source).match(/--markdown-list-digits:(\d+)/)?.[1] ?? null;
+    expect(digits("1. a\n2. b")).toBeNull();
+    expect(digits("9. a\n10. b")).toBe("2");
+    expect(digits("99. a\n100. b")).toBe("3");
+    expect(digits("0. a")).toBeNull();
+    expect(digits("- a\n- b")).toBeNull();
+    // a nested list counts its own numbers, not its parent's
+    expect(render("100. a\n    1. b")).toMatch(/--markdown-list-digits:3[^>]*><li><span>a<\/span><ol class="markdown-list"><li>/);
+    // past a 32-bit integer the browser counts from 1, so that start sets no wider indent
+    expect(digits("2147483647. a")).toBe("10");
+    expect(digits("100000000000000000000. a")).toBeNull();
+  });
 
   it("reads a task list item's box as checked or open, and keeps the rest as its text", () => {
     const [block] = parseMarkdown("- [x] done\n- [ ] open\n- [X] also done\n- [ ]\n- [y] not a box\n- plain");

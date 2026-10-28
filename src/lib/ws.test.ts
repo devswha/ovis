@@ -69,6 +69,11 @@ it("sends nothing when the bridge has not said what it supports by the end of th
     // not a dropped connection: the socket is open, only its snapshot is late (#1806)
     expect(await result).toMatchObject({ ok: false, code: "capabilities_unknown" });
     expect(submissions(socket)).toEqual([]);
+    // an Insert behind the same late snapshot is not told to update the PC: its bridge is unknown, not old
+    const inserted = client.insert("w1:p1", "one line");
+    jest.advanceTimersByTime(2_000);
+    expect(await inserted).toMatchObject({ ok: false, code: "capabilities_unknown" });
+    expect(socket.sent.filter((frame) => frame.type === "insert")).toEqual([]);
   } finally {
     client.close();
     jest.useRealTimers();
@@ -297,12 +302,19 @@ it("steers or discards an opaque pending ID once and waits for its action acknow
   const socket = FakeSocket.last;
   socket.open();
   socket.receive(snapshot(["submit", "pending-input"]));
-  for (const [index, action] of ["steer", "discard"].entries()) {
-    const result = client.pendingAction("w1:p1", "pending-1", action as "steer" | "discard");
-    for (let turn = 0; turn < 10 && socket.sent.filter((frame) => frame.type === "pending-action").length <= index; turn++) await Promise.resolve();
-    const frame = socket.sent.filter((frame) => frame.type === "pending-action")[index]!;
-    expect(frame).toEqual({ type: "pending-action", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", action });
-    socket.receive({ type: "pending-result", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", ok: index === 0, ...(index === 1 ? { code: "pending_not_found", message: "already sent" } : {}) });
+  for (const [index, [action, withdrawalOnly]] of ([["steer", false], ["discard", false], ["discard", true]] as const).entries()) {
+    const sent = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("no pending-action frame")), 1_000);
+      socket.addEventListener("sent", (frame) => {
+        if (frame.type === "pending-action") { clearTimeout(timeout); resolve(frame); }
+      });
+    });
+    const result = client.pendingAction("w1:p1", "pending-1", action, undefined, withdrawalOnly);
+    const frame = await sent;
+    // launch_ended: this client tells a launch that ended apart, so the bridge answers it with that code (#1547)
+    expect(frame).toEqual({ type: "pending-action", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", action, launch_ended: true,
+      ...(withdrawalOnly ? { withdrawal_only: true } : {}) });
+    socket.receive({ type: "pending-result", id: index + 1, pane_id: "w1:p1", pending_id: "pending-1", ok: index === 0, ...(index > 0 ? { code: "pending_not_found", message: "already sent" } : {}) });
     expect(await result).toEqual(index === 0 ? { ok: true } : { ok: false, code: "pending_not_found", message: "already sent" });
   }
   client.close();
@@ -573,15 +585,15 @@ it("attaches a grid the chat lens covers without resizing the shared pty, on a r
   // attached before the socket opened: the open replays it, as a reconnect does
   client.attach("w1:p1", 40, 20, true);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 40, rows: 20, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 40, rows: 20, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   // the terminal lens is shown and resizes: from then on it drives the size
   client.resize("w1:p1", 100, 30, true);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack" });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) });
   // the chat lens covers it again
   client.keepSize("w1:p1");
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   client.close();
 });
 
@@ -602,7 +614,7 @@ it("releases the shared grid once when the chat lens covers a terminal this tab 
   client.releaseSize("w1:p1");
   expect(releases()).toEqual([{ type: "release-size", pane_id: "w1:p1" }]);
   socket.open();
-  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", keep_size: true });
+  expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   expect(releases()).toHaveLength(1);
   // an observer never drives the grid, so it never releases it either
   client.setMode("observe");
@@ -632,7 +644,7 @@ it("keeps a visible unfocused grid while changing only its reconnect policy", ()
     socket.open();
     // Control: blur still changes the reconnect policy, without replaying a release.
     expect(socket.sent.filter((m) => m.type === "attach").at(-1))
-      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", keep_size: true });
+      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
     expect(releases()).toHaveLength(1);
   } finally {
     client.close();
@@ -659,7 +671,7 @@ it("releases the shared grid once when a hidden terminal returns directly to Cha
     client.releaseSize("w1:p1");
     expect(releases()).toHaveLength(1);
     expect(socket.sent.filter((m) => m.type === "attach").at(-1))
-      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", keep_size: true });
+      .toEqual({ type: "attach", pane_id: "w1:p1", cols: 53, rows: 33, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
     // Showing the terminal again at the same dimensions still reclaims its released grid.
     client.resize("w1:p1", 53, 33);
     expect(socket.sent.at(-1)).toEqual({ type: "resize", pane_id: "w1:p1", cols: 53, rows: 33 });
@@ -685,7 +697,7 @@ it("sends no resize for a pane it let go of, and does not attach it again on a r
   expect(socket.sent.slice(after).filter((m) => m.type === "attach" || m.type === "resize")).toEqual([]);
   // the user is back: it attaches at its own size again
   client.attach("w1:p1", 120, 40);
-  expect(socket.sent.at(-1)).toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack" });
+  expect(socket.sent.at(-1)).toEqual({ type: "attach", pane_id: "w1:p1", cols: 120, rows: 40, flow_control: "ack", receipt_resume_id: expect.any(String) });
   client.close();
 });
 
@@ -1200,7 +1212,7 @@ it("drops an open socket that answers no ping, reconnects at once and replays th
     expect(fresh).not.toBe(socket);
     expect(client.state).toBe("connecting");
     fresh.open();
-    expect(fresh.sent).toEqual([{ type: "role", mode: "interact" }, { type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack" }]);
+    expect(fresh.sent).toEqual([{ type: "role", mode: "interact" }, { type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) }]);
     expect(client.state).toBe("open");
     // the dead socket's late close changes nothing
     socket.disconnect();
@@ -1925,4 +1937,166 @@ it("records actual probe-blocked input once, not readiness polling or the text/c
     socket.receive({ type: "pong", id: pings(socket).at(-1)!.id });
     expect(client.canInput("w1:p1")).toBe(true);
   } finally { client.close(); jest.useRealTimers(); }
+});
+
+// ---- insert without Enter (feature "terminal-insert") ----------------------------------------
+
+/** every frame the client sent that could carry text into the pane */
+const inputs = (socket: FakeSocket) => socket.sent.filter((frame) => ["insert", "submit", "input", "keys"].includes(frame.type));
+
+it("insert waits for matching acknowledgement", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const frame = new Promise<{ id: number }>((resolve) => socket.addEventListener("sent", (sent) => { if (sent.type === "insert") resolve(sent); }));
+    const result = client.insert("w1:p1", "git status")!;
+    let settled = false;
+    void result.then(() => { settled = true; });
+    const sent = await frame;
+    expect(inputs(socket)).toEqual([{ type: "insert", id: sent.id, pane_id: "w1:p1", text: "git status" }]);
+    // another pane's answer, another request's answer, and a submit's answer with this id say nothing about it
+    socket.receive({ type: "insert-result", id: sent.id, pane_id: "w1:p2", ok: true });
+    socket.receive({ type: "insert-result", id: sent.id + 1, pane_id: "w1:p1", ok: true });
+    socket.receive({ type: "submit-result", id: sent.id, pane_id: "w1:p1", ok: true });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    socket.receive({ type: "insert-result", id: sent.id, pane_id: "w1:p1", ok: true });
+    expect(await result).toEqual({ ok: true });
+    // a refusal comes back as it was said, and no Enter or input follows it
+    const refused = client.insert("w1:p1", "line one\rline two")!;
+    const second = await new Promise<{ id: number }>((resolve) => socket.addEventListener("sent", (sent) => { if (sent.type === "insert" && sent.text === "line one\rline two") resolve(sent); }));
+    socket.receive({ type: "insert-result", id: second.id, pane_id: "w1:p1", ok: false, code: "unsafe_multiline", message: "no paste mode" });
+    expect(await refused).toEqual({ ok: false, code: "unsafe_multiline", message: "no paste mode" });
+    expect(inputs(socket)).toHaveLength(2);
+  } finally { client.close(); }
+});
+
+it("old bridge sends nothing", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  // a bridge that submits but does not insert: no input or submit stands in for the insert
+  socket.receive(snapshot(["submit", "input-ready"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(await client.insert("w1:p1", "git status")).toMatchObject({ ok: false, code: "unsupported" });
+    expect(inputs(socket)).toEqual([]);
+    expect(client.canInsert()).toBe(false);
+  } finally { client.close(); }
+});
+
+it("disconnect never replays insert", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const frame = new Promise<{ id: number }>((resolve) => socket.addEventListener("sent", (sent) => { if (sent.type === "insert") resolve(sent); }));
+    const result = client.insert("w1:p1", "rm -rf build")!;
+    await frame;
+    socket.disconnect();
+    // not confirmed, never "sent": the draft stays with its uncertainty, and nothing is queued
+    expect(await result).toMatchObject({ ok: false, code: "disconnected" });
+    // the reconnect replays the role and the attach, never the insert
+    client.wake();
+    const next = FakeSocket.last;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.receive(snapshot(["submit", "input-ready", "terminal-insert"]));
+    next.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(inputs(next)).toEqual([]);
+    expect(next.sent.map((sent) => sent.type)).toEqual(["role", "attach"]);
+    // a late answer to the old request on the new connection settles nothing and sends nothing
+    next.receive({ type: "insert-result", id: 1, pane_id: "w1:p1", ok: true });
+    expect(inputs(next)).toEqual([]);
+    // disconnected, an insert goes nowhere at all: null, like a submit
+    next.disconnect();
+    expect(client.insert("w1:p1", "again")).toBeNull();
+  } finally { client.close(); }
+});
+
+it("an insert waiting on a probe is dropped when the pane's input changed meanwhile", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert", "ping"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    client.wake();
+    const result = client.insert("w1:p1", "rm -rf build")!;
+    // the pane loses its input and gets it back (a detach and reattach) before the pong comes back
+    socket.receive({ type: "input-ready", pane_id: "w1:p1", ready: false });
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    socket.receive({ type: "pong", id: pings(socket).at(-1)!.id });
+    expect(await result).toMatchObject({ ok: false, code: "input_not_ready" });
+    expect(socket.sent.filter((frame) => frame.type === "insert")).toEqual([]);
+  } finally { client.close(); }
+});
+
+it("an input lease changes with every readiness or role of the pane's connection, even one that came back", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const first = client.inputLease("w1:p1");
+    // the pane's output, and another pane's readiness, leave it alone
+    socket.receive({ type: "pty-data", pane_id: "w1:p1", data: "$ " });
+    socket.receive({ type: "input-ready", pane_id: "w1:p2" });
+    expect(client.inputLease("w1:p1")).toBe(first);
+    // readiness lost and given back: ready as before, but another lease
+    socket.receive({ type: "input-ready", pane_id: "w1:p1", ready: false });
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const cycled = client.inputLease("w1:p1");
+    expect(cycled).not.toBe(first);
+    // a held attach that let go, and a role that went and came back
+    socket.receive({ type: "error", code: "attach_held", message: "held", pane_id: "w1:p1" });
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const released = client.inputLease("w1:p1");
+    expect(released).not.toBe(cycled);
+    socket.receive({ type: "role-ack", mode: "observe" });
+    socket.receive({ type: "role-ack", mode: "interact" });
+    expect(client.inputLease("w1:p1")).not.toBe(released);
+  } finally { client.close(); }
+});
+
+it("an observing connection and a liveness probe never carry an insert", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["submit", "input-ready", "terminal-insert", "ping"]));
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    client.setMode("observe");
+    socket.receive({ type: "role-ack", mode: "observe" });
+    expect(client.insert("w1:p1", "text")).toBeNull();
+    client.setMode("interact");
+    socket.receive({ type: "role-ack", mode: "interact" });
+    // a probe in flight: the insert waits for the pong, and a drop ends it as not transmitted
+    client.wake();
+    const result = client.insert("w1:p1", "text")!;
+    await Promise.resolve();
+    expect(inputs(socket)).toEqual([]);
+    socket.receive({ type: "pong", id: pings(socket).at(-1)!.id });
+    const sent = await new Promise<{ id: number }>((resolve) => socket.addEventListener("sent", (frame) => { if (frame.type === "insert") resolve(frame); }));
+    socket.receive({ type: "insert-result", id: sent.id, pane_id: "w1:p1", ok: true });
+    expect(await result).toEqual({ ok: true });
+  } finally { client.close(); }
 });

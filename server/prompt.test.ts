@@ -5,12 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, modelListWaits, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
+import { registry } from "./dialogs/registry.ts";
+import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
+import { parsedByPublicPrompt } from "./dialogs/shared.ts";
 
 const labels = (prompt: InteractivePrompt | null) => prompt?.options.map((option) => option.label);
 // Real omo-ai 5.1.30 pane.read captures at 120 and 45 columns, with the recorded open calls.
 const omoPendingFixture = (name: string) => readFileSync(new URL(`./fixtures/omo-pending-5.1.30-${name}`, import.meta.url), "utf8");
 const omoExtensionTail = omoPendingFixture("extension-tail.txt");
+// Real omo-ai 5.1.48 captures of a two-question widget at 120 and 45 columns, with the recorded call.
+const omo48PendingFixture = (name: string) => readFileSync(new URL(`./fixtures/omo-pending-5.1.48-${name}`, import.meta.url), "utf8");
 const withOmoExtensionTail = (screen: string) => screen.replace(/(❯\n─+\n)/, `$1${omoExtensionTail}`);
 // OmO's omo-task widget rows under the input box, as a live pane shows them: a live row wrapped onto a
 // second line, a live row, a finished row and the `+N more` line
@@ -1011,6 +1016,32 @@ Press enter to confirm or esc to cancel
     const shown = Object.fromEntries(Object.entries(screens).map(([name, screen]) => [name, [codexQueuedPrompt(screen, asked) !== null, codexQuestionsCollapsed(screen)]]));
     expect(shown).toEqual({ collapsed: [true, true], queuedMessage: [false, false], somethingBelow: [false, false], noHint: [false, false], numberedRow: [false, false], none: [false, false] });
   });
+
+  test("Ultra's » main prompt still sits under the queue, while a numbered row there does not", () => {
+    const asked = [{ key: "call_u:0", title: "Which dataset?", options: ["LM-O", "YCB-V"] }];
+    const collapsed = `
+• Queued follow-up inputs
+  ? 1 question · 8s
+    alt+↑ to answer
+» Ask Codex to do anything
+  GPT-6-Sol ultra · ~/lab · Context 97% left
+`;
+    for (const screen of [collapsed, collapsed.replace("alt+↑", "shift+←"), `${collapsed}  ? for shortcuts\n`]) {
+      expect(codexQuestionsCollapsed(screen)).toBe(true);
+      expect(codexQueuedPrompt(screen, asked)).toMatchObject({ queued: "collapsed", title: "Question", question: "Which dataset?" });
+    }
+    expect(codexQueuedPrompt(collapsed.replace("1 question", "2 questions"), [...asked, { key: "call_u:1", title: "Any notes?", options: [] }]))
+      .toMatchObject({ title: "Question 1 of 2", question: "Which dataset?" });
+    for (const screen of [
+      collapsed.replace("» Ask Codex to do anything", "» 1. Allow\n  2. Deny"),
+      collapsed.replace("» Ask Codex to do anything", "  Allow network access?\n» Ask Codex to do anything"),
+      collapsed.replace("    alt+↑ to answer\n", ""),
+      "» Ask Codex to do anything\n",
+    ]) {
+      expect(codexQuestionsCollapsed(screen)).toBe(false);
+      expect(codexQueuedPrompt(screen, asked)).toBeNull();
+    }
+  });
 });
 
 describe("interactive prompt answers", () => {
@@ -1807,6 +1838,15 @@ ${rows}
     expect(answerKeys(onRow!, { option_index: 0 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
     expect(answerKeys(onRow!, { option_index: 1 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
     expect(answerKeys(onRow!, { custom_text: "급해요" })).toEqual([{ keys: ["down"] }, { text: "급해요" }, { keys: ["enter"] }]);
+
+    // the label before a typed comment is the bridge's, as a key (#1482); the comment and omo's notice are not
+    const typed = (field: string) => parseInteractivePrompt("pi", review("   표시 위치: 설정 > 음성 입력 (추천)\n   월 한도: 월 $5 한도", "enter submit  ↑ review answers  shift+tab back  tab next question  esc back").replace(">\n Submit", field));
+    const commented = typed("> 급해요\n Submit");
+    expect(commented?.body).toBe("Comment: 급해요");
+    expect(commented?.own_text?.body).toEqual({ key: "Comment: {comment}", vars: { comment: "급해요" } });
+    const noticed = typed("> 급해요\n ! 1 answer was changed\n Submit");
+    expect(noticed?.body).toBe("1 answer was changed\nComment: 급해요");
+    expect(noticed?.own_text?.body).toEqual({ key: "{notice}\nComment: {comment}", vars: { notice: "1 answer was changed", comment: "급해요" } });
   });
 
   test("joins what a narrow pane wraps, the tab bar, the hint and words cut at the edge", () => {
@@ -2022,6 +2062,62 @@ ${rule60}
       });
     });
   }
+
+  // omo 5.1.48 joins the header and the question with " - " where 5.1.30 drew " — "
+  for (const width of ["wide", "narrow"]) {
+    test(`reads the real 5.1.48 two-question ${width} widget with its pending call`, () => {
+      const open = openOmoAsks(omo48PendingFixture("two.jsonl"));
+      const question = open[0]!.questions[0]!;
+      const screen = omo48PendingFixture(`two-${width}.txt`);
+      expect(screen).toContain(`${question.header} - `);
+      expect(parseInteractivePrompt("pi", screen, null, false, open)).toMatchObject({
+        agent: "omo", kind: "question", title: "Question 1 of 2", question: question.question, options: question.options,
+        multi_select: false, custom_option_index: question.options.length,
+      });
+    });
+  }
+
+  test("reads a 5.1.48 widget whose header holds the separator, and only for a call it shows", () => {
+    const jsonl = omo48PendingFixture("two.jsonl");
+    const screen = omo48PendingFixture("two-wide.txt");
+    const { header, question } = openOmoAsks(jsonl)[0]!.questions[0]!;
+    const read = (calls: string, shown: string) => parseInteractivePrompt("pi", shown, null, false, openOmoAsks(calls));
+    // a header holding " - " splits there first; the split after it is the one the call asked
+    const dashed = `${header} - x`;
+    const dashedCalls = jsonl.replaceAll(`"header":"${header}"`, `"header":"${dashed}"`);
+    expect(read(dashedCalls, screen.replaceAll(`${header} - `, `${dashed} - `))).toMatchObject({ agent: "omo", title: "Question 1 of 2" });
+    // a header or question the call does not hold, or nothing after the separator: no card
+    expect(read(dashedCalls, screen)).toBeNull();
+    expect(read(jsonl, screen.replaceAll(`${header} - `, `${header} - another `))).toBeNull();
+    expect(read(jsonl, screen.replaceAll(question, "..."))).toBeNull();
+  });
+
+  test("tries separators that share a space, and gives no card when two calls fit the line", () => {
+    const screen = omo48PendingFixture("two-wide.txt");
+    const call = (id: string, header: string, question: string, options: string[]) => [
+      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { questions: [{ header, question, multiSelect: false, options: options.map((label) => ({ label })) }], waitForAnswer: false } }] } }),
+      JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, toolName: "ask_user_question", content: [{ type: "text", text: "Question accepted; the answer will arrive as a user message." }], details: { accepted: true, requestId: id, status: "pending" }, isError: false } }),
+    ].join("\n");
+    const actual = call("actual", "Plan -", "Choose deployment target?", ["Staging", "Production"]);
+    const decoy = call("decoy", "Plan", "- Choose deployment target?", ["Continue", "Cancel"]);
+    const widget = (separator: string) => screen.replace(/\? Question pending[^\n]*\n[^\n]*\n[^\n]*\n/,
+      `? 2 questions pending · 30m\n  Plan -${separator}Choose deployment target?\n[ Staging ]  [ Production ]  [ own answer\u2026 ]\n`);
+    const read = (calls: string, separator: string) => parseInteractivePrompt("pi", widget(separator), null, false, openOmoAsks(calls));
+    for (const separator of [" - ", " \u2014 "]) {
+      expect(read(actual, separator), separator).toMatchObject({ agent: "omo", title: "Plan -", options: [{ label: "Staging" }, { label: "Production" }] });
+      // both calls fit the line, split at either separator: no card rather than the wrong one
+      expect(read(`${actual}\n${decoy}`, separator), separator).toBeNull();
+    }
+    // a cut that leaves only one call's header still counts against the other call
+    const cut = (separator: string) => screen.replace(/\? Question pending[^\n]*\n[^\n]*\n[^\n]*\n/,
+      `? 2 questions pending · 30m\n  P - Deploy${separator}...\n[ Continue ]  [ Cancel ]  [ own answer\u2026 ]\n`);
+    const cutActual = call("cut-actual", "P - Deploy", "Choose deployment target?", ["Continue", "Cancel"]);
+    const cutDecoy = call("cut-decoy", "P", "Deploy - Choose another target?", ["Continue", "Cancel"]);
+    // one column narrower, the cut also takes the separator's space
+    for (const separator of [" - ", " \u2014 ", " -", " \u2014"]) {
+      expect(parseInteractivePrompt("pi", cut(separator), null, false, openOmoAsks(`${cutActual}\n${cutDecoy}`)), separator).toBeNull();
+    }
+  });
 
   for (const count of ["one", "two"]) for (const width of ["wide", "narrow"]) {
     test(`reads the real 5.1.30 ${count}-question ${width} widget with extension status below the box`, () => {
@@ -2686,6 +2782,8 @@ Which approach?
     const prompt = parseFallbackPrompt("gjc", " config.json already exists.\n Overwrite it? (y/n)\n Press Enter to keep it, or Esc to abort\n");
     expect(prompt.question).toBe("Overwrite it? (y/n)");
     expect(labels(prompt)).toEqual(["Yes (y)", "No (n)", "Enter", "Esc"]);
+    // the card's title, Yes and No are the bridge's own words, as keys (#1482); the question is the screen's, and key names stay
+    expect(prompt.own_text).toEqual({ title: { key: "Waiting for input" }, labels: { 0: { key: "Yes (y)" }, 1: { key: "No (n)" } } });
     expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ text: "y" }]);
     expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ text: "n" }]);
     expect(labels(parseFallbackPrompt("gjc", "Delete the branch? [Y/n] "))).toEqual(["Yes (y)", "No (n)", "Enter", "Esc"]);
@@ -3117,6 +3215,50 @@ describe("pi's dialogs", () => {
   });
 });
 
+// Pi's thinking-selector layout with fictional offered levels; no installed Pi dependency.
+const PI_THINKING_HINT = "Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel";
+function piThinking(at = 1, narrow = false, levels = ["off", "medium", "max"], query = ""): string {
+  return ["Thinking Level", "", "Shift+Tab cycles thinking levels in-session", "", `> ${query}`, "",
+    ...levels.map((level, index) => `${index === at ? "→" : " "} ${level === "medium" ? "✓" : " "} ${level}${narrow ? "" : `    ${level === "max" ? "Maximum reasoning · default" : "Reasoning description"}`}`), "",
+    narrow ? "  Enter to\nselect ·\nCtrl+S to set\nas default ·\nEscape/Ctrl+C\nto cancel" : PI_THINKING_HINT,
+    "────────────────────────────", "/tmp/fictional", "0.0%/215k (auto)",
+  ].join("\n");
+}
+
+describe("pi's thinking selector", () => {
+  test("separates current/default/highlight across widths and keeps cursor movement out of identity", () => {
+    const wide = parseInteractivePrompt("pi", piThinking(2))!;
+    const narrow = parseInteractivePrompt("pi", piThinking(2, true))!;
+    expect(wide.question).toBe("Select thinking level (currently medium)");
+    expect(wide.own_text).toEqual({ question: { key: "Select thinking level (currently {level})", vars: { level: "medium" } } });
+    expect(wide.id).toBe("cb779b7d598a"); // the id main's bridge gave this card before its question went as a key
+    expect(wide.options[2]).toEqual({ label: "max", description: "Maximum reasoning · default" });
+    expect(narrow.options).toEqual(["off", "medium", "max"].map((label) => ({ label, description: null })));
+    expect(narrow.question).toBe(wide.question);
+    expect(parseInteractivePrompt("pi", piThinking(0))!.id).toBe(wide.id);
+    expect(answerKeys(wide, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["up"] }, { keys: ["enter"] }]);
+  });
+
+  test("offers only visible levels, even a single supported or filtered row", () => {
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    expect(labels(parseInteractivePrompt("pi", piThinking(4, true, levels)))).toEqual(levels);
+    for (const query of ["", "max"]) {
+      expect(labels(parseInteractivePrompt("pi", piThinking(0, true, ["max"], query)))).toEqual(["max"]);
+    }
+  });
+
+  test("refuses empty, unknown, incomplete and stale drawings", () => {
+    const screen = piThinking();
+    for (const drawn of [
+      piThinking(0, true, []), piThinking(0, true, ["unknown"]), screen.replace("Thinking Level", "Models"),
+      screen.replace("> ", "search: "), screen.replace(PI_THINKING_HINT, "Enter to select"),
+      screen.replace("→ ✓ medium", "  ✓ medium"), screen + "\nAnswer output\nMore output\n> next message",
+      piThinking(1, true) + "\nAnswer output\nMore output\n> next message",
+      screen.replace("    max", "    unknown"),
+    ]) expect(parseInteractivePrompt("pi", drawn)).toBeNull();
+  });
+});
+
 // Both screens captured from pi 0.87.1 running /model in a pane of its own, at 140 columns and
 // at 46, with the catalogue already settled.
 describe("pi's model list", () => {
@@ -3475,16 +3617,16 @@ ${"─".repeat(120)}
     // the list's text left above later output takes no key any more
     expect(parseInteractivePrompt("claude", `${claudeModelList(1)}Some later output\nand more\n`)).toBeNull();
     // nor does it hold the screen for a message that waits to be typed, while an open list does, wrapped or not
-    expect(modelListWaits("claude", `${claudeModelList(1)}Some later output\nand more\n`)).toBe(false);
-    expect(modelListWaits("claude", claudeModelList(1))).toBe(true);
+    expect(registry.waits("claude", `${claudeModelList(1)}Some later output\nand more\n`)).toBe(false);
+    expect(registry.waits("claude", claudeModelList(1))).toBe(true);
     const wrapped = claudeModelList(1).replace(CLAUDE_MODEL_HINT, "  Enter to set as\n  default · s to use\n  this session\n  only · Esc to\n  cancel");
-    expect(modelListWaits("claude", wrapped)).toBe(true);
+    expect(registry.waits("claude", wrapped)).toBe(true);
     // Claude's own footer under the open list, the session's rule and its task list, is no later output: also under a wrapped hint
-    expect(modelListWaits("claude", `${claudeModelList(1)}──────────── Session name ─\n`)).toBe(true);
-    expect(modelListWaits("claude", `${wrapped}──────────── Session name ─\n`)).toBe(true);
-    expect(modelListWaits("claude", `${wrapped}──────────── Session name ─\n  3 tasks (0 done, 1 in progress, 2 open)\n  ◼ 구현\n    Running tests…\n  ◻ 검증\n  ◻ 정리\n`)).toBe(true);
+    expect(registry.waits("claude", `${claudeModelList(1)}──────────── Session name ─\n`)).toBe(true);
+    expect(registry.waits("claude", `${wrapped}──────────── Session name ─\n`)).toBe(true);
+    expect(registry.waits("claude", `${wrapped}──────────── Session name ─\n  3 tasks (0 done, 1 in progress, 2 open)\n  ◼ 구현\n    Running tests…\n  ◻ 검증\n  ◻ 정리\n`)).toBe(true);
     // the same footer under an answered list's hint and what came after it holds nothing
-    expect(modelListWaits("claude", `${wrapped}⏺ Kept the model.\n──────────── Session name ─\n`)).toBe(false);
+    expect(registry.waits("claude", `${wrapped}⏺ Kept the model.\n──────────── Session name ─\n`)).toBe(false);
     // a list that takes Enter alone would save the pick as the default: not this card's to press
     expect(parseInteractivePrompt("claude", claudeModelList(1, 0, 10, "  Enter to set as default · Esc to cancel"))).toBeNull();
     expect(parseInteractivePrompt("claude", claudeModelList(1, 0, 10, "  Enter to confirm · Esc to cancel"))).toBeNull();
@@ -3653,15 +3795,15 @@ ${rule}
     expect(parseInteractivePrompt("claude", CLAUDE_EFFORT_SET)).toBeNull();
     // the slider's text left above later output takes no key any more, and holds no message back
     expect(parseInteractivePrompt("claude", `${claudeEffort(2)}Some later output\nand more\n`)).toBeNull();
-    expect(modelListWaits("claude", `${claudeEffort(2)}Some later output\nand more\n`)).toBe(false);
-    expect(modelListWaits("claude", claudeEffort(2))).toBe(true);
-    expect(modelListWaits("claude", CLAUDE_EFFORT_SET)).toBe(false);
+    expect(registry.waits("claude", `${claudeEffort(2)}Some later output\nand more\n`)).toBe(false);
+    expect(registry.waits("claude", claudeEffort(2))).toBe(true);
+    expect(registry.waits("claude", CLAUDE_EFFORT_SET)).toBe(false);
     // a slider that takes Enter alone would save the level as the default: not this card's to press
     expect(parseInteractivePrompt("claude", claudeEffort(2, "  ←/→ to adjust · Enter to confirm · Esc to cancel"))).toBeNull();
     // level names a narrow pane wrapped: no card, and the slider still holds the screen
     const wrapped = claudeEffort(2).replace("low     medium     high     xhigh      max      Tab to toggle", "low     medium     high\n  xhigh      max");
     expect(parseInteractivePrompt("claude", wrapped)).toBeNull();
-    expect(modelListWaits("claude", wrapped)).toBe(true);
+    expect(registry.waits("claude", wrapped)).toBe(true);
     // ▲ between two levels stands over neither
     const between = claudeEffort(2).replace(`${"─".repeat(20)}▲${"─".repeat(21)}`, `${"─".repeat(15)}▲${"─".repeat(26)}`);
     expect(between).not.toBe(claudeEffort(2));
@@ -3851,6 +3993,8 @@ describe("an answer and the menu it was made for", () => {
     agentUnanswered?: boolean;
     /** what an ANSI read shows instead of `screen`: the pane's viewport, scrolled off its live screen */
     viewport?: string;
+    /** A text viewport scrolled away from detection's live drawing. */
+    visibleScreen?: string;
     /** the next screen read alone answers with this, that much later */
     nextRead?: { text: string; delay: number };
     /** herdr presses this key and its reply is lost on the way */
@@ -3876,7 +4020,7 @@ describe("an answer and the menu it was made for", () => {
       socket.on("data", (chunk) => {
         input += chunk.toString();
         if (!input.includes("\n")) return;
-        const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string; format?: string } };
+        const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string; format?: string; source?: string } };
         const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
         const snapshotDelay = request.method === "session.snapshot" ? pane.nextSnapshotDelay : undefined;
         if (snapshotDelay !== undefined) pane.nextSnapshotDelay = undefined;
@@ -3886,7 +4030,7 @@ describe("an answer and the menu it was made for", () => {
           const once = pane.nextRead;
           pane.nextRead = undefined;
           if (once) return void setTimeout(() => answer({ read: { text: once.text } }), once.delay);
-          return void setTimeout(() => answer({ read: { text: request.params.format === "ansi" ? pane.viewport ?? pane.screen : pane.screen } }), pane.readDelay ?? 0);
+          return void setTimeout(() => answer({ read: { text: request.params.source === "visible" && pane.visibleScreen !== undefined ? pane.visibleScreen : request.params.format === "ansi" ? pane.viewport ?? pane.screen : pane.screen } }), pane.readDelay ?? 0);
         }
         if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo?.live ? [{ pid: pane.omo.pid, argv: ["omo"] }] : [] } });
         if (request.method === "agent.get" && pane.agentUnanswered) return;
@@ -3925,6 +4069,103 @@ describe("an answer and the menu it was made for", () => {
     const body = await response.json() as { error?: { code: string } };
     return { status: response.status, code: body.error?.code };
   }
+
+  // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting, where Ctrl+J and Ctrl+M arrive
+  // as LF and CR and Ctrl+Enter and Shift+Enter as CR, all read as Enter, which takes the highlighted row (Approve when the
+  // panel opens); Ctrl+H and Ctrl+I arrive as Backspace and Tab. omp matches what arrives against its bindings: approve
+  // first, then deny, then the arrows, then Enter
+  test.each([
+    ["Ctrl+J", "ctrl+j"], ["Ctrl+M", "ctrl+m"], ["Ctrl+\u23ce", "ctrl+enter"], ["\u21e7\u23ce", "shift+enter"], ["Ctrl+I", "ctrl+i"], ["\u238b", "esc"],
+  ] as const)("denies when omp's Deny is bound to %s, on a terminal that delivers it as another key", async (deny, denyName) => {
+    // two actions never share a binding: with Deny on Ctrl+\u23ce, Approve keeps only Ctrl+Q
+    const approveDrawn = denyName === "ctrl+enter" ? "Ctrl+Q" : "Ctrl+\u23ce/Ctrl+Q";
+    const approveNames = denyName === "ctrl+enter" ? ["ctrl+q"] : ["ctrl+enter", "ctrl+q"];
+    const shown = readFileSync(new URL("./fixtures/omp-approval-18.13.2-unicode-wide.txt", import.meta.url), "utf8")
+      .replace("Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b deny \u00b7", `${approveDrawn} approve \u00b7 ${deny} deny \u00b7`);
+    expect(shown).toContain(`${approveDrawn} approve \u00b7 ${deny} deny`);
+    const rows = ["approved", "approved for the session", "denied"];
+    const legacy = (key: string): string => /^(?:ctrl\+[jm]|(?:ctrl|shift)\+enter)$/.test(key) ? "enter"
+      : key === "ctrl+h" ? "backspace" : key === "ctrl+i" ? "tab" : key;
+    /** what omp 18.13 does with the keys the bridge sent, as a legacy terminal delivers them */
+    const outcome = (sent: string[]): string => {
+      let cursor = 0;
+      for (const key of sent) {
+        const received = legacy(key);
+        if (approveNames.includes(received)) return "approved";
+        if (received === denyName) return "denied";
+        if (received === "up") cursor = (cursor + rows.length - 1) % rows.length;
+        else if (received === "down") cursor = (cursor + 1) % rows.length;
+        else if (received === "enter") return rows[cursor]!;
+      }
+      return "waiting";
+    };
+    // omp redraws its cursor as the arrows arrive, which the bridge reads back before it selects
+    const lines = shown.split("\n");
+    const top = lines.findIndex((line) => line.startsWith("\u2502 \u276f Approve "));
+    expect(top).toBeGreaterThan(0);
+    const drawn = (cursor: number) => lines.map((line, index) => index < top || index > top + 2 ? line
+      : `\u2502 ${index - top === cursor ? "\u276f" : " "} ${line.slice(4)}`).join("\n");
+    expect(drawn(0)).toBe(shown);
+    for (const [option, expected] of [[2, "denied"], [0, "approved"], [1, "approved for the session"]] as const) {
+      await withPane("omp", "blocked", shown, async (pane) => {
+        let cursor = 0;
+        pane.onSent = (key) => {
+          if (key === "up") cursor = (cursor + rows.length - 1) % rows.length;
+          else if (key === "down") cursor = (cursor + 1) % rows.length;
+          pane.screen = drawn(cursor);
+        };
+        const shownCard = await card();
+        expect(shownCard?.options.map((row) => row.label)).toEqual(["Approve", "Approve bash for this session", "Deny"]);
+        expect(await answer(shownCard!.id, { option_index: option })).toEqual({ status: 200, code: undefined });
+        expect(outcome(pane.sent), `${deny} option ${option}: ${pane.sent.join(",")}`).toBe(expected);
+      });
+    }
+  });
+
+  test.each(["whole", "heading-only", "command-only", "command-middle"])("refuses an old cmd heredoc card with a quoted native frame (%s)", async (layout) => {
+    const screen = (prefix: string) => {
+      const shown = [
+        "─".repeat(60), "", "Execute Shell Command",
+        `Command Code needs to execute ${prefix}; cat <<'EOF'`,
+        "─".repeat(40), "", "Execute Shell Command", "Command Code needs to execute echo quoted.", "EOF.",
+        "", "Press [ctrl+e] to explain this command", "",
+        "❯ 1. Yes", "  2. Yes, don't ask again for `printf` commands in this project",
+        "  3. No, tell Command Code what to do differently", "",
+        "↑/↓ navigate · enter select · ctrl+e explain · Run cmd --yolo to bypass all permissions (Docs ↗)",
+      ];
+      if (layout === "command-middle") return ["  printf a", `  ${prefix}`, "  cat <<'EOF'", ...shown.slice(4)].join("\n");
+      return layout === "command-only"
+        ? [`  ${prefix}; cat <<'EOF'`, ...shown.slice(4)].join("\n")
+        : shown.slice(layout === "heading-only" ? 2 : 0).join("\n");
+    };
+    await withPane("cmd", "blocked", screen("printf harmless"), async (pane) => {
+      const first = await card();
+      expect(first).not.toBeNull();
+      if (first === null) throw new Error("cmd permission fixture did not produce a card");
+      pane.screen = screen("printf secrets >/tmp/leaked");
+      expect(await answer(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("refuses an old cmd heredoc card after delimiter indentation changes execution", async () => {
+    const screen = (indent: string) => [
+      "─".repeat(40), "", "Execute Shell Command", "Command Code needs to execute cat <<'EOF'",
+      "─".repeat(40), `${indent}EOF`, "printf secrets >/tmp/leaked", ": <<'EOF'", "EOF", "printf done.",
+      "", "Press [ctrl+e] to explain this command", "", "❯ 1. Yes",
+      "  2. Yes, don't ask again for `cat` commands in this project",
+      "  3. No, tell Command Code what to do differently", "",
+      "↑/↓ navigate · enter select · ctrl+e explain · Run cmd --yolo to bypass all permissions (Docs ↗)",
+    ].join("\n");
+    await withPane("cmd", "blocked", screen("  "), async (pane) => {
+      const first = await card();
+      expect(first).not.toBeNull();
+      if (first === null) throw new Error("cmd heredoc fixture did not produce a card");
+      pane.screen = screen("");
+      expect(await answer(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
 
   const omoRule = "─".repeat(100);
   const omoWidget = (box = "❯") => `? Question pending (1 unanswered) · 30m
@@ -4171,6 +4412,69 @@ ${heldRule}
     });
   });
 
+  // two open calls whose questions share their options (#2092): one asks two such questions, the decoy one
+  const sharedCall = (id: string, questions: { header: string; question: string }[]) => JSON.stringify({ type: "message", message: { role: "assistant", stopReason: "toolUse",
+    content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false,
+      questions: questions.map((question) => ({ ...question, options: [{ label: "Continue" }, { label: "Cancel" }] })) } }] } }) + "\n";
+  const twoShared = sharedCall("actual", [{ header: "QA", question: "Proceed with the build?" }, { header: "QB", question: "Proceed with the deploy?" }]);
+  const decoyShared = sharedCall("decoy", [{ header: "Deploy", question: "Deploy now?" }]);
+  // a form in a pane too short for it: its title, tabs and question scrolled off, its options in view
+  const clippedSharedForm = `${omoRule}
+ \u2192 1. Continue
+   2. Cancel
+   Type your own answer...
+ Submit (0/2 answered) \u2014 Enter advances
+ \u2191\u2193 move  1-9 select  space select  enter next  tab next question  c comment  esc cancel
+${omoRule}
+/tmp/work \u2022 main
+(\ud83d\ude3a OmO Native)
+`;
+
+  test("names no call for a clipped form that one open call fits twice and a decoy call once (#2092)", () => {
+    // the decoy alone is what the clipped form would be read as
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(decoyShared))).toMatchObject({ agent: "omo", kind: "question" });
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(twoShared))).toBeNull();
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(`${twoShared}${decoyShared}`))).toBeNull();
+    // questions the screen cannot show (multiple choice under a single-choice hint) make nothing ambiguous
+    const twoMulti = twoShared.replaceAll('"question":"Proceed', '"multiSelect":true,"question":"Proceed');
+    expect(openOmoAsks(twoMulti)[0]!.questions.every((question) => question.multiSelect)).toBe(true);
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(`${twoMulti}${decoyShared}`))).toMatchObject({ question: "Deploy now?" });
+  });
+
+  test("keeps a clipped typed-answer card when another call's labels share only its first wrapped line, and refuses a true twin (#2092)", () => {
+    // a 60-column pane wraps the first option after 54 characters; only its first row tells the calls apart from a rough look
+    const prefix = "Continue deployment after completing the release safety".slice(0, 54);
+    const call = (id: string, tails: string[]) => JSON.stringify({ type: "message", message: { role: "assistant", stopReason: "toolUse",
+      content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false,
+        questions: tails.map((tail, at) => ({ header: `Q${at}`, question: `Question ${id}${at}`, options: [{ label: prefix + tail }, { label: "Cancel" }] })) } }] } }) + "\n";
+    const rule = "\u2500".repeat(60);
+    const screen = [rule, ` \u2192 1. ${prefix}`, "y checks", "   2. Cancel", "   Type your own answer...",
+      " Your answer (enter to save, \u2191\u2193 back to options, esc to", " discard)", " > custom draft", " Submit (0/1 answered) \u2014 Enter advances",
+      " enter save and next  \u2191\u2193 back to options  tab next question", " esc discard", rule, "/tmp/work \u2022 main", "(\ud83d\ude3a OmO Native)", ""].join("\n");
+    const actual = call("visible", ["y checks"]);
+    const read = (calls: string) => parseInteractivePrompt("pi", screen, null, false, openOmoAsks(calls));
+    const alone = read(actual);
+    expect(alone).toMatchObject({ agent: "omo", kind: "menu", question: "Question visible0" });
+    // another call whose questions cannot be the form on screen: the card stays
+    expect(read(`${actual}${call("incompatible", ["y report", "y summary"])}`)?.id).toBe(alone!.id);
+    // a call two of whose questions are the form on screen: no card
+    expect(read(`${actual}${call("twin", ["y checks", "y checks"])}`)).toBeNull();
+  });
+
+  test.skipIf(process.platform !== "linux")("answers no call when the opened form is clipped and another call fits it too (#2092)", async () => {
+    await withOmo(async (pane) => {
+      writeFileSync(pane.omo!.path, JSON.stringify({ type: "session", id: "qa-session-488", cwd: pane.cwd }) + "\n" + twoShared + decoyShared);
+      // the widget names the decoy; Alt+Up opens the other call's form, clipped
+      pane.screen = omoWidget().replace("? Question pending (1 unanswered) \u00b7 30m\n QA \u2014 Which one?\n [ First ] [ Second ]",
+        "? 2 questions pending \u00b7 30m\n Deploy \u2014 Deploy now?\n [ Continue ] [ Cancel ]");
+      const prompt = (await card())!;
+      expect(prompt).toMatchObject({ agent: "omo", question: "Deploy now?" });
+      pane.onSent = (sent) => { if (sent === "alt+up") pane.screen = clippedSharedForm; };
+      expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["alt+up"]);
+    });
+  });
+
   test.skipIf(process.platform !== "linux")("offers a reply-only card when the call has no predefined options", async () => {
     await withOmo(async (pane) => {
       writeFileSync(pane.omo!.path, JSON.stringify({ type: "session", id: "qa-session-488", cwd: pane.cwd }) + "\n" + omoCall("reply-only", []).replace(',"options":[]', ""));
@@ -4202,6 +4506,143 @@ ${heldRule}
       pane.screen = draw(at) + (sent.startsWith("text:") ? `\n${sent.slice(5)}\n` : "");
     };
   }
+
+  const gjcCustomScreen = (at = 0, draft: string | null = null, question = "Which scope?") =>
+    `──────────────\n\n${question}\n\n──────────────\n${["Read only", "Other (type your own)", "Ask about these choices"].map((label, index) => `│${at === index ? "" : " "} ${label} │`).join("\n")}\n──────────────\n\n${draft === null ? "↑/↓ select enter esc PgUp/PgDn/Ctrl+u/d: question · Wheel: transcript" : `> ${draft}\n\nenter submit esc back to options ctrl+g external editor PgUp/PgDn: question · Wheel: transcript`}\n\n──────────────\n`;
+
+  test("matches a GJC editor below thousands of quoted body rows without losing its identity", () => {
+    const body = "> Quoted body details\n".repeat(4_000);
+    const question = `${body}Which scope?`;
+    const expected = parsedByPublicPrompt.get(parseFallbackPrompt("gjc", gjcCustomScreen(0, null, question)))!;
+    expect(expected.body).toHaveLength(12_000);
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, "", question), expected, "")).toBe(true);
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, "Original\n> draft", question), expected, "Original > draft")).toBe(true);
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, "Original \n draft", question), expected, "Original  draft")).toBe(true);
+    const wrapped = ["Original", ...Array<string>(32).fill("> draft")];
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, wrapped.join("\n"), question), expected, wrapped.join(" "))).toBe(true);
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, "Changed draft", question), expected, "Original draft")).toBe(false);
+    expect(gjcCustomEditorMatches(gjcCustomScreen(1, "", `${body}Changed details\nWhich scope?`), expected, "")).toBe(false);
+  });
+
+  test("sends a GJC Other answer only after its own inline editor opens and contains the pasted draft", async () => {
+    await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+      let at = 0;
+      let opened = false;
+      pane.onSent = (sent) => {
+        if (sent === "down") at++;
+        if (sent === "enter") opened = true;
+        const draft = sent.startsWith("text:") ? sent.slice(5).replace("\u001b[200~", "").replace("\u001b[201~", "") : "";
+        pane.screen = gjcCustomScreen(at, opened ? draft : null);
+      };
+      const prompt = (await card())!;
+      expect(prompt.custom_option_index).toBe(1);
+      expect(await answer(prompt.id, { custom_text: "/scope 읽기 전용" })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["down", "enter", "text:\u001b[200~/scope 읽기 전용\u001b[201~", "enter"]);
+    });
+  });
+
+  test("does not type a GJC Other answer into a dismissed or replaced editor", async () => {
+    for (const next of ["Ready\n\n❯ ", gjcCustomScreen(1, "", "A different question?")]) {
+      await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+        pane.onSent = (sent) => { pane.screen = sent === "down" ? gjcCustomScreen(1) : next; };
+        expect(await answer((await card())!.id, { custom_text: "Never send this to the composer" })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(["down", "enter"]);
+      });
+    }
+  });
+
+  test("does not submit a GJC custom draft after its editor closes or the draft changes", async () => {
+    // Soft wrapping can put the space between words at the row boundary. Changed content,
+    // doubled internal spaces, and incomplete drafts still must not be submitted.
+    for (const next of ["Ready\n\n❯ ", gjcCustomScreen(1, "Changed locally"), gjcCustomScreen(1, "Original\nchanged"), gjcCustomScreen(1, "Original  draft"), gjcCustomScreen(1, "Original")]) {
+      await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+        pane.onSent = (sent) => {
+          if (sent === "down") pane.screen = gjcCustomScreen(1);
+          else if (sent === "enter") pane.screen = gjcCustomScreen(1, "");
+          else if (sent.startsWith("text:")) pane.screen = next;
+        };
+        expect(await answer((await card())!.id, { custom_text: "Original draft" })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(["down", "enter", "text:\u001b[200~Original draft\u001b[201~"]);
+      });
+    }
+  });
+
+  test.each([
+    ["Original draft", "Original\ndraft"],
+    ["Original draft", "Orig\ninal draft"],
+    ["Original > draft", "Original\n> draft"],
+    ["Original  draft", "Original \n draft"],
+  ])("submits soft-wrapped GJC draft %s from the live drawing while the viewport shows history", async (text, draft) => {
+    await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+      pane.visibleScreen = "Earlier output\n\n❯ ";
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = gjcCustomScreen(1);
+        else if (sent === "enter") pane.screen = gjcCustomScreen(1, "");
+        else if (sent.startsWith("text:")) pane.screen = gjcCustomScreen(1, draft);
+      };
+      expect(await answer((await card())!.id, { custom_text: text })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["down", "enter", `text:\u001b[200~${text}\u001b[201~`, "enter"]);
+    });
+  });
+
+  test("rejects a GJC editor whose question body changes beyond the display cap", async () => {
+    const body = "Approval details ".repeat(800);
+    const draw = (at: number, draft: string | null, suffix: string) =>
+      gjcCustomScreen(at, draft, `${body}${suffix}\nWhich scope?`);
+    for (const changedAfterPaste of [false, true]) {
+      await withPane("gjc", "blocked", draw(0, null, "Original"), async (pane) => {
+        pane.onSent = (sent) => {
+          if (sent === "down") pane.screen = draw(1, null, "Original");
+          else if (sent === "enter") pane.screen = draw(1, "", changedAfterPaste ? "Original" : "Changed");
+          else if (sent.startsWith("text:")) pane.screen = draw(1, "My answer", "Changed");
+        };
+        const prompt = (await card())!;
+        expect(prompt.body).toHaveLength(12_000);
+        expect(await answer(prompt.id, { custom_text: "My answer" })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(changedAfterPaste
+          ? ["down", "enter", "text:\u001b[200~My answer\u001b[201~"]
+          : ["down", "enter"]);
+      });
+    }
+  });
+
+  test("never uses a historical GJC editor when the live drawing has closed", async () => {
+    await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = gjcCustomScreen(1);
+        else if (sent === "enter") {
+          pane.screen = "Ready\n\n❯ ";
+          pane.visibleScreen = gjcCustomScreen(1, "");
+        } else if (sent.startsWith("text:")) pane.visibleScreen = gjcCustomScreen(1, "Do not send");
+      };
+      expect(await answer((await card())!.id, { custom_text: "Do not send" })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "enter"]);
+    });
+  });
+
+  test("does not resume GJC text delivery after seeing its editor dismissed once", async () => {
+    await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
+      let editorReads = 0;
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = gjcCustomScreen(1);
+        if (sent === "enter") pane.onRead = () => {
+          editorReads++;
+          pane.screen = editorReads === 1 ? "Ready\n\n❯ " : gjcCustomScreen(1, "");
+        };
+      };
+      expect(await answer((await card())!.id, { custom_text: "Do not replay" })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "enter"]);
+      expect(editorReads).toBe(1);
+    });
+  });
+
+  test("recognizes numbered GJC Other before the clarification row and refuses control characters", () => {
+    const prompt = parseFallbackPrompt("gjc", gjcCustomScreen().replace("Other (type your own)", "2. Other (type your own)"));
+    expect(prompt.custom_option_index).toBe(1);
+    expect(() => answerKeys(prompt, { option_index: 1 })).toThrow();
+    expect(() => answerKeys(prompt, { custom_text: "bad\u001b[201~input" })).toThrow();
+    expect(() => answerKeys(prompt, { custom_text: "Use\nthe terminal" })).toThrow();
+  });
 
   test("shows a GJC startup selector even before the pane is reported blocked", async () => {
     await withPane("gjc", "idle", gjcSelector().replace("[↑↓ to navigate, Enter to select, Esc to cancel]", "up/down navigate  enter select  esc cancel"), async () => {
@@ -4785,6 +5226,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         draw: (at) => `────────────────────────────────────────\n\nOnly showing models from configured providers. Use /login to add providers.\n>\n\n${at === 0 ? "→" : " "} ✓ vllm/Qwen/Qwen3.8-27B [lwsa-platform] · default\n${at === 1 ? "→" : " "}   vllm-flash/Qwen3.8-Flash-Next [lwsa-platform]\n Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel\n────────────────────────────────────────${FOOTER}`,
       },
       {
+        name: "pi's thinking level, reread at a narrower width", agent: "pi", status: "idle", rows: 3, start: 2,
+        choice: { option_index: 0 }, sent: ["up", "up", "enter"], draw: (at) => piThinking(at, at === 0),
+      },
+      {
         name: "OmO's model list", agent: "omo", status: "idle", rows: 3, choice: { option_index: 2 }, sent: ["down", "down", "enter"],
         draw: (at) => `Only showing models from configured providers. Use /login to add providers.\nenter select  ctrl+s select as default  ctrl+f favorite\n>\n${["claude-opus-4-8 [anthropic] ✓", "claude-fable-5 [anthropic]", "gpt-5.5 [chatgpt-subscription]"].map((row, index) => `${at === index ? "→" : " "}   ${row}`).join("\n")}\n  Model Name: Claude Opus 4.8\n${"─".repeat(40)}\n/tmp/app • $0.000 (sub) • 0/1M (0.0%) (auto)  (anthropic) claude-opus-4-8 • effort medium\n(😺 OmO Native)\n`,
       },
@@ -4889,6 +5334,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     const cases = [
       { id: "omo-model", agent: "omo", move: "down", rereadMoves: false, draw: (at: number) => providerList("omo", at) },
       { id: "pi-model", agent: "pi", move: "down", rereadMoves: false, draw: (at: number) => providerList("pi", at) },
+      { id: "pi-thinking", agent: "pi", move: "down", rereadMoves: false, draw: piThinking },
       { id: "claude-model", agent: "claude", move: "down", rereadMoves: true, draw: claudeModelList },
       { id: "claude-effort", agent: "claude", move: "right", rereadMoves: true, draw: claudeEffort },
       { id: "codex-model", agent: "codex", move: "down", rereadMoves: true, draw: codexModels },
@@ -5122,11 +5568,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
   test("keeps fallback cards when a model title is only transcript text or belongs to another agent", async () => {
     const unknown = "Advanced Reasoning\nThis section explains the tradeoff.\n\nChoose a deployment target:\n  1. Staging\n  2. Production\n\nEnter a number, or Esc to cancel\n";
-    for (const agent of ["claude", "pi", "omp", "codex"]) {
+    for (const agent of ["claude", "omp", "codex"]) {
       await withPane(agent, "blocked", unknown, async () => {
         expect((await card())?.fallback).toBe(true);
       });
     }
+    // a pi pane gets no generic card at all: its keys would be guessed into pi, which may show
+    // pi-ask's form (it takes no typed keys); the terminal answers what no reader knows
+    await withPane("pi", "blocked", unknown, async () => {
+      expect(await card()).toBeNull();
+    });
     await withPane("codex", "blocked", `${codexModels(1)}\nContinue deployment?\n${CODEX_OPENS}\n`, async () => {
       expect((await card())?.fallback).toBe(true);
     });
@@ -5134,9 +5585,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     await withPane("codex", "blocked", codexModels(1).replace(CODEX_OPENS, `Continue deployment\n${CODEX_OPENS}`), async () => {
       expect((await card())?.fallback).toBe(true);
     });
-    // Even a Codex-shaped footer belongs to the other agent's unknown prompt here.
+    // Even a Codex-shaped footer belongs to the other agent's unknown prompt here (no generic card on pi).
     await withPane("pi", "blocked", codexLevels(1), async () => {
-      expect((await card())?.fallback).toBe(true);
+      expect(await card()).toBeNull();
     });
     // A newer picker title supersedes the older model heading in the visible transcript.
     const other = `Advanced Reasoning\n\nSelect Deployment Target\n\n› 1. Staging\n  2. Production\n\n${CODEX_OPENS}\n`;
@@ -5226,13 +5677,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     for (const screen of unread) {
       expect(parseInteractivePrompt("claude", screen)).toBeNull();
       expect(parseFallbackPrompt("claude", screen).options.map((option) => option.label)).toContain("Enter");
-      expect(modelListWaits("claude", screen)).toBe(true);
+      expect(registry.waits("claude", screen)).toBe(true);
       await withPane("claude", "blocked", screen, async () => {
         expect(await card()).toBeNull();
       });
     }
     // the same hint above later output belongs to an answered slider
-    expect(modelListWaits("claude", `${unread[1]}Some later output\n`)).toBe(false);
+    expect(registry.waits("claude", `${unread[1]}Some later output\n`)).toBe(false);
   });
 
   test("a screen read that comes back after the wait authorises no key", async () => {
@@ -5895,23 +6346,23 @@ describe("Claude Code's model list under a hint wrapped anywhere", () => {
 
   test("holds the screen and reads the list with the hint split inside a word", () => {
     const split = list("  Enter to set as default · s to use this ses\n  sion only · Esc to cancel");
-    expect(modelListWaits("claude", split)).toBe(true);
-    expect(modelListWaits("claude", `${split}──────────── Session name ─\n`)).toBe(true);
+    expect(registry.waits("claude", split)).toBe(true);
+    expect(registry.waits("claude", `${split}──────────── Session name ─\n`)).toBe(true);
     expect(parseInteractivePrompt("claude", split)?.options.map((option) => option.label)).toEqual(CLAUDE_MODELS.slice(0, 10).map(([name]) => name));
     // the same list's text above later output still holds nothing
-    expect(modelListWaits("claude", `${split}Some later output\nand more\n`)).toBe(false);
+    expect(registry.waits("claude", `${split}Some later output\nand more\n`)).toBe(false);
   });
 
   test("holds the screen and reads the list with the hint over seven lines", () => {
     const tall = list("  Enter to\n  set as\n  default ·\n  s to use\n  this\n  session\n  only · Esc to cancel");
-    expect(modelListWaits("claude", tall)).toBe(true);
+    expect(registry.waits("claude", tall)).toBe(true);
     expect(parseInteractivePrompt("claude", tall)?.options).toHaveLength(10);
   });
 
   test("does not take the hint quoted in Claude's output for an open list", () => {
     const quoted = `${CLAUDE_MODEL_CLOSED}⏺ Example: Enter to set as default · s to use this session only · Esc to\n  cancel\n──────────── Summary ─\n`;
-    expect(modelListWaits("claude", quoted)).toBe(false);
-    expect(modelListWaits("claude", `⏺ Enter to set as default · s to use this session only · Esc to cancel\n`)).toBe(false);
+    expect(registry.waits("claude", quoted)).toBe(false);
+    expect(registry.waits("claude", `⏺ Enter to set as default · s to use this session only · Esc to cancel\n`)).toBe(false);
   });
 });
 

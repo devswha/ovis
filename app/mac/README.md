@@ -1,23 +1,68 @@
 # Ovis for Mac
 
-The one-click setup for a Mac, downloaded from https://ovis.sh as `Ovis.dmg`. The phone apps
-need the Ovis server running on the computer; this app sets that up without a terminal and shows the
-QR code the phone app scans.
+Ovis on a Mac, downloaded from https://ovis.sh as `Ovis.dmg`. Once the Ovis server runs, the app
+opens Ovis in its own window, as a native app. Until then, or when the server stops, the window shows
+the one-click setup instead: it installs the server without a terminal and shows the QR code the
+phone app scans.
 
 It is a small SwiftUI app with no code of its own for installing: everything goes through what a
 terminal user runs, so the two never drift apart.
 
+## The Ovis window
+
+The window is a WKWebView on the server's own address (`http://127.0.0.1:<port>`, from
+`scripts/plugin.ts status`). The server lets a loopback request in without pairing, and the page's
+cookies and drafts stay in the app's own WebKit store, apart from any browser's.
+
+- **Ovis → Phone Setup…** opens the setup and the phone's QR code in a window of their own. After
+  an Install from the app it opens by itself. **File → Open in Browser** opens the page as it is in
+  the default browser, and **View → Reload** (Cmd+R) loads it again. No menu item takes a Cmd+Shift
+  letter: those are the page's own shortcuts.
+- The server's own pages stay in the app: a link that opens a new tab of it (a file) opens another
+  Ovis window. A link to any other address goes to the default browser, and a file dropped where the
+  page takes none is not opened in its place.
+- Ovis's own downloads go to Downloads; a download from a site in a web panel opens in the default
+  browser, which asks as it does for any site. A file field opens the file panel. The microphone
+  (dictation) is the app's: macOS asks once, with the text in `Info.plist`, and a signed build
+  carries the hardened runtime's `com.apple.security.device.audio-input` entitlement
+  (`Ovis.entitlements`).
+- The app checks the server every 3 seconds (`/api/health?scope=bridge`, which leaves herdr alone,
+  and only Ovis's own answer counts, never through a redirect). A running page reconnects by itself when the server is back
+  within about 15 seconds, keeping what was open in it, and says itself when the server it meets was
+  updated; a page that did not load, or whose code never started, loads again once the server
+  answers. When the server is still gone after about 15 seconds, the window shows the setup's Start
+  (the page and what was open in it go), and it goes back to Ovis by itself once the server runs
+  again, however it was started.
+- When the server comes back on another port (7317 was taken), the window follows it. The page's
+  storage belongs to its port, so the app reads the unsent drafts (the chat's draft, the terminal's
+  held input, held messages) from the page it leaves and writes them into the new one before its
+  code starts, over the older copies an earlier visit left there (unless a window the page opened is
+  still open on that port: then they only fill gaps). Nothing is sent; the old port keeps its copy.
+  Drafts move only between this Mac's own loopback addresses (`Resources/carry-drafts.js`); one that
+  does not fit in the new page's storage stays in the app and is written on the next try.
+- Another app's link (a site in a web panel can make one) asks before it opens that app, as Safari
+  does, and only the Ovis page itself opens app windows.
+- The user agent ends like Safari's, then `OvisMac/<version>`: the terminal's Korean input
+  (xterm.js's Hangul handling in `patches/`) goes by "Safari", and the page treats the app as
+  installed (`src/lib/nativeApp.ts`).
+- A WKWebView has no web notifications or Web Push: the page's alerts setting reports them as
+  unsupported here. macOS notifications from the app itself are a later step.
+
+## Setup
+
 | Button | What runs |
 | --- | --- |
-| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh, with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. |
-| Status (on open) | `herdr plugin list --json` finds the plugin, `scripts/plugin.ts status` gives its address, and `GET /api/access` gives the phone address, drawn as a QR code. |
-| **Make the phone address** | `scripts/plugin.ts phone`, the installer's Tailscale step. |
-| **Restart** / **Start** | The plugin's `stop` and `start` actions, or the LaunchAgent when herdr is not running. |
-| **Remove** | The guide's Uninstall steps (`stop`, `herdr plugin uninstall`, `tailscale serve … off`), then the LaunchAgent is disabled and deleted. |
+| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh over HTTPS (following only a redirect to ovis.sh or herdrweb.dev, where it is served from), with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. |
+| Status (on open) | `herdr plugin list --json` finds the plugin, `scripts/plugin.ts status` gives its address, and `GET /api/access` gives the phone address, drawn as a QR code. The app asks only a loopback address, never through a redirect, and draws the code only for Tailscale's HTTPS name of this Mac (`https://<name>.ts.net`). |
+| **Make the phone address** | `scripts/plugin.ts phone`, the installer's Tailscale step, from the code the server runs now. Settings → Updates runs newer releases from the state dir while herdr's checkout stays at the first one, so the app reads it from the processes: `plugin.ts status` names the launcher (`server/managed.ts` of this checkout), whose supervisor runs the bridge (`server/index.ts`) in the code's dir. When that cannot be read, or the dir is neither the checkout nor a `release-*` dir with its own `plugin.ts`, the checkout's runs. When it fails, the window shows its output. |
+| **Restart** / **Start** | The plugin's `stop` and `start`, or the LaunchAgent when herdr is not running. herdr set up from a terminal has no LaunchAgent: Start then runs herdr for this login only and makes no login item. |
+| **Remove** | The guide's Uninstall steps (`stop`, `herdr plugin uninstall`, `tailscale serve … off` for the HTTPS port Tailscale serves the app on, found with `tailscale serve status` when the server is down), then the LaunchAgent is disabled and deleted. A step that fails stops there and shows why; Try again goes on from it. |
 
 Why a LaunchAgent: herdr runs the app from its startup hook, and a headless `herdr server` runs
 startup hooks like the TUI's server does. A user who never opens a terminal still gets the app,
-and a later `herdr` in a terminal attaches to that same server.
+and a later `herdr` in a terminal attaches to that same server. herdr's output goes to
+`~/Library/Logs/Ovis/herdr-server.log`; past 10 MB the app moves it to `herdr-server.log.1` when it
+opens or starts herdr.
 
 What it never does:
 - It never boots out a loaded LaunchAgent, and Remove never stops herdr. That herdr may hold the
@@ -32,6 +77,7 @@ On a Mac with Xcode (the maintainer's test Mac, `ssh eamac`):
 
 ```sh
 app/mac/build.sh                     # ad hoc signed, for a local try
+(cd app/mac && swift test)           # the unit tests; no CI job runs them
 OVIS_SIGN_IDENTITY="Developer ID Application: … (5987KT43TJ)" \
 OVIS_NOTARY_KEY=~/.appstoreconnect/private_keys/AuthKey_<id>.p8 \
 OVIS_NOTARY_KEY_ID=<id> OVIS_NOTARY_ISSUER=<issuer> \

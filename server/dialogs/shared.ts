@@ -1,8 +1,24 @@
-import { type InteractivePrompt } from "../../shared/protocol.ts";
+import { type CardText, type InteractivePrompt, type InteractivePromptOption, type InteractivePromptStep } from "../../shared/protocol.ts";
+import { type CardTextKey } from "../../shared/card-text.ts";
 import { type OpenCodeFormFieldOption, type OpenCodeFormInfo } from "../opencode-service.ts";
 import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
+import type { PiAskUserForm } from "../pi-ask-bridge.ts";
+
+/**
+ * A parser that several readers call on the same screen, run once per read: the readers of one
+ * parsePrompt pass are given the same screen and the same context object in turn.
+ */
+export function onePerPass<T>(parse: (screen: string, ctx: ReaderContext) => T): (screen: string, ctx: ReaderContext) => T {
+  let last: { screen: string; ctx: ReaderContext; value: T } | null = null;
+  return (screen, ctx) => {
+    if (last?.screen === screen && last.ctx === ctx) return last.value;
+    const value = parse(screen, ctx);
+    last = { screen, ctx, value };
+    return value;
+  };
+}
 
 export interface DialogReader {
   id: string;
@@ -78,6 +94,12 @@ type Responder =
   | "pi-confirm"
   | "pi-input"
   | "pi-model"
+  | "pi-thinking"
+  | "pi-ask-question"
+  | "pi-ask-submit"
+  | "pi-ask-user"
+  | "pi-questionnaire-question"
+  | "pi-questionnaire-submit"
   | "omo-model"
   | "omp-model"
   | "hermes-question"
@@ -115,6 +137,17 @@ export type ParsedPrompt = InteractivePrompt & {
     revision: number;
     available: boolean;
   };
+  /** Pi's active tab, from colors verified against the live detection screen by the caller. */
+  piAskForm?: { identity: string; index: number };
+  /** @eko24ive/pi-ask's ask_user form, as the web UI's pi extension reports it (server/pi-ask-bridge.ts). */
+  piAskUser?: PiAskUserForm;
+  /** Pi's custom row owns the inline editor, rather than only a selected menu row. */
+  piAskTyping?: true;
+  /** Installed questionnaire editor contents; absent outside its guarded input mode. */
+  piQuestionnaireInput?: string;
+  piQuestionnaireInputRows?: string[];
+  /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
+  ompQuestionCut?: true;
   menuLabels: string[];
   selectedIndex: number;
   checkedOptionIndices: number[];
@@ -226,20 +259,73 @@ export function sequentialRows(rows: NumberedRow[]): boolean {
   return rows.length > 0 && rows.every((row, index) => row.number === index + 1);
 }
 
+/** What a card shows: the agent's own text as read, or the bridge's own words (`own`), which the client shows in the user's language. */
+export type CardWords = string | CardText;
+
+/** The bridge's own words on a card (shared/card-text.ts), with the values of their placeholders: given where a card takes the agent's text. */
+export function own(key: CardTextKey, vars?: CardText["vars"]): CardText {
+  return vars === undefined ? { key } : { key, vars };
+}
+
+/** A card's words in English, the bridge's own with their values filled in: as an older client shows them, and as the card's id reads them. */
+export function englishOf(words: CardWords): string {
+  if (typeof words === "string") return words;
+  return words.key.replace(/\{(\w+)\}/g, (match, name: string) => {
+    const value = words.vars?.[name];
+    return value === undefined ? match : typeof value === "object" ? englishOf(value) : String(value);
+  });
+}
+
+/** A card as a reader writes it: its title, question, body, options and steps may be the bridge's own words. */
+export type PromptDraft = Omit<InteractivePrompt, "id" | "agent" | "title" | "question" | "body" | "options" | "steps" | "own_text"> & {
+  title: CardWords;
+  question: CardWords;
+  body: CardWords | null;
+  options: (Omit<InteractivePromptOption, "label" | "description"> & { label: CardWords; description: CardWords | null })[];
+  steps?: (Omit<InteractivePromptStep, "label"> & { label: CardWords })[];
+};
+
+/** The entries of `words` that are the bridge's own, by index; none when there are none. */
+function ownByIndex(words: readonly (CardWords | null)[]): Record<number, CardText> | undefined {
+  const found = words.flatMap((entry, index) => entry !== null && typeof entry === "object" ? [[index, entry] as const] : []);
+  return found.length > 0 ? Object.fromEntries(found) : undefined;
+}
+
 export function finishPrompt(
   agent: string,
-  input: Omit<InteractivePrompt, "id" | "agent">,
+  draft: PromptDraft,
   internal: Omit<ParsedPrompt, keyof InteractivePrompt>,
   /** fields as the id reads them, where that is not as the card shows them (a fallback card's ticking working line) */
-  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body">> & { call?: string } = {},
+  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "default_custom_text">> & { call?: string } = {},
 ): ParsedPrompt {
+  // the card in English, field for field where the draft had them: the id reads the same words as ever
+  const input: Omit<InteractivePrompt, "id" | "agent"> = {
+    ...draft,
+    title: englishOf(draft.title),
+    question: englishOf(draft.question),
+    body: draft.body === null ? null : englishOf(draft.body),
+    options: draft.options.map((option) => ({ ...option, label: englishOf(option.label), description: option.description === null ? null : englishOf(option.description) })),
+    // a draft without steps gets none: undefined, which neither the id nor the card reads
+    steps: draft.steps?.map((step) => ({ ...step, label: englishOf(step.label) })),
+  };
+  // and which of its words are the bridge's own, for the client to show in the user's language
+  const owned: NonNullable<InteractivePrompt["own_text"]> = {};
+  if (typeof draft.title === "object") owned.title = draft.title;
+  if (typeof draft.question === "object") owned.question = draft.question;
+  if (draft.body !== null && typeof draft.body === "object") owned.body = draft.body;
+  const labels = ownByIndex(draft.options.map((option) => option.label));
+  if (labels) owned.labels = labels;
+  const descriptions = ownByIndex(draft.options.map((option) => option.description));
+  if (descriptions) owned.descriptions = descriptions;
+  const steps = ownByIndex(draft.steps?.map((step) => step.label) ?? []);
+  if (steps) owned.steps = steps;
   const id = createHash("sha256")
     .update(JSON.stringify({ agent, ...input, ...hashed }))
     .digest("hex")
     .slice(0, 12);
   // Hash all approval details before applying the display cap. Cursor movement
   // is excluded, but a different command, plan or option description is stale.
-  return { id, agent, ...input, body: input.body?.slice(0, 12_000) ?? null, ...internal };
+  return { id, agent, ...input, body: input.body?.slice(0, 12_000) ?? null, ...(Object.keys(owned).length > 0 ? { own_text: owned } : {}), ...internal };
 }
 
 export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
@@ -252,7 +338,10 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     body: parsed.body,
     options: parsed.options,
     multi_select: parsed.multi_select,
+    ...(parsed.text_format ? { text_format: parsed.text_format } : {}),
     ...(parsed.optional ? { optional: true as const } : {}),
+    ...(parsed.checks_with_text ? { checks_with_text: true as const } : {}),
+    ...(parsed.drafts_saved ? { drafts_saved: true as const } : {}),
     custom_option_index: parsed.custom_option_index,
     ...(parsed.queued ? { queued: parsed.queued } : {}),
     ...(parsed.steps ? { steps: parsed.steps } : {}),
@@ -262,6 +351,8 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     ...(parsed.default_option_indices ? { default_option_indices: parsed.default_option_indices } : {}),
     ...(parsed.default_custom_text ? { default_custom_text: parsed.default_custom_text } : {}),
     ...(parsed.fallback ? { fallback: true as const } : {}),
+    ...(parsed.own_text ? { own_text: parsed.own_text } : {}),
+    ...(parsed.screen_words ? { screen_words: parsed.screen_words } : {}),
   };
   parsedByPublicPrompt.set(prompt, parsed);
   return prompt;

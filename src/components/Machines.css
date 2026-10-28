@@ -31,11 +31,37 @@
 
 .machine-list > .tree-state { padding-left: calc(var(--side-gutter) + var(--side-box)); }
 
+/* PCs kept out on this device (Settings → Remote PCs): one quiet line under the PCs shown, which
+   opens the page that shows them again */
+.machine-hidden-note {
+  display: block;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--side-gutter) + var(--side-box));
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.machine-hidden-note:hover,
+.machine-hidden-note:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+@media (pointer: coarse) {
+  .machine-hidden-note { min-height: var(--touch-target); }
+}
+
 .machine-group {
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
 
-.machine-group + .machine-group { margin-top: var(--space-4); }
+/* a PC the sidebar's filter hides stays in the list, hidden: the gap is between the groups that show */
+.machine-group:not([hidden]) ~ .machine-group { margin-top: var(--space-4); }
 
 .machine-header {
   display: flex;
@@ -90,6 +116,48 @@
 
 /* the + fills the rows' status cell */
 .machine-new { width: var(--side-box); }
+
+/* The lone Host's group has no header (MachineSidebar.tsx): its + is this last row of the list, on the rows'
+   grid, the + in the folders' leading cell and its words as dim as a section head's, so it reads as an action
+   and not as one more workspace. Hover and focus are a row's. */
+.machine-new-row {
+  display: flex;
+  align-items: center;
+  width: calc(100% - var(--side-gutter) * 2);
+  min-height: var(--side-row);
+  margin: 0 var(--side-gutter);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.machine-new-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machine-new-row:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
+
+@media (hover: hover) {
+  .machine-new-row:hover {
+    background: var(--side-hover);
+    color: var(--text);
+  }
+}
+
+@media (pointer: coarse) {
+  .machine-new-row { min-height: var(--touch-target); }
+}
 
 /* An SSH PC's manage button takes no room until its header is hovered or focused, its panel is
    open or the PC is not connected. It stays in the focus order. */
@@ -232,11 +300,11 @@
   }
 }
 
-/* only the removal in flight (MachineSidebar.tsx marks it aria-busy) keeps most of its tint, so its
-   warning stays readable while the request runs; disabled because another action of the panel is
-   running, it dims like its neighbours */
+/* only the removal in flight (MachineSidebar.tsx marks it aria-busy) keeps its full strength, so its
+   warning stays readable while the request runs: dimmed even to 0.9, its text fell under 4.5:1 in
+   Tokyo Night. Disabled because another action of the panel is running, it dims like its neighbours */
 .machine-controls .btn-danger[aria-busy="true"] {
-  opacity: 0.85;
+  opacity: 1;
 }
 
 .machine-dialog {
@@ -277,6 +345,8 @@
 }
 
 .machine-dialog::backdrop { background: var(--scrim); }
+
+.machine-dialog .modal-footer { flex-wrap: wrap; }
 
 .machine-dialog .modal-title {
   display: flex;
@@ -507,3 +577,32 @@
 
 .machine-action.is-setup { border-color: var(--border); }
 .machine-action.is-setup .machine-action-text strong { color: var(--text); }
+
+/* where a PC's own Ovis answers: a link it gave, or its address to copy */
+.machine-own-address {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.machine-own-address-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+p.machine-own-address {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.machine-own-address code {
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+}

@@ -34,10 +34,11 @@ jobs:
       draft: ${{ steps.filter.outputs.draft }}
       linux: ${{ steps.route.outputs.linux }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - id: route
         name: Choose the Linux runner
         env:
@@ -88,9 +89,10 @@ jobs:
     env:
       HERDR_TEST_MODE: unit
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-ci
       # A required check: a draft run must not report it green without running it, or a stale
       # draft result could satisfy the merge gate. Marking the PR ready reruns CI.
@@ -107,7 +109,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts
+      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts
         if: needs.changes.outputs.draft != 'true'
   macos-session:
     name: Native macOS session identity
@@ -118,9 +120,10 @@ jobs:
     env:
       HERDR_TEST_MODE: unit
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
@@ -129,7 +132,7 @@ jobs:
           exit 0
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts
+      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/grok.test.ts ./server/omp-images.test.ts
         if: needs.changes.outputs.draft != 'true'
   rust-pty-host:
     # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its
@@ -143,7 +146,7 @@ jobs:
     env:
       HERDR_TEST_MODE: unit
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -186,9 +189,10 @@ jobs:
       # while another runner's run holds that port for a moment waits instead of failing.
       CHECK_WAIT_SECONDS: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
@@ -207,7 +211,7 @@ jobs:
           bun scripts/release-guards.ts --base "$BASE_SHA"
       - name: Preserve check report and verification logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-fast-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -233,9 +237,10 @@ jobs:
       CHECK_MAX_RUNS: 3
       CHECK_WAIT_SECONDS: 2400
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
@@ -255,7 +260,7 @@ jobs:
         run: bun run check integration
       - name: Preserve check report and verification logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -279,9 +284,10 @@ jobs:
       CHECK_MAX_RUNS: 3
       CHECK_WAIT_SECONDS: 2400
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
@@ -300,7 +306,7 @@ jobs:
         run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browser
         if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ci-cache/playwright
           key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
@@ -314,7 +320,7 @@ jobs:
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       - name: Preserve browser logs and evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-main-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -340,9 +346,10 @@ jobs:
       CHECK_MAX_RUNS: 3
       CHECK_WAIT_SECONDS: 2400
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
@@ -361,7 +368,7 @@ jobs:
         run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browser
         if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ci-cache/playwright
           key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
@@ -376,7 +383,7 @@ jobs:
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       - name: Preserve browser logs and evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-other-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

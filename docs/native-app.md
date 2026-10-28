@@ -218,6 +218,11 @@ What is there:
   one goes with its web view. `@capacitor/barcode-scanner` kept every old one alive (its scanner
   manager holds the view controller, which holds the bridge and the plugin), so
   `app/patches` makes that manager for each scan instead of keeping it.
+  `HerdrBridgeViewController` also hides WebKit's form accessory bar (the up and down arrows and the check mark over the
+  keyboard), as `@capacitor/keyboard`'s `hideFormAccessoryBar` would, without that plugin or its
+  patch of WebKit's private content view: its web view is a `WKWebView` subclass whose
+  `inputAccessoryView` is nil, which WebKit asks for since iOS 13. The client has its own key bar,
+  and a page cannot remove WebKit's.
 - In the client, `src/lib/nativeApp.ts` notices the app through `window.Capacitor`, as the app
   injects it; the browser build carries no Capacitor code. Inside the app:
   - Settings → Phone & devices has a Change PC row, and so does the pairing screen (a PC that
@@ -379,6 +384,21 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   `OvisBars` listener open to the app's and the PC's origins. Until then, and on a WebView without
   those features, they sit on the app's dark background (`colors.xml`), as does Android 12's own
   launch screen (`windowSplashScreenBackground`).
+- With 3-button navigation the page stays clear of the buttons, at the bottom or, on a phone in
+  landscape, at the side. On a WebView that gives the page its safe areas itself (140 and later),
+  Capacitor's SystemBars lets the page draw under the system bars and leaves the room to the CSS,
+  and the client's message box and key bar sit partly into the bottom safe area (the room an
+  iPhone's home indicator leaves), so the buttons covered them on a Galaxy. The client's layout
+  pads its sides for a side bar itself. `MainActivity` keeps the WebView clear of the bars'
+  tappable part (`WindowInsetsCompat.Type.tappableElement()`, which a pinned taskbar on a large
+  screen has too), and the strip beside it shows the window's background: the page's
+  `theme-color` once the page has sent it, the app's dark background before. A gesture bar has no
+  tappable part, so the page still draws under it. A docked keyboard covers a bottom bar, and
+  SystemBars keeps the page above both. A floating keyboard takes no bottom inset, so on WebView
+  144 and later the bar is kept clear under it; before 144 SystemBars passes the page no bottom
+  inset while any keyboard shows, and the page sits under the bar then, as it did before. On an
+  older WebView SystemBars keeps the page out from under the bars itself, and this changes
+  nothing.
 - A link to the PC's host over the other scheme (http for an https PC) opens in the browser: it is
   another origin, which gets no bridge.
 - A redirect is not a link. Capacitor would hand a redirect to another host or scheme to the

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as darwinProcess from "./darwin-process.ts";
 import { Database } from "bun:sqlite";
 import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +7,10 @@ import { join, win32 } from "node:path";
 import * as fs from "node:fs";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
+import { turnStarts } from "./transcript-turns.ts";
+import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
+import { continuesHistory } from "../src/lib/chatRows.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { parseAgyTranscript } from "./agy.ts";
 import { agyStoreFromLocks } from "./agy-store.ts";
@@ -15,7 +19,9 @@ import * as herdr from "./herdr/client.ts";
 import { forgetHistoryChains } from "./codex.ts";
 import { DevinHistoryChanged } from "./devin.ts";
 import * as omo from "./omo.ts";
-import { ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { claudeProjectDir } from "./claude-store.ts";
+import { launchedAgents } from "./launched-agents.ts";
+import { claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -67,7 +73,7 @@ describe("omo skill roots", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
       process_info: { foreground_processes: [{ pid: -1, argv: ["omo"] }] },
     });
-    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: [], custom: false });
+    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: [], custom: false, held: false });
     try {
       expect((await paneProcessRoots("omo-cwd-fixture", "omo")).omo?.agentDir).toBe(agentDir);
     } finally {
@@ -78,6 +84,30 @@ describe("omo skill roots", () => {
 });
 
 describe("pane process roots", () => {
+  it("binds an omo pane to the omo process holding a session, not an omo-looking one listed before it", async () => {
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
+      process_info: { foreground_processes: [
+        { pid: 301, argv: ["/install/omo-ai/node_modules/claude-sdk/cli.js"], cwd: "/repo" },
+        { pid: 302, argv: ["omo"], cwd: "/repo" },
+      ] },
+    });
+    const identity = spyOn(omo, "omoProcessIdentity").mockImplementation((process) =>
+      ({ agentDir: "/fixture-agent", heldIds: process.pid === 302 ? ["sess-1"] : [], custom: false, held: process.pid === 302 }));
+    const environ = spyOn(omo, "processEnviron").mockReturnValue(null);
+    try {
+      const roots = await paneProcessRoots("omo-held-fixture", "claude");
+      expect(roots.pid).toBe(302);
+      expect(roots.omo?.held).toBeTrue();
+      // with none held, the first omo process still answers, unheld, as before
+      identity.mockImplementation(() => ({ agentDir: "/fixture-agent", heldIds: [], custom: false, held: false }));
+      expect(await paneProcessRoots("omo-held-fixture", "claude")).toMatchObject({ pid: 301, omo: { held: false } });
+    } finally {
+      environ.mockRestore();
+      identity.mockRestore();
+      rpc.mockRestore();
+    }
+  });
+
   for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy"]) {
     it(`reads ${agent}'s environment from its foreground executable`, async () => {
       const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
@@ -355,11 +385,53 @@ describe("parseClaudeTranscript", () => {
       { role: "assistant", ts: "2026-09-19T08:00:02.000Z", end_ts: "2026-09-19T08:00:05.000Z", parts: [
         { kind: "text", text: "먼저 상태를 확인하겠습니다." },
         // the row says what the agent said the command is for; the command stays in the input
-        { kind: "tool", name: "Bash", summary: "check tree", input: expect.stringContaining("git status"), output: "M src/app.ts" },
+        { kind: "tool", name: "Bash", summary: "check tree", input: expect.stringContaining("git status"), output: "M src/app.ts", call_id: "toolu_1", state: "ok" },
         { kind: "thinking", text: "internal reasoning stays private" },
         { kind: "text", text: "변경된 파일이 하나입니다." },
       ] },
     ]);
+  });
+
+  describe("native call id and state", () => {
+    const prompt = JSON.stringify({ type: "user", message: { role: "user", content: "plan it" } });
+    const use = (id: string, input: object = { todos: [] }) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name: "TodoWrite", input }] } });
+    const result = (id: string, content: unknown, isError?: boolean) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(isError === undefined ? {} : { is_error: isError }) }] } });
+    const tools = (text: string) => parseClaudeTranscript(text).flatMap((turn) => turn.parts).filter((part) => part.kind === "tool");
+
+    it("pending call has native id and pending state", () => {
+      expect(tools([prompt, use("toolu_a")].join("\n"))).toMatchObject([{ call_id: "toolu_a", state: "pending", output: "" }]);
+    });
+
+    it("empty successful result is ok", () => {
+      const [part] = tools([prompt, use("toolu_a"), result("toolu_a", "")].join("\n"));
+      expect(part).toMatchObject({ call_id: "toolu_a", state: "ok", output: "" });
+      expect(part?.kind === "tool" && part.error).toBeFalsy();
+    });
+
+    it("explicit failed result is error", () => {
+      expect(tools([prompt, use("toolu_a"), result("toolu_a", "", true)].join("\n"))).toMatchObject([{ call_id: "toolu_a", state: "error", error: true }]);
+      // a result that only reads like a failure is still the success the flag says
+      expect(tools([prompt, use("toolu_b"), result("toolu_b", "Error: exit code 1", false)].join("\n"))).toMatchObject([{ call_id: "toolu_b", state: "ok" }]);
+    });
+
+    it("repeated identical calls retain distinct ids", () => {
+      const parts = tools([prompt, use("toolu_a"), result("toolu_a", "same"), use("toolu_b"), result("toolu_b", "same")].join("\n"));
+      expect(parts.map((part) => part.kind === "tool" && [part.call_id, part.state, part.input, part.output])).toEqual([
+        ["toolu_a", "ok", parts[1]?.kind === "tool" ? parts[1].input : "", "same"],
+        ["toolu_b", "ok", parts[0]?.kind === "tool" ? parts[0].input : "", "same"],
+      ]);
+    });
+
+    it("append and full poll replacement preserve call id and update or omit state", () => {
+      const first = [prompt, use("toolu_a"), use("toolu_b")];
+      expect(tools(first.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "pending"], ["toolu_b", "pending"]]);
+      // the next poll reads the file again with both results appended
+      const second = [...first, result("toolu_a", ""), result("toolu_b", "denied", true)];
+      expect(tools(second.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "ok"], ["toolu_b", "error"]]);
+      // a cut output keeps the id beside its fetch ref
+      const long = tools([prompt, use("toolu_c"), result("toolu_c", "x".repeat(5000))].join("\n"))[0];
+      expect(long).toMatchObject({ call_id: "toolu_c", state: "ok", output_ref: "toolu_c", output_size: 5000 });
+    });
   });
 
   it("shows a pasted text without Claude Code's paste wrapper, in string and block prompts", () => {
@@ -492,6 +564,170 @@ describe("parseClaudeTranscript", () => {
     // the same words a minute later are another answer, and a notice's own repeat is kept
     expect(notices([local(stderr, "2026-10-08T08:06:31.117Z"), info("Unknown command: /gaol", "2026-10-08T08:07:31.118Z")])).toEqual(["Unknown command: /gaol", "Unknown command: /gaol"]);
     expect(notices([info("Message expired", "2026-10-08T08:06:31.117Z"), info("Message expired", "2026-10-08T08:06:31.118Z")])).toEqual(["Message expired\nMessage expired"]);
+  });
+
+  it("shows a bash-mode command with what it printed as one turn, which only the command opens", () => {
+    const user = (content: string, ts: string) => JSON.stringify({ type: "user", timestamp: ts, message: { role: "user", content } });
+    const records = [
+      user('<bash-input>echo "Hello"</bash-input>', "2026-10-27T03:00:00.000Z"),
+      user("<bash-stdout>  Hello\n    world\n</bash-stdout><bash-stderr></bash-stderr>", "2026-10-27T03:00:00.100Z"),
+      user("<bash-input>ls extra</bash-input>", "2026-10-27T03:00:01.000Z"),
+      user("<bash-stdout></bash-stdout><bash-stderr>\u001b[31mls: extra: No such file or directory\u001b[39m</bash-stderr>", "2026-10-27T03:00:01.100Z"),
+      // a command whose output was not recorded, then a prompt that quotes the tags
+      user("<bash-input>sleep 60</bash-input>", "2026-10-27T03:00:02.000Z"),
+      user("Why does <bash-input>ls</bash-input> show here?", "2026-10-27T03:00:03.000Z"),
+      // only a whole output entry is one: a prompt that starts like one is a prompt
+      user("<bash-stdout> is the tag I mean", "2026-10-27T03:00:04.000Z"),
+    ];
+    expect(parseClaudeTranscript(records.join("\n"))).toEqual([
+      { role: "user", ts: "2026-10-27T03:00:00.000Z", parts: [{ kind: "shell", command: 'echo "Hello"', stdout: "  Hello\n    world", stderr: "" }] },
+      { role: "user", ts: "2026-10-27T03:00:01.000Z", parts: [{ kind: "shell", command: "ls extra", stdout: "", stderr: "ls: extra: No such file or directory" }] },
+      { role: "user", ts: "2026-10-27T03:00:02.000Z", parts: [{ kind: "shell", command: "sleep 60" }] },
+      { role: "user", ts: "2026-10-27T03:00:03.000Z", parts: [{ kind: "text", text: "Why does <bash-input>ls</bash-input> show here?" }] },
+      { role: "user", ts: "2026-10-27T03:00:04.000Z", parts: [{ kind: "text", text: "<bash-stdout> is the tag I mean" }] },
+    ]);
+    // a page never starts at an output: it would lose its command
+    expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toHaveLength(5);
+    // an output with no command before it is left out
+    expect(parseClaudeTranscript(records[1]!)).toEqual([]);
+  });
+
+  for (const provenance of [{ origin: { kind: "human" }, permissionMode: "default" }, { permissionMode: "default" }, { origin: { kind: "human" } }]) {
+    for (const array of [false, true]) {
+      it(`keeps bash tags literal in ${array ? "array" : "string"} prompts with ${Object.keys(provenance).join(" and ")}`, () => {
+        for (const text of ["<bash-input>ls</bash-input>", "<bash-stdout>err</bash-stdout>"]) {
+          const record = JSON.stringify({ type: "user", ...provenance, message: { role: "user", content: array ? [{ type: "text", text }] : text } });
+          expect(parseClaudeTranscript(record)).toEqual([{ role: "user", ts: null, parts: [{ kind: "text", text }] }]);
+          expect(turnStarts(Buffer.from(record), "claude-transcript")).toEqual([0]);
+        }
+      });
+    }
+  }
+
+  it("keeps bash output tags literal in queued human prompts", () => {
+    const text = "<bash-stdout>err</bash-stdout>";
+    const record = JSON.stringify({ type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "human" }, prompt: text } });
+    expect(parseClaudeTranscript(record)).toEqual([{ role: "user", ts: null, parts: [{ kind: "text", text }] }]);
+  });
+
+  it("preserves literal stream tags inside bash stdout without fabricating stderr", () => {
+    const stdout = "before</bash-stdout><bash-stderr>fake error</bash-stderr><bash-stdout>after";
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [user("<bash-input>printf tags</bash-input>"), user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr></bash-stderr>`)];
+    expect(parseClaudeTranscript(records.join("\n"))[0]?.parts).toEqual([{ kind: "shell", command: "printf tags", stdout: `${stdout}</bash-stdout><bash-stderr>`, stderr: "" }]);
+    expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toEqual([0]);
+  });
+
+  it("preserves literal stream tags inside bash stderr", () => {
+    const stderr = "before</bash-stderr><bash-stderr>after";
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [user("<bash-input>printf tags</bash-input>"), user(`<bash-stdout></bash-stdout><bash-stderr>${stderr}</bash-stderr>`)];
+    const parts = parseClaudeTranscript(records.join("\n")).flatMap((turn) => turn.parts);
+    expect(parts).toEqual([{ kind: "shell", command: "printf tags", stdout: "", stderr }]);
+  });
+
+  for (const [stdout, stderr] of [
+    ["", "before</bash-stdout><bash-stderr>after"],
+    ["out", "x</bash-stdout>y"],
+  ] as const) {
+    it(`keeps a printed stdout close inside stderr ${JSON.stringify(stderr)} without adding a turn`, () => {
+      const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+      const records = [
+        user("<bash-input>printf tags</bash-input>"),
+        user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+      ].join("\n");
+      const ambiguous = stderr.includes("</bash-stdout><bash-stderr>");
+      expect(parseClaudeTranscript(records)).toEqual([
+        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags",
+          stdout: ambiguous ? `${stdout}</bash-stdout><bash-stderr>${stderr}` : stdout,
+          stderr: ambiguous ? "" : stderr }] },
+      ]);
+      expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+    });
+  }
+
+  for (const { name, stdout, stderr, ambiguous } of [
+    { name: "N1", stdout: "a</bash-stdout><bash-stderr>b", stderr: "", ambiguous: true },
+    { name: "N2", stdout: 'user("<bash-stdout>Hello</bash-stdout><bash-stderr></bash-stderr>", 1)', stderr: "", ambiguous: true },
+    {
+      name: "N3",
+      stdout: `572: user('<bash-input>echo "Hello"</bash-input>')\n573: user("<bash-stdout>  Hello</bash-stdout><bash-stderr></bash-stderr>")\n575: user("<bash-stdout></bash-stdout><bash-stderr>ls: extra</bash-stderr>")`,
+      stderr: "", ambiguous: true,
+    },
+    { name: "N4", stdout: '{"content":"<bash-stdout>x</bash-stdout><bash-stderr></bash-stderr>"}', stderr: "", ambiguous: true },
+    { name: "N5", stdout: "o</bash-stdout><bash-stderr>p", stderr: "e", ambiguous: true },
+    { name: "N6", stdout: "", stderr: "x</bash-stderr><bash-stdout>y", ambiguous: false },
+    { name: "N7", stdout: "o", stderr: "a</bash-stderr><bash-stdout>b</bash-stdout><bash-stderr>c", ambiguous: true },
+    { name: "H", stdout: "ok", stderr: "x</bash-stdout><bash-stderr>y", ambiguous: true },
+    { name: "Codex R1", stdout: "before</bash-stdout><bash-stderr>after", stderr: "", ambiguous: true },
+    { name: "Codex R2", stdout: "", stderr: "before</bash-stderr><bash-stdout>middle</bash-stdout><bash-stderr>after", ambiguous: true },
+    { name: "empty-candidate collision", stdout: "x", stderr: "y</bash-stdout><bash-stderr>", ambiguous: true },
+    { name: "ambiguous trailing whitespace", stdout: "x</bash-stdout>\n<bash-stderr>y", stderr: "z \n", ambiguous: true },
+  ]) {
+    it(`keeps deterministic bash output ${name} intact in one shell turn`, () => {
+      const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+      const records = [
+        user("<bash-input>printf tags</bash-input>"),
+        user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+      ].join("\n");
+      const expectedStdout = ambiguous ? `${stdout}</bash-stdout><bash-stderr>${stderr}` : stdout;
+      const expectedStderr = ambiguous ? "" : stderr;
+      expect(parseClaudeTranscript(records)).toEqual([
+        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags", stdout: expectedStdout, stderr: expectedStderr }] },
+      ]);
+      expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+    });
+  }
+
+  it("never fabricates stderr or loses payload characters across seeded bash tag pairs", () => {
+    const pieces = ["<bash-stdout>", "</bash-stdout>", "<bash-stderr>", "</bash-stderr>", "one", "two"];
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    for (const seed of [0x2176, 0xc0de]) {
+      let state = seed;
+      const next = () => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return state;
+      };
+      const payload = () => {
+        const count = next() % 9;
+        let text = "";
+        for (let i = 0; i < count; i++) text += pieces[next() % pieces.length];
+        return text;
+      };
+      for (let i = 0; i < 512; i++) {
+        const stdout = payload(), stderr = payload();
+        const records = [
+          user("<bash-input>printf tags</bash-input>"),
+          user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+        ].join("\n");
+        const turns = parseClaudeTranscript(records);
+        expect(turns).toHaveLength(1);
+        const shell = turns[0]?.parts[0];
+        if (shell?.kind !== "shell") throw new Error("Expected one shell card");
+        expect(shell.stderr === "" || shell.stderr === stderr).toBe(true);
+        const shown = `${shell.stdout ?? ""}${shell.stderr ?? ""}`;
+        let at = 0;
+        for (const character of stdout + stderr) {
+          const found = shown.indexOf(character, at);
+          expect(found).toBeGreaterThanOrEqual(at);
+          at = found + 1;
+        }
+        expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+      }
+    }
+  });
+
+  it("attaches bash output to its shell across an informational notice", () => {
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [
+      user("<bash-input>ls</bash-input>"),
+      JSON.stringify({ type: "system", subtype: "informational", content: "Something" }),
+      user("<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>"),
+    ];
+    expect(parseClaudeTranscript(records.join("\n")).map((turn) => turn.parts)).toEqual([
+      [{ kind: "shell", command: "ls", stdout: "README.md", stderr: "" }],
+      [{ kind: "notice", text: "Something", source: "informational" }],
+    ]);
   });
 
   it("shows a slash command's answer only as the whole entry, as text, and not past its length", () => {
@@ -777,6 +1013,53 @@ describe("parseClaudeTranscript", () => {
       expect(prompts(warm.turns)).toEqual(["cherry"]);
       forgetTranscriptState();
       expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
+    });
+
+    // the same restore, with a screenshot sent in place of "cherry": a prompt all the same, also
+    // when the picture makes its record longer than the branch reader parses whole
+    for (const size of [16, 900 * 1024]) it(`hides the turns a restore left behind when the next prompt is only a picture of ${size} bytes`, () => {
+      const path = file();
+      const png = Buffer.alloc(size);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } };
+      const entries = lines.map((line) => JSON.parse(line) as { message?: { content?: unknown } });
+      const fork = entries.findIndex((entry) => entry.message?.content === "cherry");
+      const write = (from: number, to: number) => appendFileSync(path, `${entries.slice(from, to).map((entry) => JSON.stringify(entry.message?.content === "cherry" ? { ...entry, message: { ...entry.message, content: [picture] } } : entry)).join("\n")}\n`);
+      write(0, fork);
+      expect(prompts(transcriptPage("claude-transcript", path).turns)).toEqual(["apple", "banana"]);
+      write(fork, entries.length);
+      const warm = transcriptPage("claude-transcript", path).turns;
+      expect(prompts(warm)).toEqual([]);
+      expect(warm[0]?.parts.map((part) => part.kind)).toEqual(["image"]);
+      forgetTranscriptState();
+      expect(transcriptPage("claude-transcript", path).turns).toEqual(warm);
+    });
+
+    it("hides the turns a restore left behind when a screenshot prompt crosses a cold read's window", () => {
+      // a long session read cold: the picture's record starts in the first 16 MiB and ends past them
+      const path = file();
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const rows = [JSON.stringify({ type: "user", uuid: id(0), parentUuid: null, message: { role: "user", content: "apple" } })];
+      let size = rows[0]!.length + 1;
+      let n = 1;
+      for (; size < TRANSCRIPT_WINDOW_BYTES - 512 * 1024; n++) {
+        rows.push(JSON.stringify({ type: "assistant", uuid: id(n), parentUuid: id(n - 1), message: { content: [{ type: "text", text: "x".repeat(200_000) }] } }));
+        size += rows.at(-1)!.length + 1;
+      }
+      // the turn the restore goes back over, on the newest page
+      rows.push(JSON.stringify({ type: "user", uuid: id(800), parentUuid: id(n - 1), message: { role: "user", content: "banana" } }));
+      rows.push(JSON.stringify({ type: "assistant", uuid: id(801), parentUuid: id(800), message: { content: [{ type: "text", text: "banana answered" }], stop_reason: "end_turn" } }));
+      size += rows.at(-2)!.length + rows.at(-1)!.length + 2;
+      const png = Buffer.alloc(2 * 1024 * 1024);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      rows.push(JSON.stringify({ type: "user", uuid: id(900), parentUuid: null, message: { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] } }));
+      expect(size + rows.at(-1)!.length).toBeGreaterThan(TRANSCRIPT_WINDOW_BYTES);
+      rows.push(JSON.stringify({ type: "assistant", uuid: id(901), parentUuid: id(900), message: { content: [{ type: "text", text: "cherry answered" }], stop_reason: "end_turn" } }));
+      writeFileSync(path, `${rows.join("\n")}\n`);
+      forgetTranscriptState();
+      const turns = transcriptPage("claude-transcript", path).turns;
+      expect(prompts(turns)).toEqual([]);
+      expect(turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text : part.kind))).toEqual([["image"], ["cherry answered"]]);
     });
 
     it("keeps the turns before a message rewound to in the middle", () => {
@@ -1176,6 +1459,28 @@ describe("gjc sessions", () => {
     session(dir, "only.jsonl", "/home/u/project", "2026-09-20T00:00:00.000Z");
     writeFileSync(join(dir, ".gjc-managed-session-scope.v2.json"), JSON.stringify({ canonicalPath: "/home/u/project" }));
     await expect(gjcTranscriptPath("w9999:p9999", "/home/u/project", home)).rejects.toThrow(ConversationUnavailable);
+  });
+
+  it("carries each tool call's own id, so a rewind that calls the same tool again is no continuation", () => {
+    const home = mkdtempSync(join(tmpdir(), "herdr-gjc-ids-")); roots.push(home);
+    const path = join(home, "session.jsonl");
+    const line = (timestamp: string, message: Record<string, unknown>) => JSON.stringify({ type: "message", timestamp, message });
+    const read = (id: string, at: string, file: string, text: string[] = []) => line(at, { role: "assistant", stopReason: "toolUse", content: [
+      ...text.map((words) => ({ type: "text", text: words })), { type: "toolCall", id, name: "read", arguments: { path: file } },
+    ] });
+    const opening = [
+      line("2026-10-25T00:00:00.000Z", { role: "user", content: [{ type: "text", text: "Read the files." }] }),
+      read("c1", "2026-10-25T00:00:01.000Z", "src/alpha.ts", ["Reading."]),
+    ];
+    const page = (records: string[]) => { writeFileSync(path, `${records.join("\n")}\n`); forgetTranscriptState(); return transcriptPage("gjc-transcript", path); };
+    try {
+      const shown = page([...opening, read("c2", "2026-10-25T00:00:02.000Z", "src/beta.ts")]);
+      expect(shown.turns.at(-1)!.parts.flatMap((part) => part.kind === "tool" ? [part.call_id] : [])).toEqual(["c1", "c2"]);
+      // written again with the same calls (a trim): the chat goes on
+      expect(continuesHistory(shown, page([...opening, read("c2", "2026-10-25T00:00:02.000Z", "src/beta.ts")]))).toBe(true);
+      // a rewind that read the same file again under another call, later, in the turn that keeps its start
+      expect(continuesHistory(shown, page([...opening, read("c3", "2026-10-25T00:00:05.000Z", "src/beta.ts")]))).toBe(false);
+    } finally { forgetTranscriptState(); }
   });
 
   it("shows a failed request's error instead of an empty answer", () => {
@@ -1722,6 +2027,62 @@ describe("images and compactions in a Claude transcript", () => {
     expect(JSON.stringify(turns)).not.toContain("iVBOR");
   });
 
+  it("names a picture a tool returned by its entry, its result and its place there, and never carries its data", () => {
+    const png = "iVBORw0KGgoAAAANSUhEUg==";
+    const turns = parseClaudeTranscript(lines(
+      { type: "user", uuid: "00000000-2222-3333-4444-555555555555", message: { content: "open both shots" } },
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.txt" } }, { type: "tool_use", id: "toolu_b", name: "Read", input: { file_path: "b.png" } }], stop_reason: "tool_use" } },
+      { type: "user", uuid: "77777777-2222-3333-4444-555555555555", message: { content: [
+        { type: "tool_result", tool_use_id: "toolu_a", content: "plain text" },
+        { type: "tool_result", tool_use_id: "toolu_b", content: [
+          { type: "text", text: "read b.png" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+          // a type the chat never shows, and bytes that are no picture under a type it does
+          { type: "image", source: { type: "base64", media_type: "image/svg+xml", data: "PHN2Zz4=" } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "PHN2Zz4=" } },
+        ] },
+      ] } },
+    ));
+    const tools = turns.flatMap((turn) => turn.parts).filter((part) => part.kind === "tool");
+    expect(tools.map((tool) => [tool.output, tool.images])).toEqual([
+      ["plain text", undefined],
+      ["read b.png", [{ media_type: "image/png", ref: "77777777-2222-3333-4444-555555555555:1:1" }]],
+    ]);
+    expect(JSON.stringify(turns)).not.toContain(png);
+  });
+
+  it("opens a turn at a prompt that is only a picture, as at a text one", () => {
+    const picture = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+    const records = [
+      { type: "user", uuid: "11111111-2222-3333-4444-555555555555", message: { content: "first" } },
+      { type: "assistant", message: { content: [{ type: "text", text: "one" }], stop_reason: "end_turn" } },
+      { type: "user", uuid: "22222222-2222-3333-4444-555555555555", message: { content: [picture("iVBORw0KGgoAAAANSUhEUg==")] } },
+      { type: "assistant", message: { content: [{ type: "text", text: "two" }], stop_reason: "end_turn" } },
+      // what the parser draws no picture for opens nothing either
+      { type: "user", uuid: "33333333-2222-3333-4444-555555555555", message: { content: [picture("PHN2Zz4=")] } },
+    ].map((record) => JSON.stringify(record));
+    const bytes = Buffer.from(records.join("\n"));
+    expect(turnStarts(bytes, "claude-transcript")).toEqual([0, records[0]!.length + records[1]!.length + 2]);
+  });
+
+  it("keeps a tool's result on the page of its call when a picture shares the result's record", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
+      const text = lines(
+        { type: "user", uuid: "11111111-2222-3333-4444-555555555555", message: { content: "read it" } },
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_r", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: "22222222-2222-3333-4444-555555555555", message: { content: [{ type: "tool_result", tool_use_id: "toolu_r", content: [{ type: "text", text: "Read output" }, picture] }, picture] } },
+        { type: "assistant", message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
+      );
+      writeFileSync(path, `${text}\n`);
+      const page = transcriptPage("claude-transcript", path).turns;
+      expect(page).toEqual(parseClaudeTranscript(text));
+      expect(page.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")).toMatchObject({ output: "Read output", images: [{ media_type: "image/png", ref: "22222222-2222-3333-4444-555555555555:0:1" }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
   it("marks where a compaction folded the conversation, with its summary", () => {
     const turns = parseClaudeTranscript(lines(
       { type: "user", timestamp: "2026-09-27T00:00:00Z", message: { content: "before" } },
@@ -1737,7 +2098,7 @@ describe("transcriptImage", () => {
     try {
       const path = join(dir, "session.jsonl");
       const uuid = "11111111-2222-3333-4444-555555555555";
-      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       writeFileSync(path, [
         { type: "user", uuid: "99999999-2222-3333-4444-555555555555", message: { content: [{ type: "text", text: "x" }] } },
         { type: "user", uuid, message: { content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }, { type: "text", text: "what?" }, { type: "image", source: { type: "base64", media_type: "image/svg+xml", data: "PHN2Zz4=" } }] } },
@@ -1752,6 +2113,259 @@ describe("transcriptImage", () => {
       expect(transcriptImage(path, "../../etc/passwd:0")).toBeNull();
       expect(transcriptImage(join(dir, "missing.jsonl"), `${uuid}:0`)).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("decodes a tool's picture by its place in the result, and only a picture the page would name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const uuid = "77777777-2222-3333-4444-555555555555";
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+      const image = (media_type: string, data: string) => ({ type: "image", source: { type: "base64", media_type, data } });
+      // just past the endpoint's 8 MiB, behind a real PNG signature
+      const huge = png.toString("base64") + "A".repeat(Math.ceil(8 * 1024 * 1024 * 4 / 3));
+      const records = [
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_b", name: "Read", input: { file_path: "b.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid, message: { content: [
+          { type: "tool_result", tool_use_id: "toolu_a", content: "plain text" },
+          { type: "tool_result", tool_use_id: "toolu_b", content: [{ type: "text", text: "read b.png" }, image("image/png", png.toString("base64")), image("image/png", "PHN2Zz4="), image("image/png", huge)] },
+        ] } },
+      ];
+      writeFileSync(path, records.map((entry) => JSON.stringify(entry)).join("\n"));
+      const read = transcriptImage(path, `${uuid}:1:1`);
+      expect(read?.mediaType).toBe("image/png");
+      expect(Buffer.from(read!.bytes).equals(png)).toBe(true);
+      // the page names the same one picture the endpoint serves
+      const tool = parseClaudeTranscript(readFileSync(path, "utf8")).flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+      expect(tool?.kind === "tool" ? tool.images : null).toEqual([{ media_type: "image/png", ref: `${uuid}:1:1` }]);
+      // the result's text, no picture at that place, a result named as if it were the picture,
+      // bytes that are no picture, a picture past the endpoint's size, a ref that is no ref
+      for (const ref of [`${uuid}:1:0`, `${uuid}:0:0`, `${uuid}:1:9`, `${uuid}:1`, `${uuid}:1:2`, `${uuid}:1:3`, `${uuid}:1:1:0`, `${uuid}:1:x`]) expect(transcriptImage(path, ref)).toBeNull();
+      // a /clear puts the pictures before it out of reach, as it does their page
+      appendFileSync(path, `\n${JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })}\n`);
+      expect(transcriptImage(path, `${uuid}:1:1`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("serves only the pictures of the branch the page shows, from the entry it draws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const picture = (data: string) => ({ type: "image", source: { type: "base64", media_type: data.startsWith("R0lG") ? "image/gif" : "image/png", data } });
+      const png = "iVBORw0KGgoAAAANSUhEUg==";
+      const gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+      const read = (n: number, parent: number) => ({ type: "assistant", uuid: id(n), parentUuid: id(parent), message: { content: [{ type: "tool_use", id: `toolu_${n}`, name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } });
+      const result = (n: number, parent: number, call: number, data: string, extra = {}) => ({ type: "user", uuid: id(n), parentUuid: id(parent), ...extra, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${call}`, content: [{ type: "text", text: "Read output" }, picture(data)] }] } });
+      const answer = (n: number, parent: number) => ({ type: "assistant", uuid: id(n), parentUuid: id(parent), message: { content: [{ type: "text", text: `answer ${n}` }], stop_reason: "end_turn" } });
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), parentUuid: null, message: { role: "user", content: "look at the old shot" } },
+        read(2, 1), result(3, 2, 2, png), answer(4, 3),
+        // a rewind back to the start, and a prompt that is only a picture
+        { type: "user", uuid: id(5), parentUuid: null, message: { role: "user", content: [picture(png)] } },
+        read(6, 5),
+        // a record the parser hides, under the id of the result it draws
+        result(7, 6, 6, gif, { isMeta: true }), result(7, 6, 6, png), answer(8, 7),
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(5)}:0`, `${id(7)}:0:1`]);
+      expect(transcriptImage(path, `${id(5)}:0`)?.mediaType).toBe("image/png");
+      expect(transcriptImage(path, `${id(7)}:0:1`)?.mediaType).toBe("image/png");
+      // the Read the rewind left behind is no picture of this conversation's
+      expect(transcriptImage(path, `${id(3)}:0:1`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("serves a tool's picture only from a result the page draws, one that answers a call it shows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
+      const call = (n: number, toolId: string, extra = {}) => ({ type: "assistant", uuid: id(n), ...extra, message: { content: [{ type: "tool_use", id: toolId, name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } });
+      const result = (toolId: string, withPicture = true) => ({ type: "tool_result", tool_use_id: toolId, content: withPicture ? [{ type: "text", text: "Read output" }, picture] : "text only" });
+      const user = (n: number, content: unknown[]) => ({ type: "user", uuid: id(n), message: { role: "user", content } });
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } },
+        call(2, "toolu_a"), user(3, [result("toolu_a")]),
+        // no call made it: an orphan result
+        user(4, [result("toolu_none")]),
+        // a second answer to a call already answered
+        user(5, [result("toolu_a")]),
+        // answered by the entry's own first result, then again
+        call(6, "toolu_b"), user(7, [result("toolu_b", false), result("toolu_b")]),
+        // a call the parser hides
+        call(8, "toolu_c", { isMeta: true }), user(9, [result("toolu_c")]),
+        { type: "assistant", uuid: id(10), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(3)}:0:1`]);
+      expect(transcriptImage(path, `${id(3)}:0:1`)?.mediaType).toBe("image/png");
+      for (const ref of [`${id(4)}:0:1`, `${id(5)}:0:1`, `${id(7)}:1:1`, `${id(9)}:0:1`]) expect(transcriptImage(path, ref)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("judges a tool's picture by every record the page reads, whatever its size or its call's id", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const png = (size: number) => {
+        const bytes = Buffer.alloc(size);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+        return { type: "image", source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") } };
+      };
+      const call = (n: number, toolId: unknown) => ({ type: "assistant", uuid: id(n), message: { content: [{ type: "tool_use", id: toolId, name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } });
+      const user = (n: number, toolId: string, pictures: unknown[]) => ({ type: "user", uuid: id(n), message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: pictures }] } });
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } },
+        // one result holding two 5 MiB pictures: a record past the history scan's carry
+        call(2, "toolu_big"), user(3, "toolu_big", [png(5 * 1024 * 1024), png(5 * 1024 * 1024)]),
+        // a second answer to it, which the page does not draw
+        user(4, "toolu_big", [png(16)]),
+        // a call whose id is written as a number, answered by its text, and one whose id JSON escapes
+        call(5, 7), user(6, "7", [png(16)]),
+        call(7, 'toolu_"x'), user(8, 'toolu_"x', [png(16)]),
+        // a call's id and a prompt's uuid written with \u escapes: JSON reads them as the plain ones
+        call(11, "toolu_e"), user(12, "toolu_e", [png(16)]),
+        { type: "assistant", uuid: id(10), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
+        { type: "user", uuid: id(13), message: { role: "user", content: [png(16)] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n").replace('"id":"toolu_e"', '"id":"toolu_\\u0065"').replace(`"uuid":"${id(13)}"`, `"uuid":"\\u0030${id(13).slice(1)}"`) + "\n");
+      expect(readFileSync(path, "utf8")).toContain('"id":"toolu_\\u0065"');
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(3)}:0:0`, `${id(3)}:0:1`, `${id(6)}:0:0`, `${id(8)}:0:0`, `${id(12)}:0:0`, `${id(13)}:0`]);
+      for (const ref of refs) expect(transcriptImage(path, ref)?.mediaType).toBe("image/png");
+      expect(transcriptImage(path, `${id(4)}:0:0`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("reads a picture's record a window at a time, never the transcript whole", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    const alloc = spyOn(Buffer, "alloc");
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const png = Buffer.alloc(1_200_000);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      const filler = (n: number, size: number) => JSON.stringify({ type: "assistant", uuid: id(n), message: { content: [{ type: "text", text: "x".repeat(size) }], stop_reason: "end_turn" } });
+      const lines: string[] = [JSON.stringify({ type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } })];
+      for (let n = 0; n < 20; n += 1) lines.push(filler(100 + n, 1024 * 1024));
+      lines.push(JSON.stringify({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } }));
+      // the picture's id ends 3 bytes past a search window's edge, so the edge cuts it in two
+      const record = JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [{ type: "text", text: "Read output" }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] }] }, uuid: id(3) });
+      const before = lines.join("\n").length + 1;
+      const idEnd = (pad: number) => before + filler(99, pad).length + 1 + record.indexOf(id(3)) + id(3).length;
+      const edge = Math.ceil((idEnd(0) - 3) / (1024 * 1024)) * 1024 * 1024;
+      lines.push(filler(99, edge + 3 - idEnd(0)), record);
+      const transcript = lines.join("\n") + "\n";
+      writeFileSync(path, transcript);
+      expect((transcript.indexOf(id(3)) + id(3).length) % (1024 * 1024)).toBe(3);
+      expect(transcript.length).toBeGreaterThan(TRANSCRIPT_WINDOW_BYTES + 1024 * 1024);
+      alloc.mockClear();
+      const image = transcriptImage(path, `${id(3)}:0:1`);
+      expect(image?.mediaType).toBe("image/png");
+      expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
+      // no read took the transcript whole
+      expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThan(transcript.length - 1024 * 1024);
+    } finally { alloc.mockRestore(); rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("reads a record's cut strings as JSON does: their escapes, their marks, their spelling", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const pngBytes = (size: number) => {
+        const bytes = Buffer.alloc(size);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+        return bytes;
+      };
+      const png = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+      const small = pngBytes(16).toString("base64");
+      const pad = "x".repeat(2048);
+      const call = (n: number, toolId: unknown) => JSON.stringify({ type: "assistant", uuid: id(n), message: { content: [{ type: "tool_use", id: toolId, name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } });
+      const result = (n: number, toolId: string, data = small) => JSON.stringify({ type: "user", uuid: id(n), message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: [png(data)] }] } });
+      // a picture whose every base64 character is written as a \u escape: six times its text
+      const escaped = pngBytes(1_500_000);
+      const escapedText = [...escaped.toString("base64")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+      writeFileSync(path, [
+        JSON.stringify({ type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } }),
+        // an escape JSON does not have, past where a string is cut: the page reads no such record
+        JSON.stringify({ type: "user", uuid: id(2), message: { role: "user", content: [png(small), { type: "text", text: pad }] } }).replace(pad, `${pad}\\q`),
+        // an id that ends as a cut string's mark once did, after a string that is cut
+        call(3, "toolu_\u0000cut:0"), result(4, "toolu_\u0000cut:0"),
+        call(5, "toolu_esc"), result(6, "toolu_esc").replace(`"data":"${small}"`, `"data":"${escapedText}"`),
+        // a line that is JSON but no record, between a call and its result
+        call(7, "toolu_n"), "null", result(8, "toolu_n"),
+        // a call id written as a number in another spelling than the text it is keyed by
+        call(9, 1000).replace('"id":1000', '"id":1e3'), result(10, "1000"),
+        call(12, 1000).replace('"id":1000', '"id":1e400'), result(13, "Infinity"),
+        // a call id that starts with a BOM is another id than the same text without it
+        call(14, `\uFEFF${"a".repeat(1024)}`), result(15, "a".repeat(1024)),
+        JSON.stringify({ type: "assistant", uuid: id(11), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } }),
+      ].join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(4)}:0:0`, `${id(6)}:0:0`, `${id(8)}:0:0`, `${id(10)}:0:0`, `${id(13)}:0:0`]);
+      for (const ref of refs) expect(transcriptImage(path, ref)?.mediaType).toBe("image/png");
+      expect(transcriptImage(path, `${id(15)}:0:0`)).toBeNull();
+      expect(Buffer.from(transcriptImage(path, `${id(6)}:0:0`)!.bytes).equals(escaped)).toBe(true);
+      expect(transcriptImage(path, `${id(2)}:0`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("serves nothing a record it cannot hold could decide, rather than guess", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
+      // a result whose shape alone is past what the endpoint holds: thousands of strings under the cut
+      const shapeOnly = Array.from({ length: 4200 }, () => "x".repeat(1023));
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
+        { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture], pad: shapeOnly }] } },
+        // a second answer to the call, which the page does not draw
+        { type: "user", uuid: id(4), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture] }] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
+      expect(refs).toEqual([`${id(3)}:0:0`]);
+      expect(transcriptImage(path, `${id(4)}:0:0`)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("holds a window, a record's shape and the picture, never a record whole however large", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-image-"));
+    const alloc = spyOn(Buffer, "alloc");
+    try {
+      const path = join(dir, "session.jsonl");
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const png = Buffer.alloc(300_000);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      const pad = "x".repeat(20 * 1024 * 1024);
+      writeFileSync(path, [
+        { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
+        // a call and its result, each padded past the largest picture the chat shows
+        { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } },
+        { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [{ type: "text", text: pad }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] }] } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      // the first read scans the history once; the endpoint's own reads are what is left
+      expect(transcriptImage(path, `${id(3)}:0:1`)?.mediaType).toBe("image/png");
+      alloc.mockClear();
+      const image = transcriptImage(path, `${id(3)}:0:1`);
+      expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
+      expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
+    } finally { alloc.mockRestore(); rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
+  });
+
+  it("takes a picture up to the endpoint's size exactly, its padding left out", () => {
+    const png = (size: number) => {
+      const bytes = Buffer.alloc(size);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+      return { type: "image", source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") } };
+    };
+    expect(claudeImageType(png(8 * 1024 * 1024))).toBe("image/png");
+    expect(claudeImageType(png(8 * 1024 * 1024 + 1))).toBeNull();
   });
 });
 
@@ -2104,9 +2718,11 @@ describe("a Codex pane that reported no session yet", () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-fresh-"));
     const pane = { pane_id: "codex-fresh", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "idle" } as HerdrPane;
     let screen = FRESH;
+    let scrolledUp = 0;
     const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot);
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
-      ? { agent: { agent: "codex" } } : { process_info: { foreground_processes: [{ argv: ["codex"] }] } }) as never);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [{ argv: ["codex"] }] } }) as never);
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as never);
     try {
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({
@@ -2115,6 +2731,12 @@ describe("a Codex pane that reported no session yet", () => {
       // switched with /model: the status line says the new one
       screen = FRESH.replace("GPT-6.1-Sol low", "GPT-6-Sol high");
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({ screen: { model: "gpt-6-sol", reasoning_effort: "high" } });
+      // scrolled up by a device, the viewport is history, perhaps an older frame: no model is named
+      scrolledUp = 3;
+      const scrolled = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
+      expect(scrolled).toBeInstanceOf(ConversationUnavailable);
+      expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
+      scrolledUp = 0;
       // a picker hiding the footer leaves the model unknown, whatever its options say
       screen = "  >_ OpenAI Codex (v0.163.0)\n  Select Model and Effort\n› 1. GPT-6.1-Sol (default) (current)\n  GPT-6-Sol high · /tmp/project";
       const picker = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
@@ -2130,4 +2752,320 @@ describe("a Codex pane that reported no session yet", () => {
       expect((page as ConversationUnavailable).screen).toBeUndefined();
     } finally { snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
   });
+
+  // the process's start time is read from the OS: this test's own process stands in for Codex's
+  it.skipIf(process.platform === "win32")("greets a Codex started in the terminal on no conversation, and only that one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-greet-"));
+    const home = join(root, ".codex");
+    mkdirSync(home);
+    const pane = { pane_id: "codex-greet", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
+    let screen = FRESH;
+    let argv = ["codex"];
+    // what a detection read of a short screen also reaches up to (never what decides), and the rows a device scrolled up by
+    let above = "";
+    let scrolledUp = 0;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [{ pid: process.pid, argv }] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? `${above}${screen}` : screen }) as never);
+    const ask = () => paneConversation(pane.pane_id, home).catch((error: unknown) => error);
+    try {
+      // no store yet, as for a CODEX_HOME Codex has not written to
+      const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
+      expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null, screen: true, metadata: { model: "gpt-6.1-sol", reasoning_effort: "low" } });
+      expect(greeting.history_id).toStartWith("unwritten:codex:");
+      // a fresh Codex on a short screen: herdr's detection read reaches up into the history above it,
+      // where an earlier program said something (herdr 0.9.5, after a clear); only the live screen counts
+      above = "\u2022 old output from a previous program\n";
+      expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+      above = "";
+      // scrolled up by a device, the viewport is history: nothing proves the start screen, the terminal
+      // stands in, naming no model until the viewport is back at the bottom
+      scrolledUp = 3;
+      const scrolled = await ask();
+      expect(scrolled).toBeInstanceOf(ConversationUnavailable);
+      expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
+      scrolledUp = 0;
+      // a store whose threads of this folder all ended before this Codex started
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT)");
+      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('old', '/nowhere.jsonl', ?, 'cli', 1, 2)").run(root);
+      expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+      // a resume or a fork on the command line opens a conversation that exists
+      argv = ["codex", "resume"];
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      argv = ["codex", "fork", "--last"];
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      argv = ["codex"];
+      // something said on screen, or a first turn at work
+      screen = FRESH.replace("\u203a Ask Codex", "\u203a hello\n\n\u2022 Hi there\n\n\u203a Ask Codex");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      screen = FRESH;
+      pane.agent_status = "working";
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      pane.agent_status = "done";
+      // a thread of this folder written since this Codex started: perhaps its own, unread
+      const now = Math.floor(Date.now() / 1000);
+      db.query("UPDATE threads SET updated_at = ? WHERE id = 'old'").run(now);
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      db.query("UPDATE threads SET updated_at = 2").run();
+      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('new', '/nowhere-2.jsonl', ?, 'cli', ?, ?)").run(root, now, now);
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // one in another folder, a subagent's or a `codex exec` run's says nothing about this one
+      db.query("UPDATE threads SET cwd = '/elsewhere' WHERE id = 'new'").run();
+      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, agent_role) VALUES ('sub', '/sub.jsonl', ?, 'cli', ?, ?, 'worker')").run(root, now, now);
+      db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('exec', '/exec.jsonl', ?, 'exec', ?, ?)").run(root, now, now);
+      expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+      // a thread with no message yet holds no conversation, whoever made it; one with a message does
+      db.exec("ALTER TABLE threads ADD COLUMN first_user_message TEXT");
+      db.query("UPDATE threads SET cwd = ?, first_user_message = '' WHERE id = 'new'").run(root);
+      expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+      db.query("UPDATE threads SET first_user_message = 'hi' WHERE id = 'new'").run();
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // the pane's folder named through a link: Codex stored the folder it resolves to
+      const alias = join(tmpdir(), `herdr-codex-greet-alias-${process.pid}`);
+      symlinkSync(root, alias);
+      try {
+        pane.cwd = alias;
+        pane.foreground_cwd = alias;
+        expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      } finally { pane.cwd = root; pane.foreground_cwd = root; rmSync(alias, { force: true }); }
+      // Codex runs in another folder than the pane's shell: that folder's conversations count too
+      const elsewhere = mkdtempSync(join(tmpdir(), "herdr-codex-greet-fg-"));
+      try {
+        db.query("UPDATE threads SET cwd = ? WHERE id = 'new'").run(elsewhere);
+        expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+        pane.foreground_cwd = elsewhere;
+        expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      } finally { pane.foreground_cwd = root; rmSync(elsewhere, { recursive: true, force: true }); }
+      db.close();
+      // a store that cannot be read tells nothing, nor one that cannot even be looked at
+      writeFileSync(join(home, "state_5.sqlite"), "not a database");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      rmSync(join(home, "state_5.sqlite"));
+      symlinkSync(join(home, "state_5.sqlite"), join(home, "state_5.sqlite"));
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+    } finally { snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // each Codex is a child started with the CODEX_HOME under test, whose environment the server reads from
+  // the OS: a Bun process, since macOS's ps shows no environment for a system binary such as sleep
+  it.skipIf(process.platform === "win32")("greets a terminal Codex only in the store its own environment places for certain", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-home-"));
+    const own = join(root, "own");
+    const fallback = join(root, "fallback");
+    mkdirSync(own);
+    mkdirSync(fallback);
+    const pane = { pane_id: "codex-home", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
+    const children: Bun.Subprocess[] = [];
+    let codexes: { pid: number; argv: string[] }[] = [];
+    // each one says it runs before it is asked about: until its exec, the OS shows the environment it was forked with
+    // a string is the CODEX_HOME it starts with; an object sets (or, as undefined, drops) its variables
+    const started = async (...homes: (string | Record<string, string | undefined>)[]) => {
+      codexes = await Promise.all(homes.map(async (home) => {
+        const set = typeof home === "string" ? { CODEX_HOME: home } : home;
+        const env = Object.fromEntries(Object.entries({ ...process.env, ...set }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+        const child = Bun.spawn([process.execPath, "-e", "console.log('ready'); setTimeout(() => {}, 60_000)"], { cwd: root, env, stdout: "pipe" });
+        children.push(child);
+        const reader = child.stdout.getReader();
+        let said = "";
+        while (!said.includes("ready")) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error("the stand-in Codex exited before it ran");
+          said += new TextDecoder().decode(value);
+        }
+        reader.releaseLock();
+        return { pid: child.pid, argv: ["codex"] };
+      }));
+    };
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: codexes } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: FRESH }) as never);
+    // the server's own default store holds nothing: a home it cannot place must not fall back to it
+    const serverHome = process.env["CODEX_HOME"];
+    process.env["CODEX_HOME"] = fallback;
+    const ask = () => paneConversation(pane.pane_id).catch((error: unknown) => error);
+    try {
+      // a home its environment names, with no store yet: the greeting
+      await started(own);
+      const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
+      expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null });
+      expect(greeting.history_id).toStartWith("unwritten:codex:");
+      // a relative CODEX_HOME: Codex places it under its folder, where a conversation has begun
+      const relative = join(root, "rel");
+      mkdirSync(relative);
+      const begun = (store: string) => {
+        const db = new Database(join(store, "state_5.sqlite"));
+        const now = Math.floor(Date.now() / 1000);
+        db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT, first_user_message TEXT)");
+        db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, first_user_message) VALUES ('begun', '/nowhere.jsonl', ?, 'cli', ?, ?, 'hi')").run(root, now, now);
+        db.close();
+      };
+      begun(relative);
+      await started("rel");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // a CODEX_HOME that is no directory, or a second Codex whose home cannot be placed
+      await started(join(root, "missing"));
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      await started(own, "rel");
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // no CODEX_HOME: the store is .codex in the HOME the Codex runs with, never the server's own
+      const user = join(root, "user");
+      mkdirSync(join(user, ".codex"), { recursive: true });
+      await started({ CODEX_HOME: undefined, HOME: user });
+      expect(await ask()).toMatchObject({ history_id: expect.stringMatching(/^unwritten:codex:/) });
+      begun(join(user, ".codex"));
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      // with no HOME, or a relative one, there is no telling where it is
+      await started({ CODEX_HOME: undefined, HOME: undefined });
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+      await started({ CODEX_HOME: undefined, HOME: "user" });
+      expect(await ask()).toBeInstanceOf(ConversationUnavailable);
+    } finally {
+      if (serverHome === undefined) delete process.env["CODEX_HOME"]; else process.env["CODEX_HOME"] = serverHome;
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+      snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// herdr's detection read of a short screen reaches up into the history above it (herdr 0.9.5): what an
+// agent drew there before is not what its screen shows now, so it never names the model (#2163 review)
+describe("a model drawn only in the history above the live screen", () => {
+  const homes = { HOME: process.env["HOME"], CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] };
+  let root: string;
+  const mocks: { mockRestore(): void }[] = [];
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "herdr-screen-history-"));
+    mkdirSync(join(root, ".codex"));
+    process.env["HOME"] = root;
+    process.env["CLAUDE_CONFIG_DIR"] = join(root, ".claude");
+  });
+  afterEach(() => {
+    for (const mock of mocks.splice(0)) mock.mockRestore();
+    for (const agent of ["claude", "codex", "gjc"]) launchedAgents.forget(`screen-history-${agent}`);
+    forgetTranscriptState();
+    for (const [name, value] of Object.entries(homes)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    rmSync(root, { recursive: true, force: true });
+  });
+  /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
+   * each scroll position herdr reports in turn (offset from the bottom, rows of history; null for none,
+   * as herdr's scroll is optional; "fail" for a lookup that fails), the last one from then on. */
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null | "fail")[] = [[0, 30]]): string => {
+    const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
+    mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
+    mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
+      if (method === "agent.get") return { agent: { agent } } as never;
+      if (method === "pane.get") {
+        const scroll = scrolls.length > 1 ? scrolls.shift()! : scrolls[0]!;
+        if (scroll === "fail") throw new herdr.HerdrError("connect_failed", "fixture: pane.get failed");
+        return { pane: { ...pane, ...(scroll === null ? {} : { scroll: { offset_from_bottom: scroll[0], max_offset_from_bottom: scroll[1], viewport_rows: 40 } }) } } as never;
+      }
+      if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
+      throw new Error(`unexpected RPC: ${method}`);
+    }));
+    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? history + live : live }) as never));
+    return pane.pane_id;
+  };
+
+  it("names no model from an older Claude banner while the live screen asks to trust a folder", async () => {
+    const id = shown("claude", "blocked", " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n",
+      "Accessing workspace\nIs this a project you created or one you trust?\n\u276f 1. Yes, I trust this folder\n");
+    launchedAgents.launched(id, "claude");
+    expect((await paneConversation(id, join(root, ".codex"))).metadata?.model).toBeNull();
+  });
+
+  it("names no model from an older Codex footer above a cleared live screen", async () => {
+    const id = shown("codex", "working", "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6-Luna medium \u00b7 /tmp/project\n  ? for shortcuts\n", "\n\n\n\n\n\n\n");
+    const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
+    expect(answer).toBeInstanceOf(ConversationUnavailable);
+    expect((answer as ConversationUnavailable).screen).toBeUndefined();
+  });
+
+  it("names the model only when the viewport stayed at the bottom, with the same history, around its read", async () => {
+    const frame = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
+    const named = async (scrolls: ([number, number] | null | "fail")[]) => {
+      const id = shown("codex", "working", "", frame, scrolls);
+      const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
+      for (const mock of mocks.splice(0)) mock.mockRestore();
+      return (answer as ConversationUnavailable).screen?.model ?? null;
+    };
+    expect(await named([[0, 30], [0, 30]])).toBe("gpt-6.1-sol");
+    // scrolled up when the read began, scrolled up by its end, or a row pushed into the history meanwhile
+    expect(await named([[3, 30], [0, 30]])).toBeNull();
+    expect(await named([[0, 30], [3, 30]])).toBeNull();
+    expect(await named([[0, 30], [0, 31]])).toBeNull();
+    // a scroll known for one read and not the other proves nothing
+    expect(await named([null, [0, 30]])).toBeNull();
+    expect(await named([[0, 30], null])).toBeNull();
+    // nor does a lookup that failed
+    expect(await named(["fail", "fail"])).toBeNull();
+    expect(await named([[0, 30], "fail"])).toBeNull();
+  });
+
+  // herdr's pane.get may report no scroll, and then gives no geometry: a viewport scrolled up into the blank
+  // rows under a short screen reads the same as the live one, so nothing proves the screen and none is read
+  it("names no model a start screen states when herdr reports no scroll", async () => {
+    const codex = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
+    const screens = [
+      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n", model: "claude-haiku-5-5", effort: null },
+      { agent: "codex", frame: codex, model: "gpt-6.1-sol", effort: "low" },
+      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n", model: "claude-opus-5-5", effort: "xhigh" },
+    ];
+    for (const { agent, frame, model, effort } of screens) {
+      // an agent this server started, before its first message: the same frame names its model with a scroll
+      const cases: [[number, number] | null, { model: string | null; reasoning_effort: string | null }][] = [
+        [[0, 30], { model, reasoning_effort: effort }], [null, { model: null, reasoning_effort: null }]];
+      for (const [scroll, metadata] of cases) {
+        const id = shown(agent, "idle", "", frame, [scroll]);
+        launchedAgents.launched(id, agent);
+        const answer = await paneConversation(id, join(root, ".codex"));
+        expect(answer).toMatchObject({ turns: [], screen: true, metadata });
+        launchedAgents.forget(id);
+        for (const mock of mocks.splice(0)) mock.mockRestore();
+      }
+    }
+    // a Codex started in the terminal: the terminal stands in, naming no model
+    const terminal = shown("codex", "working", "", codex, [null]);
+    const answer = await paneConversation(terminal, join(root, ".codex")).catch((error: unknown) => error);
+    expect(answer).toBeInstanceOf(ConversationUnavailable);
+    expect((answer as ConversationUnavailable).screen).toBeUndefined();
+  });
+});
+
+// any client snapshot starts the Claude subagent refresh that reads this, also the one a pending message is checked against (#1545)
+it("reads a Claude pane's process start from the kernel on macOS, with no ps for it", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const home = mkdtempSync(join(tmpdir(), "claude-darwin-start-"));
+  const previousHome = process.env["HOME"];
+  const session = "0b9d6a52-7a5e-4f8e-9a51-2f3c4d5e6f70";
+  const cwd = join(home, "project");
+  mkdirSync(join(home, ".claude", "projects", claudeProjectDir(cwd)), { recursive: true });
+  writeFileSync(join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`), "");
+  const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+    ? { agent: { agent_session: { value: session } } }
+    : { process_info: { foreground_processes: [{ pid: 4242, name: "claude", argv: ["claude"] }] } }) as unknown as typeof herdr.herdrRpc);
+  const blocking = spyOn(Bun, "spawnSync");
+  // the kernel's process record answers the start; no ps asks it, awaited or not (#1404). Claude's own
+  // store may still ask an awaited ps for the process's environment on a real Mac.
+  const kernel = spyOn(darwinProcess, "darwinStartTime").mockReturnValue(1_000_000n);
+  const awaited = spyOn(Bun, "spawn");
+  process.env["HOME"] = home;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  try {
+    const found = await claudePaneSession({ pane_id: "claude-darwin", cwd } as HerdrPane);
+    expect(found?.pid).toBe(4242);
+    expect(found?.startedAt).toBe(1_000);
+    expect((awaited.mock.calls as unknown as [string[]][]).filter(([argv]) => argv.includes("etime="))).toEqual([]);
+    expect(blocking).not.toHaveBeenCalled();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+    awaited.mockRestore(); blocking.mockRestore(); kernel.mockRestore(); rpc.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

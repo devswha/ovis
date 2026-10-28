@@ -2,6 +2,7 @@ import type { CommandForm, HerdrPane, SlashCommand } from "../shared/protocol.ts
 import { AGENT_SOURCES } from "./skills/index.ts";
 import type { AgentCommandSource, ProcessRoots } from "./skills/index.ts";
 import { ancestorsToRepoRoot } from "./skills/walk.ts";
+import { userHome } from "./user-home.ts";
 
 const DESCRIPTIONS: Record<string, string> = {
   clear: "Clear the conversation", compact: "Compact conversation context", config: "Open configuration",
@@ -30,8 +31,8 @@ export function builtinCommands(agent: string | null | undefined, version?: stri
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return [];
   const source = AGENT_SOURCES[agent];
   if (!source) return [];
-  const pinned = majorMinor(source.pin);
-  const verified = pinned !== null && pinned === majorMinor(version);
+  const running = majorMinor(version);
+  const verified = running !== null && [source.pin ?? []].flat().some((pin) => majorMinor(pin) === running);
   const builtinNames = [...new Set([...source.builtins, ...(source.terminalBound ?? []), ...(source.agentHidden ?? [])])];
   return builtinNames.map((name) => ({
     name, description: source.descriptions?.[name] ?? DESCRIPTIONS[name] ?? `Run /${name}`, source: "builtin",
@@ -54,12 +55,12 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
   return cached?.identity === catalogIdentity(pane) ? cached : undefined;
 }
 
-export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = globalThis.process.env.HOME ?? "", process: ProcessRoots = {}, version?: string | null): SlashCommand[] {
+export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = userHome(), process: ProcessRoots = {}, version?: string | null): SlashCommand[] {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return [];
   const source = AGENT_SOURCES[agent];
   if (!source) return [];
   const builtins = new Map(builtinCommands(agent, version).map((command) => [command.name, command]));
-  const ancestors = cwd ? ancestorsToRepoRoot(cwd) : [];
+  const ancestors = cwd ? ancestorsToRepoRoot(cwd, home) : [];
   const discovered = source.discover({ home, cwd, repoRoot: ancestors.at(-1) ?? null, env: process.environ ?? null, roots: process, version });
   const commands: SlashCommand[] = [];
   // one row per file: the same (trigger, name, id) reached twice, e.g. through a link; a row without an id is its own

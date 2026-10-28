@@ -1,6 +1,6 @@
 import type { QueuedQuestion } from "./codex.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { ANSI_RE, cleanLine, findLastIndex, finishPrompt, normalizeText, publicPrompt, type ParsedPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, cleanLine, findLastIndex, finishPrompt, normalizeText, own, publicPrompt, type ParsedPrompt } from "./dialogs/shared.ts";
 import { CODEX_ASYNC_ASK_HINT_RE, CODEX_QUEUE_HEADER_RE } from "./dialogs/codex.ts";
 import { sameText } from "./dialogs/omo.ts";
 
@@ -22,8 +22,9 @@ export function queuedQuestionCount(screen: string): number {
   if (header < 0 || lines.length - header > 16) return 0;
   if (lines.slice(header).some((line) => /^↳\s/.test(line) || /Messages to be submitted/i.test(line) || CODEX_ASYNC_ASK_HINT_RE.test(line))) return 0;
   const at = lines.findIndex((line, index) => index > header && index <= header + 7 && CODEX_QUEUE_COUNT_RE.test(line));
-  // (the main prompt, not a numbered menu row the parser did not recognise)
-  if (at < 0 || !/\bto answer$/i.test(lines[at + 1] ?? "") || !/^›\s(?!\d+\.)/.test(lines[at + 2] ?? "")) return 0;
+  // (the main prompt, not a numbered menu row the parser did not recognise; Codex 0.164 draws
+  // the main prompt as » at Ultra reasoning effort, numbered menu rows keep ›)
+  if (at < 0 || !/\bto answer$/i.test(lines[at + 1] ?? "") || !/^[›»]\s(?!\d+\.)/.test(lines[at + 2] ?? "")) return 0;
   return Number(lines[at]!.match(CODEX_QUEUE_COUNT_RE)![1]);
 }
 
@@ -43,7 +44,7 @@ function queuedPrompt(count: number, unanswered: QueuedQuestion[], front: QueueF
     ?? waiting[0];
   if (!first || waiting.length !== count || !first.title.trim()) return null;
   return finishPrompt("codex", {
-    kind: "question", title: count > 1 ? `Question 1 of ${count}` : "Question", question: normalizeText(first.title), body: null,
+    kind: "question", title: count > 1 ? own("Question {n} of {total}", { n: 1, total: count }) : own("Question"), question: normalizeText(first.title), body: null,
     options: first.options.map((label) => ({ label, description: null })),
     multi_select: false, custom_option_index: first.options.length, queued: "collapsed",
   }, {

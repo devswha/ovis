@@ -2,9 +2,10 @@ import { paneStorageId } from "../../shared/machines.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
 
 const COMMAND_CACHE_MS = 60_000;
-const cache = new Map<string, { loadedAt: number; commands: SlashCommand[] }>();
+const cache = new Map<string, { loadedAt: number; commands: SlashCommand[]; read: number }>();
 /** per pane, how many times its lists were invalidated: a read begun before one is answered but not kept */
 const generations = new Map<string, number>();
+let reads = 0;
 const listeners = new Set<(paneId: string, machineId: string) => void>();
 
 /**
@@ -18,10 +19,23 @@ export async function cachedPaneCommands(paneId: string, machineId: string, agen
   const cached = cache.get(key);
   if (cached && Date.now() - cached.loadedAt < COMMAND_CACHE_MS) return cached.commands;
   const generation = generations.get(pane) ?? 0;
+  const read = ++reads;
   const commands = await fetchCommands(paneId);
-  // invalidated while on its way: the read begun after the invalidation is the one kept
-  if ((generations.get(pane) ?? 0) === generation) cache.set(key, { loadedAt: Date.now(), commands });
+  // invalidated while on its way, or answering after a later read's answer was kept (a retry beside a refresh):
+  // never kept. An answer that comes first is kept even while a later read is still on its way, so the other
+  // components of the pane read it at once (paneCommandsNow); that later read replaces it when it answers
+  const kept = cache.get(key);
+  if ((generations.get(pane) ?? 0) === generation && (kept === undefined || kept.read < read)) cache.set(key, { loadedAt: Date.now(), commands, read });
   return commands;
+}
+
+/**
+ * The list a read in the last minute answered for this PC, pane and agent, at once; null: none has. A
+ * component whose own read is still on its way reads the answer another one already has.
+ */
+export function paneCommandsNow(paneId: string, machineId: string, agent: string | null | undefined): SlashCommand[] | null {
+  const cached = cache.get(`${paneStorageId(machineId, paneId)}:${agent ?? ""}`);
+  return cached && Date.now() - cached.loadedAt < COMMAND_CACHE_MS ? cached.commands : null;
 }
 
 /**

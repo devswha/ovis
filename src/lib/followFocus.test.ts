@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { paneStorageId } from "../../shared/machines.ts";
-import { deviceBusy, deviceInUse, followsHerdrFocus, unsentDraft, type PaneDrafts } from "./followFocus.ts";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import { paneStorageId, type Machine } from "../../shared/machines.ts";
+import { deviceBusy, deviceInUse, followsHerdrFocus, movingHerdrFocus, movingHerdrFocusOn, OWN_MOVE_HOLD_MS, unsentDraft, type PaneDrafts } from "./followFocus.ts";
+import { paneLifetimes } from "./paneLifetime.ts";
 import { writeTerminalDraft } from "./terminalDraft.ts";
 
 const base = {
@@ -11,6 +12,7 @@ const base = {
   splitOther: null,
   linkPending: false,
   busy: false,
+  ownMove: false,
 };
 
 describe("following herdr's focus", () => {
@@ -39,6 +41,61 @@ describe("following herdr's focus", () => {
 
   it("keeps the pane of someone using this device (#1470)", () => {
     expect(followsHerdrFocus({ ...base, busy: true })).toBe(false);
+  });
+
+  it("leaves a move this device asked for to its own answer (#1470)", () => {
+    expect(followsHerdrFocus({ ...base, ownMove: true })).toBe(false);
+  });
+});
+
+describe("a focus move this device asked for", () => {
+  const deferred = () => {
+    let resolve!: (pane: string) => void, reject!: (cause: Error) => void;
+    const promise = new Promise<string>((ok, fail) => { resolve = ok; reject = fail; });
+    return { promise, resolve, reject };
+  };
+
+  it("holds the PC's frames until its answer, which the caller sees after the hold ends", async () => {
+    const split = deferred();
+    const answered = movingHerdrFocus("local", split.promise).then((pane) => ({ pane, held: movingHerdrFocusOn("local") }));
+    expect(movingHerdrFocusOn("local")).toBe(true);
+    expect(movingHerdrFocusOn("office")).toBe(false);
+    split.resolve("w1:p2");
+    expect(await answered).toEqual({ pane: "w1:p2", held: false });
+  });
+
+  it("ends the hold when herdr refuses, and only once every move on that PC is answered", async () => {
+    const first = deferred(), second = deferred();
+    const refused = movingHerdrFocus("local", first.promise).catch(() => movingHerdrFocusOn("local"));
+    const made = movingHerdrFocus("local", second.promise);
+    first.reject(new Error("pane split failed"));
+    expect(await refused).toBe(true);
+    second.resolve("w1:p3");
+    await made;
+    expect(movingHerdrFocusOn("local")).toBe(false);
+  });
+
+  it("ends the hold of a request the PC never answers once its bound runs out, and only that one", async () => {
+    jest.useFakeTimers();
+    try {
+      const stalled = deferred();
+      const stalledHold = movingHerdrFocus("local", stalled.promise);
+      jest.advanceTimersByTime(OWN_MOVE_HOLD_MS - 1);
+      expect(movingHerdrFocusOn("local")).toBe(true);
+      jest.advanceTimersByTime(1);
+      expect(movingHerdrFocusOn("local")).toBe(false);
+      // a late answer to the stalled request does not end the hold of a request made since
+      const later = deferred();
+      const answered = movingHerdrFocus("local", later.promise);
+      stalled.resolve("w1:p5");
+      await stalledHold;
+      expect(movingHerdrFocusOn("local")).toBe(true);
+      later.resolve("w1:p4");
+      await answered;
+      expect(movingHerdrFocusOn("local")).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -86,6 +143,9 @@ describe("an unsent message on the pane this device has open", () => {
     const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
     Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } });
+    // the drafts stored are the ones of the herdr this page has the PC under (lib/paneLifetime.ts)
+    data.set("ovis:pane-lifetime:local", "test-herdr");
+    paneLifetimes.observe([{ id: "local", snapshot: { panes: [], herdr_lifetime: "test-herdr" } } as unknown as Machine], (item) => item.pane_id);
   });
   afterEach(() => {
     for (const [key, descriptor] of descriptors) {

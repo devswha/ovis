@@ -1,9 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, Layers, ListChecks, Workflow, type LucideProps } from "lucide-react";
 
 import "./BackgroundTasks.css";
 
-import { useMachineApi } from "../lib/machineContext.tsx";
+import { BackgroundAgentDetail } from "./BackgroundAgentDetail.tsx";
+import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { clockOffsetMs, endedSummary, formatElapsed, runGoing, spanMs, taskElapsedMs } from "../lib/omoTasks.ts";
 import { formatTokens } from "../lib/compose.ts";
 import { planWaves } from "../lib/plan.ts";
@@ -32,19 +33,30 @@ const NODE_ICONS: Record<OmoRunNode["state"], ComponentType<LucideProps>> = {
  * ended is one line that says how many ended and how many went wrong, and opens on request.
  * The server keeps the newest ten ended tasks and five ended workflows of the last day, so the
  * line counts those, and says "recently", not "in the last day".
- * A Claude pane's tasks are its subagents. Most Claude panes have none, so it asks when
- * the pane is shown (and when its count changes), and appears only when there are or were some.
+ * A Claude Code or OpenCode pane's tasks are its subagents (`subagents`). Most such panes have
+ * none, so it asks when the pane is shown (and when its count changes), and appears only when
+ * there are or were some.
  */
-export function BackgroundTasks({ paneId, count, omo, claude = false, plan = null }: { paneId: string; count: number; omo: boolean; claude?: boolean; plan?: PlanSummary | null }) {
+export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = null }: { paneId: string; count: number; omo: boolean; subagents?: boolean; plan?: PlanSummary | null }) {
   const t = useT();
   const { fetchPaneOmoActivity, fetchPanePlan } = useMachineApi();
+  const machineId = useMachineId();
   const [open, setOpen] = useState(false);
+  // the running task whose detail is open over the list (BackgroundAgentDetail): its sheet takes
+  // the list's Back, Escape and outside-press while it is up, and the list stays under it
+  const [detail, setDetail] = useState<OmoTask | null>(null);
+  const detailUp = useRef(false);
+  detailUp.current = detail !== null;
+  const closeDetail = useCallback(() => setDetail(null), []);
   // a phone's Back closes the list, as it closes the other dialogs there (the plan used to be a sheet)
-  usePhoneSheetBack(() => setOpen(false), open);
+  usePhoneSheetBack(() => setOpen(false), open && detail === null);
+  // the list closed, or the pane or PC changed under it: a detail left open would be another task's
+  useEffect(() => { if (!open) setDetail(null); }, [open]);
+  useEffect(() => { setDetail(null); }, [paneId, machineId]);
   const [seen, setSeen] = useState(count > 0);
   useEffect(() => { if (count > 0) setSeen(true); }, [count]);
   useEffect(() => {
-    if (!claude || count > 0) return;
+    if (!subagents || count > 0) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // The server answers within a second with what it knows, so a pane whose session it is still
@@ -57,9 +69,11 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
     ask(3);
     return () => { alive = false; clearTimeout(timer); };
     // asked when the pane is shown and again when its count changes
-  }, [claude, paneId, count]);
+  }, [subagents, paneId, count]);
   const [tasks, setTasks] = useState<OmoTask[] | null>(null);
   const [runs, setRuns] = useState<OmoRun[]>([]);
+  // running ones that count but are not listed (an OpenCode pane lists the newest thousand)
+  const [moreRunning, setMoreRunning] = useState(0);
   const [failed, setFailed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** the PC's clock minus this browser's: task times are on the PC's */
@@ -84,7 +98,7 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
         const next = await fetchPaneOmoActivity(paneId);
         if (!alive) return;
         const received = Date.now();
-        setTasks(next.tasks); setRuns(next.runs); setFailed(false); setOffset(clockOffsetMs(next.serverTime, received)); setNow(received);
+        setTasks(next.tasks); setRuns(next.runs); setMoreRunning(next.moreRunning); setFailed(false); setOffset(clockOffsetMs(next.serverTime, received)); setNow(received);
       } catch {
         // the clock stops with the list: a running task's time is no longer known to run on
         if (alive) setFailed(true);
@@ -122,9 +136,10 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
 
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // a press or a key while a task's detail is up is the detail's (it is drawn outside the list)
+    const outside = (event: PointerEvent): void => { if (!detailUp.current && !root.current?.contains(event.target as Node)) setOpen(false); };
     const escape = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || detailUp.current) return;
       // the list unmounts with whatever inside it held the focus: hand it back to the toggle
       if (root.current?.contains(document.activeElement)) toggle.current?.focus();
       setOpen(false);
@@ -133,7 +148,7 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
     // somewhere else (Shift+Tab back to the message box), it closes, or it would cover them.
     // No relatedTarget is a press on a row of the list, or a browser that does not focus a pressed
     // button: that is not leaving, and a press outside is `outside`'s
-    const left = (event: FocusEvent): void => { if (event.relatedTarget instanceof Node && !node?.contains(event.relatedTarget)) setOpen(false); };
+    const left = (event: FocusEvent): void => { if (!detailUp.current && event.relatedTarget instanceof Node && !node?.contains(event.relatedTarget)) setOpen(false); };
     const node = root.current;
     window.addEventListener("pointerdown", outside);
     window.addEventListener("keydown", escape);
@@ -177,12 +192,23 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
       task.tool_calls === null ? null : t(task.tool_calls === 1 ? "{n} tool call" : "{n} tool calls", { n: task.tool_calls }),
       task.tokens === null ? null : t("{n} tokens", { n: formatTokens(task.tokens) }),
     ].filter((item) => item !== null).join(" · ");
+    const main = <span className="bg-task-main">
+      <span className="bg-task-title">{task.title}<span className="sr-only"> ({words[task.status]})</span></span>
+      {(meta.length > 0 || (task.status !== "running" && task.status !== "completed")) && <span className="bg-task-meta">{[task.status !== "running" && task.status !== "completed" ? words[task.status] : null, meta || null].filter((item) => item !== null).join(" · ")}</span>}
+    </span>;
+    // a running task opens its detail: what a Claude subagent is doing, or why this PC cannot say
+    if (task.status === "running") {
+      return <li key={task.id} className={`bg-task is-${task.status} is-openable`}>
+        <button type="button" className="bg-task-open" aria-haspopup="dialog" aria-expanded={detail?.id === task.id} onClick={(event) => { event.currentTarget.focus(); setDetail(task); }}>
+          <Icon className="bg-task-icon" aria-hidden="true" />
+          {main}
+          <ChevronRight className="bg-task-caret" aria-hidden="true" />
+        </button>
+      </li>;
+    }
     return <li key={task.id} className={`bg-task is-${task.status}`}>
       <Icon className="bg-task-icon" aria-hidden="true" />
-      <span className="bg-task-main">
-        <span className="bg-task-title">{task.title}<span className="sr-only"> ({words[task.status]})</span></span>
-        {(meta.length > 0 || (task.status !== "running" && task.status !== "completed")) && <span className="bg-task-meta">{[task.status !== "running" && task.status !== "completed" ? words[task.status] : null, meta || null].filter((item) => item !== null).join(" · ")}</span>}
-      </span>
+      {main}
     </li>;
   };
 
@@ -269,6 +295,7 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
       {tasks !== null && !failed && count === 0 && running.length === 0 && goingRuns.length === 0 && summary.ended > 0 && <p className="bg-tasks-note">{t("Nothing running right now")}</p>}
       {goingRuns.length > 0 && <><div className="menu-heading">{t("Workflows")}</div><ul className="bg-task-list">{goingRuns.map(runView)}</ul></>}
       {running.length > 0 && <><div className="menu-heading">{t("Running")}</div><ul className="bg-task-list">{running.map(row)}</ul></>}
+      {running.length > 0 && moreRunning > 0 && <p className="bg-tasks-note">{t("{n} more running", { n: moreRunning })}</p>}
       {summary.ended > 0 && <>
         <button type="button" className="bg-ended-toggle" aria-expanded={showEnded} aria-controls={endedId} onClick={() => setShowEnded(!showEnded)}>
           {showEnded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
@@ -279,5 +306,6 @@ export function BackgroundTasks({ paneId, count, omo, claude = false, plan = nul
       </>}
       </>}
     </div>}
+    {detail !== null && <BackgroundAgentDetail key={`${machineId}\0${paneId}\0${detail.id}`} paneId={paneId} task={detail} onClose={closeDetail} />}
   </span>;
 }

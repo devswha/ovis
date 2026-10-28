@@ -188,7 +188,13 @@ Recognized Hermes informational result cards remain available.
   the exact text; a `model_change`, `thinking_level_change` or `compaction` record in pi, omp, gjc
   and OmO sessions (omp's `/handoff` writes a compaction with method `handoff`); a `compacted`
   record for Codex `/compact`. Records are claimed in send order, so two equal sends never share
-  one, and a rewritten transcript drops what it no longer holds.
+  one, and a rewritten transcript drops what it no longer holds. Known limit: a pi-family send the
+  agent dropped without a record takes the record of a later equal send on the same branch, and
+  that later send ends as unknown. In pi, only the session's active
+  branch counts: a send stays with the branch it was sent on, also after the session goes to
+  another branch and `/tree` comes back to it, unless meanwhile something was written under that
+  branch's last entry or a record a result could be was written elsewhere (`resumedBranch` in
+  [`server/conversation.ts`](../server/conversation.ts)); then the send ends as unknown.
 - `dialog`: a card answered from Chat, counted only for the send that raised that card.
 - `recognized-result`: a reader of kind `result` matched a complete, recorded layout that appeared
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,
@@ -204,6 +210,27 @@ send recorded the screen as it was at send time and only inside the send's windo
 merged into history, never starts another action, and is withheld from observe-role connections.
 A command the agent keeps no transcript turn for, such as Claude Code's `/btw`, still shows a sent
 row.
+
+A row belongs to the agent session it was sent in (`commandOutcomes` in
+[`server/prompt.ts`](../server/prompt.ts)): once herdr reports another session, terminal or agent
+process in the pane, the row is hidden. A send made before the agent reports a session is bound to
+the agent process it went to and stays with the session that process reports first. Where no
+process could be matched (native Windows lists only the shell; an agent may run under another
+program name), it stays with the next session herdr reports in the same terminal under the same
+agent, or under the label herdr gave the pane at the send (herdr names an OmO pane `pi`). A send to
+a restarted agent while herdr still shows the session of the process before waits up to a minute
+(`STALE_SESSION_LAG_MS`) for the agent's own session. Known limits, all of which hide a row rather
+than show a wrong result, except the last two:
+
+- That minute is counted when Chat next asks. A session that appeared within it while no Chat was
+  open is taken for a later one, and the row is hidden.
+- Within that minute, a session change typed in the terminal of an agent that resumed the same
+  session (`claude -c`, `codex resume`) keeps the row in the new session until the next change.
+- Outside Linux, an agent restarted under the same process number cannot be told apart from the
+  one before it.
+- The order of repeated identical sends trusts the history row numbers herdr reports
+  (`printedPastEarlier` in [`server/outcome.ts`](../server/outcome.ts)): a herdr that renumbered
+  its history between two sends could credit one with the other's result. herdr 0.9.5 does not.
 
 ## Readers
 
@@ -248,9 +275,11 @@ request (`first_message_connection`) types it on its own, while it has the pane 
 disconnects or leaves the pane first, the message is held until someone sends it now or discards it,
 and the pane's other messages go at their turn. A pane holds one first message, bound to the agent
 the launch brought up: its process (the one a shell-started agent's launch saw come up) and session,
-as known when the message is queued and as learned at each event of the pane after. A `/resume`,
-another process of the same kind, or that agent ending before the message went holds it with
-`pending_target_changed`, at the pane's next event. First messages live in the
+as known when the message is queued and as learned at each event of the pane after. A `/resume` or
+another process of the same kind holds it with `pending_target_changed`, and that agent ending
+before the message went holds it with `first_message_launch_ended`, at the pane's next event; Send
+now then answers the same code to a client whose `pending-action` frame says `launch_ended`, and
+`pending_target_changed` to an older one. First messages live in the
 bridge's memory, so a restart drops the ones not sent yet. The bridge checks launch arguments by the
 dialog's rules in `shared/launch-rules.ts`.
 
@@ -267,7 +296,10 @@ To add a reader:
    `wide` (`omp-handoff-18.8.7-done-narrow.txt`). A set of result screens may get its own folder
    (`server/fixtures/hermes-results/help-120.txt`).
 2. Add the reader to `server/dialogs/<agent>.ts`, with an interaction plan if it moves a cursor,
-   or `kind: "result"` if it recognizes a finished result.
+   or `kind: "result"` if it recognizes a finished result. Words the card gets from the bridge
+   rather than from the screen (a title, the Close an Esc is offered as) go in as `own("…")`, with
+   their English key added to `shared/card-text.ts` and translated in `src/lib/i18n/composer.*.ts`:
+   the client shows them in the user's language (`own_text`), and the agent's own text as drawn.
 3. Switch the form to `dialog` with that reader's id.
 4. Test the reader against its fixtures in the agent's test file.
 

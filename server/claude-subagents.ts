@@ -1,6 +1,6 @@
-import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { join } from "node:path";
-import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
+import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 
 /**
  * The subagents one Claude Code session started (the `Agent` tool), for the status line's list,
@@ -128,7 +128,7 @@ export function lineNotifications(line: string): TaskNotification[] {
  * one that does not fit READ_BUDGET is skipped, not waited for. `more`: the file goes on past
  * what this read looked at.
  */
-export function readLines(path: string, from: number, size: number, limit: number, each: (line: string) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
+export function readLines(path: string, from: number, size: number, limit: number, each: (line: string, end: number) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
   let fd: number;
   try { fd = openSync(path, "r"); } catch { return { offset: from, skipping, more: true, failed: true }; }
   try {
@@ -154,7 +154,11 @@ export function readLines(path: string, from: number, size: number, limit: numbe
       // a line larger than the whole budget is given up; a shorter one waits for a larger share
       return more && limit >= READ_BUDGET ? { offset: from + got, skipping: true, more } : { offset: from + start, skipping: false, more };
     }
-    for (const line of buffer.subarray(start, end).toString("utf8").split("\n")) if (line.length > 0) each(line);
+    let offset = from + start;
+    for (const line of buffer.subarray(start, end).toString("utf8").split("\n")) {
+      offset += Buffer.byteLength(line) + 1;
+      if (line.length > 0) each(line, offset);
+    }
     return { offset: from + end, skipping: false, more };
   } catch { return { offset: from, skipping, more: true, failed: true }; } finally { closeSync(fd); }
 }
@@ -245,6 +249,30 @@ interface Parent {
   stops: Map<string, number>;
   /** when the person last gave a prompt: the turn going on, or last ended, began there */
   promptAt: number | null;
+  /** byte boundary of the session's last trustworthy turn_duration, cleared by later activity or skipped records */
+  restAt: number | null;
+  /** every byte written was read and parsed: no half-written line or skipped record is left, which may be a next turn's */
+  whole: boolean;
+  /**
+   * Where the session's recent turns began (the byte boundary of the entry that began each: a prompt,
+   * or the first entry after a rest), and where the chat's messages were taken into a turn already
+   * at work (`queued_command`), with the time each was written: what a busy signal is matched to
+   * (ClaudeSubagentStatus.busy).
+   */
+  starts: Start[];
+  /** whether the latest turn goes on: no rest came after it yet */
+  turnOpen: boolean;
+  /** what a slash command's echo found, until the next entry says whether it began a turn (scanParentLine) */
+  echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
+}
+interface Start { end: number; at: number | null; turn: boolean }
+
+/** The byte boundary of the entry that began the latest turn. */
+const turnAt = (parent: Parent): number | null => lastStart(parent.starts, (start) => start.turn)?.end ?? null;
+
+function lastStart(starts: readonly Start[], test: (start: Start) => boolean): Start | undefined {
+  for (let index = starts.length - 1; index >= 0; index--) if (test(starts[index]!)) return starts[index];
+  return undefined;
 }
 const parents = new Map<string, Parent>();
 
@@ -254,25 +282,77 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null };
+    parent = { id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, echo: null };
   }
   remember(parents, path, parent, 256);
   const state = parent;
   if (state.offset >= stat.size) state.behind = false;
   // the first read takes the whole window, a chunk at a time; after that a call reads what was appended
   for (let left = PARENT_WINDOW; state.offset < stat.size && left > 0;) {
-    const read = readLines(path, state.offset, stat.size, READ_BUDGET, (line) => {
+    if (state.skipping) state.restAt = null;
+    const read = readLines(path, state.offset, stat.size, READ_BUDGET, (line, end) => {
       if (state.firstAt === null) state.firstAt = stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]);
-      scanParentLine(state, line);
+      scanParentLine(state, line, end);
     }, state.skipping);
     const consumed = read.offset - state.offset;
     state.offset = read.offset;
     state.skipping = read.skipping;
     state.behind = read.more;
+    state.whole = read.offset >= stat.size && !read.skipping;
+    // a record skipped for its size may be a next turn's prompt
+    if (read.skipping) { state.restAt = null; state.echo = null; openTurn(state, read.offset, null); }
     left -= consumed;
     if (consumed === 0) break;
   }
   return state;
+}
+
+/** What the transcript has after a rest begins the next turn, which a busy signal can be matched to (ClaudeSubagentStatus.busy). */
+function openTurn(parent: Parent, end: number, at: number | null): void {
+  if (parent.turnOpen) return;
+  parent.turnOpen = true;
+  addStart(parent, { end, at, turn: true });
+}
+
+function addStart(parent: Parent, start: Start): void {
+  const last = parent.starts.at(-1);
+  if (last?.end === start.end) { last.turn ||= start.turn; return; }
+  parent.starts.push(start);
+  if (parent.starts.length > 64) parent.starts.shift();
+}
+
+/**
+ * A slash command's echo, which Claude Code writes as a user entry, begins a turn as a prompt does:
+ * a skill or a custom command runs one. A local command (`/model`) runs none, and writes its output
+ * right after the echo (`<local-command-stdout>`, as a user entry or a `local_command` one), with
+ * its caveat before it: that output takes back what the echo began.
+ */
+const COMMAND_ECHO_RE = /"content":"<(?:command-name|command-message|command-args)>/;
+/** A slash command as typed (\`/compact\`), which Claude Code writes before running it, with no \`origin\`. */
+const SLASH_RE = /"role":"user","content":"\/[^"\s]/;
+
+/** The command a slash command's echo, or its line as typed, names. */
+const commandOf = (line: string): string | null =>
+  line.match(/"role":"user","content":"\/([^"\s\\]+)/)?.[1]
+  ?? line.match(/"content":"(?:<command-message>[^<]*<\/command-message>(?:\\n|\s)*)?<command-name>\/?([^<\s]+)<\/command-name>/)?.[1] ?? null;
+const LOCAL_OUTPUT_RE = /"content":"<local-command-(?:stdout|stderr)>/;
+/**
+ * Bash mode (\`!ls\`): its command and output, which Claude Code writes as user entries. They begin no
+ * turn of their own; one that follows (2.1.311 answers the output) writes its request first.
+ */
+const BASH_RE = /"content":"<bash-(?:input|stdout|stderr)>/;
+const LOCAL_CAVEAT_RE = /"content":"<local-command-caveat>/;
+
+/**
+ * A slash command's echo is the person's prompt too, though Claude Code writes it with neither
+ * `origin` nor a permission mode (server/fixtures/skill-invocations/claude.jsonl). One marked as
+ * another's (a notice's `origin`) is not.
+ */
+function echoed(entry: Row, line: string): boolean {
+  if (entry["isMeta"] === true || entry["isSidechain"] === true || !COMMAND_ECHO_RE.test(line)) return false;
+  const origin = entry["origin"];
+  const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];
+  return kind === undefined || kind === "human";
 }
 
 /** An `Agent` call's launch is answered at once, with an acknowledgement that is no answer. */
@@ -283,7 +363,56 @@ function acknowledgement(entry: Row, block: Row): boolean {
   return words.startsWith("Async agent launched");
 }
 
-function scanParentLine(parent: Parent, line: string): void {
+function scanParentLine(parent: Parent, line: string, end: number): void {
+  const user = line.includes('"type":"user"');
+  // Claude writes a local command's caveat and output with neither `origin` nor a permission mode, as a
+  // person's prompt never is: a prompt that quotes these tags is the person's, and begins a turn
+  const own = !line.includes('"origin":') && !line.includes('"permissionMode":');
+  const local = !line.includes('"isSidechain":true') && ((user && own && (LOCAL_OUTPUT_RE.test(line) || BASH_RE.test(line) || (LOCAL_CAVEAT_RE.test(line) && line.includes('"isMeta":true')))) || line.includes('"subtype":"local_command"'));
+  // Claude closes the session's turn with a `turn_duration` entry; a next turn writes its request, prompt or answer first.
+  // A `progress` entry carries a subagent's message inside it: the subagent's, not the session's
+  if (local) {
+    // a bash-mode line the chat sent is taken in here, whether or not a turn follows it
+    if (line.includes('"content":"<bash-input>')) addStart(parent, { end, at: stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]), turn: false });
+    const echo = parent.echo;
+    if (echo !== null && LOCAL_OUTPUT_RE.test(line)) {
+      parent.restAt = echo.restAt;
+      parent.promptAt = echo.promptAt;
+      parent.turnOpen = echo.turnOpen;
+      parent.starts = echo.starts;
+      parent.echo = null;
+    }
+  } else if (line.includes('"subtype":"turn_duration"')) {
+    parent.echo = null;
+    try {
+      const entry = row(JSON.parse(line));
+      if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
+        parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
+        if (parent.restAt !== null) parent.turnOpen = false;
+      }
+    } catch { /* a line caught half written is read again */ }
+  } else if (user && line.includes('"isCompactSummary":true')) {
+    // a compaction's summary is Claude Code's own: \`/compact\` is told by its command, an idle compaction runs no turn
+  } else if (/"type":"(?:user|assistant|api-request)"/.test(line) && !line.includes('"isSidechain":true') && !line.includes('"type":"progress"')) {
+    // a command's echo, and its line as typed before it (\`/compact\`): its output takes back what the
+    // first of them began. Only the same command's: another's echo between them begins a turn of its own
+    // Claude Code writes both with neither \`origin\` nor a permission mode: a prompt quoting them is the person's
+    const echo = user && own && (COMMAND_ECHO_RE.test(line) || SLASH_RE.test(line));
+    const command = echo ? commandOf(line) : null;
+    parent.echo = !echo ? null : parent.echo !== null && parent.echo.command === command ? parent.echo
+      : { command, restAt: parent.restAt, promptAt: parent.promptAt, turnOpen: parent.turnOpen, starts: parent.starts.map((start) => ({ ...start })) };
+    parent.restAt = null;
+    openTurn(parent, end, stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]));
+  } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
+    try {
+      const entry = row(JSON.parse(line));
+      if (entry?.["type"] === "attachment" && row(entry["attachment"])?.["type"] === "queued_command") {
+        addStart(parent, { end, at: stamp(entry["timestamp"]), turn: false });
+        // a message taken in while a command runs: no command's output takes back the work it brings
+        parent.echo = null;
+      }
+    } catch { /* a line caught half written is read again */ }
+  }
   const mentioned = line.includes("<task-notification>");
   const calling = line.includes('"name":"Agent"') || line.includes('"name":"Task"');
   const answering = parent.calls.size > 0 && line.includes('"tool_result"');
@@ -295,7 +424,12 @@ function scanParentLine(parent: Parent, line: string): void {
   try { entry = row(JSON.parse(line)); } catch { return; }
   if (entry === null) return;
   const at = stamp(entry["timestamp"]);
-  if (prompting && at !== null && prompted(entry)) parent.promptAt = at;
+  if (prompting && !local && (prompted(entry) || echoed(entry, line))) {
+    if (at !== null) parent.promptAt = at;
+    // a prompt begins a turn also where no rest ended the one before (an interrupted turn writes none)
+    addStart(parent, { end, at, turn: true });
+    parent.turnOpen = true;
+  }
   // one line can hold all three: a batched entry, or an answer that quotes the tag
   const notices = mentioned ? blocksIn(entry).flatMap((block) => taskNotification(block) ?? []) : [];
   if (at !== null) {
@@ -574,6 +708,337 @@ export function subagentDetails(parentPath: string, ids: Iterable<string>): Map<
   return found;
 }
 
+/**
+ * GET /api/pane/background-agent: what one subagent's own transcript holds, for a reader who opens
+ * it while it runs (shared/protocol.ts PaneBackgroundAgentDetail). A read of its own, apart from
+ * the scanner above: the scanner keeps counts and status for every agent of every Claude pane and
+ * carries no prompt or tool argument; this reads one agent's two files once, on request, and
+ * keeps nothing. Bounded: the meta file at MAX_META_BYTES, the transcript at
+ * DETAIL_LIMITS.max_read_bytes in all, in two reads that never overlap (its first
+ * DETAIL_HEAD_BYTES, where the dispatch prompt is, and its last DETAIL_TAIL_BYTES, the recent
+ * activity, the byte before which says whether the window starts a record), a record at
+ * DETAIL_RECORD_BYTES, the answer at DETAIL_LIMITS.max_events events and max_output_bytes of text.
+ * A record a window cuts, one over its size and a line that is no record are skipped and said
+ * (`incomplete`), never guessed at: a dispatch that cannot be read is no prompt, and a later
+ * instruction is not taken for it. What the windows left out, the events dropped for the cap and
+ * the text left out for its budget are said (`truncated`). Only the prompt the agent was
+ * dispatched with, its prose and its tool calls (name and arguments) are read: no tool result,
+ * no thinking, no image, nothing from a screen.
+ *
+ * The files are `<store>/<session>/subagents/agent-<id>.meta.json` and `agent-<id>.jsonl`, the
+ * store being the real folder of the session's own transcript. The id is a plain word of at most
+ * DETAIL_ID_LENGTH, so it names nothing outside that folder. Each folder on the way is a folder
+ * and no link, looked at before the files are opened and again after they are read, and must be
+ * the same folder both times. Where the kernel names an open descriptor's file (Linux's
+ * /proc/self/fd), the subagents folder is opened itself and the files are opened inside that open
+ * folder, and each descriptor's own path must be the one expected: a folder on the way swapped for
+ * a link, or moved away, between the look and the read, is refused, whatever was opened. Elsewhere
+ * the looks before and after stand for it. A file is opened only as a plain file that is no link,
+ * and the descriptor read is checked to be the file that was looked at.
+ *
+ * A file there is the agent's only when it says so: its meta file names an agent type, and every
+ * record of its transcript is a sidechain's of this session and of this agent (Claude Code writes
+ * `isSidechain`, `sessionId` and `agentId` on each). A file that says otherwise is no agent of the
+ * session's; nothing of it is answered.
+ */
+export const DETAIL_LIMITS: PaneBackgroundAgentDetail["limits"] = Object.freeze({ max_read_bytes: 256 * 1024, max_output_bytes: 128 * 1024, max_events: 128 });
+const DETAIL_HEAD_BYTES = 64 * 1024;
+const DETAIL_TAIL_BYTES = DETAIL_LIMITS.max_read_bytes - DETAIL_HEAD_BYTES;
+const DETAIL_RECORD_BYTES = 64 * 1024;
+const DETAIL_ID_LENGTH = 128;
+/** where the kernel names each open descriptor's file; absent off Linux */
+const FD_DIR = "/proc/self/fd";
+const fdPaths = ((): boolean => { try { return process.platform === "linux" && lstatSync(FD_DIR).isDirectory(); } catch { return false; } })();
+
+/** The calls the detail read makes to the file system: a test counts its bytes, or changes the store between a look and an open. */
+export const detailIo = { openSync, readSync };
+
+/** Why the detail was not read: no such agent in the session, or a store that cannot be read as it should be. */
+export type DetailRefusal = "not_found" | "unavailable";
+
+/** Whether `id` can name a subagent's files: the scanner's word, and no longer than DETAIL_ID_LENGTH. */
+export const validDetailId = (id: string): boolean => id.length > 0 && id.length <= DETAIL_ID_LENGTH && AGENT_ID.test(id);
+
+type DetailEvent = PaneBackgroundAgentDetail["events"][number];
+
+/**
+ * A file's identity as the swap checks compare it, read as BigInt: an NTFS file ID can pass Number.MAX_SAFE_INTEGER, and
+ * as a plain number two files made close together in one folder could read as the same file.
+ */
+const identity = (stat: { dev: bigint; ino: bigint }): string => `${stat.dev}:${stat.ino}`;
+
+/** A folder's identity: a folder that is no link, or null (a link, a file, nothing). */
+function folderId(path: string): string | null {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    return stat.isDirectory() && !stat.isSymbolicLink() ? identity(stat) : null;
+  } catch { return null; }
+}
+
+/** Whether an error says only that nothing is there (a missing entry, or a missing folder on its way), not that it cannot be read. */
+const absent = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
+/** What is at `path`, not followed: a plain folder or file with its identity, nothing, something else, or an error that is no answer. */
+function look(path: string): { kind: "folder" | "file"; id: string; size: number } | "missing" | "other" | "error" {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink()) return "other";
+    if (stat.isDirectory()) return { kind: "folder", id: identity(stat), size: Number(stat.size) };
+    return stat.isFile() ? { kind: "file", id: identity(stat), size: Number(stat.size) } : "other";
+  } catch (error) { return absent(error) ? "missing" : "error"; }
+}
+
+/** The path the kernel has for an open descriptor, or null where it has none. */
+function fdPath(fd: number): string | null {
+  try { return readlinkSync(`${FD_DIR}/${fd}`); } catch { return null; }
+}
+
+/** The subagents folder of a session, as looked at: each folder on the way and its identity; open where descriptors name their files. */
+interface Folder { path: string; fd: number | null; chain: Array<{ path: string; id: string }> }
+
+function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
+  const path = join(store, sessionId, "subagents");
+  const chain: Folder["chain"] = [];
+  for (const step of [store, join(store, sessionId), path]) {
+    const seen = look(step);
+    // a folder that is not there has no agent; one that is a link or no folder leads out of the store, and one that
+    // cannot be looked at (no permission, an I/O error) is a store not readable now, never an agent gone
+    if (seen === "missing") return "not_found";
+    if (typeof seen === "string" || seen.kind !== "folder") return "unavailable";
+    chain.push({ path: step, id: seen.id });
+  }
+  if (!fdPaths) return { path, fd: null, chain };
+  let fd: number;
+  try { fd = detailIo.openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); } catch { return "unavailable"; }
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (opened.isDirectory() && identity(opened) === chain.at(-1)!.id && fdPath(fd) === path) return { path, fd, chain };
+  } catch { /* refused below */ }
+  closeSync(fd);
+  return "unavailable";
+}
+
+/** Whether the folder is still the one looked at: every folder on the way the same, and the open one where it was. */
+function intact(folder: Folder): boolean {
+  return folder.chain.every((step) => folderId(step.path) === step.id) && (folder.fd === null || fdPath(folder.fd) === folder.path);
+}
+
+/**
+ * `name` in `folder`, opened as the plain file it was looked at as: no link, not replaced since the look, at most `max` bytes.
+ * `not_found` when there is no such plain file; `unavailable` when one is there but cannot be opened as looked at (no
+ * permission, or replaced meanwhile), so a read that fails is never taken for an agent gone from the session.
+ */
+function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRefusal {
+  const path = join(folder.path, name);
+  // inside the open folder itself where the kernel allows: a folder put in its place leads nowhere else
+  const where = folder.fd === null ? path : `${FD_DIR}/${folder.fd}/${name}`;
+  const looked = look(where);
+  if (looked === "missing") return "not_found";
+  // a link, no plain file, or one over its size is none of this agent's; one that cannot be looked at is a store not readable now
+  if (looked === "error") return "unavailable";
+  if (looked === "other" || looked.kind !== "file" || looked.size > max) return "not_found";
+  let fd: number;
+  // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it
+  try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return "unavailable"; }
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    const size = Number(opened.size);
+    if (opened.isFile() && identity(opened) === looked.id && size <= max && (folder.fd === null || fdPath(fd) === path)) return { fd, size, id: looked.id, path, where };
+  } catch { /* refused below */ }
+  closeSync(fd);
+  return "unavailable";
+}
+
+/** A file `openIn` opened: its descriptor, its size and identity then, and where it was. */
+interface Opened { fd: number; size: number; id: string; path: string; where: string }
+
+/**
+ * Whether an opened file is still the one looked at, where it was looked at, after its read: the same identity at its
+ * path, and its descriptor still there (where the kernel names a descriptor's file). A file moved out of the session
+ * or its path replaced while it was read may have been read as another file.
+ */
+function stillThere(file: Opened): boolean {
+  const seen = look(file.where);
+  if (typeof seen === "string" || seen.kind !== "file" || seen.id !== file.id) return false;
+  try { if (identity(fstatSync(file.fd, { bigint: true })) !== file.id) return false; } catch { return false; }
+  return !fdPaths || fdPath(file.fd) === file.path;
+}
+
+function readAt(fd: number, from: number, length: number): Buffer {
+  const buffer = Buffer.alloc(length);
+  let got = 0;
+  while (got < length) {
+    const n = detailIo.readSync(fd, buffer, got, length - got, from + got);
+    if (n === 0) break;
+    got += n;
+  }
+  return buffer.subarray(0, got);
+}
+
+/** The text the person's side of an entry carries: a string, or its text blocks; null for a tool's answer. */
+function userText(entry: Row): string | null {
+  const content = row(entry["message"])?.["content"];
+  if (typeof content === "string") return content.trim().length > 0 ? content : null;
+  if (!Array.isArray(content) || content.some((block) => row(block)?.["type"] === "tool_result")) return null;
+  const parts = content.flatMap((block) => { const part = row(block); return part?.["type"] === "text" && typeof part["text"] === "string" ? [part["text"]] : []; });
+  const joined = parts.join("\n");
+  return joined.trim().length > 0 ? joined : null;
+}
+
+/** `text` cut to at most `max` UTF-8 bytes, a character cut in two left out with its remains. */
+function cut(text: string, max: number): string {
+  return Buffer.from(text, "utf8").subarray(0, max).toString("utf8").replace(/\uFFFD+$/, "");
+}
+
+/**
+ * One agent's transcript records, read from `fd` as the windows above: what they say, and what
+ * could not be read of them. `foreign`: a record says it is another session's or another agent's,
+ * or no sidechain's; then the file is not this agent's, and nothing of it may be answered.
+ */
+function readDetailRecords(fd: number, size: number, sessionId: string, agentId: string): { prompt: string | null; events: DetailEvent[]; truncated: boolean; incomplete: boolean; foreign: boolean } {
+  // the whole file when it fits the budget; else its head and its tail, the tail's look-behind byte inside the budget
+  const gap = size > DETAIL_LIMITS.max_read_bytes;
+  let incomplete = false;
+  let foreign = false;
+  let prompt: string | null = null;
+  /** the dispatch is the file's first record that is an instruction: until it is read, or a record before it could not be, it may still be */
+  let dispatchOpen = true;
+  const events: DetailEvent[] = [];
+  const skipped = (promptable: boolean): void => {
+    incomplete = true;
+    // a record that could not be read may have been the dispatch: a later instruction is not taken for it
+    if (promptable) dispatchOpen = false;
+  };
+  /** `promptable`: the window holds the file's start, where the dispatch is; a later instruction in the tail is not it */
+  const take = (chunk: Buffer, from: number, to: number, promptable: boolean): void => {
+    for (const line of chunk.subarray(from, to).toString("utf8").split("\n")) {
+      if (line.length === 0) continue;
+      if (Buffer.byteLength(line, "utf8") > DETAIL_RECORD_BYTES) { skipped(promptable); continue; }
+      let entry: Row | null;
+      try { entry = row(JSON.parse(line)); } catch { skipped(promptable); continue; }
+      if (entry === null) { skipped(promptable); continue; }
+      const content = entry["type"] === "user" || entry["type"] === "assistant";
+      // Claude Code marks every record of a subagent's file as the sidechain of its session and agent
+      const declared = entry["isSidechain"] === false || ("sessionId" in entry && entry["sessionId"] !== sessionId) || ("agentId" in entry && entry["agentId"] !== agentId);
+      if (declared || (content && (entry["isSidechain"] !== true || entry["sessionId"] !== sessionId || entry["agentId"] !== agentId))) { foreign = true; return; }
+      const at = iso(stamp(entry["timestamp"]));
+      if (entry["type"] === "user") {
+        // the first instruction is the dispatch; a later one, and every tool's answer, is not the agent's own activity
+        if (promptable && dispatchOpen && entry["isMeta"] !== true && entry["isCompactSummary"] !== true) { prompt = userText(entry); dispatchOpen = false; }
+        continue;
+      }
+      if (entry["type"] !== "assistant") continue;
+      const blocks = row(entry["message"])?.["content"];
+      for (const value of Array.isArray(blocks) ? blocks : []) {
+        const block = row(value);
+        if (block === null) continue;
+        if (block["type"] === "text" && typeof block["text"] === "string" && block["text"].trim().length > 0) events.push({ kind: "text", text: block["text"], at });
+        else if (block["type"] === "tool_use" && typeof block["name"] === "string" && block["name"].length > 0) {
+          const input = block["input"];
+          events.push({ kind: "tool", text: `${block["name"].trim()} ${input === undefined ? "{}" : JSON.stringify(input)}`, at });
+        }
+      }
+    }
+  };
+  /** the complete lines of a window: from `start` to its last newline; what follows is cut by the window, or still being written */
+  const complete = (chunk: Buffer, start: number, promptable: boolean): void => {
+    const end = chunk.lastIndexOf(0x0a) + 1;
+    if (end > start && !foreign) take(chunk, start, end, promptable);
+    if (end < chunk.length) skipped(promptable);
+  };
+  if (!gap) complete(readAt(fd, 0, size), 0, true);
+  else {
+    complete(readAt(fd, 0, DETAIL_HEAD_BYTES), 0, true);
+    // the tail window and the byte before it, which says whether the window starts a record: DETAIL_TAIL_BYTES in all, after the head's
+    const from = size - DETAIL_TAIL_BYTES;
+    const tail = readAt(fd, from, DETAIL_TAIL_BYTES);
+    let start = 1;
+    if (tail[0] !== 0x0a) {
+      const newline = tail.indexOf(0x0a);
+      incomplete = true;
+      start = newline === -1 ? tail.length : newline + 1;
+    }
+    if (!foreign) complete(tail, start, false);
+  }
+  return { prompt, events, truncated: gap, incomplete, foreign };
+}
+
+/**
+ * The detail of the subagent `agentId` of the session whose transcript is `parentPath`, without
+ * `server_time`; or why it was not read. `validDetailId` holds for `agentId` (the route checks it).
+ */
+export function backgroundAgentDetail(parentPath: string, agentId: string): { detail: Omit<PaneBackgroundAgentDetail, "server_time"> } | { refusal: DetailRefusal } {
+  if (!validDetailId(agentId) || plain(parentPath) === null) return { refusal: "unavailable" };
+  const sessionId = basename(parentPath, ".jsonl");
+  let store: string;
+  try { store = realpathSync(dirname(parentPath)); } catch { return { refusal: "unavailable" }; }
+  const folder = openFolder(store, sessionId);
+  if (typeof folder === "string") return { refusal: folder };
+  try {
+    const meta = openIn(folder, `agent-${agentId}.meta.json`, MAX_META_BYTES);
+    if (typeof meta === "string") return { refusal: meta };
+    // a read that fails, or a file moved or replaced while it was read, is a store not readable now; a meta file
+    // being written says nothing of the agent yet, and one that names no agent type is no subagent's
+    let bytes: Buffer;
+    try { bytes = readAt(meta.fd, 0, meta.size); if (!stillThere(meta)) return { refusal: "unavailable" }; } catch { return { refusal: "unavailable" }; } finally { closeSync(meta.fd); }
+    let record: Row | null;
+    try { record = row(JSON.parse(bytes.toString("utf8"))); } catch { record = null; }
+    if (record === null || text(record["agentType"]) === null) return { refusal: "not_found" };
+    const file = openIn(folder, `agent-${agentId}.jsonl`);
+    if (typeof file === "string") return { refusal: file };
+    let read: ReturnType<typeof readDetailRecords>;
+    try {
+      read = readDetailRecords(file.fd, file.size, sessionId, agentId);
+      if (!stillThere(file)) return { refusal: "unavailable" };
+    } catch { return { refusal: "unavailable" }; } finally { closeSync(file.fd); }
+    // a folder on the way replaced while it was read: what was read may be another folder's
+    if (!intact(folder)) return { refusal: "unavailable" };
+    if (read.foreign) return { refusal: "not_found" };
+    let { prompt, events, truncated } = read;
+    if (events.length > DETAIL_LIMITS.max_events) { events = events.slice(-DETAIL_LIMITS.max_events); truncated = true; }
+    // the text budget: the prompt first, then the events newest first; an event that does not fit goes with every older one
+    let left = DETAIL_LIMITS.max_output_bytes;
+    if (prompt !== null && Buffer.byteLength(prompt, "utf8") > left) { prompt = cut(prompt, left); truncated = true; }
+    if (prompt !== null) left -= Buffer.byteLength(prompt, "utf8");
+    let first = events.length;
+    while (first > 0) {
+      const bytes = Buffer.byteLength(events[first - 1]!.text, "utf8");
+      if (bytes > left) break;
+      left -= bytes;
+      first -= 1;
+    }
+    if (first > 0) { events = events.slice(first); truncated = true; }
+    return {
+      detail: {
+        agent_id: agentId,
+        session_id: sessionId,
+        title: text(record["description"]) ?? text(record["name"]),
+        agent: text(record["agentType"]),
+        prompt,
+        events,
+        truncated,
+        incomplete: read.incomplete,
+        limits: DETAIL_LIMITS,
+      },
+    };
+  } finally { if (folder.fd !== null) closeSync(folder.fd); }
+}
+
+/**
+ * Whether the session's transcripts started `id` as a background command (a `Bash` call's
+ * `backgroundTaskId`): the parent's, and those of its agents the scanner has read. A command has
+ * no transcript of its own, whatever files bear its id.
+ */
+export function backgroundCommand(parentPath: string, id: string): boolean {
+  if (scanParent(parentPath)?.commands.launches.has(id)) return true;
+  const dir = `${subagentsDir(parentPath)}${sep}`;
+  for (const [path, work] of works) if (path.startsWith(dir) && work.commands.launches.has(id)) return true;
+  return false;
+}
+
 const time = (value: string | null): number => value === null ? 0 : Date.parse(value) || 0;
 
 /**
@@ -587,7 +1052,7 @@ const time = (value: string | null): number => value === null ? 0 : Date.parse(v
 /** what each session's last read said of each agent: kept while the transcript is read in parts */
 const previous = new Map<string, Map<string, OmoTask>>();
 
-export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null } {
+export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
   const files = agentIds(parentPath).flatMap((id) => {
     const stat = plain(join(dir, `agent-${id}.jsonl`));
@@ -596,7 +1061,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
-  if (parent === null && files.length === 0) return { tasks: [], settled: true, watch: [], running: 0, turnRunning: 0, promptAt: null };
+  if (parent === null && files.length === 0) return { tasks: [], settled: true, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   const budget = { left: READ_BUDGET };
   const running: OmoTask[] = [];
   const ended: OmoTask[] = [];
@@ -666,6 +1131,8 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
       turns: counted ? work.turns : null,
       tool_calls: counted ? work.toolCalls : null,
       tokens: counted ? work.tokens : null,
+      // its own transcript can be opened (backgroundAgentDetail); a command's output is a screen's, which is never read
+      detail_kind: "claude-subagent",
     };
     keep(task, Math.max(tail.dispatchAt ?? 0, work.dispatchAt ?? 0, firstAt ?? 0));
   }
@@ -679,7 +1146,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
       // a command an agent left running stops with the agent
       const end = ends.get(id) ?? (halt !== undefined && launch.at <= halt ? { at: halt, status: "cancelled" as const } : undefined);
       const lost = !live || (since !== null && launch.at < since - START_SLACK_MS);
-      keep({ id, title: launch.title, category: "shell", model: null, status: end?.status ?? (lost ? "lost" : "running"), started_at: iso(launch.at), ended_at: iso(end?.at ?? null), turns: null, tool_calls: null, tokens: null });
+      keep({ id, title: launch.title, category: "shell", model: null, status: end?.status ?? (lost ? "lost" : "running"), started_at: iso(launch.at), ended_at: iso(end?.at ?? null), turns: null, tool_calls: null, tokens: null, detail_kind: null });
     }
   }
   remember(previous, parentPath, all, 256);
@@ -687,7 +1154,9 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // a command lost with its process has no end of its own: its start stands for it
   const last = (task: OmoTask): number => time(task.ended_at) || time(task.started_at);
   ended.sort((a, b) => last(b) - last(a));
-  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt };
+  // read to its end only: a part not read yet may hold the next turn
+  const resting = parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
+  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
 
   function keep(task: OmoTask, dispatched = time(task.started_at)): void {
     all.set(task.id, task);
@@ -723,9 +1192,10 @@ export interface ClaudeSubagentDeps {
   onReset?: (paneId: string) => void;
   /**
    * A pane's running subagents and background commands changed, or how many of them its turn
-   * started (`turnRunning`, server/background-wait.ts): no turn started or ended.
+   * started (`turnRunning`, server/background-wait.ts), or whether the session's own turn rests
+   * (`resting`): no turn started or ended as herdr reads it.
    */
-  onChange: (paneId: string, running: number, turnRunning: number, promptAt: number | null) => void;
+  onChange: (paneId: string, running: number, turnRunning: number, promptAt: number | null, resting: boolean) => void;
   pollMs?: number;
   refreshMs?: number;
   now?: () => number;
@@ -736,11 +1206,54 @@ interface Tracked {
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
-  live: boolean; running: number; turnRunning: number; promptAt: number | null; sig: string | null;
+  live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; sig: string | null;
   reset?: boolean;
+  /** the turns of the transcript read, and the busy signals matched to them */
+  turns?: Turns;
+  /** the transcript's size when herdr's event last said the pane does no work: a turn herdr tells after it began past it */
+  quiet?: { path: string; id: string; size: number };
   /** every observed agent, whose own file can end or resume its turn */
   watch: string[];
 }
+
+/**
+ * What says a Claude pane's session may have begun a turn its transcript does not show yet: herdr
+ * reading it as working, or the chat sending it a prompt. Each is matched on its own, so that one
+ * turn told by both is still one turn.
+ */
+export type BusySource = "herdr" | "chat";
+
+/**
+ * A busy signal, and what places its turn in the transcript: for a chat send, when its Enter was
+ * sent (`sentAt`; Claude dates the entry it writes for it no earlier); for herdr's, the
+ * transcript's size at herdr's last word that the pane did no work (`quiet`).
+ */
+interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number } }
+
+/** A signal whose turn is not written yet: the first one begun past `size` is its own. */
+interface Barrier { size: number; at: number }
+
+/**
+ * How long a signal holds the pane shown working while its turn is not written. Claude writes a
+ * turn's first entry as the turn begins, so one that has none by then most likely began no turn (a
+ * message taken into a turn already at work, a status herdr repeated). Most likely is no proof:
+ * the queue stays held on it (`held`) until a rest is written past it or herdr says the pane does
+ * no work.
+ */
+const BUSY_HOLD_MS = 5000;
+
+/**
+ * The start of the latest turn a source's signals were matched to, its signals still waiting for
+ * theirs, and those that waited BUSY_HOLD_MS in vain (`held`): they hold the queue, not the display.
+ */
+interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
+
+/**
+ * A transcript's turns as the busy signals have them (#2072). A rest certifies a pane at rest only
+ * when no signal waits for its turn. `retired`: the start of the latest turn a poll saw at rest,
+ * which a later signal with nothing to place it is never matched to.
+ */
+interface Turns { readonly path: string; readonly id: string; retired: number; herdr: Claim; chat: Claim }
 
 /**
  * The running subagents and background commands of every Claude pane, for the pane's count. Only a pane whose agent is
@@ -756,6 +1269,8 @@ export class ClaudeSubagentStatus {
   private readonly sessions = new Map<string, string | null>();
   /** The latest lookup claim; a newer pane/session observation cancels an older answer. */
   private readonly lookups = new Map<string, { key: string }>();
+  /** busy signals heard before the pane's transcript was read: matched at its first read */
+  private readonly deferred = new Map<string, Signal[]>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<void> | null = null;
   private queued: HerdrPane[] | null = null;
@@ -776,6 +1291,7 @@ export class ClaudeSubagentStatus {
   stop(): void {
     this.lookups.clear();
     this.sessions.clear();
+    this.deferred.clear();
     this.queued = null;
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
@@ -783,6 +1299,67 @@ export class ClaudeSubagentStatus {
 
   countOf(paneId: string): number {
     return this.panes.get(paneId)?.running ?? 0;
+  }
+
+  /** Signals that waited for their turn in vain hold the pane's queue: nothing proves they began no turn. */
+  holdsQueue(paneId: string): boolean {
+    const turns = this.panes.get(paneId)?.turns;
+    return turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0;
+  }
+
+  /**
+   * The session's own turn ended while subagents or commands still run: Claude keeps its busy
+   * title up while a background subagent works, and herdr reads that as `working` (#2069).
+   */
+  restsOn(paneId: string): boolean {
+    const tracked = this.panes.get(paneId);
+    return tracked !== undefined && tracked.resting && tracked.running > 0;
+  }
+
+  /**
+   * The pane's session may have begun a turn: herdr reads it as working, or the chat sent it a
+   * prompt (`sentAt`: when its Enter was sent). Claude writes a turn's prompt to its transcript as
+   * the turn begins, but a signal can come before that entry or after the whole turn. The
+   * transcript is read first, and the signal matched to a turn in it (match); one with none written
+   * yet holds the pane working until its turn is, for BUSY_HOLD_MS at most.
+   */
+  busy(paneId: string, source: BusySource, sentAt?: number): void {
+    const tracked = this.panes.get(paneId);
+    const signal: Signal = { source, at: this.now(), ...(sentAt !== undefined ? { sentAt } : {}) };
+    if (source === "herdr" && tracked) {
+      if (tracked.quiet && tracked.quiet.path === tracked.path) signal.quiet = { id: tracked.quiet.id, size: tracked.quiet.size };
+      delete tracked.quiet;
+    }
+    const turns = tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
+    const size = turns ? plain(turns.path) : null;
+    // the signal's own read, ahead of the poll that would take a turn it finds at rest for history
+    const parent = turns && size?.id === turns.id ? scanParent(turns.path) : null;
+    if (turns && parent?.id === turns.id) match(turns, parent, signal, size!.size);
+    // a pane whose transcript is not found yet keeps its latest signals, not every one
+    else this.deferred.set(paneId, [...(this.deferred.get(paneId) ?? []).slice(-15), signal]);
+    if (!tracked) return;
+    tracked.sig = null;
+    this.poll(paneId);
+  }
+
+  /**
+   * herdr says the pane does no work: its own signals holding the queue began nothing that still runs.
+   * Said in an event (`event`), a turn it tells of next begins in what is written after now.
+   */
+  quiet(paneId: string, event: boolean): void {
+    const tracked = this.panes.get(paneId);
+    if (!tracked) return;
+    // a chat send's is the transcript's to release: Claude may write its prompt late (a slow
+    // UserPromptSubmit hook) while its title shows no work
+    if (tracked.turns && tracked.turns.herdr.held.length > 0) {
+      tracked.turns.herdr.held = [];
+      // the next poll tells of the queue let go, though no file changed
+      tracked.sig = null;
+    }
+    if (!event) return;
+    const stat = tracked.path !== null && tracked.live ? plain(tracked.path) : null;
+    if (stat !== null && tracked.path !== null) tracked.quiet = { path: tracked.path, id: stat.id, size: stat.size };
+    else delete tracked.quiet;
   }
 
   /** The transcript of the Claude session the pane holds, or last held, whether it still runs Claude, and when that process started. */
@@ -797,6 +1374,7 @@ export class ClaudeSubagentStatus {
     for (const paneId of this.panes.keys()) if (!ids.has(paneId)) this.panes.delete(paneId);
     for (const paneId of this.lookups.keys()) if (!ids.has(paneId)) this.lookups.delete(paneId);
     for (const paneId of this.sessions.keys()) if (!ids.has(paneId)) this.sessions.delete(paneId);
+    for (const paneId of this.deferred.keys()) if (!ids.has(paneId)) this.deferred.delete(paneId);
     for (const pane of panes) {
       this.observeSession(pane);
       const key = `${pane.agent_session?.value ?? ""}\0${pane.cwd ?? ""}`;
@@ -852,8 +1430,10 @@ export class ClaudeSubagentStatus {
       || (current.pid !== null && found.pid != null && current.pid !== found.pid)
       || (current.startedAt !== null && found.startedAt !== null && current.startedAt !== found.startedAt)));
     if (reset) this.deps.onReset?.(pane.pane_id);
+    // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
+    if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, sig: null, watch: same && !found ? current.watch : [], reset });
+    this.panes.set(pane.pane_id, { key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -889,26 +1469,115 @@ export class ClaudeSubagentStatus {
       let running = 0;
       let turnRunning = 0;
       let promptAt: number | null = null;
+      let resting = false;
       if (tracked.path !== null && tracked.live) {
         const scanAt = this.now();
         const before = subagentsSignature(tracked.path, tracked.watch, scanAt);
         if (`${before.sig}:${tracked.startedAt}` === tracked.sig) continue;
         const state = claudeSubagentState(tracked.path, true, this.now(), tracked.startedAt);
-        ({ running, turnRunning, promptAt } = state);
+        ({ running, turnRunning, promptAt, resting } = state);
+        const parent = parents.get(tracked.path);
+        let waiting = false;
+        if (parent === undefined) resting = false;
+        else {
+          const turns = this.turnsOf(paneId, tracked.path, parent);
+          settle(turns, parent, this.now());
+          // a turn seen at rest is history: a later signal with nothing to place it is not its own
+          const latest = turnAt(parent);
+          if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
+          // a signal whose turn is not written yet: no rest written so far ends that turn
+          waiting = turns.herdr.barriers.length + turns.chat.barriers.length > 0;
+          resting &&= !waiting;
+        }
         tracked.watch = state.watch;
         const after = subagentsSignature(tracked.path, tracked.watch, this.now());
         // Certify only the versions and dependency set read, never a concurrent append's newer signature.
-        // Coarse file clocks require every input to have been quiet before the scan began.
-        tracked.sig = state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
+        // Coarse file clocks require every input to have been quiet before the scan began. A signal
+        // waiting for its turn is read again at each poll, until the turn is written or it gives up
+        tracked.sig = !waiting && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
           ? `${after.sig}:${tracked.startedAt}` : null;
       }
-      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt) continue;
+      // a held queue let go of (a rest written past it) is told too, though the pane rested all along
+      const holding = this.holdsQueue(paneId);
+      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false)) continue;
+      tracked.holding = holding;
       tracked.reset = false;
       tracked.running = running;
       tracked.turnRunning = turnRunning;
       tracked.promptAt = promptAt;
-      this.deps.onChange(paneId, running, turnRunning, promptAt);
+      tracked.resting = resting;
+      this.deps.onChange(paneId, running, turnRunning, promptAt, resting);
     }
+  }
+
+  /**
+   * The pane's turns in the transcript just read, begun at its first read: what that read found at
+   * rest is history, and the signals heard before it are matched against what it found.
+   */
+  private turnsOf(paneId: string, path: string, parent: Parent): Turns {
+    const tracked = this.panes.get(paneId)!;
+    if (tracked.turns?.path === path && tracked.turns.id === parent.id) return tracked.turns;
+    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] } };
+    if (parent.restAt !== null) turns.retired = turnAt(parent) ?? -1;
+    for (const signal of this.deferred.get(paneId) ?? []) match(turns, parent, signal, parent.offset);
+    this.deferred.delete(paneId);
+    tracked.turns = turns;
+    return turns;
+  }
+}
+
+/** The turns (for a chat signal, also the messages taken into one at work) a source's signal can be matched to. */
+const startsFor = (parent: Parent, source: BusySource): Start[] => source === "chat" ? parent.starts : parent.starts.filter((start) => start.turn);
+
+/**
+ * A busy signal, read against the transcript as `parent` has it (ClaudeSubagentStatus.busy). The
+ * signals waiting before it take their turns first. Then a turn it can be placed in is its own:
+ * for a chat send, the first begun since its Enter; for herdr's, the first begun past herdr's last
+ * word that the pane did no work; with nothing to place it, the turn going on if no signal told
+ * it (for a chat send with no time, the latest no signal told and no poll saw at rest). Otherwise
+ * its turn is not written yet, and it waits for it.
+ */
+function match(turns: Turns, parent: Parent, signal: Signal, size: number): void {
+  settle(turns, parent, null);
+  const claim = turns[signal.source];
+  const other = turns[signal.source === "herdr" ? "chat" : "herdr"];
+  const starts = startsFor(parent, signal.source);
+  let start: Start | undefined;
+  if (claim.barriers.length === 0) {
+    if (signal.sentAt !== undefined) start = starts.find((each) => each.end > claim.turn && each.at !== null && each.at >= signal.sentAt!);
+    else if (signal.quiet?.id === parent.id) start = starts.find((each) => each.end > Math.max(claim.turn, signal.quiet!.size));
+    else {
+      const floor = Math.max(claim.turn, turns.retired, other.turn);
+      // herdr's working with nothing to place it may be the next turn's, before its first entry: a
+      // turn already at rest is not taken for it, unseen by a poll or not. A chat send's time is
+      // always known where it is sent; without it, the latest turn no signal told is the send's
+      if (signal.source === "chat") start = lastStart(starts, (each) => each.end > floor);
+      else if (parent.turnOpen) start = lastStart(starts, (each) => each.turn && each.end > floor && each.end === turnAt(parent));
+    }
+  }
+  if (start !== undefined) claim.turn = start.end;
+  else claim.barriers.push({ size, at: signal.at });
+}
+
+/** Each waiting signal takes the first turn begun past it; one that waited BUSY_HOLD_MS began none (`now`). */
+function settle(turns: Turns, parent: Parent, now: number | null): void {
+  for (const source of ["herdr", "chat"] as const) {
+    const claim = turns[source];
+    for (let barrier = claim.barriers[0]; barrier !== undefined; barrier = claim.barriers[0]) {
+      const floor = Math.max(barrier.size, claim.turn);
+      const start = startsFor(parent, source).find((each) => each.end > floor);
+      if (start === undefined) break;
+      claim.turn = start.end;
+      claim.barriers.shift();
+    }
+    if (now !== null) {
+      claim.held.push(...claim.barriers.filter((barrier) => now - barrier.at >= BUSY_HOLD_MS));
+      claim.barriers = claim.barriers.filter((barrier) => now - barrier.at < BUSY_HOLD_MS);
+    }
+    // a rest written past a held signal ends whatever turn it began; for a chat send, so does its
+    // own entry written late (a bash-mode line), past which the turn, if any, shows open
+    claim.held = claim.held.filter((barrier) => (parent.restAt === null || parent.restAt <= barrier.size)
+      && !(source === "chat" && parent.starts.some((start) => start.end > barrier.size)));
   }
 }
 

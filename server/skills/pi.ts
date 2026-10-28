@@ -36,27 +36,27 @@ const PI_TERMINAL_BOUND = [
   "tree",
 ];
 const PI_FORMS: NonNullable<AgentCommandSource["forms"]> = {
-  model: [{ match: "bare", interaction: "dialog", dialog: "pi-model" }, { match: { sub: "*" }, interaction: "none" }],
-  thinking: [{ match: "bare", interaction: "dialog", dialog: "pi-model" }, { match: { sub: "*" }, interaction: "none" }],
+  model: [{ match: "bare", interaction: "dialog", dialog: "pi-model" }, { match: "other", interaction: "none" }],
+  thinking: [{ match: "bare", interaction: "dialog", dialog: "pi-thinking" }, { match: "other", interaction: "none" }],
   tree: [{ match: "bare", interaction: "terminal" }],
   fork: [{ match: "bare", interaction: "terminal" }],
   resume: [{ match: "bare", interaction: "terminal" }],
   settings: [{ match: "bare", interaction: "terminal" }],
   "scoped-models": [{ match: "bare", interaction: "terminal" }],
-  login: [{ match: "bare", interaction: "terminal" }, { match: { sub: "*" }, interaction: "terminal" }],
+  login: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
   compact: [{ match: "bare", interaction: "none" }],
   session: [{ match: "bare", interaction: "terminal" }],
   hotkeys: [{ match: "bare", interaction: "terminal" }],
   changelog: [{ match: "bare", interaction: "terminal" }],
   logout: [{ match: "bare", interaction: "terminal" }],
   new: [{ match: "bare", interaction: "unknown" }],
-  name: [{ match: "bare", interaction: "terminal" }, { match: { sub: "*" }, interaction: "none" }],
+  name: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "none" }],
   clone: [{ match: "bare", interaction: "unknown" }],
-  import: [{ match: "bare", interaction: "terminal" }, { match: { sub: "*" }, interaction: "terminal" }],
+  import: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
   copy: [{ match: "bare", interaction: "terminal" }],
-  export: [{ match: "bare", interaction: "terminal" }, { match: { sub: "*" }, interaction: "terminal" }],
+  export: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
   share: [{ match: "bare", interaction: "terminal" }],
-  bug: [{ match: "bare", interaction: "terminal" }, { match: { sub: "*" }, interaction: "terminal" }],
+  bug: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
   trust: [{ match: "bare", interaction: "terminal" }],
   reload: [{ match: "bare", interaction: "terminal" }],
   quit: [{ match: "bare", interaction: "terminal" }],
@@ -149,7 +149,7 @@ function discoverSkills({ home, cwd, env }: AgentCommandContext): SlashCommand[]
   const user = [...recursive(join(agentDir, "skills")), ...recursive(join(home, ".agents", "skills")), ...listed.added].filter((skill) => !listed.excluded(skill.path));
   const result = asCommands([...user, ...listed.forced], "user");
   if (cwd && projectTrusted(agentDir, settings, cwd)) {
-    for (const directory of ancestorsToRepoRoot(cwd)) {
+    for (const directory of ancestorsToRepoRoot(cwd, home)) {
       result.push(...asCommands(recursive(join(directory, ".pi", "skills")), "project"), ...asCommands(recursive(join(directory, ".agents", "skills")), "project"));
     }
   }

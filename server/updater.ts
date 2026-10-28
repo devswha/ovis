@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdt
 import { basename, dirname, join, resolve } from "node:path";
 import { CHECKOUT_CHANGED_REASON, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
+import { releaseIn } from "./update-state.ts";
 
 export interface Release {
   directory: string; revision: string; source_revision: string;
@@ -214,10 +215,10 @@ export class Updater {
       if (!reason) {
         try {
           const saved = JSON.parse(readFileSync(join(this.options.stateDir, "current.json"), "utf8")) as Release;
-          // Only directories created by this updater may be resumed.
-          if (saved.source_revision === this.sourceRevision && SHA.test(saved.revision) &&
-              saved.directory.startsWith(join(this.options.stateDir, "release-")) &&
-              await runCommand(saved.directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = saved;
+          // Only directories created by this updater may be resumed, under this state dir's name for them.
+          const directory = saved.source_revision === this.sourceRevision && SHA.test(saved.revision)
+            ? releaseIn(this.options.stateDir, saved.directory) : null;
+          if (directory !== null && await runCommand(directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = { ...saved, directory };
         } catch { /* missing/stale release: use the source checkout */ }
       }
       this.installed = this.brought(this.release);
@@ -416,18 +417,21 @@ export class Updater {
         attempted = revision;
         this.patch({ phase: "building", step: "download" });
         stage = mkdtempSync(join(this.options.stateDir, "release-"));
-        const run = (args: string[], timeout?: number) => runCommand(stage!, args, this.controller.signal, timeout);
+        // Network filesystems and low-memory builds can take minutes even without a network fetch.
+        const run = (args: string[], timeout = 10 * 60_000) => runCommand(stage!, args, this.controller.signal, timeout);
         await run(["git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", this.options.root, "."]);
         await run(["git", "fetch", "--quiet", this.options.root, revision]);
         await run(["git", "checkout", "--quiet", "--detach", revision]);
         // The clone's origin must keep pointing at the user's chosen upstream.
         await run(["git", "remote", "set-url", "origin", await this.git("remote", "get-url", "origin")]);
         this.patch({ step: "dependencies" });
-        await run([process.execPath, "install", "--frozen-lockfile"], 180_000);
+        await run([process.execPath, "install", "--frozen-lockfile"]);
         this.patch({ step: "typecheck" });
-        await run([process.execPath, "run", "typecheck"], 120_000);
+        // --bun: tsc's `#!/usr/bin/env node` would otherwise run on whatever node herdr's PATH has first, which
+        // may be older than tsc supports now that install.sh no longer puts its own Node there (#596)
+        await run([process.execPath, "--bun", "run", "typecheck"]);
         this.patch({ step: "build" });
-        await run([process.execPath, "run", "build"], 120_000);
+        await run([process.execPath, "run", "build"]);
         // the release's Rust PTY host, checked against its manifest; without it the release runs the Node sidecar
         if (existsSync(join(stage, "scripts", "pty-sidecar.ts"))) {
           try { console.log((await run([process.execPath, "scripts/pty-sidecar.ts", "install"], 120_000))); }
@@ -454,6 +458,8 @@ export class Updater {
         this.patch({ current_revision: revision, current_version: packageVersion(next.directory), available: false });
         this.failedRevision = null;
         rmSync(join(this.options.stateDir, "failed.json"), { force: true });
+        // every release held here is named under this state dir (initialize names a resumed one so), so a
+        // name kept is a directory kept, even where the release was recorded under another spelling (#2029)
         for (const entry of readdirSync(this.options.stateDir, { withFileTypes: true })) {
           const directory = join(this.options.stateDir, entry.name);
           if (entry.isDirectory() && entry.name.startsWith("release-") && directory !== next.directory && directory !== previous?.directory) {

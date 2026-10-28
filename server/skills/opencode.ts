@@ -141,12 +141,13 @@ export const source: AgentCommandSource = {
   forms: FORMS,
   // the screens Chat cannot represent: listed, but only the terminal runs them
   terminalBound: ["agents", "connect", "editor", "sessions", "skills", "themes"],
-  pin: "1.19.3",
+  // the shared builtins were checked against both TUIs
+  pin: [V1_PIN, V2_PIN],
   discover(ctx) {
     const v2 = isV2(ctx.version);
     const env = environRecord(ctx.env);
     const config = env.OPENCODE_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(ctx.home, ".config"), "opencode");
-    const projects = ctx.cwd ? ancestorsToRepoRoot(ctx.cwd).reverse() : [];
+    const projects = ctx.cwd ? ancestorsToRepoRoot(ctx.cwd, ctx.home).reverse() : [];
     const commands = new Map<string, SlashCommand>();
     const directories: readonly (readonly [string, "user" | "project"])[] = [
       [config, "user"],

@@ -5,7 +5,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
@@ -48,9 +48,17 @@ const VALUE_OPTIONS = new Set([
 /**
  * What an omp command line says about where it keeps its session: the last of each option wins.
  * `sessionDirValue` is the last `--session-dir`'s value ("" for an empty one, undefined when it
- * ends argv without one or none is given).
+ * ends argv without one or none is given). `extensions` are the files `-e`, `--extension`, `--hook`
+ * and `--trusted-extension` name, which omp loads even when it discovers none (`noExtensions`):
+ * under `--no-extensions`, and under `--trusted-extension`, which loads only its own files (omp
+ * refuses it together with the others).
  */
-export interface OmpLaunch { profile: string | null; sessionDir: boolean; cwd: string | null; sessionDirValue?: string }
+export interface OmpLaunch {
+  profile: string | null; sessionDir: boolean; cwd: string | null; sessionDirValue?: string;
+  extensions: string[]; noExtensions: boolean;
+}
+
+const EXTENSION_OPTIONS = new Set(["-e", "--extension", "--hook", "--trusted-extension"]);
 
 /**
  * The store options of omp's own argv (as the process has it, never a shell string), read the way
@@ -78,8 +86,9 @@ export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
     // this pass lets `--plan` take only a word that does not look like an option
     if (VALUE_OPTIONS.has(word) && word !== "--plan" && at + 1 < argv.length) rest.push(argv[++at]!);
   }
-  let cwd = "", sessionDir = false;
+  let cwd = "", sessionDir = false, noExtensions = false;
   let sessionDirValue: string | undefined;
+  const extensions: string[] = [];
   for (let at = 0; at < rest.length; at++) {
     let word = rest[at]!;
     let value: string | undefined;
@@ -90,8 +99,13 @@ export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
     // a moved store counts even without its value: omp's environment can move it too
     if (word === "--session-dir") { sessionDir = true; sessionDirValue = value; }
     else if (word === "--cwd" && value !== undefined) cwd = value;
+    else if (EXTENSION_OPTIONS.has(word) && value) {
+      extensions.push(value);
+      if (word === "--trusted-extension") noExtensions = true;
+    }
+    else if (word === "--no-extensions") noExtensions = true;
   }
-  return { profile, sessionDir, cwd: cwd || null, sessionDirValue };
+  return { profile, sessionDir, cwd: cwd || null, sessionDirValue, extensions, noExtensions };
 }
 
 /**
@@ -105,13 +119,40 @@ export function ompAgentDir(argv: readonly string[], environ: readonly string[] 
   return ompConfigDir(argv, environ, home);
 }
 
-/** The agent directory omp loads extensions from: moving sessions does not move its configuration. */
+/**
+ * The agent directory omp loads extensions from: moving sessions does not move its configuration.
+ * Read the way ompStoreLayout reads it, from the environment when one was read (without one, the
+ * default directory or the `--profile` one).
+ */
 export function ompConfigDir(argv: readonly string[], environ: readonly string[] | null, home: string): string | null {
   const launch = ompLaunch(argv);
   if (launch === null) return null;
-  const profile = launch.profile ?? (environ?.find((word) => word.startsWith("OMP_PROFILE="))?.slice(12) || null);
-  if (profile === null) return join(home, ".omp", "agent");
-  return /^[\w.-]+$/.test(profile) && profile !== "." && profile !== ".." ? join(home, ".omp", "profiles", profile, "agent") : null;
+  const variables = new Map<string, string>();
+  for (const word of environ ?? []) {
+    const equals = word.indexOf("=");
+    if (equals > 0 && !variables.has(word.slice(0, equals))) variables.set(word.slice(0, equals), word.slice(equals + 1));
+  }
+  return ompAgentDirectory(launch, (key) => variables.get(key), home)?.agent ?? null;
+}
+
+/** herdr's omp integration (`herdr integration install omp`), the file it installs in an agent directory's `extensions`. */
+export const OMP_INTEGRATION_FILE = "herdr-omp-agent-state.ts";
+
+/**
+ * Whether an omp process loads herdr's omp integration, found the way omp 18.8.7 finds extensions:
+ * a file `-e`/`--extension`/`--hook`/`--trusted-extension` names (loaded even under
+ * `--no-extensions`), and unless `--no-extensions`, the integration in the `extensions` of its agent
+ * directory (ompConfigDir) or of `<cwd>/.omp`, the directory it runs in (omp skips that one in the
+ * home directory). Extensions listed in a `settings.json` are not seen.
+ */
+export function ompLoadsIntegration(argv: readonly string[], environ: readonly string[] | null, home: string, cwd: string | null): boolean {
+  const launch = ompLaunch(argv);
+  if (launch === null) return false;
+  if (launch.extensions.some((path) => basename(path) === OMP_INTEGRATION_FILE)) return true;
+  if (launch.noExtensions) return false;
+  const agentDir = ompConfigDir(argv, environ, home);
+  if (agentDir !== null && existsSync(join(agentDir, "extensions", OMP_INTEGRATION_FILE))) return true;
+  return cwd !== null && isAbsolute(cwd) && !sameDirectory(cwd, home) && existsSync(join(cwd, ".omp", "extensions", OMP_INTEGRATION_FILE));
 }
 
 /**
@@ -186,22 +227,9 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
   // omp's home is $HOME, or the account's own when it is unset or empty
   try { user = variable("HOME") || userInfo().homedir; } catch { return null; }
   if (!isAbsolute(user)) return null;
-  const root = join(user, variable("PI_CONFIG_DIR") || ".omp");
-  const fromEnv = ompProfileName(variable("OMP_PROFILE") !== undefined ? variable("OMP_PROFILE") : variable("PI_PROFILE"));
-  const profile = launch.profile !== null ? ompProfileName(launch.profile) : fromEnv;
-  if (profile === null) return null;
-  const defaultAgent = join(profile === undefined ? root : join(root, "profiles", profile), "agent");
-  let agent = defaultAgent;
-  if (profile === undefined) {
-    const override = variable("PI_CODING_AGENT_DIR");
-    // a name omp refuses counts as none here: it read it only under a `--profile` that named none
-    const named = (name: string | null | undefined) => name === null ? undefined : name;
-    const handedDown = named(fromEnv) ?? named(ompProfileName(variable("PI_PROFILE")));
-    if (override && !(handedDown !== undefined && override === join(root, "profiles", handedDown, "agent"))) {
-      if (!isAbsolute(override)) return null;
-      agent = resolve(override);
-    }
-  }
+  const directory = ompAgentDirectory(launch, variable, user);
+  if (directory === null) return null;
+  const { agent, defaultAgent, profile } = directory;
   let sessions = join(agent, "sessions"), terminalSessions = join(agent, "terminal-sessions");
   if (agent === defaultAgent) {
     const xdg = (key: string): string | null | undefined => {
@@ -220,6 +248,31 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
   const own = launch.sessionDir ? launch.sessionDirValue : variable("PI_CODING_AGENT_SESSION_DIR") || undefined;
   if (own === undefined) return { sessions, terminalSessions, depth: 2 };
   return isAbsolute(own) ? { sessions: resolve(own), terminalSessions, depth: 1 } : null;
+}
+
+/**
+ * The agent directory of an omp with this launch and environment, as ompStoreLayout describes it,
+ * the default one it would be without PI_CODING_AGENT_DIR, and its profile. null for a profile name
+ * omp refuses or a relative PI_CODING_AGENT_DIR.
+ */
+function ompAgentDirectory(launch: OmpLaunch, variable: (key: string) => string | undefined, home: string): { agent: string; defaultAgent: string; profile: string | undefined } | null {
+  const root = join(home, variable("PI_CONFIG_DIR") || ".omp");
+  const fromEnv = ompProfileName(variable("OMP_PROFILE") !== undefined ? variable("OMP_PROFILE") : variable("PI_PROFILE"));
+  const profile = launch.profile !== null ? ompProfileName(launch.profile) : fromEnv;
+  if (profile === null) return null;
+  const defaultAgent = join(profile === undefined ? root : join(root, "profiles", profile), "agent");
+  let agent = defaultAgent;
+  if (profile === undefined) {
+    const override = variable("PI_CODING_AGENT_DIR");
+    // a name omp refuses counts as none here: it read it only under a `--profile` that named none
+    const named = (name: string | null | undefined) => name === null ? undefined : name;
+    const handedDown = named(fromEnv) ?? named(ompProfileName(variable("PI_PROFILE")));
+    if (override && !(handedDown !== undefined && override === join(root, "profiles", handedDown, "agent"))) {
+      if (!isAbsolute(override)) return null;
+      agent = resolve(override);
+    }
+  }
+  return { agent, defaultAgent, profile };
 }
 
 /**
@@ -339,6 +392,26 @@ export function ompRouteOwns({ layout }: OmpRoute, file: string, cwd: string): b
   if (parts === null || parts.length !== layout.depth && parts.length !== layout.depth + 1) return false;
   const header = transcriptHeader(file);
   return header !== null && ompSessionVersion(header.version) && (layout.depth === 2 || sameDirectory(header.cwd, cwd));
+}
+
+/**
+ * The blob store holding the pictures of an omp transcript, or null. omp 18.8.7 keeps its sessions in
+ * `<data>/sessions` and their pictures in `<data>/blobs` (`<data>` is the agent directory, or omp's
+ * XDG data directory), so a session of a managed store, `<data>/sessions/<cwd>/<id>.jsonl` or a
+ * subagent's file a level below it, has its blobs beside the store. A session directory of its own
+ * (`--session-dir`) names no data directory, and its pictures stay unnamed. The store is found from
+ * the transcript's real path, by layout alone, whether it exists yet or not: the parser, a page read
+ * live and the image endpoint all ask of the store when they read a blob, and a store that is missing,
+ * or a link (to another omp's store, or anywhere), answers nothing then (ompBlobPicture). A blob is
+ * served only when its bytes hash to the name the transcript gave them, so a wrong guess finds nothing.
+ */
+export function ompBlobStore(transcript: string): string | null {
+  let real: string;
+  try { real = realpathSync(transcript); } catch { return null; }
+  for (let dir = dirname(dirname(real)), depth = 0; depth < 2; depth += 1, dir = dirname(dir)) {
+    if (basename(dir) === "sessions") return join(dirname(dir), "blobs");
+  }
+  return null;
 }
 
 /** The transcript the pane's omp process holds open or last pointed its terminal breadcrumb at, or null (ompRouteTranscript). */

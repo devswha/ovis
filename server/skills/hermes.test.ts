@@ -32,6 +32,26 @@ function fixture() {
 }
 
 describe("Hermes commands", () => {
+  it("bounds fallback body reads to the first 64 KiB", () => {
+    const f = fixture();
+    const path = join(f.profile, "skills", "huge", "SKILL.md");
+    put(path, `---\nname: huge\n---\n${"\n".repeat(64 * 1024)}outside-prefix\n`);
+    const rows = f.discovered();
+    const row = rows.find(({ name }) => name === "huge");
+    expect(row).toBeDefined();
+    expect(row?.description).not.toBe("outside-prefix");
+  });
+
+  it("does not parse a vertical-whitespace delimiter as frontmatter", () => {
+    const f = fixture();
+    const body = "Body after the malformed header";
+    put(join(f.profile, "skills", "malformed", "SKILL.md"), `---\v\nname: malformed\n---\n${body}\n`);
+    const rows = f.discovered();
+    const row = rows.find(({ name }) => name === "malformed");
+    expect(row).toBeDefined();
+    expect(row?.description).not.toBe(body);
+  });
+
   it("keeps CLI CommandDefs and palette aliases, including terminal-bound screens", () => {
     const f = fixture();
     const rows = f.commands();
@@ -63,6 +83,25 @@ describe("Hermes commands", () => {
       { name: "project", description: "Project.", source: "skill", origin: "project" },
       { name: "stock-skill", description: "Installed stock.", source: "skill", origin: "bundled" },
     ]);
+  });
+
+  it("reads Windows Hermes skills under LOCALAPPDATA, where 0.21.5 keeps its home and checkout", () => {
+    const f = fixture();
+    const hermes = join(f.root, "local", "hermes");
+    f.skill(join(hermes, "skills"), "stock", { name: "Stock Skill", description: "Installed stock." });
+    f.skill(join(hermes, "skills"), "mine", { description: "Personal." });
+    f.skill(join(hermes, "hermes-agent", "skills"), "other/stock", { name: "Stock Skill" });
+    f.skill(join(f.home, ".hermes", "skills"), "wrong-home");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(paneCommands("hermes", f.cwd, f.home, { environ: [`LOCALAPPDATA=${join(f.root, "local")}`] }).filter((command) => command.source === "skill")).toMatchObject([
+        { name: "mine", description: "Personal.", origin: "user" },
+        { name: "stock-skill", description: "Installed stock.", origin: "bundled" },
+      ]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("never offers untrusted projects, disabled discovery, non-repositories or a home repository", () => {

@@ -1,6 +1,6 @@
 import type { ConversationPart, ConversationTurn } from "../../shared/protocol.ts";
 import { turnSkills } from "./skillActivity.ts";
-import { isTodoTool } from "./todos.ts";
+import { isTodoTool, todoSnapshot, type TodoItem } from "./todos.ts";
 import { t } from "./i18n.ts";
 
 export type ToolPart = Extract<ConversationPart, { kind: "tool" }>;
@@ -8,36 +8,87 @@ export type ThinkingPart = Extract<ConversationPart, { kind: "thinking" }>;
 export type TextPart = Extract<ConversationPart, { kind: "text" }>;
 
 /**
- * A turn the way Codex shows it: everything the agent did on the way — tool calls,
- * reasoning and the narration between them — folded under one "Worked for 7s · 1 edit"
- * header, and only what it said after the last action left out in the open as the answer.
+ * A turn the way Codex shows it: tool calls, reasoning and explicit progress narration fold under
+ * one "Worked for 7s · 1 edit" header. Every other assistant response stays in the main chat,
+ * including an unphased response followed by more work or another answer.
  */
 export interface SplitTurn {
   work: ConversationPart[];
   answer: TextPart[];
 }
 
+const isProse = (part: ConversationPart): part is TextPart => part.kind === "text" && part.text.trim().length > 0;
+const isAnswer = (part: ConversationPart): part is TextPart => isProse(part) && part.phase !== "commentary";
+const isWork = (part: ConversationPart): boolean => part.kind !== "text" || (isProse(part) && part.phase === "commentary");
+
 export function splitTurn(parts: ConversationPart[]): SplitTurn {
-  let lastAction = -1;
-  for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index];
-    if (part?.kind !== "text" || part.phase === "commentary") lastAction = index;
-  }
-  const isProse = (part: ConversationPart): part is TextPart => part.kind === "text" && part.text.trim().length > 0;
-  return {
-    work: parts.filter((part, index) => part.kind !== "text" || (isProse(part) && part.phase !== "final_answer" && index <= lastAction)),
-    answer: parts.filter((part, index): part is TextPart => isProse(part) && (part.phase === "final_answer" || index > lastAction)),
+  return { work: parts.filter(isWork), answer: parts.filter(isAnswer) };
+}
+
+/** `start`: the index of the run's first part in the turn, which names the run while it grows */
+export type TurnSegment = { kind: "work"; start: number; parts: ConversationPart[] } | { kind: "answer"; start: number; parts: TextPart[] };
+export type WorkSegment = Extract<TurnSegment, { kind: "work" }>;
+
+/**
+ * The turn in the agent's own order, as its terminal shows it: each run of work between two
+ * answers is its own block, so words written before a tool call stay above it. Classified as
+ * `splitTurn` classifies; whitespace-only text is in neither.
+ */
+export function turnSegments(parts: ConversationPart[]): TurnSegment[] {
+  const segments: TurnSegment[] = [];
+  parts.forEach((part, index) => {
+    const last = segments.at(-1);
+    if (isAnswer(part)) {
+      if (last?.kind === "answer") last.parts.push(part);
+      else segments.push({ kind: "answer", start: index, parts: [part] });
+    } else if (isWork(part)) {
+      if (last?.kind === "work") last.parts.push(part);
+      else segments.push({ kind: "work", start: index, parts: [part] });
+    }
+  });
+  return segments;
+}
+
+/**
+ * The name of each run's block, which also keeps its fold. A run keeps its name while its parts
+ * change: words before its tools join it (a record marks them commentary, a blank one is filled
+ * in), a part leaves it, or it splits or merges with another run (#2063). `previous` holds the name
+ * of the run each part was in when the turn was last drawn, by part index. A run takes the first
+ * of those names among its own parts that no earlier run has taken. Only then does a run with none
+ * get `work:<start>`, so a new run never takes the name of a run already shown.
+ *
+ * A run that draws no block (`drawn`: hidden reasoning alone) has no fold to keep: the runs drawn
+ * choose first, so it never takes a drawn block's name when the two split or merge (#2111). Its own
+ * name is `dormant`, by part index as `previous` is: a run drawn again takes it back, its fold with
+ * it, but only after every name a drawn run had.
+ */
+export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<ConversationPart, number>, previous: ReadonlyMap<number, string>,
+  drawn: (run: WorkSegment) => boolean = () => true, dormant: ReadonlyMap<number, string> = new Map()): string[] {
+  const used = new Set<string>();
+  const kept: (string | undefined)[] = runs.map(() => undefined);
+  const take = (index: number, from: ReadonlyMap<number, string>): void => {
+    const name = runs[index]!.parts.map((part) => from.get(at.get(part)!)).find((name) => name !== undefined && !used.has(name));
+    if (name !== undefined) { used.add(name); kept[index] = name; }
   };
+  const shown = runs.flatMap((run, index) => drawn(run) ? [index] : []);
+  const hidden = runs.flatMap((run, index) => drawn(run) ? [] : [index]);
+  for (const group of [shown, hidden]) for (const from of [previous, dormant]) for (const index of group) if (kept[index] === undefined) take(index, from);
+  return runs.map((run, index) => {
+    if (kept[index] !== undefined) return kept[index];
+    let name = `work:${run.start}`;
+    while (used.has(name)) name += "+";
+    used.add(name);
+    return name;
+  });
 }
 
 /**
  * A work block is open while its turn runs and folded once the turn settles: the answer stays
  * outside the fold, so a finished turn reads as its answer under one "Worked for" row.
  *
- * A settled turn keeps its block open when the work holds words the answer does not end on:
- * prose with no answer at all (an action came after the last words, or Codex commentary had no
- * final answer), or prose recorded after the last answer part. Folding would hide the newest
- * thing the agent said, or all of it. It takes the turn's parts, not the split: the order decides.
+ * A settled turn keeps its block open when explicit commentary comes after the last answer, or
+ * when commentary has no answer at all. Folding would hide the newest thing the agent said, or all
+ * of it. It takes the turn's parts, not the split: the order decides.
  */
 export function workStartsOpen(live: boolean, parts: ConversationPart[]): boolean {
   if (live) return true;
@@ -115,6 +166,77 @@ export function formatWorkDuration(startTs: string | null, endTs: string | null)
 export function isLiveWorkTurn(turn: ConversationTurn, last: boolean, status?: string, sentOver?: ConversationTurn | null): boolean {
   if (turn === sentOver) return false;
   return last && turn.role === "assistant" && (status === "working" || status === "blocked");
+}
+
+/**
+ * One todo call in a run of them. `state` is the transcript's own word for it (shared/protocol.ts):
+ * `unknown` when it records none (Codex after its output, other agents, older servers). Nothing
+ * here reads the output text or its emptiness for an outcome.
+ */
+export interface TodoAttempt {
+  part: ToolPart;
+  state: "ok" | "pending" | "error" | "unknown";
+  /** the list this call left, null when it cannot be read */
+  items: TodoItem[] | null;
+}
+
+/**
+ * Todo calls the agent made one after another, with nothing between them, drawn as one row: the
+ * plan's progress without a line per snapshot. Every attempt stays inside it, in order.
+ */
+export interface TodoGroup {
+  /** stable while calls are appended and the page is polled again: the first call's own id, in its turn's row */
+  id: string;
+  attempts: TodoAttempt[];
+  /**
+   * The list the row stands for: the latest call that completed (`ok`, or done with no recorded
+   * outcome). Null when none did. Its items are null when that list cannot be read; an earlier list
+   * never stands in for it.
+   */
+  current: TodoAttempt | null;
+  /** calls that have not answered, and calls that failed (by the transcript's flag) */
+  pending: number;
+  failed: number;
+}
+
+function attemptOf(part: ToolPart): TodoAttempt {
+  return { part, state: part.state ?? "unknown", items: todoSnapshot(part) };
+}
+
+/**
+ * The runs of two or more todo calls in a turn, by their first call. It walks the turn's own parts,
+ * before hidden thinking, skills or the answer are taken out: any other part, narration included,
+ * ends a run, so nothing the agent did between two updates is folded away. `rowKey` is the turn's
+ * row in the timeline; with the first call's original index it names a run whose calls carry no id.
+ */
+export function todoGroups(parts: readonly ConversationPart[], rowKey: string): Map<ToolPart, TodoGroup> {
+  const groups = new Map<ToolPart, TodoGroup>();
+  let run: { start: number; parts: ToolPart[] } | null = null;
+  const close = () => {
+    if (run !== null && run.parts.length > 1) {
+      const first = run.parts[0]!;
+      const attempts = run.parts.map(attemptOf);
+      let current: TodoAttempt | null = null;
+      // a call flagged failed never stands for the list, whatever state it carries
+      for (const attempt of attempts) if ((attempt.state === "ok" || attempt.state === "unknown") && attempt.part.error !== true) current = attempt;
+      groups.set(first, {
+        id: JSON.stringify([rowKey, first.call_id ?? `#${run.start}`]),
+        attempts,
+        current,
+        pending: attempts.filter((attempt) => attempt.state === "pending").length,
+        failed: attempts.filter((attempt) => attempt.state === "error" || attempt.part.error === true).length,
+      });
+    }
+    run = null;
+  };
+  parts.forEach((part, index) => {
+    if (part.kind === "tool" && !part.skill && isTodoTool(part.name)) {
+      if (run === null) run = { start: index, parts: [] };
+      run.parts.push(part);
+    } else close();
+  });
+  close();
+  return groups;
 }
 
 /** The rows a work block draws: skills are chips beside the prompt, thinking only when shown. */
