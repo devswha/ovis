@@ -56,6 +56,7 @@ import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTOR
 import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
 import { readHerdrUi } from "./herdr-ui.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
+import { closeOpenCodeNative } from "./opencode-native.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { handlePluginRequest } from "./plugin-routes.ts";
@@ -670,6 +671,7 @@ export function createServer(
         registration?.close();
         relay?.stop();
         closeCodexDaemonSources();
+        closeOpenCodeNative();
       });
       void shellAgents.stop();
       server.stop(true);
