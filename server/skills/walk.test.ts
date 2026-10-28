@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneCommands } from "../commands.ts";
-import { userHome, ancestorsToRepoRoot, createWalkBudget, customCommands, customCommandSteps, readFrontmatter, walkSkills, walkSkillSteps } from "./walk.ts";
+import { userHome } from "../user-home.ts";
+import { ancestorsToRepoRoot, createWalkBudget, customCommands, customCommandSteps, readFrontmatter, walkSkills, walkSkillSteps } from "./walk.ts";
 import { source as claude } from "./claude.ts";
 import { source as devin } from "./devin.ts";
 import type { WalkRules } from "./walk.ts";
@@ -314,6 +315,20 @@ describe("repository ancestors", () => {
     mkdirSync(join(repo, ".git"));
     expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
     expect(ancestorsToRepoRoot(home)).toEqual([]);
+  });
+
+  it("meets a home in another letter case on Windows, from below it and from above it", () => {
+    const root = temp();
+    mkdirSync(join(root, ".git"));
+    const home = join(root, "Home");
+    const cwd = join(home, "work");
+    mkdirSync(cwd, { recursive: true });
+    expect(ancestorsToRepoRoot(cwd, home.toUpperCase(), "win32")).toEqual([cwd]);
+    expect(ancestorsToRepoRoot(root, home.toUpperCase(), "win32")).toEqual([]);
+    expect(ancestorsToRepoRoot(root.toUpperCase(), home, "win32")).toEqual([]);
+    // elsewhere letter case tells folders apart
+    expect(ancestorsToRepoRoot(cwd, home.toUpperCase(), "linux")).toEqual([cwd, home, root]);
+    expect(ancestorsToRepoRoot(root, home.toUpperCase(), "linux")).toEqual([root]);
   });
 
 });
