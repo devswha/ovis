@@ -133,7 +133,8 @@ describe("answering a prompt from the chat", () => {
       ["multi: decomposed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep cafe\u0301", null],
       ["multi: composed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep caf\u00e9", null],
       // marks a page does not draw (U+200B, U+2060, U+00AD) and a ligature (U+FB01) that reads as its letters
-      ...([["zero-width space", "pro\u200Bduction"], ["word joiner", "pro\u2060duction"], ["soft hyphen", "pro\u00ADduction"]] as const).flatMap(([kind, word]): Case[] => [
+      ...([["zero-width space", "pro\u200Bduction"], ["word joiner", "pro\u2060duction"], ["soft hyphen", "pro\u00ADduction"],
+        ["combining grapheme joiner", "pro\u034Fduction"], ["variation selector-16", "pro\uFE0Fduction"]] as const).flatMap(([kind, word]): Case[] => [
         [`single: ${kind}`, [`Keep **${word}**`, "Keep **production**"], false, true, "Keep production", custom("Keep production")],
         [`multi: ${kind}`, [`Keep **${word}**`, "Keep **production**"], true, false, "Keep production", null],
       ]),

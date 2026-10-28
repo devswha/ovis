@@ -23,10 +23,11 @@ function boundLetter(label: string): string | null {
 /**
  * text as a page shows it, for comparing what is typed with what a card shows (never what is sent): one
  * Unicode form by look (NFKC: `e` and a combining accent is `é`, the ligature `ﬁ` is `fi`), without
- * the marks a page does not draw (format characters: zero-width space and joiners, word joiner, soft
- * hyphen, byte order mark), its spacing collapsed. Rows that read alike then name each other (#2220).
+ * the marks a page does not draw (format characters and every default-ignorable code point: zero-width
+ * space and joiners, word joiner, soft hyphen, byte order mark, the combining grapheme joiner, variation
+ * selectors, Hangul fillers; a visible accent stays), its spacing collapsed. Rows that read alike then name each other (#2220).
  */
-const spaced = (text: string): string => text.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
+const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 function bareLabel(label: string): string {
   return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));
