@@ -77,9 +77,12 @@ async function oneLineInstall(): Promise<void> {
   });
   await step("a terminal through the sidecar, on install.sh's Node where it installed one", async () => {
     // install.sh installs Node only when the Rust PTY host cannot run here; the server finds it by path
-    const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; fi`);
-    if (out.includes("NO_APP_NODE")) console.log("  install.sh installed no Node: the Rust PTY host runs this PC's terminals");
-    else assert.match(out, /PTY_OK/, `the bundled PTY smoke test failed:\n${out.slice(-1500)}`);
+    // and where it installed none, the Rust host has to open a pty itself (its own check, as install.sh's rust_host_runs runs it)
+    const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo RUST_PTY_OK; fi`);
+    if (out.includes("NO_APP_NODE")) {
+      assert.match(out, /RUST_PTY_OK/, `install.sh installed no Node, and the Rust PTY host opens no pty:\n${out.slice(-1500)}`);
+      console.log("  install.sh installed no Node: the Rust PTY host runs this PC's terminals");
+    } else assert.match(out, /PTY_OK/, `the bundled PTY smoke test failed:\n${out.slice(-1500)}`);
   });
   const again = await step("install.sh again: keeps what is there", () => asUser(`cat /tmp/install.sh | sh 2>&1; echo "exit=$?"`));
   assert.match(again, /exit=0/, again.slice(-1500));

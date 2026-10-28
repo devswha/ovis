@@ -252,6 +252,16 @@ install_node() {
   rm -rf "$NODE_DIR.old" "$tmp"
 }
 
+# Whether the node first on PATH is one the Node sidecar takes (server/pty/sidecar.ts isRealNode):
+# Node 18 or newer, not Bun, built for this PC ($arch). An x64 Node left from a Rosetta shell on an
+# arm64 Mac answers 18+ but cannot load the server's node-pty.
+node_fits() {
+  fit=$(node -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' 2>/dev/null) || return 1
+  fit_major=${fit%% *}
+  case "$fit_major" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$fit_major" -ge 18 ] && [ "${fit#* }" = "$arch" ]
+}
+
 # The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
 # first there and overrode the user's own Node (#596). A release whose server looks for it in
 # NODE_DIR itself (server/pty/sidecar.ts, in the code at $1) needs no link, so a link of ours goes
@@ -456,9 +466,8 @@ main() {
   if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
     needs_node=needed
     # our own Node counts here: on this PATH it goes before the user's
-    node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
     # optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
-    if [ "${node_major:-0}" -lt 18 ] && ! ( install_node ); then
+    if ! node_fits && ! ( install_node ); then
       say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
     fi
   fi

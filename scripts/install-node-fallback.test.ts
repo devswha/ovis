@@ -16,7 +16,7 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "node_link"].map(fn).join("\n");
+const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "node_fits", "node_link"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-node-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -117,6 +117,37 @@ describe("install_node", () => {
     const result = attempt(pc(download("not node"), "exit 0"));
     expect(result.out).toContain("FAILED");
     expect(result.out).toContain("does not match its published SHA-256");
+  });
+});
+
+describe("node_fits", () => {
+  /** whether install.sh takes the node first on PATH, one that answers the probe with `answer`, on a PC of `arch` */
+  const fits = (answer: string, arch = "arm64") => {
+    const bin = mkdtempSync(join(dir, "fits-"));
+    writeFileSync(join(bin, "node"), `#!/bin/sh\necho '${answer}'\n`, { mode: 0o755 });
+    return sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${bin}:/usr/bin:/bin`, arch }).out.trim();
+  };
+
+  it("takes Node 18 or newer built for this PC", () => {
+    expect(fits("22 arm64")).toBe("FITS");
+    expect(fits("18 x64", "x64")).toBe("FITS");
+  });
+
+  it("refuses an older Node, Bun, a Node of another architecture and a node that does not answer", () => {
+    expect(fits("16 arm64")).toBe("NO");
+    expect(fits("bun arm64")).toBe("NO");
+    // an x64 Node from a Rosetta shell on an arm64 Mac, which the server's node-pty cannot load (#2100 review)
+    expect(fits("22 x64")).toBe("NO");
+    expect(fits("")).toBe("NO");
+    // no node at all: node_fits uses shell builtins only, so a PATH of one empty directory is enough
+    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: mkdtempSync(join(dir, "no-node-")), arch: "arm64" }).out.trim()).toBe("NO");
+  });
+
+  it("asks a real Node the same way", () => {
+    const real = Bun.which("node");
+    if (real === null) throw new Error("this test needs Node");
+    const arch = process.arch;
+    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${join(real, "..")}:/usr/bin:/bin`, arch }).out.trim()).toBe(Number(process.versions.node.split(".")[0]) >= 18 ? "FITS" : "NO");
   });
 });
 
