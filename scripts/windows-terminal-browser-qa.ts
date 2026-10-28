@@ -1,4 +1,5 @@
-/** Manual native Windows/PowerShell regression (not run by CI), in the isolated test session.
+/** Native Windows/PowerShell regression in the isolated test session. Not in the browser lane:
+ * .github/workflows/windows-terminal-qa.yml runs it on a Windows runner.
  * Requires Bun, herdr on PATH and Chromium (`bun node_modules/playwright-core/cli.js install chromium`).
  * Run after `bun install --frozen-lockfile` and `bun run build`:
  *   bun scripts/windows-terminal-browser-qa.ts
