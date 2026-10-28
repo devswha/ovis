@@ -35,6 +35,8 @@ async function withBridgedPane(run: (pane: {
   keys: string[];
   /** called when herdr is asked for the pane's screen */
   onScreen?: () => void;
+  /** the pane's screen, the recorded pi-ask form unless set */
+  screen?: string;
   /** further foreground pis with the extension, each answering with its own state */
   others: Map<number, PiAskBridgeState>;
   bridge: Bridge;
@@ -75,7 +77,7 @@ async function withBridgedPane(run: (pane: {
   }));
   const pane = {
     status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, keys: [] as string[],
-    onScreen: undefined as (() => void) | undefined, others, bridge, session, root,
+    onScreen: undefined as (() => void) | undefined, screen: undefined as string | undefined, others, bridge, session, root,
     read: async (): Promise<InteractivePrompt | null> => {
       const url = new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${id}`);
       const response = (await handlePromptRequest(new Request(url), url))!;
@@ -102,7 +104,7 @@ async function withBridgedPane(run: (pane: {
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
       if (request.method === "pane.read") {
         pane.onScreen?.();
-        return reply({ read: { text: fixture.screen } });
+        return reply({ read: { text: pane.screen ?? fixture.screen } });
       }
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
       if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [pane.foreground, ...others.keys()].map((pid) => ({ pid, argv: ["fictional-shell"] })) } });
@@ -389,6 +391,21 @@ test("a pi-ask form that opens during the read or before the keys gets none of t
     // the form opens while herdr reads the pane's screen
     pane.onScreen = () => { pane.bridge.state.flows = [form]; };
     expect(await pane.read()).toBeNull();
+  });
+});
+
+test("pi's own dialogs keep their cards, except while a pi-ask form holds the keys", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    pane.screen = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
+    pane.bridge.state.flows = [];
+    // no pi-ask form open: pi's select dialog is a card, answered by keys as on main
+    expect(await pane.read()).toMatchObject({ question: "Choose a color", options: [{ label: "Red" }, { label: "Blue" }] });
+    // a pi-ask form open: no card that every answer would refuse; the terminal answers
+    pane.bridge.state.flows = [answerForm(pane.bridge.state)];
+    expect(await pane.read()).toBeNull();
+    expect(pane.keys).toEqual([]);
   });
 });
 

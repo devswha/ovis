@@ -896,13 +896,12 @@ async function readKnownPrompt(
   const prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
-  // pi-ask's form with no card: pi-ask takes no typed keys (its docs/remote-events.md), so no generic
-  // card guesses them; the terminal answers it. The pane's pi says so through the extension (any
-  // open form, a card or not, with or without a session written yet); without it, an open
-  // ask_user call in the session does
-  // asked after the screen read, so a form that opened during it counts
-  const fallbackCard = !prompt || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback") === true;
-  if (fallbackCard && agent === "pi" && await piAskRefusesKeys(paneId, piTranscript, signal)) return { prompt: null, screen, suppressFallback: true };
+  // pi-ask's form with no card: pi-ask takes no typed keys (its docs/remote-events.md), so no card
+  // that answers by keys is offered, pi's own dialogs included (the answer would refuse them too):
+  // the terminal answers it. The pane's pi says so through the extension (any open form, a card or
+  // not, with or without a session written yet); without it, an open ask_user call in the session
+  // does. Asked after the screen read, so a form that opened during it counts
+  if (agent === "pi" && await piAskRefusesKeys(paneId, piTranscript, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
