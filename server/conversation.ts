@@ -1368,18 +1368,30 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
 
 /**
  * The pane's live screen, or "" when nothing proves it: herdr's viewport, read while herdr reports
- * it at the bottom with the same history before and after the read. Scrolled up, on this device or
+ * it at the bottom with the same history before and after the read (or, when herdr reports no
+ * scroll at all, whose whole text is the live screen's). Scrolled up, on this device or
  * another, the viewport is history; and herdr's detection read is no stand-in, since on a short
  * screen it reaches up into the history above (herdr 0.9.5: a cleared 7-row screen read as 34 rows).
  * Whatever the agent drew there before (another model, a conversation) is not what it shows now.
  */
 async function bottomViewport(paneId: string): Promise<string> {
   const scroll = () => paneScrollInfo(paneId).catch(() => null);
+  const read = (source: "visible" | "detection") =>
+    paneRead({ paneId, source, format: "text", timeoutMs: 2_000 }).then((answer) => answer.text, () => "");
   const before = await scroll();
-  if (before?.offset_from_bottom !== 0) return "";
-  const text = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
-  const after = text === "" ? null : await scroll();
-  return after?.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
+  if (before !== null && before.offset_from_bottom !== 0) return "";
+  const text = await read("visible");
+  if (text === "") return "";
+  const after = await scroll();
+  if (before !== null && after !== null) {
+    return after.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
+  }
+  // herdr's scroll is optional: with none for either read, the viewport counts only when its whole
+  // text is the live screen's (as viewportShowsLive), so a detection read that reaches into history
+  // never stands in. A scroll known for one read and not the other proves nothing.
+  if (before !== null || after !== null) return "";
+  const rows = (screen: string): string => screen.split("\n").map((row) => row.trimEnd()).join("\n").trimEnd();
+  return rows(text) === rows(await read("detection")) ? text : "";
 }
 
 /**

@@ -2783,22 +2783,22 @@ describe("a model drawn only in the history above the live screen", () => {
   });
   afterEach(() => {
     for (const mock of mocks.splice(0)) mock.mockRestore();
-    launchedAgents.forget("screen-history-claude");
+    for (const agent of ["claude", "codex", "gjc"]) launchedAgents.forget(`screen-history-${agent}`);
     forgetTranscriptState();
     for (const [name, value] of Object.entries(homes)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
     rmSync(root, { recursive: true, force: true });
   });
   /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
-   * each scroll position herdr reports in turn (offset from the bottom, rows of history), the last one
-   * from then on. */
-  const shown = (agent: string, status: string, history: string, live: string, scrolls: [number, number][] = [[0, 30]]): string => {
+   * each scroll position herdr reports in turn (offset from the bottom, rows of history; null for none,
+   * as herdr's scroll is optional), the last one from then on. */
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null)[] = [[0, 30]]): string => {
     const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
     mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
     mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
       if (method === "agent.get") return { agent: { agent } } as never;
       if (method === "pane.get") {
-        const [offset, max] = scrolls.length > 1 ? scrolls.shift()! : scrolls[0]!;
-        return { pane: { ...pane, scroll: { offset_from_bottom: offset, max_offset_from_bottom: max, viewport_rows: 40 } } } as never;
+        const scroll = scrolls.length > 1 ? scrolls.shift()! : scrolls[0]!;
+        return { pane: { ...pane, ...(scroll === null ? {} : { scroll: { offset_from_bottom: scroll[0], max_offset_from_bottom: scroll[1], viewport_rows: 40 } }) } } as never;
       }
       if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
       throw new Error(`unexpected RPC: ${method}`);
@@ -2823,7 +2823,7 @@ describe("a model drawn only in the history above the live screen", () => {
 
   it("names the model only when the viewport stayed at the bottom, with the same history, around its read", async () => {
     const frame = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
-    const named = async (scrolls: [number, number][]) => {
+    const named = async (scrolls: ([number, number] | null)[]) => {
       const id = shown("codex", "working", "", frame, scrolls);
       const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
       for (const mock of mocks.splice(0)) mock.mockRestore();
@@ -2834,6 +2834,37 @@ describe("a model drawn only in the history above the live screen", () => {
     expect(await named([[3, 30], [0, 30]])).toBeNull();
     expect(await named([[0, 30], [3, 30]])).toBeNull();
     expect(await named([[0, 30], [0, 31]])).toBeNull();
+    // a scroll known for one read and not the other proves nothing
+    expect(await named([null, [0, 30]])).toBeNull();
+    expect(await named([[0, 30], null])).toBeNull();
+  });
+
+  // herdr's pane.get may report no scroll: then the viewport is the live screen only when its whole text is
+  it("names the model a start screen states when herdr reports no scroll, and the live screen is the viewport", async () => {
+    const codex = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
+    const screens = [
+      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n", model: "claude-haiku-5-5", effort: null },
+      { agent: "codex", frame: codex, model: "gpt-6.1-sol", effort: "low" },
+      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n", model: "claude-opus-5-5", effort: "xhigh" },
+    ];
+    for (const { agent, frame, model, effort } of screens) {
+      // an agent this server started, before its first message
+      const id = shown(agent, "idle", "", frame, [null]);
+      launchedAgents.launched(id, agent);
+      expect(await paneConversation(id, join(root, ".codex"))).toMatchObject({ turns: [], screen: true, metadata: { model, reasoning_effort: effort } });
+      launchedAgents.forget(id);
+      for (const mock of mocks.splice(0)) mock.mockRestore();
+    }
+    // a Codex started in the terminal: the terminal stands in, with its model
+    const terminal = shown("codex", "working", "", codex, [null]);
+    const answer = await paneConversation(terminal, join(root, ".codex")).catch((error: unknown) => error);
+    expect((answer as ConversationUnavailable).screen).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "low" });
+    for (const mock of mocks.splice(0)) mock.mockRestore();
+    // a short screen whose detection read also reaches the history above: no proof, no model
+    const short = shown("codex", "working", "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6-Luna medium \u00b7 /tmp/project\n  ? for shortcuts\n", codex, [null]);
+    const unproven = await paneConversation(short, join(root, ".codex")).catch((error: unknown) => error);
+    expect(unproven).toBeInstanceOf(ConversationUnavailable);
+    expect((unproven as ConversationUnavailable).screen).toBeUndefined();
   });
 });
 
