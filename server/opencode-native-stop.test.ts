@@ -1,5 +1,5 @@
-import { afterAll, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,8 +9,12 @@ import { closeOpenCodeNative, openCodeNativeState, openCodePaneService } from ".
 import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
 
 const root = mkdtempSync(join(tmpdir(), "opencode-native-stop-"));
-afterAll(() => {
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
   closeOpenCodeNative();
+});
+afterAll(() => {
   delete openCodeServiceOptions.stateDir;
   forgetOpenCodeService();
   rmSync(root, { recursive: true, force: true });
@@ -22,13 +26,14 @@ const within = <T>(promise: Promise<T>, what: string, ms = 3_000): Promise<T> =>
   return Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen`)), ms); })]).finally(() => clearTimeout(timer));
 };
 
-it("closes the OpenCode event stream a verified pane opened when the server stops (#1548)", async () => {
+/** a stand-in OpenCode v2 service: its info, any session, and the event stream it holds open */
+function opencodeService(name: string) {
+  const dir = join(root, name);
   const streamOpened = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
-  // a stand-in OpenCode v2 service: its info, any session, and the event stream it holds open
   const service = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: root } });
+    if (url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: dir } });
     if (url.pathname.startsWith("/api/session/")) return Response.json({ data: { id: decodeURIComponent(url.pathname.split("/").at(-1)!) } });
     if (url.pathname === "/api/event") {
       return new Response(new ReadableStream<Uint8Array>({
@@ -38,25 +43,63 @@ it("closes the OpenCode event stream a verified pane opened when the server stop
     }
     return new Response(null, { status: 404 });
   } });
-  writeFileSync(join(root, "service.json"), JSON.stringify({ url: service.url.origin, pid: process.pid, password: "x", version: "2.0.32" }));
-  openCodeServiceOptions.stateDir = root;
+  cleanups.push(() => service.stop(true));
+  mkdirSync(dir, { recursive: true });
+  return { dir, service, streamOpened: streamOpened.promise, streamClosed: streamClosed.promise };
+}
+
+function useService(fake: ReturnType<typeof opencodeService>): void {
+  writeFileSync(join(fake.dir, "service.json"), JSON.stringify({ url: fake.service.url.origin, pid: process.pid, password: "x", version: "2.0.32" }));
+  openCodeServiceOptions.stateDir = fake.dir;
   forgetOpenCodeService();
   closeOpenCodeNative();
+}
+
+function server(): ReturnType<typeof createServer> {
   const stateDir = mkdtempSync(join(tmpdir(), "opencode-native-stop-state-"));
-  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", machines: false, sidecar: false });
-  let stopped = false;
-  try {
-    const pane = { pane_id: "p_stop", agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: "ses_stop" } } as unknown as HerdrPane;
-    expect(await openCodePaneService(pane)).not.toBeNull();
-    await within(streamOpened.promise, "the stream opening");
-    server.stop();
-    stopped = true;
-    expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
-    await within(streamClosed.promise, "the stream closing at the service");
-  } finally {
-    if (!stopped) server.stop();
-    closeOpenCodeNative();
-    service.stop(true);
-    rmSync(stateDir, { recursive: true, force: true });
-  }
+  const instance = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", machines: false, sidecar: false });
+  cleanups.push(() => { instance.stop(); rmSync(stateDir, { recursive: true, force: true }); });
+  return instance;
+}
+
+const opencodePane = (paneId: string) => ({ pane_id: paneId, agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: `ses_${paneId.replace(/[^A-Za-z0-9]/gu, "")}` } }) as unknown as HerdrPane;
+
+it("closes the OpenCode event stream a verified pane opened when the server stops (#1548)", async () => {
+  const fake = opencodeService("single");
+  useService(fake);
+  const instance = server();
+  expect(await openCodePaneService(opencodePane("p_stop"))).not.toBeNull();
+  await within(fake.streamOpened, "the stream opening");
+  instance.stop();
+  expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
+  await within(fake.streamClosed, "the stream closing at the service");
+});
+
+it("keeps the stream and the verified panes of a server that still runs when another one stops", async () => {
+  const fake = opencodeService("shared");
+  useService(fake);
+  const first = server();
+  const second = server();
+  expect(await openCodePaneService(opencodePane("p_shared"))).not.toBeNull();
+  await within(fake.streamOpened, "the stream opening");
+  first.stop();
+  expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_shared"] });
+  // a second stop of the same server releases nothing more
+  first.stop();
+  expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_shared"] });
+  second.stop();
+  expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
+  await within(fake.streamClosed, "the stream closing at the service");
+});
+
+it("opens no stream for a verification that arrives after the last server stopped", async () => {
+  const fake = opencodeService("late");
+  useService(fake);
+  server().stop();
+  expect(await openCodePaneService(opencodePane("p_late"))).toBeNull();
+  expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
+  // a server started again verifies panes as before
+  server();
+  expect(await openCodePaneService(opencodePane("p_late"))).not.toBeNull();
+  expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_late"] });
 });
