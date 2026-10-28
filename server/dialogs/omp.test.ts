@@ -127,14 +127,18 @@ describe("omp tool approval (#2059)", () => {
     expect(steps(prompt, 3)).toEqual([{ keys: [KEY.escape] }]);
   });
 
-  it("answers each row by moving to it when a narrow pane cuts 18.13's hint, while the details cannot be scrolling", () => {
+  it("answers Deny by moving to it when a narrow pane cuts 18.13's hint after the approve keys, while the details cannot be scrolling", () => {
     const shown = approval("18.13.2-unicode-narrow");
     expect(shown).toContain("\u2502 \u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b de\u2026 \u2502");
     const prompt = parseInteractivePrompt("omp", shown);
     expect(labels(prompt)).toEqual(["Approve", "Approve bash for this session", "Deny"]);
-    expect(steps(prompt, 0)).toEqual([{ keys: [KEY.enter] }]);
+    expect(steps(prompt, 0)).toEqual([{ keys: ["ctrl+q"] }]);
     expect(steps(prompt, 1)).toEqual([{ keys: [KEY.down] }, { keys: [KEY.enter] }]);
     expect(steps(prompt, 2)).toEqual([{ keys: [KEY.down] }, { keys: [KEY.down] }, { keys: [KEY.enter] }]);
+    // omp takes the approve keys before selecting: unseen, or bound to the select key, a move to Deny could approve
+    for (const drawn of ["\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+\u23ce/Ctr\u2026", "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 \u23ce approve \u00b7 \u238b de\u2026"]) {
+      expect(parseInteractivePrompt("omp", redraw(shown, hintOf(shown), drawn)), drawn).toBeNull();
+    }
     // eight detail rows may be a window on more, which only the cut part of the hint would say
     const command = shown.split("\n").find((line) => line.includes("Command: ls -la"))!;
     const tall = shown.replace(command, Array.from({ length: 8 }, () => command).join("\n"));
@@ -158,6 +162,24 @@ describe("omp tool approval (#2059)", () => {
     }
   });
 
+  it("reads 18.13's hint as omp draws it on macOS in Nerd Font icons, and answers Approve by its row without a Ctrl+letter", () => {
+    const shown = approval("18.13.2-nerd-wide");
+    // \u2303 is \u{f0634} followed by a space, \u23ce \u{f0311}, \u238b \u{f12b7}: Ctrl+O reads `\u{f0634} O`
+    const mac = parseInteractivePrompt("omp", redraw(shown, hintOf(shown),
+      "\u2191/\u2193 choose \u00b7 \u{f0311} select \u00b7 \u{f0634} \u{f0311}/\u{f0634} Q approve \u00b7 \u{f12b7} deny \u00b7 \u{f0634} O details \u00b7 type to deny and steer"));
+    expect(labels(mac)).toEqual(["Approve", "Approve bash for this session", "Deny"]);
+    expect(steps(mac, 0)).toEqual([{ keys: ["ctrl+q"] }]);
+    expect(steps(mac, 1)).toEqual([{ keys: [KEY.down] }, { keys: [KEY.enter] }]);
+    expect(steps(mac, 2)).toEqual([{ keys: [KEY.escape] }]);
+    // Ctrl+Enter, or Ctrl+M that a terminal sends as Enter, could take the row under the cursor: Approve is moved to instead
+    for (const approve of ["Ctrl+\u23ce", "Ctrl+M"]) {
+      const own = parseInteractivePrompt("omp", redraw(approval("18.13.2-unicode-wide"), hintOf(approval("18.13.2-unicode-wide")),
+        `\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 ${approve} approve \u00b7 \u238b deny \u00b7 Ctrl+O details \u00b7 type to deny and steer`));
+      expect(steps(own, 0), approve).toEqual([{ keys: [KEY.enter] }]);
+      expect(steps(own, 2), approve).toEqual([{ keys: [KEY.escape] }]);
+    }
+  });
+
   it("leaves to the terminal a panel it cannot read in full or a key it cannot send", () => {
     const old = approval("18.10.4-unicode-wide");
     const current = approval("18.13.2-unicode-wide");
@@ -170,6 +192,9 @@ describe("omp tool approval (#2059)", () => {
       [current, "\u23ce deny and send \u00b7 Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b deny \u00b7 Ctrl+O details"],
       [current, "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b deny \u00b7 Ctrl+O details \u00b7 PgUp/PgDn scroll \u00b7 type to deny and steer"],
       [current, "j/k choose \u00b7 \u23ce select \u00b7 Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b deny"],
+      // a move key bound to approve or deny would answer while moving to a row
+      [current, "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 \u23ce approve \u00b7 \u238b deny"],
+      [current, "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+Q approve \u00b7 \u2193 deny"],
     ] as const) {
       expect(parseInteractivePrompt("omp", redraw(shown, hintOf(shown), drawn)), drawn).toBeNull();
     }
@@ -177,8 +202,21 @@ describe("omp tool approval (#2059)", () => {
     expect(parseInteractivePrompt("omp", redraw(current, "\u2502   Deny ", "  Reject"))).toBeNull();
     expect(parseInteractivePrompt("omp", redraw(current, "\u2502 \u276f Approve ", "  Approve"))).toBeNull();
     // later output under the panel, or under 18.13's composer
-    expect(parseInteractivePrompt("omp", `${old.trimEnd()}\n Fixture output after the panel.\n`)).toBeNull();
-    expect(parseInteractivePrompt("omp", `${current.trimEnd()}\n Fixture output after the panel.\n`)).toBeNull();
+    for (const later of [" Fixture output after the panel.", "\u03c0 Fixture output after the panel.", "x 1s unrelated output"]) {
+      expect(parseInteractivePrompt("omp", `${old.trimEnd()}\n${later}\n`), later).toBeNull();
+      expect(parseInteractivePrompt("omp", `${current.trimEnd()}\n${later}\n`), later).toBeNull();
+    }
+  });
+
+  it("gives another call drawn as the same panel another card, by the screen above it", () => {
+    // omp cuts a long detail at the panel's edge and summarizes a multi-line one: the panel alone can repeat
+    for (const name of ["18.10.4-unicode-wide", "18.13.2-unicode-wide"]) {
+      const shown = approval(name);
+      const next = shown.replace("\u2502 $ ls -la ", "\u2502 $ rm -r ");
+      expect(next, name).not.toBe(shown);
+      expect(parseInteractivePrompt("omp", next)?.body, name).toBe(parseInteractivePrompt("omp", shown)?.body);
+      expect(parseInteractivePrompt("omp", next)?.id, name).not.toBe(parseInteractivePrompt("omp", shown)?.id);
+    }
   });
 
   it("keeps one card while the countdown in the title ticks", () => {
