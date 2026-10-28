@@ -303,11 +303,11 @@ export class VoiceService {
     form.append("model", transcribeModel);
     form.append("stream", "true");
     for (const language of clip.languages) form.append("languages[]", language);
-    form.append("prompt", PROMPTS[clip.mode]);
     // hints only fill the room the required fields leave, first ones first: a pane with many
     // slash commands would otherwise make the provider refuse the whole recording
-    const room = Math.max(0, PROVIDER_FORM_FIELDS_MAX - [...form.keys()].length);
+    const room = Math.max(0, PROVIDER_FORM_FIELDS_MAX - ([...form.keys()].length + 1));
     for (const keyword of clip.keywords.slice(0, room)) form.append("keywords[]", keyword);
+    form.append("prompt", PROMPTS[clip.mode]);
 
     let response: Response;
     try {
