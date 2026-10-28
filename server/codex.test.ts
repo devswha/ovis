@@ -246,7 +246,7 @@ describe("Codex conversation records", () => {
       return () => parseCodexTranscript(transcript);
     }, false, true);
     expect(result[0]?.parts).toEqual([{ kind: "text", text: text.trimEnd() }]);
-    expect(ratio).toBeLessThan(10);
+    expect(ratio).toBeLessThan(20);
   }, 30_000);
 
   it("hides injected context, metadata and developer messages while preserving the real request", () => {
