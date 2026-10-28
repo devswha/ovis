@@ -213,6 +213,14 @@ const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！�
 /** a command's option (`--oneline`, `-rf`): its line is a command, never prose to join */
 const OPTION_RE = /(?:^|\s)--?\w/;
 
+/**
+ * A line that is a command or a path, read on its own: it opens with a common command (`git push`,
+ * `bun test`, a `$ ` prompt), or it is one token with a `/` or a file's extension. Such a line keeps
+ * its breaks on both sides, whatever the rest of its paragraph says. A command this list does not
+ * name is caught only by its options or its signs (OPTION_RE, PROSE_RE).
+ */
+const COMMAND_LINE_RE = /^\s*(?:\$\s+\S|(?:git|gh|npm|npx|bun|bunx|yarn|pnpm|node|deno|python3?|pip3?|uv|cargo|rustc|go|make|cd|ls|rm|cp|mv|mkdir|cat|echo|curl|wget|ssh|scp|rsync|sudo|docker|kubectl|helm|terraform|export|source|chmod|chown|tar|grep|rg|sed|awk|find|touch|kill|systemctl|brew|apt|apt-get|dnf|herdr|claude|codex|tmux)(?:\s|$)|\S*(?:\/|\w\.[a-z][a-z0-9]{0,5}\b)\S*[.,;:]?\s*$)/;
+
 /** how a sentence ends, a closing quote or bracket after it allowed */
 const SENTENCE_END_RE = /[.!?\u2026\u3002\uff01\uff1f]["'\u201d\u2019)\]\u300d\u300f\uff09]*$/u;
 
@@ -291,7 +299,7 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
         const before = [...previous.text.trimEnd()].at(-1) ?? "";
         const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
         const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OPTION_RE.test(previous.text) && !OPTION_RE.test(text)
-          && !OWN_LINE_RE.test(text) && before !== ":";
+          && !COMMAND_LINE_RE.test(previous.text) && !COMMAND_LINE_RE.test(text) && !OWN_LINE_RE.test(text) && before !== ":";
         // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
         // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
         // anywhere, so only a line filled to the edge goes on

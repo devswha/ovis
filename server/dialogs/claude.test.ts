@@ -281,6 +281,16 @@ describe("Claude's words over its question (#2088)", () => {
       .toBe("Merge and push:\n\ngit merge experimental-feature-branch\ngit push");
   });
 
+  test("keeps command lines apart in a paragraph that ends in a path with a period", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● Merge and push:", "", "  git merge experimental-feature-branch", "  git push", "  docs/release-notes.md.", ""]))?.screen_words)
+      .toBe("Merge and push:\n\ngit merge experimental-feature-branch\ngit push\ndocs/release-notes.md.");
+  });
+
+  test("keeps command lines apart when text follows them with no blank line", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● Merge and push:", "", "  git merge experimental-feature-branch", "  git push", "  Then the branch is on the remote.", ""]))?.screen_words)
+      .toBe("Merge and push:\n\ngit merge experimental-feature-branch\ngit push\nThen the branch is on the remote.");
+  });
+
   test("reads Korean prose with a word in parentheses as Claude's words, not a tool call", () => {
     expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 패치(Patch)는 기존 내용을 보존합니다.", ""]))?.screen_words).toBe("패치(Patch)는 기존 내용을 보존합니다.");
   });
