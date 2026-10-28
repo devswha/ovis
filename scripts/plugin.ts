@@ -21,11 +21,11 @@
  */
 
 import { mergeEnvLayers } from "../server/legacy-env.ts";
-import { acquireOwnerDirectory, type OwnerLease } from "../server/owner-guard.ts";
+import { acquireOwnerDirectory, guardPath, type OwnerLease } from "../server/owner-guard.ts";
 import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
 import { defaultStateDir } from "../server/update-state.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 
@@ -60,21 +60,34 @@ const HERDR_PLUGIN_STATE = join(herdrStateDir(process.env, platform(), homedir()
 const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_PLUGIN_STATE, id)).find((dir) => existsSync(dir)) ?? join(HERDR_PLUGIN_STATE, PLUGIN_ID);
 // run by hand, without herdr's HERDR_PLUGIN_STATE_DIR: a server started from a checkout keeps its
 // own dir while it runs; otherwise the dir herdr gives the plugin, where its startup hook wrote
-const STATE_DIR = runningStateDir(process.env["HERDR_PLUGIN_STATE_DIR"]
-  ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR));
+const REQUESTED_STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"]
+  ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR);
+/** where the record is: the old id's dir while a server started under it runs (runningStateDir) */
+let STATE_DIR = runningStateDir(REQUESTED_STATE_DIR);
 const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? ownDir(join(homedir(), ".config"));
 adoptLegacyConfig(CONFIG_DIR);
-const PID_FILE = join(STATE_DIR, "server.pid");
-const LOG_FILE = join(STATE_DIR, "server.log");
+let PID_FILE = join(STATE_DIR, "server.pid");
+let LOG_FILE = join(STATE_DIR, "server.log");
 /** the recorded server's pid and birth, so a pid handed on to another process is not taken for it */
-const OWNER_FILE = join(STATE_DIR, "server.owner");
+let OWNER_FILE = join(STATE_DIR, "server.owner");
+/**
+ * Finds the record again once this process has its turn: the server a start or stop before it
+ * waited on may have stopped meanwhile, and the old id's dir with it.
+ */
+function settleStateDir(): void {
+  STATE_DIR = runningStateDir(REQUESTED_STATE_DIR);
+  PID_FILE = join(STATE_DIR, "server.pid");
+  LOG_FILE = join(STATE_DIR, "server.log");
+  OWNER_FILE = join(STATE_DIR, "server.owner");
+}
 /**
  * Starts and stops take turns through this lock: a start holds it from deciding whether a server
  * runs until its own answers (or fails), a stop until the server is gone. Without it a second start
  * found the first one's server spawned but not on its port yet, spawned another and overwrote its
- * record, and `stop` then missed the server that kept running (#1611).
+ * record, and `stop` then missed the server that kept running (#1611). It is kept in the dir herdr
+ * hands the plugin, not the one the record is in, which can change while a start waits for its turn.
  */
-const LIFECYCLE_LOCK = join(STATE_DIR, "lifecycle.lock");
+const LIFECYCLE_LOCK = join(REQUESTED_STATE_DIR, "lifecycle.lock");
 const LIFECYCLE_BUSY = "another start or stop of Ovis is running";
 /** longer than a start holds the lock (its port wait and its readiness wait, 20 s each) or a stop does */
 const LIFECYCLE_WAIT_MS = 60_000;
@@ -242,7 +255,8 @@ function recordedPid(): number | null {
  */
 function provedServer(): number | null {
   const pid = recordedPid();
-  if (pid === null) return null;
+  // an exited server its parent has not reaped yet still answers signal 0, with its birth
+  if (pid === null || liveProcess(pid) === false) return null;
   let owner: { pid?: unknown; birth?: unknown } | null = null;
   try { owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown }; } catch { /* none kept */ }
   const birth = owner?.pid === pid ? parseBirth(owner.birth) : null;
@@ -281,6 +295,10 @@ function pidIn(file: string): number | null {
  * owner is proved gone (it crashed, or the PC restarted under it) is taken over at once.
  */
 async function takeTurn(): Promise<OwnerLease | string> {
+  // the lock reports a guard it cannot open as a start in progress: a state dir this user cannot
+  // write would then be waited on for a minute, and its message would name a lock nobody holds
+  try { closeSync(openSync(guardPath(LIFECYCLE_LOCK), "a", 0o600)); }
+  catch (error) { return `${guardPath(LIFECYCLE_LOCK)} could not be opened: ${(error as Error).message}`; }
   const deadline = Date.now() + LIFECYCLE_WAIT_MS;
   let said = false;
   for (;;) {
@@ -407,10 +425,11 @@ async function start(): Promise<number> {
     process.stdout.write(`Ovis already running at ${origin}\n`);
     return 0;
   }
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(REQUESTED_STATE_DIR, { recursive: true });
   const turn = await takeTurn();
   if (typeof turn === "string") return failStart(`could not start Ovis: ${turn}`);
   try {
+    settleStateDir();
     return await startInTurn();
   } finally {
     turn.release();
@@ -543,17 +562,19 @@ const stopDependencies: StopDependencies = {
  * gives up, and leaves nothing running.
  */
 export async function stop(dependencies: StopDependencies = stopDependencies): Promise<number> {
-  // no start made the dir, so none recorded a server here
-  if (!existsSync(STATE_DIR)) {
+  // no start made the dir, and no server runs under the old id's: nothing to stop
+  if (!existsSync(REQUESTED_STATE_DIR) && recordedPid() === null) {
     process.stdout.write("Ovis is not running\n");
     return 0;
   }
+  mkdirSync(REQUESTED_STATE_DIR, { recursive: true });
   const turn = await takeTurn();
   if (typeof turn === "string") {
     process.stderr.write(`could not stop Ovis: ${turn}\n`);
     return 1;
   }
   try {
+    settleStateDir();
     return await stopInTurn(dependencies);
   } finally {
     turn.release();

@@ -310,6 +310,62 @@ describe("starts at the same moment", () => {
     } finally { process.kill(-server.pid!, "SIGKILL"); }
   });
 
+  it.skipIf(platform() === "win32" || process.getuid?.() === 0)("say at once that a state dir they cannot write stops them, instead of waiting on it as on another start", async () => {
+    const dir = join(scratch, "state");
+    mkdirSync(dir);
+    chmodSync(dir, 0o500);
+    try {
+      const started = Date.now();
+      const stopped = await run("stop");
+      expect(stopped.exitCode).toBe(1);
+      expect(stopped.err).toContain(`could not stop Ovis: ${join(dir, "lifecycle.lock.guard")} could not be opened`);
+      expect(stopped.out, "regression: it waited as if another start held the lock").not.toContain("waiting for it to finish");
+      expect(Date.now() - started).toBeLessThan(10_000);
+    } finally { chmodSync(dir, 0o700); }
+  });
+
+  // a recorded server that exited while its parent (a plugin host, say) has not reaped it yet
+  it.skipIf(platform() !== "linux" || !Bun.which("setsid"))("start a server when the recorded one has exited but is not reaped yet", async () => {
+    const parent = spawn("sh", ["-c", `setsid sh -c 'echo $$; exec sleep 0.2' & exec sleep 30`], { stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      const pid = Number(await new Promise<string>((resolve) => parent.stdout!.once("data", (chunk) => resolve(String(chunk).trim()))));
+      const reading = readProcessBirth(pid);
+      expect(reading.state).toBe("identified");
+      const state = () => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ")[0];
+      const deadline = Date.now() + 5_000;
+      while (state() !== "Z" && Date.now() < deadline) await Bun.sleep(20);
+      expect(state()).toBe("Z");
+      mkdirSync(join(scratch, "state"), { recursive: true });
+      writeFileSync(join(scratch, "state", "server.pid"), `${pid}\n`);
+      writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify({ pid, birth: reading.state === "identified" ? reading.birth : null }));
+      const root = join(scratch, "root");
+      mkdirSync(join(root, "server"), { recursive: true });
+      writeFileSync(join(root, "server", "managed.ts"), `require("node:fs").writeFileSync(${JSON.stringify(join(scratch, "spawned"))}, ""); process.exit(1);\n`);
+      const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(started.err, "regression: an exited, unreaped server was taken for a running one").not.toContain("is still running");
+      expect(existsSync(join(scratch, "spawned"))).toBe(true);
+    } finally { parent.kill("SIGKILL"); }
+  }, 30_000);
+
+  it("take turns in the dir herdr hands them, while the record is still under the old id's", async () => {
+    // a server started under the old id runs; herdr hands the updated plugin the new id's dir. A
+    // start and a stop that read the record in different dirs must still share one lock
+    const plugins = join(scratch, "plugins");
+    const legacy = join(plugins, "devswha.herdr-web-ui");
+    const current = join(plugins, "devswha.ovis");
+    mkdirSync(legacy, { recursive: true });
+    const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    try {
+      writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
+      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: current, PORT: "1" });
+      expect(stopped.exitCode, stopped.err).toBe(0);
+      expect(existsSync(join(current, "lifecycle.lock.guard"))).toBe(true);
+      expect(existsSync(join(legacy, "lifecycle.lock.guard")), "regression: the lock followed the record into the old id's dir").toBe(false);
+    } finally {
+      try { process.kill(-server.pid!, "SIGKILL"); } catch { /* stopped */ }
+    }
+  });
+
   it("start a server when the recorded pid now runs another process", async () => {
     // the birth kept for the record is not the one running under its pid: the pid was handed on
     const { server, root } = recordedSleeper(() => ({ platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : "Thu Jan 1 00:00:00 1970" }));
