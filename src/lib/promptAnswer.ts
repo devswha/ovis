@@ -5,6 +5,7 @@
  * Anything else is the prompt's own "type something" answer when it has one.
  */
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
+import { CASE_FOLDING_DATA } from "./caseFolding.generated.ts";
 import { t } from "./i18n.ts";
 import { optionName, promptWords } from "./promptText.ts";
 
@@ -29,18 +30,23 @@ function boundLetter(label: string): string | null {
  */
 const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
-/** one case for every letter, as Unicode folds it: `Straße`, `STRASSE` and `STRAẞE` are `strasse`, a final `ς` is `σ` */
-const folded = (text: string): string => text.normalize("NFKC").toUpperCase().toLowerCase()
-  .replaceAll("ß", "ss").replaceAll("ς", "σ").normalize("NFKC"); // last: `ẞ` and an acute is `sś`, as `SS` and an acute is
+const caseFolds = new Map(CASE_FOLDING_DATA.split(";").map((entry) => {
+  const [from, to] = entry.split("=") as [string, string];
+  return [String.fromCodePoint(parseInt(from, 16)), String.fromCodePoint(...to.split(" ").map((hex) => parseInt(hex, 16)))];
+}));
+/** Unicode's full case folding (CaseFolding.txt C and F): `Straße`, `STRASSE` and `STRAẞE` all fold to `strasse` */
+const toCasefold = (text: string): string => Array.from(text, (char) => caseFolds.get(char) ?? char).join("");
 
 /**
- * What a name reads as, for telling rows apart (#2220): its letters, marks and digits, in one Unicode form
- * by look and one case, nothing else. Marks a page does not draw, spacing, punctuation, blanks such as
- * U+2800 and controls such as U+007F all go. Two rows with one skeleton may look the same, so a typed
- * answer picks neither. That over-refuses pairs like `production.` and `production`; a click still picks them.
+ * What a name reads as, for telling rows apart (#2220): Unicode's compatibility caseless form (Unicode 3.13,
+ * D146: NFKD(toCasefold(NFKD(toCasefold(NFD(x)))))), then its letters, marks and digits alone. Marks a page
+ * does not draw, spacing, punctuation, blanks such as U+2800 and controls such as U+007F all go; the last
+ * NFD puts the marks left in canonical order again, so a skeleton is its own skeleton. Two rows with one
+ * skeleton may look the same, so a typed answer picks neither. That over-refuses pairs like `production.`
+ * and `production`; a click still picks them.
  */
-const skeleton = (text: string): string => folded(text)
-  .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[^\p{L}\p{M}\p{N}]/gu, "");
+export const skeleton = (text: string): string => toCasefold(toCasefold(text.normalize("NFD")).normalize("NFKD")).normalize("NFKD")
+  .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[^\p{L}\p{M}\p{N}]/gu, "").normalize("NFD");
 
 function bareLabel(label: string): string {
   return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));

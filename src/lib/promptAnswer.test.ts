@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
-import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin, type TypedAnswer } from "./promptAnswer.ts";
+import { CASE_FOLDING_DATA } from "./caseFolding.generated.ts";
+import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, skeleton, type PressOrigin, type TypedAnswer } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
   id: "p", agent: "claude", kind: "question", title: "Question", question: "?", body: null,
@@ -167,7 +168,8 @@ describe("answering a prompt from the chat", () => {
       ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
       // names that differ only by Unicode case folding (ß and ss, ẞ and SS, final ς and σ) are twins too
       ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"],
-        ["ẞ and SS under an acute", "Keep **STRA\u1E9E\u0301E**", "Keep **STRASS\u0301E**"]] as const).flatMap(([kind, a, b]): Case[] => {
+        ["ẞ and SS under an acute", "Keep **STRA\u1E9E\u0301E**", "Keep **STRASS\u0301E**"],
+        ["ᾀ under an acute and ἄι", "Keep **\u1F80\u0301**", "Keep **\u1F04\u03B9**"], ["Ŀ and L under an acute", "Keep **\u013F\u0301**", "Keep **L\u0301**"]] as const).flatMap(([kind, a, b]): Case[] => {
         const rows = [a, b, "Remote relay"];
         const [typedA, typedB] = [a, b].map((label) => label.replaceAll("**", ""));
         return [
@@ -180,6 +182,8 @@ describe("answering a prompt from the chat", () => {
           [`multi: ${kind}, a distinct row beside them`, rows, true, false, "3", { option_indices: [2] }],
         ];
       }),
+      // not twins under D146: the acute sits on the alpha in one and on the iota in the other, as drawn
+      ["single: ᾀ under an acute beside ἀι under an acute", ["Keep **\u1F80\u0301**", "Keep **\u1F00\u03B9\u0301**"], false, true, "Keep \u1F80\u0301", { option_index: 0 }],
       ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
       ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
     ];
@@ -189,6 +193,14 @@ describe("answering a prompt from the chat", () => {
       };
       expect(answerFromText(card, typed), name).toEqual(expected);
     }
+  });
+  it("gives every case-folded letter, alone or under marks, a skeleton that is its own skeleton (#2220 review)", () => {
+    const letters = CASE_FOLDING_DATA.split(";").flatMap((entry) => entry.split("=")[0]!.split(" ").concat(entry.split("=")[1]!.split(" ")))
+      .map((hex) => String.fromCodePoint(parseInt(hex, 16)));
+    expect(letters.length).toBeGreaterThan(2000);
+    const unstable = letters.flatMap((letter) => ["", "\u0301", "\u0345\u0301", "\u0301\u0345", "\u00B7\u0301", "\u0323\u0301"].map((marks) => letter + marks))
+      .filter((text) => skeleton(skeleton(text)) !== skeleton(text));
+    expect(unstable).toEqual([]);
   });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);
