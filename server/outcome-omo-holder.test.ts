@@ -17,7 +17,7 @@ type Foreground = { pid: number; name: string; argv: string[] };
 
 /**
  * An OmO pane whose session holders are `holderPids`, with herdr giving no per-process cwd (macOS), so the pane's
- * own directory places them. Each listed process runs under one start time, and is gone once it is not listed.
+ * own directory places them. Each listed process runs under `state.start`, and is gone once it is not listed.
  */
 function omoPane(holderPids: number[]) {
   const root = mkdtempSync(join(tmpdir(), "ovis-outcome-omo-holder-")); roots.push(root);
@@ -27,10 +27,10 @@ function omoPane(holderPids: number[]) {
   const holders = join(agentDir, "sessions", omo.omoSessionFolder(cwd), "session-holders", "sess-1");
   mkdirSync(holders, { recursive: true });
   for (const pid of holderPids) writeFileSync(join(holders, `${pid}.json`), JSON.stringify({ pid, processStartedAtMs: 1_000, cwd }));
-  const state = { foreground: [] as Foreground[] };
+  const state = { foreground: [] as Foreground[], start: 1_000 };
   const listed = (pid: number) => state.foreground.some((entry) => entry.pid === pid);
-  spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => listed(pid) ? 1_000 : null);
-  spyOn(processStart, "processStartedAt").mockImplementation((pid) => listed(pid) ? 1_000 : null);
+  spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => listed(pid) ? state.start : null);
+  spyOn(processStart, "processStartedAt").mockImplementation((pid) => listed(pid) ? state.start : null);
   spyOn(processStart, "processAlive").mockImplementation((pid) => listed(pid));
   spyOn(omo, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
 
@@ -103,3 +103,25 @@ it("keeps the OmO a command was bound to when another holder of the session come
   expect(await fixture.served()).toEqual([command.id]);
   expect(holderReads).not.toHaveBeenCalled();
 });
+
+for (const platform of ["linux", "darwin"] as const) {
+  it(`does not take another program that got the OmO's pid later for it, on ${platform}`, async () => {
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: platform });
+    try {
+      const fixture = omoPane([parent.pid]);
+      fixture.state.foreground = [parent, sdk];
+      const command = await fixture.send();
+      expect(command.visibility?.process?.pid).toBe(parent.pid);
+      expect(await fixture.served()).toEqual([command.id]);
+
+      // the OmO exited before herdr reported its session; long after, a Claude Code got its pid in the same terminal
+      fixture.state.foreground = [{ pid: parent.pid, name: "claude", argv: ["claude"] }];
+      fixture.state.start = 2_000;
+      fixture.reportSession();
+      expect(await fixture.served()).toBeUndefined();
+    } finally {
+      Object.defineProperty(process, "platform", real);
+    }
+  });
+}

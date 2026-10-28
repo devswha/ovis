@@ -91,15 +91,19 @@ const outcomeIdentity = (pane: HerdrPane): string => JSON.stringify([pane.termin
  * The agent process in front (agentProcessInFront, as a pending send is bound), keyed by its pid and, on Linux, its
  * start time; never the process-group id. `held`: the OmO process holding a session (heldOmoProcess), which an
  * argv-silent custom OmO is known by alone, so a send is not bound to its bundled SDK child; a process bound so is
- * marked `held`. With `bound`, that process only, while herdr still lists it as one of the agent's, or it was bound
- * as the OmO holding the session (a holder counts only where its start is readable, so never on Windows, which hands
- * a finished agent's pid to the next process at once; Linux compares that start on each poll).
+ * marked `held` and keyed by its start on macOS too (the kernel's record, no `ps`). With `bound`, that process only,
+ * while herdr still lists it as one of the agent's, or it is the OmO it was bound as: a holder counts only while its
+ * start is readable (never on Windows, which hands a finished agent's pid to the next process at once), and a later
+ * start under that pid is another process (checkBoundProcess).
  */
 function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number, held?: number | null):
   { pid: number; started: number | null; held?: true } | null {
   const running = agentProcessInFront(info, agent, bound, held);
-  return running && (bound === undefined || running.pid === bound && (running.pid === held || agentProcesses([running], agent).length > 0))
-    ? { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null, ...running.pid === held ? { held: true as const } : {} } : null;
+  if (!running) return null;
+  const heldStart = running.pid === held ? processStartedAt(running.pid) : null;
+  if (bound !== undefined && (running.pid !== bound || heldStart === null && agentProcesses([running], agent).length === 0)) return null;
+  return heldStart !== null ? { pid: running.pid, started: heldStart, held: true }
+    : { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null };
 }
 
 /** The OmO process holding a session among `info`'s, for an OmO send only; read without holding the event loop. */
