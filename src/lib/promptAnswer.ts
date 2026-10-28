@@ -37,36 +37,42 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     const index = Number(token) - 1;
     return valid.includes(index) ? index : null;
   };
-  if (prompt.multi_select) {
-    const indices = value.split(/[\s,]+/).filter(Boolean).map(byNumber);
-    if (indices.every((index) => index !== null)) return { option_indices: [...new Set(indices as number[])] };
-    return prompt.custom_option_index !== null ? { custom_text: value } : null;
-  }
-  const numbered = byNumber(value);
-  const lower = spaced(value);
+  const typed = (): TypedAnswer | null => prompt.custom_option_index !== null ? { custom_text: value } : null;
   // a label the bridge wrote is named as the card shows it, in the user's language, or in English
   const words = promptWords(prompt);
-  const names = (label: string): boolean => spaced(label) === lower || bareLabel(label) === lower || boundLetter(label) === lower;
-  // the one option the words name; words that name two (rows that read alike) pick neither: null
-  const only = (label: (index: number) => string, named = names): number | null | undefined => {
-    const found = valid.filter((index) => named(label(index)));
-    return found.length === 1 ? found[0] : found.length > 1 ? null : undefined;
+  /** the one option `said` names as the card shows the options; null for words that name several (rows that read alike), undefined for none */
+  const nameOf = (said: string): number | null | undefined => {
+    const lower = spaced(said);
+    const names = (label: string): boolean => spaced(label) === lower || bareLabel(label) === lower || boundLetter(label) === lower;
+    const only = (label: (index: number) => string, named = names): number | null | undefined => {
+      const found = valid.filter((index) => named(label(index)));
+      return found.length === 1 ? found[0] : found.length > 1 ? null : undefined;
+    };
+    // an option's own words first: a translated label never takes the words another option shows
+    // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
+    // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
+    if (prompt.text_format === "markdown") return only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower);
+    const own = only((index) => prompt.options[index]!.label);
+    return own !== undefined ? own : only((index) => words.label(index));
   };
-  // an option's own words first: a translated label never takes the words another option shows
-  // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
-  // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
-  const own = prompt.text_format === "markdown"
-    ? only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower)
-    : only((index) => prompt.options[index]!.label);
-  const named = own !== undefined || prompt.text_format === "markdown" ? own : only((index) => words.label(index));
   // a number picks its row, unless a row shows that number as its name: words that name another option,
   // or several, pick none (an omp card's `` `2` ``, typed as "2", is not the second row)
-  if (numbered !== null) {
-    if (named === undefined || named === numbered) return { option_index: numbered };
-    return prompt.custom_option_index !== null ? { custom_text: value } : null;
+  const picks = (token: string, index: number): boolean => {
+    const named = nameOf(token);
+    return named === undefined || named === index;
+  };
+  if (prompt.multi_select) {
+    const tokens = value.split(/[\s,]+/).filter(Boolean);
+    const indices = tokens.map(byNumber);
+    if (!indices.every((index) => index !== null)) return typed();
+    // each number, as on a single choice: one that is another row's shown name refuses the whole answer
+    if (!tokens.every((token, at) => picks(token, indices[at]!))) return typed();
+    return { option_indices: [...new Set(indices as number[])] };
   }
-  if (typeof named === "number") return { option_index: named };
-  return prompt.custom_option_index !== null ? { custom_text: value } : null;
+  const numbered = byNumber(value);
+  if (numbered !== null) return picks(value, numbered) ? { option_index: numbered } : typed();
+  const named = nameOf(value);
+  return typeof named === "number" ? { option_index: named } : typed();
 }
 
 function range(prompt: InteractivePrompt): string {

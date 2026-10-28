@@ -97,6 +97,16 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText({ ...numeral, custom_option_index: null, options: numeral.options.slice(0, 2) }, "2")).toBeNull();
     // the row whose name is its own number is that pick
     expect(answerFromText(prompt(["1", "2"], null), "2")).toEqual({ option_index: 1 });
+    // and the same on a multiple choice, for each number: one that names another row, or several, refuses the answer
+    const multiNumeral = { ...prompt(["`2`", "Keep production"], null, true), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(multiNumeral, "2")).toBeNull();
+    expect(answerFromText(multiNumeral, "1 2")).toBeNull();
+    const multiNumerals = { ...prompt(["`2`", "**2**"], null, true), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(multiNumerals, "2")).toBeNull();
+    expect(answerFromText({ ...multiNumeral, custom_option_index: 2, options: [...multiNumeral.options, { label: "Other", description: null }] }, "2")).toEqual({ custom_text: "2" });
+    // plain numbers still choose, and a row named after its own number is that row
+    expect(answerFromText(prompt(["Desktop", "Phone", "Tablet"], null, true), "1 3")).toEqual({ option_indices: [0, 2] });
+    expect(answerFromText(prompt(["1", "2"], null, true), "2")).toEqual({ option_indices: [1] });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
     expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });
