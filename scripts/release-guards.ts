@@ -113,13 +113,26 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
     else missing.push(platform);
   }
   if (missing.length > 0) return [`remote-v${version} is not published for every platform: ${url} has no bundle for ${missing.join(", ")}. ${wait}`];
-  // the GET remote PCs download with, for its first byte only: the archive answers and is not empty
+  // the GET remote PCs download with, for its first byte only: the archive answers, says it is not
+  // empty and delivers that byte (headers alone are not a download)
   const unreachable = (await Promise.all(assets.map(async (asset) => {
     const response = await read(asset, { range: "bytes=0-0" });
     if (typeof response === "string") return response;
-    await discard(response);
     const size = Number(/\/(\d+)$/.exec(response.headers.get("content-range") ?? "")?.[1] ?? (response.status === 200 ? response.headers.get("content-length") : 0));
-    return size > 0 ? null : `${asset} is empty`;
+    let received = 0;
+    const reader = response.body?.getReader();
+    try {
+      while (reader && received === 0) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+      }
+    } catch (error) {
+      return `${asset} failed before its first byte (${(error as Error).message})`;
+    } finally {
+      await reader?.cancel().catch(() => {});
+    }
+    return size > 0 && received > 0 ? null : `${asset} is empty`;
   }))).filter((result) => result !== null);
   return unreachable.length > 0 ? [`remote-v${version} is not published: ${unreachable.join("; ")}. ${wait}`] : [];
 }

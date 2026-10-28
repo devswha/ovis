@@ -86,6 +86,18 @@ describe("publishedProblems", () => {
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39"), ...archives, [asset("linux-arm64")]: 0 })))[0]).toContain(`${asset("linux-arm64")} is empty`);
   });
 
+  it("fails an archive that announces its size but never delivers its first byte", async () => {
+    /** every archive answers 206 with a positive size, and `body()` as its body */
+    const broken = (body: () => ReadableStream<Uint8Array> | null): Get => async (url, init) => {
+      if (url === manifestUrl(39)) return github({ [manifestUrl(39)]: manifest("39") })(url, init);
+      return new Response(body(), { status: 206, headers: { "content-range": "bytes 0-0/100" } });
+    };
+    const failing = () => new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error("connection reset")); } });
+    expect((await publishedProblems(39, broken(failing)))[0]).toContain(`${asset("linux-x64")} failed before its first byte (connection reset)`);
+    expect((await publishedProblems(39, broken(() => null)))[0]).toContain(`${asset("linux-x64")} is empty`);
+    expect((await publishedProblems(39, broken(() => new ReadableStream({ start(controller) { controller.close(); } }))))[0]).toContain(`${asset("linux-x64")} is empty`);
+  });
+
   it("fails a manifest remote PCs would refuse as too large, and one that is not JSON", async () => {
     const padded = JSON.stringify({ ...manifest("39"), padding: "x".repeat(1024 * 1024) });
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: padded, ...archives })))[0]).toContain("is larger than remote PCs accept");
