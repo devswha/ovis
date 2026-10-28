@@ -41,7 +41,8 @@ export function buildXtermSource(root: string): string {
   try {
     const program = ts.createProgram(files, { ...options, outDir: staging });
     const emitted = program.emit();
-    if (emitted.emitSkipped) {
+    // a file TypeScript could not write is only a diagnostic: never publish a build missing it
+    if (emitted.emitSkipped || emitted.diagnostics.some(({ category }) => category === ts.DiagnosticCategory.Error)) {
       const diagnostics = ts.getPreEmitDiagnostics(program).concat(emitted.diagnostics);
       throw new Error(ts.formatDiagnosticsWithColorAndContext(diagnostics, {
         getCanonicalFileName: (name) => name, getCurrentDirectory: () => root, getNewLine: () => "\n",

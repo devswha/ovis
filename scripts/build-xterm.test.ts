@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import ts from "typescript-api";
+import { appendFileSync, cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildXtermSource } from "./build-xterm.ts";
@@ -43,5 +44,22 @@ describe("buildXtermSource", () => {
     expect(second).not.toBe(first);
     expect(written(second).content).toContain("changedForTest");
     expect(written(first)).toEqual(before);
+  }, 60_000);
+
+  it("publishes nothing when a module could not be written, so the next build emits it again", () => {
+    const root = checkout();
+    const cache = join(root, "node_modules/.cache/herdr-xterm");
+    const writeFile = ts.sys.writeFile;
+    ts.sys.writeFile = (path, ...rest) => {
+      if (path.endsWith(`${module}.js`)) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      writeFile(path, ...rest);
+    };
+    try {
+      expect(() => buildXtermSource(root)).toThrow("no space left on device");
+    } finally {
+      ts.sys.writeFile = writeFile;
+    }
+    expect(existsSync(cache) ? readdirSync(cache) : []).toEqual([]);
+    expect(written(buildXtermSource(root)).content).toContain("export class UnicodeService");
   }, 60_000);
 });
