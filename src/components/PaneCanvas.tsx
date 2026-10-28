@@ -6,7 +6,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { PANE_DRAG_TYPE, paneDragData, type SplitSide } from "../lib/split.ts";
 import { PaneSubmitRetention } from "../lib/paneSubmitRetention.ts";
 import { PaneCachedContext, PanePresentedContext, PaneShownContext, PaneSubmitContext } from "../lib/paneSubmitContext.ts";
-import { cachedPaneCells, visitPaneTab } from "../lib/paneTabCache.ts";
+import { cachedPaneCells, paneTabCacheSize, visitPaneTab } from "../lib/paneTabCache.ts";
 import { routeMissing } from "../lib/api.ts";
 import { layoutCells, zoomMode } from "../lib/layoutMap.ts";
 import { layoutTopology, paneContextPress, paneFieldTarget, SOLO_PANE_QUERY, soloPane, splitPath, splitRatioAt } from "../lib/paneCanvas.ts";
@@ -237,7 +237,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     ? { ...cell, left: 0, top: 0, width: 100, height: 100 } : cell);
   const shownIds = new Set(cells.map((cell) => cell.paneId));
   visitedTabs.current = visitPaneTab(visitedTabs.current, presented?.tab_id ?? null,
-    new Set(snapshot?.panes.map((item) => item.tab_id) ?? []));
+    new Set(snapshot?.panes.map((item) => item.tab_id) ?? []), paneTabCacheSize(mirrored));
   const cachedCells = cachedPaneCells(visitedTabs.current, presented?.tab_id ?? null, snapshot?.panes ?? [], lastCells.current, shownIds);
   const cachedIds = new Set(cachedCells.map((cell) => cell.paneId));
   // Every frame stays under the same keyed array, including a frame returning before its ACK.

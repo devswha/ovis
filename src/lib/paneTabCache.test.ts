@@ -1,13 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import { cachedPaneCells, visitPaneTab } from "./paneTabCache.ts";
+import { cachedPaneCells, paneTabCacheSize, visitPaneTab } from "./paneTabCache.ts";
 
 describe("pane tab cache", () => {
   const liveTabs = new Set(["a", "b", "c", "d", "e"]);
-  it("keeps three previous tabs and promotes a return without duplicates", () => {
+  it("promotes a return without duplicates", () => {
     const visits = ["d", "c", "b", "a"];
-    expect(visitPaneTab(visits, "e", liveTabs)).toEqual(["e", "d", "c", "b"]);
+    expect(visitPaneTab(visits, "e", liveTabs)).toEqual(["e", "d", "c", "b", "a"]);
     expect(visitPaneTab(visits, "b", liveTabs)).toEqual(["b", "d", "c", "a"]);
     expect(visitPaneTab(visits, "d", liveTabs)).toEqual(visits);
+  });
+  it("keeps seven previous tabs, three on a mirrored PC, and drops the oldest", () => {
+    const many = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    const visits = ["h", "g", "f", "e", "d", "c", "b", "a"];
+    expect(paneTabCacheSize(false)).toBe(8);
+    expect(visitPaneTab(visits, "i", new Set(many), paneTabCacheSize(false))).toEqual(["i", "h", "g", "f", "e", "d", "c", "b"]);
+    expect(paneTabCacheSize(true)).toBe(4);
+    expect(visitPaneTab(visits, "i", new Set(many), paneTabCacheSize(true))).toEqual(["i", "h", "g", "f"]);
+    // a PC found to be mirrored after its tabs were cached sheds the extra ones at the next render
+    expect(visitPaneTab(visits, "h", new Set(many), paneTabCacheSize(true))).toEqual(["h", "g", "f", "e"]);
   });
   it("drops closed tabs and leaves unvisited tabs cold", () => {
     expect(visitPaneTab(["c", "b", "a"], "b", new Set(["a", "b", "d"]))).toEqual(["b", "a"]);

@@ -41,6 +41,21 @@ export const ATTACH_HOLD_MS = 100;
  * not start the hold. A refusal and a screen both begin with something else.
  */
 const ATTACH_PREAMBLE_RE = /^(?:\x1b\[(?:\?[\d;]+[hl]|\d* q))*(?:\x1b(?:\[(?:\?[\d;]*|\d+ ?| )?)?)?$/;
+/** the whole mode sets and resets of that preamble */
+const ATTACH_PREAMBLE_HEAD_RE = /^(?:\x1b\[(?:\?[\d;]+[hl]|\d* q))*/;
+/** how herdr's refusal line starts: its CLI's error prefix, or the bare words. A screen starts otherwise (an escape, the pane's text). */
+const ATTACH_REFUSAL_LEADS = ["herdr: ", "terminal attach"];
+
+/**
+ * Output past the preamble that no refusal line can start with: herdr is drawing the screen, so the
+ * attach took and its bytes need not wait out the hold (#1642). Anything a refusal may still turn
+ * out to be (`h`, `herdr: ser`) waits.
+ */
+export function attachScreenStarted(held: string): boolean {
+  if (ATTACH_PREAMBLE_RE.test(held)) return false;
+  const rest = held.replace(ATTACH_PREAMBLE_HEAD_RE, "");
+  return !ATTACH_REFUSAL_LEADS.some((lead) => rest.startsWith(lead) || lead.startsWith(rest));
+}
 /** how often a terminal another web bridge holds is tried again, while clients here still want it */
 export const ATTACH_HELD_RETRY_MS = 3_000;
 /**
@@ -508,6 +523,12 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
             holding = true;
             heldSince = Date.now();
             holdTimer = setTimeout(took, holdFor);
+          }
+          // a screen, not a refusal: the attach took, and a tab switch waits on it. A pane another
+          // bridge held keeps the whole hold: a displacement right after its screen spends no click
+          if (holding && !attachment.held && attachScreenStarted(held)) {
+            clearTimeout(holdTimer);
+            took();
           }
         },
         onExit: ended,
