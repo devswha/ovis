@@ -13,7 +13,7 @@
  * pi-ask takes every answer at once, so the card asks one question per step and keeps the earlier
  * steps' answers here until the last one is given, as OpenCode's form does (prompt.ts).
  */
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   PI_ASK_BRIDGE_DIRECTORY,
@@ -29,6 +29,7 @@ import { finishPrompt, own, type ParsedPrompt, type PromptDraft } from "./dialog
 import { paneProcessInfo } from "./herdr/client.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { OmoAskReader, type OmoAskEntry, type OmoAsks } from "./omo-ask.ts";
+import { piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 
 const STATE_READ_MS = 1_000;
 /** The extension gives pi-ask 3 s to confirm; this covers that and the socket round trip. */
@@ -64,7 +65,40 @@ export function piAskUserAsksAfter(open: OmoAsks, entry: OmoAskEntry): OmoAsks {
   return [...open.filter((call) => !ids.has(call.id)), ...calls];
 }
 
-const openCalls = new OmoAskReader(piAskUserAsksAfter);
+/** Every ask_user call the file ever recorded, on any branch: read incrementally, so a session without one costs no branch read. */
+const everAsked = new OmoAskReader((seen, entry) => {
+  const calls = piAskUserAsksAfter([], entry);
+  return calls.length ? [...seen, ...calls].slice(-64) : seen;
+});
+const branchAsks = new Map<string, { size: number; mtime: number; open: OmoAsks | null }>();
+
+/**
+ * The ask_user calls pi-ask waits on, as it finds them: on the session's active branch only
+ * (pi-ask reads `getBranch()`; a /tree away from a call leaves it on another branch, and a result
+ * on another branch does not answer it). Null when the branch cannot be read.
+ */
+function openAsks(transcript: string): OmoAsks | null {
+  try {
+    if (everAsked.read(transcript).length === 0) return [];
+    const { size, mtimeMs } = statSync(transcript);
+    const cached = branchAsks.get(transcript);
+    if (cached && cached.size === size && cached.mtime === mtimeMs) return cached.open;
+    let open: OmoAsks | null = null;
+    if (piBranchSegments(transcript, size) !== null) {
+      open = [];
+      for (const line of piBranchRecords(transcript, size)) {
+        if (!/ask_user|toolResult|ask:pending-dismissed/.test(line)) continue;
+        try { open = piAskUserAsksAfter(open, JSON.parse(line)); } catch { /* a torn record answers nothing */ }
+      }
+    }
+    branchAsks.delete(transcript);
+    branchAsks.set(transcript, { size, mtime: mtimeMs, open });
+    if (branchAsks.size > 64) branchAsks.delete(branchAsks.keys().next().value!);
+    return open;
+  } catch {
+    return null;
+  }
+}
 
 const isString = (value: unknown, max = MAX_TEXT): value is string => typeof value === "string" && value.length <= max;
 const optionalString = (value: unknown): boolean => value === undefined || isString(value);
@@ -152,7 +186,7 @@ export interface BoundPiAskFlow { socket: string; pid: number; sessionFile: stri
 
 /** Whether the session has an ask_user call pi-ask still waits on (its own rule, as for the card). */
 export function piAskUserOpen(transcript: string): boolean {
-  try { return openCalls.read(transcript).length > 0; } catch { return false; }
+  return (openAsks(transcript)?.length ?? 0) > 0;
 }
 
 /**
@@ -176,12 +210,16 @@ export async function boundPiAskFlow(
   const { pid, socket } = sockets[0]!;
   const state = await bridgeState(socket, signal);
   if (!state || state.pid !== pid || typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, transcript.path)) return null;
-  let open: OmoAsks;
-  try { open = openCalls.read(transcript.path); } catch { return null; }
-  // a form pi-ask dropped without a completed event has its call settled in the session: it does not count
-  const flows = state.flows.map(validFlow).filter((flow): flow is PiAskFlow => flow !== null && open.some((call) => call.id === flow.toolCallId));
-  if (flows.length !== 1 || state.flows.some((flow) => validFlow(flow) === null)) return null;
-  return { socket, pid, sessionFile: state.sessionFile, flow: flows[0]! };
+  const open = openAsks(transcript.path);
+  if (open === null) return null;
+  // only a form whose call pi-ask still waits on counts: one it dropped without a completed event
+  // has its call settled, and one with no call (`/answer`, `/ask:replay`) is never a card
+  const waiting = state.flows.filter((flow) => {
+    const toolCallId = (flow as { toolCallId?: unknown } | null)?.toolCallId;
+    return typeof toolCallId === "string" && open.some((call) => call.id === toolCallId);
+  });
+  const flow = waiting.length === 1 ? validFlow(waiting[0]) : null;
+  return flow ? { socket, pid, sessionFile: state.sessionFile, flow } : null;
 }
 
 interface Draft { flowId: string; identity: string; stepIndex: number; answers: Record<string, PiAskRemoteAnswer>; revision: number }
@@ -308,9 +346,13 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
       ? "A valid option index is required."
       : stepAnswer(question, [body.option_index], undefined);
   } else {
+    // a typed answer alone (the composer, or an older card's Send) keeps the checks the card shows as saved
+    const saved = question.type === "multi" && body.option_indices === undefined
+      ? (draft.answers[question.id]?.values ?? []).map((value) => question.options.findIndex((option) => option.value === value)).filter((index) => index >= 0)
+      : body.option_indices;
     answer = body.option_indices !== undefined && question.type !== "multi"
       ? "This question takes one choice."
-      : stepAnswer(question, body.option_indices, body.custom_text);
+      : stepAnswer(question, saved, body.custom_text);
   }
   if (typeof answer === "string") return done(invalid(answer));
   const answers = { ...draft.answers };

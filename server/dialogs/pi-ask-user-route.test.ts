@@ -217,13 +217,43 @@ test("questions can be skipped, a typed answer survives Back, and an answered qu
   });
 });
 
+test("the card follows pi's active branch, as pi-ask does", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    // Given the call answered on a branch, then /tree back to before the answer and a new entry:
+    // pi-ask finds the call open again on the branch in play
+    const [, , call, level, dismissed] = fixture.transcript as { id: string; parentId: string | null }[];
+    appendFileSync(pane.session, JSON.stringify(dismissed) + "\n");
+    appendFileSync(pane.session, JSON.stringify({ ...level, id: "b0000001", parentId: call!.id }) + "\n");
+    expect(await pane.read()).toMatchObject({ question: "Which part should ship first?", title: "Release plan", steps: [{ label: "Scope" }, { label: "Checks" }, { label: "Tone" }] });
+    // and a call left open on an abandoned branch neither shows a card nor holds back others
+    appendFileSync(pane.session, JSON.stringify({ type: "message", id: "b0000002", parentId: "b0000001", timestamp: "2026-10-28T06:50:00.000Z", message: { role: "toolResult", toolCallId: "toolu_feat1202ask", toolName: "ask_user", content: [], isError: false, timestamp: 1 } }) + "\n");
+    pane.status = "idle";
+    expect(await pane.read()).toBeNull();
+  });
+});
+
+test("a typed answer from the composer keeps the checks the card shows as saved", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    await pane.answer((await pane.read())!.id, { option_index: 0 });
+    await pane.answer((await pane.read())!.id, { option_indices: [0, 1] });
+    await pane.answer((await pane.read())!.id, { step_index: 1 });
+    // the composer sends only the typed text
+    expect((await pane.answer((await pane.read())!.id, { custom_text: "typecheck" })).status).toBe(200);
+    expect((await pane.answer((await pane.read())!.id, { option_index: 0 })).status).toBe(200);
+    expect(pane.bridge.submits.map((submit) => submit.response)).toEqual([{ kind: "answer", mode: "submit", answers: { scope: { values: ["server"] }, checks: { values: ["unit", "browser"], customText: "typecheck" }, tone: { values: ["short"] } } }]);
+  });
+});
+
 test("a form pi-ask dropped without telling the extension does not hide the live one", async () => {
   if (!posix) return;
   await withBridgedPane(async (pane) => {
     const live = pane.bridge.state.flows[0]!;
     // an earlier form whose call is settled in the session: pi-ask disposed it without a completed event
-    pane.bridge.state.flows = [{ ...live, flowId: "tool:earlier", toolCallId: "earlier", createdAt: 1 }, live];
-    expect(await pane.read()).toMatchObject({ question: "Which part should ship first?" });
+    // and a dropped /answer form, which has no call at all
+    pane.bridge.state.flows = [{ ...live, flowId: "tool:earlier", toolCallId: "earlier", createdAt: 1 }, { ...live, flowId: "flow:1:x", toolCallId: undefined, createdAt: 2 }, live];
+    expect(await pane.read()).toMatchObject({ question: "Which part should ship first?", title: "Release plan", steps: [{ label: "Scope" }, { label: "Checks" }, { label: "Tone" }] });
   });
 });
 
@@ -255,8 +285,8 @@ test("no card without every fact the extension and the session agree on", async 
   // two forms at once, each with its call open in the session
   expect(await unbridged((pane) => {
     pane.bridge.state.flows = [pane.bridge.state.flows[0]!, { ...pane.bridge.state.flows[0]!, flowId: "tool:other", toolCallId: "other" }];
-    const call = fixture.transcript[2] as { message: { content: { id: string }[] } };
-    appendFileSync(pane.session, JSON.stringify({ ...call, message: { ...call.message, content: [{ ...call.message.content[0], id: "other" }] } }) + "\n");
+    const call = fixture.transcript[2] as { id: string; message: { content: { id: string }[] } };
+    appendFileSync(pane.session, JSON.stringify({ ...call, id: "a0000002", parentId: (fixture.transcript[3] as { id: string }).id, message: { ...call.message, content: [{ ...call.message.content[0], id: "other" }] } }) + "\n");
   })).toBeNull();
   // the call already settled in the session file
   expect(await unbridged((pane) => { appendFileSync(pane.session, JSON.stringify(fixture.transcript[4]) + "\n"); })).toBeNull();
