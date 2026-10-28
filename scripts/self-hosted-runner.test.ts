@@ -82,6 +82,8 @@ type RunnerOptions = NonNullable<Parameters<typeof runRunner>[0]>;
 async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "build" }, signal: NodeJS.Signals | null, limitMs = 5_000) {
   const { tempDir, args, env, logPath } = prepareRunner(options);
   const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
+  // read as it comes: a process left holding stderr must not hold the test past its bound
+  const stderrText = new Response(child.stderr).text();
   try {
     const hung = join(tempDir, "hung");
     const deadline = Date.now() + 5_000;
@@ -92,7 +94,7 @@ async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "bu
     if (signal) child.kill(signal);
     const ended = await Promise.race([child.exited, Bun.sleep(limitMs).then(() => "still running" as const)]);
     const stuck = spawnSync("pgrep", ["-f", tempDir], { encoding: "utf8" }).stdout.trim();
-    return { ended, stderr: ended === "still running" ? "" : await new Response(child.stderr).text(), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
+    return { ended, stderr: await Promise.race([stderrText, Bun.sleep(1_000).then(() => "")]), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
   } finally {
     child.kill("SIGKILL");
     spawnSync("pkill", ["-KILL", "-f", tempDir]);

@@ -118,10 +118,17 @@ fi
 STATE_DIR=""
 # Git over a saturated or stalled link: give up on a transfer slower than 1 KB/s for a minute, and on
 # any command after its deadline, rather than hold every refresh (and, at start, every runner).
+# timeout without --foreground runs git in a process group of its own and signals all of it at the
+# deadline, transport helpers included; cleanup reads the group from git.pid to stop it as well.
 git_net() {
-  local limit="$1"; shift
-  GIT_TERMINAL_PROMPT=0 timeout --foreground -k 10 "$limit" \
-    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"
+  local limit="$1" pid status=0; shift
+  GIT_TERMINAL_PROMPT=0 timeout -k 10 "$limit" \
+    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@" &
+  pid=$!
+  printf '%s\n' "$pid" > "$STATE_DIR/git.pid"
+  wait "$pid" || status=$?
+  rm -f "$STATE_DIR/git.pid"
+  return "$status"
 }
 
 refresh_mirror() {
@@ -341,6 +348,7 @@ cleanup() {
   # the whole refresh, git and the Bun cache build included: none may outlive the launcher
   if [ -n "$STATE_DIR" ]; then : > "$STATE_DIR/stopping"; fi
   if [ -n "$CACHE_PID" ]; then kill -TERM -- "-$CACHE_PID" 2>/dev/null || true; fi
+  if [ -n "$STATE_DIR" ] && [ -s "$STATE_DIR/git.pid" ]; then kill -TERM -- "-$(cat "$STATE_DIR/git.pid")" 2>/dev/null || true; fi
   docker stop -t 5 "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
