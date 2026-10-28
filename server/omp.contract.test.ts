@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createServer } from "./index.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { type EventFrame, herdrRpc, type HerdrSubscription, sessionSnapshot, subscribeEvents, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ConversationResponse, InteractivePrompt } from "../shared/protocol.ts";
 
 // omp names its session file when it starts and writes it with the first message (seen on a
@@ -107,16 +107,18 @@ beforeAll(async () => {
   // omp moves its cursor (`\u276f`) to the next row on Down
   const movedScreen = join(root, "ask-moved.txt");
   writeFileSync(movedScreen, readFileSync(askScreen, "utf8").replace("\u2502 \u276f \u25cb Use local socket", "\u2502   \u25cb Use local socket").replace("\u2502   \u25cb Remote relay", "\u2502 \u276f \u25cb Remote relay"));
-  await herdrRpc("pane.send_text", { pane_id: askPaneId, text: `HOME='${root}' exec '${join(handoffBin, "omp")}' '${join(root, "ask.js")}' '${askScreen}' '${movedScreen}' '${askMarker}'\n` });
-  for (const deadline = Date.now() + 5_000; (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === askPaneId)?.agent !== "omp";) {
-    if (Date.now() > deadline) throw new Error("the stand-in omp did not start in the Ask pane");
-    await Bun.sleep(50);
-  }
+  // herdr takes a report for a pane only once it has seen the pane's omp itself, which it announces
+  await herdrAfter([drawnOn(askPaneId, "Which route should carry"), { type: "pane.agent_status_changed", pane_id: askPaneId }],
+    () => herdrRpc("pane.send_text", { pane_id: askPaneId, text: `HOME='${root}' exec '${join(handoffBin, "omp")}' '${join(root, "ask.js")}' '${askScreen}' '${movedScreen}' '${askMarker}'\n` }),
+    "drew the stand-in's Ask panel and saw its omp",
+    (events) => events.some((event) => event.event === "pane.output_matched")
+      && events.some((event) => event.event === "pane.agent_status_changed" && event.data?.["agent"] === "omp"));
   await herdrRpc("pane.report_agent", { pane_id: askPaneId, source: "herdr:omp", agent: "omp", state: "blocked", seq: ++seq });
   await herdrRpc("pane.report_agent_session", { pane_id: askPaneId, source: "herdr:omp", agent: "omp", seq: ++seq, agent_session_path: askSession, session_start_source: "startup" });
   process.env["HOME"] = root;
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state") });
-});
+  // herdr takes a few seconds to see each stand-in's omp; every wait above is bounded on its own
+}, 30_000);
 
 afterAll(async () => {
   server?.stop();
@@ -146,11 +148,38 @@ it("answers a session omp has not written yet as an empty conversation, then fol
   expect(written.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
 });
 
+/** herdr's subscription to `text` showing in the pane */
+function drawnOn(pane: string, text: string): HerdrSubscription {
+  return { type: "pane.output_matched", pane_id: pane, source: "visible", match: { type: "substring", value: text } };
+}
+
+/** Runs `trigger` once herdr's subscription to `subscriptions` has started, and waits until its events say `done` (by default, the first one), bounded. */
+function herdrAfter(subscriptions: HerdrSubscription[], trigger: () => unknown, what: string, done: (events: EventFrame[]) => boolean = (events) => events.length > 0): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let over = false;
+    const events: EventFrame[] = [];
+    const finish = (error?: Error) => { if (over) return; over = true; clearTimeout(timer); subscription.close(); if (error) reject(error); else resolve(); };
+    const subscription = subscribeEvents(subscriptions, {
+      onStarted: () => { Promise.resolve().then(trigger).catch((error: Error) => finish(error)); },
+      onEvent: (event) => { events.push(event); if (done(events)) finish(); },
+      onError: (error) => finish(error),
+    });
+    const timer = setTimeout(() => finish(new Error(`herdr never ${what}`)), 10_000);
+  });
+}
+
+/** The pane's card as the server reads it now. */
+async function promptOf(pane: string): Promise<InteractivePrompt | null> {
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`);
+  expect(response.status).toBe(200);
+  return (await response.json() as { prompt: InteractivePrompt | null }).prompt;
+}
+
 /** The pane's card once `wanted` holds for it, within a deadline. */
-async function promptWhen(wanted: (prompt: InteractivePrompt | null) => boolean, pane = handoffPaneId): Promise<InteractivePrompt | null> {
+async function promptWhen(wanted: (prompt: InteractivePrompt | null) => boolean): Promise<InteractivePrompt | null> {
   let last: InteractivePrompt | null = null;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline; await Bun.sleep(50)) {
-    const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`);
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(handoffPaneId)}`);
     expect(response.status).toBe(200);
     last = (await response.json() as { prompt: InteractivePrompt | null }).prompt;
     if (wanted(last)) return last;
@@ -188,7 +217,8 @@ it("cancels omp's /handoff from its card, and keeps the same conversation when a
 });
 
 it("shows an omp Ask card in the open call's Markdown, answered by the keys of the menu on screen (#1644)", async () => {
-  const card = await promptWhen((prompt) => prompt?.text_format === "markdown", askPaneId);
+  // the stand-in drew its panel and the pane reports the session before the server starts: one read each step
+  const card = await promptOf(askPaneId);
   expect(card).toMatchObject({
     agent: "omp", text_format: "markdown", custom_option_index: 2,
     question: "Which **route** should carry the `fixture` session? See [the guide](https://example.com/guide).",
@@ -201,21 +231,25 @@ it("shows an omp Ask card in the open call's Markdown, answered by the keys of t
   // the call answered in the terminal: the same screen is no longer that call's, and its card is as drawn
   const open = readFileSync(askSession, "utf8");
   appendFileSync(askSession, JSON.stringify({ type: "message", id: "r1", parentId: "c328f4b1", timestamp: new Date().toISOString(), message: { role: "toolResult", toolCallId: "omp-md-ask", toolName: "ask", content: [{ type: "text", text: "answered" }] } }) + "\n");
-  const drawn = await promptWhen((prompt) => prompt !== null && prompt.text_format === undefined, askPaneId);
+  const drawn = await promptOf(askPaneId);
+  expect(drawn?.text_format).toBeUndefined();
   expect(drawn).toMatchObject({ question: "Which route should carry the fixture session? See the guide (https://example.com/guide).", options: [{ label: "Use local socket" }, { label: "Remote relay" }] });
   writeFileSync(askSession, open);
 
   // the Markdown card answers as the screen's card: its id, and Down then Enter to the second row
-  const rich = await promptWhen((prompt) => prompt?.text_format === "markdown", askPaneId);
+  const rich = await promptOf(askPaneId);
+  expect(rich?.text_format).toBe("markdown");
   expect(rich!.id).toBe(card!.id);
-  const answered = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pane_id: askPaneId, prompt_id: rich!.id, option_index: 1 }),
-  });
+  // the stand-in notes each key before it draws "Answered." for the Enter
+  let answering!: Promise<Response>;
+  await herdrAfter([drawnOn(askPaneId, "Answered.")], () => {
+    answering = fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: askPaneId, prompt_id: rich!.id, option_index: 1 }),
+    });
+  }, "drew the stand-in's answer");
+  const answered = await answering;
   expect(answered.status, await answered.text()).toBe(200);
-  for (const deadline = Date.now() + 10_000; !existsSync(askMarker) || !readFileSync(askMarker).includes(0x0d); await Bun.sleep(50)) {
-    if (Date.now() > deadline) throw new Error("the stand-in omp got no Enter");
-  }
   expect(readFileSync(askMarker, "latin1")).toMatch(/^\x1b(?:\[|O)B\r$/);
 });
 

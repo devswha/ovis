@@ -116,6 +116,43 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     expect(ompMarkdownPrompt(review, asks)).toBe(review);
   });
 
+  it("leaves the card as drawn where the chat's own Markdown scanner would show other characters (#2220 review)", () => {
+    const version = "18.12.6";
+    const drawnScreen = screen(version, "single", 120);
+    // the screen's rows rewritten in place, as omp would draw these labels
+    const relabel = (shown: string, labels: [string, string]) => {
+      let out = shown;
+      for (const [from, to] of [["Use local socket (Recommended)", labels[0]], ["Remote relay", labels[1]]] as const) {
+        const at = out.lastIndexOf(from);
+        out = out.slice(0, at) + to.padEnd(from.length) + out.slice(at + from.length);
+      }
+      return out;
+    };
+    const cases: [string, [string, string], [string, string]][] = [
+      // omp draws the stars of a glob pair as written; the chat's scanner takes them for emphasis
+      ["a glob pair", ["Keep *.log and *.tmp", "Keep .log and .tmp"], ["Keep *.log and *.tmp", "Keep .log and .tmp"]],
+      // an escaped mark: omp draws the mark, the chat's scanner keeps the backslash
+      ["an escape", ["Keep \\*literal\\* files", "Remote relay"], ["Keep *literal* files", "Remote relay"]],
+      // a code span in two backticks around one
+      ["a two-backtick code span", ["Run `` a`b ``", "Remote relay"], ["Run a`b", "Remote relay"]],
+    ];
+    for (const [name, asked, shown] of cases) {
+      const menu = card(relabel(drawnScreen, shown));
+      expect(menu.options.map((option) => option.label), name).toEqual(shown);
+      const calls = withArgs(open(version), (args) => {
+        args.questions[0]!.options[0]!.label = asked[0];
+        args.questions[0]!.options[1]!.label = asked[1];
+      });
+      expect(ompMarkdownPrompt(menu, calls), name).toBe(menu);
+    }
+    // the glob pair in the question itself
+    const row = "Which route should carry the fixture session? See the guide (https://example.com/guide).";
+    const at = drawnScreen.lastIndexOf(row);
+    const globs = card(drawnScreen.slice(0, at) + "Keep *.log and *.tmp?".padEnd(row.length) + drawnScreen.slice(at + row.length));
+    const asked = withArgs(open(version), (args) => { args.questions[0]!.question = "Keep *.log and *.tmp?"; });
+    expect(ompMarkdownPrompt(globs, asked)).toBe(globs);
+  });
+
   it("closes an omp session's ask call at its result and at the next user message", () => {
     const call = { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "a", name: "ask", arguments: { questions: [] } }] } };
     const opened = ompAsksAfter([], call);

@@ -1,5 +1,6 @@
 import { askedQuestions } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
+import { parseInline, parseMarkdown, type InlineNode, type MarkdownBlock } from "../src/lib/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
@@ -58,6 +59,60 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
   return cut && start !== shown && asked.length > start.length && asked.startsWith(start);
 }
 
+/**
+ * `markdown` as omp draws it, when the card draws the same characters: the card's Markdown scanner
+ * (src/lib/markdown.ts, the chat's) is not CommonMark. It takes `*.log and *.tmp` for emphasis and keeps
+ * a backslash before an escaped mark, so the card would show other words than omp, and an option could
+ * read as another one. Where they part, null: the card stays as drawn.
+ */
+function drawn(markdown: string, question: boolean): string | null {
+  const omp = ompDrawn(markdown, question);
+  const card = cardDrawn(markdown, question);
+  return omp !== null && card !== null && omp.replace(/\s+/gu, "") === card.replace(/\s+/gu, "") ? omp : null;
+}
+
+/**
+ * `markdown` as the card draws it (src/components/PromptCard.tsx), put in omp's terms to compare: the
+ * question through the chat's block scanner, with a link's address after its words; a label or a
+ * description through its inline scanner, links as their words. Null for what has no such text
+ * (math, a table, a quote, a task box).
+ */
+function cardDrawn(markdown: string, question: boolean): string | null {
+  try {
+    return question ? parseMarkdown(markdown, 0, false).map(cardBlock).join("\n") : cardInline(parseInline(markdown, false), false);
+  } catch (error) {
+    if (error instanceof Undrawn) return null;
+    throw error;
+  }
+}
+
+function cardBlock(block: MarkdownBlock): string {
+  switch (block.type) {
+    case "paragraph": return block.lines.map((line) => cardInline(line, true)).join("\n");
+    case "heading": return `${block.level > 2 ? `${"#".repeat(block.level)} ` : ""}${cardInline(block.content, true)}`;
+    case "code": return block.value;
+    case "list": return block.items.map((item, index) => item.checked !== undefined ? undrawn()
+      : `${block.ordered ? `${(block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
+    default: return undrawn();
+  }
+}
+
+function cardInline(nodes: InlineNode[], addresses: boolean): string {
+  return nodes.map((node): string => {
+    switch (node.type) {
+      case "text": case "code": return node.value;
+      case "image": return node.alt;
+      case "strong": case "em": case "del": return cardInline(node.children, addresses);
+      case "link": case "file": {
+        const words = cardInline(node.children, false);
+        const href = node.type === "link" ? node.href : node.path;
+        return addresses && href && words !== href && words !== href.replace(/^mailto:/, "") ? `${words} (${href})` : words;
+      }
+      case "math": return undrawn();
+    }
+  }).join("");
+}
+
 class Undrawn extends Error {}
 const undrawn = (): never => { throw new Undrawn(); };
 
@@ -70,7 +125,7 @@ const undrawn = (): never => { throw new Undrawn(); };
  * or description is one line of inline Markdown. Null for what omp draws otherwise (a table, a
  * quote, a rule, HTML, a task list, a block inside a label): the card then stays as drawn.
  */
-function drawn(markdown: string, question: boolean): string | null {
+function ompDrawn(markdown: string, question: boolean): string | null {
   // where Bun's parser and omp's part: Bun decodes every HTML entity and takes `~x~` as strikethrough,
   // while omp draws them as written
   if (/&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/i.test(markdown) || /(?<!~)~(?!~)[^~\n]*(?<!~)~(?!~)/.test(markdown)) return null;

@@ -75,6 +75,15 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(twins, "*main*")).toEqual({ option_index: 1 });
     expect(answerFromText(twins, "main")).toEqual({ option_index: 0 });
   });
+  it("picks no option for words that name two of them, on any card (#2220 review)", () => {
+    // the chat's scanner reads the first label's stars as emphasis: both rows read alike
+    const globs = { ...prompt(["Keep *.log and *.tmp", "Keep .log and .tmp"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(globs, "Keep .log and .tmp")).toEqual({ custom_text: "Keep .log and .tmp" });
+    expect(answerFromText(globs, "2")).toEqual({ option_index: 1 });
+    const alike = prompt(["Retry", "retry"], null);
+    expect(answerFromText(alike, "retry")).toBeNull();
+    expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });
+  });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);
     expect(answerFromText(freeForm, "1")).toEqual({ custom_text: "1" });

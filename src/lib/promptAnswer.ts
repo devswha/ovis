@@ -52,12 +52,18 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   // a label the bridge wrote is named as the card shows it, in the user's language, or in English
   const words = promptWords(prompt);
   const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
+  // the one option the words name; words that name two (rows that read alike) pick neither: null
+  const only = (label: (index: number) => string): number | null | undefined => {
+    const found = valid.filter((index) => names(label(index)));
+    return found.length === 1 ? found[0] : found.length > 1 ? null : undefined;
+  };
   // an option's own words first: a translated label never takes the words another option shows
   // an omp card in Markdown is named by the words it shows alone: its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
-  const named = prompt.text_format === "markdown"
-    ? valid.find((index) => names(shownWords(parseInline(prompt.options[index]!.label, false))))
-    : valid.find((index) => names(prompt.options[index]!.label)) ?? valid.find((index) => names(words.label(index)));
-  if (named !== undefined) return { option_index: named };
+  const own = prompt.text_format === "markdown"
+    ? only((index) => shownWords(parseInline(prompt.options[index]!.label, false)))
+    : only((index) => prompt.options[index]!.label);
+  const named = own !== undefined || prompt.text_format === "markdown" ? own : only((index) => words.label(index));
+  if (typeof named === "number") return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }
 
