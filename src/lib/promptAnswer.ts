@@ -83,9 +83,13 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   if (whole !== undefined) return prompt.multi_select ? { option_indices: [whole] } : { option_index: whole };
   const tokens = prompt.multi_select ? value.split(/[\s,]+/).filter(Boolean) : [value];
   const indices = tokens.map(byNumber);
+  // a row's name as the card shows it, for telling rows apart: a row numbered whose name may look like another
+  // row's picks none either (a click still does)
+  const shown = (index: number): string => prompt.text_format === "markdown" ? optionName(prompt, prompt.options[index]!.label).words : prompt.options[index]!.label;
+  const distinct = (index: number): boolean => valid.filter((other) => skeleton(shown(other)) === skeleton(shown(index))).length === 1;
   const own = (token: string, index: number | null): boolean => {
     const named = nameOf(token);
-    return index !== null && (named === undefined || named === index);
+    return index !== null && (named === undefined || named === index) && distinct(index);
   };
   if (!tokens.every((token, at) => own(token, indices[at]!))) return typed();
   return prompt.multi_select ? { option_indices: [...new Set(indices as number[])] } : { option_index: indices[0]! };

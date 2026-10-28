@@ -80,7 +80,7 @@ describe("answering a prompt from the chat", () => {
     // the chat's scanner reads the first label's stars as emphasis: both rows read alike
     const globs = { ...prompt(["Keep *.log and *.tmp", "Keep .log and .tmp"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(globs, "Keep .log and .tmp")).toEqual({ custom_text: "Keep .log and .tmp" });
-    expect(answerFromText(globs, "2")).toEqual({ option_index: 1 });
+    expect(answerFromText(globs, "2")).toEqual({ custom_text: "2" });  // the pair shares a skeleton: its row number refuses too (a click still picks it)
     // rows the card draws alike once spacing collapses, as a page does
     const spaced = { ...prompt(["Keep **production**", "Keep  **production**"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(spaced, "Keep production")).toEqual({ custom_text: "Keep production" });
@@ -111,7 +111,8 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(prompt(["1", "2"], null, true), "2")).toEqual({ option_indices: [1] });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
-    expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });
+    // the pair shares a skeleton: its row number refuses too (a click still picks it)
+    expect(answerFromText(alike, "1")).toBeNull();
   });
   it("matches the whole typed text to the shown names first, and reads numbers only from text that names no row (#2220 review)", () => {
     type Case = [name: string, labels: string[], multi: boolean, other: boolean, typed: string, expected: TypedAnswer | null];
@@ -159,6 +160,11 @@ describe("answering a prompt from the chat", () => {
         [`multi: ${kind}`, [label, "Keep **production**"], true, false, "Keep production", null],
       ]),
       ["single: a braille blank typed", ["Keep **production**\u2800", "Keep **production**"], false, true, "Keep production\u2800", custom("Keep production\u2800")],
+      // a row number picks no row whose name may look like another row's (a click still does)
+      ["single: the number of a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "1", custom("1")],
+      ["single: the number of a distinct row beside twins", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "3", { option_index: 2 }],
+      ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", null],
+      ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
       ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
       ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
     ];
