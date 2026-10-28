@@ -39,8 +39,11 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
     const head = ref.current;
     if (head !== null && focused !== undefined && (focused.key === key || from.includes(focused.key))) {
       const active = document.activeElement;
-      // focusing it records a new object (onFocus), which the cleanup below leaves alone
       if (active === null || active === document.body) head.focus({ preventScroll: true });
+      // a new record for the head that holds it, which the cleanups below leave alone. Here, not only
+      // in onFocus: with the window in the background the browser moves the focus but sends the
+      // focus event only when the reader comes back
+      if (memory && document.activeElement === head) memory.focused = { key };
     }
     return () => {
       // the heads drawn in its place in this render have run the effect above by the time this
