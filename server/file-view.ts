@@ -147,30 +147,41 @@ export function describeWithin(path: string, folder: string): { info: FileInfo; 
   try { within = realpathSync(folder); } catch { return null; }
   const file = openAuthorized(path, [within], true);
   if (file === null) return null;
+  // nothing here opens the path again: the type comes from its name, the rest from the descriptor
   try {
-    const described = fileInfo(path);
-    if (described === null) return null;
+    const mime = mimeOf(path);
     const modified = fstatSync(file.fd).mtime.toISOString();
-    return { info: { ...described, size: file.size, modified, kind: kindOf(described.mime, path, file.fd) }, within };
+    return { info: { path, name: basename(path), size: file.size, modified, mime, kind: kindOf(mime, path, file.fd) }, within };
   } catch { return null; } finally { release(file.fd); }
 }
 
 /**
  * Try every exact place before opening a name stored in another form. A file named by a path in
  * the scratch folder (the viewer opens what it found there by the path it was given, and a choice
- * among candidates by its own) is still that folder's: found and served as `locateFileInFolder`
- * does. `mayBeScratch` tells, without asking for the folder, whether a path can lie in one.
+ * among candidates by its own) is still that folder's: found only there, in any form, as
+ * `locateFileInFolder` finds it, and never by a lookup that is not held to the folder.
+ * `mayBeScratch` tells, without asking for the folder, whether a path can lie in one.
  */
 export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>, mayBeScratch: (path: string) => boolean = () => false): Promise<LocatedFile> {
+  // the folder is asked for once, however many lookups need it
+  let asked: Promise<string | null> | undefined;
+  const scratchOnce = () => asked ??= scratchFolder();
+  /** the pane's scratch folder and `path` relative to it, when `path` lies in it */
+  const inScratch = async (path: string | null): Promise<{ folder: string; relative: string } | null> => {
+    if (path === null || !mayBeScratch(path)) return null;
+    const folder = await scratchOnce();
+    return folder !== null && path.startsWith(resolve(folder) + sep) ? { folder, relative: relativePath(resolve(folder), path) } : null;
+  };
+  const named = await inScratch(resolveFilePath(input, cwd));
+  if (named !== null) return await locateFileInFolder(named.relative, named.folder) ?? locateFileInFolder(named.relative, named.folder, true);
   const exact = await locateFile(input, cwd);
-  if (exact !== null && "info" in exact && mayBeScratch(exact.info.path)) {
-    const folder = await scratchFolder();
-    if (folder !== null && exact.info.path.startsWith(resolve(folder) + sep)) return locateFileInFolder(relativePath(resolve(folder), exact.info.path), folder);
-  }
+  // found under the pane's folder, in the scratch folder below it
+  const walked = exact !== null && "info" in exact ? await inScratch(exact.info.path) : null;
+  if (walked !== null) return locateFileInFolder(walked.relative, walked.folder);
   if (exact !== null) return exact;
   let folder: string | null = null;
   if (cwd !== null && !isAbsolute(input.trim()) && !input.trim().startsWith("~")) {
-    folder = await scratchFolder();
+    folder = await scratchOnce();
     if (folder !== null) {
       const scratch = await locateFileInFolder(input, folder);
       if (scratch !== null) return scratch;

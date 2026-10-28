@@ -1451,6 +1451,21 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     expect(await fileView.findFile(outside, cwd, async () => scratch, () => true)).toMatchObject({ info: { path: outside } });
   });
 
+  it("finds a path in the folder only there, in any name form, never past it", async () => {
+    const nfd = "é.txt".normalize("NFD");
+    const { cwd, scratch } = fixture(nfd, "INSIDE", "OUTSIDE-SECRET");
+    // a file system that stores one form for both cannot hold the swapped name beside it
+    if (existsSync(join(scratch, nfd.normalize("NFC")))) return;
+    const mayBeScratch = (path: string) => path.startsWith(scratch);
+    const stat = await fromScratch(nfd, cwd, scratch);
+    // the file the viewer was told of gone, and a link to the file outside put there under the other form of its name
+    unlinkSync(join(scratch, nfd));
+    symlinkSync(join(scratch, "..", nfd), join(scratch, nfd.normalize("NFC")));
+    const byPath = await fileView.findFile(stat.info.path, cwd, async () => scratch, mayBeScratch);
+    if (byPath !== null && "info" in byPath) expect(await (await fileResponse(byPath.info, false, false, null, null, undefined, byPath.within ?? null)).text()).not.toContain("OUTSIDE-SECRET");
+    expect(byPath).toBeNull();
+  });
+
   it("keeps sending the file it opened when a link is swapped in while it is sent", async () => {
     // larger than one read too: such a body is sent after its headers, never from the path
     for (const inside of ["INSIDE", "I".repeat(STREAM_CHUNK_BYTES + 1)]) {
