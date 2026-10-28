@@ -1,0 +1,193 @@
+import { closeSync } from "node:fs";
+
+import type { FileTask, FileTaskResult } from "./file-tasks.ts";
+
+/**
+ * The threads the file routes read the filesystem on (#790): a file's type and size, a folder's
+ * names, a page rendered with its own files put into it, a file opened to stream. Each of those
+ * calls is synchronous and may wait on the disk for as long as the disk takes (a network share
+ * that stalls, a page of tens of megabytes), so each runs on one of a few worker threads
+ * (`file-worker.ts`), never on the thread that answers every other request and terminal.
+ *
+ * At most `workers` threads, each with one task at a time, and at most `waiting` tasks waiting
+ * for one; past that a task is refused at once (`FileBusyError`, which the routes answer with 503).
+ * A task not answered within its deadline (waiting included) is refused the same way, but the
+ * thread it ran on stays taken until the call it is in returns: a thread cannot be stopped inside
+ * a system call, and only a thread that answered is known to be free. What that late answer
+ * opened is closed, never handed out.
+ */
+
+/** What a task may take, waiting for a thread included, before its request is answered 503. */
+export const FILE_TASK_DEADLINE_MS = 3_000;
+/**
+ * A task of many calls rather than one: a page rendered with its own files (work for the processor
+ * too), or a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
+ * slow). It may take longer.
+ */
+export const FILE_LONG_TASK_DEADLINE_MS = 15_000;
+
+/** Every file thread is taken (or a task outlived its deadline): try again in a moment. */
+export class FileBusyError extends Error {
+  readonly code = "file_busy";
+}
+
+interface PoolOptions {
+  workers: number;
+  waiting: number;
+  deadlineMs: number;
+  longDeadlineMs: number;
+  /** the module a thread runs (a stand-in, in tests) */
+  worker: URL;
+  /** run each task on the calling thread instead (tests that set `pageFileHooks`, which a thread cannot see) */
+  inline: ((task: FileTask) => FileTaskResult) | null;
+}
+
+const DEFAULTS: PoolOptions = {
+  workers: 4,
+  waiting: 64,
+  deadlineMs: FILE_TASK_DEADLINE_MS,
+  longDeadlineMs: FILE_LONG_TASK_DEADLINE_MS,
+  worker: new URL("./file-worker.ts", import.meta.url),
+  inline: null,
+};
+let options = DEFAULTS;
+
+interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean }
+/** Bun's Worker, which the DOM's type does not describe: `unref` lets the process end with the thread idle. */
+type BunWorker = Worker & { ref(): void; unref(): void };
+interface Thread { worker: BunWorker; pending: Pending | null }
+
+const threads = new Set<Thread>();
+const idle: Thread[] = [];
+const queue: Pending[] = [];
+
+/**
+ * For tests: fewer threads, a shorter deadline, a stand-in thread module, or tasks run inline. No
+ * argument restores the defaults. Every thread started before is ended, a busy one too (what it
+ * runs fails), so a test's held thread does not outlive it.
+ */
+export function setFilePoolOptions(next: Partial<PoolOptions> = {}): void {
+  options = { ...DEFAULTS, ...next };
+  idle.length = 0;
+  for (const thread of [...threads]) {
+    threads.delete(thread);
+    if (thread.pending !== null) {
+      settle(thread.pending, new Error("the file threads were replaced"));
+      abandon(thread.pending.task);
+    }
+    thread.pending = null;
+    void thread.worker.terminate();
+  }
+  for (const pending of queue.splice(0)) settle(pending, new Error("the file threads were replaced"));
+}
+
+/** Threads started and not yet ended, busy or idle, and tasks waiting for one (tests). */
+export function filePoolSize(): { threads: number; idle: number; waiting: number } {
+  return { threads: threads.size, idle: idle.length, waiting: queue.length };
+}
+
+/** `task` run on a file thread; rejects with `FileBusyError` when none is free in time. */
+export function fileTask<T extends FileTaskResult>(task: FileTask): Promise<T> {
+  const inline = options.inline;
+  if (inline !== null) return Promise.resolve().then(() => inline(task) as T);
+  // the thread names the descriptor it opens here at once, so one never answered (a thread that
+  // failed or was ended mid-task) can still be closed (`abandon`)
+  if (task.op === "open") task = { ...task, opened: openedCell() };
+  return new Promise<T>((done, fail) => {
+    const deadline = task.op === "render" || task.op === "walk" ? options.longDeadlineMs : options.deadlineMs;
+    const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending), deadline) };
+    const thread = idle.pop() ?? (threads.size < options.workers ? start() : null);
+    if (thread !== null) run(thread, pending);
+    else if (queue.length < options.waiting) queue.push(pending);
+    else settle(pending, new FileBusyError("every file thread is busy"));
+  });
+}
+
+function settle(pending: Pending, outcome: FileTaskResult | Error): void {
+  if (pending.settled) return;
+  pending.settled = true;
+  clearTimeout(pending.timer);
+  if (outcome instanceof Error) pending.fail(outcome);
+  else pending.done(outcome);
+}
+
+/** Past its deadline: refused, whether it still waits for a thread or runs on one (which stays taken until it answers). */
+function expire(pending: Pending): void {
+  const at = queue.indexOf(pending);
+  if (at >= 0) queue.splice(at, 1);
+  settle(pending, new FileBusyError("the file system did not answer in time"));
+}
+
+function start(): Thread {
+  const worker = new Worker(options.worker) as BunWorker;
+  // an idle thread does not keep the server's process alive
+  worker.unref();
+  const thread: Thread = { worker, pending: null };
+  threads.add(thread);
+  worker.addEventListener("message", (event: MessageEvent<{ result?: FileTaskResult; error?: string }>) => {
+    const pending = thread.pending;
+    thread.pending = null;
+    if (pending !== null) {
+      if (pending.settled) discard(pending.task, event.data.result);
+      else settle(pending, event.data.error !== undefined ? new Error(event.data.error) : event.data.result ?? null);
+    }
+    next(thread);
+  });
+  // a thread that failed outside a task (its module would not load) or ended: its task fails, and another thread takes the queue
+  const end = (error: Error) => {
+    if (!threads.delete(thread)) return;
+    const at = idle.indexOf(thread);
+    if (at >= 0) idle.splice(at, 1);
+    if (thread.pending !== null) {
+      settle(thread.pending, error);
+      abandon(thread.pending.task);
+    }
+    thread.pending = null;
+    const waiting = queue.shift();
+    if (waiting !== undefined) run(start(), waiting);
+  };
+  worker.addEventListener("error", (event) => { end(new Error(`a file thread failed: ${event.message}`)); void worker.terminate(); });
+  worker.addEventListener("close", () => end(new Error("a file thread ended")));
+  return thread;
+}
+
+function run(thread: Thread, pending: Pending): void {
+  thread.pending = pending;
+  thread.worker.ref();
+  thread.worker.postMessage(pending.task);
+}
+
+/** A thread that answered takes the next waiting task, or rests. */
+function next(thread: Thread): void {
+  // ended by setFilePoolOptions (tests) while it ran
+  if (!threads.has(thread)) return;
+  const waiting = queue.shift();
+  if (waiting !== undefined) {
+    run(thread, waiting);
+    return;
+  }
+  thread.worker.unref();
+  idle.push(thread);
+}
+
+/** A late answer's descriptor is closed: the request that asked for it was already answered 503. */
+function discard(task: FileTask, result: FileTaskResult | undefined): void {
+  if (task.op === "open" && result != null && typeof result === "object" && "fd" in result) {
+    try { closeSync(result.fd); } catch { /* already closed */ }
+  }
+}
+
+/** A cell a thread names its opened descriptor in (-1: none yet). */
+function openedCell(): Int32Array<SharedArrayBuffer> {
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  cell[0] = -1;
+  return cell;
+}
+
+/** The descriptor a task's thread opened and will never hand over (it failed or was ended), closed. */
+function abandon(task: FileTask): void {
+  if (task.op !== "open" || task.opened === undefined) return;
+  const fd = Atomics.exchange(task.opened, 0, -1);
+  if (fd < 0) return;
+  try { closeSync(fd); } catch { /* already closed */ }
+}
