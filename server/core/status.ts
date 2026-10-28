@@ -553,5 +553,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); collector.stop(); } };
 
   const queueHeld = (paneId: string): boolean => queueStatus(paneId, "idle") === "working";
-  return { push, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
+  /** the herdr this server reads now, as a snapshot names it, read without asking herdr anything; undefined proves nothing */
+  const currentHerdrLifetime = (): string | undefined => {
+    const identity = finishes.herdrIdentity();
+    return identity === null ? undefined : herdrLifetime(identity);
+  };
+  return { push, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
 }

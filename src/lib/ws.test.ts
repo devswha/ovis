@@ -80,14 +80,34 @@ it("sends nothing when the bridge has not said what it supports by the end of th
   }
 });
 
+it("waits for the snapshot when the features frame is not trusted: nothing leaves, as on an older bridge (#2257)", async () => {
+  jest.useFakeTimers();
+  const client = new HerdrSocket("ws://test/ws");
+  client.trustFeatures((frame) => frame.herdr_lifetime === "known");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive({ type: "features", features: ["submit", "terminal-insert"], connection: "c1", herdr_lifetime: "replaced" });
+  try {
+    const result = client.submit("w1:p1", "chat message", "chat message");
+    jest.advanceTimersByTime(2_000);
+    expect(await result).toMatchObject({ ok: false, code: "capabilities_unknown" });
+    expect(submissions(socket)).toEqual([]);
+  } finally {
+    client.close();
+    jest.useRealTimers();
+  }
+});
+
 it("sends a chat message and an Insert once the server's features frame came, its snapshot still on its way", async () => {
   const client = new HerdrSocket("ws://test/ws");
+  client.trustFeatures((frame) => frame.herdr_lifetime === "known");
   client.attach("w1:p1", 80, 24);
   client.connect();
   const socket = FakeSocket.last;
   socket.open();
   // the snapshot waits on herdr (10 s after a restart, under load); what the server takes does not
-  socket.receive({ type: "features", features: ["submit", "input-ready", "terminal-insert"] });
+  socket.receive({ type: "features", features: ["submit", "input-ready", "terminal-insert"], connection: "c1", herdr_lifetime: "known" });
   socket.receive({ type: "input-ready", pane_id: "w1:p1" });
   try {
     const sent = socket.nextSubmission();
@@ -769,11 +789,12 @@ it("watches a pane it let go of only on a server that can, again after a reconne
 
 it("restores watches and chat interest once per connection: on the features frame, not again on the snapshot", () => {
   const client = new HerdrSocket("ws://test/ws");
+  client.trustFeatures(() => true);
   client.connect();
   const socket = FakeSocket.last;
   socket.open();
   expect(client.watch("w1:p1", 100, 30)).toBe(true);
-  socket.receive({ type: "features", features: ["watch", "submit"] });
+  socket.receive({ type: "features", features: ["watch", "submit"], connection: "c1" });
   expect(socket.sent.filter((m) => m.type === "watch")).toEqual([{ type: "watch", pane_id: "w1:p1", cols: 100, rows: 30 }]);
   // the snapshot lists the same features: nothing is asked twice
   socket.receive(snapshot(["watch", "submit"]));

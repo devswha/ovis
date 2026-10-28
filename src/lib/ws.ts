@@ -222,6 +222,8 @@ export class HerdrSocket {
   /** settles when this connection's features are known (or the connection ends) */
   private featuresSeen: Promise<void> = Promise.resolve();
   private markFeatures: () => void = () => {};
+  /** whether a `features` frame may say what this connection's bridge takes before its snapshot; see trustFeatures */
+  private featuresTrusted: (frame: Extract<ServerMessage, { type: "features" }>) => boolean = () => false;
   private nextSubmit = 1;
   /** submits waiting for their submit-result, by id */
   private readonly submits = new Map<number, (result: SubmitResult) => void>();
@@ -368,13 +370,14 @@ export class HerdrSocket {
       let unwatched: string[] = [];
       // A server lists its features in a first frame of their own, before the snapshot, which can wait
       // seconds on herdr; an older bridge lists them in its snapshot only. Each list is the bridge's
-      // latest word, but what it restores is asked for once per connection, by the first of them.
-      if (message.type === "features" || message.type === "snapshot") {
+      // latest word, but what it restores is asked for once per connection, by the first of them. A features
+      // frame counts only when trusted (trustFeatures); otherwise its snapshot says, as an older bridge's does.
+      if ((message.type === "features" && this.featuresTrusted(message)) || message.type === "snapshot") {
         const first = !this.featuresKnown;
         this.features = new Set(message.features ?? []);
         this.featuresKnown = true;
         this.pingKnown = this.features.has("ping");
-        // a probe sent before this snapshot (running or paused), on ping support remembered from an
+        // a probe sent before these features (running or paused), on ping support remembered from an
         // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
         // its connection is trusted as before rather than dropped at the deadline or left paused
         if (!this.pingKnown && this.probing) this.endProbe();
@@ -705,6 +708,15 @@ export class HerdrSocket {
   onBeforeReplay(handler: () => void): () => void {
     this.beforeReplayHandlers.add(handler);
     return () => { this.beforeReplayHandlers.delete(handler); };
+  }
+
+  /**
+   * Which `features` frames say what the bridge takes before the snapshot does. None by default: a send
+   * then waits for the snapshot, as on an older bridge. MachineSession trusts one that names the herdr the
+   * page already proved, so a send never leaves for a pane ID a replaced herdr gave out again.
+   */
+  trustFeatures(check: (frame: Extract<ServerMessage, { type: "features" }>) => boolean): void {
+    this.featuresTrusted = check;
   }
 
   attach(paneId: string, cols: number, rows: number, keepSize = false): void {

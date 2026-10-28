@@ -8,7 +8,7 @@ function socket(stopped: boolean) {
   const handler = createSocket({
     clients: new Set(), present: new Set(), stopped: () => stopped, admit: () => true, setRole() {}, watchPane() {}, unwatchPane() {},
     end: (_client, reason) => { ended.push(reason); }, holdPending() {}, attachments: new Map(),
-    clientSnapshot: async () => ({}) as SessionSnapshot, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
+    clientSnapshot: async () => ({}) as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
   });
   const client = { data: connectionData({ deviceId: undefined, readOnly: false }) } as Client;
   return { handler, client, ended };
@@ -22,13 +22,16 @@ it("tells a new connection its features before its snapshot, which waits on herd
     const handler = createSocket({
       clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchPane() {}, unwatchPane() {},
       end() {}, holdPending() {}, attachments: new Map(),
-      clientSnapshot: () => held, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
+      clientSnapshot: () => held, herdrLifetime: () => outcome === "read" ? "herdr-a" : undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
     });
-    const frames: { type: string; features?: string[]; code?: string }[] = [];
+    const frames: { type: string; features?: string[]; code?: string; connection?: string; herdr_lifetime?: string }[] = [];
     const client = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (raw: string) => { frames.push(JSON.parse(raw)); return raw.length; } } as unknown as Client;
     const opened = handler.open!(client);
     expect(frames.map((frame) => frame.type)).toEqual(["features"]);
     expect(frames[0]!.features).toEqual(expect.arrayContaining(["submit", "pending-input", "terminal-insert"]));
+    expect(frames[0]!.connection).toBe(client.data.connectionId);
+    // the herdr it reads now, read without a herdr call; none when it proves none
+    expect(frames[0]!.herdr_lifetime).toBe(outcome === "read" ? "herdr-a" : undefined);
     if (outcome === "read") settle({ workspaces: [], panes: [], agents: [], layouts: [] } as unknown as SessionSnapshot);
     else fail(new Error("herdr session.snapshot timed out after 10000ms"));
     await opened;
