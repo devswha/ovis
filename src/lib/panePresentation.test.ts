@@ -126,6 +126,18 @@ it("keeps proving a finish when Codex dates its answer again with a later task_c
   expect(evidence.accept("codex-scope", 3, other, completed)).toBe(false);
 });
 
+it("does not take an older reply with the same text for the finish when no turn has a start time", () => {
+  const evidence = new ConversationFinishEvidence();
+  const newest = { source: "opencode-transcript", history_id: "session", turns: [
+    { role: "assistant", ts: null, end_ts: "2026-10-19T00:05:00Z", parts: [{ kind: "text", text: "Done", phase: "final_answer" }] },
+  ] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  const older = structuredClone(newest);
+  older.turns[0]!.end_ts = "2026-10-19T00:01:00Z";
+  expect(evidence.accept("no-start-scope", 3, newest)).toBe(true);
+  expect(evidence.accept("no-start-scope", 3, older, newest)).toBe(false);
+  expect(evidence.accept("no-start-scope", 3, structuredClone(newest), older)).toBe(true);
+});
+
 for (const id of [5, 10]) {
   it(`accepts finish ${id} when the saved finish 4 has no answer proof`, () => {
     const local = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
