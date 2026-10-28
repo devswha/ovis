@@ -20,7 +20,7 @@
  */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
 import { closeSync, constants, fstatSync, lstatSync, opendirSync, openSync, readSync, realpathSync, statSync, type BigIntStats, type Dir, type Dirent, type Stats } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -30,7 +30,9 @@ import { claudeProjectDir } from "./claude-store.ts";
 import { cmdSlug } from "./cmd.ts";
 import { grokSessionGroups } from "./grok-store.ts";
 import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefix } from "./codex.ts";
+import { hermesHome } from "./hermes-home.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
+import { userHome } from "./user-home.ts";
 
 /** At most this much of any one file is read. */
 export const HEAD_BYTES = 64 * 1024;
@@ -1014,7 +1016,7 @@ function agySessions(cwds: readonly string[], home: string, budget: Budget, read
  */
 export function listSessions(agent: SessionHistoryAgent, cwd: string, options: SessionHistoryOptions = {}): Row[] {
   const env = options.env ?? process.env;
-  const home = options.home ?? homedir();
+  const home = options.home ?? userHome(env, options.platform ?? process.platform);
   const read = options.readHead;
   const budget = new Budget(options.stat ?? ((path, bigint) => bigint ? statSync(path, { bigint: true }) : statSync(path)), options.platform ?? process.platform, options.resolve, options.lstat, options.fstat, options.opendir, options.opened);
   budget.used = options.spent ?? 0;
@@ -1050,7 +1052,7 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
         const data = join(env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
         return opencodeSessions(cwds, named ? dirname(named) : data, named ?? opencodeDatabasePath(env, home), budget);
       }
-      case "hermes": return hermesSessions(cwds, options.hermesHome ?? (env["HERMES_HOME"] || join(home, ".hermes")), budget);
+      case "hermes": return hermesSessions(cwds, options.hermesHome ?? hermesHome(home, env, budget.platform), budget);
       case "devin": return devinSessions(cwds, join(env["XDG_DATA_HOME"] || join(home, ".local", "share"), "devin", "cli", "sessions.db"), budget);
       case "grok": return grokSessions(cwds, home, env, budget, read);
       case "agy": return agySessions(cwds, home, budget, read);

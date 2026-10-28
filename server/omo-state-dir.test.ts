@@ -33,9 +33,11 @@ test("agent environment precedence and home fallbacks are injectable without cre
   delete env.SENPI_CODING_AGENT_DIR;
   expect(omoStateDir(cwd, { env, home: root })).toBe(join(root, "pi", suffix));
   delete env.PI_CODING_AGENT_DIR;
-  expect(omoStateDir(cwd, { env, home: root })).toBe(join(root, "home", ".omo", "agent", suffix));
+  // Windows agents keep their stores under USERPROFILE; elsewhere USERPROFILE means nothing
+  const windows = process.platform === "win32";
+  expect(omoStateDir(cwd, { env, home: root })).toBe(join(root, windows ? "profile" : "home", ".omo", "agent", suffix));
   delete env.HOME;
-  expect(omoStateDir(cwd, { env, home: root })).toBe(join(root, "profile", ".omo", "agent", suffix));
+  expect(omoStateDir(cwd, { env, home: root })).toBe(windows ? join(root, "profile", ".omo", "agent", suffix) : join(root, ".omo", "agent", suffix));
   expect(omoStateDir(cwd, options)).toBe(join(root, ".omo", "agent", suffix));
   expect(existsSync(join(root, ".omo"))).toBe(false);
   expect(existsSync(cwd)).toBe(false);

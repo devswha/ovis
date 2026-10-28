@@ -470,6 +470,26 @@ describe("listSessions", () => {
     expect(rows).toEqual([]);
   });
 
+  it("finds Windows Hermes under LOCALAPPDATA, where 0.21.5 keeps it, and an earlier build's root only while it is the only store", () => {
+    const home = newHome();
+    const local = join(home, "Local");
+    install("hermes", home);
+    mkdirSync(local);
+    renameSync(join(home, ".hermes"), join(local, "hermes"));
+    expect(listSessions("hermes", CWD, { home, env: { LOCALAPPDATA: local }, platform: "win32" }).map((row) => row.id)).toEqual(EXPECTED.hermes);
+    const legacy = newHome();
+    install("hermes", legacy);
+    expect(listSessions("hermes", CWD, { home: legacy, env: { LOCALAPPDATA: join(legacy, "Local") }, platform: "win32" }).map((row) => row.id)).toEqual(EXPECTED.hermes);
+  });
+
+  it("looks in USERPROFILE on Windows when no home is given, even with HOME set", () => {
+    const profile = newHome();
+    install("hermes", profile);
+    mkdirSync(join(profile, "AppData", "Local"), { recursive: true });
+    renameSync(join(profile, ".hermes"), join(profile, "AppData", "Local", "hermes"));
+    expect(listSessions("hermes", CWD, { env: { HOME: newHome(), USERPROFILE: profile }, platform: "win32" }).map((row) => row.id)).toEqual(EXPECTED.hermes);
+  });
+
   const sideFiles = (dir: string) => readdirSync(dir).filter((name) => /-(wal|shm)$/.test(name)).sort();
 
   it("writes no -wal or -shm into a closed WAL store when no writer arrives", () => {
