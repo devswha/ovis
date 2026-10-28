@@ -22,6 +22,7 @@ on:
       - 'src/lib/*[Ww]heel*'
       - 'src/lib/pinchFontSize.ts'
       - 'src/lib/settings.ts'
+      - 'src/styles.css'
       - 'src/lib/narrowPaneFont.ts'
       - 'src/components/PaneCanvas.*'
       - 'src/components/PaneTerminal.*'
