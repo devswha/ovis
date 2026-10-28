@@ -4,7 +4,7 @@ import { useT } from "../lib/i18n.ts";
 import { inNativeApp } from "../lib/nativeApp.ts";
 import { notificationState } from "../lib/notifications.ts";
 import { pushSupported, testDevicePush } from "../lib/push.ts";
-import { runPushAction, usePushHealth, type PushActionOutcome, type PushActionResult } from "../lib/pushHealth.ts";
+import { repairFailed, runPushAction, usePushHealth, type PushActionOutcome, type PushActionResult } from "../lib/pushHealth.ts";
 import { repairOutcome } from "../lib/useNotifications.ts";
 import { useSettings } from "../lib/settings.ts";
 import { repairFailureText } from "./PushHealthNotice.tsx";
@@ -18,7 +18,7 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
   wanted.current = settings.alertsOn;
   const supported = pushSupported();
   const denied = notificationState() === "denied";
-  const enable = !settings.alertsOn || health.repair || result === "missing" || result === "gone" || result === "permission";
+  const enable = !settings.alertsOn || health.repair || repairFailed(result) || result === "missing" || result === "gone" || result === "permission";
 
   const send = (repair: boolean) => runPushAction(repair ? "repair" : "test", async (): Promise<PushActionOutcome> => {
     // the subscription the line will be about: the one tested, or the one the repair registered; none

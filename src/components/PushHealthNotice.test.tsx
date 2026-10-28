@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
 import { dismissPushNotice, refreshPushHealth, resetPushHealth, runPushAction } from "../lib/pushHealth.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { repairOutcome, useNotificationSwitch } from "../lib/useNotifications.ts";
 import { PushHealthNotice } from "./PushHealthNotice.tsx";
+import { PushTestControls } from "./PushTestControls.tsx";
 
 describe("the alerts notice", () => {
   const saved = { PushManager: (globalThis as { PushManager?: unknown }).PushManager, Notification: (globalThis as { Notification?: unknown }).Notification };
@@ -44,5 +47,42 @@ describe("the alerts notice", () => {
     expect(render()).toContain("Turn alerts on again");
     dismissPushNotice();
     expect(render()).toBe("");
+  });
+
+  it.each([false, true])("keeps reload advice and the Settings repair button after a real worker-ready timeout (prior fault: %s)", async (priorFault) => {
+    if (!priorFault) resetPushHealth();
+    let enable: (() => Promise<import("../lib/pushHealth.ts").PushActionResult>) | undefined;
+    function Harness() {
+      enable = useNotificationSwitch({
+        updateSettings: () => undefined, locked: false, notifications: "granted", setNotifications: () => undefined,
+        alerts: DEFAULT_ALERTS, alertsRef: { current: DEFAULT_ALERTS }, alertsOn: true, setPushOn: () => undefined,
+      }).enableNotifications;
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    const onEnable = enable!;
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+      ready: new Promise(() => undefined), getRegistration: async () => undefined,
+    } });
+    // Fire the actual worker-ready deadline as an event, without elapsed-time waits.
+    const timeout = globalThis.setTimeout;
+    const timer = spyOn(globalThis, "setTimeout").mockImplementation(Object.assign((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => {
+      if (milliseconds === 10_000) {
+        queueMicrotask(() => callback(...args));
+        return timeout(() => undefined, 0);
+      }
+      return timeout(callback, milliseconds, ...args);
+    }, timeout));
+    try {
+      await runPushAction("repair", async () => repairOutcome(await onEnable()), () => true);
+      const settings = renderToStaticMarkup(createElement(SettingsProvider, {
+        children: createElement(PushTestControls, { onEnable }),
+      }));
+      expect(settings).toContain("Reload the page, then try again.");
+      expect(settings).toContain("Turn alerts on again");
+      if (priorFault) expect(render()).toContain("Reload the page, then try again.");
+    } finally {
+      timer.mockRestore();
+    }
   });
 });

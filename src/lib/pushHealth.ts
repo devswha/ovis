@@ -119,11 +119,11 @@ export interface PushHealthState {
 const DISMISSED_KEY = "ovis:push-notice-dismissed";
 const PROBLEMS: readonly PushProblem[] = ["permission", "missing", "gone", "key-mismatch", "rejected"];
 
-function readDismissed(): PushProblem | null {
+function readDismissed(fallback: PushProblem | null = null): PushProblem | null {
   try {
     const value = window.localStorage.getItem(DISMISSED_KEY);
     return PROBLEMS.find((problem) => problem === value) ?? null;
-  } catch { return null; }
+  } catch { return fallback; }
 }
 
 function writeDismissed(problem: PushProblem | null): void {
@@ -149,6 +149,15 @@ let resultFor: string | null | undefined;
 function setState(next: PushHealthState): void {
   state = next;
   for (const listener of listeners) listener();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.storageArea !== window.localStorage || event.key !== null && event.key !== DISMISSED_KEY) return;
+    // Events can be queued behind a newer write: read what stands now, never replay event.newValue.
+    const dismissed = readDismissed(state.dismissed);
+    if (dismissed !== state.dismissed) setState({ ...state, dismissed });
+  });
 }
 
 function subscribe(listener: () => void): () => void {
@@ -236,17 +245,23 @@ export async function refreshPushHealth(wanted: boolean): Promise<void> {
   }
   // the PC out of reach says nothing new: what was known stands, a notice included, until it answers again
   if (!reached) return;
-  const health = classifyPushHealth(input);
+  let health = classifyPushHealth(input);
   // a fault found later is the latest word: the line of an earlier test does not stand beside it, nor
   // does the line of a test or repair of a subscription since replaced. Why a repair failed is about
-  // the fault it was meant to mend, and stands with it until a repair can no longer help
-  let result = (repairFailed(state.result) ? health.repair : health.problem === null) ? state.result : null;
-  if (result !== null && endpoint !== undefined) {
+  // the fault it was meant to mend. No worker or no status answer proves no recovery.
+  const working = health.problem === null && input.status !== null && typeof input.status === "object";
+  const keepFailure = repairFailed(state.result) && input.wanted && input.supported && input.permission === "granted"
+    && !working && (health.problem === null || health.repair && (state.health.problem === null || health.problem === state.health.problem));
+  if (keepFailure && health.problem === null) health = state.health;
+  let result = (repairFailed(state.result) ? keepFailure : health.problem === null) ? state.result : null;
+  if (result !== null && !repairFailed(result) && endpoint !== undefined) {
     if (resultFor === undefined) resultFor = endpoint;
     else if (resultFor !== endpoint) result = null;
   }
-  const dismissed = keptDismissal(health, input);
-  if (dismissed !== state.dismissed) writeDismissed(dismissed);
+  // Read the origin's current value even if this tab has not received its storage event yet.
+  const stored = readDismissed(state.dismissed);
+  const dismissed = keptDismissal(stored, health, input);
+  if (dismissed !== stored) writeDismissed(dismissed);
   setState({ ...state, health, result, dismissed });
 }
 
@@ -255,9 +270,9 @@ export async function refreshPushHealth(wanted: boolean): Promise<void> {
  * look that found alerts working: the server answered for a subscription this device holds. A look
  * that saw nothing (no worker yet, an older server) proves neither, and keeps it.
  */
-function keptDismissal(health: PushHealth, input: PushHealthInput): PushProblem | null {
-  const dismissed = state.dismissed;
+function keptDismissal(dismissed: PushProblem | null, health: PushHealth, input: PushHealthInput): PushProblem | null {
   if (dismissed === null) return null;
+  if (!input.wanted) return null;
   if (health.problem !== null) return health.problem === dismissed ? dismissed : null;
   return typeof input.status === "object" && input.status !== null ? null : dismissed;
 }
