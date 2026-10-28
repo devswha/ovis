@@ -346,6 +346,11 @@ describe("omp tool approval over each composer shape", () => {
     }
     expect(labels(parseInteractivePrompt("omp", shaped("band-minimal").replace(/\n[^\n]*(\n\u2570\u2500\n?)$/u, "\n$1")))).toEqual(["Approve", "Approve bash for this session", "Deny"]);
     expect(parseInteractivePrompt("omp", statusless("borderless"))).toBeNull();
+    // the band with only a right status group: its gauge rule runs from the left edge to the group's cap
+    for (const row of [`${"\u2500".repeat(100)}\u25c0 \u2b22 Shape fixture`, `${"-".repeat(100)}< [M] Shape fixture`]) {
+      const shown = shaped("band-minimal").replace(/\n[^\n]*(\n\u2570\u2500\n?)$/u, `\n${row}$1`);
+      expect(labels(parseInteractivePrompt("omp", shown)), row).toEqual(["Approve", "Approve bash for this session", "Deny"]);
+    }
   });
 
   it("reads the boxed composer with a user's own status line", () => {

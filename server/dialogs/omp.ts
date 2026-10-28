@@ -330,9 +330,9 @@ const OMP_COMPOSERS: readonly (readonly (RegExp | null)[])[] = [
 ];
 /**
  * the status row as drawn: the band's powerline cap (Nerd Font preset), the space omp pads a segment group with, or with
- * no left group the band's gauge rule; never text from a line's first character (the ascii gauge's `-` is left out: `ls -l`)
+ * no left group the band's gauge rule up to the right group's cap (ascii `-…< `); never text from a line's first character
  */
-const OMP_STATUS_ROW_RE = /^(?:[\ue0b0-\ue0d4] | +|─+)\S/u;
+const OMP_STATUS_ROW_RE = /^(?:[\ue0b0-\ue0d4] | +|─+|-+< )\S/u;
 
 /** the last row over omp's composer when the screen ends in one, else the screen's last row; `raw` holds the rows untrimmed */
 function ompAboveComposer(lines: string[], raw: string[]): number {
