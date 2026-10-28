@@ -162,13 +162,17 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
     void Promise.race([font.settled, new Promise<void>((resolve) => { backstop = setTimeout(resolve, FONT_LOAD_TIMEOUT_MS + 1000); })]).then(() => {
       clearTimeout(backstop);
       if (gone || termRef.current !== term || socketRef.current !== socket) return;
+      // the pane was cached, let go of (released, and maybe watched) or taken up again (resume
+      // attaches it) while the font loaded: the release and resume own its attach from there
+      if (cachedRef.current || releasedRef.current || socket.isAttached(paneId)) return;
       attached = true;
       attach();
     });
     return () => {
       gone = true;
       clearTimeout(backstop);
-      if (attached) leavePane();
+      // the pane is left as an attached one is: whoever attached or watched it meanwhile
+      if (attached || socket.isAttached(paneId) || watchingRef.current) leavePane();
     };
   }, [paneId, terminalId]);
 
