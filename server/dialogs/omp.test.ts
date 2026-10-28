@@ -391,7 +391,9 @@ describe("omp tool approval over each composer shape", () => {
     // a panel left on screen over another program's lines, shaped like a composer: omp pads its status row's groups,
     // where output starts at the line's first character (`ls -l` there starts with the ascii gauge's `-`)
     const panel = box.trimEnd().split("\n").slice(0, -2).join("\n");
-    for (const tail of ["\u276f\nThis is later command output", "fixture@host:~/repo\n\u2570\u2500", "-rw-r--r-- 1 fixture fixture 0 notes\n\u2570\u2500"]) {
+    for (const tail of ["\u276f\nThis is later command output", "fixture@host:~/repo\n\u2570\u2500", "-rw-r--r-- 1 fixture fixture 0 notes\n\u2570\u2500",
+      // a file mode, or a dash, where a statusless composer's rules would be: no rule omp draws
+      "-rw-r--r--\n\u276f", "-\n\u276f\n-", "-\n\n-"]) {
       expect(parseInteractivePrompt("omp", `${panel}\n${tail}\n`), tail).toBeNull();
     }
   });

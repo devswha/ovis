@@ -297,9 +297,10 @@ const OMP_PANEL_ROW_RE = /^[│|] ?(.*?)\s*[│|]$/;
  * and the Deny row), or anything else under the panel matches none: the terminal answers.
  */
 const CURSOR = "(?: [▏|])?";
-const OMP_RULE = /^(?:─+|-+)$/u;
-/** a top rule, which the status' right group may ride (claude, rule) */
-const OMP_STATUS_RULE = /^(?:─+(?:.*─)?|-+(?:.*-)?)$/u;
+/** a rule as omp draws one, across the pane: a run of its glyphs, never a word that holds some (`-rw-r--r--`) */
+const OMP_RULE = /^(?:─{4,}|-{4,})$/u;
+/** a top rule (claude, rule): its run of glyphs, then the status' right group when it rides the rule, then the rule's last glyph */
+const OMP_STATUS_RULE = /^(?:─{4,}(?:[^─].*)?─|-{4,}(?:[^-].*)?-)$/u;
 /** the box's top border: a rule out of each corner, in one glyph set, the status between */
 const OMP_BOX_TOP = /^(?:╭─.*─╮|\+-.*-\+)$/u;
 const OMP_PROMPT = new RegExp(`^❯${CURSOR}$`, "u");
