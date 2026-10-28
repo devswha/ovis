@@ -16,6 +16,12 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
  * A PC route whose answer can take longer than the proxy's usual 75 s: a worktree's creation waits on
  * git and then an agent's start, and a resume on the agent's start and then the check of its store.
  */
+/**
+ * How far a browser's machine events may fall behind before its stream is ended (it reconnects and
+ * reads the roster afresh). Counted in bytes, not frames: herdr hands a burst of status changes over
+ * in one socket read, so hundreds of small frames are written before the response is drained once.
+ */
+export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 export const slowMachinePath = (path: string): boolean => path === "worktree/create" || path === "sessions/resume";
 
 /**
@@ -109,7 +115,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
           unwatchDevice = onRevoke?.(close);
           if (closed) return;
-          const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < -4) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
+          const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < 0) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // A roster leaves without the values their hide rules hide (withoutHiddenTokens), so no browser holds one;
           // the rules' decisions (decidedRowTokens) go first, in the same write, showing the values of this roster and
@@ -162,7 +168,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           if (request.signal.aborted) close();
         },
         cancel() { close(); },
-      });
+      }, new ByteLengthQueuingStrategy({ highWaterMark: MACHINE_EVENTS_QUEUE_BYTES }));
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" } });
     }
     if (parts[0] === "setup") {
