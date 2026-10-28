@@ -78,7 +78,7 @@ async function switchTo(page: Page, tabId: string, paneId: string, marker: strin
       await new Promise<void>((done) => requestAnimationFrame(() => done()));
       const now = performance.now();
       if (text === null && shown()) text = now - start;
-      const frame = ready === null ? bench.ready.find((item) => item.pane === paneId && item.t >= start) : undefined;
+      const frame: { pane: string; t: number } | undefined = ready === null ? bench.ready.find((item) => item.pane === paneId && item.t >= start) : undefined;
       if (frame) ready = frame.t - start;
     }
     return { text, ready };
@@ -206,6 +206,6 @@ try {
   }
 } finally {
   await browser?.close();
-  server?.stop(true);
+  server?.stop();
   rmSync(root, { recursive: true, force: true });
 }
