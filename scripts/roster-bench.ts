@@ -57,7 +57,11 @@ async function serve(stateDir: string): Promise<void> {
 
 async function bench(): Promise<void> {
   // the isolated herdr of a check run (or the `ovis-test` session): never the user's own
-  await import("./test-herdr.ts");
+  const { testSocketPath } = await import("./test-herdr.ts");
+  // test-herdr.ts leaves the inherited socket in place in live mode or with no herdr binary: refuse both
+  if (process.env["HERDR_TEST_LIVE"] === "1" || process.env["HERDR_SOCKET"] !== testSocketPath()) {
+    throw new Error("roster-bench: runs only on the isolated test herdr (`bun run check run ...`), never on a live session");
+  }
   const { herdrRpc, workspaceCreate, workspaceClose } = await import("../server/herdr/client.ts");
   const { chromium } = await import("playwright-core");
   const { chromePath } = await import("./chrome-path.ts");
@@ -80,6 +84,11 @@ async function bench(): Promise<void> {
     }));
   };
   const report = (paneId: string, state: Phase) => herdrRpc("pane.report_agent", { pane_id: paneId, source: "roster-bench", agent: "claude", state });
+  // what a roster size opened, undone last first when it ends or fails: its workspaces, server and page
+  const undo: (() => unknown)[] = [];
+  const unwind = async (): Promise<void> => {
+    for (let step = undo.pop(); step !== undefined; step = undo.pop()) await Promise.resolve().then(step).catch(() => undefined);
+  };
 
   async function openPanes(count: number): Promise<{ workspaces: string[]; panes: string[] }> {
     const workspaces: string[] = [], panes: string[] = [];
@@ -87,6 +96,7 @@ async function bench(): Promise<void> {
     await pool(groups.map((size, index) => ({ size, index })), 8, async ({ size, index }) => {
       const created = await workspaceCreate({ cwd: root, label: `bench ${String(index + 1).padStart(3, "0")}` });
       workspaces.push(created.workspace.workspace_id);
+      undo.push(() => workspaceClose(created.workspace.workspace_id));
       panes.push(created.root_pane.pane_id);
       let target = created.root_pane.pane_id;
       for (let split = 1; split < size; split++) {
@@ -113,7 +123,7 @@ async function bench(): Promise<void> {
   try {
     for (const size of sizes) {
       console.log(`roster-bench: ${size} panes`);
-      const { workspaces, panes } = await openPanes(size);
+      const { panes } = await openPanes(size);
       const ours = new Set(panes);
       await pool(panes, 16, (paneId) => report(paneId, "idle"));
 
@@ -129,26 +139,31 @@ async function bench(): Promise<void> {
           if (message.id !== undefined && message.stats) asked.get(message.id)?.(message.stats);
         },
       });
+      undo.push(async () => { child.kill(); await child.exited; });
+      // a server that died answers nothing: every wait on it ends with it instead of hanging the run
+      const unlessExited = <T>(wait: Promise<T>): Promise<T> =>
+        Promise.race([wait, child.exited.then((code) => { throw new Error(`roster-bench: the server exited (${code})`); })]);
       const ask = (what: "stats" | "gc" | "stop"): Promise<ServerStats> => {
         const id = ++asks;
         const answer = Promise.withResolvers<ServerStats>();
         asked.set(id, answer.resolve);
         child.send({ id, ask: what });
-        return answer.promise;
+        return unlessExited(answer.promise);
       };
-      const origin = `http://127.0.0.1:${await port.promise}`;
+      const origin = `http://127.0.0.1:${await unlessExited(port.promise)}`;
 
       // the working rows' spinners would otherwise fill every window with style work of their own
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+      undo.push(() => context.close());
       await context.addInitScript(() => {
-        const bench = { last: performance.now(), inflight: 0, frames: {} as Record<string, number>, longtasks: 0, longtaskMs: 0, opens: 0, drops: 0, deliveries: 0, pending: false };
+        const bench = { last: performance.now(), inflight: 0, frames: {} as Record<string, number>, longtasks: 0, longtaskMs: 0, opens: 0, drops: 0, deliveries: 0, pending: false, open: false };
         (window as unknown as { __bench: typeof bench }).__bench = bench;
         const Real = window.EventSource;
         window.EventSource = class extends Real {
           constructor(url: string | URL, init?: EventSourceInit) {
             super(url, init);
-            this.addEventListener("open", () => { bench.opens++; bench.last = performance.now(); });
-            this.addEventListener("error", () => { bench.drops++; bench.last = performance.now(); });
+            this.addEventListener("open", () => { bench.opens++; bench.open = true; bench.last = performance.now(); });
+            this.addEventListener("error", () => { bench.drops++; bench.open = false; bench.last = performance.now(); });
             this.addEventListener("message", (event: MessageEvent<string>) => {
               bench.last = performance.now();
               // messages read from one network chunk are dispatched in one task: count the tasks they took
@@ -191,8 +206,9 @@ async function bench(): Promise<void> {
       };
       await until(async () => (await rows(null)) === size, `${size} agent rows`);
       const quiet = () => until(() => page.evaluate(() => {
-        const bench = (window as unknown as { __bench: { last: number; inflight: number } }).__bench;
-        return bench.inflight === 0 && performance.now() - bench.last > 750;
+        const bench = (window as unknown as { __bench: { last: number; inflight: number; open: boolean } }).__bench;
+        // a dropped stream reconnects about 3 s later: its recovery belongs to this burst, not the next
+        return bench.open && bench.inflight === 0 && performance.now() - bench.last > 750;
       }), "a quiet event stream");
       await quiet();
 
@@ -257,12 +273,11 @@ async function bench(): Promise<void> {
         console.log(`summary ${JSON.stringify(line)}`);
       }
 
-      await context.close();
       await ask("stop").catch(() => undefined);
-      await child.exited;
-      for (const workspace of workspaces) await workspaceClose(workspace).catch(() => undefined);
+      await unwind();
     }
   } finally {
+    await unwind();
     await browser.close();
     rmSync(root, { recursive: true, force: true });
   }
