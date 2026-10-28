@@ -24,12 +24,17 @@ describe("attachScreenStarted", () => {
     // the words of a takeover's diagnostic without herdr's prefix
     expect(attachScreenStarted("terminal attach taken over\r\n")).toBe(false);
   });
-  it("takes a screen as soon as its first byte past the setup that no mode set has comes", () => {
+  it("takes a screen only from its first printable text, never from an escape alone", () => {
     expect(attachScreenStarted(SETUP)).toBe(false);
-    // a lone ESC may still start a mode set; `ESC ]` (its hyperlink reset) is the screen's
-    const first = SETUP.length + SCREEN.indexOf("\x1b]");
-    expect(attachScreenStarted((SETUP + SCREEN).slice(0, first + 1))).toBe(false);
-    for (let end = first + 2; end <= SETUP.length + SCREEN.length; end++) expect([end, attachScreenStarted((SETUP + SCREEN).slice(0, end))]).toEqual([end, true]);
+    // the OSC (its hyperlink reset), the clear and the colours come first: none of them is the screen yet
+    const first = SETUP.length + SCREEN.indexOf("bash");
+    for (let end = 0; end <= first; end++) expect([end, attachScreenStarted((SETUP + SCREEN).slice(0, end))]).toEqual([end, false]);
+    // an OSC title, a cursor save or an escape cut short, before a refusal (#2255 review)
+    for (const lead of ["\x1b]", "\x1b]0;title", "\x1b]0;title\x07", "\x1b7", "\x1b8\x1b(B", "\x1b[", "\x1b[?10"]) {
+      expect([lead, attachScreenStarted(SETUP + lead)]).toEqual([lead, false]);
+      expect([lead, attachScreenStarted(SETUP + lead + REFUSALS[0])]).toEqual([lead, false]);
+    }
+    for (let end = first + 1; end <= SETUP.length + SCREEN.length; end++) expect([end, attachScreenStarted((SETUP + SCREEN).slice(0, end))]).toEqual([end, true]);
     // a screen whose first text is not a refusal's start
     expect(attachScreenStarted(`${SETUP}pane text: has a read in progress; retry\r\n`)).toBe(true);
   });
