@@ -2788,13 +2788,18 @@ describe("a model drawn only in the history above the live screen", () => {
     for (const [name, value] of Object.entries(homes)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
     rmSync(root, { recursive: true, force: true });
   });
-  /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`. */
-  const shown = (agent: string, status: string, history: string, live: string): string => {
+  /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
+   * each scroll position herdr reports in turn (offset from the bottom, rows of history), the last one
+   * from then on. */
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: [number, number][] = [[0, 30]]): string => {
     const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
     mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
     mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
       if (method === "agent.get") return { agent: { agent } } as never;
-      if (method === "pane.get") return { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 40 } } } as never;
+      if (method === "pane.get") {
+        const [offset, max] = scrolls.length > 1 ? scrolls.shift()! : scrolls[0]!;
+        return { pane: { ...pane, scroll: { offset_from_bottom: offset, max_offset_from_bottom: max, viewport_rows: 40 } } } as never;
+      }
       if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
       throw new Error(`unexpected RPC: ${method}`);
     }));
@@ -2814,6 +2819,21 @@ describe("a model drawn only in the history above the live screen", () => {
     const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
     expect(answer).toBeInstanceOf(ConversationUnavailable);
     expect((answer as ConversationUnavailable).screen).toBeUndefined();
+  });
+
+  it("names the model only when the viewport stayed at the bottom, with the same history, around its read", async () => {
+    const frame = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
+    const named = async (scrolls: [number, number][]) => {
+      const id = shown("codex", "working", "", frame, scrolls);
+      const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
+      for (const mock of mocks.splice(0)) mock.mockRestore();
+      return (answer as ConversationUnavailable).screen?.model ?? null;
+    };
+    expect(await named([[0, 30], [0, 30]])).toBe("gpt-6.1-sol");
+    // scrolled up when the read began, scrolled up by its end, or a row pushed into the history meanwhile
+    expect(await named([[3, 30], [0, 30]])).toBeNull();
+    expect(await named([[0, 30], [3, 30]])).toBeNull();
+    expect(await named([[0, 30], [0, 31]])).toBeNull();
   });
 });
 
