@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { MachineEvent } from "../shared/machines.ts";
 import { handleMachineRequest, machineEventsClock, machineEventsQueuedBytes } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
@@ -9,12 +9,11 @@ const TOTAL_BYTES = 32 * 1024 * 1024;
 const CEILING_BYTES = 64 * 1024 * 1024;
 const STALL_MS = 30_000;
 
-// the streams' clock, moved on by the tests instead of waiting
+// the streams' clock, moved on by each test instead of waiting, and given back after it
 const realNow = machineEventsClock.now;
 let clock = 0;
-machineEventsClock.now = () => clock;
-afterEach(() => { clock = 0; });
-process.on("exit", () => { machineEventsClock.now = realNow; });
+beforeEach(() => { clock = 0; machineEventsClock.now = () => clock; });
+afterEach(() => { machineEventsClock.now = realNow; });
 
 /** A roster stand-in that tells every open stream, as the status hub tells the real one. */
 function managerStandIn() {
@@ -267,6 +266,55 @@ describe("the machine events stream", () => {
       await Promise.all(streams.map((stream) => stream.close()));
     }
     expect(machineEventsQueuedBytes()).toBe(0);
+  });
+
+  it("never ends a browser that reads on, however much it has waiting, while fresh streams fill the total", async () => {
+    const { manager, emit, listening, newest } = managerStandIn();
+    const steady = await open(manager);
+    const steadyListens = newest();
+    const mib = Math.floor(1024 * 1024 / frameBytes(status(0)));
+    try {
+      // 2 MiB waiting, then each second 1 MiB more and 1 MiB read: its queue never empties
+      for (let sent = 0; sent < 2 * mib; sent++) emit(status(0));
+      for (let second = 0; second < 31; second++) {
+        clock += 1000;
+        for (let sent = 0; sent < mib; sent++) emit(status(0));
+        expect(await steady.readUntil(steady.events.length + mib)).toBe("open");
+      }
+      // eleven streams opened now take the total past 32 MiB while it reads on
+      const fresh = await Promise.all(Array.from({ length: 11 }, () => open(manager)));
+      try {
+        for (let step = 0; step < 6; step++) {
+          for (let sent = 0; sent < mib / 2; sent++) emit(status(0));
+          expect(await steady.readUntil(steady.events.length + Math.floor(mib / 2))).toBe("open");
+        }
+        expect(machineEventsQueuedBytes()).toBeGreaterThan(TOTAL_BYTES);
+        expect(steadyListens()).toBe(true);
+        expect(listening()).toBe(12);
+      } finally {
+        await Promise.all(fresh.map((stream) => stream.close()));
+      }
+    } finally {
+      await steady.close();
+    }
+  });
+
+  it("lets every stream together reach 64 MiB and no further while none has stopped reading", async () => {
+    const { manager, emit } = managerStandIn();
+    // twenty fresh streams fed 3.9 MiB each would be 78 MiB
+    const streams = await Promise.all(Array.from({ length: 20 }, () => open(manager)));
+    try {
+      let most = 0;
+      for (let sent = 0; sent < Math.floor(3.9 * 1024 * 1024 / frameBytes(status(0))); sent++) {
+        emit(status(0));
+        most = Math.max(most, machineEventsQueuedBytes());
+      }
+      // reached to within one small frame of the ceiling, never past it
+      expect(most).toBeLessThanOrEqual(CEILING_BYTES);
+      expect(most).toBeGreaterThan(CEILING_BYTES - 1024);
+    } finally {
+      await Promise.all(streams.map((stream) => stream.close()));
+    }
   });
 
   it("drops what waited for a browser that went away, so the streams opened after it get the whole total", async () => {

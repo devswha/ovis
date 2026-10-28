@@ -23,11 +23,12 @@ export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 /**
  * What every machine events stream together may hold, every queued byte counted, large frames and
  * watching devices included. Past it, the streams that stopped reading are ended, the one holding
- * the most first: a stream whose queue has not emptied for MACHINE_EVENTS_STALL_MS. A stream that
- * has just been sent its roster has not stopped reading, so it is neither ended nor ends another.
+ * the most first: a stream whose browser has taken nothing from its queue for MACHINE_EVENTS_STALL_MS.
+ * One that reads on is never that, however much it has waiting, and one that has just been sent its
+ * roster has not stopped reading either, so neither is ended nor ends another.
  */
 export const MACHINE_EVENTS_TOTAL_BYTES = 32 * 1024 * 1024;
-/** How long a queue may stay unemptied before its stream counts as stopped reading. */
+/** How long a browser may take nothing from a waiting queue before its stream counts as stopped reading. */
 export const MACHINE_EVENTS_STALL_MS = 30_000;
 /**
  * What every stream together may hold even while none has stopped reading yet (browsers opening at
@@ -35,14 +36,20 @@ export const MACHINE_EVENTS_STALL_MS = 30_000;
  * again. A frame its stream is alone in holding always goes, so one roster larger than this does too.
  */
 export const MACHINE_EVENTS_CEILING_BYTES = 64 * 1024 * 1024;
-/** When a queue last stopped being empty is read from this; tests move it on instead of waiting. */
+/** When a browser last took from its queue is read from this; tests move it on instead of waiting. */
 export const machineEventsClock = { now: (): number => performance.now() };
 
 /**
  * `told`: what the stream held when it was last written to; a queue only shrinks between writes, so it
- * is never less. `since`: when its queue last went from empty to holding a frame.
+ * is never less. `taken`: every byte its browser has taken so far; `movedAt`: when that was last seen
+ * to grow, or the queue to be empty.
  */
-interface EventsQueue { queued: () => number; drop: () => void; told: number; since: number }
+interface EventsQueue { queued: () => number; taken: () => number; drop: () => void; told: number; seenTaken: number; movedAt: number }
+/** Notes whether the browser has taken anything since it was last looked at: reading on, however slowly, is no stall. */
+const observe = (queue: EventsQueue, now: number): void => {
+  const taken = queue.taken();
+  if (taken !== queue.seenTaken || queue.queued() === 0) { queue.seenTaken = taken; queue.movedAt = now; }
+};
 const eventsQueues = new Set<EventsQueue>();
 /** The sum of every stream's `told`: never less than what all of them hold, so the total is counted exactly only near it. */
 let toldTotal = 0;
@@ -172,17 +179,17 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             while (large.length > 0 && large[0]!.end <= left) large.shift();
             return large.reduce((most, frame) => Math.max(most, frame.bytes), 0);
           };
-          const own: EventsQueue = { queued, drop, told: 0, since: 0 };
+          const own: EventsQueue = { queued, taken: () => written - queued(), drop, told: 0, seenTaken: 0, movedAt: machineEventsClock.now() };
           queue = own;
           eventsQueues.add(own);
           const retell = (): void => { const now = queued(); toldTotal += now - own.told; own.told = now; };
-          const stalled = (other: EventsQueue, now: number): boolean => other.told > 0 && now - other.since >= MACHINE_EVENTS_STALL_MS;
+          const stalled = (other: EventsQueue, now: number): boolean => other.told > 0 && now - other.movedAt >= MACHINE_EVENTS_STALL_MS;
           const send = (text: string) => {
             if (closed) return;
             const bytes = encoder.encode(text);
             const now = machineEventsClock.now();
             retell();
-            if (own.told === 0) own.since = now;
+            observe(own, now);
             // the backlog this frame adds beyond the one large frame a stream may hold: all of a small frame, of a
             // large one what the large one already waiting leaves uncovered (none when it is the first)
             const counted = bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES ? Math.min(bytes.byteLength, largeQueued()) : bytes.byteLength;
@@ -191,7 +198,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
               // perhaps over the total: count every stream exactly, then end those that stopped reading, the one
               // holding the most first, this one too if it is that one
               toldTotal = 0;
-              for (const other of eventsQueues) { other.told = other.queued(); toldTotal += other.told; }
+              for (const other of eventsQueues) { other.told = other.queued(); toldTotal += other.told; observe(other, now); }
               while (toldTotal + bytes.byteLength > MACHINE_EVENTS_TOTAL_BYTES) {
                 let most: EventsQueue | undefined;
                 for (const other of eventsQueues) if (stalled(other, now) && (most === undefined || other.told > most.told)) most = other;
