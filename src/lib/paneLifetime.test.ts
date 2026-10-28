@@ -149,7 +149,7 @@ describe("pane state per herdr lifetime", () => {
     expect(reloaded.unsent().some((item) => item.id === "older")).toBe(true);
   });
 
-  it("drops the recovery copy of an unconfirmed row discarded in the same page, and makes none for a PC whose state is stored", () => {
+  it("drops the recovery copy of an unconfirmed row discarded in the same page, and makes one for a stored PC only when storage refuses the row", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
     const pending = new PendingMessageStore(() => lifetimes.paneStorage, lifetimes);

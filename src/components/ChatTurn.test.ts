@@ -187,13 +187,16 @@ describe("an agent turn's folded work, drawn again", () => {
     await draw([commentary("Checking."), reasoning]);
     await toggle(0);
     expect(opened()).toEqual([false]);
-    // the words become the answer: what is left of the run draws no block
+    // the words become the answer: what is left of the run draws no block, through every redraw
+    // while the reasoning streams
     await draw([answer("Checking."), reasoning]);
     expect(opened()).toEqual([]);
+    await draw([answer("Checking."), { ...reasoning, text: "Weighing it again." }]);
+    expect(opened()).toEqual([]);
     // a tool joins the reasoning: the block is drawn again, as the reader left it
-    await draw([answer("Checking."), reasoning, tool("ls")]);
+    await draw([answer("Checking."), { ...reasoning, text: "Weighing it again." }, tool("ls")]);
     expect(opened()).toEqual([false]);
-    await remount([answer("Checking."), reasoning, tool("ls")]);
+    await remount([answer("Checking."), { ...reasoning, text: "Weighing it again." }, tool("ls")]);
     expect(opened()).toEqual([false]);
   });
 
