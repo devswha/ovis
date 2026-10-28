@@ -58,7 +58,7 @@ function runRunner(options: {
   gitFetchExitCode?: number;
   /** exit status of the container that builds the Bun cache */
   cacheBuildExitCode?: number;
-  /** "fetch" makes the mirror's git fetch, "ls-remote" its default-branch query, "build" the Bun cache build, wait until killed; each touches <tempDir>/hung first */
+  /** "fetch" makes the mirror's git fetch, "ls-remote" its default-branch query, "build" the Bun cache build, wait until killed; each writes a byte to the FIFO <tempDir>/hung first */
   hang?: "fetch" | "ls-remote" | "build";
   /** the hung stub ignores SIGTERM, as a git or docker client that will not stop; "helper": the git stub
    * stops, but leaves a child (a transport helper) that ignores it */
@@ -93,27 +93,37 @@ const HUNG_RUN_MS = 3 * LOADED_BOUND_MS;
 /** A stop "at once": under the 5 s after which run.sh's timeouts kill what ignored the stop. */
 const STOP_AT_ONCE_MS = 4_000;
 
+/** Runs `argv` until it ends, or kills it after `ms`: whether it ended by itself with status 0. */
+async function endsWithin(argv: string[], ms: number) {
+  const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" });
+  const status = await Promise.race([proc.exited, Bun.sleep(ms).then(() => null)]);
+  if (status === null) proc.kill("SIGKILL");
+  await proc.exited;
+  return status === 0;
+}
+
 /**
  * Starts the launcher as runRunner does, waits until its stub hangs (options.hang), then sends it
- * `signal` (none: lets it go on). Returns how it ended, within `endMs` of the hang.
+ * `signal` (none: lets it go on, and lets a runner have its token). Returns how it ended, within
+ * `endMs` of the hang.
  */
 async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "ls-remote" | "build" }, signal: NodeJS.Signals | null, endMs = LOADED_BOUND_MS) {
   const { tempDir, args, env, logPath } = prepareRunner(options);
   const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
   // read as it comes: a process left holding stderr must not hold the test past its bound
   const stderrText = new Response(child.stderr).text();
+  let release: ReturnType<typeof Bun.spawn> | undefined;
   try {
-    const hung = join(tempDir, "hung");
-    const deadline = Date.now() + LOADED_BOUND_MS;
-    while (!existsSync(hung)) {
-      if (Date.now() > deadline) throw new Error("the stub never hung");
-      await Bun.sleep(10);
-    }
+    // the hanging stub writes a byte to this FIFO as it hangs: reading it blocks until then
+    if (!await endsWithin(["head", "-c", "1", env.RUNNER_TEST_HUNG!], LOADED_BOUND_MS)) throw new Error("the stub never hung");
+    // the gh stub hands out a token once this FIFO opens: only now, so no runner starts before the hang
+    if (!signal) release = Bun.spawn(["sh", "-c", 'echo go > "$0"', env.RUNNER_TEST_TOKEN_GATE!], { stdout: "ignore", stderr: "ignore" });
     if (signal) child.kill(signal);
     const ended = await Promise.race([child.exited, Bun.sleep(endMs).then(() => "still running" as const)]);
     const stuck = spawnSync("pgrep", ["-f", tempDir], { encoding: "utf8" }).stdout.trim();
     return { ended, stderr: await Promise.race([stderrText, Bun.sleep(LOADED_BOUND_MS).then(() => "")]), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
   } finally {
+    release?.kill("SIGKILL");
     child.kill("SIGKILL");
     spawnSync("pkill", ["-KILL", "-f", tempDir]);
     await child.exited;
@@ -133,11 +143,9 @@ function prepareRunner(options: RunnerOptions) {
 printf 'gh %s\\n' "$*" >> "$RUNNER_TEST_LOG"
 case " $* " in
   *registration-token*)
-    # a refresh set to hang hangs before any runner starts, however soon --cache-wait runs out
-    if [ -n "\${RUNNER_TEST_HANG_FETCH:-}\${RUNNER_TEST_HANG_LSREMOTE:-}\${RUNNER_TEST_HANG_BUILD:-}" ]; then
-      tries=0
-      while [ ! -e "$RUNNER_TEST_HUNG" ] && [ "$tries" -lt 1200 ]; do sleep 0.05; tries=$((tries + 1)); done
-    fi
+    # a refresh set to hang hangs before any runner starts, however soon --cache-wait runs out: the
+    # test opens this FIFO once it has seen the hang
+    if [ -n "\${RUNNER_TEST_TOKEN_GATE:-}" ]; then read -r go < "$RUNNER_TEST_TOKEN_GATE"; fi
     if [ "\${GH_TOKEN_EXIT_CODE:-0}" -ne 0 ]; then
       exit "$GH_TOKEN_EXIT_CODE"
     fi
@@ -170,7 +178,7 @@ case "$1" in
     case "$name" in *-cache)
       if [ -n "\${RUNNER_TEST_HANG_BUILD:-}" ]; then
         [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
-        touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
+        printf x > "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
       fi
       exit "\${DOCKER_CACHE_EXIT:-0}" ;;
     esac
@@ -208,13 +216,13 @@ case "$1" in
       elif [ -n "\${RUNNER_TEST_STUBBORN:-}" ]; then
         trap '' TERM
       fi
-      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
+      printf x > "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
     fi
     exit "\${GIT_FETCH_EXIT:-0}" ;;
   ls-remote)
     if [ -n "\${RUNNER_TEST_HANG_LSREMOTE:-}" ]; then
       [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
-      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
+      printf x > "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
     fi
     case "$RUNNER_TEST_DEFAULT_BRANCH" in
       fail) exit 128 ;;
@@ -244,6 +252,8 @@ exit 0
     // a sleep named by its path in this run's directory, so a test can find one left running
     copyFileSync(spawnSync("bash", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim(), join(binDir, "hang-sleep"));
     chmodSync(join(binDir, "hang-sleep"), 0o755);
+    // FIFOs: the test waits for the hang, and the gh stub for the test, by blocking on them, not polling
+    if (options.hang) spawnSync("mkfifo", [join(tempDir, "hung"), join(tempDir, "token-gate")]);
     const envFile = join(tempDir, "host.env");
     if (options.envFile === "present") writeFileSync(envFile, "# P620\n\nCHECK_HOST_MAX_RUNS=6\nCHECK_HOST_BROWSER_WORKERS=10\n");
     if (options.envFile === "bare") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nGH_TOKEN\n");
@@ -269,6 +279,7 @@ exit 0
       PATH: path,
       RUNNER_TEST_LOG: logPath,
       RUNNER_TEST_HUNG: join(tempDir, "hung"),
+      ...(options.hang ? { RUNNER_TEST_TOKEN_GATE: join(tempDir, "token-gate") } : {}),
       ...(options.hang === "fetch" ? { RUNNER_TEST_HANG_FETCH: "1" } : {}),
       ...(options.hang === "build" ? { RUNNER_TEST_HANG_BUILD: "1" } : {}),
       ...(options.hang === "ls-remote" ? { RUNNER_TEST_HANG_LSREMOTE: "1" } : {}),
