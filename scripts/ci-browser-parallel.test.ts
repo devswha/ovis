@@ -67,7 +67,8 @@ describe("parallel browser script deadline", () => {
     expect(run.leftAlive).toEqual([]);
   }, 20_000);
 
-  it("fails a script that exits but leaves a process holding its output, without waiting for the bound", async () => {
+  // A process whose parent has exited is found through /proc: Linux only, as CI's runners are.
+  it.skipIf(process.platform !== "linux")("fails a script that exits but leaves a process holding its output, without waiting for the bound", async () => {
     // the bound is past the stub run's own 15 s limit: only the exit can end this run in time
     const run = await runStub("exit 0", "60");
     expect(run.signal).toBeNull();
@@ -83,7 +84,8 @@ describe("parallel browser script deadline", () => {
     expect(scriptTimeoutSeconds(undefined)).toBe(600);
     expect(scriptTimeoutSeconds("")).toBe(600);
     expect(scriptTimeoutSeconds("1.5")).toBe(1.5);
-    for (const bad of ["0", "-3", "soon", "Infinity"]) expect(() => scriptTimeoutSeconds(bad)).toThrow("BROWSER_SCRIPT_TIMEOUT_SECONDS");
+    expect(scriptTimeoutSeconds("2147483")).toBe(2147483);
+    for (const bad of ["0", "-3", "soon", "Infinity", "2147484"]) expect(() => scriptTimeoutSeconds(bad)).toThrow("BROWSER_SCRIPT_TIMEOUT_SECONDS");
   });
 });
 

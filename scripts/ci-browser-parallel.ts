@@ -32,11 +32,14 @@ const TIMEOUT_TAIL_LINES = 40;
 /** The exit code a timed-out script is given, as timeout(1) does. */
 export const TIMEOUT_EXIT_CODE = 124;
 
-/** BROWSER_SCRIPT_TIMEOUT_SECONDS: a positive number of seconds; unset or empty is the default. */
+/** The longest delay setTimeout takes; a longer one fires at once. */
+const MAX_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
+
+/** BROWSER_SCRIPT_TIMEOUT_SECONDS: a positive number of seconds up to about 24 days; unset or empty is the default. */
 export function scriptTimeoutSeconds(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_SCRIPT_TIMEOUT_SECONDS;
   const seconds = Number(value);
-  if (!(Number.isFinite(seconds) && seconds > 0)) throw new Error(`BROWSER_SCRIPT_TIMEOUT_SECONDS must be a positive number of seconds, not "${value}"`);
+  if (!(Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS)) throw new Error(`BROWSER_SCRIPT_TIMEOUT_SECONDS must be a positive number of seconds up to ${MAX_TIMEOUT_SECONDS}, not "${value}"`);
   return seconds;
 }
 
