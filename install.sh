@@ -260,7 +260,8 @@ server_arch() {
   # past the bound, where a file is read once bounded has returned (as in starred)
   server_file=$(mktemp 2>/dev/null) || return 0
   bounded 5 bun -p process.arch </dev/null >"$server_file" 2>/dev/null || true
-  server=$(sed -n 1p "$server_file" 2>/dev/null || true)
+  # all of it, not a first line: a preload that prints before Bun's answer must not stand in for it
+  server=$(cat "$server_file" 2>/dev/null || true)
   rm -f "$server_file"
   case "$server" in
     x64 | arm64) arch=$server; platform="$os-$arch" ;;
@@ -276,7 +277,7 @@ node_fits() {
   fit_file=$(mktemp 2>/dev/null) || return 1
   fit_status=0
   bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' </dev/null >"$fit_file" 2>/dev/null || fit_status=$?
-  fit=$(sed -n 1p "$fit_file" 2>/dev/null || true)
+  fit=$(cat "$fit_file" 2>/dev/null || true)
   rm -f "$fit_file"
   [ "$fit_status" = 0 ] || return 1
   fit_major=${fit%% *}

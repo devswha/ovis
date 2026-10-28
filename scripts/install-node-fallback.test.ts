@@ -141,6 +141,9 @@ describe("node_fits", () => {
     // an x64 Node from a Rosetta shell on an arm64 Mac, which the server's node-pty cannot load (#2100 review)
     expect(fits("22 x64")).toBe("NO");
     expect(fits("")).toBe("NO");
+    // a preload's line before the real answer, an x64 Node's on an arm64 PC: never the preload's line alone (#2100 review)
+    expect(fits("22 arm64\n24 x64")).toBe("NO");
+    expect(fits("preload says hi\n22 arm64")).toBe("NO");
     expect(sh(`if node_fits /nonexistent/node; then echo FITS; else echo NO; fi`, { arch: "arm64" }).out.trim()).toBe("NO");
   });
 
@@ -186,6 +189,8 @@ describe("server_arch", () => {
   it("keeps uname's when Bun does not answer with one it knows", () => {
     expect(after("ia32")).toBe("x64 darwin-x64");
     expect(after("")).toBe("x64 darwin-x64");
+    // a preload that prints a line before Bun's own answer (#2100 review)
+    expect(after("arm64\nx64")).toBe("x64 darwin-x64");
   });
 
   it("reads Bun's answer without waiting for a child Bun left holding its output (#2100 review)", () => {
