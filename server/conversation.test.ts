@@ -2588,16 +2588,30 @@ describe("a Codex pane that reported no session yet", () => {
     const pane = { pane_id: "codex-greet", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
     let screen = FRESH;
     let argv = ["codex"];
+    // what a detection read of a short screen also reaches up to, and the rows a device scrolled up by
+    let above = "";
+    let scrolledUp = 0;
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
-      ? { agent: { agent: "codex" } } : { process_info: { foreground_processes: [{ pid: process.pid, argv }] } }) as never);
-    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as never);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [{ pid: process.pid, argv }] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? `${above}${screen}` : screen }) as never);
     const ask = () => paneConversation(pane.pane_id, home).catch((error: unknown) => error);
     try {
       // no store yet, as for a CODEX_HOME Codex has not written to
       const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
       expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null, screen: true, metadata: { model: "gpt-6.1-sol", reasoning_effort: "low" } });
       expect(greeting.history_id).toStartWith("unwritten:codex:");
+      // a fresh Codex on a short screen: herdr's detection read reaches up into the history above it,
+      // where an earlier program said something (herdr 0.9.5, after a clear); only the live screen counts
+      above = "\u2022 old output from a previous program\n";
+      expect(await ask()).toMatchObject({ history_id: greeting.history_id });
+      above = "";
+      // scrolled up by a device, the viewport is history: nothing proves the start screen, the terminal
+      // stands in, still with the model the live footer states
+      scrolledUp = 3;
+      expect(await ask()).toMatchObject({ name: "ConversationUnavailable", screen: { model: "gpt-6.1-sol", reasoning_effort: "low" } });
+      scrolledUp = 0;
       // a store whose threads of this folder all ended before this Codex started
       const db = new Database(join(home, "state_5.sqlite"));
       db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT)");
@@ -2691,8 +2705,9 @@ describe("a Codex pane that reported no session yet", () => {
       }));
     };
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
-      ? { agent: { agent: "codex" } } : { process_info: { foreground_processes: codexes } }) as never);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: codexes } }) as never);
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: FRESH }) as never);
     // the server's own default store holds nothing: a home it cannot place must not fall back to it
     const serverHome = process.env["CODEX_HOME"];
