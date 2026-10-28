@@ -284,6 +284,86 @@ describe("omp tool approval (#2059)", () => {
   });
 });
 
+// omp 18.13.2 under --approval-mode=always-ask with each built-in `composer.shape` (band is the default, recorded above),
+// recorded at 119 columns like the approval screens above; `-minimal` with `statusLine.preset: minimal`, `-ascii` with the
+// ascii status line and symbol presets, which draw the frame in `+-|`. `box-live` is
+// the screen omp drew with a user's own config (`composer.shape: box`), where the card did not show (#2106).
+const SHAPES = ["box", "claude", "pi", "borderless", "rule", "field", "rail"] as const;
+const shaped = (name: string) => approval(`18.13.2-shape-${name}`);
+
+describe("omp tool approval over each composer shape", () => {
+  it("reads the panel over the composer omp mounts under it, in every built-in shape and status-line preset", () => {
+    for (const name of [...SHAPES, "band-minimal", "box-minimal", "box-ascii", "claude-ascii"]) {
+      const shown = shaped(name);
+      const prompt = parseInteractivePrompt("omp", shown);
+      expect(prompt, name).toMatchObject({
+        kind: "approval", title: "Allow tool: bash", body: "Command: ls -la",
+        options: [{ label: "Approve" }, { label: "Approve bash for this session" }, { label: "Deny" }],
+      });
+      expect(steps(prompt, 0), name).toEqual([{ keys: ["ctrl+q"] }]);
+      expect(steps(prompt, 1), name).toEqual([{ keys: [KEY.down] }, { keys: [KEY.enter] }]);
+      expect(steps(prompt, 2), name).toEqual([{ keys: [KEY.escape] }]);
+      const parsed = parsedByPublicPrompt.get(prompt!)!;
+      expect(promptTailIsActive(parsed, shown), name).toBe(true);
+      expect(promptTailIsActive(parsed, `${shown.trimEnd()}\n Fixture output after the panel.\n`), name).toBe(false);
+    }
+  });
+
+  it("reads the boxed composer with a user's own status line", () => {
+    const shown = approval("18.13.2-box-live");
+    expect(shown).toMatch(/\n\u256d\u2500\u2500 .* \u2500\u2500\u256e\n\u2570\u2500 +\u2500\u256f\n/u);
+    expect(parseInteractivePrompt("omp", shown)).toMatchObject({
+      kind: "approval", title: "Allow tool: bash", body: "Command: ls -la .",
+      options: [{ label: "Approve" }, { label: "Approve bash for this session" }, { label: "Deny" }],
+    });
+  });
+
+  it("leaves to the terminal a draft in the composer, output under it, and a composer omp does not ship", () => {
+    const box = shaped("box");
+    const prompt = box.split("\n").find((line) => /^\u2570\u2500 +\u2500\u256f$/u.test(line))!;
+    // a draft turns the panel's Enter into "deny and send"; omp redraws the hint too, but the composer alone says so
+    expect(parseInteractivePrompt("omp", box.replace(prompt, `\u2570\u2500 ls${prompt.slice(5)}`))).toBeNull();
+    expect(parseInteractivePrompt("omp", box.replace(prompt, `\u2502  first line${" ".repeat([...prompt].length - 14)}\u2502\n${prompt}`))).toBeNull();
+    expect(parseInteractivePrompt("omp", shaped("claude").replace(/\n\u276f\n/u, "\n\u276f ls\n"))).toBeNull();
+    const rail = shaped("rail");
+    expect(rail).toContain("\n\u258e\n");
+    expect(parseInteractivePrompt("omp", rail.replace("\n\u258e\n", "\n\u258e ls\n"))).toBeNull();
+    for (const name of [...SHAPES, "band-minimal"]) {
+      expect(parseInteractivePrompt("omp", `${shaped(name).trimEnd()}\n Fixture output after the composer.\n`), name).toBeNull();
+    }
+    // an extension's own composer shape (or any other rows) under the panel
+    const other = box.replace(/\n\u256d.*\u256e\n\u2570\u2500 +\u2500\u256f/u, "\n\u2503 \u2b22 Shape fixture\n\u2503");
+    expect(other).not.toBe(box);
+    expect(parseInteractivePrompt("omp", other)).toBeNull();
+  });
+});
+
+// omp 18.13.2's Ask with the shapes that keep an empty row over their status bar (pi-tui `bottomBarGap`), at 119 columns
+const gapAsk = (shape: string) => readFileSync(new URL(`../fixtures/omp-ask-18.13.2-shape-${shape}.txt`, import.meta.url), "utf8");
+
+describe("omp Ask over a status bar with a gap (#1644)", () => {
+  it("keeps the card while the question waits above the gap and the status row", () => {
+    for (const shape of ["rule", "field", "rail"]) {
+      const shown = gapAsk(shape);
+      expect(shown, shape).toMatch(/\u256f\n\n ?(?:[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f] \S+|\u03c0) \u00b7 /u);
+      expect(card(shown), shape).toMatchObject({ question: "Which route should carry the fictional session?", options: [{ label: "Local socket" }, { label: "Remote relay" }] });
+    }
+  });
+
+  it("shows no card once output came between the panel and the status row", () => {
+    for (const shape of ["rule", "field", "rail"]) {
+      const shown = gapAsk(shape);
+      // the panel's own bottom border is the last one on the screen
+      const at = shown.lastIndexOf("\u256f\n\n") + 2;
+      const gapped = (rows: string) => shown.slice(0, at) + rows + shown.slice(at + 1);
+      expect(gapped("\n"), shape).toBe(shown);
+      expect(parseInteractivePrompt("omp", gapped(" Fixture output after the panel.\n")), shape).toBeNull();
+      // two empty rows are no gap omp keeps
+      expect(parseInteractivePrompt("omp", gapped("\n\n")), shape).toBeNull();
+    }
+  });
+});
+
 describe("omp /handoff", () => {
   it("reads the generating status, with and without focus instructions, as a card that cancels with Esc", () => {
     for (const width of widths) {
