@@ -626,7 +626,7 @@ export class MachineManager {
         // all or nothing: one that cannot be completed or saved leaves the PC as it was, trying its own address (#2075)
         const move = runtime.move;
         runtime.move = undefined;
-        const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt };
+        const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, heard: runtime.heard };
         try {
           runtime.machine.target = target;
           if (move) {
@@ -645,6 +645,7 @@ export class MachineManager {
           if (move) {
             Object.assign(runtime.machine, { target: left.target, error: left.error, herdr: left.herdr, snapshot: left.snapshot });
             if (left.ownOvisAt) runtime.ownOvisAt = left.ownOvisAt; else delete runtime.ownOvisAt;
+            if (left.heard) runtime.heard = true; else delete runtime.heard;
           }
           throw error;
         }
