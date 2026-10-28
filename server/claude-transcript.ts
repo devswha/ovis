@@ -9,7 +9,9 @@ import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts"
 /** Slash-command and bookkeeping entries Claude logs as user turns — not conversations. */
 export function isCommandEntry(text: string): boolean {
   if (claudeCommandEcho(text)) return false;
-  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-") || text.startsWith("<bash-std");
+  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
+    // bash-mode output, only as the whole entry: the parser joins it to its command
+    || (text.startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
 /**
@@ -20,12 +22,12 @@ export function isCommandEntry(text: string): boolean {
 const LOCAL_COMMAND_MAX_CHARS = 4000;
 
 function localCommandOutput(content: unknown): string {
-  return capNotice((taggedStreams(content, "local-command") ?? []).map(({ text }) => text).filter((text) => text.length > 0).join("\n"));
+  return capNotice((taggedStreams(content, "local-command") ?? []).map(({ text }) => text.trim()).filter((text) => text.length > 0).join("\n"));
 }
 
 /**
  * The streams a whole entry holds, `<{tag}-stdout>…</{tag}-stdout>` and `<{tag}-stderr>…`, in order and with
- * terminal controls stripped; null when the entry holds anything else.
+ * terminal controls stripped, untrimmed; null when the entry holds anything else.
  */
 function taggedStreams(content: unknown, tag: "local-command" | "bash"): { stream: "stdout" | "stderr"; text: string }[] | null {
   if (typeof content !== "string") return null;
@@ -51,7 +53,7 @@ function taggedStreams(content: unknown, tag: "local-command" | "bash"): { strea
       end = content.indexOf(close, end + close.length);
     }
     if (end === -1) return null;
-    streams.push({ stream, text: stripTerminalControls(content.slice(start, end)).trim() });
+    streams.push({ stream, text: stripTerminalControls(content.slice(start, end)) });
     at = next;
   }
   return streams;
@@ -370,7 +372,8 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       const printed = taggedStreams(content, "bash");
       const shell = turns.at(-1)?.parts[0];
       if (printed !== null && shell?.kind === "shell" && shell.stdout === undefined) {
-        const of = (stream: "stdout" | "stderr") => capNotice(printed.filter((part) => part.stream === stream).map(({ text }) => text).join("\n"));
+        // an output's first line keeps its indent: only the blank end goes
+        const of = (stream: "stdout" | "stderr") => capNotice(printed.filter((part) => part.stream === stream).map(({ text }) => text.trimEnd()).join("\n"));
         shell.stdout = of("stdout");
         shell.stderr = of("stderr");
       }
