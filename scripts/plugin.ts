@@ -26,7 +26,7 @@ import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
 import { defaultStateDir } from "../server/update-state.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, platform } from "node:os";
+import { homedir, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 
 import qrcode from "qrcode-generator";
@@ -249,20 +249,41 @@ function recordedPid(): number | null {
 }
 
 /**
- * The recorded server while that very process runs: its birth, kept when it was started, matches the
- * one running under its pid now. null when it is gone, or cannot be told apart (a record from before
- * the birth was kept, or a birth that cannot be read).
+ * The recorded server while it may still run: null only once it is proved gone or replaced (its pid
+ * is free, the PC restarted after it was recorded, or another birth runs there now), or when no record
+ * of its identity was kept (a server started by a version before this one). A birth that could not be
+ * read, when it was recorded or now, proves nothing either way, so the server counts as running.
  */
 function provedServer(): number | null {
   const pid = recordedPid();
   // an exited server its parent has not reaped yet still answers signal 0, with its birth
   if (pid === null || liveProcess(pid) === false) return null;
-  let owner: { pid?: unknown; birth?: unknown } | null = null;
-  try { owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown }; } catch { /* none kept */ }
-  const birth = owner?.pid === pid ? parseBirth(owner.birth) : null;
-  if (birth === null || birth.platform !== process.platform) return null;
+  let owner: { pid?: unknown; birth?: unknown; birth_unknown?: unknown } | null = null;
+  let recordedAt = 0;
+  try {
+    owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as typeof owner;
+    recordedAt = statSync(OWNER_FILE).mtimeMs;
+  } catch { /* none kept */ }
+  if (owner?.pid !== pid) return null;
+  // every process from before a restart is gone, whatever now holds its pid
+  if (recordedAt < Date.now() - uptime() * 1000 - 1000) return null;
   const now = readProcessBirth(pid);
-  return now.state === "identified" && now.birth.value === birth.value ? pid : null;
+  if (now.state === "absent") return null;
+  const birth = parseBirth(owner.birth);
+  if (birth !== null && birth.platform === process.platform) return now.state === "unknown" || now.birth.value === birth.value ? pid : null;
+  if (owner.birth_unknown !== true) return null;
+  return now.state === "identified" && startedAfter(now.birth.value, recordedAt) ? null : pid;
+}
+
+/** Whether a birth read now is of a process that started after `time` (ms), where the platform's birth is a time. */
+function startedAfter(birth: string, time: number): boolean {
+  if (process.platform === "win32") return Number(birth) > time;
+  if (process.platform === "darwin") {
+    // `ps -o lstart` under TZ=UTC, to the second: "Wed Oct 21 17:41:40 2026"
+    const [, month, day, clock, year] = birth.split(" ");
+    return Date.parse(`${month} ${day} ${year} ${clock} UTC`) > time + 1000;
+  }
+  return false; // Linux: ticks after boot; a reused pid within one boot needs the pid space to wrap
 }
 
 /** the live process a pid file names, or null */
@@ -484,7 +505,7 @@ async function startInTurn(): Promise<number> {
   }
   writeFileSync(PID_FILE, `${child.pid}\n`, { mode: 0o600 });
   const birth = readProcessBirth(child.pid);
-  writeFileSync(OWNER_FILE, `${JSON.stringify({ pid: child.pid, ...(birth.state === "identified" ? { birth: birth.birth } : {}) })}\n`, { mode: 0o600 });
+  writeFileSync(OWNER_FILE, `${JSON.stringify({ pid: child.pid, ...(birth.state === "identified" ? { birth: birth.birth } : { birth_unknown: true }) })}\n`, { mode: 0o600 });
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
   // a server that has exited will not answer: its last words are in the log now

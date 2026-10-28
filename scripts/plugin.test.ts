@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { platform, tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { platform, tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 
 import { herdrStateDir } from "./plugin-state.ts";
@@ -364,6 +364,29 @@ describe("starts at the same moment", () => {
     } finally {
       try { process.kill(-server.pid!, "SIGKILL"); } catch { /* stopped */ }
     }
+  });
+
+  it("leave a server alone whose birth could not be read when it was started, while it still runs", async () => {
+    const { server, root } = recordedSleeper(() => undefined);
+    writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify({ pid: server.pid, birth_unknown: true }));
+    try {
+      const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(existsSync(join(scratch, "spawned")), "regression: a server whose birth could not be read was taken for gone").toBe(false);
+      expect(started.err).toContain(`Ovis (pid ${server.pid}) is still running but does not answer`);
+    } finally { process.kill(-server.pid!, "SIGKILL"); }
+  });
+
+  it("start a server when the PC restarted after a record whose birth could not be read", async () => {
+    const { server, root } = recordedSleeper(() => undefined);
+    const owner = join(scratch, "state", "server.owner");
+    writeFileSync(owner, JSON.stringify({ pid: server.pid, birth_unknown: true }));
+    // written an hour before this boot: whatever holds its pid now is another process
+    const beforeBoot = (Date.now() - uptime() * 1000) / 1000 - 3600;
+    utimesSync(owner, beforeBoot, beforeBoot);
+    try {
+      await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(existsSync(join(scratch, "spawned"))).toBe(true);
+    } finally { process.kill(-server.pid!, "SIGKILL"); }
   });
 
   it("start a server when the recorded pid now runs another process", async () => {
