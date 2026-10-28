@@ -77,7 +77,8 @@ const SCROLL_INPUT_MS = 500;
 const READER_ALLOWANCE_PX = 1;
 // How far an upward move without the reader's input may leave the end and still follow: a composer
 // growing a few lines shrinks the view before the correction to the end lands. A scroll that sends
-// no input this page sees (a screen reader's, a Firefox scrollbar's) leaves the end only past it.
+// no input this page sees (a screen reader's, a Firefox scrollbar's) leaves the end only past it, and
+// only over a transcript that did not shrink under it (onScroll, #2042).
 const LAYOUT_ALLOWANCE_PX = 48;
 /** The pane this chat shows, for what its rows fetch on request (a tool call's whole output). */
 const ChatPaneContext = createContext<string | null>(null);
@@ -1263,6 +1264,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // The paging away is the reader opening something (readOpened): it holds in a chat still too short to scroll.
   const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
+  // The last row and where it started in the transcript, and the transcript's height, at the
+  // previous scroll event (#2042).
+  const lastRowOffset = useRef<{ key: string; offset: number } | null>(null);
+  const lastScrollHeight = useRef(0);
   // When the reader last used upward scroll input.
   const scrollInputAt = useRef(-Infinity);
   const pointerDragAt = useRef(-Infinity);
@@ -1850,6 +1855,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
+    const previousTop = lastScrollTop.current;
     lastScrollTop.current = node.scrollTop;
     // A pointer press alone is not intent: a drag must also move the transcript up. A held scrollbar
     // thumb's move is decided when it is let go (the pointerup above): while it rests, the layout
@@ -1864,15 +1870,43 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const byReader = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS;
     const allowance = byReader ? READER_ALLOWANCE_PX : LAYOUT_ALLOWANCE_PX;
     if (scrollingUp && byReader) navigated();
+    // A row above the view shrank and the list held the rows on screen where they were
+    // (maintainVisibleContentPosition), or the transcript's end shrank under a view at it: the move
+    // up is the layout's, however far it lands from an end a glide was still on its way to (#2042).
+    // A move up the reader made, even one that sends no input this page sees, moves the view up a
+    // transcript that did not shrink.
+    const lastKey = timelineRows.at(-1)?.key;
+    const lastRow = lastKey === undefined ? null : node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(lastKey)}"]`);
+    // where the last row starts in the transcript: it moves up as rows above it shrink
+    const row = lastKey === undefined || lastRow === null ? null
+      : { key: lastKey, offset: lastRow.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop };
+    const rowBefore = lastRowOffset.current;
+    lastRowOffset.current = row;
+    const shrunkAbove = row !== null && rowBefore?.key === row.key ? Math.max(0, rowBefore.offset - row.offset) : 0;
+    // the transcript got shorter: at its end the browser moves the view up with it
+    const shrunk = Math.max(0, lastScrollHeight.current - node.scrollHeight);
+    lastScrollHeight.current = node.scrollHeight;
+    // Without input, a move up while the transcript got shorter is the layout's, however far: the
+    // list holding the rows and the browser keeping the view inside the transcript can both move it
+    // for one shrink. Over a transcript that did not shrink it is the reader's past the layout
+    // allowance, as a move from the end is. Growth never excuses a move up.
+    const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
+    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || previousTop - node.scrollTop <= LAYOUT_ALLOWANCE_PX);
+    const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
-    if (scrollingUp && distanceFromBottom > allowance && stickToBottom.current) {
+    if (leftEnd && distanceFromBottom > allowance && stickToBottom.current) {
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
+    // the layout's move left a reader still following short of the end: they go on there
+    if (heldInPlace && stickToBottom.current && !pagingAway.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+      if (timeline.current) timeline.current.scrollToEnd({ animated: false });
+      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+    }
     // A downward automatic scroll may arrive before the next measured layout.
     // Only upward movement can turn an existing follow intent into reading intent.
-    if (!stickToBottom.current || scrollingUp || pagingAway.current) {
+    if (!stickToBottom.current || leftEnd || pagingAway.current) {
       const following = !pagingAway.current && distanceFromBottom <= allowance;
       if (following && !stickToBottom.current) manualLayout.current = false;
       stickToBottom.current = following;
