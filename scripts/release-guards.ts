@@ -94,13 +94,13 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
   };
   const answer = await read(url, "GET");
   if (typeof answer === "string") return [`remote-v${version} is tagged but not published: ${answer}. ${wait}`];
-  let manifest: { version?: unknown; assets?: Record<string, { url?: unknown; sha256?: unknown } | undefined> };
+  let manifest: { version?: unknown; assets?: Record<string, { url?: unknown; sha256?: unknown } | undefined> } | null;
   try { manifest = (await answer.json()) as typeof manifest; } catch { return [`remote-v${version} is not published: ${url} is not JSON. ${wait}`]; }
-  if (manifest.version !== String(version)) return [`remote-v${version} is not published: ${url} names version ${JSON.stringify(manifest.version)}. ${wait}`];
+  if (manifest?.version !== String(version)) return [`remote-v${version} is not published: ${url} names version ${JSON.stringify(manifest?.version ?? null)}. ${wait}`];
   const missing: string[] = [];
   const assets: string[] = [];
   for (const platform of BUNDLE_PLATFORMS) {
-    const asset = manifest.assets?.[platform];
+    const asset = manifest?.assets?.[platform];
     if (typeof asset?.url === "string" && asset.url.startsWith("https://") && typeof asset.sha256 === "string" && /^[a-f0-9]{64}$/.test(asset.sha256)) assets.push(asset.url);
     else missing.push(platform);
   }
@@ -187,6 +187,15 @@ export function check(cwd: string, publishing: boolean, base?: string): Verdict 
   };
 }
 
+/** The Release run's verdict: check() of the tree, and a remote-vN that is tagged must also be downloadable. */
+export async function releaseCheck(cwd: string, get: Get = fetch): Promise<Verdict> {
+  const verdict = check(cwd, true);
+  const bundle = Number(bundleVersion(readFileSync(join(cwd, MACHINES), "utf8")));
+  // an untagged bundle is already a problem of check(); a tag alone is not a published bundle
+  if (git(cwd, "rev-parse", "-q", "--verify", `refs/tags/remote-v${bundle}`).ok) verdict.problems.push(...await publishedProblems(bundle, get));
+  return verdict;
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   if (args[0] === "--worker-deployed") {
@@ -200,12 +209,7 @@ if (import.meta.main) {
     const publishing = args[0] === "--release";
     const base = args[0] === "--base" ? args[1] : undefined;
     if (base && !git(root, "show", `${base}:package.json`).ok) console.log(`::warning::Cannot read package.json at --base ${base}; checking HEAD as a release.`);
-    const verdict = check(root, publishing, base || undefined);
-    if (publishing && verdict.version !== null) {
-      // a missing tag is already a problem above; a tag alone is not a published bundle
-      const bundle = Number(bundleVersion(readFileSync(join(root, MACHINES), "utf8")));
-      if (git(root, "rev-parse", "-q", "--verify", `refs/tags/remote-v${bundle}`).ok) verdict.problems.push(...await publishedProblems(bundle));
-    }
+    const verdict = publishing ? await releaseCheck(root) : check(root, false, base || undefined);
     if (publishing && verdict.version !== args[1]) verdict.problems.unshift(`package.json version ${verdict.version} is not the requested ${args[1] ?? "(none)"}.`);
     if (verdict.version === null) console.log("Not a release (package.json's version is tagged, or the base already has it): nothing to check.");
     for (const problem of verdict.problems) console.error(`::error::${problem}`);

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { BUNDLE_PLATFORMS, BUNDLE_WORKFLOW, bundleInput, bundleProblems, check, DEPLOYED_FILE, type Get, manifestUrl, publishedProblems, WORKER_SOURCES, workerFingerprint, workerProblems } from "./release-guards.ts";
+import { BUNDLE_PLATFORMS, BUNDLE_WORKFLOW, bundleInput, bundleProblems, check, DEPLOYED_FILE, type Get, manifestUrl, publishedProblems, releaseCheck, WORKER_SOURCES, workerFingerprint, workerProblems } from "./release-guards.ts";
 import { bundleManifestSource } from "../server/remote-bundle.ts";
 import { REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
 
@@ -70,6 +70,7 @@ describe("publishedProblems", () => {
 
   it("fails a manifest of another version, one missing a platform, and an archive that cannot be downloaded", async () => {
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("38"), ...archives })))[0]).toContain('names version "38"');
+    expect((await publishedProblems(39, github({ [manifestUrl(39)]: null, ...archives })))[0]).toContain("names version null");
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39", BUNDLE_PLATFORMS.slice(1)), ...archives })))[0]).toContain("no bundle for linux-x64");
     const { [asset("win32-x64")]: _, ...partial } = archives;
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39"), ...partial })))[0]).toContain(`${asset("win32-x64")} answered 404`);
@@ -155,6 +156,27 @@ describe("check", () => {
     expect(check(dir, true).problems[0]).toContain("remote-v2 is not published");
     run(dir, "tag", "remote-v2");
     expect(check(dir, true).problems).toEqual([]);
+  });
+
+  it("fails the Release run while the tagged bundle is not downloadable, and asks only about a tagged one", async () => {
+    const dir = released({ "server/index.ts": "b", "shared/machines.ts": 'export const REMOTE_BUNDLE_VERSION = "2";\n' });
+    releasePr(dir);
+    const asked: string[] = [];
+    const unpublished: Get = async (url) => { asked.push(url); return new Response("Not Found", { status: 404 }); };
+    const untagged = await releaseCheck(dir, unpublished);
+    expect(untagged.problems).toHaveLength(1);
+    expect(untagged.problems[0]).toContain("Push the tag remote-v2");
+    expect(asked).toEqual([]);
+    run(dir, "tag", "remote-v2");
+    const tagged = await releaseCheck(dir, unpublished);
+    expect(tagged.version).toBe("1.1.0");
+    expect(tagged.problems).toEqual([expect.stringContaining("remote-v2 is tagged but not published")]);
+    expect(asked).toEqual([manifestUrl(2)]);
+    const archive = (platform: string) => `https://github.com/devswha/ovis/releases/download/remote-v2/herdr-web-ui-${platform}.tgz`;
+    const published: Get = async (url) => url === manifestUrl(2)
+      ? Response.json({ version: "2", assets: Object.fromEntries(BUNDLE_PLATFORMS.map((platform) => [platform, { url: archive(platform), sha256: "b".repeat(64) }])) })
+      : new Response(null, { status: BUNDLE_PLATFORMS.some((platform) => url === archive(platform)) ? 200 : 404 });
+    expect(await releaseCheck(dir, published)).toEqual({ version: "1.1.0", problems: [] });
   });
 
   it("passes a change merged after the release PR, which the Release run checks instead", () => {
