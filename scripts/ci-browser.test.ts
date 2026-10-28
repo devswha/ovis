@@ -29,12 +29,34 @@ source "$1"
 /**
  * A hang guard, not a speed check: the stubbed lane still forks a few processes for every browser
  * script, and took up to 5 s on a host at load 100 of 128 cores, where a 5 s limit killed it (#2110).
- * Each lane test gets the guard and room to report what the lane printed. The guard ends the lane's
- * whole process group: ending only its bash leaves the script's pipeline holding the output open, so
- * a hung lane would wait for the test's own timeout and outlive it.
+ * Each lane test gets the guard and room to report what the lane printed. The guard ends the lane and
+ * every process under it: ending only its bash leaves the script's pipeline holding the output open,
+ * so a hung lane would wait for the test's own timeout and outlive it. The lane stays in the test's
+ * own process group, which scripts/ci-tests.ts ends when the file finishes or the run is interrupted.
  */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
+
+/** Ends `pid` and every process under it, read from the process table before any is ended. */
+async function endTree(pid: number): Promise<void> {
+  if (process.platform === "win32") {
+    await Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" }).exited;
+    return;
+  }
+  const table = await new Response(Bun.spawn(["ps", "-A", "-o", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" }).stdout).text();
+  const children = new Map<number, number[]>();
+  for (const line of table.split("\n")) {
+    const [own, parent] = line.trim().split(/\s+/).map(Number);
+    if (own && parent !== undefined) children.set(parent, [...(children.get(parent) ?? []), own]);
+  }
+  const tree: number[] = [];
+  for (const pending = [pid]; pending.length > 0;) {
+    const next = pending.pop()!;
+    tree.push(next);
+    pending.push(...(children.get(next) ?? []));
+  }
+  for (const member of tree) try { process.kill(member, "SIGKILL"); } catch { /* already gone */ }
+}
 
 async function lane(fail = "", kept = false, ci = "") {
   const dir = mkdtempSync(join(tmpdir(), "hwc-browser-test-"));
@@ -42,12 +64,12 @@ async function lane(fail = "", kept = false, ci = "") {
     const child = Bun.spawn(["bash", "-c", stub, "stub", join(import.meta.dir, "ci-browser.sh")], {
       cwd: dir,
       env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
-      stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true,
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     let hung = false;
     const guard = setTimeout(() => {
       hung = true;
-      try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group already ended */ }
+      void endTree(child.pid);
     }, LANE_HANG_MS);
     const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
       .finally(() => clearTimeout(guard));
