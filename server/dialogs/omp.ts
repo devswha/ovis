@@ -281,6 +281,8 @@ const OMP_COMPOSER_FRAME_RE = /^╰─*$/;
 /** a choice row: the cursor (❯, its Nerd Font icon, or `>`) on the highlighted one, two spaces before the rest */
 const OMP_CHOICE_RE = /^(?:([❯\uf054>])|  )\s?(\S.*)$/u;
 const OMP_REMEMBER_RE = /^(?:[☐☑\uf096\uf14a]|\[[ x]\]) Remember across sessions$/u;
+/** the toggle ticked: the grants under it are kept across sessions */
+const OMP_REMEMBERED_RE = /^(?:[☑\uf14a]|\[x\]) /u;
 
 /** a modifier as omp draws it: a word with `+`, or a keycap or Nerd Font icon and the preset's joiner */
 const OMP_KEY_MODIFIERS: readonly [RegExp, string][] = [
@@ -384,6 +386,8 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const menu = ompChoices(rows);
   if (!menu) return null;
   const { choices, first, approve } = menu;
+  // a grant taken while the toggle is ticked outlives the session: the terminal answers that, where the box shows
+  if (choices.some((choice) => choice.toggle && OMP_REMEMBERED_RE.test(choice.label))) return null;
   if ((clipped && first >= OMP_APPROVAL_DETAIL_ROWS) || rows.slice(0, first).some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
   const cursor = choices.findIndex((choice) => choice.cursor);
   // the toggle answers nothing: it changes which grants the rows under it record

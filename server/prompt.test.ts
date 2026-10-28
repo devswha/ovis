@@ -4012,6 +4012,49 @@ describe("an answer and the menu it was made for", () => {
     return { status: response.status, code: body.error?.code };
   }
 
+  // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting. omp reads Ctrl+J and Ctrl+M
+  // as Enter there, which takes the highlighted row (Approve when the panel opens) before its own Deny binding
+  test.each(["Ctrl+J", "Ctrl+M"])("denies when omp's Deny is bound to %s, which a legacy terminal sends as Enter", async (deny) => {
+    const shown = readFileSync(new URL("./fixtures/omp-approval-18.13.2-unicode-wide.txt", import.meta.url), "utf8")
+      .replace("\u238b deny \u00b7", `${deny} deny \u00b7`);
+    expect(shown).toContain(`Ctrl+\u23ce/Ctrl+Q approve \u00b7 ${deny} deny`);
+    const rows = ["approved", "approved for the session", "denied"];
+    /** what omp 18.13 does with the keys the bridge sent, as a legacy terminal delivers them */
+    const outcome = (sent: string[]): string => {
+      let cursor = 0;
+      for (const key of sent) {
+        const received = key === "ctrl+j" || key === "ctrl+m" ? "enter" : key;
+        if (received === "ctrl+q") return "approved";
+        if (received === "esc") return "denied";
+        if (received === "up") cursor = Math.max(0, cursor - 1);
+        else if (received === "down") cursor = Math.min(rows.length - 1, cursor + 1);
+        else if (received === "enter") return rows[cursor]!;
+      }
+      return "waiting";
+    };
+    // omp redraws its cursor as the arrows arrive, which the bridge reads back before it selects
+    const lines = shown.split("\n");
+    const top = lines.findIndex((line) => line.startsWith("\u2502 \u276f Approve "));
+    expect(top).toBeGreaterThan(0);
+    const drawn = (cursor: number) => lines.map((line, index) => index < top || index > top + 2 ? line
+      : `\u2502 ${index - top === cursor ? "\u276f" : " "} ${line.slice(4)}`).join("\n");
+    expect(drawn(0)).toBe(shown);
+    for (const [option, expected] of [[2, "denied"], [0, "approved"], [1, "approved for the session"]] as const) {
+      await withPane("omp", "blocked", shown, async (pane) => {
+        let cursor = 0;
+        pane.onSent = (key) => {
+          if (key === "up") cursor = Math.max(0, cursor - 1);
+          else if (key === "down") cursor = Math.min(rows.length - 1, cursor + 1);
+          pane.screen = drawn(cursor);
+        };
+        const shownCard = await card();
+        expect(shownCard?.options.map((row) => row.label)).toEqual(["Approve", "Approve bash for this session", "Deny"]);
+        expect(await answer(shownCard!.id, { option_index: option })).toEqual({ status: 200, code: undefined });
+        expect(outcome(pane.sent), `${deny} option ${option}: ${pane.sent.join(",")}`).toBe(expected);
+      });
+    }
+  });
+
   test.each(["whole", "heading-only", "command-only", "command-middle"])("refuses an old cmd heredoc card with a quoted native frame (%s)", async (layout) => {
     const screen = (prefix: string) => {
       const shown = [

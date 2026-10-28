@@ -129,6 +129,13 @@ describe("omp tool approval (#2059)", () => {
     expect(steps(prompt, 1)).toEqual([{ keys: [KEY.up] }, { keys: [KEY.enter] }]);
     expect(steps(prompt, 2)).toEqual([{ keys: ["ctrl+q"] }]);
     expect(steps(prompt, 3)).toEqual([{ keys: [KEY.escape] }]);
+    // ticked, the toggle keeps a grant across sessions: no card, whatever the grant rows read
+    const whole = redraw(shown, "\u2502 Path: notes/fixture.txt ", "Path: notes/fixture.txt");
+    for (const box of ["\u2611", "\uf14a"]) {
+      const ticked = redraw(whole, "Remember across sessions", `  ${box} Remember across sessions`);
+      expect(ticked, box).not.toBe(whole);
+      expect(parseInteractivePrompt("omp", ticked), box).toBeNull();
+    }
   });
 
   it("answers Deny by moving to it when a narrow pane cuts 18.13's hint after the approve keys, while the details cannot be scrolling", () => {
@@ -244,7 +251,9 @@ describe("omp tool approval (#2059)", () => {
     const box = shown.split("\n").find((line) => /^\u2570\u2500+\u256f$/.test(line))!;
     const ticked = shown.replace(box, `\u2570\u2500\u2500\u2500 elapsed 3.0s ${"\u2500".repeat([...box].length - 19)}\u256f`);
     expect(ticked).not.toBe(shown);
-    expect(parseInteractivePrompt("omp", ticked)?.id).toBe(parseInteractivePrompt("omp", shown)?.id);
+    const id = parseInteractivePrompt("omp", shown)?.id;
+    expect(id).toEqual(expect.any(String));
+    expect(parseInteractivePrompt("omp", ticked)?.id).toBe(id);
   });
 
   it("keeps one card while the countdown in the title ticks", () => {
