@@ -195,4 +195,18 @@ describe("node_link", () => {
     expect(link(env, "needed").out).toContain("[]");
     expect(existsSync(node(env))).toBe(false);
   });
+
+  it("links the Node it installed after herdr's build found none, whatever Node the user's own PATH has", () => {
+    // herdr started outside the user's shell (nvm in .bashrc) has none on its PATH, and the build retries on the link (#596 review)
+    const env = pc(false, undefined, "NODE_DIR", "v20.11.0");
+    expect(link(env, "installed").out).toContain("[ node]");
+    expect(readFileSync(node(env), "utf8")).toBe("app node");
+  });
+
+  it("survives a user PATH without sed or node under set -eu", () => {
+    const env = { ...pc(false), original_path: "" };
+    const result = link(env, "needed");
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("[ node]");
+  });
 });

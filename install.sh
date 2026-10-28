@@ -255,18 +255,27 @@ install_node() {
 # The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
 # first there and overrode the user's own Node (#596). A release whose server looks for it in
 # NODE_DIR itself (server/pty/sidecar.ts, in the code at $1) needs no link, so a link of ours goes
-# and anything else there stays. An older release finds Node on the PATH only: where it needs one
-# ($2 = needed: no Rust PTY host) and the user's PATH has no Node 18 or newer, our Node is linked as
-# before, the one from before the rename too.
+# and anything else there stays. An older release finds Node on the PATH only, so our Node is linked
+# for it as before, the one from before the rename too: where it needs one ($2 = needed: no Rust PTY
+# host) and the user's PATH has no Node 18 or newer, or always once herdr's build said its own PATH
+# has none ($2 = installed), since herdr's PATH need not be the user's (nvm in .bashrc).
 node_link() {
   if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
     [ -L "$BIN_DIR/node" ] || return 0
     case "$(readlink "$BIN_DIR/node")" in
       "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node") rm -f "$BIN_DIR/node" ;;
     esac
-  elif [ "${2:-}" = needed ] && [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
-    user_major=$(PATH="${original_path:-}"; export PATH; node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
-    [ "${user_major:-0}" -lt 18 ] || return 0
+  elif [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
+    case "${2:-}" in
+      installed) ;;
+      needed)
+        # only node runs on the user's PATH: sed may not be on it
+        user_version=$(PATH="${original_path:-}"; export PATH; node --version 2>/dev/null) || user_version=""
+        user_major=$(printf '%s\n' "$user_version" | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
+        [ "${user_major:-0}" -lt 18 ] || return 0
+        ;;
+      *) return 0 ;;
+    esac
     for private in "$NODE_DIR" "$LEGACY_NODE_DIR"; do
       [ -x "$private/bin/node" ] || continue
       if mkdir -p "$BIN_DIR" && ln -s "$private/bin/node" "$BIN_DIR/node"; then
@@ -405,7 +414,7 @@ main() {
     elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
       # a release from before the Rust PTY host was the default still asks for Node in its first build
       # step, on herdr's PATH
-      node_link "" needed
+      node_link "" installed
       herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
     fi
     if [ "$installed" = 1 ]; then
