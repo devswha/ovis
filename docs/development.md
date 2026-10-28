@@ -757,8 +757,8 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   list names a script that does not exist; it pins no count, so PRs that add scripts do not
   conflict on it.
 
-  `scripts/windows-terminal-browser-qa.ts` needs native Windows, so it stays on that list and
-  `windows-terminal-qa.yml` runs it on a GitHub-hosted Windows runner instead: on pull requests
+  `scripts/windows-terminal-browser-qa.ts` needs native Windows, so the browser lane leaves it out
+  (it is on that list) and `windows-terminal-qa.yml` runs it on a GitHub-hosted Windows runner: on pull requests
   that touch the mirror, the terminal's viewport code or the xterm patch, weekly on main, and on
   a manual dispatch (**Actions → Windows terminal QA**). It is not a required check. To run it on
   a Windows PC: `bun install --frozen-lockfile`, `bun run build`, then

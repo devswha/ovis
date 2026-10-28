@@ -40,7 +40,11 @@ try {
   await until(async () => (await paneRead({ paneId: pane, source: "visible", format: "text" })).text.includes("WIN-HISTORY-120"), "PowerShell output");
   browser = await chromium.launch({ executablePath: chromePath(), headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, hasTouch: true });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ terminalWheelSpeed: 1 })));
+  await context.addInitScript(() => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ terminalWheelSpeed: 1 }));
+    // the pane menu's Original width: unchosen, a touch or narrow screen folds the wide grid and nothing pans
+    localStorage.setItem("ovis:mirror-wrap", JSON.stringify(false));
+  });
   const page = await context.newPage();
   const errors: string[] = [];
   let scrollWrites = 0;
@@ -63,6 +67,7 @@ try {
   await paneScroll(pane, 0);
   await until(async () => (await text()).includes("P".repeat(100)), "native prompt returns before resizing");
   await page.setViewportSize({ width: 390, height: 500 });
+  await until(async () => await host.evaluate((element) => element.scrollWidth > element.clientWidth), "the native grid at its original width overflows a phone");
   await host.evaluate((element) => { element.scrollTop = 80; });
   await until(async () => await host.evaluate((element) => element.scrollTop > 100), "settled short mount follows the native prompt");
   const beforeWheelPan = await host.evaluate((element) => element.scrollTop);
