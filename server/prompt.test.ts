@@ -4412,6 +4412,49 @@ ${heldRule}
     });
   });
 
+  // two open calls whose questions share their options (#2092): one asks two such questions, the decoy one
+  const sharedCall = (id: string, questions: { header: string; question: string }[]) => JSON.stringify({ type: "message", message: { role: "assistant", stopReason: "toolUse",
+    content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false,
+      questions: questions.map((question) => ({ ...question, options: [{ label: "Continue" }, { label: "Cancel" }] })) } }] } }) + "\n";
+  const twoShared = sharedCall("actual", [{ header: "QA", question: "Proceed with the build?" }, { header: "QB", question: "Proceed with the deploy?" }]);
+  const decoyShared = sharedCall("decoy", [{ header: "Deploy", question: "Deploy now?" }]);
+  // a form in a pane too short for it: its title, tabs and question scrolled off, its options in view
+  const clippedSharedForm = `${omoRule}
+ \u2192 1. Continue
+   2. Cancel
+   Type your own answer...
+ Submit (0/2 answered) \u2014 Enter advances
+ \u2191\u2193 move  1-9 select  space select  enter next  tab next question  c comment  esc cancel
+${omoRule}
+/tmp/work \u2022 main
+(\ud83d\ude3a OmO Native)
+`;
+
+  test("names no call for a clipped form that one open call fits twice and a decoy call once (#2092)", () => {
+    // the decoy alone is what the clipped form would be read as
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(decoyShared))).toMatchObject({ agent: "omo", kind: "question" });
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(twoShared))).toBeNull();
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(`${twoShared}${decoyShared}`))).toBeNull();
+    // questions the screen cannot show (multiple choice under a single-choice hint) make nothing ambiguous
+    const twoMulti = twoShared.replaceAll('"question":"Proceed', '"multiSelect":true,"question":"Proceed');
+    expect(openOmoAsks(twoMulti)[0]!.questions.every((question) => question.multiSelect)).toBe(true);
+    expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(`${twoMulti}${decoyShared}`))).toMatchObject({ question: "Deploy now?" });
+  });
+
+  test.skipIf(process.platform !== "linux")("answers no call when the opened form is clipped and another call fits it too (#2092)", async () => {
+    await withOmo(async (pane) => {
+      writeFileSync(pane.omo!.path, JSON.stringify({ type: "session", id: "qa-session-488", cwd: pane.cwd }) + "\n" + twoShared + decoyShared);
+      // the widget names the decoy; Alt+Up opens the other call's form, clipped
+      pane.screen = omoWidget().replace("? Question pending (1 unanswered) \u00b7 30m\n QA \u2014 Which one?\n [ First ] [ Second ]",
+        "? 2 questions pending \u00b7 30m\n Deploy \u2014 Deploy now?\n [ Continue ] [ Cancel ]");
+      const prompt = (await card())!;
+      expect(prompt).toMatchObject({ agent: "omo", question: "Deploy now?" });
+      pane.onSent = (sent) => { if (sent === "alt+up") pane.screen = clippedSharedForm; };
+      expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["alt+up"]);
+    });
+  });
+
   test.skipIf(process.platform !== "linux")("offers a reply-only card when the call has no predefined options", async () => {
     await withOmo(async (pane) => {
       writeFileSync(pane.omo!.path, JSON.stringify({ type: "session", id: "qa-session-488", cwd: pane.cwd }) + "\n" + omoCall("reply-only", []).replace(',"options":[]', ""));
