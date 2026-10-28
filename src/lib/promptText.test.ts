@@ -64,11 +64,11 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
     options: [{ label: "Patch", description: null }, { label: "Rewrite", description: null }], multi_select: false, custom_option_index: 2,
     screen_words: "There are two ways to fix it.",
   };
-  const call = (state: "pending" | "ok", question = "Which fix do you want?"): ConversationTurn => ({
+  const call = (state: "pending" | "ok", question = "Which fix do you want?", options = ["Patch", "Rewrite"], header = "Fix"): ConversationTurn => ({
     role: "assistant", ts: null,
     parts: [{ kind: "text", text: "There are two ways to fix it." }, {
       kind: "tool", name: "AskUserQuestion", summary: "", output: "", call_id: "toolu_1", state,
-      input: JSON.stringify({ questions: [{ question, header: "Fix", options: [{ label: "Patch" }, { label: "Rewrite" }] }] }, null, 2),
+      input: JSON.stringify({ questions: [{ question, header, options: options.map((label) => ({ label })) }] }, null, 2),
     }],
   });
   const asking: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "fix a.txt" }] };
@@ -85,6 +85,20 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
   it("shows them while the waiting call in the transcript asks another question", () => {
     expect(screenWordsToShow(asked, [asking, call("pending", "Which color?")])).toBe("There are two ways to fix it.");
     expect(screenWordsToShow(asked, [asking, { ...call("pending"), parts: [{ kind: "tool", name: "AskUserQuestion", summary: "", input: "not json", output: "", state: "pending" }] }])).toBe("There are two ways to fix it.");
+  });
+
+  it("shows them while the same question asked in an earlier, interrupted turn still waits there", () => {
+    // the call left waiting by an interrupt; the new turn has nothing in the session file yet
+    expect(screenWordsToShow(asked, [asking, call("pending"), asking])).toBe("There are two ways to fix it.");
+  });
+
+  it("shows them while the waiting call asks the same words with other options or another header", () => {
+    expect(screenWordsToShow(asked, [asking, call("pending", "Which fix do you want?", ["Patch", "Revert"])])).toBe("There are two ways to fix it.");
+    expect(screenWordsToShow(asked, [asking, call("pending", "Which fix do you want?", ["Patch", "Rewrite"], "Scope")])).toBe("There are two ways to fix it.");
+  });
+
+  it("matches a form's question under its header and place", () => {
+    expect(screenWordsToShow({ ...asked, title: "Fix · 1 of 2" }, [asking, call("pending")])).toBeNull();
   });
 
   it("shows them over an earlier question answered in the transcript", () => {

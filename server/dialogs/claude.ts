@@ -213,6 +213,9 @@ const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！�
 /** a command's option (`--oneline`, `-rf`): its line is a command, never prose to join */
 const OPTION_RE = /(?:^|\s)--?\w/;
 
+/** how a sentence ends, a closing quote or bracket after it allowed */
+const SENTENCE_END_RE = /[.!?\u2026\u3002\uff01\uff1f]["'\u201d\u2019)\]\u300d\u300f\uff09]*$/u;
+
 /** a script written without spaces between words: a line of it the pane broke goes on without a space */
 const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
 
@@ -237,7 +240,9 @@ const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
  *
  * Lines the pane wrapped are joined back only where that cannot change what they say: two lines of
  * plain prose, the first one too full for the next one's first word, and not ending in a colon (what
- * follows may be a command). Every other break stays as drawn.
+ * follows may be a command), in a paragraph that ends as a sentence does. A paragraph of commands
+ * (`git merge experimental-feature-branch` over `git push` reads as prose and can fill the line)
+ * ends in none of a sentence's marks: every break in it stays as drawn, as do all other breaks.
  */
 function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   let rule = -1;
@@ -265,35 +270,40 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   if (start < 0) return null;
   // a hint a narrow pane wrapped: "(ctrl+o" over "to expand)"
   if (CLAUDE_COLLAPSED_RE.test(block.map(({ text }) => text.trim()).join(" "))) return null;
-  const paragraphs: string[] = [];
-  let paragraph = "";
-  let previous = { drawn: "", text: "" };
+  // the block's paragraphs, each its lines as drawn
+  const groups: { drawn: string; text: string }[][] = [[]];
   for (const line of block) {
-    const { text } = line;
-    if (text === "") {
-      if (paragraph !== "") paragraphs.push(paragraph);
-      paragraph = "";
-      continue;
-    }
-    if (paragraph === "") paragraph = text;
-    else {
-      const next = text.trimStart();
-      const first = /^\S+/.exec(next)![0];
-      const before = [...previous.text.trimEnd()].at(-1) ?? "";
-      const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
-      const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OPTION_RE.test(previous.text) && !OPTION_RE.test(text)
-        && !OWN_LINE_RE.test(text) && before !== ":";
-      // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
-      // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
-      // anywhere, so only a line filled to the edge goes on
-      const full = unspaced
-        ? Bun.stringWidth(previous.drawn) >= width - 1
-        : Bun.stringWidth(previous.drawn) + 1 + Bun.stringWidth(first) >= width;
-      paragraph += prose && full ? `${unspaced ? "" : " "}${next}` : `\n${text}`;
-    }
-    previous = line;
+    if (line.text !== "") groups.at(-1)!.push(line);
+    else if (groups.at(-1)!.length > 0) groups.push([]);
   }
-  if (paragraph !== "") paragraphs.push(paragraph);
+  const paragraphs: string[] = [];
+  for (const group of groups.filter((lines) => lines.length > 0)) {
+    const sentence = SENTENCE_END_RE.test(group.at(-1)!.text.trimEnd());
+    let paragraph = "";
+    let previous = { drawn: "", text: "" };
+    for (const line of group) {
+      const { text } = line;
+      if (paragraph === "") paragraph = text;
+      else if (!sentence) paragraph += `\n${text}`;
+      else {
+        const next = text.trimStart();
+        const first = /^\S+/.exec(next)![0];
+        const before = [...previous.text.trimEnd()].at(-1) ?? "";
+        const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
+        const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OPTION_RE.test(previous.text) && !OPTION_RE.test(text)
+          && !OWN_LINE_RE.test(text) && before !== ":";
+        // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
+        // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
+        // anywhere, so only a line filled to the edge goes on
+        const full = unspaced
+          ? Bun.stringWidth(previous.drawn) >= width - 1
+          : Bun.stringWidth(previous.drawn) + 1 + Bun.stringWidth(first) >= width;
+        paragraph += prose && full ? `${unspaced ? "" : " "}${next}` : `\n${text}`;
+      }
+      previous = line;
+    }
+    paragraphs.push(paragraph);
+  }
   // capped as a card's body is, never inside a character
   const words = [...paragraphs.join("\n\n")].slice(0, 12_000).join("");
   return words.trim() === "" ? null : words;

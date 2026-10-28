@@ -12,21 +12,28 @@ export function cardText(card: CardText, t: Translate = inCurrentLanguage): stri
 /**
  * Claude's words read off the screen over its question (`screen_words`, #2088), for the card to show
  * while the chat has no record of them: Claude Code 2.1.311 writes the turn to its session file only
- * with the answer. Once the transcript holds this question's call, still waiting, the session file has
- * the turn and the chat shows Claude's own text: the card leaves the screen's copy out. Another
- * question's call (one left waiting by an interrupted turn, a transcript read before the screen's)
- * says nothing of these words.
+ * with the answer. Once the turn in progress (the transcript's last, Claude's) holds this question's
+ * call, still waiting, the session file has the turn and the chat shows Claude's own text: the card
+ * leaves the screen's copy out. The call must ask what the card asks, under its header and with its
+ * options; a call in an earlier turn (one an interrupted turn left waiting, the same question asked
+ * again) says nothing of these words.
  */
 export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly ConversationTurn[]): string | null {
   if (!prompt.screen_words) return null;
-  const asked = prompt.question.replace(/\s+/g, " ").trim();
+  const same = (a: string, b: string): boolean => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+  const labels = prompt.options.map((option) => option.label);
+  // the card's title is the question's header (`Fix`, or `Fix · 1 of 2` in a form) unless the bridge wrote it
+  const headed = (header: string | null): boolean => prompt.own_text?.title !== undefined || header === null
+    || same(prompt.title, header) || prompt.title.startsWith(`${header.trim()} · `);
   const asksThis = (input: string): boolean => {
     let args: unknown;
     try { args = JSON.parse(input); } catch { return false; }
-    return askedQuestions("AskUserQuestion", args)?.some((question) => question.question.replace(/\s+/g, " ").trim() === asked) ?? false;
+    return askedQuestions("AskUserQuestion", args)?.some((question) => same(question.question, prompt.question) && headed(question.header)
+      && question.options.length === labels.length && question.options.every((option, index) => same(option.label, labels[index]!))) ?? false;
   };
-  const recorded = turns.some((turn) => turn.role === "assistant" && turn.parts.some((part) =>
-    part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending" && asksThis(part.input)));
+  const turn = turns.at(-1);
+  const recorded = turn?.role === "assistant" && turn.parts.some((part) =>
+    part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending" && asksThis(part.input));
   return recorded ? null : prompt.screen_words;
 }
 
