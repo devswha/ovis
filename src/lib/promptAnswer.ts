@@ -7,7 +7,7 @@
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { t } from "./i18n.ts";
 import { promptWords } from "./promptText.ts";
-import { parseInline, type InlineNode } from "./markdown.ts";
+import { parseInline, type InlineNode } from "../../shared/markdown.ts";
 
 export type TypedAnswer = Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">;
 

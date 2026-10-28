@@ -1,4 +1,7 @@
 import type { IBuffer, ILink, ILinkProvider } from "@xterm/xterm";
+import { fileUriPath } from "../../shared/fileUri.ts";
+
+export { fileUriPath };
 
 /** what a name is made of: letters, digits and the marks that complete them (a decomposed `é` is two) */
 const NAME = "\\p{L}\\p{N}\\p{M}_";
@@ -38,22 +41,6 @@ export function openWebLink(uri: string): void {
   link.click();
 }
 
-/** Local file URIs are read by the existing server-side file viewer. */
-export function fileUriPath(uri: string): string | null {
-  // a control character belongs to no path, and URL drops a trailing one before it can be seen
-  if (!/^file:\/\/\//i.test(uri) || /[\u0000-\u001f\u007f]/.test(uri)) return null;
-  try {
-    const url = new URL(uri);
-    if (url.host || url.search || url.hash) return null;
-    const path = decodeURIComponent(url.pathname);
-    // two separators in front name a network share on a Windows PC, however the second was written
-    if (/[\u0000-\u001f\u007f]/.test(path) || /^[\\/]{2}/.test(path)) return null;
-    // `/C:/Users/me/a.md` is how a URI writes a Windows drive path
-    return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
-  } catch {
-    return null; // malformed URI input is not a file link
-  }
-}
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).

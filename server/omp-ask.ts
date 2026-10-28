@@ -1,6 +1,6 @@
 import { askedQuestions } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { parseInline, parseMarkdown, type InlineNode, type MarkdownBlock } from "../src/lib/markdown.ts";
+import { parseInline, parseMarkdown, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
