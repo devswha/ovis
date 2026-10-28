@@ -139,7 +139,8 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/updates" && request.method === "GET") {
     setRequestRoute(pathname);
-    return Promise.all([withServed(status, service), where?.()]).then(([value, at]) => reply(at ? { ...value, ...at } : value));
+    // a failed lookup leaves the status as it was: the connection server then asks /api/access as of an older server
+    return Promise.all([withServed(status, service), where?.().catch(() => undefined)]).then(([value, at]) => reply(at ? { ...value, ...at } : value));
   }
   if (pathname === "/api/updates/notes" && request.method === "GET") { setRequestRoute(pathname); return reply(service?.notes() ?? noUpdateNotes()); }
   if (pathname === "/api/updates/installed" && request.method === "GET") { setRequestRoute(pathname); return reply(service?.installed() ?? noInstalledNotes()); }
