@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Machine } from "../shared/machines.ts";
-import { PANE_TOKEN_NAME, paneTokenRuleMatches, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec } from "../shared/pane-tokens.ts";
+import { PANE_TOKEN_NAME, paneTokenRuleMatches, paneTokenSpecs, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec } from "../shared/pane-tokens.ts";
 
 /** how often a watched config.toml is looked at again while a browser listens */
 const POLL_MS = 5_000;
@@ -136,6 +136,46 @@ export function agentRowTokens(config: unknown): AgentRowTokens | null {
   return { rows, by_agent: byAgent };
 }
 
+const nonblank = (value: string | null | undefined): string | null => value?.trim() || null;
+
+/** Whether every place `specs` name `name` hides `value`: the agent row then never draws it. */
+function hiddenEverywhere(specs: PaneTokenSpec[], name: string, value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const places = specs.filter((spec) => spec.name === name);
+  return places.length > 0 && places.every(({ rules }) => rules?.find((rule) => paneTokenRuleMatches(rule, value))?.hide === true);
+}
+
+/**
+ * The PCs as browsers are told them (#1349): without the token values herdr's rows hide wherever
+ * they name them, so no roster, streamed or polled, holds a value the user chose to hide, whatever
+ * rows a browser holds when it lands. A row's tokens are its pane's, else its agent's, under its
+ * pane's agent, else its agent record's (src/lib/sidebarAgents.ts, src/components/AgentSidebar.tsx).
+ * The machines are copied where a value leaves, never changed: the manager keeps them.
+ */
+export function withoutHiddenTokens(layout: AgentRowTokens | null, machines: Machine[]): Machine[] {
+  if (layout === null) return machines;
+  return machines.map((machine) => {
+    const snapshot = machine.snapshot;
+    if (!snapshot) return machine;
+    const recordAgent = new Map<string, string | null | undefined>();
+    for (const record of snapshot.agents) if (!recordAgent.has(record.pane_id)) recordAgent.set(record.pane_id, record.agent);
+    const paneAgent = new Map<string, string | null>();
+    for (const pane of snapshot.panes) if (!paneAgent.has(pane.pane_id)) paneAgent.set(pane.pane_id, nonblank(pane.agent) ?? nonblank(recordAgent.get(pane.pane_id)));
+    let changed = false;
+    const shown = <T extends { pane_id: string; tokens?: Record<string, unknown> }>(item: T, agent: string | null): T => {
+      const specs = paneTokenSpecs(layout, agent);
+      if (!item.tokens || specs === null) return item;
+      const kept = Object.entries(item.tokens).filter(([name, value]) => !hiddenEverywhere(specs, name, value));
+      if (kept.length === Object.keys(item.tokens).length) return item;
+      changed = true;
+      return { ...item, tokens: Object.fromEntries(kept) };
+    };
+    const panes = snapshot.panes.map((pane) => shown(pane, paneAgent.get(pane.pane_id) ?? null));
+    const agents = snapshot.agents.map((record) => shown(record, paneAgent.has(record.pane_id) ? paneAgent.get(record.pane_id)! : nonblank(record.agent)));
+    return changed ? { ...machine, snapshot: { ...snapshot, panes, agents } } : machine;
+  });
+}
+
 /**
  * The token values the PCs' panes and agents report in `machines`, by token name, read now: the
  * manager's machines are changed in place, so a roster kept for later is kept as this.
@@ -160,7 +200,8 @@ export function reportedTokenValues(machines: readonly Machine[]): Map<string, S
  * one `equals` rule that hides for each such value they hide, and no rule where they hide none. The
  * rules' own operands (a literal no pane reports, a number's bound) stay on this PC, while a
  * browser, an older one too, draws the same tokens for those values (shared/pane-tokens.ts
- * paneTokenValues). A value reported later is drawn until the rows are told again with it.
+ * paneTokenValues). Told with rosters withoutHiddenTokens, these rules only place a token named
+ * twice (hidden at one place, drawn at another): a decision that lands late moves it, never shows it.
  */
 export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: ReadonlyMap<string, ReadonlySet<string>>[]): AgentRowTokens | null {
   if (layout === null) return null;
