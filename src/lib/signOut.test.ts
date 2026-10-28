@@ -28,7 +28,9 @@ describe("ending a sign-in", () => {
   let left: HealthAuth["via"] = undefined;
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: URL | RequestInfo, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method });
-    return String(url) === "/api/health" ? Response.json({ auth: in_({ via: left }) }) : new Response(null, { status: 204 });
+    // herdr is down: only the bridge's health answers, and signing out must not need more
+    if (String(url) === "/api/health") return new Response(null, { status: 502 });
+    return String(url) === "/api/health?scope=bridge" ? Response.json({ auth: in_({ via: left }) }) : new Response(null, { status: 204 });
   }, { preconnect: globalThis.fetch.preconnect }));
   afterAll(() => fetchSpy.mockRestore());
   afterEach(() => { calls.length = 0; left = undefined; });
@@ -42,13 +44,13 @@ describe("ending a sign-in", () => {
     for (const via of ["token", "device"] as const) {
       calls.length = 0;
       expect(await endSignIn(via)).toEqual({ reload: false });
-      expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health", method: undefined }]);
+      expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health?scope=bridge", method: undefined }]);
     }
   });
 
   it("ends Portal's sign-in too when it is what the app's leaves behind", async () => {
     left = "portal";
     expect(await endSignIn("device")).toEqual({ reload: true });
-    expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health", method: undefined }, { url: "/_portal/auth/logout", method: "POST" }]);
+    expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health?scope=bridge", method: undefined }, { url: "/_portal/auth/logout", method: "POST" }]);
   });
 });
