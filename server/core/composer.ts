@@ -75,6 +75,15 @@ const PROMPT_REFUSED = new Set(["agent_not_found", "agent_not_ready", "agent_blo
 export const modelSwitchText = (agent: string | null, text: string): string =>
   agent === "omp" && text.trim() === "/model" ? "/switch" : text;
 
+/**
+ * Claude Code reads `\` + Enter as a new line, so the Enter after a message whose last character is a
+ * backslash adds a line instead of sending: the message stays in the input box (Claude Code 2.1.312,
+ * #2277). A space after it lets the Enter send, and Claude Code records the message without the space.
+ * A chat or queued message gets it; the terminal's input line types `\` + Enter as the keyboard does.
+ */
+export const closeBackslash = (agent: string | null, text: string): string =>
+  agent === "claude" && text.endsWith("\\") ? `${text} ` : text;
+
 /** How long after its process starts an omp that has not reported is waited for: from cold it takes up to about 20 s. */
 const OMP_STARTUP_MS = 30_000;
 
@@ -455,7 +464,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           seen ??= roots.processes;
           agent = resolveAgent(pane, typingRoots(roots)).agent;
         }
-        const sent = modelSwitchText(agent, text);
+        const sent = closeBackslash(agent, modelSwitchText(agent, text));
         sentText = sent;
         if (pane && agent === "omp") {
           pane = await untilOmpReported(paneId, pane, inTime, options.ompReportPollMs ?? OMP_REPORT_POLL_MS, options.ompStartupMs ?? OMP_STARTUP_MS);

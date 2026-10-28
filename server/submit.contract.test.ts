@@ -488,6 +488,34 @@ describe("WebSocket submit", () => {
     }
   }, 30_000);
 
+  it("sends Claude a message that ends in a backslash with a space after it, so its Enter sends (#2277)", async () => {
+    const socket = await Socket.connect();
+    try {
+      // Claude Code reads `\` + Enter as a new line, and the message would stay in its box
+      let from = chunks(agent).length;
+      socket.send({ type: "submit", id: 33, pane_id: agent.pane, text: "see C:\\temp\\", payload: "see C:\\temp\\" });
+      expect(await socket.result(33)).toMatchObject({ ok: true });
+      expect((await received(agent, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("see C:\\temp\\ ")}\r`);
+      // a backslash before the end, and another agent, go as written
+      from = chunks(agent).length;
+      socket.send({ type: "submit", id: 34, pane_id: agent.pane, text: "see C:\\temp\\x", payload: "see C:\\temp\\x" });
+      expect(await socket.result(34)).toMatchObject({ ok: true });
+      expect((await received(agent, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("see C:\\temp\\x")}\r`);
+      from = chunks(omp).length;
+      socket.send({ type: "submit", id: 35, pane_id: omp.pane, text: "see C:\\temp\\", payload: "see C:\\temp\\" });
+      expect(await socket.result(35)).toMatchObject({ ok: true });
+      expect((await received(omp, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("see C:\\temp\\")}\r`);
+      // the terminal's input line types `\` + Enter as the keyboard does
+      from = chunks(agent).length;
+      socket.send({ type: "submit", id: 36, pane_id: agent.pane, text: "see C:\\temp\\", payload: "see C:\\temp\\", typed: true });
+      expect(await socket.result(36)).toMatchObject({ ok: true });
+      await received(agent, from, 1);
+      expect(typed(agent, from)).toBe("see C:\\temp\\\r");
+    } finally {
+      socket.close();
+    }
+  }, 30_000);
+
   it("refuses an immediate Claude chat send over a live draft without calling agent.prompt or typing", async () => {
     const socket = await Socket.connect();
     const screen = mockClaudeInput(agent.pane, claudeInputScreen("❯ still typing"));
