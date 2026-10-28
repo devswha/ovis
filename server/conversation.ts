@@ -1385,9 +1385,11 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
 
   // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
   // that cannot be read leaves it unknown. omp follows its transcript only: catalog discovery
-  // can refresh the CLI's OAuth credentials and is never initiated by the bridge.
+  // can refresh the CLI's OAuth credentials and is never initiated by the bridge. The live screen
+  // (herdr's detection read), never the viewport: a terminal scrolled into its history can show an
+  // older frame of the agent, with a model it no longer runs.
   const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> => {
-    const screen = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
+    const screen = await paneRead({ paneId, source: "detection", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
     return startScreenMetadata(source, screen);
   };
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata): Promise<RecognizedConversation> => {
@@ -1426,7 +1428,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       // a Codex that reported no session yet (one started in the terminal): the terminal stands in
       // for the chat, and Codex's live status line still states the model and effort it runs at
       if (pane.agent === "codex" && page.before === undefined && page.since === undefined && page.from === undefined) {
-        const text = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
+        const text = await paneRead({ paneId, source: "detection", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
         const screen = startScreenMetadata("codex-transcript", text);
         // unless it has begun no conversation at all: then it has its greeting, as one this server
         // started does. At work or asking, its first turn may have begun.

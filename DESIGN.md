@@ -2380,11 +2380,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The bridge never runs that command or infers an omp model from its status line or directory.
   Codex is read only from the live footer beneath its composer; an answer quoting the /model
   picker or a draft cannot supply a model, and while a popup hides the footer the model is unknown.
-  A Codex started in a terminal
+  The screen read is the live one (herdr's detection read), never the viewport: a terminal scrolled
+  into its history, on this device or another, can show an older frame with a model the agent no
+  longer runs. A Codex started in a terminal
   reports no session, so its terminal-output fallback carries the status line's model. Such an
   answer is marked `screen`, and the chat re-reads it on terminal output, so a switch made in the
-  terminal shows once the agent draws it. A name the screen cannot tie to one id draws no pill,
-  and an agent's default model never stands in for the session's.
+  terminal shows once the agent draws it. A screen that states no model draws no pill, and an
+  agent's default model never stands in for the session's.
 - The model is drawn by name only where its id is one `modelLabel` (`src/lib/modelName.ts`) can
   name for certain, from the vendor's own regular naming and matched whole:
   `claude-<family>-<major>[-<minor>]`, also behind `anthropic/`, is `<Family> <major>.<minor>`
