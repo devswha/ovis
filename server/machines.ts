@@ -47,6 +47,8 @@ interface Runtime {
   acceptedEpoch?: string;
   /** a full snapshot of another epoch than the proven one, held back until health says which server answers */
   candidate?: SessionSnapshot;
+  /** the held snapshot's finish epoch as its server read it, before any status was laid over it */
+  candidateRun?: string;
   /** this PC's one health call in flight (sourceCheck) */
   verification?: SourceCheck;
   /** the user cancelled this PC's bridge update: it is not started again on its own until the PC connects */
@@ -64,7 +66,7 @@ interface Runtime {
    * Ends with the connection (disconnect): a cancelled, failed or superseded setup leaves the PC as it was (#2075).
    */
   move?: { herdr?: Machine["herdr"]; snapshot?: SessionSnapshot; ownOvisAt?: SshTarget | null };
-  /** which of the PC's herdr runs this server knows have ended (endedFinishEpochs) */
+  /** which of the PC's herdr runs this server knows have ended (finishEnded) */
   finishes: FinishEpochLedger;
 }
 interface JobState {
@@ -277,6 +279,8 @@ export class MachineManager {
   private emitTimer?: ReturnType<typeof setTimeout>;
   /** this server's own boot id: the local PC's proof, without asking anyone */
   private bootId?: string;
+  /** this server's own finish epoch now (server/finishes.ts), when it reads its own herdr (finishEnded) */
+  private localFinishEpoch?: () => string;
   /** a monotonic clock for the health calls' start interval; tests pass their own */
   private now: () => number;
   private sourceToken = 0;
@@ -288,8 +292,9 @@ export class MachineManager {
   private ownUpdateCheckMs: number;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { bootId?: string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number } } = {}) {
+    options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number } } = {}) {
     this.bootId = options.bootId;
+    this.localFinishEpoch = options.localFinishEpoch;
     this.ownUpdatePollMs = options.ownUpdate?.pollMs ?? OWN_UPDATE_POLL_MS;
     this.ownUpdateStartMs = options.ownUpdate?.startMs ?? OWN_UPDATE_START_MS;
     this.ownUpdateCheckMs = options.ownUpdate?.checkMs ?? OWN_CHECK_WAIT_MS;
@@ -436,15 +441,18 @@ export class MachineManager {
   private runtime(machine: Machine): Runtime { return { machine, attempts: 0, generation: 0, refreshing: false, refreshQueued: false, snapshotRevision: 0, terminals: new Set(), finishes: new FinishEpochLedger(machine.snapshot) }; }
   list(): Machine[] { return [this.local, ...[...this.machines.values()].map((r) => r.machine)]; }
   /**
-   * Each PC's herdr runs (finish epochs) this server knows have ended (server/seen.ts, FinishEpochLedger). The epoch
-   * a PC's snapshot names is not enough: a snapshot restored from machines.json can name a run the PC has since left
-   * (#1468), and a late read one this server already saw end (#2206). Either would drop the read finishes of the run
-   * the PC is in.
+   * Whether this server knows a PC's herdr run (finish epoch) has ended (server/seen.ts). This server's own PC is in
+   * the run its Finishes names now; every other one, an earlier process's included, is over. A remote PC's ledger
+   * says (FinishEpochLedger): the epoch its snapshot names is not enough, as a snapshot restored from machines.json
+   * can name a run the PC has since left (#1468), and a late read one this server already saw end (#2206). Either
+   * would drop the read finishes of the run the PC is in. A PC this server does not hold has no run known to be over.
    */
-  endedFinishEpochs(): Map<string, ReadonlySet<string>> {
-    const ended = new Map<string, ReadonlySet<string>>([[LOCAL_MACHINE, this.localFinishes.endedEpochs()]]);
-    for (const [id, runtime] of this.machines) ended.set(id, runtime.finishes.endedEpochs());
-    return ended;
+  finishEnded(pc: string, epoch: string): boolean {
+    if (pc === LOCAL_MACHINE) {
+      const current = this.localFinishEpoch?.() ?? this.local.snapshot?.finish_epoch;
+      return current !== undefined && current !== epoch;
+    }
+    return this.machines.get(pc)?.finishes.ended(epoch) ?? false;
   }
   subscribe(listener: (event: MachineEvent) => void): () => void {
     this.listeners.add(listener);
@@ -456,6 +464,8 @@ export class MachineManager {
     for (const listener of this.listeners) listener(event ?? { type: "machines", machines: this.list() });
   }
   localMessage(message: ServerMessage): void {
+    // a status of a herdr run already seen to end is older than the read that showed it ended: not told, not kept
+    if (message.type === "pane-status" && this.localFinishes.stale(message.finish_epoch)) return;
     // Structural invalidations queue a follow-up below without discarding the
     // active read: continuous layout changes must not starve roster publication.
     // Status/exit patches still outrank any snapshot asked for before them.
@@ -466,9 +476,9 @@ export class MachineManager {
     this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     // its id used again is a pane heard of for the first time
     if (message.type === "pane-exited") this.heardAgents.forget(message.pane_id);
-    if (message.type === "pane-status" && this.local.snapshot && !this.localFinishes.stale(message.finish_epoch)) {
+    if (message.type === "pane-status" && this.local.snapshot) {
       this.local.snapshot = snapshotAfterStatus(this.local.snapshot, message);
-      this.localFinishes.hold(this.local.snapshot);
+      this.localFinishes.hold(message.finish_epoch, this.bootId);
     }
     if (message.type === "session-changed" || message.type === "pane-exited") void this.refreshLocal();
   }
@@ -1234,13 +1244,16 @@ export class MachineManager {
       if (generation !== runtime.generation || this.stopped) return;
       let message: ServerMessage;
       try { message = JSON.parse(String(event.data)); } catch { return; }
+      // a status of a run already seen to end is older than the read that showed it ended: not told, not kept
+      if (message.type === "pane-status" && runtime.finishes.stale(message.finish_epoch)) return;
       // session-changed queues one follow-up, but lets the active roster publish.
       if (["snapshot", "pane-status", "pane-exited"].includes(message.type)) runtime.snapshotRevision++;
       // a frame may have been overtaken by an HTTP read: it holds its epoch, it proves no other ended
-      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.finishes.hold(message.snapshot); this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name); this.emit(); }
-      // a status of a run already seen to end is older than the read that showed it ended
-      if (message.type === "pane-status" && !runtime.finishes.stale(message.finish_epoch)) {
-        if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(runtime.machine.snapshot); }
+      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.finishes.hold(message.snapshot.finish_epoch, message.snapshot.order_epoch); this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name); this.emit(); }
+      // a status names no server: it is the proven one's, or not known while health is asked (the cached roster's
+      // order epoch may be another server's)
+      if (message.type === "pane-status") {
+        if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(message.finish_epoch, runtime.acceptedEpoch); }
         // a snapshot held for health is older than this frame too: published later, it keeps the status
         if (runtime.candidate) runtime.candidate = snapshotAfterStatus(runtime.candidate, message);
         void this.push.onStatus(message.pane_id, alertStatus(message.agent_status, message.background_wait), runtime.machine.id).catch(() => {});
@@ -1330,7 +1343,7 @@ export class MachineManager {
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     // what this connection proved goes with it; the start interval stays (sourceStarts)
     runtime.verification?.abort.abort(); runtime.verification = undefined;
-    runtime.acceptedEpoch = undefined; runtime.candidate = undefined; delete runtime.machine.source_boot_id;
+    runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
     runtime.move = undefined;
     runtime.machine.state = "disconnected";
   }
@@ -1347,7 +1360,7 @@ export class MachineManager {
     const epoch = snapshot.order_epoch;
     if (typeof epoch !== "string" || !Number.isSafeInteger(snapshot.read_seq)) return true;
     if (epoch === runtime.acceptedEpoch) return !olderOrderRead(runtime.machine.snapshot, snapshot);
-    if (!olderOrderRead(runtime.candidate, snapshot)) runtime.candidate = snapshot;
+    if (!olderOrderRead(runtime.candidate, snapshot)) { runtime.candidate = snapshot; runtime.candidateRun = snapshot.finish_epoch; }
     this.sourceCheck(runtime);
     return false;
   }
@@ -1388,12 +1401,12 @@ export class MachineManager {
    * A full snapshot read from the PC's server becomes the PC's, saved and seeded for alerts. One that a setup at another
    * SSH address read waits for that setup to connect there (Runtime.move), and is neither shown nor saved before.
    * `settled`: a read that started after every snapshot and status of the PC that reached this server
-   * (FinishEpochLedger.settle).
+   * (FinishEpochLedger.settle). Otherwise `server`: the one known to have named its finish epoch, if any.
    */
-  private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false): void {
+  private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false, server?: string): void {
     if (runtime.move) { runtime.move.snapshot = snapshot; return; }
     runtime.machine.snapshot = snapshot;
-    if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot);
+    if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
     this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name);
   }
@@ -1402,8 +1415,10 @@ export class MachineManager {
     runtime.machine.source_boot_id = boot;
     runtime.acceptedEpoch = boot;
     const candidate = runtime.candidate;
-    runtime.candidate = undefined;
-    if (candidate?.order_epoch === boot && !olderOrderRead(runtime.machine.snapshot, candidate)) this.publish(runtime, candidate);
+    const run = runtime.candidateRun;
+    runtime.candidate = undefined; runtime.candidateRun = undefined;
+    // its run is the proven server's own unless a status laid another over it
+    if (candidate?.order_epoch === boot && !olderOrderRead(runtime.machine.snapshot, candidate)) this.publish(runtime, candidate, false, candidate.finish_epoch === run ? boot : undefined);
     else if (runtime.machine.snapshot?.order_epoch !== boot) {
       // the cache is of another server: a read of this one replaces it
       const generation = runtime.generation;

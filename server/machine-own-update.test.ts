@@ -411,7 +411,7 @@ describe("a PC whose own Ovis is away (#2047)", () => {
       await until((machine) => machine.state === "connected");
       expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
       // the herdr run read there was never the PC's: a read at its own address ends none of its read finishes (#2206)
-      expect(manager.endedFinishEpochs().get(MACHINE_ID)).toEqual(new Set());
+      expect(manager.finishEnded(MACHINE_ID, "run@other@second.invalid")).toBe(false);
       // the other address's Ovis is gone now, leaving this app's runtime and a bridge's descriptor whose process is
       // gone, so a restart that read it there would start this app's bridge unasked
       remote.elsewhere = "stale-bridge";
