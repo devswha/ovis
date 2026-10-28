@@ -410,12 +410,19 @@ export function createPushService(options: PushServiceOptions): PushService {
     try {
       persistRetired();
     } catch (error) {
+      retiredUnwritten = true;
       console.error(`Cannot write ${retiredPath} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); retired endpoints are kept in memory until a write succeeds`);
     }
   }
+  /**
+   * The list on disk is not the one in memory (a write failed): a subscribe writes it first, so a mark
+   * a revocation removed in memory only cannot come back at a restart and drop the new subscription.
+   */
+  let retiredUnwritten = false;
 
   function persistRetired(): void {
     writeJsonPrivate(retiredPath, [...retiredStore()].map(([hash, { at, owner }]) => ({ hash, at, ...(owner === undefined ? {} : { owner }) })));
+    retiredUnwritten = false;
   }
 
   function retiredStore(): Map<string, RetiredMark> {
@@ -583,8 +590,14 @@ export function createPushService(options: PushServiceOptions): PushService {
     if (gone) {
       const retired = retiredStore();
       const mark = retiredKey(subscription.endpoint);
+      // two spellings of one endpoint held by different owners share the mark: it then belongs to neither,
+      // so one owner's revocation cannot take a mark the other's subscription was retired under too
+      const previous = retired.get(mark);
+      const shared = (previous !== undefined && previous.owner === undefined)
+        || [...store().values()].some((held) => held.endpoint !== subscription.endpoint && retiredKey(held.endpoint) === mark && held.device_id !== identity.owner);
+      const owner = shared ? undefined : identity.owner;
       retired.delete(mark);
-      retired.set(mark, { at: (options.now ?? Date.now)(), ...(identity.owner === undefined ? {} : { owner: identity.owner }) });
+      retired.set(mark, { at: (options.now ?? Date.now)(), ...(owner === undefined ? {} : { owner }) });
       if (retired.size > RETIRED_LIMIT) retired.delete(retired.keys().next().value!);
       // the list is telemetry: a write that fails keeps the mark in memory, and never keeps the dead subscription (#2013)
       rewriteRetired();
@@ -708,6 +721,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       next.set(subscription.endpoint, { ...subscription, ...(kept === undefined ? {} : { alerts: kept }),
         ...(deviceId === undefined ? {} : { device_id: deviceId }),
         ...(browser === undefined ? {} : { browser_keys: browser }) });
+      if (retiredUnwritten) persistRetired();
       persist(next);
       // the record of the subscription this replaces (another owner, other keys) is not the new one's
       const identity = identityOf({ ...subscription, device_id: deviceId });

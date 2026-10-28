@@ -922,6 +922,42 @@ describe("push delivery health (#1039)", () => {
     expect(createPushService({ loopbackHttp: true, stateDir, now: () => clock }).retired(endpoint)).toBe(true);
   });
 
+  // regression: two owners' spellings of one endpoint share its mark, and the last retirement took it for its owner alone
+  it("keeps a mark two owners' spellings were retired under through either owner's revocation", async () => {
+    const push = createPushService({ loopbackHttp: true, stateDir });
+    const endpoint = fake.subscription.endpoint;
+    push.subscribe(fake.subscription, undefined, "device-a");
+    push.subscribe({ ...fake.subscription, endpoint: `${endpoint}#b` }, undefined, "device-b");
+    fake.answerWith(410);
+    expect(await push.sendTest(endpoint)).toEqual({ ok: false, status: 410, gone: true });
+    expect(await push.sendTest(`${endpoint}#b`)).toEqual({ ok: false, status: 410, gone: true });
+    push.revokeDevice("device-b");
+    expect(push.retired(endpoint)).toBe(true);
+    push.revokeDevice("device-a");
+    expect(push.retired(endpoint)).toBe(true);
+    expect(createPushService({ loopbackHttp: true, stateDir }).retired(endpoint)).toBe(true);
+  });
+
+  // regression: a mark a revocation removed in memory only came back at a restart and dropped the endpoint subscribed again
+  it("writes the marks a revocation removed before the endpoint is subscribed again", async () => {
+    const push = createPushService({ loopbackHttp: true, stateDir });
+    push.subscribe(fake.subscription, undefined, "device-a");
+    fake.answerWith(410);
+    expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: false, status: 410, gone: true });
+    // the list cannot be replaced for a while: a directory stands at its temporary path
+    const blocker = join(stateDir, `push-retired.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    const quiet = spyOn(console, "error").mockImplementation(() => undefined);
+    try { push.revokeDevice("device-a"); } finally { quiet.mockRestore(); }
+    rmSync(blocker, { recursive: true });
+    const response = await handlePushRequest(new Request("http://localhost/api/push/subscribe", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: fake.subscription }),
+    }), "/api/push/subscribe", push, "device-b");
+    expect(response?.status).toBe(204);
+    fake.answerWith(201);
+    expect(await createPushService({ loopbackHttp: true, stateDir }).sendTest(fake.subscription.endpoint)).toEqual({ ok: true });
+  });
+
   it("revocation takes the device's history and marks when the retired list cannot be written", async () => {
     const push = createPushService({ loopbackHttp: true, stateDir });
     push.subscribe(fake.subscription, undefined, "device-a");
