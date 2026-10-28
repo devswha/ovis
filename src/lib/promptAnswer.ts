@@ -20,8 +20,8 @@ function boundLetter(label: string): string | null {
   return label.match(/\(([a-z])\)$/i)?.[1]?.toLowerCase() ?? null;
 }
 
-/** text as a page shows it, its spacing collapsed, for comparing what is typed with what a card shows */
-const spaced = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+/** text as a page shows it, for comparing what is typed with what a card shows: one Unicode spelling (NFC: `e` and a combining accent is `é`), its spacing collapsed */
+const spaced = (text: string): string => text.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
 
 function bareLabel(label: string): string {
   return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));
