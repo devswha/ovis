@@ -1035,6 +1035,7 @@ describe("a Claude process's store source", () => {
     process.env["USERPROFILE"] = profile;
     try {
       // elsewhere USERPROFILE means nothing: the store stays where it was without HOME
+      Object.defineProperty(process, "platform", { value: "linux" });
       expect((await claudeStoreOf(null, undefined, {}))?.dir).toBe(".claude");
       Object.defineProperty(process, "platform", { value: "win32" });
       expect((await claudeStoreOf(null, undefined, {}))?.dir).toBe(join(profile, ".claude"));
