@@ -21,6 +21,8 @@ namespace Ovis
         public string Version;
         /// <summary>The version the answering server reports itself (GET /api/updates); null when it does not answer.</summary>
         public string RunningVersion;
+        /// <summary>The live server process `plugin.ts status` names (`(pid N)`), which it reports whether herdr answers or not.</summary>
+        public int? Pid;
         /// <summary>The answering server says it runs without the update supervisor: not one the plugin's start runs, or one whose supervisor has not reported yet.</summary>
         public bool Unmanaged;
     }
@@ -112,7 +114,9 @@ namespace Ovis
                 return;
             }
             Set(Phase.Working, title);
-            var wasRunning = Status != null && Status.Running;
+            // a server process the plugin recorded counts though herdr is down (its health then fails): the update
+            // stops it, so a failed one must start it again
+            var wasRunning = Status != null && (Status.Running || Status.Pid != null);
             // the release is settled before anything stops, so a PC that cannot reach GitHub keeps its server running
             var tags = await Run.Program("git", new[] { "ls-remote", "--tags", "--refs", Links.Repository, "v*" }, Append, true);
             var tag = Setup.UpdateTag(tags.Status == 0 ? tags.Output : null, AppVersion);
@@ -370,32 +374,21 @@ namespace Ovis
         {
             var result = await Run.Program("bun", new[] { PluginScript(plugin), "status" }, null, false);
             var words = (result.Output.Split('\n').FirstOrDefault() ?? "").Split(' ');
-            var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output) };
+            var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output), Pid = Setup.StatusPid(result.Output) };
             if (!status.Running || status.Origin == null) return status;
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
                 {
                     var url = status.Origin.TrimEnd('/') + "/api/updates";
-                    HttpResponseMessage answer;
-                    try
-                    {
-                        answer = await client.GetAsync(url);
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        // a server busy starting answers late once; a second wait tells it from one that does not answer
-                        answer = await client.GetAsync(url);
-                    }
+                    var answer = await GetTwice(client, url, null);
                     if (answer.StatusCode == System.Net.HttpStatusCode.Unauthorized)
                     {
                         // behind a token: the plugin's own settings hold it, as `plugin.ts` reads them
                         var token = await PluginToken(plugin);
                         answer.Dispose();
                         if (token == null) return await WithAccess(status);
-                        var request = new HttpRequestMessage(HttpMethod.Get, url);
-                        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                        answer = await client.SendAsync(request);
+                        answer = await GetTwice(client, url, token);
                     }
                     using (answer)
                     {
@@ -413,6 +406,28 @@ namespace Ovis
                 // no version from the server: one that runs is then one whose version cannot be read
             }
             return await WithAccess(status);
+        }
+
+        /// <summary>
+        /// One GET, sent again once when it times out: a server busy starting answers late once, and a second wait tells
+        /// it from one that does not answer. Each send is a request of its own, with the token when there is one.
+        /// </summary>
+        private static async Task<HttpResponseMessage> GetTwice(HttpClient client, string url, string token)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+                {
+                    if (token != null) request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    try
+                    {
+                        return await client.SendAsync(request);
+                    }
+                    catch (TaskCanceledException) when (attempt < 2)
+                    {
+                    }
+                }
+            }
         }
 
         private static async Task<string> PluginToken(Plugin plugin)

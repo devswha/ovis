@@ -165,6 +165,12 @@ namespace Ovis
                     Equal("0.4.19", Setup.StatusVersion("running http://127.0.0.1:7317 (pid 4)\r\nversion: 0.4.19\r\nconfig: none\r\n"));
                     Equal(null, Setup.StatusVersion("down http://127.0.0.1:7317\nconfig: none (settings go in C:\\x\\env)\n"));
                     Equal(null, Setup.StatusVersion(""));
+                    // the process it recorded, alive, whether herdr answers ("running") or not ("down")
+                    Equal(4, Setup.StatusPid("running http://127.0.0.1:7317 (pid 4)\r\nversion: 0.4.19\r\n"));
+                    Equal(2, Setup.StatusPid("down http://127.0.0.1:17317 (pid 2)\nconfig: none\n"));
+                    Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317\nconfig: none (settings go in C:\\x (pid 9)\\env)\n"));
+                    Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317 (pid x)\n"));
+                    Equal((int?)null, Setup.StatusPid(null));
                     Equal("0.4.22", Setup.UpdatesVersion("{\"managed\":true,\"current_revision\":\"abc\",\"current_version\":\"0.4.22\",\"latest_version\":\"0.4.22\"}"));
                     Equal(null, Setup.UpdatesVersion("{\"managed\":false,\"current_version\":null}"));
                     Equal(null, Setup.UpdatesVersion("{\"error\":{\"code\":\"unauthorized\"}}"));

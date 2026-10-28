@@ -192,6 +192,20 @@ namespace Ovis
         }
 
         /// <summary>
+        /// The `(pid N)` of the status's first line: `plugin.ts status` names the process it recorded only while it lives,
+        /// and says so whether herdr answers or not (its "running" needs herdr, every release since 0.3).
+        /// </summary>
+        public static int? StatusPid(string output)
+        {
+            var first = (output ?? "").Split('\n').FirstOrDefault() ?? "";
+            var at = first.LastIndexOf("(pid ", StringComparison.Ordinal);
+            if (at < 0) return null;
+            var end = first.IndexOf(')', at);
+            int pid;
+            return end > at && int.TryParse(first.Substring(at + 5, end - at - 5), out pid) && pid > 0 ? pid : (int?)null;
+        }
+
+        /// <summary>
         /// Why the server needs an update. herdr's list is never taken for the version that runs: a stopped server known
         /// only by it is started first, as it may have updated itself, and a running one that does not say its version
         /// (a token holds /api/updates) is one whose version cannot be read. The update then installs the newest
