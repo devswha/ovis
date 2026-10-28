@@ -39,7 +39,8 @@ const threadClock = ((): (() => number) | null => {
  * milliseconds still depends on the runner's processor, and the growth from a small input to a
  * five times larger one still moved on a busy runner (3 times as written read 10.8). Against an
  * input of the same size that the code reads in one pass, a scan that goes quadratic costs a
- * multiple that grows with the size, while the work both share stays out of the ratio. This
+ * multiple that grows with the size, while the work both share stays out of the ratio (so a cost
+ * that grows with the length alone, which both inputs share, is not what such a case bounds). This
  * thread's CPU time where the system keeps it, else the process's. Each input runs once untimed,
  * then three times, and the least of each is compared: being preempted or slowed only adds time.
  */
@@ -53,9 +54,12 @@ const cpuRatio = <K, T>(make: (input: K) => () => T, reference: K, subject: K): 
   const runSubject = make(subject);
   runReference();
   const result = runSubject();
-  // a run of a fraction of a millisecond is timed over as many runs as take two; twenty where the
-  // process's clock may count in steps of milliseconds, so no reference run reads none
-  const shortest = threadClock === null ? 20 : 2;
+  // a run of a fraction of a millisecond is timed over as many runs as take two; a hundred where
+  // the process's clock may count in steps of about 16 ms (Windows), so a step is a small part
+  // of what any reference reads. The least reference of the three is checked too, not only the
+  // first: runs that got faster after it may read less, or none on that clock, so the whole set
+  // is timed again over twice the runs
+  const shortest = threadClock === null ? 100 : 2;
   let runs = 1;
   const timed = (run: () => T): number => {
     const start = now();
@@ -63,13 +67,15 @@ const cpuRatio = <K, T>(make: (input: K) => () => T, reference: K, subject: K): 
     return now() - start;
   };
   while (timed(runReference) < shortest) runs *= 2;
-  let leastReference = Infinity;
-  let leastSubject = Infinity;
-  for (let round = 0; round < 3; round += 1) {
-    leastReference = Math.min(leastReference, timed(runReference));
-    leastSubject = Math.min(leastSubject, timed(runSubject));
+  for (;; runs *= 2) {
+    let leastReference = Infinity;
+    let leastSubject = Infinity;
+    for (let round = 0; round < 3; round += 1) {
+      leastReference = Math.min(leastReference, timed(runReference));
+      leastSubject = Math.min(leastSubject, timed(runSubject));
+    }
+    if (leastReference >= shortest) return { result, ratio: leastSubject / leastReference };
   }
-  return { result, ratio: leastSubject / leastReference };
 };
 
 describe("a Codex process's own store", () => {
@@ -241,7 +247,7 @@ describe("Codex conversation records", () => {
     }, false, true);
     expect(result[0]?.parts).toEqual([{ kind: "text", text: text.trimEnd() }]);
     expect(ratio).toBeLessThan(10);
-  });
+  }, 30_000);
 
   it("hides injected context, metadata and developer messages while preserving the real request", () => {
     const turns = parseCodexTranscript(jsonl(
@@ -922,7 +928,7 @@ describe("Codex rollout resolution", () => {
     // 200 when the work per link grows with the links before it (an unshift)
     const { result, ratio } = cpuRatio((links: boolean) => {
       const huge = answered(links ? "[abcdefghijklmnop](/a)".repeat(40_000) : `${"[abcdefghijklmnop] /a)".repeat(39_999)}[abcdefghijklmnop](/a)`);
-      const candidates = Array.from({ length: 32 }, (_, index) => ({ path: `large-${index}`, text: huge }));
+      const candidates = Array.from({ length: 8 }, (_, index) => ({ path: `large-${index}`, text: huge }));
       return () => matchShortCodexAnswers(screen, candidates);
     }, false, true);
     expect(result).toBeNull();
