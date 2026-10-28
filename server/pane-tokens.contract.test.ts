@@ -109,6 +109,24 @@ describe("a browser's own snapshots", () => {
     expect(await session("/api/session", bridge)).toEqual({ quota: "off · private", eta: "soon" });
   }, 60_000);
 
+  it("leaves them in every snapshot of a bridge this app starts on a PC, whose only client is its connection server", async () => {
+    // as server/remote-entry.ts starts one: no machines, its registered credential as its token
+    const bridgeState = mkdtempSync(join(tmpdir(), "ovis-test-pane-tokens-bridge-"));
+    const managed = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bridgeState, token: "registered-credential", machines: false, tailscaleOwner: null, herdrConfigPath });
+    try {
+      const response = await fetch(`http://127.0.0.1:${managed.port}/api/session`, { headers: { authorization: "Bearer registered-credential" } });
+      expect(tokensIn(((await response.json()) as { snapshot: Snapshot }).snapshot)).toEqual({ quota: "off · private", eta: "soon" });
+      const socket = authenticatedWebSocket(`ws://127.0.0.1:${managed.port}/ws`, "registered-credential");
+      const frame = Promise.withResolvers<Snapshot>();
+      const deadline = setTimeout(() => frame.reject(new Error("timed out waiting for the snapshot frame")), 15_000);
+      socket.onmessage = (event) => { const message = JSON.parse(String(event.data)); if (message.type === "snapshot") frame.resolve(message.snapshot); };
+      try { expect(tokensIn(await frame.promise)).toEqual({ quota: "off · private", eta: "soon" }); } finally { clearTimeout(deadline); socket.close(); }
+    } finally {
+      managed.stop();
+      rmSync(bridgeState, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("leaves them out of a browser's /ws snapshot frame, not a bridge's", async () => {
     const firstSnapshot = async (token: string) => {
       const socket = authenticatedWebSocket(`ws://127.0.0.1:${server.port}/ws`, token);
