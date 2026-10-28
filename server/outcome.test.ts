@@ -872,6 +872,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  it("keeps a skill's question linked when only its send's screen looks like a side panel", async () => {
+    // a table's divider through every row of the send's screen passes there for the panel's edge, not on the next screen
+    const table = Array.from({ length: 8 }, (_, index) => `${`Task ${index}`.padEnd(40)}\u2502 preserve requirement ${index}`);
+    const pane = { agent: "claude", status: "blocked", screen: [...table, "\u276f /review", "\u2610 Dataset", "",
+      "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "     Occlusion benchmark.", "  2. YCB-V", "     Household objects.",
+      "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"].join("\n") };
+    await withFakeHerdr(pane, async (paneId) => {
+      const current = { ...send("/review", "claude", [{ ...row("review"), source: "skill" }]),
+        at: Date.now() - 10, screen: table.join("\n"), identity: JSON.stringify([undefined, undefined]), store: null };
+      noteSubmitted(paneId, current.text, current);
+      const shown = await served(paneId);
+      expect(shown.prompt).toMatchObject({ kind: "question", question: "Which evaluation dataset should we use?" });
+      expect(shown.outcomes?.at(-1)?.state).toBe("interaction-required");
+      expect(current.dialogId).toBe(shown.prompt!.id);
+    });
+  });
+
   it("completes a named Claude model card through the real answer handler", async () => {
     const pane = { agent: "claude", status: "idle", screen: `❯ /model
 

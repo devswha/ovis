@@ -74,9 +74,10 @@ function indexAtColumn(line: string, column: number): number {
 /**
  * Claude Code's fullscreen layout (`"tui": "fullscreen"`) can draw a side panel to the right of the
  * session, its diff panel (`/diff`, `1 file changed +2 … source: Current ▾`) on a wide pane (from about
- * 110 columns on 2.1.303; the pane's width is not checked here, only the edge): every row from the screen's top carries the panel's left edge `│` in one column, the
- * panel's own text after it, down through the prompt and its footer. Those rows are cut at that edge
- * so the session's menus read as without the panel (measured on 2.1.303). A screen whose edge stops
+ * 110 columns on 2.1.303; only the edge is checked here, not the pane's width): every row from the
+ * screen's top carries the panel's left edge `│` in one column, the panel's own text after it,
+ * down through the prompt and its footer. Those rows are cut at that edge so the session's menus read
+ * as without the panel (measured on 2.1.303). A screen whose edge stops
  * before its last non-blank row (a markdown table scrolled above a plan, say) is left as it is.
  */
 const CLAUDE_SIDE_PANEL_MIN_COLUMN = 40;
@@ -92,7 +93,10 @@ export function withoutClaudeSidePanel(screen: string): string {
     }
     return columns;
   };
-  const rowEdges = lines.map(edges);
+  const top = edges(lines[0] ?? "").filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN);
+  if (top.length === 0) return screen;
+  // each row's edges once, past the top row's check that turns away most screens
+  const rowEdges = lines.map((line, index) => index === 0 ? top : edges(line));
   const rowsAt = (column: number): number => {
     let rows = 0;
     while (rows < lines.length && rowEdges[rows]!.includes(column)) rows += 1;
@@ -100,8 +104,7 @@ export function withoutClaudeSidePanel(screen: string): string {
   };
   // the panel's edge runs through the footer; a table's column divider stops where the table ends
   const throughFooter = (rows: number): boolean => rows >= CLAUDE_SIDE_PANEL_MIN_ROWS && lines.slice(rows).every((line) => line.trim() === "");
-  const column = rowEdges[0]!.filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN)
-    .find((at) => throughFooter(rowsAt(at)));
+  const column = top.find((at) => throughFooter(rowsAt(at)));
   if (column === undefined) return screen;
   const rows = rowsAt(column);
   return lines.map((line, index) => index < rows ? line.slice(0, indexAtColumn(line, column)).trimEnd() : line).join("\n");

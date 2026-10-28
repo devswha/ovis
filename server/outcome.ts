@@ -244,9 +244,19 @@ function transcriptEvidence(sent: CommandSend, records: readonly CommandTranscri
   return null;
 }
 
-/** A Claude screen is read on the session's side of a fullscreen side panel, as parsePrompt reads its cards. */
-const screenLines = (screen: string, agent: string): string[] => (agent === "claude" ? withoutClaudeSidePanel(screen) : screen)
-  .replace(ANSI_RE, "").split(/\r?\n/u).map((line) => line.trimEnd());
+const screenLines = (screen: string): string[] => screen.replace(ANSI_RE, "").split(/\r?\n/u).map((line) => line.trimEnd());
+/**
+ * Screens read against each other, as lines. Claude's are read on the session's side of a fullscreen side panel, as
+ * parsePrompt reads its cards, only when every one of them shows the panel: a table's divider can pass for the panel's
+ * edge on one screen and not the next, and a cut on one side alone loses the anchor between them.
+ */
+function readAlike(agent: string, ...screens: string[]): string[][] {
+  if (agent === "claude") {
+    const cut = screens.map(withoutClaudeSidePanel);
+    if (cut.every((text, index) => text !== screens[index])) return cut.map(screenLines);
+  }
+  return screens.map(screenLines);
+}
 /** Chrome belongs to the agent, not one command; the first applicable result reader supplies it. */
 function withoutChrome(lines: string[], agent: string, readers: readonly DialogReader[]): string[] | null {
   const reader = readers.find((reader) => reader.kind === "result" && reader.chromeStart
@@ -264,7 +274,7 @@ function withoutChrome(lines: string[], agent: string, readers: readonly DialogR
 
 /** Ignore persistent status clocks when checking whether an expected dialog's output has settled. */
 export function dialogSettlingScreen(screen: string, agent: string, readers: readonly DialogReader[]): string {
-  const lines = screenLines(screen, agent);
+  const lines = screenLines(screen);
   return (withoutChrome(lines, agent, readers) ?? lines).join("\n");
 }
 
@@ -320,18 +330,19 @@ const sendAnchor = (snapshot: readonly string[], lines: readonly string[], snaps
  * Fewer complete blocks below it, or this send's row missing, leaves the earlier sends' blocks ambiguous and this send
  * unreserved.
  */
-function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], lines: readonly string[], reader: DialogReader, readers: readonly DialogReader[]): boolean {
+function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[]): boolean {
   const known = [...same].reverse().find((candidate) => candidate.top !== undefined
     && typeof candidate.resultEchoes?.[reader.id] === "number"
     && typeof candidate.resultEchoLimit?.[reader.id] === "number");
   const owed = known?.resultEchoLimit?.[reader.id];
   if (!known || typeof owed !== "number" || known.top === undefined || sent.top === undefined) return false;
-  const before = withoutChrome(screenLines(known.screen, sent.agent), sent.agent, readers);
-  if (before === null) return false;
+  const [knownLines, full] = readAlike(sent.agent, known.screen, sent.screen) as [string[], string[]];
+  const before = withoutChrome(knownLines, sent.agent, readers);
+  const lines = withoutChrome(full, sent.agent, readers);
+  if (before === null || lines === null) return false;
   let last = before.length - 1;
   while (last >= 0 && !before[last]!.trim()) last -= 1;
   const end = known.top + last - sent.top;
-  const full = screenLines(sent.screen, sent.agent);
   const echoOf = reader.echoOf ?? defaultEchoOf;
   const complete = lines.filter((line, index) => index > end && echoOf(line, sent.text)
     && resultBelow(sent, blockBelow(full, lines, index, echoOf), reader) !== null).length;
@@ -348,19 +359,20 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
   const reservations: Record<string, number | null> = {};
   const same = previous.filter((candidate) => candidate.agent === sent.agent && candidate.identity === sent.identity && normalize(candidate.text) === normalize(sent.text));
   const prior = same.at(-1);
-  const lines = withoutChrome(screenLines(sent.screen, sent.agent), sent.agent, readers);
+  const [own, earlier] = prior ? readAlike(sent.agent, sent.screen, prior.screen) : readAlike(sent.agent, sent.screen);
+  const lines = withoutChrome(own!, sent.agent, readers);
   for (const reader of readers) {
     if (lines === null) { reservations[reader.id] = null; continue; }
     const echoOf = reader.echoOf ?? defaultEchoOf;
     const priorOrdinal = prior?.resultEchoes?.[reader.id];
     const priorLimit = prior?.resultEchoLimit?.[reader.id];
     if (!prior) { reservations[reader.id] = 1; continue; }
-    const past = (): number | null => printedPastEarlier(sent, same, lines, reader, readers) ? 1 : null;
+    const past = (): number | null => printedPastEarlier(sent, same, reader, readers) ? 1 : null;
     if (priorOrdinal === null || priorLimit === null) { reservations[reader.id] = past(); continue; }
     // the history rows outrank the prior screen's text: on a screen of identical blocks its tail also matches the
     // screen's own bottom and counts none of the echoes printed since, so the debt would never be paid (#1550)
     if (past() === 1) { reservations[reader.id] = 1; continue; }
-    const before = withoutChrome(screenLines(prior.screen, sent.agent), sent.agent, readers);
+    const before = withoutChrome(earlier!, sent.agent, readers);
     if (before === null) { reservations[reader.id] = null; continue; }
     const anchor = sendAnchor(before, lines, prior.top, sent.top);
     if (anchor === null) {
@@ -507,9 +519,9 @@ export function ownsCommandDialog(sent: CommandSend, prompt: ParsedPrompt, scree
 
 /** The block belonging to exactly this reserved echo, never a later command's block. */
 function ownedCommandScreen(sent: CommandSend, screen: string, reader: DialogReader, readers: readonly DialogReader[], top?: number): string | null {
-  const fullLines = screenLines(screen, sent.agent);
+  const [fullLines, sentLines] = readAlike(sent.agent, screen, sent.screen) as [string[], string[]];
   const lines = withoutChrome(fullLines, sent.agent, readers);
-  const before = withoutChrome(screenLines(sent.screen, sent.agent), sent.agent, readers);
+  const before = withoutChrome(sentLines, sent.agent, readers);
   if (lines === null || before === null) return null;
   const anchor = sendAnchor(before, lines, sent.top, top);
   if (anchor === null) return null;
