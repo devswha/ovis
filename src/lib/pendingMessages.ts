@@ -1,5 +1,5 @@
 import type { PendingMessage } from "../../shared/protocol.ts";
-import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
+import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
 export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -23,9 +23,14 @@ export class PendingMessageStore {
   private busy = new Set<string>();
   /** rows saved as not confirmed while they are shown as they were (unconfirm) */
   private unconfirmed = new Set<string>();
+  /** the recovery record kept for a row this page alone holds (keepUnconfirmed), by owner and row */
+  private recovery = new Map<string, string>();
   private listeners = new Set<() => void>();
   // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
-  constructor(private storage: () => StoragePort = () => paneLifetimes.paneStorage) {}
+  constructor(
+    private storage: () => StoragePort = () => paneLifetimes.paneStorage,
+    private lifetimes: Pick<PaneLifetimes, "stored" | "keep" | "discard"> = paneLifetimes,
+  ) {}
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
@@ -187,7 +192,16 @@ export class PendingMessageStore {
       const pane = paneStateKey(PREFIX + owner);
       if (pane?.machineId !== machineId) continue;
       const kept = rows.filter((message) => message.serverOwned);
-      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) paneLifetimes.keep(machineId, pane.paneId, "pending", message.text);
+      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text);
+      // a row storage took on the same herdr (lib/paneLifetime.ts storeMemory) is offered again after a
+      // reload, so its recovery copy goes; a row left to recovery has only its record now
+      let durable = new Set<string>();
+      try { durable = new Set(this.restored(this.storage().getItem(PREFIX + owner)).map((message) => message.id)); } catch { /* none is */ }
+      for (const [key, record] of [...this.recovery]) {
+        if (!key.startsWith(`${owner}\0`)) continue;
+        this.recovery.delete(key);
+        if (durable.has(key.slice(owner.length + 1))) this.lifetimes.discard(record);
+      }
       if (kept.length > 0) this.rows.set(owner, kept); else this.rows.delete(owner);
       this.saved.delete(owner);
       this.unsaved.delete(owner);
@@ -249,6 +263,15 @@ export class PendingMessageStore {
     const id = `unconfirmed:${[...crypto.getRandomValues(new Uint32Array(2))].map((part) => part.toString(36)).join("-")}`;
     this.refresh(owner);
     this.write(owner, [...this.read(owner), { id, request_id: 0, text, created_at: new Date().toISOString(), state: "uncertain", error: UNCONFIRMED_SEND, serverOwned: false }]);
+    // a PC whose pane state is not stored (a bridge that names no herdr, storage that refused its
+    // record, a tab behind another) keeps the row in this page alone, and the message box is already
+    // empty: a copy in Recover unsent text outlives a reload. It is offered for a pane the user picks,
+    // never put back under this pane ID, which a later herdr may reuse (#2172). The row's own record:
+    // discarding the row takes no other tab's copy of the same words
+    const pane = paneStateKey(PREFIX + owner);
+    if (pane === null || this.lifetimes.stored(pane.machineId)) return;
+    const kept = this.lifetimes.keep(pane.machineId, pane.paneId, "pending", text, true);
+    if (kept !== null) this.recovery.set(`${owner}\0${id}`, kept);
   }
   removeCopy(owner: string, id: string): void {
     if (this.read(owner).some((message) => message.id === id && message.serverOwned)) return;
@@ -256,6 +279,11 @@ export class PendingMessageStore {
     this.unconfirmed.delete(`${owner}\0${id}`);
     this.refresh(owner);
     this.write(owner, this.read(owner).filter((message) => message.id !== id));
+    // its recovery copy goes with it
+    const kept = this.recovery.get(`${owner}\0${id}`);
+    if (kept === undefined) return;
+    this.recovery.delete(`${owner}\0${id}`);
+    this.lifetimes.discard(kept);
   }
 }
 
