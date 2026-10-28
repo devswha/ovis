@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { MachineEvent } from "../shared/machines.ts";
-import type { AgentRowTokens } from "../shared/pane-tokens.ts";
-import { agentRowTokens, HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
+import type { Machine, MachineEvent } from "../shared/machines.ts";
+import { paneTokenValues, type AgentRowTokens } from "../shared/pane-tokens.ts";
+import { agentRowTokens, decidedRowTokens, HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
@@ -31,6 +31,10 @@ const changed = async (config: HerdrSidebarConfig, edit: () => void): Promise<vo
     stop();
   }
 };
+
+/** a PC whose panes report these agents and tokens; `agents` are herdr's agent records, by pane */
+const machineWith = (panes: Array<{ pane_id: string; agent?: string; tokens?: Record<string, unknown> }>, agents: Array<{ pane_id: string; agent: string; tokens?: Record<string, unknown> }> = []): Machine =>
+  ({ id: "local", state: "connected", snapshot: { panes, agents } }) as unknown as Machine;
 
 describe("herdrConfigPath", () => {
   test("follows herdr: HERDR_CONFIG_PATH, then XDG_CONFIG_HOME on any platform, then the platform's own place", () => {
@@ -94,6 +98,53 @@ codex = [["agent"]]
     expect(parse(`[ui.sidebar.agents]\nrows = [["$", "$has space", 3, { dim = true }, "$ok"]]`)).toEqual({ rows: [{ name: "ok" }], by_agent: {} });
     expect(agentRowTokens(null)).toBeNull();
     expect(agentRowTokens({ ui: [] })).toBeNull();
+  });
+});
+
+describe("decidedRowTokens", () => {
+  test("decides the hide rules for the values the PCs report, as the browser would, and names none of their operands", () => {
+    const raw = parse(`
+[ui.sidebar.agents]
+rows = [
+  ["agent", { token = "$quota", rules = [{ equals = "private-literal", hide = true }, { starts_with = "5h 100%", hide = true }] }, { token = "$load", rules = [{ gt = 80, hide = true }] }],
+  [{ token = "$eta", rules = [{ equals = "soon", hide = true }] }, "$eta", "$model"],
+]
+
+[ui.sidebar.agents.rows_by_agent]
+codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "WK", ignore_case = true, hide = true }] }]]
+`);
+    const panes = [
+      { pane_id: "w1:p1", agent: "claude", tokens: { quota: "5h 100% · Wk 3%", load: "95", eta: "soon", model: "opus" } },
+      { pane_id: "w1:p2", agent: "codex", tokens: { quota: "5h 40% · wk 70%", load: "12", eta: "  " } },
+      { pane_id: "w1:p3", agent: "codex" },
+    ];
+    const agents = [{ pane_id: "w1:p3", agent: "codex", tokens: { quota: "5h 10% · Wk 9%", load: 99 } }];
+    const told = decidedRowTokens(raw, [machineWith(panes, agents), { id: "away", state: "disconnected", snapshot: null } as unknown as Machine]);
+    expect(told).toEqual({
+      rows: [
+        { name: "quota", rules: [{ equals: "5h 100% · Wk 3%", hide: true }] },
+        { name: "load", rules: [{ equals: "95", hide: true }] },
+        { name: "eta", rules: [{ equals: "soon", hide: true }] },
+        { name: "eta" },
+        { name: "model" },
+      ],
+      // the first rule that matches decides: "5h 40%…" matches one that does not hide
+      by_agent: { codex: [{ name: "quota", rules: [{ equals: "5h 10% · Wk 9%", hide: true }, { equals: "5h 100% · Wk 3%", hide: true }] }] },
+    });
+    const text = JSON.stringify(told);
+    for (const operand of ["private-literal", "80", "WK", "5h 4", "starts_with", "contains", "gt", "ignore_case"]) expect(text).not.toContain(operand);
+    // every reported value draws as the config's own rules draw it, under every agent's rows
+    for (const agent of ["claude", "codex", null]) {
+      for (const tokens of [...panes.map((pane) => pane.tokens), ...agents.map((record) => record.tokens)]) {
+        expect(paneTokenValues(told, agent, tokens)).toEqual(paneTokenValues(raw, agent, tokens));
+      }
+    }
+    // no rows, or no value a rule hides: nothing to decide
+    expect(decidedRowTokens(null, [machineWith(panes)])).toBeNull();
+    expect(decidedRowTokens(raw, [])).toEqual({
+      rows: [{ name: "quota" }, { name: "load" }, { name: "eta" }, { name: "eta" }, { name: "model" }],
+      by_agent: { codex: [{ name: "quota" }] },
+    });
   });
 });
 
@@ -231,6 +282,59 @@ describe("the machine events", () => {
       writeFileSync(path, `[ui.sidebar.agents]\nrows = [["$quota", "$progress"]]`);
       while (events.length === 1) await read();
       expect(events[1]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }, { name: "progress" }], by_agent: {} } });
+    } finally {
+      abort.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+  });
+
+  test("tell a watching browser what the hide rules decide for the reported values, before the roster that brings one, never their operands", async () => {
+    const path = configFile(`[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ equals = "private-literal", hide = true }, { starts_with = "off", hide = true }] }]]`);
+    const config = new HerdrSidebarConfig(path, 10);
+    let roster: ((event: MachineEvent) => void) | undefined;
+    const tell = (quota: string) => roster!({ type: "machines", machines: [machineWith([{ pane_id: "w1:p1", agent: "claude", tokens: { quota } }])] });
+    // as MachineManager does: a new listener hears the roster at once
+    const manager = { subscribe: (listener: (event: MachineEvent) => void) => { roster = listener; tell("5h 95%"); return () => undefined; } } as unknown as MachineManager;
+    const abort = new AbortController();
+    const response = await handleMachineRequest(new Request("http://127.0.0.1:7317/api/machines/events", { signal: abort.signal }), manager, undefined, undefined, true, config);
+    const reader = response.body!.getReader();
+    const events: MachineEvent[] = [];
+    let text = "";
+    let buffer = "";
+    const read = async (): Promise<void> => {
+      const { value } = await reader.read();
+      const chunk = new TextDecoder().decode(value);
+      text += chunk;
+      buffer += chunk;
+      for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+        const frame = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        if (frame.startsWith("data: ")) events.push(JSON.parse(frame.slice(6)) as MachineEvent);
+      }
+    };
+    const until = async (count: number): Promise<MachineEvent[]> => {
+      while (events.length < count) await read();
+      return events.slice(count - 2, count).map((event) => event.type === "machines" ? { type: "machines" } as MachineEvent : event);
+    };
+    try {
+      // no reported value is hidden yet: the rows name the token alone
+      expect(await until(2)).toEqual([{ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }], by_agent: {} } }, { type: "machines" } as MachineEvent]);
+      // a value the rules hide: the decision comes first, so the roster never draws it
+      tell("off · paused");
+      expect(await until(4)).toEqual([
+        { type: "herdr-sidebar", agents: { rows: [{ name: "quota", rules: [{ equals: "off · paused", hide: true }] }], by_agent: {} } },
+        { type: "machines" } as MachineEvent,
+      ]);
+      // the same decision is not told again
+      tell("off · paused");
+      await until(5);
+      expect(events[4]!.type).toBe("machines");
+      // new rows are decided for the values last reported
+      writeFileSync(path, `[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ equals = "5h 95%", hide = true }] }, "$eta"]]`);
+      await until(6);
+      expect(events[5]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }, { name: "eta" }], by_agent: {} } });
+      expect(text).not.toContain("private-literal");
+      expect(text).not.toContain("starts_with");
     } finally {
       abort.abort();
       await reader.cancel().catch(() => undefined);

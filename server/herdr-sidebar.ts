@@ -1,7 +1,8 @@
 import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PANE_TOKEN_NAME, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec } from "../shared/pane-tokens.ts";
+import type { Machine } from "../shared/machines.ts";
+import { PANE_TOKEN_NAME, paneTokenRuleMatches, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec } from "../shared/pane-tokens.ts";
 
 /** how often a watched config.toml is looked at again while a browser listens */
 const POLL_MS = 5_000;
@@ -133,6 +134,33 @@ export function agentRowTokens(config: unknown): AgentRowTokens | null {
     }));
   if (rows === null && Object.keys(byAgent).length === 0) return null;
   return { rows, by_agent: byAgent };
+}
+
+/**
+ * What browsers are told of the rows (#1349): the rows' tokens as they are, with each place's hide
+ * rules decided here for the values the PCs' panes and agents report in `machines`: one `equals`
+ * rule that hides for each such value they hide, and no rule where they hide none. The rules' own
+ * operands (a literal no pane reports, a number's bound) stay on this PC, while a browser, an older
+ * one too, draws the same tokens for those values (shared/pane-tokens.ts paneTokenValues). A value
+ * reported after `machines` is drawn until the rows are told again with it.
+ */
+export function decidedRowTokens(layout: AgentRowTokens | null, machines: readonly Machine[]): AgentRowTokens | null {
+  if (layout === null) return null;
+  const reported = new Map<string, Set<string>>();
+  for (const { snapshot } of machines) {
+    for (const { tokens } of [...snapshot?.panes ?? [], ...snapshot?.agents ?? []]) {
+      for (const [name, value] of Object.entries(tokens ?? {})) {
+        if (typeof value !== "string" || !value.trim()) continue;
+        const values = reported.get(name) ?? new Set<string>();
+        reported.set(name, values.add(value));
+      }
+    }
+  }
+  const decide = (specs: PaneTokenSpec[]): PaneTokenSpec[] => specs.map(({ name, rules }) => {
+    const hidden = rules === undefined ? [] : [...reported.get(name) ?? []].filter((value) => rules.find((rule) => paneTokenRuleMatches(rule, value))?.hide).sort();
+    return hidden.length === 0 ? { name } : { name, rules: hidden.map((value) => ({ equals: value, hide: true })) };
+  });
+  return { rows: layout.rows && decide(layout.rows), by_agent: Object.fromEntries(Object.entries(layout.by_agent).map(([agent, specs]) => [agent, decide(specs)])) };
 }
 
 /**

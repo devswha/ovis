@@ -1,4 +1,4 @@
-import type { DevicePairedEvent, MachineEvent, MachineRoster, SetupAction, SetupRequest } from "../shared/machines.ts";
+import type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, SetupAction, SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
@@ -7,6 +7,7 @@ import { MachineManager } from "./machines.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { crossSiteFileRead } from "./file-view.ts";
+import { decidedRowTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
@@ -107,17 +108,31 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           unwatchDevice = onRevoke?.(close);
           if (closed) return;
           const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < -4) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
-          stop = manager.subscribe((event) => send(`data: ${JSON.stringify(event)}\n\n`));
+          // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
+          // Their hide rules are decided here for the values the PCs report (decidedRowTokens), and told before
+          // the roster that carries a new value, so a value they hide is never drawn off this stream.
+          // Read before listening: a change this read finds is told to the browsers already listening, and to this one once.
+          let rows = herdrSidebar?.get() ?? null;
+          let reported: readonly Machine[] = [];
+          let toldSidebar: string | undefined;
+          const sendSidebar = () => {
+            if (!herdrSidebar) return;
+            const told = JSON.stringify({ type: "herdr-sidebar", agents: decidedRowTokens(rows, reported) } satisfies MachineEvent);
+            if (told === toldSidebar) return;
+            toldSidebar = told;
+            send(`data: ${told}\n\n`);
+          };
+          stop = manager.subscribe((event) => {
+            if (event.type === "machines") { reported = event.machines; sendSidebar(); }
+            send(`data: ${JSON.stringify(event)}\n\n`);
+          });
           // the shared preferences ride the same stream, one connection per browser; the document
           // opens it, so a page that reconnects (or whose GET lost a race) holds the latest
           const sendPreferences = (shared: SharedPreferences) => send(`data: ${JSON.stringify({ type: "preferences", preferences: shared } satisfies MachineEvent)}\n\n`);
           stopPreferences = preferences?.subscribe(sendPreferences);
           if (preferences) sendPreferences(preferences.get());
-          // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC
-          const sendSidebar = (agents: AgentRowTokens | null) => send(`data: ${JSON.stringify({ type: "herdr-sidebar", agents } satisfies MachineEvent)}\n\n`);
-          // read before listening: a change this read finds is told to the browsers already listening, and to this one once
-          if (herdrSidebar) sendSidebar(herdrSidebar.get());
-          stopSidebar = herdrSidebar?.subscribe(sendSidebar);
+          sendSidebar();
+          stopSidebar = herdrSidebar?.subscribe((next) => { rows = next; sendSidebar(); });
           const sendSeen = (finishes: SeenFinish[]) => send(`data: ${JSON.stringify({ type: "seen", finishes } satisfies MachineEvent)}\n\n`);
           if (seen) sendSeen(seen.list());
           stopSeen = seen?.subscribe((finish) => sendSeen([finish]));
