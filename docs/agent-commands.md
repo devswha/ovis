@@ -190,8 +190,9 @@ Recognized Hermes informational result cards remain available.
   record for Codex `/compact`. Records are claimed in send order, so two equal sends never share
   one, and a rewritten transcript drops what it no longer holds. In pi, only the session's active
   branch counts: a send stays with the branch it was sent on, also after the session goes to
-  another branch and `/tree` comes back to it, unless something was written under that branch's
-  last entry meanwhile (`resumedBranch` in [`server/conversation.ts`](../server/conversation.ts)).
+  another branch and `/tree` comes back to it, unless meanwhile something was written under that
+  branch's last entry or a record a result could be was written elsewhere (`resumedBranch` in
+  [`server/conversation.ts`](../server/conversation.ts)); then the send ends as unknown.
 - `dialog`: a card answered from Chat, counted only for the send that raised that card.
 - `recognized-result`: a reader of kind `result` matched a complete, recorded layout that appeared
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,

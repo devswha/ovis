@@ -190,6 +190,9 @@ function claudeOutputEchoes(records: readonly CommandTranscriptRecord[]): Readon
 }
 
 /** Native envelopes, not conversational prose or the model/effort shown in a footer. */
+/** The pi, omp, gjc and OmO record types transcriptEvidence takes a send's result from. */
+export const PI_EVIDENCE_TYPES: ReadonlySet<string> = new Set(["model_change", "thinking_level_change", "compaction"]);
+
 function transcriptEvidence(sent: CommandSend, records: readonly CommandTranscriptRecord[], until: number, used: ReadonlySet<number> = new Set(),
   echoOffset?: number | null, outputs?: ReadonlyMap<number, number>): { offset: number; at: number } | null {
   const invocation = sent.invocations[0];

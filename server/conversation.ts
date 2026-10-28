@@ -73,7 +73,7 @@ import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTransc
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
-import { commandTranscriptRecords, type CommandTranscriptRecord } from "./outcome.ts";
+import { commandTranscriptRecords, PI_EVIDENCE_TYPES, type CommandTranscriptRecord } from "./outcome.ts";
 import { type ClaudeBranch, claudeForks, followClaudeBranch, type PromptChain, turnStarts } from "./transcript-turns.ts";
 import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 
@@ -1684,25 +1684,30 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
 }
 
 /**
- * The remembered pi branch (`branches`: name to the node it was last read at) that `path` runs on from: its node is on
- * the path, and every node written under that node since is on the path too, so no answer went down another way from
- * it that the path cannot show. The deepest such node wins. `nodes` are the window's nodes in file order.
+ * The remembered pi branch (`branches`: name to the node it was last read at) that `path` runs on from. Its node is on
+ * the path, and of what was written since (that node was then the file's last), nothing off the path is under it, and
+ * nothing off the path is a record a send's result could be (`PI_EVIDENCE_TYPES`): a result written on the branch the
+ * session went to must not leave a send waiting on its old branch for a later identical send's. `nodes` are the
+ * window's nodes in file order.
  */
 function resumedBranch(branches: ReadonlyMap<string, string>, nodes: readonly CommandTranscriptRecord[], path: readonly CommandTranscriptRecord[]): string | null {
   const onPath = new Map(path.map((record) => [String(record.entry.id), record]));
-  let found: { name: string; offset: number } | null = null;
   for (const [name, leaf] of branches) {
     const at = onPath.get(leaf);
-    if (!at || (found && found.offset >= at.offset)) continue;
+    if (!at) continue;
     const under = new Set([leaf]);
     const alone = nodes.every(({ entry, offset }) => {
-      if (offset <= at.offset || typeof entry.parentId !== "string" || !under.has(entry.parentId)) return true;
-      under.add(String(entry.id));
-      return onPath.has(String(entry.id));
+      if (offset <= at.offset) return true;
+      const id = String(entry.id);
+      if (typeof entry.parentId === "string" && under.has(entry.parentId)) {
+        under.add(id);
+        return onPath.has(id);
+      }
+      return onPath.has(id) || !PI_EVIDENCE_TYPES.has(String(entry.type));
     });
-    if (alone) found = { name, offset: at.offset };
+    if (alone) return name;
   }
-  return found?.name ?? null;
+  return null;
 }
 
 /**
