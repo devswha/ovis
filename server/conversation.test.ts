@@ -2848,18 +2848,19 @@ describe("a model drawn only in the history above the live screen", () => {
   it("names no model a start screen states when herdr reports no scroll", async () => {
     const codex = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
     const screens = [
-      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n" },
-      { agent: "codex", frame: codex },
-      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n" },
+      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n", model: "claude-haiku-5-5", effort: null },
+      { agent: "codex", frame: codex, model: "gpt-6.1-sol", effort: "low" },
+      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n", model: "claude-opus-5-5", effort: "xhigh" },
     ];
-    for (const { agent, frame } of screens) {
+    for (const { agent, frame, model, effort } of screens) {
       // an agent this server started, before its first message: the same frame names its model with a scroll
-      const cases: [[number, number] | null, "named" | null][] = [[[0, 30], "named"], [null, null]];
-      for (const [scroll, model] of cases) {
+      const cases: [[number, number] | null, { model: string | null; reasoning_effort: string | null }][] = [
+        [[0, 30], { model, reasoning_effort: effort }], [null, { model: null, reasoning_effort: null }]];
+      for (const [scroll, metadata] of cases) {
         const id = shown(agent, "idle", "", frame, [scroll]);
         launchedAgents.launched(id, agent);
         const answer = await paneConversation(id, join(root, ".codex"));
-        expect(answer.metadata?.model === null ? null : "named").toBe(model);
+        expect(answer).toMatchObject({ turns: [], screen: true, metadata });
         launchedAgents.forget(id);
         for (const mock of mocks.splice(0)) mock.mockRestore();
       }
