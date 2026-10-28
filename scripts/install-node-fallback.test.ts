@@ -152,6 +152,15 @@ describe("node_fits", () => {
     expect(result.ms).toBeLessThan(10_000);
   });
 
+  it("reads the answer of a node that exits but leaves a child holding its output, without waiting for that child", () => {
+    const bin = mkdtempSync(join(dir, "fits-"));
+    // the child keeps the output open for 20 s: a $( ) capture would wait for it, past the probe's bound
+    writeFileSync(join(bin, "node"), "#!/bin/sh\necho '22 arm64'\nsleep 20 &\n", { mode: 0o755 });
+    const result = sh(`if node_fits ${join(bin, "node")}; then echo FITS; else echo NO; fi`, { arch: "arm64" });
+    expect(result.out.trim()).toBe("FITS");
+    expect(result.ms).toBeLessThan(10_000);
+  });
+
   it("asks a real Node the same way", () => {
     const real = Bun.which("node");
     if (real === null) throw new Error("this test needs Node");
@@ -177,6 +186,14 @@ describe("server_arch", () => {
   it("keeps uname's when Bun does not answer with one it knows", () => {
     expect(after("ia32")).toBe("x64 darwin-x64");
     expect(after("")).toBe("x64 darwin-x64");
+  });
+
+  it("reads Bun's answer without waiting for a child Bun left holding its output (#2100 review)", () => {
+    const bin = mkdtempSync(join(dir, "bun-"));
+    writeFileSync(join(bin, "bun"), "#!/bin/sh\necho arm64\nsleep 20 &\n", { mode: 0o755 });
+    const result = sh(`server_arch\necho "$arch $platform"`, { PATH: `${bin}:/usr/bin:/bin`, arch: "x64", os: "darwin", platform: "darwin-x64" });
+    expect(result.out.trim()).toBe("arm64 darwin-arm64");
+    expect(result.ms).toBeLessThan(10_000);
   });
 });
 

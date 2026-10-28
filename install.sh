@@ -256,7 +256,12 @@ install_node() {
 # an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the Node install_node
 # downloads and node_fits accepts follow Bun, not uname.
 server_arch() {
-  server=$(bounded 5 bun -p process.arch 2>/dev/null) || server=""
+  # into a file, not $( ): a bun that left a child holding its output would hold a pipe's reader
+  # past the bound, where a file is read once bounded has returned (as in starred)
+  server_file=$(mktemp 2>/dev/null) || return 0
+  bounded 5 bun -p process.arch </dev/null >"$server_file" 2>/dev/null || true
+  server=$(sed -n 1p "$server_file" 2>/dev/null || true)
+  rm -f "$server_file"
   case "$server" in
     x64 | arm64) arch=$server; platform="$os-$arch" ;;
   esac
@@ -267,7 +272,13 @@ server_arch() {
 # Bounded, as the server's probe is: a node that keeps running (a NODE_OPTIONS preload) cannot hold
 # the install.
 node_fits() {
-  fit=$(bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' 2>/dev/null) || return 1
+  # into a file for the same reason as server_arch's
+  fit_file=$(mktemp 2>/dev/null) || return 1
+  fit_status=0
+  bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' </dev/null >"$fit_file" 2>/dev/null || fit_status=$?
+  fit=$(sed -n 1p "$fit_file" 2>/dev/null || true)
+  rm -f "$fit_file"
+  [ "$fit_status" = 0 ] || return 1
   fit_major=${fit%% *}
   case "$fit_major" in '' | *[!0-9]*) return 1 ;; esac
   [ "$fit_major" -ge 18 ] && [ "${fit#* }" = "$arch" ]
