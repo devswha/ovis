@@ -464,8 +464,9 @@ namespace Ovis
             var dir = await Run.Program("herdr", new[] { "plugin", "config-dir", plugin.Id }, null, false);
             var path = dir.Status == 0 ? (dir.Output.Split('\n').FirstOrDefault() ?? "").Trim() : "";
             var files = path.Length == 0 ? new string[0] : new[] { "env", ".env" }.Select(name => System.IO.Path.Combine(path, name)).Where(System.IO.File.Exists).Select(file => System.IO.File.ReadAllText(file)).ToArray();
-            // the environment herdr hands the plugin, under its settings files, as `plugin.ts` layers them
-            var environment = Setup.EnvironmentLayer(name => Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User) ?? Environment.GetEnvironmentVariable(name));
+            // the environment herdr hands the plugin, under its settings files, as `plugin.ts` layers them: this process's
+            // own value first (herdr and the app started the same way share it), the saved User value when it has none
+            var environment = Setup.EnvironmentLayer(name => Environment.GetEnvironmentVariable(name) ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User));
             return Setup.EnvToken(new[] { environment }.Concat(files));
         }
 
