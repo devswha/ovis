@@ -12,7 +12,7 @@ afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: t
 function checkout(): string {
   const root = mkdtempSync(join(tmpdir(), "herdr-build-xterm-test-"));
   made.push(root);
-  cpSync(join(repo, "node_modules/@xterm/xterm"), join(root, "node_modules/@xterm/xterm"), { recursive: true });
+  cpSync(join(repo, "node_modules/@xterm/xterm"), join(root, "node_modules/@xterm/xterm"), { recursive: true, dereference: true });
   return root;
 }
 

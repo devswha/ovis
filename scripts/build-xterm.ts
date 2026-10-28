@@ -18,6 +18,8 @@ export function buildXtermSource(root: string): string {
   const version = JSON.parse(readFileSync(join(source, "../package.json"), "utf8")).version;
   if (version !== "5.5.0") throw new Error("Revalidate the xterm composition backport before changing xterm versions");
   const files = ts.sys.readDirectory(source, [".ts"], undefined, ["**/*"]).sort();
+  // the patch also edits xterm's public typings, which the emit type-checks against
+  const typings = ts.sys.readDirectory(join(source, "../typings"), [".ts"], undefined, ["**/*"]).sort();
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
@@ -28,7 +30,7 @@ export function buildXtermSource(root: string): string {
     skipLibCheck: true, types: [], noEmitOnError: true,
   };
   const key = createHash("sha256").update(`${ts.version}\0${JSON.stringify(options)}\0`);
-  for (const file of files) {
+  for (const file of [...files, ...typings]) {
     const content = readFileSync(file);
     key.update(`${relative(source, file)}\0${content.length}\0`).update(content);
   }
@@ -45,13 +47,29 @@ export function buildXtermSource(root: string): string {
         getCanonicalFileName: (name) => name, getCurrentDirectory: () => root, getNewLine: () => "\n",
       }));
     }
-    try {
-      renameSync(staging, output);
-    } catch (error) {
-      if (!existsSync(output)) throw error;
-    }
+    moveIntoPlace(staging, output);
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    rmSync(staging, { recursive: true, force: true, maxRetries: 5 });
   }
   return output;
+}
+
+/**
+ * Renames a finished build into place; losing to another build that got there first is fine. On
+ * Windows a scanner (Defender, the indexer) can hold a fresh file for a moment and refuse the rename,
+ * so it is tried again until a deadline.
+ */
+function moveIntoPlace(staging: string, output: string): void {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      renameSync(staging, output);
+      return;
+    } catch (error) {
+      if (existsSync(output)) return;
+      const held = process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "");
+      if (!held || Date.now() > deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
 }
