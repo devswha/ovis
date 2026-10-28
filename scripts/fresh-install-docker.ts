@@ -78,7 +78,7 @@ async function oneLineInstall(): Promise<void> {
   await step("a terminal through the sidecar, on install.sh's Node where it installed one", async () => {
     // install.sh installs Node only when the Rust PTY host cannot run here; the server finds it by path
     // and where it installed none, the Rust host has to open a pty itself (its own check, as install.sh's rust_host_runs runs it)
-    const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo RUST_PTY_OK; fi`);
+    const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; timeout 10 bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo RUST_PTY_OK; fi; true`);
     if (out.includes("NO_APP_NODE")) {
       assert.match(out, /RUST_PTY_OK/, `install.sh installed no Node, and the Rust PTY host opens no pty:\n${out.slice(-1500)}`);
       console.log("  install.sh installed no Node: the Rust PTY host runs this PC's terminals");

@@ -146,8 +146,9 @@ describe("node_fits", () => {
   it("asks a real Node the same way", () => {
     const real = Bun.which("node");
     if (real === null) throw new Error("this test needs Node");
-    const arch = process.arch;
-    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${join(real, "..")}:/usr/bin:/bin`, arch }).out.trim()).toBe(Number(process.versions.node.split(".")[0]) >= 18 ? "FITS" : "NO");
+    // what this node itself says, not this Bun's own process.versions
+    const [version, arch] = Bun.spawnSync([real, "-p", "process.versions.node + ' ' + process.arch"]).stdout.toString().trim().split(" ");
+    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${join(real, "..")}:/usr/bin:/bin`, arch: arch! }).out.trim()).toBe(Number(version!.split(".")[0]) >= 18 ? "FITS" : "NO");
   });
 });
 
