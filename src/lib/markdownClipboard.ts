@@ -53,8 +53,8 @@ function fromDom(node: Node): ClipboardNode {
  * A tool-file label reads shortened (`app/src/a.ts`) while its `data-raw-path` is the path as written
  * (`/work/app/src/a.ts`): a selection that takes the whole label copies that path. The missing head
  * goes into the label's own text for the copy alone and comes out again, so no boundary moves.
- * `read` learns whether any label grew. A label the page hides (a chat under a terminal peek) is
- * not what the reader selected and stays as it is.
+ * `read` learns whether any label grew. A label the page hides (a chat under a terminal peek, one not
+ * rendered at all) is not what the reader selected and stays as it is.
  */
 function withRawToolPaths<T>(selection: Selection, scope: ParentNode, read: (grew: boolean) => T): T {
   const grown: { text: Text; head: number }[] = [];
@@ -67,7 +67,7 @@ function withRawToolPaths<T>(selection: Selection, scope: ParentNode, read: (gre
         const range = selection.getRangeAt(index);
         return range.comparePoint(text, 0) === 0 && range.comparePoint(text, text.length) === 0;
       });
-      if (!whole || getComputedStyle(label).visibility !== "visible") continue;
+      if (!whole || label.getClientRects().length === 0 || getComputedStyle(label).visibility !== "visible") continue;
       const head = raw.slice(0, raw.length - text.data.length);
       text.insertData(0, head);
       grown.push({ text, head: head.length });
@@ -90,6 +90,9 @@ export function chatSelectionClipboardPayload(selection: Selection, root: Elemen
   for (let index = 0; index < selection.rangeCount; index++) {
     const range = selection.getRangeAt(index);
     if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+      // a selection with no part in this chat is another chat's (which copies it with its HTML),
+      // or the page's: whichever chat's listener runs first must not take it over
+      if (![...Array(selection.rangeCount).keys()].some((other) => selection.getRangeAt(other).intersectsNode(root))) return null;
       return withRawToolPaths(selection, document, (grew) => grew ? { text: selection.toString(), html: null } : null);
     }
   }

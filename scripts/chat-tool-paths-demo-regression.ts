@@ -220,12 +220,18 @@ import { SettingsProvider } from "./src/lib/settings.ts";
 const FOLDERS = { local: "${ROOT}", remote: "/srv/other", unknown: null, unc: "//server/share/app" };
 function Fixture() {
   const [machine, setMachine] = useState("local");
-  window.toolPathsQa = { machine: setMachine };
-  return <div className="terminal-host"><div className="terminal-stack is-chat" style={{ position: "relative", height: "100vh", width: "100%" }}>
+  const [second, setSecond] = useState(false);
+  window.toolPathsQa = { machine: setMachine, second: setSecond };
+  return <div className="terminal-host"><div className="terminal-stack is-chat" style={{ position: "relative", height: second ? "50vh" : "100vh", width: "100%" }}>
     <MachineContext.Provider value={machine}>
       <ChatView key={machine} paneId="same-pane" refreshKey={0} connected ended={false} agent="claude" agentStatus="done" cwd={FOLDERS[machine]} />
     </MachineContext.Provider>
-  </div></div>;
+  </div>
+  {second && <div className="tool-paths-second is-chat" style={{ position: "relative", height: "50vh", width: "100%" }}>
+    <MachineContext.Provider value="local">
+      <ChatView paneId="second-pane" refreshKey={0} connected ended={false} agent="claude" agentStatus="done" cwd={FOLDERS.local} />
+    </MachineContext.Provider>
+  </div>}</div>;
 }
 createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture /></SettingsProvider>);
 `;
@@ -520,6 +526,27 @@ async function bareChecks(browser: Browser, base: string): Promise<void> {
       assert.deepEqual(await shownFiles(chat), expected(root, false, (path) => path), `machine ${machine}`);
     }
     record("unknown-or-outside-root", "the same pane id on another PC (folder /srv/other), on one with no folder and on a UNC folder written //server/share/app reads every path as written; back, the first PC's folder again", { machines: { local: ROOT, remote: "/srv/other", unknown: null, unc: "//server/share/app" } });
+    // two chats mounted at once (split halves, herdr splits, a chat kept under a peek): a copy wholly
+    // inside either is that chat's own, rich HTML included, whichever chat's listener runs first
+    await page.evaluate(() => (window as unknown as { toolPathsQa: { second: (on: boolean) => void } }).toolPathsQa.second(true));
+    const second = page.locator(".tool-paths-second");
+    await expandCards(second);
+    const twoChats: Record<string, { claimed: boolean | null; hasHtml: boolean }> = {};
+    for (const [name, scope] of [["the second chat", second], ["the first chat", chat]] as const) {
+      const copy = await copyOf(page, scope, (labels) => {
+        const replies = labels[0]!.closest(".chat-view")!.querySelectorAll(".markdown");
+        const range = document.createRange();
+        range.setStartBefore(labels[0]!);
+        range.setEndAfter(replies[replies.length - 1]!);
+        getSelection()!.removeAllRanges();
+        getSelection()!.addRange(range);
+      });
+      assert.equal(copy.claimed, true, `${name}: the chat takes a copy wholly inside it`);
+      assert.ok(copy.text.includes("/work/app/docs/notes.md") && !copy.text.split("\n").some((line) => line.trim().startsWith("app/")), `${name}: the copy keeps the paths as written: ${JSON.stringify(copy.text)}`);
+      assert.ok(copy.html.includes("<p>") && copy.html.includes("Tidied"), `${name}: the copy keeps the chat's rich HTML: ${JSON.stringify(copy.html)}`);
+      twoChats[name] = { claimed: copy.claimed, hasHtml: true };
+    }
+    record("relative-tool-target", "with two chats mounted, a copy wholly inside either keeps its whole paths and its rich HTML", twoChats);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 }
