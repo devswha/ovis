@@ -241,6 +241,8 @@ function resilientSubscription(
       const current = subscription;
       subscription = null;
       current?.close();
+      // a subscription its caller closes reports no close of its own: it is not live any more either
+      onLive?.(false);
     },
   };
 }

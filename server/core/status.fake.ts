@@ -63,8 +63,10 @@ export const opencode = (session: string | null) => ({ ...base, agent: "opencode
 export const claude = { ...base, agent: "claude", agent_session: { agent: "claude", source: "hook", kind: "id", value: CLAUDE } };
 
 let hubs = 0;
-/** The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent. */
-/** `herdrIdentity`: what the stood-in herdr's socket reads as (server/finishes.ts), when a test needs one */
+/**
+ * The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent.
+ * `herdrIdentity`: what the stood-in herdr's socket reads as (server/finishes.ts), when a test needs one.
+ */
 export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;

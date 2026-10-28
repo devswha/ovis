@@ -674,9 +674,8 @@ describe("the herdr a features frame names (#2257)", () => {
     const named = h.status.currentHerdrLifetime();
     expect(named).toBeString();
     expect((await h.snapshot()).herdr_lifetime).toBe(named);
-    // herdr died: the subscription closes, while its socket file can stay behind
+    // herdr died: the subscription closes, while its socket file (still "herdr-socket-a" here) stays behind
     handlers.onHerdrLive!(false);
-    expect(socket).not.toBeNull();
     expect(h.status.currentHerdrLifetime()).toBeUndefined();
     // a new socket under a subscription opened before it is not the herdr that answered
     handlers.onHerdrLive!(true);

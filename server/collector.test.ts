@@ -83,6 +83,15 @@ describe("herdr liveness", () => {
       collector.stop();
     }
   });
+
+  it("says herdr is no longer live once the collector stops, whose own close reports none (#2257)", () => {
+    const herdr = fakeHerdr([]);
+    const live: boolean[] = [];
+    const collector = startStatusCollector({ ...recorder().handlers, onHerdrLive: (now) => live.push(now) }, herdr.deps);
+    herdr.lifecycle().start();
+    collector.stop();
+    expect(live.at(-1)).toBe(false);
+  });
 });
 
 describe("lifecycle invalidations", () => {
