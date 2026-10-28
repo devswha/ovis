@@ -1435,12 +1435,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         if (error.message === "no_session_path" && screen.model !== null && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
           // every folder the pane names, and the live screen alone: a detection read of a short screen
           // reaches up into the history above it, where anything said earlier would deny the greeting,
-          // so the viewport stands in, but only while herdr says it sits at the bottom (else nothing is proven)
-          const bottom = async () => (await paneScrollInfo(paneId).catch(() => null))?.offset_from_bottom === 0;
-          const viewport = await bottom()
+          // so the viewport stands in, but only while herdr says it sits at the bottom, with no row scrolled
+          // into the history, the same before and after the read (else nothing is proven)
+          const scroll = () => paneScrollInfo(paneId).catch(() => null);
+          const before = await scroll();
+          const viewport = before?.offset_from_bottom === 0
             ? await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "")
             : "";
-          const live = viewport !== "" && await bottom() ? viewport : "";
+          const after = viewport === "" ? null : await scroll();
+          const live = after?.offset_from_bottom === 0 && after.max_offset_from_bottom === before?.max_offset_from_bottom ? viewport : "";
           const fresh = await codexFreshSession(paneId, [pane.cwd ?? "", pane.foreground_cwd ?? ""], codexHome, live);
           if (fresh !== null) return await notBegun("codex-transcript", fresh, screen);
         }
