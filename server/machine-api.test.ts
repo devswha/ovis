@@ -136,7 +136,7 @@ describe("the machine events stream", () => {
       const within = Math.floor(STREAM_BYTES / frameBytes(status(0)));
       for (let sent = 0; sent < within; sent++) emit(status(0));
       expect(listening()).toBe(1);
-      emit(status(0));
+      // the frame that would take it past 4 MiB ends it
       emit(status(0));
       expect(listening()).toBe(0);
       // errored, not closed: the 4 MiB that waited is not still handed to a browser that stopped reading
@@ -170,10 +170,11 @@ describe("the machine events stream", () => {
     const stream = await open(manager);
     try {
       emit(large(STREAM_BYTES + 1024));
-      emit(large(STREAM_BYTES + 1024));
       expect(listening()).toBe(1);
-      emit(status(0));
+      // the second is backlog the first does not cover, counted as it comes: larger than the whole total, it ends the stream
+      emit(large(TOTAL_BYTES + 1024));
       expect(listening()).toBe(0);
+      expect(machineEventsQueuedBytes()).toBe(0);
     } finally {
       await stream.close();
     }

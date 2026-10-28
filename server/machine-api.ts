@@ -170,9 +170,10 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             if (closed) return;
             const bytes = encoder.encode(text);
             retell();
-            if (own.told > MACHINE_EVENTS_QUEUE_BYTES) { drop(); return; }
-            // a large frame waits on its own allowance; a second one behind it ends the stream at its next frame
-            const counted = bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES ? 0 : bytes.byteLength;
+            // the backlog this frame adds: all of it, but for a large frame only what the large one already waiting
+            // leaves uncovered (none when it is the first), so a second large frame is counted as soon as it comes
+            const counted = bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES ? Math.min(bytes.byteLength, largeQueued()) : bytes.byteLength;
+            if (own.told + counted > MACHINE_EVENTS_QUEUE_BYTES) { drop(); return; }
             if (toldTotal + counted > MACHINE_EVENTS_TOTAL_BYTES) {
               // perhaps over the total: count every backlog exactly, then end the streams with the most first,
               // this one too if it is that one
