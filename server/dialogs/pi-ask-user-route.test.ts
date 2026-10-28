@@ -340,8 +340,11 @@ test("an open pi-ask form in a session pi has not written yet is never a card of
 
 /** A form from /answer: no tool call, no card, but pi-ask's all the same. */
 const answerForm = (state: PiAskBridgeState) => ({ ...state.flows[0]!, flowId: "flow:answer", toolCallId: undefined, source: "answer" });
-/** The session with no open call, so only the extension can say a form is open. */
-const noCall = (pane: { session: string }) => writeFileSync(pane.session, fixture.transcript.slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+/** No open call, in the session file or on pi's live branch: only a form pi-ask reports is open. */
+const noCall = (pane: { session: string; bridge: Bridge }) => {
+  writeFileSync(pane.session, fixture.transcript.slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  pane.bridge.state.openCalls = [];
+};
 
 test("not knowing whether a pi-ask form is open never makes room for keys", async () => {
   if (!posix) return;
@@ -421,6 +424,29 @@ test("pi's own dialog answers by keys when the extension says no form is open, w
     expect(card).toMatchObject({ question: "Choose a color" });
     expect((await pane.answer(card.id, { option_index: 0 })).status).toBe(200);
     expect(pane.keys).toEqual(["enter"]);
+  });
+});
+
+test("an open call on pi's live branch holds the keys even when pi-ask reported no form", async () => {
+  if (!posix) return;
+  // a pi-ask that sends no started event: the extension lists no form, but pi's branch has the call
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    pane.bridge.state.flows = [];
+    pane.bridge.state.openCalls = ["toolu_feat1202ask"];
+    const card = await pane.read();
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
+  });
+  // and when pi cannot say which calls are open, the session file still holds them back
+  await withBridgedPane(async (pane) => {
+    pane.bridge.state.flows = [];
+    pane.bridge.state.openCalls = null;
+    const card = await pane.read();
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
   });
 });
 

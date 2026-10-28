@@ -190,9 +190,11 @@ export function piAskUserOpen(transcript: string): boolean {
 /**
  * Whether the pane's foreground pi has a pi-ask form open, as its extension says, with no session
  * needed: pi writes no session file before its first answer, and a form from `/answer` needs no
- * tool call. "inactive": the pane's pi answered through the extension that no form is open, from
- * pi-ask's live state (a /tree move that writes nothing leaves the session file behind it).
- * "absent": no extension serves the pane's pi, so it cannot say. "unknown" (the pane's processes
+ * tool call. "active": a form pi-ask reported open, or an ask_user call still open on pi's live
+ * branch (a pi-ask that sends no started event still has its call there). "inactive": the
+ * extension answered with neither, from pi's live state (a /tree move that writes nothing leaves
+ * the session file behind it). "absent": no extension serves the pane's pi, or pi could not say
+ * which calls are open: the session file decides. "unknown" (the pane's processes
  * unreadable, a socket that is not this user's alone, a read that failed or answers for another
  * pid) is never room for keys. Every candidate socket is asked: more than one is no reason to stop.
  */
@@ -203,19 +205,24 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
   const directories = agentDirs.map((agentDir) => join(agentDir, PI_ASK_BRIDGE_DIRECTORY)).filter((directory) => existsSync(directory));
   if (directories.length === 0) return "absent";
   if (pids === null) return "unknown";
-  let activity: PiAskActivity = "absent";
+  // the strongest answer wins: active, then unknown, then a pi that could not say (the session
+  // file decides), and only then a pi that answered none open
+  let unknown = false;
+  let undecided = false;
+  let answered = false;
   for (const directory of directories) {
     for (const pid of pids) {
       const socket = join(directory, `${pid}.sock`);
       try { lstatSync(socket); } catch { continue; }
-      if (!ownSocket(socket)) { activity = "unknown"; continue; }
+      if (!ownSocket(socket)) { unknown = true; continue; }
       const state = await bridgeState(socket, signal);
-      if (!state || state.pid !== pid) activity = "unknown";
-      else if (state.flows.length > 0) return "active";
-      else if (activity === "absent") activity = "inactive";
+      if (!state || state.pid !== pid) unknown = true;
+      else if (state.flows.length > 0 || Array.isArray(state.openCalls) && state.openCalls.length > 0) return "active";
+      else if (Array.isArray(state.openCalls)) answered = true;
+      else undecided = true;
     }
   }
-  return activity;
+  return unknown ? "unknown" : undecided || !answered ? "absent" : "inactive";
 }
 
 /**
