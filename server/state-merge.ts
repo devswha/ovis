@@ -467,11 +467,10 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
       const value = readPushFile(join(active, "push-retired.json"));
       retired = (Array.isArray(value) ? value : []).map((entry) => (entry as { hash?: unknown } | null)?.hash).filter((hash): hash is string => typeof hash === "string");
     } catch { /* telemetry: an endpoint it would have kept out only fails its next push */ }
-    // push.ts stores and retires endpoints normalized: another spelling of one held or retired here is that one
-    const canonical = (subscription: Subscription) => normalizeEndpoint(subscription.endpoint);
-    const settled = (subscription: Subscription) => mine.some((held) => canonical(held) === canonical(subscription))
+    // push.ts keys a retired mark by the normalized endpoint (a mark from before #2012 by the spelling handed over)
+    const settled = (subscription: Subscription) => mine.some((held) => held.endpoint === subscription.endpoint)
       || before.includes(endpointHash(subscription.endpoint))
-      || retired.includes(endpointHash(subscription.endpoint)) || retired.includes(endpointHash(canonical(subscription)));
+      || retired.includes(endpointHash(subscription.endpoint)) || retired.includes(endpointHash(normalizeEndpoint(subscription.endpoint)));
     const taken = theirs.filter((subscription) => !settled(subscription) && keyOf(subscription.endpoint) !== null);
     const record = recorded(theirs.filter((subscription) => settled(subscription) || taken.includes(subscription)));
     if (taken.length === 0) return { record, taken: 0 };

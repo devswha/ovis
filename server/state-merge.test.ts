@@ -529,6 +529,21 @@ describe("push subscriptions of the install's other state dir", () => {
     expect(held).toEqual([]);
   });
 
+  // regression: storing endpoints normalized let the other dir's next write respell one taken over, and the next merge took it again
+  it("do not come back after a goodbye here when the other dir writes its list again", async () => {
+    const { active, sibling } = install();
+    const fake = await subscribe(sibling, webpush.generateVAPIDKeys());
+    const legacy = `${fake.subscription.endpoint}#legacy`;
+    writeJson(join(sibling, "push-subscriptions.json"), [{ ...fake.subscription, endpoint: legacy, device_id: null }]);
+    mergeSiblingState(active, sibling, at(0));
+    createPushService({ stateDir: active, loopbackHttp: true }).unsubscribe(legacy);
+    // the other dir writes its list again, for a subscription of its own
+    createPushService({ stateDir: sibling, loopbackHttp: true }).subscribe({ ...fake.subscription, endpoint: `${fake.subscription.endpoint}-other` }, undefined, null);
+    mergeSiblingState(active, sibling, at(1));
+    const held = JSON.parse(readFileSync(join(active, "push-subscriptions.json"), "utf8")) as { endpoint: string }[];
+    expect(held.map((subscription) => subscription.endpoint)).toEqual([`${fake.subscription.endpoint}-other`]);
+  });
+
   it("bring their key along where this dir has none", async () => {
     const { active, sibling } = install();
     const key = webpush.generateVAPIDKeys();

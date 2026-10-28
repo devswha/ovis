@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import webpush from "web-push";
 
 import { paneAlertsMuted, type AlertPrefs } from "../shared/notify-policy.ts";
 import { paneStorageId } from "../shared/machines.ts";
@@ -370,8 +371,8 @@ describe("push delivery", () => {
     expect(createPushService({ loopbackHttp: true, stateDir }).retired(fake.subscription.endpoint)).toBe(false);
   });
 
-  // regression: a mark or a history written before endpoints were normalized is the hash of the spelling handed over
-  it("keeps refusing, and forgets on goodbye, an endpoint retired before endpoints were normalized", async () => {
+  // a mark written before #2012 is the hash of the spelling handed over, and so is the history
+  it("keeps refusing, and forgets on goodbye, an endpoint retired under the spelling it was handed over", async () => {
     const legacy = `${fake.subscription.endpoint}#legacy`;
     const raw = createHash("sha256").update(legacy).digest("base64url");
     writeFileSync(join(stateDir, "push-retired.json"), JSON.stringify([{ hash: raw, at: 1, owner: "owner" }]));
@@ -401,6 +402,9 @@ describe("push delivery", () => {
       expect(fake.received).toHaveLength(0);
       expect(quiet.mock.calls.some(([line]) => String(line).includes("push-subscriptions.json"))).toBe(true);
     } finally { rename.mockRestore(); quiet.mockRestore(); }
+    // a restart, with the file still listing it, does not bring it back: it is retired
+    expect(await createPushService({ loopbackHttp: true, stateDir }).sendTest(fake.subscription.endpoint)).toBeNull();
+    expect(fake.received).toHaveLength(0);
     // the device's goodbye, though nothing of it is left in memory, writes the file without it
     push.unsubscribe(fake.subscription.endpoint);
     expect(JSON.parse(readFileSync(join(stateDir, "push-subscriptions.json"), "utf8"))).toEqual([]);
@@ -410,10 +414,16 @@ describe("push delivery", () => {
     expect((JSON.parse(readFileSync(join(stateDir, "push-subscriptions.json"), "utf8")) as { endpoint: string }[]).map((entry) => entry.endpoint)).toEqual([`${fake.subscription.endpoint}-other`]);
   });
 
-  it("stores an endpoint in one form, the URL without its fragment", () => {
-    const { keys } = fake.subscription;
-    expect(parseSubscription({ endpoint: "https://PUSH.Example:443/wpush/./v2/x#attacker", keys })?.endpoint).toBe("https://push.example/wpush/v2/x");
-    expect(parseSubscription({ endpoint: "https://push.example/wpush/v2/x", keys })?.endpoint).toBe("https://push.example/wpush/v2/x");
+  // regression: storing endpoints normalized let a key pair push-keys.json kept for another spelling sign for this one
+  it("keeps a subscription and the key pair it was made for under the spelling it was handed over", async () => {
+    const { endpoint, keys } = fake.subscription;
+    expect(parseSubscription({ endpoint: `${endpoint}#x`, keys }, { loopbackHttp: true })?.endpoint).toBe(`${endpoint}#x`);
+    // a foreign key pair left for an old spelling of this endpoint, no longer subscribed
+    const stale = webpush.generateVAPIDKeys();
+    writeFileSync(join(stateDir, "push-keys.json"), JSON.stringify({ keys: [{ ...stale, endpoints: [`${endpoint}#old-import`] }] }));
+    const push = subscribed();
+    expect(await push.sendTest(endpoint)).toEqual({ ok: true });
+    expect(fake.received[0]).toMatchObject({ vapidKey: push.publicKey(), vapidValid: true });
   });
 
   // regression (fails on main): a fragment, or any other spelling of the same URL, got past the retired check (#2012)
