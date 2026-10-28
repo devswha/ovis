@@ -189,10 +189,15 @@ const FILE_ID_INFO_CLASS = 0x12;
 /**
  * The handle's full identity (FILE_ID_INFO: the volume's 64-bit serial and the 128-bit file id, which
  * ReFS keeps where the 64-bit index cannot say), or null when the file system names the file by none.
+ * A file system that answers no FileIdInfo at all (FAT32) is named by its 64-bit index instead, an
+ * index that names no one file refused (handleInformation); a full id it marks unavailable is not.
  */
 function fullIdentity(handle: bigint): string | null {
   const info = Buffer.alloc(24);
-  if (windowsApi().kernel.GetFileInformationByHandleEx(handle, FILE_ID_INFO_CLASS, info, info.byteLength) === 0) return null;
+  if (windowsApi().kernel.GetFileInformationByHandleEx(handle, FILE_ID_INFO_CLASS, info, info.byteLength) === 0) {
+    const legacy = handleInformation(handle).identity;
+    return legacy === null ? null : `index:${legacy}`;
+  }
   const id = info.subarray(8);
   if (id.every((byte) => byte === 0) || id.every((byte) => byte === 0xff)) return null;
   return `${info.readBigUInt64LE(0)}:${id.toString("hex")}`;
