@@ -21,6 +21,8 @@ namespace Ovis
         public string Version;
         /// <summary>The version the answering server reports itself (GET /api/updates); null when it does not answer.</summary>
         public string RunningVersion;
+        /// <summary>The answering server says it runs without the update supervisor: not one the plugin's start runs, or one whose supervisor has not reported yet.</summary>
+        public bool Unmanaged;
     }
 
     /// <summary>
@@ -70,7 +72,7 @@ namespace Ovis
                 return;
             }
             Status = await ReadStatus(plugin);
-            UpdateReason = Setup.Reason(plugin, Status.RunningVersion, Status.Version, Status.Running, AppVersion);
+            UpdateReason = Setup.Reason(plugin, Status.RunningVersion, Status.Version, Status.Running, AppVersion, Status.Unmanaged);
             HerdrVersion = UpdateReason == UpdateReason.None ? null : Setup.ParseVersion((await Run.Program("herdr", new[] { "--version" }, null, false)).Output.Split('\n').FirstOrDefault());
             Set(Setup.Choose(plugin, UpdateReason, HerdrVersion));
         }
@@ -97,7 +99,7 @@ namespace Ovis
                 await Refresh();
                 return;
             }
-            if (plugin == null || plugin.Id == Links.LegacyPluginId || AppVersion == null)
+            if (plugin == null)
             {
                 await RunInstaller(title);
                 return;
@@ -110,12 +112,19 @@ namespace Ovis
                 return;
             }
             Set(Phase.Working, title);
-            // the release is settled before the server stops, so a PC that cannot reach GitHub keeps it running
+            var wasRunning = Status != null && Status.Running;
+            // the release is settled before anything stops, so a PC that cannot reach GitHub keeps its server running
             var tags = await Run.Program("git", new[] { "ls-remote", "--tags", "--refs", Links.Repository, "v*" }, Append, true);
             var tag = Setup.UpdateTag(tags.Status == 0 ? tags.Output : null, AppVersion);
             if (tag == null)
             {
                 Fail(Lang.L("Could not read the Ovis releases from GitHub, so nothing was updated. Check the internet connection.", "GitHub에서 Ovis 릴리스를 읽지 못해 아무것도 업데이트하지 않았습니다. 인터넷 연결을 확인해 주세요."));
+                return;
+            }
+            if (plugin.Id == Links.LegacyPluginId)
+            {
+                // install.ps1 moves the old id; pinned to that release, so an OVIS_REF the PC inherited cannot take it back
+                await RunInstaller(title, tag, wasRunning);
                 return;
             }
             // the reinstall leaves the old files to a server that runs them, and the start would find it answering
@@ -128,7 +137,7 @@ namespace Ovis
             if ((await Run.Program("herdr", reinstall, Append, true, 45 * 60)).Status != 0)
             {
                 // herdr keeps the old install when its reinstall fails: start that one again rather than leave it stopped
-                if (await HerdrRunning()) await Run.Program("herdr", new[] { "plugin", "action", "invoke", plugin.Id + ".start-windows" }, Append);
+                await StartKept(wasRunning);
                 Fail(Lang.L("herdr could not update the Ovis server; the version it had is kept.", "herdr가 Ovis 서버를 업데이트하지 못했습니다. 원래 버전은 그대로입니다."));
                 return;
             }
@@ -165,7 +174,23 @@ namespace Ovis
             }
         }
 
-        private async Task RunInstaller(string title)
+        /// <summary>
+        /// The server that ran before a failed update, started again the way herdr starts it, so it runs with herdr's
+        /// plugin environment and so on its active release (started by hand, a checkout Settings → Updates moved past
+        /// would run its own older files): the start-windows action while herdr runs, else herdr's server, whose
+        /// startup hook starts it, as Start does.
+        /// </summary>
+        private async Task StartKept(bool wasRunning)
+        {
+            if (!wasRunning) return;
+            var kept = await FindPlugin();
+            if (kept == null || (await ReadStatus(kept)).Running) return;
+            if (await HerdrRunning()) await Run.Program("herdr", new[] { "plugin", "action", "invoke", kept.Id + ".start-windows" }, Append);
+            else Run.Detached("herdr", new[] { "server" });
+        }
+
+        /// <summary>install.ps1, at `reference` when given (the installer reads it from OVIS_REF) instead of what the PC inherited.</summary>
+        private async Task RunInstaller(string title, string reference = null, bool wasRunning = false)
         {
             ClearLog();
             Paths.RefreshPath();
@@ -176,9 +201,21 @@ namespace Ovis
             }
             Set(Phase.Working, title);
             Environment.SetEnvironmentVariable("OVIS_NO_OPEN", "1");
-            var result = await Run.Program("powershell", PowerShell(Links.InstallCommand), Append, true, 45 * 60);
+            var inherited = Environment.GetEnvironmentVariable("OVIS_REF");
+            if (reference != null) Environment.SetEnvironmentVariable("OVIS_REF", reference);
+            RunResult result;
+            try
+            {
+                result = await Run.Program("powershell", PowerShell(Links.InstallCommand), Append, true, 45 * 60);
+            }
+            finally
+            {
+                if (reference != null) Environment.SetEnvironmentVariable("OVIS_REF", inherited);
+            }
             if (result.Status != 0)
             {
+                // the installer stops the old id's server before it moves it: leave the PC running as it was
+                await StartKept(wasRunning);
                 Fail(Lang.L("The installer stopped with an error.", "설치 중 오류가 났습니다."));
                 return;
             }
@@ -340,7 +377,16 @@ namespace Ovis
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
                 {
                     var url = status.Origin.TrimEnd('/') + "/api/updates";
-                    var answer = await client.GetAsync(url);
+                    HttpResponseMessage answer;
+                    try
+                    {
+                        answer = await client.GetAsync(url);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        // a server busy starting answers late once; a second wait tells it from one that does not answer
+                        answer = await client.GetAsync(url);
+                    }
                     if (answer.StatusCode == System.Net.HttpStatusCode.Unauthorized)
                     {
                         // behind a token: the plugin's own settings hold it, as `plugin.ts` reads them
@@ -353,7 +399,12 @@ namespace Ovis
                     }
                     using (answer)
                     {
-                        if (answer.IsSuccessStatusCode) status.RunningVersion = Setup.UpdatesVersion(await answer.Content.ReadAsStringAsync());
+                        if (answer.IsSuccessStatusCode)
+                        {
+                            var body = await answer.Content.ReadAsStringAsync();
+                            status.RunningVersion = Setup.UpdatesVersion(body);
+                            status.Unmanaged = Setup.UpdatesUnmanaged(body);
+                        }
                     }
                 }
             }
@@ -368,8 +419,10 @@ namespace Ovis
         {
             var dir = await Run.Program("herdr", new[] { "plugin", "config-dir", plugin.Id }, null, false);
             var path = dir.Status == 0 ? (dir.Output.Split('\n').FirstOrDefault() ?? "").Trim() : "";
-            if (path.Length == 0) return null;
-            return Setup.EnvToken(new[] { "env", ".env" }.Select(name => System.IO.Path.Combine(path, name)).Where(System.IO.File.Exists).Select(file => System.IO.File.ReadAllText(file)));
+            var files = path.Length == 0 ? new string[0] : new[] { "env", ".env" }.Select(name => System.IO.Path.Combine(path, name)).Where(System.IO.File.Exists).Select(file => System.IO.File.ReadAllText(file)).ToArray();
+            // the environment herdr hands the plugin, under its settings files, as `plugin.ts` layers them
+            var environment = Setup.EnvironmentLayer(name => Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User) ?? Environment.GetEnvironmentVariable(name));
+            return Setup.EnvToken(new[] { environment }.Concat(files));
         }
 
         /// <summary>The phone address and Tailscale's state, from GET /api/access.</summary>

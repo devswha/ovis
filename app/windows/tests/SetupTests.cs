@@ -106,6 +106,20 @@ namespace Ovis
                     if (unknown.Length == 0 || unknown == Setup.UpdateMessage(UpdateReason.Older, plugin, false, null, null, App)) throw new Exception("the unknown version has no words of its own: " + unknown);
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "unknown"))), "", "", true, App));
                 }),
+                Case("a server running without the update supervisor is not offered Update: the plugin's reinstall would not replace it", () =>
+                {
+                    // also one the plugin just started, whose supervisor has not reported yet: right after an update
+                    var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
+                    Equal(UpdateReason.None, Setup.Reason(plugin, null, null, true, App, true));
+                    // a version it does report still decides
+                    Equal(UpdateReason.Older, Setup.Reason(plugin, "0.4.15", null, true, App, true));
+                    // and the old id still moves
+                    Equal(UpdateReason.LegacyId, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.LegacyPluginId, "0.3.45"))), null, null, true, App, true));
+                    Equal(true, Setup.UpdatesUnmanaged("{\"managed\":false,\"current_version\":null}"));
+                    Equal(false, Setup.UpdatesUnmanaged("{\"managed\":true,\"current_version\":\"0.4.19\"}"));
+                    Equal(false, Setup.UpdatesUnmanaged("{\"error\":{\"code\":\"unauthorized\"}}"));
+                    Equal(false, Setup.UpdatesUnmanaged("<html>"));
+                }),
                 Case("a linked checkout or a fork, under either id, or an app built without a version, is never offered a reinstall", () =>
                 {
                     foreach (var id in new[] { Links.PluginId, Links.LegacyPluginId })
@@ -163,6 +177,11 @@ namespace Ovis
                     Equal("new", Setup.EnvToken(new[] { "HERDR_WEB_TOKEN=old\nOVIS_TOKEN=new\n" }));
                     Equal("old", Setup.EnvToken(new[] { "HERDR_WEB_TOKEN=old\n" }));
                     Equal(null, Setup.EnvToken(new[] { "OVIS_TOKEN=\n", "PORT=1" }));
+                    // the environment as a layer under the files: only the old name set there still counts
+                    var oldOnly = new Dictionary<string, string> { { "HERDR_WEB_TOKEN", "legacy" } };
+                    Equal("legacy", Setup.EnvToken(new[] { Setup.EnvironmentLayer(name => oldOnly.ContainsKey(name) ? oldOnly[name] : null), "PORT=1\n" }));
+                    Equal("file", Setup.EnvToken(new[] { Setup.EnvironmentLayer(name => oldOnly.ContainsKey(name) ? oldOnly[name] : null), "OVIS_TOKEN=file\n" }));
+                    Equal("", Setup.EnvironmentLayer(name => null));
                 }),
                 Case("versions: X.Y.Z from herdr's, a tag's or a preview's spelling, and nothing else", () =>
                 {

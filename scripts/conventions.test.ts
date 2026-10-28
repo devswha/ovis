@@ -190,6 +190,7 @@ describe("names from before Ovis", () => {
     "install.ps1": "reads the old settings of an earlier install",
     "app/windows/src/Setup.cs": "reads the token of an earlier install's settings, as install.ps1 does",
     "app/windows/tests/SetupTests.cs": "tests that read",
+    "app/windows/src/Model.cs": "reads the token an earlier install set in the environment, as plugin.ts layers it",
     "docs/guide.md": "tells users the old names still work",
     "shared/telemetry.ts": "pinned to the deployed telemetry Worker, so not even a comment changes",
   };
