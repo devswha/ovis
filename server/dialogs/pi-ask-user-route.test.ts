@@ -452,7 +452,7 @@ test("an open call on pi's live branch holds the keys even when pi-ask reported 
     expect(card).toBeNull();
     expect(pane.keys).toEqual([]);
   });
-  // and when pi cannot say which calls are open, the session file still holds them back
+  // and when pi cannot say which calls are open: the extension serves this pi, so no key-driven card
   await withBridgedPane(async (pane) => {
     pane.bridge.state.flows = [];
     pane.bridge.state.openCalls = null;
