@@ -147,7 +147,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
         if (typeof answer === "object") return Response.json({ snapshot: answer });
         if (answer !== 200) return new Response("unavailable", { status: answer });
       }
-      if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [], fixture_at: at } });
+      if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [], fixture_at: at, finish_epoch: `run@${at}` } });
       if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
       return new Response("not found", { status: 404 });
     }, websocket: { open(ws) { if (away) ws.close(); else sockets.add(ws); }, close(ws) { sockets.delete(ws); }, message() {} } }));
@@ -410,6 +410,8 @@ describe("a PC whose own Ovis is away (#2047)", () => {
       clock += 10_000; manager.retryNow(MACHINE_ID);
       await until((machine) => machine.state === "connected");
       expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
+      // the herdr run read there was never the PC's: a read at its own address ends none of its read finishes (#2206)
+      expect(manager.endedFinishEpochs().get(MACHINE_ID)).toEqual(new Set());
       // the other address's Ovis is gone now, leaving this app's runtime and a bridge's descriptor whose process is
       // gone, so a restart that read it there would start this app's bridge unasked
       remote.elsewhere = "stale-bridge";

@@ -11,6 +11,7 @@ import { alertStatus } from "../shared/notify-policy.ts";
 import type { BridgeDescriptor } from "./bridge.ts";
 import { HerdrError, sessionSnapshot } from "./herdr/client.ts";
 import { ConnectionDiagnostics, transportFailureCode } from "./connection-diagnostics.ts";
+import { FinishEpochLedger } from "./finish-epoch-ledger.ts";
 import { labelOmoPanes } from "./conversation.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
@@ -63,8 +64,8 @@ interface Runtime {
    * Ends with the connection (disconnect): a cancelled, failed or superseded setup leaves the PC as it was (#2075).
    */
   move?: { herdr?: Machine["herdr"]; snapshot?: SessionSnapshot; ownOvisAt?: SshTarget | null };
-  /** a snapshot or status of the PC itself reached this server since it started: its finish epoch is not a saved one (finishEpochs) */
-  heard?: true;
+  /** which of the PC's herdr runs this server knows have ended (endedFinishEpochs) */
+  finishes: FinishEpochLedger;
 }
 interface JobState {
   update: boolean;
@@ -263,6 +264,7 @@ export class MachineManager {
   private setAside: string[] = [];
   private sshDir: string;
   private local: Machine = { id: LOCAL_MACHINE, name: hostname(), kind: "local", enabled: true, state: "connecting", error: null, snapshot: null };
+  private localFinishes = new FinishEpochLedger();
   private localDiagnostics = new ConnectionDiagnostics("machine.local");
   private remoteDiagnostics = new ConnectionDiagnostics("machine.remote");
   private discoveryTimer?: ReturnType<typeof setTimeout>;
@@ -431,19 +433,18 @@ export class MachineManager {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  private runtime(machine: Machine): Runtime { return { machine, attempts: 0, generation: 0, refreshing: false, refreshQueued: false, snapshotRevision: 0, terminals: new Set() }; }
+  private runtime(machine: Machine): Runtime { return { machine, attempts: 0, generation: 0, refreshing: false, refreshQueued: false, snapshotRevision: 0, terminals: new Set(), finishes: new FinishEpochLedger(machine.snapshot) }; }
   list(): Machine[] { return [this.local, ...[...this.machines.values()].map((r) => r.machine)]; }
   /**
-   * Each PC's finish epoch as the PC told it since this server started (server/seen.ts). A snapshot restored from
-   * machines.json names none: it is saved a moment after it changes, so it can name a herdr run the PC has since left,
-   * and the read finishes of the run it is in would be dropped as over (#1468).
+   * Each PC's herdr runs (finish epochs) this server knows have ended (server/seen.ts, FinishEpochLedger). The epoch
+   * a PC's snapshot names is not enough: a snapshot restored from machines.json can name a run the PC has since left
+   * (#1468), and a late read one this server already saw end (#2206). Either would drop the read finishes of the run
+   * the PC is in.
    */
-  finishEpochs(): Map<string, string> {
-    const epochs = new Map<string, string>();
-    const add = (machine: Machine) => { if (machine.snapshot?.finish_epoch) epochs.set(machine.id, machine.snapshot.finish_epoch); };
-    add(this.local);
-    for (const runtime of this.machines.values()) if (runtime.heard) add(runtime.machine);
-    return epochs;
+  endedFinishEpochs(): Map<string, ReadonlySet<string>> {
+    const ended = new Map<string, ReadonlySet<string>>([[LOCAL_MACHINE, this.localFinishes.endedEpochs()]]);
+    for (const [id, runtime] of this.machines) ended.set(id, runtime.finishes.endedEpochs());
+    return ended;
   }
   subscribe(listener: (event: MachineEvent) => void): () => void {
     this.listeners.add(listener);
@@ -465,8 +466,9 @@ export class MachineManager {
     this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     // its id used again is a pane heard of for the first time
     if (message.type === "pane-exited") this.heardAgents.forget(message.pane_id);
-    if (message.type === "pane-status" && this.local.snapshot) {
+    if (message.type === "pane-status" && this.local.snapshot && !this.localFinishes.stale(message.finish_epoch)) {
       this.local.snapshot = snapshotAfterStatus(this.local.snapshot, message);
+      this.localFinishes.hold(this.local.snapshot);
     }
     if (message.type === "session-changed" || message.type === "pane-exited") void this.refreshLocal();
   }
@@ -496,7 +498,11 @@ export class MachineManager {
           if (revision !== this.localRevision) { this.localRefreshQueued = true; continue; }
           this.localDiagnostics.recovered(LOCAL_MACHINE, { operation: "snapshot", elapsed_ms: performance.now() - started });
           // a read that started before the cached one never replaces it
-          if (!olderOrderRead(this.local.snapshot, snapshot)) this.local.snapshot = snapshot;
+          // nor does one of a herdr run already seen to end; one that started after every status is newer than them
+          if (!olderOrderRead(this.local.snapshot, snapshot) && !this.localFinishes.stale(snapshot.finish_epoch)) {
+            this.local.snapshot = snapshot;
+            this.localFinishes.settle(snapshot);
+          }
           this.local.state = "connected"; this.local.error = null;
           // a pane the roster no longer lists is gone: the same id later is a pane heard of anew
           this.heardAgents.keepOnly(snapshot.panes);
@@ -626,7 +632,7 @@ export class MachineManager {
         // all or nothing: one that cannot be completed or saved leaves the PC as it was, trying its own address (#2075)
         const move = runtime.move;
         runtime.move = undefined;
-        const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, heard: runtime.heard };
+        const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, finishes: runtime.finishes.copy() };
         try {
           runtime.machine.target = target;
           if (move) {
@@ -647,7 +653,7 @@ export class MachineManager {
           if (move) {
             Object.assign(runtime.machine, { target: left.target, error: left.error, herdr: left.herdr, snapshot: left.snapshot });
             if (left.ownOvisAt) runtime.ownOvisAt = left.ownOvisAt; else delete runtime.ownOvisAt;
-            if (left.heard) runtime.heard = true; else delete runtime.heard;
+            runtime.finishes = left.finishes;
           }
           throw error;
         }
@@ -1193,7 +1199,8 @@ export class MachineManager {
           if (generation !== runtime.generation || this.stopped) return;
           if (revision !== runtime.snapshotRevision) { runtime.refreshQueued = true; continue; }
           if (!runtime.move) runtime.machine.error = null;
-          if (this.admitRemote(runtime, snapshot)) { this.publish(runtime, snapshot); this.emit(); }
+          // read after every snapshot and status that reached this server before it (the revision did not move)
+          if (this.admitRemote(runtime, snapshot)) { this.publish(runtime, snapshot, true); this.emit(); }
         } catch (e) {
           if (generation !== runtime.generation || this.stopped) return;
           if (revision !== runtime.snapshotRevision) { runtime.refreshQueued = true; continue; }
@@ -1229,9 +1236,11 @@ export class MachineManager {
       try { message = JSON.parse(String(event.data)); } catch { return; }
       // session-changed queues one follow-up, but lets the active roster publish.
       if (["snapshot", "pane-status", "pane-exited"].includes(message.type)) runtime.snapshotRevision++;
-      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.heard = true; this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name); this.emit(); }
-      if (message.type === "pane-status") {
-        if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.heard = true; }
+      // a frame may have been overtaken by an HTTP read: it holds its epoch, it proves no other ended
+      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.finishes.hold(message.snapshot); this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name); this.emit(); }
+      // a status of a run already seen to end is older than the read that showed it ended
+      if (message.type === "pane-status" && !runtime.finishes.stale(message.finish_epoch)) {
+        if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(runtime.machine.snapshot); }
         // a snapshot held for health is older than this frame too: published later, it keeps the status
         if (runtime.candidate) runtime.candidate = snapshotAfterStatus(runtime.candidate, message);
         void this.push.onStatus(message.pane_id, alertStatus(message.agent_status, message.background_wait), runtime.machine.id).catch(() => {});
@@ -1330,9 +1339,11 @@ export class MachineManager {
    * copied unchanged. Within the epoch its health proved over this connection, a read older than the
    * cached one is dropped; any other epoch, the connection's first included, is held back while the
    * manager asks that PC's /api/health which server answers now (a held one is offered again by the
-   * next refresh). A snapshot without evidence (an older bridge) is taken as before.
+   * next refresh). A snapshot without evidence (an older bridge) is taken as before. One of a herdr run this
+   * server already saw end is old, whatever its pair says (#2206).
    */
   private admitRemote(runtime: Runtime, snapshot: SessionSnapshot): boolean {
+    if (runtime.finishes.stale(snapshot.finish_epoch)) return false;
     const epoch = snapshot.order_epoch;
     if (typeof epoch !== "string" || !Number.isSafeInteger(snapshot.read_seq)) return true;
     if (epoch === runtime.acceptedEpoch) return !olderOrderRead(runtime.machine.snapshot, snapshot);
@@ -1376,11 +1387,13 @@ export class MachineManager {
   /**
    * A full snapshot read from the PC's server becomes the PC's, saved and seeded for alerts. One that a setup at another
    * SSH address read waits for that setup to connect there (Runtime.move), and is neither shown nor saved before.
+   * `settled`: a read that started after every snapshot and status of the PC that reached this server
+   * (FinishEpochLedger.settle).
    */
-  private publish(runtime: Runtime, snapshot: SessionSnapshot): void {
+  private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false): void {
     if (runtime.move) { runtime.move.snapshot = snapshot; return; }
     runtime.machine.snapshot = snapshot;
-    runtime.heard = true;
+    if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot);
     this.saveSoon();
     this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name);
   }

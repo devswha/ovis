@@ -289,18 +289,20 @@ describe("machine snapshot refresh races", () => {
     expect(runtime.machine.snapshot?.panes[0]?.finish_id).toBe(4);
   });
 
-  it("names a remote PC's finish epoch for read finishes only once the PC told it, never from a saved snapshot", async () => {
+  it("ends a remote PC's herdr run for read finishes only once a read of the PC names another, never from a saved snapshot", async () => {
     const { manager, drive } = await fixture();
     const saved = { ...snapshot("done"), finish_epoch: "saved-run" };
     drive.machines.set("saved", drive.runtime({ id: "saved", name: "Saved PC", kind: "ssh", enabled: true, state: "disconnected", error: null, snapshot: saved }));
     expect(manager.list().find((machine) => machine.id === "saved")?.snapshot?.finish_epoch).toBe("saved-run");
-    expect(manager.finishEpochs().has("saved")).toBe(false);
+    expect(manager.endedFinishEpochs().get("saved")).toEqual(new Set());
 
     const { manager: live, drive: liveDrive, remote, runtime } = await remoteFixture();
-    const current = { ...snapshot("done"), finish_epoch: "remote-server" };
-    remote.set(current);
+    remote.set({ ...snapshot("done"), finish_epoch: "remote-server" });
     await liveDrive.refresh(runtime);
-    expect(live.finishEpochs().get("remote")).toBe("remote-server");
+    expect(live.endedFinishEpochs().get("remote")).toEqual(new Set());
+    remote.set({ ...snapshot("done"), finish_epoch: "remote-next" });
+    await liveDrive.refresh(runtime);
+    expect(live.endedFinishEpochs().get("remote")).toEqual(new Set(["remote-server"]));
   });
 
   it("keeps a newer local status and retries the invalidated snapshot", async () => {
@@ -737,6 +739,36 @@ describe("workspace order evidence through the manager", () => {
     const response = await handleMachineRequest(new Request("http://127.0.0.1/api/machines"), manager);
     const roster = await response.json() as { machines: Machine[] };
     expect(roster.machines.find((machine) => machine.id === "remote")?.snapshot).toMatchObject({ order_epoch: "R", read_seq: 1 });
+  });
+
+  it("a late read of a herdr run an HTTP read showed ended cannot bring it back with the same order pair (#2206)", async () => {
+    const { manager, drive, remote, runtime, send, setHealth } = await remoteFixture();
+    setHealth(() => Response.json({ ok: true, web_ui: { boot_id: "R", revision: null } }));
+    const run = (finish_epoch: string, agent_status = "done"): SessionSnapshot => ({ ...paired("R", 0, agent_status), finish_epoch });
+    const proved = published(manager, (machines) => machines.some((machine) => machine.id === "remote" && machine.snapshot?.finish_epoch === "A"));
+    remote.set(run("A"));
+    await drive.refresh(runtime);
+    await proved;
+    // herdr restarts on the PC, its server stays: the next read names the new run, with no move in between
+    remote.set(run("B"));
+    await drive.refresh(runtime);
+    expect(remoteOf(manager)?.snapshot).toMatchObject({ finish_epoch: "B", order_epoch: "R", read_seq: 0 });
+    // the observer's frames read before that restart arrive after it
+    send({ type: "snapshot", snapshot: run("A", "blocked") });
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "blocked", finish_id: 9, finish_epoch: "A" });
+    await heard(manager, send);
+    expect(remoteOf(manager)?.snapshot).toMatchObject({ finish_epoch: "B", panes: [{ agent_status: "done" }] });
+    expect(manager.endedFinishEpochs().get("remote")).toEqual(new Set(["A"]));
+    // a frame of a run this server has not seen end is shown, but proves nothing ended: only a read after it does
+    remote.hold();
+    send({ type: "snapshot", snapshot: run("C") });
+    await heard(manager, send);
+    expect(remoteOf(manager)?.snapshot?.finish_epoch).toBe("C");
+    expect(manager.endedFinishEpochs().get("remote")).toEqual(new Set(["A"]));
+    const reread = published(manager, (machines) => machines.some((machine) => machine.id === "remote" && machine.snapshot?.finish_epoch === "B"));
+    remote.finish();
+    await reread;
+    expect(manager.endedFinishEpochs().get("remote")).toEqual(new Set(["A", "C"]));
   });
 
   it("remote epoch proof comes only from manager sideband health", async () => {

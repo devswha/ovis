@@ -5,8 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MachineEvent } from "../shared/machines.ts";
 import { MAX_SEEN, type SeenFinish } from "../shared/seen.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
+import { CompletionTracker } from "./completion.ts";
 import { handleMachineRequest } from "./machine-api.ts";
-import type { MachineManager } from "./machines.ts";
+import { MachineManager } from "./machines.ts";
+import type { PushService } from "./push.ts";
 import { handleSeenRequest, SeenStore } from "./seen.ts";
 
 const roots: string[] = [];
@@ -47,15 +50,15 @@ describe("read finishes shared by the browsers of a server", () => {
   });
 
 
-  it("leaves out and drops the finishes of a PC's herdr run that ended, and keeps a PC's whose epoch it does not know", async () => {
+  it("leaves out and drops the finishes of a PC's herdr run known to have ended, and keeps the others", async () => {
     const dir = root();
     const old = { ...finish("a", 4), epoch: "e0" };
     const remote = { ...finish("a", 2), pc: "remote", epoch: "r0" };
     new SeenStore(dir).record(old);
     new SeenStore(dir).record(remote);
     new SeenStore(dir).record(finish("b", 1));
-    const epochs = new Map([["local", "e1"]]);
-    const store = new SeenStore(dir, () => epochs);
+    const ended = new Map([["local", new Set(["e0"])]]);
+    const store = new SeenStore(dir, () => ended);
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
     // GET and the events stream's first `seen` frame both read list()
@@ -69,9 +72,52 @@ describe("read finishes shared by the browsers of a server", () => {
     store.record(finish("c", 1));
     expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([remote, finish("b", 1), finish("c", 1)]);
     expect(told).toEqual([finish("c", 1)]);
-    // a PC's new run leaves its own older run behind as well
-    epochs.set("remote", "r1");
+    // a PC's run that ended is left behind as well
+    ended.set("remote", new Set(["r0"]));
     expect(store.list()).toEqual([finish("b", 1), finish("c", 1)]);
+  });
+
+  it("keeps and saves the read finishes of a herdr run when a late report names the run it replaced (#2206)", async () => {
+    const dir = root();
+    const roster = (finish_epoch: string): SessionSnapshot => ({
+      protocol: 22, version: "fixture", workspaces: [], tabs: [], layouts: [], agents: [], finish_epoch, order_epoch: "boot", read_seq: 0,
+      panes: [{ pane_id: "p1", agent: "codex", agent_status: "done", focused: false, revision: 1, tab_id: "t1", terminal_id: "term", workspace_id: "w", finish_id: 1 }],
+    });
+    let current = roster("A");
+    const manager = new MachineManager(join(dir, "machines"), { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => current);
+    const shown = (epoch: string) => new Promise<void>((resolve) => {
+      const stop = manager.subscribe((event) => {
+        if (event.type === "machines" && event.machines[0]?.snapshot?.finish_epoch === epoch) { queueMicrotask(() => stop()); resolve(); }
+      });
+    });
+    // wired as the server wires it (index.ts)
+    const store = new SeenStore(dir, () => manager.endedFinishEpochs());
+    const run = (epoch: string, pane: string): SeenFinish => ({ pc: "local", epoch, pane, id: 1 });
+    const saved = () => JSON.parse(readFileSync(join(dir, "seen.json"), "utf8")) as SeenFinish[];
+    try {
+      await shown("A");
+      expect((await post(store, JSON.stringify(run("A", "p1")))).status).toBe(200);
+      // herdr restarts: the next read names the new run, B, which a browser reads
+      current = roster("B");
+      const replaced = shown("B");
+      void manager.refreshLocal();
+      await replaced;
+      expect((await post(store, JSON.stringify(run("B", "p1")))).status).toBe(200);
+      // a status the old run sent arrives after that read
+      manager.localMessage({ type: "pane-status", pane_id: "p1", agent_status: "done", finish_id: 2, finish_epoch: "A" });
+      expect(manager.list()[0]?.snapshot?.finish_epoch).toBe("B");
+      // B's records stay, a new one is saved, and A's left the file with that write
+      const answered = await post(store, JSON.stringify(run("B", "p2")));
+      expect([answered.status, await answered.json()]).toEqual([200, run("B", "p2")]);
+      expect(saved()).toEqual([run("B", "p1"), run("B", "p2")]);
+      // a status of a run never seen proves no other over: B's records stay, and its own are taken
+      manager.localMessage({ type: "pane-status", pane_id: "p1", agent_status: "done", finish_id: 1, finish_epoch: "C" });
+      store.record(run("C", "p1"));
+      expect(store.list()).toEqual([run("B", "p1"), run("B", "p2"), run("C", "p1")]);
+      expect(saved()).toEqual(store.list());
+    } finally {
+      manager.stop();
+    }
   });
 
   it("answers GET and POST, and refuses what is not a read finish", async () => {

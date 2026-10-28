@@ -6,8 +6,8 @@ import { damagedCopy, readStateDocument, writeStateDocument } from "./state-docu
 /**
  * The finishes some browser of this server presented (shared/seen.ts), kept in the state directory
  * beside preferences.json, so a finish read on the phone is read on the desktop too. A change is
- * held, and told, only once it is on disk. A finish of a herdr run that ended (its PC's finish
- * epoch moved on) is never handed out or taken, and the next write leaves it out of the file.
+ * held, and told, only once it is on disk. A finish of a herdr run this server knows has ended
+ * (MachineManager.endedFinishEpochs) is never handed out or taken, and the next write leaves it out of the file.
  */
 export class SeenStore {
   /** insertion order is write order: the first entries are the oldest */
@@ -18,10 +18,10 @@ export class SeenStore {
   private unsettled = true;
 
   /**
-   * `epochs`: each PC's finish epoch as this server holds it now (its PCs' snapshots). A PC with
-   * none there keeps every record: its epoch is not known, so none of them is known to be over.
+   * `ended`: each PC's finish epochs this server knows have ended. A record of any other epoch is
+   * kept, the one a PC's snapshot names now or not: a late read can name a run that is over (#2206).
    */
-  constructor(stateDir: string, private readonly epochs: () => ReadonlyMap<string, string> = () => new Map()) {
+  constructor(stateDir: string, private readonly ended: () => ReadonlyMap<string, ReadonlySet<string>> = () => new Map()) {
     this.path = join(stateDir, "seen.json");
     try {
       const disk = this.readDisk();
@@ -53,14 +53,14 @@ export class SeenStore {
   }
 
   list(): SeenFinish[] {
-    const epochs = this.epochs();
-    return [...this.finishes.values()].filter((finish) => !ended(finish, epochs));
+    const ended = this.ended();
+    return [...this.finishes.values()].filter((finish) => !over(finish, ended));
   }
 
   record(finish: SeenFinish): SeenFinish {
-    const epochs = this.epochs();
+    const ended = this.ended();
     // answered as sent: a browser that still shows the run that ended has nothing to keep
-    if (ended(finish, epochs)) return finish;
+    if (over(finish, ended)) return finish;
     let base = this.finishes;
     let keepDamaged = false;
     if (this.unsettled) {
@@ -77,7 +77,7 @@ export class SeenStore {
     const finishes = new Map(base);
     finishes.delete(key);
     finishes.set(key, next);
-    for (const [old, kept] of finishes) if (ended(kept, epochs)) finishes.delete(old);
+    for (const [old, kept] of finishes) if (over(kept, ended)) finishes.delete(old);
     for (const old of finishes.keys()) {
       if (finishes.size <= MAX_SEEN) break;
       finishes.delete(old);
@@ -96,10 +96,7 @@ export class SeenStore {
   }
 }
 
-const ended = (finish: SeenFinish, epochs: ReadonlyMap<string, string>): boolean => {
-  const epoch = epochs.get(finish.pc);
-  return epoch !== undefined && epoch !== finish.epoch;
-};
+const over = (finish: SeenFinish, ended: ReadonlyMap<string, ReadonlySet<string>>): boolean => ended.get(finish.pc)?.has(finish.epoch) ?? false;
 
 /** The body as text, or null past MAX_SEEN_BYTES: one announced over it is refused unread, one that lies about its length is cut off as it arrives. */
 async function readSeenBody(request: Request): Promise<string | null> {
