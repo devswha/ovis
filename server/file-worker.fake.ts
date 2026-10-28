@@ -11,10 +11,12 @@
  *   a real system call that blocks until a writer opens it (which ending the thread cannot cut
  *   short), and then reads, as a read on a stalled disk would;
  * - with an `authorizeGate` (the same shape), stops once the file is authorized, before the task
- *   answers: it records the descriptor the task named in its cell (`opened`) in cell 1, then waits
- *   on the FIFO the same way, as a check on a stalled disk would.
+ *   answers, as a check on a stalled disk would: it opens the FIFO (read and write, which never
+ *   waits), records the descriptor the task named in its cell (`opened`) in cell 1, then blocks in a
+ *   read of the FIFO. Opened before cell 1 is set, the FIFO always has this reader once the test
+ *   sees it, so the test's release (a write that does not wait) never waits for this thread.
  */
-import { closeSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, openSync, readSync } from "node:fs";
 
 import { type FileTask, runFileTask, transferablesOf } from "./file-tasks.ts";
 import { pageFileHooks } from "./file-view.ts";
@@ -40,9 +42,10 @@ self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; rea
   if (authorizeGate !== undefined) {
     pageFileHooks.afterAuthorize = () => {
       const cells = new Int32Array(authorizeGate.cells);
+      const fifo = openSync(authorizeGate.fifo, constants.O_RDWR);
       Atomics.store(cells, 1, "opened" in task && task.opened !== undefined ? task.opened[0]! : -2);
       Atomics.notify(cells, 1);
-      closeSync(openSync(authorizeGate.fifo, "r"));
+      try { readSync(fifo, new Uint8Array(1), 0, 1, null); } finally { closeSync(fifo); }
     };
   }
   let result;

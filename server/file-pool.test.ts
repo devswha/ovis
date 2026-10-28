@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -165,8 +165,10 @@ describe("file threads", () => {
     expect(fstatSync(fd).size).toBe(5);
     setFilePoolOptions();
     await expect(describing).rejects.toThrow("replaced");
-    // the call returns, the thread is gone, and what it opened is closed
-    closeSync(openSync(fifo, "w"));
+    // the call returns (a write that never waits: the thread opened the FIFO before it said it ran), the thread is gone, and what it opened is closed
+    const writer = openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
+    writeSync(writer, "x");
+    closeSync(writer);
     await fileThreadsClosed();
     expect(() => fstatSync(fd)).toThrow();
   });
