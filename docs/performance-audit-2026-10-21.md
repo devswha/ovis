@@ -266,8 +266,8 @@ foreign storage areas, access recovery, listener cleanup, share retries, stale p
 same-ID fingerprint upgrades and repeated turns beyond the history limit. React test-renderer
 deprecation warnings remain; state-changing test actions are wrapped in `act`.
 
-The paired harness and JSON live beside the original temporary evidence as `sidebar-compare.tsx`,
-`compare-browser.ts` and `browser-comparison.json`. Final Fast checks and full-app sidebar browser
+The paired harness and JSON (`sidebar-compare.tsx`, `compare-browser.ts` and
+`browser-comparison.json`) were temporary like the rest and were not kept. Final Fast checks and full-app sidebar browser
 verification are recorded in the PR validation receipt.
 
 **Remaining, not fixed by this PR:** duplicate Omo parsing, synchronous server seen persistence,
