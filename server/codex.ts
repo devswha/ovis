@@ -1501,8 +1501,6 @@ async function heldThreadIds(home: string): Promise<Map<string, { loadedAt: numb
     } catch { /* unlocked and removed meanwhile */ }
   }
   if (named.size === 0) return held;
-  // the lock files each holder has open: inode numbers are only unique within a file system
-  const openBy = new Map<string, Set<string>>();
   // the kernel hands /proc/locks out a page at a time, and a lock any process takes or drops between
   // two pages moves the lines after it: one read may leave a held lock out (or show one twice). So a
   // lock file no read has shown held is looked for in two more reads before it counts as nobody's
@@ -1510,6 +1508,9 @@ async function heldThreadIds(home: string): Promise<Map<string, { loadedAt: numb
   for (let read = 0; read < 3 && unseen(); read++) {
     let table: string;
     try { table = readFileSync("/proc/locks", "utf8"); } catch { return null; }
+    // the lock files each holder has open, listed again for each read: a holder may have opened
+    // another since the last one. Inode numbers are only unique within a file system
+    const openBy = new Map<string, Set<string>>();
     for (const line of table.split("\n")) {
       // a held write flock: one a process waits for reads "N: -> FLOCK ..."
       const lock = /^\d+:\s+FLOCK\s+\S+\s+WRITE\s+(\d+)\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/.exec(line);

@@ -1069,6 +1069,19 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     // left out of one read, or two, it is found in the next
     expect(await tearing(1)).toEqual({ found: null, reads: 2 });
     expect(await tearing(2)).toEqual({ found: null, reads: 3 });
+    // the holder opened the peer's lock between two reads: its open files are listed again
+    const readDirectory = fs.readdirSync;
+    let listings = 0;
+    const late = spyOn(fs, "readdirSync").mockImplementation(((directory: string, ...rest: unknown[]) => {
+      const names = (readDirectory as (path: string, ...more: unknown[]) => string[])(directory, ...rest);
+      if (directory !== `/proc/${holder.pid}/fd` || ++listings > 1) return names;
+      return names.filter((descriptor) => {
+        try { return !fs.readlinkSync(`${directory}/${descriptor}`).endsWith(`${peer}.lock`); } catch { return true; }
+      });
+    }) as typeof fs.readdirSync);
+    try {
+      expect(await tearing(1)).toEqual({ found: null, reads: 2 });
+    } finally { late.mockRestore(); }
   }, 20_000);
 });
 
