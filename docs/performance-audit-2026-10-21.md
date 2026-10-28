@@ -206,7 +206,8 @@ the two P1 browser findings; the independent server and parser changes remain se
 
 ### Reproduction notes
 
-The local investigation's disposable harness and raw JSON are under `/tmp/ovis-perf-audit-0xwjx1/` (temporary evidence, not a durable repository dependency):
+The local investigation used a disposable harness and raw JSON that were not kept (the PC's
+temporary directory, not part of the repository). They were:
 
 - `sidebar-probe.tsx`, `run-browser.ts`, `browser-results.json`
 - `server-probe.ts`, `server-results.json`
@@ -214,7 +215,7 @@ The local investigation's disposable harness and raw JSON are under `/tmp/ovis-p
 - `prompt-probe.ts`, `prompt-results.json`
 - `merge-results.json`, `bundle-results.json`
 
-The release sources were recovered with `git archive v0.4.12` / `git show v0.4.12:<path>`, not by checking out or mutating the active branch. Main built with `bun run build --outDir <temporary-directory>`; release built in its disposable archive with the same dependencies. All benchmark state was generated from counters and literal fixture text. The source revision, fixture dimensions, repetitions and observed distributions above are the durable evidence; temporary files may be removed by normal system cleanup.
+The release sources were recovered with `git archive v0.4.12` / `git show v0.4.12:<path>`, not by checking out or mutating the active branch. Main built with `bun run build --outDir <temporary-directory>`; release built in its disposable archive with the same dependencies. All benchmark state was generated from counters and literal fixture text. The source revision, fixture dimensions, repetitions and observed distributions above are the durable evidence; the count-based regressions committed with the fix keep the measured bounds.
 
 ## Latest-main implementation
 

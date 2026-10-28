@@ -140,9 +140,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
           }
         }
       }
-      epochs.current.delete(machine.id);
       epochs.current.set(machine.id, epoch);
-      while (epochs.current.size > SEEN_LIMIT) epochs.current.delete(epochs.current.keys().next().value!);
       const pane = machine.state === "connected" && machine.id === selectedMachineId && pageVisible && paneInFront()
         ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
       if (pane?.agent_status === "done" && !pane.background_wait && pane.finish_id !== undefined && pane.finish_id > 0) {
