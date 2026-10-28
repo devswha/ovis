@@ -730,6 +730,25 @@ describe("sidebar finish acknowledgement through React effects", () => {
     expect(client.status("a")).toBe("done");
   });
 
+  it("does not cache a retired epoch's scope again while it retires", async () => {
+    const client = await open(roster({ a: 1 }, {}, "retire-1"), "a");
+    const set = Map.prototype.set;
+    let cached: unknown[] = [];
+    const spy = spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
+      // A scope's cached record maps panes to IDs; a change notice carries its epoch.
+      if (value && typeof value === "object" && !Object.hasOwn(value, "epoch")) cached.push(key);
+      return set.call(this, key, value);
+    });
+    try {
+      for (let epoch = 2; epoch <= 4; epoch++) {
+        cached = [];
+        await client.update(roster({ a: 1 }, {}, `retire-${epoch}`), "a");
+        expect(cached).not.toContain(JSON.stringify(["local", `retire-${epoch - 1}`]));
+        expect(client.status("a")).toBe("idle");
+      }
+    } finally { spy.mockRestore(); }
+  });
+
   it("drops the prior epoch even if pane IDs and finish counters are identical", async () => {
     const client = await open(roster({ a: 1 }), "a");
     await client.update(roster({ a: 1 }, {}, "server-b"));
