@@ -172,11 +172,14 @@ try {
     }
     assert.equal(got, "a\x1b[Db".repeat(5), "an arrow between two letters arrives between them");
     // Diagnostic only: a letter, an arrow and a letter pressed at once, where only the settle margin
-    // keeps the arrow behind the first letter. Logged, not asserted.
+    // keeps the arrow behind the first letter. Logged, not asserted. The first letter goes through the
+    // attach pty and the rest may go through herdr, so no mark typed after them can vouch for it: all
+    // five bytes are read, in whatever order, before the next step.
+    let together = "";
     await s.page.keyboard.press("a");
     await s.page.keyboard.press("ArrowLeft");
     await s.page.keyboard.press("b");
-    const together = (await mark(s, "a, ArrowLeft and b at once")).read;
+    await until(() => (together += s.received()).length >= 5, () => `a, ArrowLeft and b at once received (read ${JSON.stringify(together)})`);
     console.log(`a, ArrowLeft and b pressed at once arrived ${together === "a\x1b[Db" ? "in order" : `as ${JSON.stringify(together)}: the arrow outran the settle margin`}`);
     got = "";
     await s.page.keyboard.press("Escape");
