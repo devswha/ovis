@@ -468,7 +468,12 @@ export function createServer(
       }
 
       if (pathname === "/api/updates" || pathname.startsWith("/api/updates/")) {
-        return handleUpdateRequest(request, pathname, options.updates);
+        // the bridge token cannot read /api/access: where this server answers comes with its update status (#2191)
+        const where = bridgeAuthorized ? async () => {
+          const access = await remoteAccess(bunServer.port ?? DEFAULT_PORT);
+          return { port: access.port, serving_url: access.tailscale.serving_url };
+        } : undefined;
+        return handleUpdateRequest(request, pathname, options.updates, where);
       }
       if (pathname === "/api/herdr/update") { setRequestRoute(pathname); return handleHerdrUpdateRequest(request, options.herdrUpdate); }
       if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {

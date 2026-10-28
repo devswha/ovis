@@ -37,7 +37,8 @@ interface Remote {
   replacementBundle?: string;
   /** the bundle version its new bridge answers with, when it differs from the one it registered (a replacement race) */
   replacementLiveBundle?: string;
-  access?: Record<string, unknown>;
+  /** what its GET /api/access answers; null answers 401, as a server that opens it only to its own token */
+  access?: Record<string, unknown> | null;
   bundle?: string;
   /** what its status says once asked to install, one answer per read (the last repeats); it restarts on the new version after `restartAfter` reads, never without */
   afterInstall?: { statuses: Partial<UpdateStatus>[]; restartAfter?: number };
@@ -114,7 +115,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       requests.push(`${request.method} ${path}`);
       if (request.headers.get("authorization") !== `Bearer ${descriptor.token}`) return new Response("unauthorized", { status: 401 });
       if (remote.redirect?.path === path) return new Response(null, { status: 307, headers: { location: remote.redirect.to } });
-      if (path === "/api/access") return remote.access ? Response.json(remote.access) : new Response("not found", { status: 404 });
+      if (path === "/api/access") return remote.access ? Response.json(remote.access) : new Response(remote.access === null ? "unauthorized" : "not found", { status: remote.access === null ? 401 : 404 });
       if (path === "/api/updates" && request.method === "GET" && installed && remote.afterInstall) {
         const { statuses, restartAfter } = remote.afterInstall;
         const answer = { ...remote.status, ...statuses[Math.min(readsSinceInstall, statuses.length - 1)] };
@@ -682,6 +683,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     const { until } = pc({ status: { ...unmanagedUpdateStatus() }, access: { port: OWN_PORT, tailscale: { serving_url: "http://plain.example" } } });
     const waiting = await until((machine) => machine.action_required === "setup");
     expect(waiting.remote_ovis).toMatchObject({ address: `pc.invalid:${OWN_PORT}`, url: null });
+  });
+
+  it("takes where it answers from its update status when its GET /api/access wants its own token (#2191)", async () => {
+    const { requests, until } = pc({ status: managedOffer({ port: OWN_PORT, serving_url: "https://home-server.example.ts.net" }), access: null }, { autoUpdate: false });
+    const waiting = await until((machine) => machine.action_required === "update_bridge");
+    expect(waiting.remote_ovis).toMatchObject({ updatable: true, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" });
+    // it told both with its status: the route its token keeps closed to the bridge's is not asked
+    expect(requests).not.toContain("GET /api/access");
   });
 
   it("tells a first connect the same, on the job the dialog reads", async () => {
