@@ -1,6 +1,20 @@
 import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
+import { parseInline, shownText } from "../../shared/markdown.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
+
+/**
+ * An option's name as its card shows it, the one reading the card's rendering and a typed answer share
+ * (#2220): an omp card in Markdown shows its label whole (InlineMarkdown), and `words` are the
+ * characters that shows (shownText, which the server held to omp's screen); another card reads a
+ * trailing "(Recommended)" off as the Recommended tag (Claude draws its own pick as "Redis (Recommended)").
+ * A Markdown link to `recommended` is an omp option's words, never that tag.
+ */
+export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
+  if (prompt.text_format === "markdown") return { text: label, recommended: false, words: shownText(parseInline(label, false)) ?? label };
+  const text = label.replace(/\s*\(recommended\)$/i, "");
+  return { text, recommended: text !== label, words: text };
+}
 
 /** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */
 export function cardText(card: CardText, t: Translate = inCurrentLanguage): string {

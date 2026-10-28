@@ -80,6 +80,13 @@ describe("answering a prompt from the chat", () => {
     const globs = { ...prompt(["Keep *.log and *.tmp", "Keep .log and .tmp"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(globs, "Keep .log and .tmp")).toEqual({ custom_text: "Keep .log and .tmp" });
     expect(answerFromText(globs, "2")).toEqual({ option_index: 1 });
+    // rows the card draws alike once spacing collapses, as a page does
+    const spaced = { ...prompt(["Keep **production**", "Keep  **production**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(spaced, "Keep production")).toEqual({ custom_text: "Keep production" });
+    // a link to `recommended` is the option's words, not its Recommended tag (#2220 review)
+    const linked = { ...prompt(["Keep [production](recommended)", "Keep [production]"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(linked, "Keep production")).toEqual({ option_index: 0 });
+    expect(answerFromText(linked, "Keep [production]")).toEqual({ option_index: 1 });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
     expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });

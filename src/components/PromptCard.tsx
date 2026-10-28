@@ -7,7 +7,7 @@ import { ApiError } from "../lib/api.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { blocksStepNavigation, focusFollowsAnswer, pressOrigin, sendsChecksWithText, type TypedAnswer } from "../lib/promptAnswer.ts";
-import { promptWords } from "../lib/promptText.ts";
+import { optionName, promptWords } from "../lib/promptText.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
@@ -139,11 +139,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
   };
 
   const customLabelId = useId();
-  // Claude renders the menu's own pick as "Redis (Recommended)": a tag reads better than the suffix
-  const labelOf = (label: string): { text: string; recommended: boolean } => {
-    const text = label.replace(/\s*\(recommended\)$/i, "");
-    return { text, recommended: text !== label };
-  };
+  // Claude renders the menu's own pick as "Redis (Recommended)": a tag reads better than the suffix (optionName)
+  const labelOf = (label: string): { text: string; recommended: boolean } => optionName(prompt, label);
   const hasChoices = prompt.options.some((_, index) => index !== prompt.custom_option_index);
   // the bridge's own words in the user's language, the agent's as written
   const words = promptWords(prompt, t);

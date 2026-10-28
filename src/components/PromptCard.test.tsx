@@ -80,6 +80,14 @@ describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
     expect(html).toContain("the relay");
   });
 
+  it("draws an option's Markdown whole, never reading a link to `recommended` as the Recommended tag (#2220 review)", () => {
+    const twins: InteractivePrompt = { ...ask, options: [{ label: "Keep [production](recommended)", description: null }, { label: "Keep [production]", description: null }], custom_option_index: 2 };
+    const html = render(twins, ["en"]);
+    const labels = [...html.matchAll(/<span class="prompt-card-option-label">(.*?)<\/span><\/span>/g)].map((match) => match[1]!.replace(/<[^>]+>/g, ""));
+    expect(labels).toEqual(["Keep production", "Keep [production]"]);
+    expect(html).not.toContain("prompt-card-tag");
+  });
+
   it("draws a card read off the screen as plain text", () => {
     const { text_format: _, ...plain } = ask;
     const html = render(plain, ["en"]);

@@ -6,8 +6,7 @@
  */
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { t } from "./i18n.ts";
-import { promptWords } from "./promptText.ts";
-import { parseInline, type InlineNode } from "../../shared/markdown.ts";
+import { optionName, promptWords } from "./promptText.ts";
 
 export type TypedAnswer = Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">;
 
@@ -21,14 +20,11 @@ function boundLetter(label: string): string | null {
   return label.match(/\(([a-z])\)$/i)?.[1]?.toLowerCase() ?? null;
 }
 
-/** A Markdown label's words as the card shows them (`Use \`local\` socket` is "Use local socket"), which is what a user types. */
-function shownWords(nodes: InlineNode[]): string {
-  return nodes.map((node) => node.type === "text" || node.type === "code" || node.type === "math" ? node.value
-    : node.type === "image" ? node.alt : shownWords(node.children)).join("");
-}
+/** text as a page shows it, its spacing collapsed, for comparing what is typed with what a card shows */
+const spaced = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
 
 function bareLabel(label: string): string {
-  return label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, "").trim().toLowerCase();
+  return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));
 }
 
 /** null: the prompt only takes its options, and the text names none of them. */
@@ -48,19 +44,20 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   }
   const numbered = byNumber(value);
   if (numbered !== null) return { option_index: numbered };
-  const lower = value.toLowerCase();
+  const lower = spaced(value);
   // a label the bridge wrote is named as the card shows it, in the user's language, or in English
   const words = promptWords(prompt);
-  const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
+  const names = (label: string): boolean => spaced(label) === lower || bareLabel(label) === lower || boundLetter(label) === lower;
   // the one option the words name; words that name two (rows that read alike) pick neither: null
-  const only = (label: (index: number) => string): number | null | undefined => {
-    const found = valid.filter((index) => names(label(index)));
+  const only = (label: (index: number) => string, named = names): number | null | undefined => {
+    const found = valid.filter((index) => named(label(index)));
     return found.length === 1 ? found[0] : found.length > 1 ? null : undefined;
   };
   // an option's own words first: a translated label never takes the words another option shows
-  // an omp card in Markdown is named by the words it shows alone: its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
+  // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
+  // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
   const own = prompt.text_format === "markdown"
-    ? only((index) => shownWords(parseInline(prompt.options[index]!.label, false)))
+    ? only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower)
     : only((index) => prompt.options[index]!.label);
   const named = own !== undefined || prompt.text_format === "markdown" ? own : only((index) => words.label(index));
   if (typeof named === "number") return { option_index: named };

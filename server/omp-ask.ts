@@ -1,6 +1,6 @@
 import { askedQuestions } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { parseInline, parseMarkdown, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
+import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
@@ -44,18 +44,22 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
 
+/** text with every run of spaces and line breaks as one space */
+const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
+
 /**
- * Whether the screen's text is `drawn`, character for character but for spacing, which omp wraps at
- * the pane's width. Case, digits and every mark count, so a call that differs from the menu by one
- * `/`, `*`, `_` or letter is another call. Only a question omp says it cut (`cut`, dialogs/omp.ts)
+ * Whether the screen's text is `drawn`, character for character but for how much spacing there is:
+ * omp wraps at the pane's width and pads its rows, so a run of spaces or a line break is one space
+ * (flat). The space itself counts (`Use local socket` is not `Use localsocket`), as do case, digits
+ * and every mark, so a call that differs from the menu by one `/`, `*`, `_` or letter is another call. Only a question omp says it cut (`cut`, dialogs/omp.ts)
  * may show just the start of the call's question, followed by omp's `…`.
  */
 function shows(screen: string, drawn: string | null, cut = false): boolean {
   if (drawn === null) return false;
-  const shown = screen.replace(/\s+/gu, "");
-  const asked = drawn.replace(/\s+/gu, "");
+  const shown = flat(screen);
+  const asked = flat(drawn);
   if (shown === asked) return true;
-  const start = shown.replace(/…$/u, "");
+  const start = shown.replace(/\s*…$/u, "");
   return cut && start !== shown && asked.length > start.length && asked.startsWith(start);
 }
 
@@ -68,7 +72,7 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
 function drawn(markdown: string, question: boolean): string | null {
   const omp = ompDrawn(markdown, question);
   const card = cardDrawn(markdown, question);
-  return omp !== null && card !== null && omp.replace(/\s+/gu, "") === card.replace(/\s+/gu, "") ? omp : null;
+  return omp !== null && card !== null && flat(omp) === flat(card) ? omp : null;
 }
 
 /**
@@ -97,20 +101,9 @@ function cardBlock(block: MarkdownBlock): string {
   }
 }
 
+/** omp draws a picture's alt text, the card the picture or `!` and its address; math too is drawn otherwise (shownText's null) */
 function cardInline(nodes: InlineNode[], addresses: boolean): string {
-  return nodes.map((node): string => {
-    switch (node.type) {
-      case "text": case "code": return node.value;
-      case "strong": case "em": case "del": return cardInline(node.children, addresses);
-      case "link": case "file": {
-        const words = cardInline(node.children, false);
-        const href = node.type === "link" ? node.href : node.path;
-        return addresses && href && words !== href && words !== href.replace(/^mailto:/, "") ? `${words} (${href})` : words;
-      }
-      // omp draws a picture's alt text; the card draws the picture, or `!` and its address
-      case "math": case "image": return undrawn();
-    }
-  }).join("");
+  return shownText(nodes, addresses) ?? undrawn();
 }
 
 class Undrawn extends Error {}

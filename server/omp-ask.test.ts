@@ -82,6 +82,8 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       ["code with an underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local_socket`"; })],
       ["code with an asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local*socket`"; })],
       ["an address with an underscore", withArgs(asks, (args) => { args.questions[0]!.question = args.questions[0]!.question.replace("/guide", "/gui_de"); })],
+      // a space between two words: omp wraps at the spaces, but never takes one out (#2220, CodeRabbit)
+      ["a space less", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local`socket"; })],
       // and a mark that pairs with nothing, as a glob or a path
       ["an unpaired asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` *socket"; })],
       ["an unpaired underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` _socket"; })],

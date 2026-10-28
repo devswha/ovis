@@ -39,6 +39,37 @@ export type MarkdownBlock =
   | { type: "table"; header: InlineNode[][]; rows: InlineNode[][][] }
   | { type: "hr" };
 
+/**
+ * The characters `nodes` show as text, as a card draws them (#2220): emphasis, strikethrough and code
+ * their text, a link or a file link its words, with its address after them when `addresses` (unless the
+ * words are the address). Null for a node that shows something else than characters: math, a picture.
+ * The one reading of what an Ask card's option says: the server holds it to omp's screen, the card draws
+ * it, and a typed answer names the option by it.
+ */
+export function shownText(nodes: InlineNode[], addresses = false): string | null {
+  let out = "";
+  for (const node of nodes) {
+    switch (node.type) {
+      case "text": case "code": out += node.value; break;
+      case "strong": case "em": case "del": {
+        const inner = shownText(node.children, addresses);
+        if (inner === null) return null;
+        out += inner;
+        break;
+      }
+      case "link": case "file": {
+        const words = shownText(node.children);
+        if (words === null) return null;
+        const href = node.type === "link" ? node.href : node.path;
+        out += addresses && href && words !== href && words !== href.replace(/^mailto:/, "") ? `${words} (${href})` : words;
+        break;
+      }
+      case "math": case "image": return null;
+    }
+  }
+  return out;
+}
+
 export function safeMarkdownHref(href: string): string | null {
   const value = href.trim();
   return /^(?:https?:\/\/|mailto:)/i.test(value) ? value : null;
