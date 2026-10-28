@@ -1529,7 +1529,8 @@ describe("check CLI", () => {
     mkdirSync(actionlintDirectory, { recursive: true });
     writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
-    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check", CHECK_WAIT_SECONDS: "20" };
+    // an admission port of its own: on the shared one this run would wait behind every real run
+    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check", CHECK_LOCK_PORT: String(freePortRange(MAX_RUNS_LIMIT)) };
     for (const name of ["CHECK_REPORT", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"]) delete env[name];
 
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });

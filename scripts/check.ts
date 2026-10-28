@@ -1396,8 +1396,9 @@ export async function main(groupSeams: GroupSeams & {
     }
   }
   // the rest (a source or dist that changed mid-run, a report that could not be saved, ...) would
-  // otherwise end the run with every step ok and only an exit code (#1921)
-  const reasons = report.errors.filter((error) => !covered.has(error));
+  // otherwise end a failed run with every step ok and only an exit code (#1921); a run that passed
+  // says nothing more
+  const reasons = code === 0 ? [] : report.errors.filter((error) => !covered.has(error));
   for (const reason of reasons) console.error(`check: ${reason}`);
   if (reasons.length > 0) console.error(`check: report ${paths.reportPath}`);
   process.exit(code);
