@@ -778,6 +778,37 @@ describe("workspace order evidence through the manager", () => {
     expect([manager.finishEnded("remote", "A"), manager.finishEnded("remote", "C")]).toEqual([true, true]);
   });
 
+  it("a snapshot held for health that a status laid another run over names no server for that run (#2206)", async () => {
+    const { manager, drive, remote, runtime, send, setHealth } = await remoteFixture();
+    const health = gatedHealth();
+    setHealth(health.handler);
+    const run = (finish_epoch: string): SessionSnapshot => ({ ...paired("R", 0, "done"), finish_epoch });
+    remote.set(run("A"));
+    await drive.refresh(runtime);
+    const call = await health.next();
+    // while health is asked, a status names run B: it is laid over the held snapshot, whose server is not B's proof
+    // (the reads that status asks for wait at the server until health answers)
+    remote.hold();
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "done", finish_id: 1, finish_epoch: "B" });
+    await heard(manager, send);
+    const proved = published(manager, (machines) => machines.some((machine) => machine.id === "remote" && machine.source_boot_id === "R"));
+    call.answer("R");
+    await proved;
+    expect(remoteOf(manager)?.snapshot).toMatchObject({ order_epoch: "R", finish_epoch: "B" });
+    // R's next read names run C: B is over while R answers, but not for good, so a status of B is still taken and told
+    remote.set(run("C"));
+    const settled = published(manager, (machines) => machines.some((machine) => machine.id === "remote" && machine.snapshot?.finish_epoch === "C"));
+    remote.finish();
+    await settled;
+    expect(manager.finishEnded("remote", "B")).toBe(true);
+    const told: string[] = [];
+    manager.subscribe((event) => { if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "pane-status") told.push(event.message.finish_epoch ?? ""); });
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "working", finish_id: 1, finish_epoch: "B" });
+    await heard(manager, send);
+    expect(told).toEqual(["B"]);
+    expect(manager.finishEnded("remote", "B")).toBe(false);
+  });
+
   it("a status heard before a connection's health proof cannot end its run for good under the cached roster's server (#2206)", async () => {
     let clock = 0;
     const { manager, drive, remote, runtime, endpoint, send, setHealth, observed } = await remoteFixture({ now: () => clock });
