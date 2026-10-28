@@ -2791,7 +2791,7 @@ describe("a model drawn only in the history above the live screen", () => {
   /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
    * each scroll position herdr reports in turn (offset from the bottom, rows of history; null for none,
    * as herdr's scroll is optional), the last one from then on. */
-  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null)[] = [[0, 30]]): string => {
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null)[] = [[0, 30]], detected = history + live): string => {
     const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
     mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
     mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
@@ -2803,7 +2803,7 @@ describe("a model drawn only in the history above the live screen", () => {
       if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
       throw new Error(`unexpected RPC: ${method}`);
     }));
-    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? history + live : live }) as never));
+    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? detected : live }) as never));
     return pane.pane_id;
   };
 
@@ -2859,6 +2859,11 @@ describe("a model drawn only in the history above the live screen", () => {
     const terminal = shown("codex", "working", "", codex, [null]);
     const answer = await paneConversation(terminal, join(root, ".codex")).catch((error: unknown) => error);
     expect((answer as ConversationUnavailable).screen).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "low" });
+    for (const mock of mocks.splice(0)) mock.mockRestore();
+    // the same rows, read with trailing spaces, CRLF line ends and blank rows below: still the live screen
+    const padded = shown("codex", "working", "", codex, [null], `${codex.split("\n").map((row) => `${row}   `).join("\r\n")}\r\n\r\n   \r\n`);
+    const same = await paneConversation(padded, join(root, ".codex")).catch((error: unknown) => error);
+    expect((same as ConversationUnavailable).screen).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "low" });
     for (const mock of mocks.splice(0)) mock.mockRestore();
     // a short screen whose detection read also reaches the history above: no proof, no model
     const short = shown("codex", "working", "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6-Luna medium \u00b7 /tmp/project\n  ? for shortcuts\n", codex, [null]);
