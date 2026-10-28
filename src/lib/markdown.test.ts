@@ -246,9 +246,12 @@ describe("text no one wrote by hand", () => {
    * What `parse` makes of `text(size)`, having checked that it reads in linear time: ten times the
    * text takes under thirty times as long (linear is ten, a search of the rest of the line from
    * every character a hundred). A budget in milliseconds failed on GitHub's runners with nothing
-   * slower in the parser, so this counts the CPU time the process spent, which a busy runner does
-   * not stretch as it does the clock, and one round of three is enough, so a garbage collection
-   * slows a round, not the bound.
+   * slower in the parser, so this counts the CPU time this thread spent, which a busy runner does
+   * not stretch as it does the clock (the process's time also counts the garbage collector's
+   * threads, and reached 32 on a busy runner, #2084). Small and large are timed in turn, up to five
+   * rounds, and the fastest of each are compared: being preempted or slowed only adds time, so the
+   * fastest run is the one closest to the parser's own work. A count of the parser's steps would
+   * not see what some of these cases guard against, a regular expression backtracking in one call.
    */
   const linear = <T,>(text: (size: number) => string, size: number, parse: (text: string) => T): T => {
     const small = text(size / 10);
@@ -257,7 +260,7 @@ describe("text no one wrote by hand", () => {
     parse(small);
     const read = parse(large);
     const cpu = (): number => {
-      const { user, system } = process.cpuUsage();
+      const { user, system } = process.threadCpuUsage();
       return (user + system) / 1000;
     };
     // a parse of microseconds is timed over as many runs as take two milliseconds
@@ -268,9 +271,13 @@ describe("text no one wrote by hand", () => {
       return cpu() - start;
     };
     while (timed(small) < 2) runs *= 2;
-    let ratio = Infinity;
-    for (let round = 0; round < 3 && !(ratio < 30); round += 1) ratio = Math.min(ratio, timed(large) / timed(small));
-    expect(ratio).toBeLessThan(30);
+    let fastestSmall = Infinity;
+    let fastestLarge = Infinity;
+    for (let round = 0; round < 5 && !(fastestLarge / fastestSmall < 30); round += 1) {
+      fastestSmall = Math.min(fastestSmall, timed(small));
+      fastestLarge = Math.min(fastestLarge, timed(large));
+    }
+    expect(fastestLarge / fastestSmall).toBeLessThan(30);
     return read;
   };
   /** every string of up to `length` of the `parts`, in order */
