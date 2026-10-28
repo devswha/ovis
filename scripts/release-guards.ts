@@ -118,7 +118,9 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
   const unreachable = (await Promise.all(assets.map(async (asset) => {
     const response = await read(asset, { range: "bytes=0-0" });
     if (typeof response === "string") return response;
-    const size = Number(/\/(\d+)$/.exec(response.headers.get("content-range") ?? "")?.[1] ?? (response.status === 200 ? response.headers.get("content-length") : 0));
+    // the size the answer declares; null when it declares none (a chunked 200 from a host without ranges)
+    const declared = /\/(\d+)$/.exec(response.headers.get("content-range") ?? "")?.[1] ?? (response.status === 200 ? response.headers.get("content-length") : null);
+    const size = declared === null ? null : Number(declared);
     let received = 0;
     const reader = response.body?.getReader();
     try {
@@ -132,7 +134,7 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
     } finally {
       await reader?.cancel().catch(() => {});
     }
-    return size > 0 && received > 0 ? null : `${asset} is empty`;
+    return received > 0 && size !== 0 ? null : `${asset} is empty`;
   }))).filter((result) => result !== null);
   return unreachable.length > 0 ? [`remote-v${version} is not published: ${unreachable.join("; ")}. ${wait}`] : [];
 }

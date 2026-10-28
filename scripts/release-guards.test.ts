@@ -98,6 +98,18 @@ describe("publishedProblems", () => {
     expect((await publishedProblems(39, broken(() => new ReadableStream({ start(controller) { controller.close(); } }))))[0]).toContain(`${asset("linux-x64")} is empty`);
   });
 
+  it("passes an archive of undeclared size once its first byte arrives, and fails one that declares zero bytes", async () => {
+    /** a host without ranges: every archive answers 200 with `headers`, streaming one byte */
+    const whole = (headers: Record<string, string>): Get => async (url, init) => {
+      if (url === manifestUrl(39)) return github({ [manifestUrl(39)]: manifest("39") })(url, init);
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } }), { status: 200, headers });
+    };
+    const response = await whole({})(asset("linux-x64"), {});
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(await publishedProblems(39, whole({}))).toEqual([]);
+    expect((await publishedProblems(39, whole({ "content-length": "0" })))[0]).toContain(`${asset("linux-x64")} is empty`);
+  });
+
   it("fails a manifest remote PCs would refuse as too large, and one that is not JSON", async () => {
     const padded = JSON.stringify({ ...manifest("39"), padding: "x".repeat(1024 * 1024) });
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: padded, ...archives })))[0]).toContain("is larger than remote PCs accept");
