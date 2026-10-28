@@ -85,6 +85,9 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       // and a mark that pairs with nothing, as a glob or a path
       ["an unpaired asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` *socket"; })],
       ["an unpaired underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` _socket"; })],
+      // where Bun's parser and omp's part: omp draws an HTML entity and `~x~` as written
+      ["an HTML entity", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local`&#32;socket"; })],
+      ["single tildes", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` ~socket~"; })],
       // Markdown omp draws in its own way: a table
       ["a table in the question", withArgs(asks, (args) => { args.questions[0]!.question += "\n\n| a | b |\n|---|---|\n| 1 | 2 |"; })],
       ["another description", withArgs(asks, (args) => { args.questions[0]!.options[0]!.description = "Keeps the **session** elsewhere."; })],

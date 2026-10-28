@@ -71,6 +71,9 @@ const undrawn = (): never => { throw new Undrawn(); };
  * quote, a rule, HTML, a task list, a block inside a label): the card then stays as drawn.
  */
 function drawn(markdown: string, question: boolean): string | null {
+  // where Bun's parser and omp's part: Bun decodes every HTML entity and takes `~x~` as strikethrough,
+  // while omp draws them as written
+  if (/&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/i.test(markdown) || /(?<!~)~(?!~)[^~\n]*(?<!~)~(?!~)/.test(markdown)) return null;
   const block = <T>(draw: (children: string, meta: T) => string) => question ? draw : undrawn;
   try {
     return Bun.markdown.render(markdown, {
