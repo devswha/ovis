@@ -147,7 +147,8 @@ setInterval(() => {}, 1 << 30);
           for (const y of lines) {
             for (const x of columns) {
               // left of the edge is the run's own colour; right of it the next cell's, or the pane's when it has none
-              const expected = x < Math.round(edge) ? span.background : next.background ?? at(Math.min(shot.width - 1, Math.round(edge) + 3), y);
+              // (read at the row's far end, where no row of the sample reaches)
+              const expected = x < Math.round(edge) ? span.background : next.background ?? at(shot.width - 2, y);
               const stray = off(at(x, y), expected);
               if (stray > TOLERANCE) seams.push(`row ${index} after "${span.text}" x=${x} y=${y}: ${at(x, y).join(",")} vs ${expected.join(",")}`);
             }
