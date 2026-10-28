@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { Machine, MachineEvent } from "../shared/machines.ts";
 import { paneTokenValues, type AgentRowTokens } from "../shared/pane-tokens.ts";
-import { agentRowTokens, decidedRowTokens, HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
+import { agentRowTokens, decidedRowTokens, HerdrSidebarConfig, herdrConfigPath, reportedTokenValues } from "./herdr-sidebar.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
@@ -119,7 +119,7 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
       { pane_id: "w1:p3", agent: "codex" },
     ];
     const agents = [{ pane_id: "w1:p3", agent: "codex", tokens: { quota: "5h 10% · Wk 9%", load: 99 } }];
-    const told = decidedRowTokens(raw, [machineWith(panes, agents), { id: "away", state: "disconnected", snapshot: null } as unknown as Machine]);
+    const told = decidedRowTokens(raw, reportedTokenValues([machineWith(panes, agents), { id: "away", state: "disconnected", snapshot: null } as unknown as Machine]));
     expect(told).toEqual({
       rows: [
         { name: "quota", rules: [{ equals: "5h 100% · Wk 3%", hide: true }] },
@@ -140,8 +140,11 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
       }
     }
     // no rows, or no value a rule hides: nothing to decide
-    expect(decidedRowTokens(null, [machineWith(panes)])).toBeNull();
-    expect(decidedRowTokens(raw, [])).toEqual({
+    // values from two rosters are decided together
+    expect(decidedRowTokens(raw, reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "81" } }])]), reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "95" } }])]))?.rows?.[1])
+      .toEqual({ name: "load", rules: [{ equals: "81", hide: true }, { equals: "95", hide: true }] });
+    expect(decidedRowTokens(null, reportedTokenValues([machineWith(panes)]))).toBeNull();
+    expect(decidedRowTokens(raw)).toEqual({
       rows: [{ name: "quota" }, { name: "load" }, { name: "eta" }, { name: "eta" }, { name: "model" }],
       by_agent: { codex: [{ name: "quota" }] },
     });
@@ -292,7 +295,12 @@ describe("the machine events", () => {
     const path = configFile(`[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ equals = "private-literal", hide = true }, { starts_with = "off", hide = true }] }]]`);
     const config = new HerdrSidebarConfig(path, 10);
     let roster: ((event: MachineEvent) => void) | undefined;
-    const tell = (quota: string) => roster!({ type: "machines", machines: [machineWith([{ pane_id: "w1:p1", agent: "claude", tokens: { quota } }])] });
+    // as MachineManager does: the same machine each time, its snapshot replaced in place
+    const machine = machineWith([]);
+    const tell = (quota: string) => {
+      machine.snapshot = machineWith([{ pane_id: "w1:p1", agent: "claude", tokens: { quota } }]).snapshot;
+      roster!({ type: "machines", machines: [machine] });
+    };
     // as MachineManager does: a new listener hears the roster at once
     const manager = { subscribe: (listener: (event: MachineEvent) => void) => { roster = listener; tell("5h 95%"); return () => undefined; } } as unknown as MachineManager;
     const abort = new AbortController();

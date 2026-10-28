@@ -137,15 +137,10 @@ export function agentRowTokens(config: unknown): AgentRowTokens | null {
 }
 
 /**
- * What browsers are told of the rows (#1349): the rows' tokens as they are, with each place's hide
- * rules decided here for the values the PCs' panes and agents report in `machines`: one `equals`
- * rule that hides for each such value they hide, and no rule where they hide none. The rules' own
- * operands (a literal no pane reports, a number's bound) stay on this PC, while a browser, an older
- * one too, draws the same tokens for those values (shared/pane-tokens.ts paneTokenValues). A value
- * reported after `machines` is drawn until the rows are told again with it.
+ * The token values the PCs' panes and agents report in `machines`, by token name, read now: the
+ * manager's machines are changed in place, so a roster kept for later is kept as this.
  */
-export function decidedRowTokens(layout: AgentRowTokens | null, machines: readonly Machine[]): AgentRowTokens | null {
-  if (layout === null) return null;
+export function reportedTokenValues(machines: readonly Machine[]): Map<string, Set<string>> {
   const reported = new Map<string, Set<string>>();
   for (const { snapshot } of machines) {
     for (const { tokens } of [...snapshot?.panes ?? [], ...snapshot?.agents ?? []]) {
@@ -156,8 +151,22 @@ export function decidedRowTokens(layout: AgentRowTokens | null, machines: readon
       }
     }
   }
+  return reported;
+}
+
+/**
+ * What browsers are told of the rows (#1349): the rows' tokens as they are, with each place's hide
+ * rules decided here for the values reported (reportedTokenValues, of one roster or of several):
+ * one `equals` rule that hides for each such value they hide, and no rule where they hide none. The
+ * rules' own operands (a literal no pane reports, a number's bound) stay on this PC, while a
+ * browser, an older one too, draws the same tokens for those values (shared/pane-tokens.ts
+ * paneTokenValues). A value reported later is drawn until the rows are told again with it.
+ */
+export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: ReadonlyMap<string, ReadonlySet<string>>[]): AgentRowTokens | null {
+  if (layout === null) return null;
+  const valuesOf = (name: string): string[] => [...new Set(reported.flatMap((values) => [...values.get(name) ?? []]))];
   const decide = (specs: PaneTokenSpec[]): PaneTokenSpec[] => specs.map(({ name, rules }) => {
-    const hidden = rules === undefined ? [] : [...reported.get(name) ?? []].filter((value) => rules.find((rule) => paneTokenRuleMatches(rule, value))?.hide).sort();
+    const hidden = rules === undefined ? [] : valuesOf(name).filter((value) => rules.find((rule) => paneTokenRuleMatches(rule, value))?.hide).sort();
     return hidden.length === 0 ? { name } : { name, rules: hidden.map((value) => ({ equals: value, hide: true })) };
   });
   return { rows: layout.rows && decide(layout.rows), by_agent: Object.fromEntries(Object.entries(layout.by_agent).map(([agent, specs]) => [agent, decide(specs)])) };

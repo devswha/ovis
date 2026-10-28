@@ -1,4 +1,4 @@
-import type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, SetupAction, SetupRequest } from "../shared/machines.ts";
+import type { DevicePairedEvent, MachineEvent, MachineRoster, SetupAction, SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
@@ -7,7 +7,7 @@ import { MachineManager } from "./machines.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { crossSiteFileRead } from "./file-view.ts";
-import { decidedRowTokens } from "./herdr-sidebar.ts";
+import { decidedRowTokens, reportedTokenValues } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
@@ -114,11 +114,11 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           // stream. That decision also covers the values of the roster the browser holds until the new one lands.
           // Read before listening: a change this read finds is told to the browsers already listening, and to this one once.
           let rows = herdrSidebar?.get() ?? null;
-          let reported: readonly Machine[] = [];
+          let reported = new Map<string, Set<string>>();
           let toldSidebar: string | undefined;
-          const sidebarFrame = (machines: readonly Machine[]): string => {
+          const sidebarFrame = (...values: Map<string, Set<string>>[]): string => {
             if (!herdrSidebar) return "";
-            const told = JSON.stringify({ type: "herdr-sidebar", agents: decidedRowTokens(rows, machines) } satisfies MachineEvent);
+            const told = JSON.stringify({ type: "herdr-sidebar", agents: decidedRowTokens(rows, ...values) } satisfies MachineEvent);
             if (told === toldSidebar) return "";
             toldSidebar = told;
             return `data: ${told}\n\n`;
@@ -126,8 +126,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           const sendSidebar = () => { const frame = sidebarFrame(reported); if (frame) send(frame); };
           stop = manager.subscribe((event) => {
             if (event.type !== "machines") { send(`data: ${JSON.stringify(event)}\n\n`); return; }
-            const frame = sidebarFrame([...reported, ...event.machines]);
-            reported = event.machines;
+            const incoming = reportedTokenValues(event.machines);
+            const frame = sidebarFrame(reported, incoming);
+            reported = incoming;
             send(`${frame}data: ${JSON.stringify(event)}\n\n`);
           });
           // the shared preferences ride the same stream, one connection per browser; the document
