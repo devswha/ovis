@@ -20,6 +20,7 @@ import { forgetHistoryChains } from "./codex.ts";
 import { DevinHistoryChanged } from "./devin.ts";
 import * as omo from "./omo.ts";
 import { claudeProjectDir } from "./claude-store.ts";
+import { launchedAgents } from "./launched-agents.ts";
 import { claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
@@ -2553,9 +2554,11 @@ describe("a Codex pane that reported no session yet", () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-fresh-"));
     const pane = { pane_id: "codex-fresh", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "idle" } as HerdrPane;
     let screen = FRESH;
+    let scrolledUp = 0;
     const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot);
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
-      ? { agent: { agent: "codex" } } : { process_info: { foreground_processes: [{ argv: ["codex"] }] } }) as never);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get" ? { agent: { agent: "codex" } }
+      : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 30, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [{ argv: ["codex"] }] } }) as never);
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as never);
     try {
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({
@@ -2564,6 +2567,12 @@ describe("a Codex pane that reported no session yet", () => {
       // switched with /model: the status line says the new one
       screen = FRESH.replace("GPT-6.1-Sol low", "GPT-6-Sol high");
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({ screen: { model: "gpt-6-sol", reasoning_effort: "high" } });
+      // scrolled up by a device, the viewport is history, perhaps an older frame: no model is named
+      scrolledUp = 3;
+      const scrolled = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
+      expect(scrolled).toBeInstanceOf(ConversationUnavailable);
+      expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
+      scrolledUp = 0;
       // a picker hiding the footer leaves the model unknown, whatever its options say
       screen = "  >_ OpenAI Codex (v0.163.0)\n  Select Model and Effort\n› 1. GPT-6.1-Sol (default) (current)\n  GPT-6-Sol high · /tmp/project";
       const picker = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
@@ -2588,7 +2597,7 @@ describe("a Codex pane that reported no session yet", () => {
     const pane = { pane_id: "codex-greet", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
     let screen = FRESH;
     let argv = ["codex"];
-    // what a detection read of a short screen also reaches up to, and the rows a device scrolled up by
+    // what a detection read of a short screen also reaches up to (never what decides), and the rows a device scrolled up by
     let above = "";
     let scrolledUp = 0;
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
@@ -2608,9 +2617,11 @@ describe("a Codex pane that reported no session yet", () => {
       expect(await ask()).toMatchObject({ history_id: greeting.history_id });
       above = "";
       // scrolled up by a device, the viewport is history: nothing proves the start screen, the terminal
-      // stands in, still with the model the live footer states
+      // stands in, naming no model until the viewport is back at the bottom
       scrolledUp = 3;
-      expect(await ask()).toMatchObject({ name: "ConversationUnavailable", screen: { model: "gpt-6.1-sol", reasoning_effort: "low" } });
+      const scrolled = await ask();
+      expect(scrolled).toBeInstanceOf(ConversationUnavailable);
+      expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
       scrolledUp = 0;
       // a store whose threads of this folder all ended before this Codex started
       const db = new Database(join(home, "state_5.sqlite"));
@@ -2755,6 +2766,54 @@ describe("a Codex pane that reported no session yet", () => {
       await Promise.all(children.map((child) => child.exited));
       snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// herdr's detection read of a short screen reaches up into the history above it (herdr 0.9.5): what an
+// agent drew there before is not what its screen shows now, so it never names the model (#2163 review)
+describe("a model drawn only in the history above the live screen", () => {
+  const homes = { HOME: process.env["HOME"], CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] };
+  let root: string;
+  const mocks: { mockRestore(): void }[] = [];
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "herdr-screen-history-"));
+    mkdirSync(join(root, ".codex"));
+    process.env["HOME"] = root;
+    process.env["CLAUDE_CONFIG_DIR"] = join(root, ".claude");
+  });
+  afterEach(() => {
+    for (const mock of mocks.splice(0)) mock.mockRestore();
+    launchedAgents.forget("screen-history-claude");
+    forgetTranscriptState();
+    for (const [name, value] of Object.entries(homes)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    rmSync(root, { recursive: true, force: true });
+  });
+  /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`. */
+  const shown = (agent: string, status: string, history: string, live: string): string => {
+    const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
+    mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
+    mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
+      if (method === "agent.get") return { agent: { agent } } as never;
+      if (method === "pane.get") return { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 40 } } } as never;
+      if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
+      throw new Error(`unexpected RPC: ${method}`);
+    }));
+    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? history + live : live }) as never));
+    return pane.pane_id;
+  };
+
+  it("names no model from an older Claude banner while the live screen asks to trust a folder", async () => {
+    const id = shown("claude", "blocked", " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n",
+      "Accessing workspace\nIs this a project you created or one you trust?\n\u276f 1. Yes, I trust this folder\n");
+    launchedAgents.launched(id, "claude");
+    expect((await paneConversation(id, join(root, ".codex"))).metadata?.model).toBeNull();
+  });
+
+  it("names no model from an older Codex footer above a cleared live screen", async () => {
+    const id = shown("codex", "working", "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6-Luna medium \u00b7 /tmp/project\n  ? for shortcuts\n", "\n\n\n\n\n\n\n");
+    const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
+    expect(answer).toBeInstanceOf(ConversationUnavailable);
+    expect((answer as ConversationUnavailable).screen).toBeUndefined();
   });
 });
 
