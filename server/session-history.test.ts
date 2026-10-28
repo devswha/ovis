@@ -489,6 +489,16 @@ describe("listSessions", () => {
     expect(looked.filter((path) => !isAbsolute(path))).toEqual([]);
   });
 
+  it("counts Windows Hermes's home probes against the listing's checks", () => {
+    const home = newHome();
+    const looked: string[] = [];
+    const stat = (path: string, bigint?: boolean) => { looked.push(path); return statAs(path, bigint); };
+    expect(listSessions("hermes", CWD, { home, env: { LOCALAPPDATA: join(home, "Local") }, platform: "win32", spent: MAX_STATS, stat })).toEqual([]);
+    expect(looked).toEqual([]);
+    listSessions("hermes", CWD, { home, env: { LOCALAPPDATA: join(home, "Local") }, platform: "win32", stat });
+    expect(looked).toContain(join(home, "Local", "hermes", "state.db"));
+  });
+
   it("looks in USERPROFILE on Windows when no home is given, even with HOME set", () => {
     const profile = newHome();
     install("hermes", profile);

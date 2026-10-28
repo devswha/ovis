@@ -1053,7 +1053,7 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
         const data = join(env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
         return opencodeSessions(cwds, named ? dirname(named) : data, named ?? opencodeDatabasePath(env, home), budget);
       }
-      case "hermes": return hermesSessions(cwds, options.hermesHome ?? hermesHome(home, env, budget.platform), budget);
+      case "hermes": return hermesSessions(cwds, options.hermesHome ?? hermesHome(home, env, budget.platform, (path) => budget.stat(path) !== null), budget);
       case "devin": return devinSessions(cwds, join(env["XDG_DATA_HOME"] || join(home, ".local", "share"), "devin", "cli", "sessions.db"), budget);
       case "grok": return grokSessions(cwds, home, env, budget, read);
       case "agy": return agySessions(cwds, home, budget, read);

@@ -18,6 +18,6 @@ export function platformHermesHome(home = userHome(), env: Record<string, string
 }
 
 /** HERMES_HOME when set, otherwise Hermes's own platform default. */
-export function hermesHome(home = userHome(), env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): string {
-  return env["HERMES_HOME"] || platformHermesHome(home, env, platform);
+export function hermesHome(home = userHome(), env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform, exists: (path: string) => boolean = existsSync): string {
+  return env["HERMES_HOME"] || platformHermesHome(home, env, platform, exists);
 }
