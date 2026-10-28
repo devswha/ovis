@@ -55,24 +55,20 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     const own = only((index) => prompt.options[index]!.label);
     return own !== undefined ? own : only((index) => words.label(index));
   };
-  // a number picks its row, unless a row shows that number as its name: words that name another option,
-  // or several, pick none (an omp card's `` `2` ``, typed as "2", is not the second row)
-  const picks = (token: string, index: number): boolean => {
+  // One rule for a single and a multiple choice. The whole text first: a row's shown name picks that row
+  // alone, words several rows show pick none. Only words no row shows are read as numbers, and each number
+  // must then name no other row: an omp card's `` `2` `` or `` `1 2` ``, typed, is that row, never rows 2 or 1 and 2
+  const whole = nameOf(value);
+  if (whole === null) return typed();
+  if (whole !== undefined) return prompt.multi_select ? { option_indices: [whole] } : { option_index: whole };
+  const tokens = prompt.multi_select ? value.split(/[\s,]+/).filter(Boolean) : [value];
+  const indices = tokens.map(byNumber);
+  const own = (token: string, index: number | null): boolean => {
     const named = nameOf(token);
-    return named === undefined || named === index;
+    return index !== null && (named === undefined || named === index);
   };
-  if (prompt.multi_select) {
-    const tokens = value.split(/[\s,]+/).filter(Boolean);
-    const indices = tokens.map(byNumber);
-    if (!indices.every((index) => index !== null)) return typed();
-    // each number, as on a single choice: one that is another row's shown name refuses the whole answer
-    if (!tokens.every((token, at) => picks(token, indices[at]!))) return typed();
-    return { option_indices: [...new Set(indices as number[])] };
-  }
-  const numbered = byNumber(value);
-  if (numbered !== null) return picks(value, numbered) ? { option_index: numbered } : typed();
-  const named = nameOf(value);
-  return typeof named === "number" ? { option_index: named } : typed();
+  if (!tokens.every((token, at) => own(token, indices[at]!))) return typed();
+  return prompt.multi_select ? { option_indices: [...new Set(indices as number[])] } : { option_index: indices[0]! };
 }
 
 function range(prompt: InteractivePrompt): string {

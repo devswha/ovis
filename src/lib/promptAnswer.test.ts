@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
-import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin } from "./promptAnswer.ts";
+import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin, type TypedAnswer } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
   id: "p", agent: "claude", kind: "question", title: "Question", question: "?", body: null,
@@ -87,29 +87,64 @@ describe("answering a prompt from the chat", () => {
     const linked = { ...prompt(["Keep [production](recommended)", "Keep [production]"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(linked, "Keep production")).toEqual({ option_index: 0 });
     expect(answerFromText(linked, "Keep [production]")).toEqual({ option_index: 1 });
-    // a number that is also an option's shown name: the number picks only where no other row reads so (#2220 review)
+    // words that are a row's shown name pick that row, before any number (#2220 review)
     const numeral = { ...prompt(["`2`", "Keep production"], 2), agent: "omp", text_format: "markdown" as const };
-    expect(answerFromText(numeral, "2")).toEqual({ custom_text: "2" });
+    expect(answerFromText(numeral, "2")).toEqual({ option_index: 0 });
     expect(answerFromText(numeral, "1")).toEqual({ option_index: 0 });
     const numerals = { ...prompt(["`2`", "**2**"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(numerals, "2")).toEqual({ custom_text: "2" });
-    // with no typed answer, such words are refused rather than sent as a pick
-    expect(answerFromText({ ...numeral, custom_option_index: null, options: numeral.options.slice(0, 2) }, "2")).toBeNull();
+    // and so with no typed answer, never the second row
+    expect(answerFromText({ ...numeral, custom_option_index: null, options: numeral.options.slice(0, 2) }, "2")).toEqual({ option_index: 0 });
     // the row whose name is its own number is that pick
     expect(answerFromText(prompt(["1", "2"], null), "2")).toEqual({ option_index: 1 });
     // and the same on a multiple choice, for each number: one that names another row, or several, refuses the answer
     const multiNumeral = { ...prompt(["`2`", "Keep production"], null, true), agent: "omp", text_format: "markdown" as const };
-    expect(answerFromText(multiNumeral, "2")).toBeNull();
+    expect(answerFromText(multiNumeral, "2")).toEqual({ option_indices: [0] });
     expect(answerFromText(multiNumeral, "1 2")).toBeNull();
     const multiNumerals = { ...prompt(["`2`", "**2**"], null, true), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(multiNumerals, "2")).toBeNull();
-    expect(answerFromText({ ...multiNumeral, custom_option_index: 2, options: [...multiNumeral.options, { label: "Other", description: null }] }, "2")).toEqual({ custom_text: "2" });
+    expect(answerFromText({ ...multiNumeral, custom_option_index: 2, options: [...multiNumeral.options, { label: "Other", description: null }] }, "1 2")).toEqual({ custom_text: "1 2" });
     // plain numbers still choose, and a row named after its own number is that row
     expect(answerFromText(prompt(["Desktop", "Phone", "Tablet"], null, true), "1 3")).toEqual({ option_indices: [0, 2] });
     expect(answerFromText(prompt(["1", "2"], null, true), "2")).toEqual({ option_indices: [1] });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
     expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });
+  });
+  it("matches the whole typed text to the shown names first, and reads numbers only from text that names no row (#2220 review)", () => {
+    type Case = [name: string, labels: string[], multi: boolean, other: boolean, typed: string, expected: TypedAnswer | null];
+    const custom = (text: string): TypedAnswer => ({ custom_text: text });
+    const cases: Case[] = [
+      // the whole text is a row's shown name: that row alone
+      ["multi: `1 2` named whole", ["Keep production", "`1 2`"], true, false, "1 2", { option_indices: [1] }],
+      ["multi: `1,2` named whole", ["Keep production", "`1,2`"], true, false, "1,2", { option_indices: [1] }],
+      ["single: `2` named whole", ["`2`", "Keep production"], false, true, "2", { option_index: 0 }],
+      ["single: a row's own number", ["1", "2"], false, false, "2", { option_index: 1 }],
+      ["multi: a row's own number", ["1", "2"], true, false, "2", { option_indices: [1] }],
+      // the whole text names several rows: none
+      ["multi: `1 2` beside **1 2**", ["`1 2`", "**1 2**"], true, false, "1 2", null],
+      ["single: `2` beside **2**", ["`2`", "**2**"], false, true, "2", custom("2")],
+      ["multi: `2` beside **2**", ["`2`", "**2**"], true, false, "2", null],
+      ["single: spacing twins", ["Keep **production**", "Keep  **production**"], false, true, "Keep production", custom("Keep production")],
+      ["single: case twins", ["Retry", "retry"], false, false, "retry", null],
+      // no row is named so: numbers, each naming no other row
+      ["multi: plain numbers", ["Desktop", "Phone", "Tablet"], true, false, "1 3", { option_indices: [0, 2] }],
+      ["multi: numbers with a comma", ["Desktop", "Phone", "Tablet"], true, false, "1,3", { option_indices: [0, 2] }],
+      ["multi: a number that is another row's name", ["`2`", "Keep production"], true, false, "1 2", null],
+      ["single: a plain number", ["Desktop", "Phone"], false, true, "2", { option_index: 1 }],
+      ["single: a number past the rows", ["Desktop", "Phone"], false, true, "5", custom("5")],
+      // Markdown twins and shown words from the earlier rounds
+      ["single: a glob pair", ["Keep *.log and *.tmp", "Keep .log and .tmp"], false, true, "Keep .log and .tmp", custom("Keep .log and .tmp")],
+      ["single: a link to `recommended`", ["Keep [production](recommended)", "Keep [production]"], false, true, "Keep [production]", { option_index: 1 }],
+      ["single: emphasis beside code", ["*main*", "`*main*`"], false, true, "*main*", { option_index: 1 }],
+      ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
+    ];
+    for (const [name, labels, multi, other, typed, expected] of cases) {
+      const card: InteractivePrompt = {
+        ...prompt(other ? [...labels, "Other"] : labels, other ? labels.length : null, multi), agent: "omp", text_format: "markdown",
+      };
+      expect(answerFromText(card, typed), name).toEqual(expected);
+    }
   });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);
