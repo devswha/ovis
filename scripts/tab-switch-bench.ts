@@ -28,10 +28,11 @@ const arg = (name: string, fallback: string): string => {
   return at > 0 && process.argv[at + 1] ? process.argv[at + 1]! : fallback;
 };
 const ROUNDS = Number(arg("rounds", "5"));
+if (!Number.isInteger(ROUNDS) || ROUNDS < 1) throw new Error(`--rounds must be a positive integer, not ${arg("rounds", "5")}`);
 const OUT = arg("out", "");
 const LABEL = arg("label", "");
-/** tabs per round: the first one shown, eight cold switches, then one more so the 8th-back is never the first */
-const TABS = 10;
+/** tabs per round: the first one shown, then eight never shown */
+const TABS = 9;
 const VIEWPORTS = {
   desktop: { viewport: { width: 1280, height: 800 } },
   phone: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },

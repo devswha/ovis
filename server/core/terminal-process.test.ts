@@ -18,6 +18,9 @@ describe("attachScreenStarted", () => {
       const output = SETUP + TEARDOWN + line;
       for (let end = 0; end <= output.length; end++) expect([end, attachScreenStarted(output.slice(0, end))]).toEqual([end, false]);
     }
+    // a teardown with control sequences or a line break 0.9.5 does not write still waits
+    const other = `${SETUP}\x1b[>4;0m\x1b[<u${TEARDOWN}\r\n${REFUSALS[0]}`;
+    for (let end = 0; end <= other.length; end++) expect([end, attachScreenStarted(other.slice(0, end))]).toEqual([end, false]);
     // the words of a takeover's diagnostic without herdr's prefix
     expect(attachScreenStarted("terminal attach taken over\r\n")).toBe(false);
   });

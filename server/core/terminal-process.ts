@@ -41,19 +41,24 @@ export const ATTACH_HOLD_MS = 100;
  * not start the hold. A refusal and a screen both begin with something else.
  */
 const ATTACH_PREAMBLE_RE = /^(?:\x1b\[(?:\?[\d;]+[hl]|\d* q))*(?:\x1b(?:\[(?:\?[\d;]*|\d+ ?| )?)?)?$/;
-/** the whole mode sets and resets of that preamble */
-const ATTACH_PREAMBLE_HEAD_RE = /^(?:\x1b\[(?:\?[\d;]+[hl]|\d* q))*/;
-/** how herdr's refusal line starts: its CLI's error prefix, or the bare words. A screen starts otherwise (an escape, the pane's text). */
+/**
+ * Whole control sequences (any CSI) and line breaks: what a refusal's teardown may hold before its
+ * line, wider than the preamble so that a herdr whose teardown adds one is still never taken for a screen
+ */
+const ATTACH_CONTROL_HEAD_RE = /^(?:\x1b\[[0-?]*[ -/]*[@-~]|[\r\n])*/;
+/** a control sequence not ended yet */
+const ATTACH_CONTROL_PARTIAL_RE = /^\x1b(?:\[[0-?]*[ -/]*)?$/;
+/** how herdr's refusal line starts: its CLI's error prefix, or the bare words. A screen starts otherwise (an OSC, the pane's text). */
 const ATTACH_REFUSAL_LEADS = ["herdr: ", "terminal attach"];
 
 /**
- * Output past the preamble that no refusal line can start with: herdr is drawing the screen, so the
- * attach took and its bytes need not wait out the hold (#1642). Anything a refusal may still turn
- * out to be (`h`, `herdr: ser`) waits.
+ * Output past the control sequences that no refusal line can start with: herdr is drawing the
+ * screen, so the attach took and its bytes need not wait out the hold (#1642). Anything a refusal
+ * may still turn out to be (`h`, `herdr: ser`, a sequence cut short) waits.
  */
 export function attachScreenStarted(held: string): boolean {
-  if (ATTACH_PREAMBLE_RE.test(held)) return false;
-  const rest = held.replace(ATTACH_PREAMBLE_HEAD_RE, "");
+  const rest = held.replace(ATTACH_CONTROL_HEAD_RE, "");
+  if (rest === "" || ATTACH_CONTROL_PARTIAL_RE.test(rest)) return false;
   return !ATTACH_REFUSAL_LEADS.some((lead) => rest.startsWith(lead) || lead.startsWith(rest));
 }
 /** how often a terminal another web bridge holds is tried again, while clients here still want it */
