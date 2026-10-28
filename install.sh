@@ -252,11 +252,22 @@ install_node() {
   rm -rf "$NODE_DIR.old" "$tmp"
 }
 
-# Whether the node first on PATH is one the Node sidecar takes (server/pty/sidecar.ts isRealNode):
-# Node 18 or newer, not Bun, built for this PC ($arch). An x64 Node left from a Rosetta shell on an
-# arm64 Mac answers 18+ but cannot load the server's node-pty.
+# The architecture the server runs on: that of the Bun that runs it. Bun's installer picks arm64 on
+# an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the Node install_node
+# downloads and node_fits accepts follow Bun, not uname.
+server_arch() {
+  server=$(bounded 5 bun -p process.arch 2>/dev/null) || server=""
+  case "$server" in
+    x64 | arm64) arch=$server; platform="$os-$arch" ;;
+  esac
+}
+
+# Whether the node $1 (a path, or a name on PATH) is one the Node sidecar takes (server/pty/sidecar.ts
+# isRealNode): Node 18 or newer, not Bun, built for the server's architecture ($arch, server_arch).
+# Bounded, as the server's probe is: a node that keeps running (a NODE_OPTIONS preload) cannot hold
+# the install.
 node_fits() {
-  fit=$(node -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' 2>/dev/null) || return 1
+  fit=$(bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' 2>/dev/null) || return 1
   fit_major=${fit%% *}
   case "$fit_major" in '' | *[!0-9]*) return 1 ;; esac
   [ "$fit_major" -ge 18 ] && [ "${fit#* }" = "$arch" ]
@@ -384,6 +395,7 @@ main() {
     [ -e "$BIN_DIR/bun" ] || ln -s "$HOME/.bun/bin/bun" "$BIN_DIR/bun"
     installed_here="$installed_here bun"
   fi
+  server_arch
 
   # The ref to install is settled before anything moves: a release from before the rename still
   # names the plugin by its old id, and installing it cannot move an install to the new one
@@ -465,9 +477,9 @@ main() {
   needs_node=""
   if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
     needs_node=needed
-    # our own Node counts here: on this PATH it goes before the user's
-    # optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
-    if ! node_fits && ! ( install_node ); then
+    # the app's own Node first, as the server looks (server/pty/sidecar.ts realNode), then the PATH's.
+    # Optional now: a Node that cannot be installed leaves the panes mirrored, never the install unfinished
+    if ! node_fits "$NODE_DIR/bin/node" && ! node_fits "$LEGACY_NODE_DIR/bin/node" && ! node_fits node && ! ( install_node ); then
       say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
     fi
   fi

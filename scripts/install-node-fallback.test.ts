@@ -16,7 +16,9 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "node_fits", "node_link"].map(fn).join("\n");
+const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "server_arch", "node_fits", "node_link"].map(fn).join("\n");
+/** main()'s choice of whether to install Node, as written there: from `needs_node=""` to its node_link call */
+const NODE_DECISION = /^ {2}needs_node=""[\s\S]*?^ {2}node_link "\$code" "\$needs_node"$/m.exec(INSTALLER)?.[0] ?? "";
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-node-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -125,7 +127,7 @@ describe("node_fits", () => {
   const fits = (answer: string, arch = "arm64") => {
     const bin = mkdtempSync(join(dir, "fits-"));
     writeFileSync(join(bin, "node"), `#!/bin/sh\necho '${answer}'\n`, { mode: 0o755 });
-    return sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${bin}:/usr/bin:/bin`, arch }).out.trim();
+    return sh(`if node_fits node; then echo FITS; else echo NO; fi`, { PATH: `${bin}:/usr/bin:/bin`, arch }).out.trim();
   };
 
   it("takes Node 18 or newer built for this PC", () => {
@@ -139,8 +141,15 @@ describe("node_fits", () => {
     // an x64 Node from a Rosetta shell on an arm64 Mac, which the server's node-pty cannot load (#2100 review)
     expect(fits("22 x64")).toBe("NO");
     expect(fits("")).toBe("NO");
-    // no node at all: node_fits uses shell builtins only, so a PATH of one empty directory is enough
-    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: mkdtempSync(join(dir, "no-node-")), arch: "arm64" }).out.trim()).toBe("NO");
+    expect(sh(`if node_fits /nonexistent/node; then echo FITS; else echo NO; fi`, { arch: "arm64" }).out.trim()).toBe("NO");
+  });
+
+  it("gives up on a node that answers and then keeps running, within its bound (#2100 review: a NODE_OPTIONS preload)", () => {
+    const bin = mkdtempSync(join(dir, "fits-"));
+    writeFileSync(join(bin, "node"), "#!/bin/sh\necho '22 arm64'\nexec sleep 60\n", { mode: 0o755 });
+    const result = sh(`if node_fits ${join(bin, "node")}; then echo FITS; else echo NO; fi`, { arch: "arm64" });
+    expect(result.out.trim()).toBe("NO");
+    expect(result.ms).toBeLessThan(10_000);
   });
 
   it("asks a real Node the same way", () => {
@@ -148,7 +157,56 @@ describe("node_fits", () => {
     if (real === null) throw new Error("this test needs Node");
     // what this node itself says, not this Bun's own process.versions
     const [version, arch] = Bun.spawnSync([real, "-p", "process.versions.node + ' ' + process.arch"]).stdout.toString().trim().split(" ");
-    expect(sh(`if node_fits; then echo FITS; else echo NO; fi`, { PATH: `${join(real, "..")}:/usr/bin:/bin`, arch: arch! }).out.trim()).toBe(Number(version!.split(".")[0]) >= 18 ? "FITS" : "NO");
+    expect(sh(`if node_fits ${real}; then echo FITS; else echo NO; fi`, { arch: arch! }).out.trim()).toBe(Number(version!.split(".")[0]) >= 18 ? "FITS" : "NO");
+  });
+});
+
+describe("server_arch", () => {
+  /** arch and platform after server_arch, on a PC whose uname said `uname`, with a bun answering `answer` */
+  const after = (answer: string, uname = "x64") => {
+    const bin = mkdtempSync(join(dir, "bun-"));
+    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho '${answer}'\n`, { mode: 0o755 });
+    return sh(`server_arch\necho "$arch $platform"`, { PATH: `${bin}:/usr/bin:/bin`, arch: uname, os: "darwin", platform: `darwin-${uname}` }).out.trim();
+  };
+
+  it("takes the architecture of the Bun that runs the server over uname's, as from a Rosetta shell on an arm64 Mac (#2100 review)", () => {
+    expect(after("arm64")).toBe("arm64 darwin-arm64");
+    expect(after("x64", "x64")).toBe("x64 darwin-x64");
+  });
+
+  it("keeps uname's when Bun does not answer with one it knows", () => {
+    expect(after("ia32")).toBe("x64 darwin-x64");
+    expect(after("")).toBe("x64 darwin-x64");
+  });
+});
+
+describe("main's choice to install Node", () => {
+  /** runs that choice with the Rust host refused, the app's Node and the user's PATH node answering as given; true when it downloads */
+  const downloads = (app: string | null, user: string | null) => {
+    const root = mkdtempSync(join(dir, "choice-"));
+    const nodeDir = join(root, "share/ovis/node");
+    const userBin = join(root, "user-bin");
+    mkdirSync(join(nodeDir, "bin"), { recursive: true });
+    mkdirSync(userBin);
+    if (app !== null) writeFileSync(join(nodeDir, "bin/node"), `#!/bin/sh\necho '${app}'\n`, { mode: 0o755 });
+    if (user !== null) writeFileSync(join(userBin, "node"), `#!/bin/sh\necho '${user}'\n`, { mode: 0o755 });
+    const run = sh(`rust_host_runs() { return 1; }\ninstall_node() { echo DOWNLOADED; }\nnode_link() { :; }\n${NODE_DECISION}`, {
+      PATH: `${userBin}:/usr/bin:/bin`, NODE_DIR: nodeDir, LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), code: root, arch: "arm64" });
+    expect(run.code).toBe(0);
+    return run.out.includes("DOWNLOADED");
+  };
+
+  it("keeps the app's own Node when it fits, whatever node the PATH has first (#2100 review)", () => {
+    expect(NODE_DECISION).not.toBe("");
+    expect(downloads("22 arm64", "22 x64")).toBe(false);
+    expect(downloads("22 arm64", null)).toBe(false);
+  });
+
+  it("takes the PATH's node when the app has none that fits, and downloads only when neither does", () => {
+    expect(downloads(null, "20 arm64")).toBe(false);
+    expect(downloads("22 x64", "20 arm64")).toBe(false);
+    expect(downloads("22 x64", "16 arm64")).toBe(true);
+    expect(downloads(null, null)).toBe(true);
   });
 });
 
