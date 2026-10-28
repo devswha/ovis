@@ -164,12 +164,20 @@ describe("omp tool approval (#2059)", () => {
     for (const [drawn, approve, deny] of [
       ["\u{f0634} \u{f0311}/\u{f0634} Q approve \u00b7 \u{f12b7} deny", "ctrl+q", KEY.escape],
       ["\u2303\u23ce/\u2303Q approve \u00b7 \u238b deny", "ctrl+q", KEY.escape],
-      ["Ctrl+\u23ce approve \u00b7 \u238b deny", "ctrl+enter", KEY.escape],
-      ["\u2325\u21e7A approve \u00b7 Ctrl+C deny", "alt+shift+a", "ctrl+c"],
+      ["Ctrl+A approve \u00b7 Ctrl+C deny", "ctrl+a", "ctrl+c"],
     ] as const) {
       const prompt = parseInteractivePrompt("omp", redraw(shown, hint, drawn));
       expect(steps(prompt, 0), drawn).toEqual([{ keys: [approve] }]);
       expect(steps(prompt, 1), drawn).toEqual([{ keys: [deny] }]);
+    }
+    // 18.10 has no rows to move to: a key a legacy terminal can deliver as another (Ctrl+J/M, Ctrl+\u23ce and \u21e7\u23ce as
+    // Enter) answers nothing, or the wrong way when Enter approves; a chord like \u2325\u21e7A may not arrive as drawn
+    for (const drawn of [
+      "Ctrl+\u23ce approve \u00b7 \u238b deny", "\u2325\u21e7A approve \u00b7 Ctrl+C deny",
+      "\u23ce approve \u00b7 Ctrl+J deny", "Ctrl+Q/\u23ce approve \u00b7 Ctrl+M deny",
+      "Ctrl+Q approve \u00b7 Ctrl+\u23ce deny", "Ctrl+Q approve \u00b7 \u21e7\u23ce deny", "Ctrl+Q approve \u00b7 Ctrl+I deny",
+    ]) {
+      expect(parseInteractivePrompt("omp", redraw(shown, hint, drawn)), drawn).toBeNull();
     }
   });
 
@@ -189,8 +197,8 @@ describe("omp tool approval (#2059)", () => {
       expect(steps(own, 0), approve).toEqual([{ keys: [KEY.enter] }]);
       expect(steps(own, 2), approve).toEqual([{ keys: [KEY.escape] }]);
     }
-    // so is a Deny bound to Ctrl+M or Ctrl+J, which would take the highlighted Approve
-    for (const deny of ["Ctrl+M", "Ctrl+J"]) {
+    // so is a Deny a legacy terminal delivers as Enter, which would take the highlighted Approve, or as Tab or Backspace
+    for (const deny of ["Ctrl+M", "Ctrl+J", "Ctrl+\u23ce", "\u21e7\u23ce", "Ctrl+I", "Ctrl+H"]) {
       const own = parseInteractivePrompt("omp", redraw(approval("18.13.2-unicode-wide"), hintOf(approval("18.13.2-unicode-wide")),
         `\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+Q approve \u00b7 ${deny} deny \u00b7 Ctrl+O details \u00b7 type to deny and steer`));
       expect(steps(own, 0), deny).toEqual([{ keys: ["ctrl+q"] }]);
@@ -213,6 +221,8 @@ describe("omp tool approval (#2059)", () => {
       // a move key bound to approve or deny would answer while moving to a row
       [current, "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 \u23ce approve \u00b7 \u238b deny"],
       [current, "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+Q approve \u00b7 \u2193 deny"],
+      // a select key a legacy terminal delivers as another would answer nothing, or as Enter
+      [current, "\u2191/\u2193 choose \u00b7 Ctrl+M select \u00b7 Ctrl+Q approve \u00b7 \u238b deny"],
     ] as const) {
       expect(parseInteractivePrompt("omp", redraw(shown, hintOf(shown), drawn)), drawn).toBeNull();
     }

@@ -310,8 +310,15 @@ function ompHintKey(drawn: string): string | null {
   return base === null ? null : [...modifiers, base].join("+");
 }
 
-/** Ctrl+H, I, J and M: a terminal without extended key reporting sends them as Backspace, Tab, Enter and Enter */
-const OMP_ENTER_ALIAS_RE = /^ctrl\+[hijm]$/;
+/**
+ * The keys sent as drawn: Esc and a Ctrl+letter arrive the same on every terminal. Without extended key reporting a
+ * terminal sends Ctrl+J and Ctrl+M as LF and CR, and Ctrl+Enter and Shift+Enter as CR, which omp reads as Enter (the
+ * highlighted row on 18.13's menu, or an approve key bound to Enter); Ctrl+H and Ctrl+I as Backspace and Tab. A choice
+ * whose key is none of these is answered by moving to its row, or the terminal answers it.
+ */
+const OMP_DIRECT_KEY_RE = /^(?:esc|ctrl\+[a-gkln-z])$/;
+/** a select key arrives unchanged too: Enter or Space themselves, or a direct key */
+const OMP_SELECT_KEY_RE = /^(?:enter|space|ctrl\+[a-gkln-z])$/;
 
 /** every key of a slash-separated hint (`Ctrl+⏎/Ctrl+Q`), or null when one cannot be sent */
 function ompHintKeys(drawn: string): string[] | null {
@@ -361,9 +368,8 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   // with the hint cut, the deny key is not shown: Deny is answered by moving to it
   const denyKey = full ? ompHintKey(full[4]!) : null;
   if (!approveKeys || (full && (!denyKey || approveKeys.includes(denyKey)))) return null;
-  // a Ctrl+letter first, which every terminal delivers (Ctrl+Enter needs extended key reporting)
-  const plainKey = approveKeys.find((key) => /^ctrl\+[a-z]$/.test(key) && !OMP_ENTER_ALIAS_RE.test(key));
-  const approveKey = plainKey ?? approveKeys[0]!;
+  const plainKey = approveKeys.find((key) => key !== KEY.escape && OMP_DIRECT_KEY_RE.test(key));
+  const directDeny = denyKey !== null && OMP_DIRECT_KEY_RE.test(denyKey) ? denyKey : null;
   let top = bottom - 3;
   while (top >= 0 && OMP_PANEL_ROW_RE.test(lines[top]!)) top -= 1;
   const title = top >= 0 ? OMP_APPROVAL_TOP_RE.exec(lines[top]!) : null;
@@ -372,14 +378,15 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const card = { kind: "approval" as const, title: title[1]!, question: title[1]!, multi_select: false, custom_option_index: null };
   const internal = { responder: "omp-approval" as const, checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null };
   if (chooseKeys === undefined) {
-    if (rows.length === 0 || !denyKey || rows.some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
+    // 18.10 has no rows to move to: both answers need a key that arrives as drawn
+    if (rows.length === 0 || !plainKey || !directDeny || rows.some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
     return finishPrompt("omp", {
       ...card, body: rows.join("\n").trim() || null,
       options: [{ label: own("Approve"), description: null }, { label: own("Deny"), description: null }],
-    }, { ...internal, menuLabels: ["Approve", "Deny"], selectedIndex: -1, optionSteps: [keySteps([approveKey]), keySteps([denyKey])] });
+    }, { ...internal, menuLabels: ["Approve", "Deny"], selectedIndex: -1, optionSteps: [keySteps([plainKey]), keySteps([directDeny])] });
   }
   const selectKey = ompHintKey(selectDrawn!);
-  if ((chooseKeys !== "↑/↓" && chooseKeys !== "Up/Down") || !selectKey) return null;
+  if ((chooseKeys !== "↑/↓" && chooseKeys !== "Up/Down") || !selectKey || !OMP_SELECT_KEY_RE.test(selectKey)) return null;
   // omp takes the approve and deny keys before moving or selecting: bound to one of those, a move would answer
   const moves: string[] = [KEY.up, KEY.down, selectKey];
   if ([...approveKeys, ...(denyKey ? [denyKey] : [])].some((key) => moves.includes(key))) return null;
@@ -397,10 +404,9 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
     options: offered.map((choice) => ({ label: choice.label, description: null })),
   }, {
     ...internal, menuLabels: offered.map((choice) => choice.label), selectedIndex: offered.findIndex((choice) => choice.cursor),
-    // Approve and Deny by their keys, wherever the cursor is; the session and grant rows by moving to them
-    // without a key a terminal cannot send as Enter, Approve or Deny too is a row to move to: Enter takes the row under the cursor
+    // Approve and Deny by their keys when those arrive as drawn, wherever the cursor is; every other row by moving to it
     optionSteps: offered.map((choice) => choice.row === approve && plainKey ? keySteps([plainKey])
-      : denyKey && !OMP_ENTER_ALIAS_RE.test(denyKey) && choice.row === choices.length - 1 ? keySteps([denyKey])
+      : directDeny && choice.row === choices.length - 1 ? keySteps([directDeny])
       : keySteps([...navigationKeys(choice.row - cursor), selectKey])),
   });
 }

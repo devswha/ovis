@@ -4012,22 +4012,31 @@ describe("an answer and the menu it was made for", () => {
     return { status: response.status, code: body.error?.code };
   }
 
-  // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting. omp reads Ctrl+J and Ctrl+M
-  // as Enter there, which takes the highlighted row (Approve when the panel opens) before its own Deny binding
-  test.each(["Ctrl+J", "Ctrl+M"])("denies when omp's Deny is bound to %s, which a legacy terminal sends as Enter", async (deny) => {
+  // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting, where Ctrl+J and Ctrl+M arrive
+  // as LF and CR and Ctrl+Enter and Shift+Enter as CR, all read as Enter, which takes the highlighted row (Approve when the
+  // panel opens); Ctrl+H and Ctrl+I arrive as Backspace and Tab. omp matches what arrives against its bindings: approve
+  // first, then deny, then the arrows, then Enter
+  test.each([
+    ["Ctrl+J", "ctrl+j"], ["Ctrl+M", "ctrl+m"], ["Ctrl+\u23ce", "ctrl+enter"], ["\u21e7\u23ce", "shift+enter"], ["Ctrl+I", "ctrl+i"], ["\u238b", "esc"],
+  ] as const)("denies when omp's Deny is bound to %s, on a terminal that delivers it as another key", async (deny, denyName) => {
+    // two actions never share a binding: with Deny on Ctrl+\u23ce, Approve keeps only Ctrl+Q
+    const approveDrawn = denyName === "ctrl+enter" ? "Ctrl+Q" : "Ctrl+\u23ce/Ctrl+Q";
+    const approveNames = denyName === "ctrl+enter" ? ["ctrl+q"] : ["ctrl+enter", "ctrl+q"];
     const shown = readFileSync(new URL("./fixtures/omp-approval-18.13.2-unicode-wide.txt", import.meta.url), "utf8")
-      .replace("\u238b deny \u00b7", `${deny} deny \u00b7`);
-    expect(shown).toContain(`Ctrl+\u23ce/Ctrl+Q approve \u00b7 ${deny} deny`);
+      .replace("Ctrl+\u23ce/Ctrl+Q approve \u00b7 \u238b deny \u00b7", `${approveDrawn} approve \u00b7 ${deny} deny \u00b7`);
+    expect(shown).toContain(`${approveDrawn} approve \u00b7 ${deny} deny`);
     const rows = ["approved", "approved for the session", "denied"];
+    const legacy = (key: string): string => /^(?:ctrl\+[jm]|(?:ctrl|shift)\+enter)$/.test(key) ? "enter"
+      : key === "ctrl+h" ? "backspace" : key === "ctrl+i" ? "tab" : key;
     /** what omp 18.13 does with the keys the bridge sent, as a legacy terminal delivers them */
     const outcome = (sent: string[]): string => {
       let cursor = 0;
       for (const key of sent) {
-        const received = key === "ctrl+j" || key === "ctrl+m" ? "enter" : key;
-        if (received === "ctrl+q") return "approved";
-        if (received === "esc") return "denied";
-        if (received === "up") cursor = Math.max(0, cursor - 1);
-        else if (received === "down") cursor = Math.min(rows.length - 1, cursor + 1);
+        const received = legacy(key);
+        if (approveNames.includes(received)) return "approved";
+        if (received === denyName) return "denied";
+        if (received === "up") cursor = (cursor + rows.length - 1) % rows.length;
+        else if (received === "down") cursor = (cursor + 1) % rows.length;
         else if (received === "enter") return rows[cursor]!;
       }
       return "waiting";
@@ -4043,8 +4052,8 @@ describe("an answer and the menu it was made for", () => {
       await withPane("omp", "blocked", shown, async (pane) => {
         let cursor = 0;
         pane.onSent = (key) => {
-          if (key === "up") cursor = Math.max(0, cursor - 1);
-          else if (key === "down") cursor = Math.min(rows.length - 1, cursor + 1);
+          if (key === "up") cursor = (cursor + rows.length - 1) % rows.length;
+          else if (key === "down") cursor = (cursor + 1) % rows.length;
           pane.screen = drawn(cursor);
         };
         const shownCard = await card();
