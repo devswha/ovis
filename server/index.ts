@@ -469,9 +469,11 @@ export function createServer(
 
       if (pathname === "/api/updates" || pathname.startsWith("/api/updates/")) {
         // the bridge token cannot read /api/access: where this server answers comes with its update status (#2191)
+        // the port is this server's own; a tailscale that cannot be read only leaves the https address out
         const where = bridgeAuthorized ? async () => {
-          const access = await remoteAccess(bunServer.port ?? DEFAULT_PORT);
-          return { port: access.port, serving_url: access.tailscale.serving_url };
+          const port = bunServer.port ?? DEFAULT_PORT;
+          const serving = await remoteAccess(port).then((access) => access.tailscale.serving_url, () => null);
+          return { port, serving_url: serving };
         } : undefined;
         return handleUpdateRequest(request, pathname, options.updates, where);
       }

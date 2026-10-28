@@ -27,8 +27,8 @@ interface Remote {
   status: UpdateStatus | null;
   /** what its install route answers, one per request (the last repeats); 202 when unset */
   install?: { status: number; code?: string }[];
-  /** what its status says before it was asked to install, one answer per read; then `status` */
-  beforeInstall?: Partial<UpdateStatus>[];
+  /** what its status says before it was asked to install, one answer per read (null: a 503); then `status` */
+  beforeInstall?: (Partial<UpdateStatus> | null)[];
   /** a route that answers with a redirect to `to` instead */
   redirect?: { path: string; to: string };
   /** the pid its new bridge registers with */
@@ -122,7 +122,10 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
         if (++readsSinceInstall === restartAfter) restart();
         return Response.json(answer);
       }
-      if (path === "/api/updates" && request.method === "GET" && !installed && readsBefore < (remote.beforeInstall?.length ?? 0)) return Response.json({ ...remote.status, ...remote.beforeInstall![readsBefore++] });
+      if (path === "/api/updates" && request.method === "GET" && !installed && readsBefore < (remote.beforeInstall?.length ?? 0)) {
+        const before = remote.beforeInstall![readsBefore++];
+        return before === null ? new Response("unavailable", { status: 503 }) : Response.json({ ...remote.status, ...before });
+      }
       if (path === "/api/updates" && request.method === "GET") return remote.status ? Response.json(remote.status) : Response.json({ error: { code: "unauthorized", message: "token required" } }, { status: 401 });
       if (path === "/api/updates/install" && request.method === "POST") {
         expect(request.headers.get("x-herdr-update")).toBe("1");
@@ -691,6 +694,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(waiting.remote_ovis).toMatchObject({ updatable: true, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" });
     // it told both with its status: the route its token keeps closed to the bridge's is not asked
     expect(requests).not.toContain("GET /api/access");
+  });
+
+  it("keeps where it answers when a read after a check for releases fails", async () => {
+    const { until } = pc({ status: managedOffer({ port: OWN_PORT, serving_url: "https://home-server.example.ts.net" }), access: null,
+      beforeInstall: [{ phase: "checking", available: false, latest_revision: null }, null] }, { autoUpdate: false, ownUpdate: { pollMs: 5 } });
+    const waiting = await until((machine) => machine.action_required === "setup");
+    expect(waiting.remote_ovis).toMatchObject({ updatable: false, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" });
+    expect(waiting.remote_ovis?.reason).toMatch(/did not tell its update status \(503\)/);
   });
 
   it("tells a first connect the same, on the job the dialog reads", async () => {

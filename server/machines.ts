@@ -1058,8 +1058,14 @@ export class MachineManager {
     };
     // a check for releases (its own, every 5 minutes) offers nothing while it runs: its answer is waited for
     let told = await read();
-    for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && told.status?.phase === "checking" && Date.now() < until && !signal?.aborted;) { await this.pause(signal); told = await read(); }
-    await locate("status" in told ? told.status : null);
+    // the last status that told where it answers: a later read that fails does not take it back
+    let located = "status" in told ? told.status : null;
+    for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && told.status?.phase === "checking" && Date.now() < until && !signal?.aborted;) {
+      await this.pause(signal);
+      told = await read();
+      if ("status" in told && typeof told.status === "object" && told.status !== null && "port" in told.status) located = told.status;
+    }
+    await locate(located);
     if ("refused" in told) return answer(null, told.refused);
     const status = told.status;
     if (status?.managed !== true) return answer(status, `That PC's Ovis does not update itself: ${remoteWords(status?.blocked_reason) ?? "it was not started by its updater."}`);
