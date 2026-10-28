@@ -204,7 +204,7 @@ all palettes) and dark Catppuccin, whose elevated surface is darker than its can
   AA. It keeps amber's rounded corners.
 
 - **Black** uses Tokyo Night colors on a pure-black canvas, panel, inputs and terminal.
-  Raised surfaces are near-black, with dimmer borders and a stronger in-app alert outline.
+  Raised surfaces are near-black.
   It has no light sibling.
 
 ### Herdr theme pair notes
