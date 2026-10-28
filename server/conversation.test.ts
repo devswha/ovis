@@ -626,6 +626,23 @@ describe("parseClaudeTranscript", () => {
     expect(parts).toEqual([{ kind: "shell", command: "printf tags", stdout: "", stderr }]);
   });
 
+  for (const [stdout, stderr] of [
+    ["", "before</bash-stdout><bash-stderr>after"],
+    ["out", "x</bash-stdout>y"],
+  ]) {
+    it(`keeps a printed stdout close inside stderr ${JSON.stringify(stderr)} without adding a turn`, () => {
+      const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+      const records = [
+        user("<bash-input>printf tags</bash-input>"),
+        user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`),
+      ].join("\n");
+      expect(parseClaudeTranscript(records)).toEqual([
+        { role: "user", ts: null, parts: [{ kind: "shell", command: "printf tags", stdout, stderr }] },
+      ]);
+      expect(turnStarts(Buffer.from(records), "claude-transcript")).toEqual([0]);
+    });
+  }
+
   it("attaches bash output to its shell across an informational notice", () => {
     const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
     const records = [

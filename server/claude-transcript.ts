@@ -31,6 +31,25 @@ function localCommandOutput(content: unknown): string {
  */
 function taggedStreams(content: unknown, tag: "local-command" | "bash"): { stream: "stdout" | "stderr"; text: string }[] | null {
   if (typeof content !== "string") return null;
+  if (tag === "bash" && content.trimStart().startsWith("<bash-stdout>") && content.trimEnd().endsWith("</bash-stderr>")) {
+    const envelope = content.trim();
+    const start = "<bash-stdout>".length;
+    const stderrEnd = envelope.length - "</bash-stderr>".length;
+    // Anchor stderr at the end, then try boundaries from the left. A printed stdout close
+    // inside stderr cannot move the boundary. If a candidate instead leaves a closed stderr
+    // followed by another stdout envelope, stdout is still continuing (literal stream tags).
+    const continuedStdout = /<\/bash-stderr>\s*<bash-stdout>/g;
+    let afterContinuation = start;
+    for (const continuation of envelope.matchAll(continuedStdout)) afterContinuation = continuation.index + continuation[0].length;
+    const boundary = /<\/bash-stdout>\s*<bash-stderr>/g;
+    boundary.lastIndex = afterContinuation;
+    const split = boundary.exec(envelope);
+    if (split === null || boundary.lastIndex > stderrEnd) return null;
+    return [
+      { stream: "stdout", text: stripTerminalControls(envelope.slice(start, split.index)) },
+      { stream: "stderr", text: stripTerminalControls(envelope.slice(boundary.lastIndex, stderrEnd)) },
+    ];
+  }
   // the whole entry is the output, one stream after another: a tag quoted inside an echo's
   // arguments is not an answer
   const streams: { stream: "stdout" | "stderr"; text: string }[] = [];
