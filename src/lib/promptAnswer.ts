@@ -20,8 +20,13 @@ function boundLetter(label: string): string | null {
   return label.match(/\(([a-z])\)$/i)?.[1]?.toLowerCase() ?? null;
 }
 
-/** text as a page shows it, for comparing what is typed with what a card shows: one Unicode spelling (NFC: `e` and a combining accent is `é`), its spacing collapsed */
-const spaced = (text: string): string => text.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+/**
+ * text as a page shows it, for comparing what is typed with what a card shows (never what is sent): one
+ * Unicode form by look (NFKC: `e` and a combining accent is `é`, the ligature `ﬁ` is `fi`), without
+ * the marks a page does not draw (format characters: zero-width space and joiners, word joiner, soft
+ * hyphen, byte order mark), its spacing collapsed. Rows that read alike then name each other (#2220).
+ */
+const spaced = (text: string): string => text.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 function bareLabel(label: string): string {
   return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));

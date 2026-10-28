@@ -132,6 +132,13 @@ describe("answering a prompt from the chat", () => {
       ["single: composed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], false, true, "Keep caf\u00e9", custom("Keep caf\u00e9")],
       ["multi: decomposed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep cafe\u0301", null],
       ["multi: composed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep caf\u00e9", null],
+      // marks a page does not draw (U+200B, U+2060, U+00AD) and a ligature (U+FB01) that reads as its letters
+      ...([["zero-width space", "pro\u200Bduction"], ["word joiner", "pro\u2060duction"], ["soft hyphen", "pro\u00ADduction"]] as const).flatMap(([kind, word]): Case[] => [
+        [`single: ${kind}`, [`Keep **${word}**`, "Keep **production**"], false, true, "Keep production", custom("Keep production")],
+        [`multi: ${kind}`, [`Keep **${word}**`, "Keep **production**"], true, false, "Keep production", null],
+      ]),
+      ["single: a ligature", ["Keep **\uFB01le**", "Keep **file**"], false, true, "Keep file", custom("Keep file")],
+      ["multi: a ligature", ["Keep **\uFB01le**", "Keep **file**"], true, false, "Keep \uFB01le", null],
       ["single: the other spelling of one row's name", ["Keep **caf\u00e9**", "Remote relay"], false, true, "keep cafe\u0301", { option_index: 0 }],
       // no row is named so: numbers, each naming no other row
       ["multi: plain numbers", ["Desktop", "Phone", "Tablet"], true, false, "1 3", { option_indices: [0, 2] }],
