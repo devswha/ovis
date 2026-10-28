@@ -1,4 +1,4 @@
-import type { CardText, InteractivePrompt } from "../../shared/protocol.ts";
+import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
 /** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */
@@ -6,6 +6,20 @@ export function cardText(card: CardText, t: Translate = inCurrentLanguage): stri
   const vars = card.vars === undefined ? undefined
     : Object.fromEntries(Object.entries(card.vars).map(([name, value]) => [name, value !== null && typeof value === "object" ? cardText(value, t) : value]));
   return t(card.key, vars);
+}
+
+/**
+ * Claude's words read off the screen over its question (`screen_words`, #2088), for the card to show
+ * while the chat has no record of them: Claude Code 2.1.311 writes the turn to its session file only
+ * with the answer. Once the transcript's last turn holds a question call still waiting, the session
+ * file has the turn and the chat shows Claude's own text: the card leaves the screen's copy out.
+ */
+export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly ConversationTurn[]): string | null {
+  if (!prompt.screen_words) return null;
+  const last = turns.at(-1);
+  const recorded = last?.role === "assistant"
+    && last.parts.some((part) => part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending");
+  return recorded ? null : prompt.screen_words;
 }
 
 /** At most `limit` UTF-16 units of `text`, never ending on half of a character (a lone high surrogate). */

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 
-import type { InteractivePrompt } from "../../shared/protocol.ts";
+import type { ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
 import { type Language, translate } from "./i18n.ts";
-import { promptWords } from "./promptText.ts";
+import { promptWords, screenWordsToShow } from "./promptText.ts";
 
 const inLanguage = (language: Language) => (key: string, vars?: Record<string, string | number>) => translate(language, key, vars);
 
@@ -55,5 +55,36 @@ describe("a prompt card's words", () => {
     const { own_text: _, ...older } = goal;
     const words = promptWords(older, inLanguage("ko"));
     expect([words.title, words.label(0)]).toEqual(["Goal active", "Close"]);
+  });
+});
+
+describe("Claude's words read off the screen over its question (#2088)", () => {
+  const asked: InteractivePrompt = {
+    id: "q", agent: "claude", kind: "question", title: "Fix", question: "Which fix do you want?", body: null,
+    options: [{ label: "Patch", description: null }, { label: "Rewrite", description: null }], multi_select: false, custom_option_index: 2,
+    screen_words: "There are two ways to fix it.",
+  };
+  const call = (state: "pending" | "ok"): ConversationTurn => ({
+    role: "assistant", ts: null,
+    parts: [{ kind: "text", text: "There are two ways to fix it." }, { kind: "tool", name: "AskUserQuestion", summary: "", input: "{}", output: "", call_id: "toolu_1", state }],
+  });
+  const asking: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "fix a.txt" }] };
+
+  it("shows them while the transcript has nothing of the turn (Claude Code 2.1.311)", () => {
+    expect(screenWordsToShow(asked, [asking])).toBe("There are two ways to fix it.");
+    expect(screenWordsToShow(asked, [])).toBe("There are two ways to fix it.");
+  });
+
+  it("leaves them to the chat once the transcript holds the question's call, still waiting", () => {
+    expect(screenWordsToShow(asked, [asking, call("pending")])).toBeNull();
+  });
+
+  it("shows them over an earlier question answered in the transcript", () => {
+    expect(screenWordsToShow(asked, [asking, call("ok")])).toBe("There are two ways to fix it.");
+  });
+
+  it("shows nothing for a card without them", () => {
+    const { screen_words: _, ...plain } = asked;
+    expect(screenWordsToShow(plain, [asking])).toBeNull();
   });
 });

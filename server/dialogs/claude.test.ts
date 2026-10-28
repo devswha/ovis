@@ -175,3 +175,70 @@ describe("Claude's question beside its fullscreen diff panel", () => {
     expect(parseInteractivePrompt("claude", panel("english").replace(hint, "● Done.".padEnd(hint.length)))).toBeNull();
   });
 });
+
+describe("Claude's words over its question (#2088)", () => {
+  // live-captured from Claude Code 2.1.311 in a 119- and a 40-column pane while the question waited;
+  // its session file had neither the words nor the call until the answer
+  const asked = (width: number) => readFileSync(new URL(`../fixtures/claude-question-words-2.1.311-${width}.txt`, import.meta.url), "utf8");
+  /** the screen with the words' lines (from their `●` line down to the panel's rule) replaced by `lines` */
+  const withAbove = (screen: string, lines: string[]): string => {
+    const rows = screen.split("\n");
+    const start = rows.findIndex((row) => row.startsWith("● The file"));
+    const rule = rows.findIndex((row, index) => index > start && /^─{8,}$/.test(row));
+    return [...rows.slice(0, start), ...lines, ...rows.slice(rule)].join("\n");
+  };
+
+  test("reads the words over the question at 119 columns, the pane's wrapping joined back", () => {
+    const prompt = parseInteractivePrompt("claude", asked(120));
+    expect(prompt).toMatchObject({ kind: "question", title: "Fix", question: "Which fix do you want?" });
+    expect(prompt?.screen_words).toBe([
+      "The file a.txt has a made-up bug: its last line is missing a trailing newline, so the file doesn't end cleanly. I haven't opened or changed the file.",
+      "There are two ways to fix it. Patch adds the missing newline to the end of the last line, a minimal edit. Rewrite regenerates the whole file from scratch, which is heavier and riskier.",
+    ].join("\n\n"));
+  });
+
+  test("reads the words over the question at 40 columns", () => {
+    expect(parseInteractivePrompt("claude", asked(40))?.screen_words).toBe([
+      "The file a.txt has a made-up bug: its last line is missing a trailing newline, so the final line doesn't end properly. It's a contrived example, so I haven't checked or changed anything yet.",
+      "There are two ways to fix it. You can patch the file by adding the missing newline, or rewrite the file from scratch. Which one do you want?",
+    ].join("\n\n"));
+  });
+
+  test("keeps the card's id whatever the words are: they are not part of the question", () => {
+    const quiet = parseInteractivePrompt("claude", withAbove(asked(40), []));
+    expect(quiet?.screen_words).toBeUndefined();
+    expect(parseInteractivePrompt("claude", asked(40))?.id).toBe(quiet!.id);
+  });
+
+  test("reads no words when the user's prompt is right over the question", () => {
+    const panel = readFileSync(new URL("../fixtures/claude-diff-panel-2.1.303-english-180.txt", import.meta.url), "utf8");
+    const prompt = parseInteractivePrompt("claude", panel);
+    expect(prompt).toMatchObject({ kind: "question", title: "Color" });
+    expect(prompt?.screen_words).toBeUndefined();
+  });
+
+  test("reads no words when a tool's output is right over the question", () => {
+    const prompt = parseInteractivePrompt("claude", withAbove(asked(120), ["● Read(a.txt)", "  ⎿  Read 3 lines", ""]));
+    expect(prompt).toMatchObject({ kind: "question", title: "Fix" });
+    expect(prompt?.screen_words).toBeUndefined();
+  });
+
+  test("reads no words whose start is above the screen's top: they read as the user's wrapped prompt does", () => {
+    const rows = asked(40).split("\n");
+    const cut = rows.slice(rows.findIndex((row) => row.startsWith("● The file")) + 1).join("\n");
+    const prompt = parseInteractivePrompt("claude", cut);
+    expect(prompt).toMatchObject({ kind: "question", title: "Fix" });
+    expect(prompt?.screen_words).toBeUndefined();
+  });
+
+  test("keeps a list's items on lines of their own", () => {
+    const prompt = parseInteractivePrompt("claude", withAbove(asked(40), [
+      "● Two ways to fix it:",
+      "  - Patch: add the missing newline to",
+      "    the end of the last line.",
+      "  - Rewrite: rewrite the whole file.",
+      "",
+    ]));
+    expect(prompt?.screen_words).toBe("Two ways to fix it:\n- Patch: add the missing newline to the end of the last line.\n- Rewrite: rewrite the whole file.");
+  });
+});

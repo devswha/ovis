@@ -170,7 +170,9 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   const title = tabs && current >= 0
     ? tabs.whole && tabs.tabs.length > 1 ? own("{label} · {n} of {total}", { label: tabs.tabs[current]!.label, n: current + 1, total: tabs.tabs.length }) : tabs.tabs[current]!.label
     : chip ?? own(multiSelect ? "Multiple choice" : "Question");
-  return finishPrompt("claude", {
+  // read off the screen, not part of the question: left out of the card's id
+  const words = claudeWordsAbove(raw, rows[0]!.lineIndex);
+  const parsed = finishPrompt("claude", {
     kind: "question", title, question, body: null,
     options: optionRows.map((row) => ({ label: row.label, description: row.description ?? null })),
     // a multiple choice takes its typed answer where its Submit row shows: Enter there sends it
@@ -190,6 +192,82 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
       ],
     } : {}),
   });
+  return words === null ? parsed : { ...parsed, screen_words: words };
+}
+
+/** Claude's tool call line, `● Write(a.ts)` or an MCP call `● server - tool (MCP)(…)`; its own text opens with ● too */
+const CLAUDE_CALL_RE = /^[●⏺]\s+[\w.:-]+(?:\s[\w.:-]+)*(?:\s\(MCP\))?\(/;
+
+/** a list item, or a line of a table or a rule, opens a line of its own: never the rest of the line above it */
+const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])/;
+
+/**
+ * Claude's own words over its question (#2088). Claude Code 2.1.311 writes a turn's text to the
+ * session file only with the answer, so while the question waits the screen is the only place they
+ * are. They are the text block right over the question panel's top rule, as recorded at 120 and 40
+ * columns: a `●` line that is no tool call, the lines under it at its two-column indent, paragraphs
+ * parted by blank lines.
+ *
+ *   ● The file a.txt has a made-up bug: its
+ *     last line is missing a trailing
+ *     …
+ *   ────────────────────────────────────────
+ *    ☐ Fix
+ *
+ * Anything else right over the panel (the user's prompt, a tool's output, a status line) is not
+ * Claude's words, and no words are read then. Neither are a block whose `●` start is above the
+ * screen's top: its lines read the same as the user's own prompt wrapped under its `❯`.
+ * Lines the pane wrapped are joined back: a line goes on the one above when its first word would
+ * not have fit after it, short of the edge.
+ */
+function claudeWordsAbove(lines: string[], firstRow: number): string | null {
+  let rule = -1;
+  for (let index = firstRow - 1; index >= Math.max(0, firstRow - 60) && rule < 0; index -= 1) {
+    if (SOLID_RULE_RE.test(cleanLine(lines[index]!))) rule = index;
+  }
+  if (rule < 0) return null;
+  const width = Bun.stringWidth(cleanLine(lines[rule]!));
+  // each line as drawn (its width says where the pane wrapped it) and its text, the block's indent off
+  const block: { drawn: string; text: string }[] = [];
+  let start = -1;
+  for (let index = rule - 1; index >= 0 && start < 0; index -= 1) {
+    const drawn = lines[index]!.replace(ANSI_RE, "").trimEnd();
+    if (drawn === "") block.unshift({ drawn, text: "" });
+    else if (/^\s*⎿/.test(drawn)) return null;
+    else if (drawn.startsWith("  ")) block.unshift({ drawn, text: drawn.slice(2) });
+    else if (/^[●⏺]\s/.test(drawn) && !CLAUDE_CALL_RE.test(drawn)) {
+      block.unshift({ drawn, text: drawn.replace(/^[●⏺]\s+/, "") });
+      start = index;
+    } else return null;
+  }
+  if (start < 0) return null;
+  const paragraphs: string[] = [];
+  let paragraph = "";
+  let previous = "";
+  for (const { drawn, text } of block) {
+    if (text === "") {
+      if (paragraph !== "") paragraphs.push(paragraph);
+      paragraph = "";
+      continue;
+    }
+    if (paragraph === "") paragraph = text;
+    else {
+      const first = /^\s*(\S+)/.exec(text)![1]!;
+      const lead = [...first][0]!;
+      // a wide character wraps alone, with no space where the pane broke the line
+      const glued = Bun.stringWidth([...previous].at(-1) ?? "") === 2 && Bun.stringWidth(lead) === 2;
+      // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
+      // columns: "  properly. It's a contrived example," over "so")
+      const wrappedHere = !OWN_LINE_RE.test(text)
+        && Bun.stringWidth(previous) + (glued ? 0 : 1) + Bun.stringWidth(glued ? lead : first) >= width;
+      paragraph += wrappedHere ? `${glued ? "" : " "}${text.trimStart()}` : `\n${text}`;
+    }
+    previous = drawn;
+  }
+  if (paragraph !== "") paragraphs.push(paragraph);
+  // capped as a card's body is, never inside a character
+  const words = [...paragraphs.join("\n\n")].slice(0, 12_000).join("");
+  return words.trim() === "" ? null : words;
 }
 
 /** A single question's header chip (`☐ Dataset`), the question's own short name; null when there is none. */
