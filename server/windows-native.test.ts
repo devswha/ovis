@@ -32,15 +32,17 @@ const onWindows = process.platform === "win32";
 function completeJson<T>(path: string): T | undefined {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  // a Windows scanner can hold the file just renamed into place for a moment
+  catch (error) { if (["ENOENT", "EBUSY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined; throw error; }
   try { return JSON.parse(text) as T; }
   catch (error) { if (error instanceof SyntaxError) return undefined; throw error; }
 }
 
 /** Waits for the whole JSON in `path`, looking again on every change in `dir`, until `ms` runs out. */
-function watchJson<T>(dir: string, path: string, ms: number): { result: Promise<T>; close: () => Promise<void> } {
+function watchJson<T>(dir: string, path: string, ms: number): { result: Promise<T>; looked: () => Promise<void>; close: () => Promise<void> } {
   const watcher = watch(dir);
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  const lookers: (() => void)[] = [];
   const result = new Promise<T>((resolve, reject) => {
     deadline = setTimeout(() => reject(new Error(`${path} was not written`)), ms);
     watcher.on("change", () => {
@@ -48,12 +50,15 @@ function watchJson<T>(dir: string, path: string, ms: number): { result: Promise<
         const value = completeJson<T>(path);
         if (value !== undefined) { clearTimeout(deadline); resolve(value); }
       } catch (error) { clearTimeout(deadline); reject(error); }
+      for (const looker of lookers.splice(0)) looker();
     });
   });
   // A waiting host has no child and therefore no result; still observe a later rejection on failure.
   void result.catch(() => {});
   return {
     result,
+    // the next look at the file, or the result's failure if that comes first
+    looked: () => Promise.race([new Promise<void>((resolve) => lookers.push(resolve)), result.then(() => {})]),
     close: async () => {
       clearTimeout(deadline);
       const closed = new Promise<void>((resolve) => watcher.once("close", resolve));
@@ -68,9 +73,15 @@ it("waits past a half-written result until the whole file is renamed into place 
   const path = join(root, "result.json");
   const waiting = watchJson<{ pid: number }>(root, path, 15_000);
   try {
+    let settled = false;
+    void waiting.result.then(() => { settled = true; }, () => { settled = true; });
     // what the hosted runner saw: the name already there, its content not yet
+    const looked = waiting.looked();
     writeFileSync(path, "{\"pid\":");
-    expect(completeJson(path)).toBeUndefined();
+    await looked;
+    // the watcher has seen the half-written file and is still waiting
+    await Promise.resolve();
+    expect(settled).toBe(false);
     writeFileSync(`${path}.tmp`, JSON.stringify({ pid: 7 }));
     renameSync(`${path}.tmp`, path);
     expect(await waiting.result).toEqual({ pid: 7 });

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import ts from "typescript-api";
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { buildXtermSource } from "./build-xterm.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -87,6 +87,41 @@ describe("buildXtermSource", () => {
     expect(written(second).content).toContain("changedForTest");
   }, 60_000);
 
+  // through a symlink, imports resolved out of the hashed copy to the disk (macOS's tmpdir is one)
+  it("reads none of xterm's package from the disk while compiling, even through a symlinked checkout", () => {
+    const linked = join(mkdtempSync(join(tmpdir(), "herdr-build-xterm-link-")), "checkout");
+    made.push(dirname(linked));
+    symlinkSync(checkout(), linked, "dir");
+    const { readFile, fileExists } = ts.sys;
+    const fromDisk: string[] = [];
+    const xterm = (path: string) => path.replaceAll("\\", "/").includes("/@xterm/xterm/");
+    ts.sys.readFile = (path, encoding) => { if (xterm(path)) fromDisk.push(path); return readFile(path, encoding); };
+    ts.sys.fileExists = (path) => { if (xterm(path)) fromDisk.push(path); return fileExists(path); };
+    try {
+      expect(written(buildXtermSource(linked)).content).toContain("export class UnicodeService");
+    } finally {
+      Object.assign(ts.sys, { readFile, fileExists });
+    }
+    expect(fromDisk).toEqual([]);
+  }, 60_000);
+
+  it("publishes nothing when an emitted module vanishes from the staging directory before the rename", () => {
+    const root = checkout();
+    const cache = join(root, "node_modules/.cache/herdr-xterm");
+    const writeFile = ts.sys.writeFile;
+    // what another build that took this staging directory for abandoned would do to it
+    ts.sys.writeFile = (path, ...rest) => {
+      writeFile(path, ...rest);
+      if (path.endsWith(`${module}.js`)) rmSync(path);
+    };
+    try {
+      expect(() => buildXtermSource(root)).toThrow("lost");
+    } finally {
+      ts.sys.writeFile = writeFile;
+    }
+    expect(readdirSync(cache)).toEqual([]);
+  }, 60_000);
+
   it("emits again when only the manifest's typings entry changes", () => {
     const root = checkout();
     const xterm = join(root, "node_modules/@xterm/xterm");
@@ -98,16 +133,26 @@ describe("buildXtermSource", () => {
     expect(buildXtermSource(root)).not.toBe(first);
   }, 60_000);
 
-  it("removes the staging directory a killed build left behind, not one a running build writes", () => {
+  it("removes the staging directories killed builds left behind, not one a build may still write", () => {
     const root = checkout();
     const cache = join(root, "node_modules/.cache/herdr-xterm");
     // a process that has exited: its build was killed before it could clean up
     const dead = Bun.spawnSync([process.execPath, "-e", ""]).pid;
-    const killed = `0123456789abcdef.tmp-${dead}-Ab12Cd`, running = `0123456789abcdef.tmp-${process.pid}-Ef34Gh`;
-    mkdirSync(join(cache, killed), { recursive: true });
-    mkdirSync(join(cache, running));
+    const staging = (pid: number | "", suffix: string, minutesAgo: number) => {
+      const name = `0123456789abcdef.tmp-${pid === "" ? "" : `${pid}-`}${suffix}`;
+      mkdirSync(join(cache, name), { recursive: true });
+      const at = new Date(Date.now() - minutesAgo * 60_000);
+      utimesSync(join(cache, name), at, at);
+      return name;
+    };
+    staging(dead, "Ab12Cd", 30);
+    // from before staging names carried a pid
+    staging("", "Xy98Zw", 30);
+    const running = staging(process.pid, "Ef34Gh", 30);
+    // a dead-looking pid may be a build in another pid namespace: a fresh directory is still in use
+    const fresh = staging(dead, "Ij56Kl", 1);
     const output = buildXtermSource(root);
-    expect(readdirSync(cache).sort()).toEqual([basename(output), running].sort());
+    expect(readdirSync(cache).sort()).toEqual([basename(output), fresh, running].sort());
   }, 60_000);
 
   it.skipIf(process.platform === "win32")("publishes a build other users of the checkout can read", () => {

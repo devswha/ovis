@@ -1,7 +1,7 @@
 /** xterm's source uses const enums in .d.ts files; TypeScript must inline them before Vite. */
 import ts from "typescript-api";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**
@@ -16,7 +16,8 @@ import { join, relative } from "node:path";
  * source changed in between would otherwise be published under the old source's key (#2148).
  */
 export function buildXtermSource(root: string): string {
-  const source = join(root, "node_modules/@xterm/xterm/src");
+  // the package's own path: through a symlink TypeScript would resolve imports out of it, to disk
+  const source = join(realpathSync(join(root, "node_modules/@xterm/xterm")), "src");
   const cache = join(root, "node_modules/.cache/herdr-xterm");
   const manifest = join(source, "../package.json");
   const files = ts.sys.readDirectory(source, [".ts"], undefined, ["**/*"]).sort();
@@ -51,9 +52,13 @@ export function buildXtermSource(root: string): string {
     const host = ts.createCompilerHost(options);
     // inside xterm's package only the hashed files exist, as they were hashed
     const xterm = canonical(join(source, "..")) + "/";
-    const { fileExists, readFile } = host;
-    host.readFile = (path) => canonical(path).startsWith(xterm) ? hashed.get(canonical(path)) : readFile(path);
-    host.fileExists = (path) => canonical(path).startsWith(xterm) ? hashed.has(canonical(path)) : fileExists(path);
+    const { fileExists, readFile, realpath, writeFile } = host;
+    const inside = (path: string) => canonical(path).startsWith(xterm);
+    host.readFile = (path) => inside(path) ? hashed.get(canonical(path)) : readFile(path);
+    host.fileExists = (path) => inside(path) ? hashed.has(canonical(path)) : fileExists(path);
+    host.realpath = (path) => inside(path) ? path : realpath ? realpath(path) : path;
+    const written: string[] = [];
+    host.writeFile = (path, ...rest) => { written.push(path); writeFile(path, ...rest); };
     const program = ts.createProgram(files, { ...options, outDir: staging }, host);
     const emitted = program.emit();
     // a file TypeScript could not write is only a diagnostic: never publish a build missing it
@@ -63,6 +68,9 @@ export function buildXtermSource(root: string): string {
         getCanonicalFileName: (name) => name, getCurrentDirectory: () => root, getNewLine: () => "\n",
       }));
     }
+    // a staging directory another build took for abandoned loses files TypeScript never reports
+    const lost = written.filter((path) => !existsSync(path));
+    if (lost.length) throw new Error(`The xterm build lost ${lost.length} emitted files before publishing, ${lost[0]} first`);
     // mkdtemp's 0700 would lock other users of this checkout out of the published build
     chmodSync(staging, 0o755);
     moveIntoPlace(staging, output);
@@ -81,14 +89,26 @@ function canonical(path: string): string {
 /**
  * Removes the staging directories of builds that died before finishing (SIGKILL, OOM, Ctrl-C), which
  * would otherwise stay until node_modules is reinstalled. A staging directory whose process still
- * runs belongs to a build emitting right now and is left alone.
+ * runs belongs to a build emitting right now and is left alone, and so is any written to in the last
+ * minutes: a build in another pid namespace (a container on the same checkout) looks dead from here.
  */
-function removeAbandonedStaging(cache: string): void {
+function removeAbandonedStaging(cache: string, now = Date.now()): void {
   for (const name of readdirSync(cache)) {
+    if (!name.includes(".tmp-")) continue;
+    // a name from before staging carried its pid has none and is judged by its age alone
     const pid = Number(/\.tmp-(\d+)-[^.]+$/.exec(name)?.[1]);
-    if (pid && !running(pid)) rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 5 });
+    if (pid && running(pid)) continue;
+    const path = join(cache, name);
+    let changed: number;
+    try { changed = statSync(path).mtimeMs; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    if (now - changed < STAGING_GRACE_MS) continue;
+    rmSync(path, { recursive: true, force: true, maxRetries: 5 });
   }
 }
+
+/** Far longer than an emit takes (seconds), even on a loaded runner. */
+const STAGING_GRACE_MS = 10 * 60_000;
 
 function running(pid: number): boolean {
   try {
