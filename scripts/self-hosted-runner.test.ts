@@ -60,7 +60,14 @@ function runRunner(options: {
   cacheBuildExitCode?: number;
   /** "fetch" makes the mirror's git fetch, "build" the Bun cache build, wait until killed; each touches <tempDir>/hung first */
   hang?: "fetch" | "build";
+  /** the hung stub ignores SIGTERM, as a git or docker client that will not stop; "helper": the git stub
+   * stops, but leaves a child (a transport helper) that ignores it */
+  stubborn?: boolean | "helper";
   repo?: string;
+  /** what GitHub names as the default branch: a branch, "" for no answer, or "fail" for a failed ls-remote */
+  defaultBranch?: string;
+  /** branches the mirror holds; main's commit and lock are commitSha and lockBlob, any other branch's otherCommit and otherLock */
+  branches?: string[];
 } = {}) {
   const { tempDir, args, env, logPath, envFile } = prepareRunner(options);
   try {
@@ -145,7 +152,10 @@ case "$1" in
     done
     # the Bun cache build (it filled the directory mounted at /cache/bun above) reads no token
     case "$name" in *-cache)
-      if [ -n "\${RUNNER_TEST_HANG_BUILD:-}" ]; then touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30; fi
+      if [ -n "\${RUNNER_TEST_HANG_BUILD:-}" ]; then
+        [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
+        touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+      fi
       exit "\${DOCKER_CACHE_EXIT:-0}" ;;
     esac
     IFS= read -r token || exit 1
@@ -176,17 +186,35 @@ case "$1" in
     [ "$1" = --add ] && shift
     if [ "$#" -ge 2 ]; then printf '%s\\n' "$2" >> "$dir/config.$1"; else head -n 1 "$dir/config.$1" 2>/dev/null; fi ;;
   fetch)
-    if [ -n "\${RUNNER_TEST_HANG_FETCH:-}" ]; then touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30; fi
+    if [ -n "\${RUNNER_TEST_HANG_FETCH:-}" ]; then
+      if [ "\${RUNNER_TEST_STUBBORN:-}" = helper ]; then
+        (trap '' TERM; exec "$(dirname "$0")/hang-sleep" 30) &
+      elif [ -n "\${RUNNER_TEST_STUBBORN:-}" ]; then
+        trap '' TERM
+      fi
+      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+    fi
     exit "\${GIT_FETCH_EXIT:-0}" ;;
-  ls-remote) printf 'ref: refs/heads/main\\tHEAD\\n' ;;
-  symbolic-ref) [ "$2" = -q ] && exit 1; touch "$dir/head-set" ;;
-  rev-parse)
-    case "$last" in
-      HEAD) [ -f "$dir/head-set" ] || exit 1; echo ${commitSha} ;;
-      HEAD:bun.lock) echo ${lockBlob} ;;
-      'HEAD^{commit}') echo ${commitSha} ;;
-      *) exit 1 ;;
+  ls-remote)
+    case "$RUNNER_TEST_DEFAULT_BRANCH" in
+      fail) exit 128 ;;
+      '') ;;
+      *) printf 'ref: refs/heads/%s\\tHEAD\\n' "$RUNNER_TEST_DEFAULT_BRANCH" ;;
     esac ;;
+  # a new bare repository's HEAD names refs/heads/main (init.defaultBranch), as with real git
+  symbolic-ref)
+    if [ "$2" = -q ]; then cat "$dir/head" 2>/dev/null || echo refs/heads/main; else printf '%s\\n' "$last" > "$dir/head"; fi ;;
+  rev-parse)
+    rev="$last"
+    case "$rev" in HEAD*) rev="$(cat "$dir/head" 2>/dev/null || echo refs/heads/main)\${rev#HEAD}" ;; esac
+    for branch in $RUNNER_TEST_BRANCHES; do
+      if [ "$branch" = main ]; then commit=${commitSha} lock=${lockBlob}; else commit=${otherCommit} lock=${otherLock}; fi
+      case "$rev" in
+        "refs/heads/$branch"|"refs/heads/$branch^{commit}") echo "$commit"; exit 0 ;;
+        "refs/heads/$branch:bun.lock") echo "$lock"; exit 0 ;;
+      esac
+    done
+    exit 1 ;;
 esac
 exit 0
 `);
@@ -223,6 +251,9 @@ exit 0
       RUNNER_TEST_HUNG: join(tempDir, "hung"),
       ...(options.hang === "fetch" ? { RUNNER_TEST_HANG_FETCH: "1" } : {}),
       ...(options.hang === "build" ? { RUNNER_TEST_HANG_BUILD: "1" } : {}),
+      ...(options.stubborn ? { RUNNER_TEST_STUBBORN: options.stubborn === "helper" ? "helper" : "1" } : {}),
+      RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
+      RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
       GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
       DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
@@ -239,6 +270,8 @@ const runnerRun = /^docker run --rm -i /;
 /** What the git stub reports for the mirror's default branch and its bun.lock. */
 const commitSha = "1".repeat(40);
 const lockBlob = "2".repeat(40);
+const otherCommit = "3".repeat(40);
+const otherLock = "4".repeat(40);
 const cacheBuild = /^docker run --rm --init --name herdr-ci-.+-cache /;
 
 describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () => {
@@ -444,12 +477,17 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
   });
 
-  it.skipIf(process.platform !== "linux")("still starts the runners when a refresh fails, and retries a failed Bun cache build only after 30 minutes", () => {
+  it.skipIf(process.platform !== "linux")("still starts the runners when a refresh or a build fails, builds nothing after a failed refresh, and retries a failed build only after 30 minutes", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
-      const first = runRunner({ cacheHome, gitFetchExitCode: 1, cacheBuildExitCode: 1 });
+      // a refresh that failed builds nothing: what the mirror holds was not confirmed this time
+      const unfetched = runRunner({ cacheHome, gitFetchExitCode: 1 });
+      expect(unfetched.result.status).toBe(0);
+      expect(unfetched.result.stderr).toContain("[cache] could not refresh the git mirror");
+      expect(unfetched.calls.split("\n").filter((call) => cacheBuild.test(call))).toEqual([]);
+      expect(unfetched.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      const first = runRunner({ cacheHome, cacheBuildExitCode: 1 });
       expect(first.result.status).toBe(0);
-      expect(first.result.stderr).toContain("[cache] could not refresh the git mirror");
       expect(first.result.stderr).toContain("[cache] could not build the Bun cache");
       expect(first.calls.split("\n").filter((call) => cacheBuild.test(call))).toHaveLength(1);
       expect(first.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
@@ -532,6 +570,48 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       rmSync(cacheHome, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform !== "linux")("builds the Bun cache from the branch GitHub names as the default, not the mirror's initial HEAD", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      const { result, calls } = runRunner({ cacheHome, defaultBranch: "stable", branches: ["main", "stable"] });
+      expect(result.status).toBe(0);
+      expect(calls.split("\n").find((call) => cacheBuild.test(call))).toContain(`-e COMMIT=${otherCommit} `);
+      expect(readlinkSync(join(cacheHome, "ovis-ci-runner/owner/repo/bun/current"))).toBe(otherLock);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("builds no Bun cache when GitHub names no default branch the mirror holds", () => {
+    for (const github of [{ defaultBranch: "fail" }, { defaultBranch: "" }, { defaultBranch: "stable", branches: ["main"] }]) {
+      const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+      try {
+        const { result, calls } = runRunner({ cacheHome, ...github });
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain("[cache] could not refresh the git mirror");
+        // never the mirror's initial HEAD (main) nor any other branch
+        expect(calls.split("\n").filter((call) => cacheBuild.test(call))).toEqual([]);
+        expect(existsSync(join(cacheHome, "ovis-ci-runner/owner/repo/bun/current"))).toBe(false);
+        expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      } finally {
+        rmSync(cacheHome, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("outlives no git or Bun cache build that ignores SIGTERM, and removes the build container last", async () => {
+    for (const [hang, stubborn] of [["fetch", true], ["fetch", "helper"], ["build", true]] as const) {
+      const { ended, calls, stuck } = await runRunnerUntilHung({ hang, stubborn }, "SIGTERM", 20_000);
+      expect(ended).toBe(143);
+      // checked the moment the launcher ended: nothing of the refresh may be left
+      expect(stuck).toBe("");
+      if (hang === "build") {
+        const cacheCalls = calls.split("\n").filter((call) => /^docker \S+ .*herdr-ci-.+-cache\b/.test(call));
+        expect(cacheCalls.at(-1)).toMatch(/^docker rm -f herdr-ci-.+-cache$/);
+      }
+    }
+  }, 60_000);
 
   it.skipIf(process.platform !== "linux")("starts the runners without caches when the cache directory or the repository name cannot hold them", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));

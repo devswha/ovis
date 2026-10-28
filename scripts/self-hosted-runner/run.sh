@@ -120,22 +120,30 @@ STATE_DIR=""
 # any command after its deadline, rather than hold every refresh (and, at start, every runner).
 # timeout without --foreground runs git in a process group of its own and signals all of it at the
 # deadline, transport helpers included. That group is outside the cache loop's, which cleanup stops:
-# the trap passes the stop on. A signal is handled between commands, so once `&` has started
+# the trap passes the stop on, then waits for timeout, which kills a git that ignores it 5 s later,
+# and kills what is left of the group, so the launcher outlives every part of it. A signal is handled between commands, so once `&` has started
 # timeout, $! names it: before its setpgid the process itself, after it the whole group.
-git_net() {
-  local limit="$1" status=0; shift
+# A subshell, so its trap never replaces the caller's.
+git_net() (
+  limit="$1" status=0; shift
   # a no-op job first, so a stop before timeout starts never signals an older job's reused pid
   : &
-  trap 'kill -TERM "$!" 2>/dev/null; kill -TERM -- "-$!" 2>/dev/null; exit 143' TERM
-  GIT_TERMINAL_PROMPT=0 timeout -k 10 "$limit" \
+  # every step may fail (set -e applies inside a trap too): wait reports timeout's status
+  trap 'kill -TERM "$!" 2>/dev/null || true; kill -TERM -- "-$!" 2>/dev/null || true; wait "$!" || true
+    kill -KILL -- "-$!" 2>/dev/null || true; exit 143' TERM
+  GIT_TERMINAL_PROMPT=0 timeout -k 5 "$limit" \
     git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@" &
   wait "$!" || status=$?
-  trap - TERM
-  return "$status"
-}
+  # timeout ends with git; a transport helper that ignored the signal is still in its group
+  kill -KILL -- "-$!" 2>/dev/null || true
+  exit "$status"
+)
 
+# Sets DEFAULT_REF to the default branch GitHub names on this refresh, once the mirror holds it; it
+# stays empty (and this fails) when GitHub's answer is missing, so no other branch is ever taken.
 refresh_mirror() {
   local tmp head dir url="https://github.com/$REPO.git"
+  DEFAULT_REF=""
   # a mirror of anything else (set up by hand, say) is not this repository's: start again
   if [ -d "$MIRROR/objects" ] && [ "$(git -C "$MIRROR" config remote.origin.url)" != "$url" ]; then
     echo "[cache] $MIRROR does not mirror $url: setting it up again" >&2
@@ -164,10 +172,13 @@ refresh_mirror() {
   fi
   # no pull request refs: only this repository's own branches and tags
   git_net 900 -C "$MIRROR" fetch --quiet --prune --no-write-fetch-head origin || return 1
-  # HEAD names the default branch, whose bun.lock the Bun cache follows
+  # The default branch, whose bun.lock alone the Bun cache follows: asked of GitHub every time, never
+  # taken from the mirror's own HEAD (a new mirror's names main, whatever the repository's is).
   head="$(git_net 120 -C "$MIRROR" ls-remote --symref origin HEAD |
-    sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')"
-  if [ -n "$head" ] && [ "$(git -C "$MIRROR" symbolic-ref -q HEAD)" != "$head" ]; then
+    sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')" || head=""
+  case "$head" in refs/heads/?*) ;; *) return 1 ;; esac
+  git -C "$MIRROR" rev-parse --verify -q "$head^{commit}" >/dev/null || return 1
+  if [ "$(git -C "$MIRROR" symbolic-ref -q HEAD)" != "$head" ]; then
     git -C "$MIRROR" symbolic-ref HEAD "$head" || return 1
   fi
   # With automatic maintenance off, every fetch adds a pack (fetch.unpackLimit 1): join them now and
@@ -175,13 +186,16 @@ refresh_mirror() {
   if [ "$(find "$MIRROR/objects/pack" -name '*.pack' | wc -l)" -gt 50 ]; then
     git -C "$MIRROR" repack -q -a -d --keep-unreachable || return 1
   fi
+  DEFAULT_REF="$head"
 }
 
-# One directory per bun.lock (named after its blob), and `current` pointing at the default branch's.
+# One directory per bun.lock (named after its blob), and `current` pointing at the default branch's
+# (DEFAULT_REF, which refresh_mirror has just confirmed).
 refresh_bun_cache() {
   local lock commit version tmp failed old dir status
-  lock="$(git -C "$MIRROR" rev-parse --verify -q 'HEAD:bun.lock')" || return 0
-  commit="$(git -C "$MIRROR" rev-parse --verify -q 'HEAD^{commit}')" || return 1
+  [ -n "$DEFAULT_REF" ] || return 1
+  lock="$(git -C "$MIRROR" rev-parse --verify -q "$DEFAULT_REF:bun.lock")" || return 0
+  commit="$(git -C "$MIRROR" rev-parse --verify -q "$DEFAULT_REF^{commit}")" || return 1
   version="$BUN_CACHES/$lock"
   failed="$BUN_CACHES/.failed-$lock"
   mkdir -p "$BUN_CACHES" || return 1
@@ -197,7 +211,7 @@ refresh_bun_cache() {
     # the container a PID 1 that passes the deadline's SIGTERM on (a bare PID 1 ignores it), and -k
     # ends the client if it still waits. Whatever ended it, docker rm -f below ends the container.
     status=0
-    timeout --foreground -k 30 900 docker run --rm --init \
+    timeout --foreground -k 5 900 docker run --rm --init \
       --name "$CACHE_CONTAINER" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
@@ -243,12 +257,15 @@ refresh_bun_cache() {
 }
 
 # git and Docker write with the umask: the runner containers read the caches as another user.
+# The Bun cache is built only after this refresh confirmed the default branch: never from a stale or
+# initial HEAD. On a stop, the trap waits for the command running now (bash runs it after that
+# command ends), so the launcher's own wait outlives every git and docker client of the refresh.
 refresh_caches() (
   umask 022
+  trap 'exit 143' TERM
   if ! refresh_mirror; then
-    echo "[cache] could not refresh the git mirror $MIRROR from github.com/$REPO" >&2
-  fi
-  if [ -d "$MIRROR/objects" ] && ! refresh_bun_cache; then
+    echo "[cache] could not refresh the git mirror $MIRROR from github.com/$REPO, or GitHub named no default branch it holds" >&2
+  elif ! refresh_bun_cache; then
     echo "[cache] could not build the Bun cache in $BUN_CACHES for the default branch's bun.lock" >&2
   fi
   return 0
@@ -256,6 +273,7 @@ refresh_caches() (
 
 # The first refresh says when it is done, so runners can start with warm caches; then one a minute.
 cache_loop() {
+  trap 'exit 143' TERM
   refresh_caches
   : > "$STATE_DIR/warm"
   [ "$ONCE" = 1 ] && return 0
@@ -358,7 +376,10 @@ cleanup() {
   for slot in $(seq 1 "$COUNT"); do
     docker stop -t 30 "${PREFIX}${slot}" >/dev/null 2>&1 || true
   done
+  # the runners, and the cache loop with every git and docker client it started
   wait 2>/dev/null || true
+  # a build client killed while its container still ran left the container behind
+  docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   docker stop -t 5 "$NETNS" >/dev/null 2>&1 || true
   # Remove any runner of this host that is still registered.
   ids="$(gh api "repos/$REPO/actions/runners" --paginate \

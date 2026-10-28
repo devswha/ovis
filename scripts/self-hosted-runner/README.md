@@ -73,7 +73,9 @@ directory read-only at `/cache` in every runner container:
   own (a job may still read one of a deleted or force-pushed branch); past 50 packs the launcher
   joins them, keeping every object. A mirror whose origin is not this repository is set up again.
 - `bun/<blob of bun.lock>`, Bun's install cache for the default branch's lockfile, with `current`
-  pointing at it. It is built when that lockfile changes, in a throwaway container of the runner
+  pointing at it. The default branch is the one GitHub names on that refresh (`ls-remote --symref
+  origin HEAD`), and only once the mirror holds it: a refresh that fails or gets no answer builds
+  nothing, never from the mirror's own HEAD. It is built when that lockfile changes, in a throwaway container of the runner
   image with the runners' hardening, as the host user, from a checkout of the mirror:
   `bun install --frozen-lockfile --ignore-scripts`, which resolves nothing beyond the lockfile,
   checks every download's integrity against it and runs no package script. A failed build (a
@@ -88,7 +90,9 @@ A cache the launcher cannot refresh (GitHub or the registry unreachable or stall
 downloads: runners still start, jobs fetch what the caches lack, and the journal says
 `[cache] ...`. The first runners wait for the first refresh up to `--cache-wait` seconds (default
 120), then start without it. Git gives up on a transfer slower than 1 KB/s for a minute and on any
-fetch after 15 minutes, and the Bun cache build is stopped after 15 minutes. A cache directory the
+fetch after 15 minutes, and the Bun cache build is stopped after 15 minutes. On a stop, the launcher
+waits for the refresh's git and docker clients (one that ignores SIGTERM is killed 5 s later) and
+removes the build container before it exits. A cache directory the
 launcher cannot use runs the runners without caches. `--no-cache` turns both off. Artifact uploads and the actions' own archives (about 8 MB a job)
 still use the network.
 
