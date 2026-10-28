@@ -516,6 +516,19 @@ describe("push subscriptions of the install's other state dir", () => {
     return fake;
   };
 
+  // regression: the merge compared raw spellings, so another spelling of an endpoint retired here came back registered (#2012)
+  it("leave out another spelling of an endpoint retired here", async () => {
+    const { active, sibling } = install();
+    const key = webpush.generateVAPIDKeys();
+    const fake = await subscribe(sibling, key);
+    writeJson(join(sibling, "push-subscriptions.json"), [{ ...fake.subscription, endpoint: `${fake.subscription.endpoint}#other`, device_id: null }]);
+    const retiredHash = createHash("sha256").update(fake.subscription.endpoint).digest("base64url");
+    writeJson(join(active, "push-retired.json"), [{ hash: retiredHash, at: 1, owner: "device-a" }]);
+    mergeSiblingState(active, sibling, at(0));
+    const held = existsSync(join(active, "push-subscriptions.json")) ? JSON.parse(readFileSync(join(active, "push-subscriptions.json"), "utf8")) as unknown[] : [];
+    expect(held).toEqual([]);
+  });
+
   it("bring their key along where this dir has none", async () => {
     const { active, sibling } = install();
     const key = webpush.generateVAPIDKeys();

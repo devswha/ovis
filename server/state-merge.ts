@@ -33,7 +33,7 @@ import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
-import { PUSH_EXTRA_KEYS } from "./push.ts";
+import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
 import { readStateDocument, writeStateDocument } from "./state-document.ts";
 import { stateDirNames } from "./update-state.ts";
 
@@ -467,8 +467,11 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
       const value = readPushFile(join(active, "push-retired.json"));
       retired = (Array.isArray(value) ? value : []).map((entry) => (entry as { hash?: unknown } | null)?.hash).filter((hash): hash is string => typeof hash === "string");
     } catch { /* telemetry: an endpoint it would have kept out only fails its next push */ }
-    const settled = (subscription: Subscription) => mine.some((held) => held.endpoint === subscription.endpoint)
-      || before.includes(endpointHash(subscription.endpoint)) || retired.includes(endpointHash(subscription.endpoint));
+    // push.ts stores and retires endpoints normalized: another spelling of one held or retired here is that one
+    const canonical = (subscription: Subscription) => normalizeEndpoint(subscription.endpoint);
+    const settled = (subscription: Subscription) => mine.some((held) => canonical(held) === canonical(subscription))
+      || before.includes(endpointHash(subscription.endpoint))
+      || retired.includes(endpointHash(subscription.endpoint)) || retired.includes(endpointHash(canonical(subscription)));
     const taken = theirs.filter((subscription) => !settled(subscription) && keyOf(subscription.endpoint) !== null);
     const record = recorded(theirs.filter((subscription) => settled(subscription) || taken.includes(subscription)));
     if (taken.length === 0) return { record, taken: 0 };
