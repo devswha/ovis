@@ -705,8 +705,8 @@ export interface InteractivePrompt {
   /** Claude's plan file behind a plan card, whose whole text is then the body: opened in the file viewer */
   plan_file?: string;
   /**
-   * Claude's own words drawn over its question on the pane's screen, the pane's wrapping joined back
-   * (paragraphs parted by a blank line). Claude Code (2.1.311) writes them to its session file only
+   * Claude's own words drawn over its question on the pane's screen, paragraphs parted by a blank line;
+   * lines the pane wrapped are joined back only between plain prose, every other break kept as drawn. Claude Code (2.1.311) writes them to its session file only
    * with the answer, so until then the card shows them, as read off the screen. Absent when the
    * screen shows no words of Claude's right over the question, or not where they start; not part
    * of the card's id.

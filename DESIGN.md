@@ -2246,8 +2246,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`--bg`, `--fs-xs`); a question in words is never set in mono.
 - Claude's words before its question (#2088): Claude Code 2.1.311 writes a turn's text to its
   session file only with the answer, so while a question waits the card shows the text the
-  terminal draws right over the question (`screen_words`, read off the screen, the pane's wrapping
-  joined back), over the question in `--text` prose with a `--text-dim` caption that it comes
+  terminal draws right over the question (`screen_words`, read off the screen; the pane's wrapping
+  joined back between plain prose, any other line break kept), over the question in `--text` prose with a `--text-dim` caption that it comes
   from the terminal. Like the reference text it gives way: eight lines at rest, two at the least,
   scrolling in itself. It follows Claude Code's own terminal, which keeps those words over its
   dialog; the Claude app shows them as the turn's text, which the chat shows once the transcript

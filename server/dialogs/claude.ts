@@ -195,11 +195,23 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   return words === null ? parsed : { ...parsed, screen_words: words };
 }
 
-/** Claude's tool call line, `● Write(a.ts)` or an MCP call `● server - tool (MCP)(…)`; its own text opens with ● too */
-const CLAUDE_CALL_RE = /^[●⏺]\s+[\w.:-]+(?:\s[\w.:-]+)*(?:\s\(MCP\))?\(/;
+/**
+ * Claude's tool call line, `● Write(a.ts)` or an MCP call `● plugin/server - tool (MCP)(…)`: a name with
+ * no space before its `(`; Claude's own text opens with ● too
+ */
+const CLAUDE_CALL_RE = /^[●⏺]\s+(?:[^\s(]+|\S.* \(MCP\))\(/;
+
+/** a collapsed group of tool calls, `Read 2 files (ctrl+o to expand)` (2.1.311), its bullet drawn or not */
+const CLAUDE_COLLAPSED_RE = /\(ctrl\+o\s+to\s+expand\)/i;
 
 /** a list item, or a line of a table or a rule, opens a line of its own: never the rest of the line above it */
 const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])/;
+
+/** words and sentence punctuation only: a line with a path, a URL, code or a command's signs keeps its breaks */
+const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！？：；「」『』（）]+$/u;
+
+/** a script written without spaces between words: a line of it the pane broke goes on without a space */
+const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
 
 /**
  * Claude's own words over its question (#2088). Claude Code 2.1.311 writes a turn's text to the
@@ -214,16 +226,23 @@ const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])
  *   ────────────────────────────────────────
  *    ☐ Fix
  *
- * Anything else right over the panel (the user's prompt, a tool's output, a status line) is not
- * Claude's words, and no words are read then. Neither are a block whose `●` start is above the
- * screen's top: its lines read the same as the user's own prompt wrapped under its `❯`.
- * Lines the pane wrapped are joined back: a line goes on the one above when its first word would
- * not have fit after it, short of the edge.
+ * The rule is the panel's own only with nothing but the panel's header and question under it.
+ * Anything else right over the panel (the user's prompt, a tool's output or its collapsed group, a
+ * status line) is not Claude's words, and no words are read then. Neither are a block whose `●`
+ * start is above the screen's top: its lines read the same as the user's own prompt wrapped under
+ * its `❯`.
+ *
+ * Lines the pane wrapped are joined back only where that cannot change what they say: two lines of
+ * plain prose, the first one too full for the next one's first word, and not ending in a colon (what
+ * follows may be a command). Every other break stays as drawn.
  */
 function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   let rule = -1;
   for (let index = firstRow - 1; index >= Math.max(0, firstRow - 60) && rule < 0; index -= 1) {
-    if (SOLID_RULE_RE.test(cleanLine(lines[index]!))) rule = index;
+    const line = cleanLine(lines[index]!);
+    if (SOLID_RULE_RE.test(line)) rule = index;
+    // the user's prompt, Claude's text or a tool between: the rule above them is not this panel's
+    else if (/^[❯●⏺⎿✻]/.test(line)) return null;
   }
   if (rule < 0) return null;
   const width = Bun.stringWidth(cleanLine(lines[rule]!));
@@ -232,8 +251,8 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   let start = -1;
   for (let index = rule - 1; index >= 0 && start < 0; index -= 1) {
     const drawn = lines[index]!.replace(ANSI_RE, "").trimEnd();
+    if (CLAUDE_COLLAPSED_RE.test(drawn) || /^\s*⎿/.test(drawn)) return null;
     if (drawn === "") block.unshift({ drawn, text: "" });
-    else if (/^\s*⎿/.test(drawn)) return null;
     else if (drawn.startsWith("  ")) block.unshift({ drawn, text: drawn.slice(2) });
     else if (/^[●⏺]\s/.test(drawn) && !CLAUDE_CALL_RE.test(drawn)) {
       block.unshift({ drawn, text: drawn.replace(/^[●⏺]\s+/, "") });
@@ -241,10 +260,13 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
     } else return null;
   }
   if (start < 0) return null;
+  // a hint a narrow pane wrapped: "(ctrl+o" over "to expand)"
+  if (CLAUDE_COLLAPSED_RE.test(block.map(({ text }) => text.trim()).join(" "))) return null;
   const paragraphs: string[] = [];
   let paragraph = "";
-  let previous = "";
-  for (const { drawn, text } of block) {
+  let previous = { drawn: "", text: "" };
+  for (const line of block) {
+    const { text } = line;
     if (text === "") {
       if (paragraph !== "") paragraphs.push(paragraph);
       paragraph = "";
@@ -252,17 +274,20 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
     }
     if (paragraph === "") paragraph = text;
     else {
-      const first = /^\s*(\S+)/.exec(text)![1]!;
-      const lead = [...first][0]!;
-      // a wide character wraps alone, with no space where the pane broke the line
-      const glued = Bun.stringWidth([...previous].at(-1) ?? "") === 2 && Bun.stringWidth(lead) === 2;
+      const next = text.trimStart();
+      const first = /^\S+/.exec(next)![0];
+      const before = [...previous.text.trimEnd()].at(-1) ?? "";
+      const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
+      const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OWN_LINE_RE.test(text) && before !== ":";
       // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
-      // columns: "  properly. It's a contrived example," over "so")
-      const wrappedHere = !OWN_LINE_RE.test(text)
-        && Bun.stringWidth(previous) + (glued ? 0 : 1) + Bun.stringWidth(glued ? lead : first) >= width;
-      paragraph += wrappedHere ? `${glued ? "" : " "}${text.trimStart()}` : `\n${text}`;
+      // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
+      // anywhere, so only a line filled to the edge goes on
+      const full = unspaced
+        ? Bun.stringWidth(previous.drawn) >= width - 1
+        : Bun.stringWidth(previous.drawn) + 1 + Bun.stringWidth(first) >= width;
+      paragraph += prose && full ? `${unspaced ? "" : " "}${next}` : `\n${text}`;
     }
-    previous = drawn;
+    previous = line;
   }
   if (paragraph !== "") paragraphs.push(paragraph);
   // capped as a card's body is, never inside a character

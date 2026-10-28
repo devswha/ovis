@@ -231,6 +231,54 @@ describe("Claude's words over its question (#2088)", () => {
     expect(prompt?.screen_words).toBeUndefined();
   });
 
+  test("reads no words over a collapsed group of tool calls, its bullet drawn or not (live 2.1.311, 43 columns)", () => {
+    const tools = readFileSync(new URL("../fixtures/claude-question-tools-2.1.311-43.txt", import.meta.url), "utf8");
+    for (const screen of [tools, tools.replace("  Read 2 files (ctrl+o to expand)", "● Read 2 files (ctrl+o to expand)")]) {
+      const prompt = parseInteractivePrompt("claude", screen);
+      expect(prompt).toMatchObject({ kind: "question", title: "File", question: "Which file should I fix?" });
+      expect(prompt?.screen_words).toBeUndefined();
+    }
+    // the hint wrapped by a narrow pane, and a group whose bullet is drawn above Claude's own line
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● Searched for 2 patterns, read 1 file (ctrl+o", "  to expand)", ""]))?.screen_words).toBeUndefined();
+  });
+
+  test("reads no words over a plugin's MCP call", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● plugin/thing - do (MCP)(x: 1)", ""]))?.screen_words).toBeUndefined();
+  });
+
+  test("reads no words of an earlier turn over a rule that is not the question's own", () => {
+    const rows = asked(40).split("\n");
+    const start = rows.findIndex((row) => row.startsWith("● The file"));
+    const rule = rows.findIndex((row, index) => index > start && /^─{8,}$/.test(row));
+    const screen = [...rows.slice(0, start), "● Earlier task: Rewrite is safest.", "─".repeat(40), "❯ New task: use Patch.", "", ...rows.slice(rule + 1)].join("\n");
+    const prompt = parseInteractivePrompt("claude", screen);
+    expect(prompt).toMatchObject({ kind: "question", title: "Fix" });
+    expect(prompt?.screen_words).toBeUndefined();
+  });
+
+  test("keeps the breaks of a command, a path or a URL: joining them could change what they say", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), [
+      "● Use this shell snippet:",
+      "  # Safety: do not remove saved backups.",
+      "  rm -rf backups",
+      "",
+    ]))?.screen_words).toBe("Use this shell snippet:\n# Safety: do not remove saved backups.\nrm -rf backups");
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), [
+      "● See https://example.com/docs/very/long",
+      "  /path/to/the/page for the details.",
+      "",
+    ]))?.screen_words).toBe("See https://example.com/docs/very/long\n/path/to/the/page for the details.");
+  });
+
+  test("joins Korean at its spaces, and Chinese without one only where the line was full", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 마지막 줄에 줄바꿈이 빠져 있어서", "  파일이 깔끔하게 끝나지 않습니다.", ""]))?.screen_words)
+      .toBe("마지막 줄에 줄바꿈이 빠져 있어서 파일이 깔끔하게 끝나지 않습니다.");
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 文件最后一行缺少换行符所以文件没有正常", "  地结束。", ""]))?.screen_words)
+      .toBe("文件最后一行缺少换行符所以文件没有正常地结束。");
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 文件缺少换行符。", "  请选择修复方式。", ""]))?.screen_words)
+      .toBe("文件缺少换行符。\n请选择修复方式。");
+  });
+
   test("keeps a list's items on lines of their own", () => {
     const prompt = parseInteractivePrompt("claude", withAbove(asked(40), [
       "● Two ways to fix it:",

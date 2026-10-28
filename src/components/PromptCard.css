@@ -257,7 +257,7 @@
   color: var(--text);
   font-size: var(--fs-sm);
   line-height: var(--lh-base);
-  white-space: pre-line;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

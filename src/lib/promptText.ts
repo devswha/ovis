@@ -11,14 +11,26 @@ export function cardText(card: CardText, t: Translate = inCurrentLanguage): stri
 /**
  * Claude's words read off the screen over its question (`screen_words`, #2088), for the card to show
  * while the chat has no record of them: Claude Code 2.1.311 writes the turn to its session file only
- * with the answer. Once the transcript's last turn holds a question call still waiting, the session
- * file has the turn and the chat shows Claude's own text: the card leaves the screen's copy out.
+ * with the answer. Once the transcript holds this question's call, still waiting, the session file has
+ * the turn and the chat shows Claude's own text: the card leaves the screen's copy out. Another
+ * question's call (one left waiting by an interrupted turn, a transcript read before the screen's)
+ * says nothing of these words.
  */
 export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly ConversationTurn[]): string | null {
   if (!prompt.screen_words) return null;
-  const last = turns.at(-1);
-  const recorded = last?.role === "assistant"
-    && last.parts.some((part) => part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending");
+  const asked = prompt.question.replace(/\s+/g, " ").trim();
+  const asksThis = (input: string): boolean => {
+    try {
+      const questions = (JSON.parse(input) as { questions?: unknown }).questions;
+      return Array.isArray(questions) && questions.some((question) => typeof question === "object" && question !== null
+        && typeof (question as { question?: unknown }).question === "string"
+        && (question as { question: string }).question.replace(/\s+/g, " ").trim() === asked);
+    } catch {
+      return false;
+    }
+  };
+  const recorded = turns.some((turn) => turn.role === "assistant" && turn.parts.some((part) =>
+    part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending" && asksThis(part.input)));
   return recorded ? null : prompt.screen_words;
 }
 
