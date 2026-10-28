@@ -126,12 +126,15 @@ export type LocatedFile = { info: FileInfo; within?: string } | { candidates: st
  * path and then following it again could meet a link put there in between, so the file is
  * described from a descriptor shown to lie in the folder (`describeWithin`, on a file thread), and
  * comes back with that folder (`within`), in which `fileResponse` opens it again the same way.
- * Candidates are only names to choose from.
+ * Candidates are only names to choose from. Without `walk`, only the place `input` names is
+ * looked at (in another form of the name too, with `anyForm`), never a file deeper in the folder
+ * whose path ends in it: a path given in full that is not there is not found, as anywhere else.
  */
-export async function locateFileInFolder(input: string, folder: string, anyForm = false): Promise<LocatedFile> {
+export async function locateFileInFolder(input: string, folder: string, anyForm = false, walk = true): Promise<LocatedFile> {
   const relative = input.trim();
   if (isAbsolute(relative) || relative.startsWith("~") || !resolve(folder, relative).startsWith(resolve(folder) + sep)) return null;
-  const found = await locateFile(relative, folder, anyForm);
+  // named in full (no folder to walk), `locateFile` looks only where the path points
+  const found = walk ? await locateFile(relative, folder, anyForm) : await locateFile(resolve(folder, relative), null, anyForm);
   if (found === null) return null;
   // a missing or unreadable target is not a fallback
   if ("candidates" in found) return await fileTask<boolean>({ op: "within", paths: found.candidates, folder }) ? found : null;
@@ -177,7 +180,11 @@ export async function findFile(input: string, cwd: string | null, scratchFolder:
     return folder !== null && path.startsWith(resolve(folder) + sep) ? { folder, relative: relativePath(resolve(folder), path) } : null;
   };
   const named = await inScratch(resolveFilePath(input, cwd));
-  if (named !== null) return await locateFileInFolder(named.relative, named.folder) ?? locateFileInFolder(named.relative, named.folder, true);
+  if (named !== null) {
+    // a path given in full (or from ~) names one place; only a relative one may be found deeper in the folder
+    const walk = !isAbsolute(input.trim()) && !input.trim().startsWith("~");
+    return await locateFileInFolder(named.relative, named.folder, false, walk) ?? locateFileInFolder(named.relative, named.folder, true, walk);
+  }
   const exact = await locateFile(input, cwd);
   // found under the pane's folder, in the scratch folder below it
   const walked = exact !== null && "info" in exact ? await inScratch(exact.info.path) : null;
@@ -909,6 +916,17 @@ export function isHtmlPage(info: FileInfo): boolean {
  * stays in it came with (`locateFileInFolder`); such a file is sent only from a descriptor shown to
  * lie in that folder (`openAuthorized`), and such a page only when the page opened lies there.
  */
+/**
+ * Descriptors a file body names by `/proc/self/fd` (`fileResponse`), each closed once both that body
+ * and its answer are collected: Bun opens the body's path only when it sends it, so the descriptor
+ * must outlive that open, or its number could name another file by then; an answer or body still
+ * held may still be sent.
+ */
+const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((held) => {
+  held.left -= 1;
+  if (held.left === 0) release(held.fd);
+});
+
 export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
   const name = encodeURIComponent(info.name);
   const headers = new Headers({
@@ -960,9 +978,17 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
   if (head) return new Response(null, { status, headers });
   if (opened.bytes !== null) return new Response(opened.bytes, { status, headers });
   if (opened.fast) {
-    // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once)
+    // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once);
+    // a scratch file (`within`) by its descriptor's own path, the file that descriptor holds
     headers.delete("content-length");
-    return new Response(Bun.file(info.path, { type }).slice(start, end + 1, type), { status, headers });
+    const body = Bun.file(opened.fd === null ? info.path : `/proc/self/fd/${opened.fd}`, { type }).slice(start, end + 1, type);
+    const response = new Response(body, { status, headers });
+    if (opened.fd !== null) {
+      const held = { fd: opened.fd, left: 2 };
+      bodyDescriptors.register(body, held);
+      bodyDescriptors.register(response, held);
+    }
+    return response;
   }
   return new Response(descriptorBody(opened.fd!, start, length, null), { status, headers });
 }

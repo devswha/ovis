@@ -1393,6 +1393,16 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     const swap = () => { unlinkSync(join(scratch, name)); symlinkSync(join(root, name), join(scratch, name)); };
     return { cwd, scratch, swap };
   };
+  /** A body sent from its descriptor's own path keeps that descriptor until the body and its answer are collected: once both are gone, each is closed. */
+  const bodiesCollected = async () => {
+    const deadline = Date.now() + 5_000;
+    while (live.size > 0) {
+      if (Date.now() > deadline) throw new Error(`descriptors still open after collection: ${[...live].join(", ")}`);
+      Bun.gc(true);
+      // a turn of the event loop, for the collected bodies' finalizers to run
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
   const fromScratch = async (name: string, cwd: string, scratch: string) => {
     const found = await fileView.findFile(name, cwd, async () => scratch);
     if (found === null || !("info" in found)) throw new Error("expected the scratch file");
@@ -1468,16 +1478,54 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     }
   });
 
+  it("finds a path given in full in the folder only where it points, never a file deeper whose path ends in it", async () => {
+    const { cwd, scratch } = fixture("other.txt", "INSIDE", "OUTSIDE-SECRET");
+    mkdirSync(join(scratch, "sub"));
+    writeFileSync(join(scratch, "sub", "a.txt"), "DEEPER");
+    const mayBeScratch = (path: string) => path.startsWith(scratch);
+    // `<scratch>/a.txt` is not there: not found, as a missing path anywhere else
+    expect(await fileView.findFile(join(scratch, "a.txt"), cwd, async () => scratch, mayBeScratch)).toBeNull();
+    // a bare name is still found deeper in the scratch folder, as the fallback always did
+    expect(await fileView.findFile("a.txt", cwd, async () => scratch, mayBeScratch)).toMatchObject({ info: { path: join(scratch, "sub", "a.txt") } });
+  });
+
   it("keeps sending the file it opened when a link is swapped in while it is sent", async () => {
     // larger than one read too: such a body is sent after its headers, never from the path
     for (const inside of ["INSIDE", "I".repeat(STREAM_CHUNK_BYTES + 1)]) {
       const { cwd, scratch, swap } = fixture("note.txt", inside, "OUTSIDE-SECRET");
-      const found = await fromScratch("note.txt", cwd, scratch);
-      const responses = await Promise.all([false, true].map((download) => fileResponse(found.info, download, false, null, null, undefined, found.within)));
-      expect(responses.map((response) => response.status)).toEqual([200, 200]);
-      swap();
-      for (const response of responses) expect(await response.text()).toBe(inside);
+      await (async () => {
+        const found = await fromScratch("note.txt", cwd, scratch);
+        const responses = await Promise.all([false, true].map((download) => fileResponse(found.info, download, false, null, null, undefined, found.within)));
+        expect(responses.map((response) => response.status)).toEqual([200, 200]);
+        swap();
+        for (const response of responses) expect(await response.text()).toBe(inside);
+      })();
     }
+    await bodiesCollected();
+  });
+
+  it("sends a file larger than one read with its exact length, whole and by range", async () => {
+    // only Linux names an open file by its descriptor (`/proc/self/fd`); elsewhere it is streamed without one
+    if (process.platform !== "linux") return;
+    const size = STREAM_CHUNK_BYTES + 4096;
+    const { cwd, scratch } = fixture("big.bin", "B".repeat(size), "OUTSIDE-SECRET");
+    // a disk that answers at once, whatever this machine's load: the case a file body is for
+    pageFileHooks.fastDiskMs = 60_000;
+    await (async () => {
+      const found = await fromScratch("big.bin", cwd, scratch);
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => fileResponse(found.info, true, false, null, request, undefined, found.within) });
+      try {
+        const whole = await fetch(server.url);
+        expect(whole.headers.get("content-length")).toBe(String(size));
+        expect((await whole.text()).length).toBe(size);
+        const part = await fetch(server.url, { headers: { range: `bytes=10-${STREAM_CHUNK_BYTES + 9}` } });
+        expect(part.status).toBe(206);
+        expect(part.headers.get("content-range")).toBe(`bytes 10-${STREAM_CHUNK_BYTES + 9}/${size}`);
+        expect(part.headers.get("content-length")).toBe(String(STREAM_CHUNK_BYTES));
+        expect((await part.text()).length).toBe(STREAM_CHUNK_BYTES);
+      } finally { await server.stop(true); }
+    })();
+    await bodiesCollected();
   });
 
   it("names the descriptor a file thread opens in the folder in its cell, and takes back one it refuses", async () => {

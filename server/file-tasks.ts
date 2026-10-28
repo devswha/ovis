@@ -117,7 +117,10 @@ function open(path: string, get: { range: string | null; ifRange: boolean } | nu
   const length = end - start + 1;
   if (length > STREAM_CHUNK_BYTES) {
     try { (pageFileHooks.readSync ?? readSync)(fd, new Uint8Array(PROBE_BYTES), 0, PROBE_BYTES, start); } catch { close(); return null; }
-    if (within !== null || performance.now() - began >= fastDiskMs) return { size, range, bytes: null, fd, fast: false };
+    if (performance.now() - began >= fastDiskMs) return { size, range, bytes: null, fd, fast: false };
+    // a file the scratch fallback found is never sent from its path: on Linux, from its descriptor's
+    // own (`/proc/self/fd`, the file it holds, sized as a file body); elsewhere streamed from it
+    if (within !== null) return { size, range, bytes: null, fd, fast: process.platform === "linux" };
     close();
     return { size, range, bytes: null, fd: null, fast: true };
   }
