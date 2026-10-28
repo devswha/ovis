@@ -1,19 +1,9 @@
 import type { LayoutCell } from "./layoutMap.ts";
 
-/**
- * How many tabs stay mounted on a PC canvas, the current one included: a return to any of them
- * draws its kept screen at once instead of a new terminal and attach. A hidden attached pane holds
- * no pty (#1061), so more of them cost only memory. A mirrored PC (no terminal attach) keeps 4: a
- * hidden mirrored pane keeps polling `pane.read`.
- */
-export function paneTabCacheSize(mirrored: boolean): number {
-  return mirrored ? 4 : 8;
-}
-
-/** Newest first, including the current tab and at most `size - 1` previous tabs. */
-export function visitPaneTab(previous: readonly string[], current: string | null, liveTabs: ReadonlySet<string>, size = paneTabCacheSize(false)): readonly string[] {
+/** Newest first, including the current tab and at most three previous tabs. */
+export function visitPaneTab(previous: readonly string[], current: string | null, liveTabs: ReadonlySet<string>): readonly string[] {
   const surviving = previous.filter((id) => liveTabs.has(id) && id !== current);
-  return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, size) : surviving.slice(0, size);
+  return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, 4) : surviving.slice(0, 4);
 }
 
 /** Only previously mounted panes survive: new hidden splits must not acquire an attach. */

@@ -139,6 +139,55 @@ for (const [name, reads, screen] of [
   });
 }
 
+for (const resized of [false, true]) {
+  it(`${resized ? "keeps the hold for an attach resized before its screen" : "settles an attach on its first screen"}`, async () => {
+    mock.restore();
+    spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [{ pane_id: "p", terminal_id: "term_0", workspace_id: "w", tab_id: "t", cwd: "/fixture", focused: false, revision: 0, agent_status: "idle" as const }],
+      layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture",
+    } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>);
+    spyOn(Bun, "which").mockReturnValue("/fixture/herdr");
+    const attempts: pty.PtySessionOptions[] = [];
+    const RealPtySession = pty.PtySession;
+    mock.module("../pty/session.ts", () => ({
+      PtySession: class {
+        readonly exited = Promise.withResolvers<void>().promise;
+        constructor(options: pty.PtySessionOptions) { attempts.push(options); }
+        kill() {}
+        pause() {}
+        resume() {}
+        resize() {}
+        winch() {}
+        write() { return true; }
+      },
+    }));
+    const frames: ServerMessage[] = [];
+    const client = {
+      data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+      getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
+    } as unknown as Client;
+    const registry = createTerminalRegistry({
+      options: {}, clients: new Set([client]), stopped: () => false,
+      terminalAttach: async () => true, holdFor: 60_000, heldRetry: 60_000, retryFor: 0, relookupFor: 5_000,
+      holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+    });
+    try {
+      await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24 });
+      const attach = attempts[0];
+      if (!attach) throw new Error("no attach was started");
+      // #2255 CI: the screen herdr drew before it applied this size is not yet the pane at that size,
+      // so input waits out the hold as it did before the early settle
+      if (resized) await registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols: 91, rows: 27 });
+      attach.onData("\x1b[?1049h\x1b[2J\x1b[1;1Hpane text");
+      expect(frames.some((frame) => frame.type === "input-ready" && frame.ready !== false)).toBe(!resized);
+    } finally {
+      registry.closeAttachment("p");
+      registry.conversations.stop();
+      mock.module("../pty/session.ts", () => ({ PtySession: RealPtySession }));
+    }
+  });
+}
+
 it("marks a newcomer recovering after a ready stream ends and clears it when the next attach takes", async () => {
   // Given the real process lifecycle, with only its PTY and herdr lookup controlled.
   mock.restore();

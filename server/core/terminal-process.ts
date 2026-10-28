@@ -548,6 +548,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       if (!Bun.which(command, { PATH: process.env["PATH"] ?? "", cwd: process.env["HOME"] ?? "/" })) {
         throw new HerdrError("attach_failed", `herdr could not be started: ${command} is not an executable on the server's PATH (set OVIS_HERDR_BIN to herdr's full path)`);
       }
+      // the grid this attach starts at: a resize before its screen is applied by herdr after that screen
+      const startCols = attachment.cols;
+      const startRows = attachment.rows;
       const session = new PtySession({
         command,
         // --takeover goes after the id: before it, herdr reads the id as an unknown option
@@ -578,7 +581,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           }
           // a screen, not a refusal: the attach took, and a tab switch waits on it. A pane another
           // bridge held keeps the whole hold: a displacement right after its screen spends no click
-          if (holding && !attachment.held && attachScreenStarted(held)) {
+          // a pane resized since the attach started keeps the whole hold: herdr's first screen is
+          // still the old grid, and input sent at once would reach the program before the new one
+          if (holding && !attachment.held && attachment.cols === startCols && attachment.rows === startRows && attachScreenStarted(held)) {
             clearTimeout(holdTimer);
             guardUntil = heldSince + holdFor;
             took();
