@@ -819,9 +819,6 @@ async function readKnownPrompt(
     const bound = await boundPiAskFlow(paneId, piTranscript, signal);
     if (bound) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, bound)) };
   }
-  // pi-ask's form with no bound card: pi-ask takes no typed keys (its docs/remote-events.md), so no
-  // generic card guesses them; the terminal answers it
-  const piAskWaits = !!piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path);
   let screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
@@ -884,7 +881,10 @@ async function readKnownPrompt(
   const prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
-  if (piAskWaits && (!prompt || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))) return { prompt: null, screen, suppressFallback: true };
+  // pi-ask's form with no bound card: pi-ask takes no typed keys (its docs/remote-events.md), so no
+  // generic card guesses them; the terminal answers it. Read only where a fallback card could show.
+  const fallbackCard = prompt ? parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback") === true : pane.agent_status === "blocked";
+  if (fallbackCard && piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
