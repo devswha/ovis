@@ -72,8 +72,9 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(question, "use a local socket")).toEqual({ custom_text: "use a local socket" });
     // the raw Markdown of one option can be the words another one shows
     const twins = { ...prompt(["*main*", "`*main*`"], 2), agent: "omp", text_format: "markdown" as const };
-    expect(answerFromText(twins, "*main*")).toEqual({ option_index: 1 });
-    expect(answerFromText(twins, "main")).toEqual({ option_index: 0 });
+    // and since both read as "main" by their letters, a typed name picks neither (#2220 skeleton); a click still does
+    expect(answerFromText(twins, "*main*")).toEqual({ custom_text: "*main*" });
+    expect(answerFromText(twins, "main")).toEqual({ custom_text: "main" });
   });
   it("picks no option for words that name two of them, on any card (#2220 review)", () => {
     // the chat's scanner reads the first label's stars as emphasis: both rows read alike
@@ -85,8 +86,9 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(spaced, "Keep production")).toEqual({ custom_text: "Keep production" });
     // a link to `recommended` is the option's words, not its Recommended tag (#2220 review)
     const linked = { ...prompt(["Keep [production](recommended)", "Keep [production]"], 2), agent: "omp", text_format: "markdown" as const };
-    expect(answerFromText(linked, "Keep production")).toEqual({ option_index: 0 });
-    expect(answerFromText(linked, "Keep [production]")).toEqual({ option_index: 1 });
+    // both read as "keep production" by their letters: a typed name picks neither (#2220 skeleton)
+    expect(answerFromText(linked, "Keep production")).toEqual({ custom_text: "Keep production" });
+    expect(answerFromText(linked, "Keep [production]")).toEqual({ custom_text: "Keep [production]" });
     // words that are a row's shown name pick that row, before any number (#2220 review)
     const numeral = { ...prompt(["`2`", "Keep production"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(numeral, "2")).toEqual({ option_index: 0 });
@@ -149,8 +151,15 @@ describe("answering a prompt from the chat", () => {
       ["single: a number past the rows", ["Desktop", "Phone"], false, true, "5", custom("5")],
       // Markdown twins and shown words from the earlier rounds
       ["single: a glob pair", ["Keep *.log and *.tmp", "Keep .log and .tmp"], false, true, "Keep .log and .tmp", custom("Keep .log and .tmp")],
-      ["single: a link to `recommended`", ["Keep [production](recommended)", "Keep [production]"], false, true, "Keep [production]", { option_index: 1 }],
-      ["single: emphasis beside code", ["*main*", "`*main*`"], false, true, "*main*", { option_index: 1 }],
+      ["single: a link to `recommended`", ["Keep [production](recommended)", "Keep [production]"], false, true, "Keep [production]", custom("Keep [production]")],
+      ["single: emphasis beside code", ["*main*", "`*main*`"], false, true, "*main*", custom("*main*")],
+      // rows whose letters, marks and digits are the same (a skeleton): a typed name picks neither
+      ...([["a braille blank", "Keep **production**\u2800"], ["a DEL", "Keep **pro\u007Fduction**"], ["a full stop", "Keep **production**."]] as const).flatMap(([kind, label]): Case[] => [
+        [`single: ${kind}`, [label, "Keep **production**"], false, true, "Keep production", custom("Keep production")],
+        [`multi: ${kind}`, [label, "Keep **production**"], true, false, "Keep production", null],
+      ]),
+      ["single: a braille blank typed", ["Keep **production**\u2800", "Keep **production**"], false, true, "Keep production\u2800", custom("Keep production\u2800")],
+      ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
       ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
     ];
     for (const [name, labels, multi, other, typed, expected] of cases) {

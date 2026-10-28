@@ -29,6 +29,15 @@ function boundLetter(label: string): string | null {
  */
 const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
+/**
+ * What a name reads as, for telling rows apart (#2220): its letters, marks and digits, in one Unicode form
+ * by look and one case, nothing else. Marks a page does not draw, spacing, punctuation, blanks such as
+ * U+2800 and controls such as U+007F all go. Two rows with one skeleton may look the same, so a typed
+ * answer picks neither. That over-refuses pairs like `production.` and `production`; a click still picks them.
+ */
+const skeleton = (text: string): string => text.normalize("NFKC").toLowerCase()
+  .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[^\p{L}\p{M}\p{N}]/gu, "");
+
 function bareLabel(label: string): string {
   return spaced(label.replace(/\s*\((?:[a-z]|esc|recommended)\)$/i, ""));
 }
@@ -52,7 +61,12 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     const names = (label: string): boolean => spaced(label) === lower || bareLabel(label) === lower || boundLetter(label) === lower;
     const only = (label: (index: number) => string, named = names): number | null | undefined => {
       const found = valid.filter((index) => named(label(index)));
-      return found.length === 1 ? found[0] : found.length > 1 ? null : undefined;
+      if (found.length > 1) return null;
+      // rows that may look the same pick none: the one named shares its skeleton with another row, or the
+      // words read as two rows' names
+      const alike = (shape: string): number => valid.filter((index) => skeleton(label(index)) === shape).length;
+      if (found.length === 1) return alike(skeleton(label(found[0]!))) > 1 ? null : found[0];
+      return alike(skeleton(said)) > 1 ? null : undefined;
     };
     // an option's own words first: a translated label never takes the words another option shows
     // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
