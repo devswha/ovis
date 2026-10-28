@@ -679,6 +679,8 @@ export interface InteractivePrompt {
   multi_select: boolean;
   /** Native OpenCode question explicitly marked required: false; an empty answer skips it. */
   optional?: true;
+  /** A multi-select whose typed answer goes with its checks in one answer (pi-ask's ask_user; OpenCode's native form says so by its agent). */
+  checks_with_text?: true;
   /** index of the "type your own answer" option, when the menu has one */
   custom_option_index: number | null;
   /** a question in Codex's queue while Codex keeps working: only the card answers it. Collapsed,

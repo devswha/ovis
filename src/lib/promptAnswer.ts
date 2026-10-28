@@ -56,6 +56,11 @@ function range(prompt: InteractivePrompt): string {
   return numbers.length > 1 ? `${numbers[0]}–${numbers.at(-1)}` : String(numbers[0] ?? 1);
 }
 
+/** A multi-select whose checks and typed answer go together: Submit and Send both send the whole step. */
+export function sendsChecksWithText(prompt: InteractivePrompt): boolean {
+  return prompt.multi_select && !prompt.fallback && (prompt.checks_with_text === true || prompt.agent === "opencode");
+}
+
 /** Pi switches native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
 export function blocksStepNavigation(prompt: InteractivePrompt, selected: ReadonlySet<number>, custom: string): boolean {
   if (prompt.agent !== "pi" || !prompt.steps?.some(step => step.can_navigate)) return false;

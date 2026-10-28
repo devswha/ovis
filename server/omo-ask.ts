@@ -27,12 +27,13 @@ export interface OmoAskCall {
 /** The open calls, oldest first. */
 export type OmoAsks = readonly OmoAskCall[];
 
-interface Entry {
+export interface OmoAskEntry {
   type?: unknown;
   customType?: unknown;
   data?: unknown;
-  message?: { role?: unknown; content?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown };
+  message?: { role?: unknown; content?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown; stopReason?: unknown };
 }
+type Entry = OmoAskEntry;
 
 const ANSWER_FRAME_RE = /^\[Answer to question ([^\]\r\n]+)\]\r?\n/;
 
@@ -79,6 +80,9 @@ export function omoAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
 
 /** Incremental question replay shared with the status reader's JSONL projection. */
 export class OmoAskReader {
+  /** `after`: how one record changes the open calls; pi-ask's ask_user has its own rule (pi-ask-bridge.ts). */
+  constructor(private readonly after: (open: OmoAsks, entry: OmoAskEntry) => OmoAsks = omoAsksAfter) {}
+
   private files = new Map<string, { id: string; size: number; mtime: number; offset: number; asks: OmoAsks }>();
 
   read(path: string): OmoAsks {
@@ -93,7 +97,7 @@ export class OmoAskReader {
       state.offset = readOmoLines(fd, state.offset, stat.size, (line) => {
         const text = "text" in line ? line.text : line.record;
         if (text === undefined) return;
-        try { state!.asks = omoAsksAfter(state!.asks, JSON.parse(text)); } catch { /* partial or invalid record */ }
+        try { state!.asks = this.after(state!.asks, JSON.parse(text)); } catch { /* partial or invalid record */ }
       });
       state.size = stat.size;
       state.mtime = stat.mtimeMs;

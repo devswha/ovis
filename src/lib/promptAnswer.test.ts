@@ -2,11 +2,23 @@ import { describe, expect, it } from "bun:test";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
-import { answerFromText, answerHint, answerRefusal, focusFollowsAnswer, needsConfirmation, pressOrigin, type PressOrigin } from "./promptAnswer.ts";
+import { answerFromText, answerHint, answerRefusal, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, type PressOrigin } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
   id: "p", agent: "claude", kind: "question", title: "Question", question: "?", body: null,
   options: options.map((label) => ({ label, description: null })), multi_select: multi, custom_option_index: custom,
+});
+
+describe("a multi-select's checks and typed answer", () => {
+  it("go together where the server says so, and on OpenCode's native form from any server", () => {
+    const multi = prompt(["Unit tests", "Browser QA", "Type your own answer"], 2, true);
+    expect(sendsChecksWithText({ ...multi, agent: "pi", checks_with_text: true })).toBe(true);
+    expect(sendsChecksWithText({ ...multi, agent: "opencode" })).toBe(true);
+    // pi's own screen-read forms keep one answer per press
+    expect(sendsChecksWithText({ ...multi, agent: "pi" })).toBe(false);
+    expect(sendsChecksWithText({ ...multi, agent: "opencode", fallback: true })).toBe(false);
+    expect(sendsChecksWithText({ ...prompt(["A", "B"], 1), agent: "pi", checks_with_text: true })).toBe(false);
+  });
 });
 
 describe("answering a prompt from the chat", () => {

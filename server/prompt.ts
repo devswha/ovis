@@ -11,6 +11,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, pa
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader } from "./omo-ask.ts";
+import { answerPiAskUser, boundPiAskFlow, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
@@ -812,6 +813,15 @@ async function readKnownPrompt(
   }
 
   if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
+  const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
+  // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
+  if (piTranscript && "path" in piTranscript) {
+    const bound = await boundPiAskFlow(paneId, piTranscript, signal);
+    if (bound) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, bound)) };
+  }
+  // pi-ask's form with no bound card: pi-ask takes no typed keys (its docs/remote-events.md), so no
+  // generic card guesses them; the terminal answers it
+  const piAskWaits = !!piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path);
   let screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
@@ -840,7 +850,7 @@ async function readKnownPrompt(
   const omoTrusted = (agent !== "claude" && agent !== "") || pane.agent_status === "blocked";
   let piNative: ParsedPrompt | null = null;
   if (agent === "pi") {
-    const transcript = await piTranscriptPath(paneId).catch(() => null);
+    const transcript = piTranscript;
     if (transcript && "path" in transcript) {
       try {
         const calls = pendingPiQuestionnaires(transcript.path);
@@ -858,7 +868,7 @@ async function readKnownPrompt(
   if (piTabs && !questionnaire && !piNative) {
     // A saved custom answer replaces the Other label. Only the pane's verified pending call
     // can prove that last row is still input, not a clipped third/fourth ordinary option.
-    const transcript = await piTranscriptPath(paneId).catch(() => null);
+    const transcript = piTranscript;
     if (transcript && "path" in transcript) {
       try {
         const matches = piAskReader.read(transcript.path).flatMap(call => {
@@ -874,6 +884,7 @@ async function readKnownPrompt(
   const prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
+  if (piAskWaits && (!prompt || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
@@ -1227,6 +1238,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           return jsonResponse({ error: { code: "prompt_changed", message: "The form has already been settled." } }, 409);
         }
         return jsonResponse({ error: { code: "reply_failed", message: `Failed to reply to OpenCode form (HTTP ${replyResult.status}).` } }, 502);
+      }
+
+      if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
+        const { response, answered } = await answerPiAskUser(body.pane_id, parsedPrompt, body, deadline);
+        if (response.ok) askingEnded(body.pane_id);
+        if (answered) {
+          const sent = chatSent.get(body.pane_id)?.commands.at(-1);
+          // pi-ask itself took the answer to the form the sent command opened
+          if (sent?.dialogId === prompt.id) noteCommandEvidence(body.pane_id, sent.id, { kind: "native", at: Date.now() });
+          formsAnswered.set(body.pane_id, Date.now());
+          if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+        }
+        return response;
       }
 
       if (body.step_back === true || body.step_index !== undefined) {
