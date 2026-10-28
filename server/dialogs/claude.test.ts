@@ -270,6 +270,15 @@ describe("Claude's words over its question (#2088)", () => {
     ]))?.screen_words).toBe("See https://example.com/docs/very/long\n/path/to/the/page for the details.");
   });
 
+  test("keeps two commands on their lines", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● Run these:", "  git log --oneline --decorate --graph", "  git status", ""]))?.screen_words)
+      .toBe("Run these:\ngit log --oneline --decorate --graph\ngit status");
+  });
+
+  test("reads Korean prose with a word in parentheses as Claude's words, not a tool call", () => {
+    expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 패치(Patch)는 기존 내용을 보존합니다.", ""]))?.screen_words).toBe("패치(Patch)는 기존 내용을 보존합니다.");
+  });
+
   test("joins Korean at its spaces, and Chinese without one only where the line was full", () => {
     expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● 마지막 줄에 줄바꿈이 빠져 있어서", "  파일이 깔끔하게 끝나지 않습니다.", ""]))?.screen_words)
       .toBe("마지막 줄에 줄바꿈이 빠져 있어서 파일이 깔끔하게 끝나지 않습니다.");

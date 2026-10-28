@@ -1,4 +1,5 @@
 import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
+import { askedQuestions } from "./askQuestions.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
 /** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */
@@ -20,14 +21,9 @@ export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly Con
   if (!prompt.screen_words) return null;
   const asked = prompt.question.replace(/\s+/g, " ").trim();
   const asksThis = (input: string): boolean => {
-    try {
-      const questions = (JSON.parse(input) as { questions?: unknown }).questions;
-      return Array.isArray(questions) && questions.some((question) => typeof question === "object" && question !== null
-        && typeof (question as { question?: unknown }).question === "string"
-        && (question as { question: string }).question.replace(/\s+/g, " ").trim() === asked);
-    } catch {
-      return false;
-    }
+    let args: unknown;
+    try { args = JSON.parse(input); } catch { return false; }
+    return askedQuestions("AskUserQuestion", args)?.some((question) => question.question.replace(/\s+/g, " ").trim() === asked) ?? false;
   };
   const recorded = turns.some((turn) => turn.role === "assistant" && turn.parts.some((part) =>
     part.kind === "tool" && part.name === "AskUserQuestion" && part.state === "pending" && asksThis(part.input)));

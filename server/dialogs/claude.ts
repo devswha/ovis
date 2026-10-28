@@ -196,10 +196,10 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
 }
 
 /**
- * Claude's tool call line, `● Write(a.ts)` or an MCP call `● plugin/server - tool (MCP)(…)`: a name with
- * no space before its `(`; Claude's own text opens with ● too
+ * Claude's tool call line, `● Write(a.ts)` or an MCP call `● plugin/server - tool (MCP)(…)`: an ASCII name
+ * right before its `(`; Claude's own text opens with ● too (`● 패치(Patch)는 …` is text)
  */
-const CLAUDE_CALL_RE = /^[●⏺]\s+(?:[^\s(]+|\S.* \(MCP\))\(/;
+const CLAUDE_CALL_RE = /^[●⏺]\s+(?:[\w.:/-]+|\S.* \(MCP\))\(/;
 
 /** a collapsed group of tool calls, `Read 2 files (ctrl+o to expand)` (2.1.311), its bullet drawn or not */
 const CLAUDE_COLLAPSED_RE = /\(ctrl\+o\s+to\s+expand\)/i;
@@ -209,6 +209,9 @@ const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])
 
 /** words and sentence punctuation only: a line with a path, a URL, code or a command's signs keeps its breaks */
 const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！？：；「」『』（）]+$/u;
+
+/** a command's option (`--oneline`, `-rf`): its line is a command, never prose to join */
+const OPTION_RE = /(?:^|\s)--?\w/;
 
 /** a script written without spaces between words: a line of it the pane broke goes on without a space */
 const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
@@ -278,7 +281,8 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
       const first = /^\S+/.exec(next)![0];
       const before = [...previous.text.trimEnd()].at(-1) ?? "";
       const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
-      const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OWN_LINE_RE.test(text) && before !== ":";
+      const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OPTION_RE.test(previous.text) && !OPTION_RE.test(text)
+        && !OWN_LINE_RE.test(text) && before !== ":";
       // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
       // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
       // anywhere, so only a line filled to the edge goes on
