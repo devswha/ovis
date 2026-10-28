@@ -110,21 +110,25 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < -4) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // Their hide rules are decided here for the values the PCs report (decidedRowTokens), and told before
-          // the roster that carries a new value, so a value they hide is never drawn off this stream.
+          // the roster that carries a new value, in the same write, so a value they hide is never drawn off this
+          // stream. That decision also covers the values of the roster the browser holds until the new one lands.
           // Read before listening: a change this read finds is told to the browsers already listening, and to this one once.
           let rows = herdrSidebar?.get() ?? null;
           let reported: readonly Machine[] = [];
           let toldSidebar: string | undefined;
-          const sendSidebar = () => {
-            if (!herdrSidebar) return;
-            const told = JSON.stringify({ type: "herdr-sidebar", agents: decidedRowTokens(rows, reported) } satisfies MachineEvent);
-            if (told === toldSidebar) return;
+          const sidebarFrame = (machines: readonly Machine[]): string => {
+            if (!herdrSidebar) return "";
+            const told = JSON.stringify({ type: "herdr-sidebar", agents: decidedRowTokens(rows, machines) } satisfies MachineEvent);
+            if (told === toldSidebar) return "";
             toldSidebar = told;
-            send(`data: ${told}\n\n`);
+            return `data: ${told}\n\n`;
           };
+          const sendSidebar = () => { const frame = sidebarFrame(reported); if (frame) send(frame); };
           stop = manager.subscribe((event) => {
-            if (event.type === "machines") { reported = event.machines; sendSidebar(); }
-            send(`data: ${JSON.stringify(event)}\n\n`);
+            if (event.type !== "machines") { send(`data: ${JSON.stringify(event)}\n\n`); return; }
+            const frame = sidebarFrame([...reported, ...event.machines]);
+            reported = event.machines;
+            send(`${frame}data: ${JSON.stringify(event)}\n\n`);
           });
           // the shared preferences ride the same stream, one connection per browser; the document
           // opens it, so a page that reconnects (or whose GET lost a race) holds the latest

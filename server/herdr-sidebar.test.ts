@@ -329,10 +329,22 @@ describe("the machine events", () => {
       tell("off · paused");
       await until(5);
       expect(events[4]!.type).toBe("machines");
+      // a hidden value that changes: until the new roster lands the browser holds the old value, so the decision keeps it hidden too
+      tell("off · later");
+      expect(await until(7)).toEqual([
+        { type: "herdr-sidebar", agents: { rows: [{ name: "quota", rules: [{ equals: "off · later", hide: true }, { equals: "off · paused", hide: true }] }], by_agent: {} } },
+        { type: "machines" } as MachineEvent,
+      ]);
+      // once that roster is all the browser holds, the old value leaves the decision
+      tell("off · later");
+      expect(await until(9)).toEqual([
+        { type: "herdr-sidebar", agents: { rows: [{ name: "quota", rules: [{ equals: "off · later", hide: true }] }], by_agent: {} } },
+        { type: "machines" } as MachineEvent,
+      ]);
       // new rows are decided for the values last reported
       writeFileSync(path, `[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ equals = "5h 95%", hide = true }] }, "$eta"]]`);
-      await until(6);
-      expect(events[5]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }, { name: "eta" }], by_agent: {} } });
+      await until(10);
+      expect(events[9]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }, { name: "eta" }], by_agent: {} } });
       expect(text).not.toContain("private-literal");
       expect(text).not.toContain("starts_with");
     } finally {
