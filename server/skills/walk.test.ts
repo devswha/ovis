@@ -303,9 +303,11 @@ describe("repository ancestors", () => {
     expect(userHome({ HOME: "", USERPROFILE: "C:\\Users\\user" }, "win32")).toBe("C:\\Users\\user");
     expect(userHome({}, "win32")).toBe(homedir());
     expect(userHome({}, "linux")).toBe("");
+    // USERPROFILE is Windows' alone: a missing HOME elsewhere is not filled from it
+    expect(userHome({ HOME: "", USERPROFILE: "/profile" }, "linux")).toBe("");
   });
 
-  it("falls back to USERPROFILE when HOME is unset", () => {
+  it("falls back to USERPROFILE when HOME is unset on Windows", () => {
     const home = temp();
     delete process.env.HOME;
     process.env.USERPROFILE = home;
@@ -313,8 +315,14 @@ describe("repository ancestors", () => {
     const cwd = join(repo, "sub");
     mkdirSync(cwd, { recursive: true });
     mkdirSync(join(repo, ".git"));
-    expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
-    expect(ancestorsToRepoRoot(home)).toEqual([]);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(ancestorsToRepoRoot(cwd)).toEqual([cwd, repo]);
+      expect(ancestorsToRepoRoot(home)).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("meets a home in another letter case on Windows, from below it and from above it", () => {

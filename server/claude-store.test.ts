@@ -1030,11 +1030,16 @@ describe("a Claude process's store source", () => {
   it("finds the server's default store under USERPROFILE when HOME is unset, as native Windows starts it", async () => {
     const profile = tempDir();
     const before = { home: process.env["HOME"], profile: process.env["USERPROFILE"] };
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     delete process.env["HOME"];
     process.env["USERPROFILE"] = profile;
     try {
+      // elsewhere USERPROFILE means nothing: the store stays where it was without HOME
+      expect((await claudeStoreOf(null, undefined, {}))?.dir).toBe(".claude");
+      Object.defineProperty(process, "platform", { value: "win32" });
       expect((await claudeStoreOf(null, undefined, {}))?.dir).toBe(join(profile, ".claude"));
     } finally {
+      Object.defineProperty(process, "platform", platform);
       if (before.home === undefined) delete process.env["HOME"]; else process.env["HOME"] = before.home;
       if (before.profile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = before.profile;
     }
