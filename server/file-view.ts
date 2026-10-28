@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { type BigIntStats, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, read, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, parse, relative as relativePath, resolve, sep } from "node:path";
 
 import type { FileInfo, FileKind } from "../shared/protocol.ts";
 import { fileTask } from "./file-pool.ts";
@@ -42,7 +42,7 @@ export function resolveFilePath(input: string, cwd: string | null): string | nul
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|typescript|xml|x-sh|toml|yaml|x-yaml|sql)|image\/svg\+xml)/;
 const SNIFF_BYTES = 8192;
 
-function kindOf(mime: string, path: string): FileKind {
+function kindOf(mime: string, path: string, opened: number | null = null): FileKind {
   if (mime === "image/svg+xml") return "image";
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
@@ -51,11 +51,12 @@ function kindOf(mime: string, path: string): FileKind {
   if (TEXT_TYPES.test(mime)) return "text";
   // no known type (a .log, a dotfile, source without a registered extension): text when
   // its first bytes hold no NUL
+  // (`opened`: a descriptor already open on the file, read instead of the path)
   let fd: number | null = null;
   try {
-    fd = openSync(path, "r");
+    if (opened === null) fd = openSync(path, "r");
     const buffer = Buffer.alloc(SNIFF_BYTES);
-    const read = readSync(fd, buffer, 0, SNIFF_BYTES, 0);
+    const read = readSync(opened ?? fd!, buffer, 0, SNIFF_BYTES, 0);
     return buffer.subarray(0, read).includes(0) ? "binary" : "text";
   } catch {
     return "binary";
@@ -117,20 +118,55 @@ export async function locateFile(input: string, cwd: string | null, anyForm = fa
   return found.length > 1 ? { candidates: found } : null;
 }
 
-/** A relative fallback stays in its own folder, including after following symlinks. */
-export async function locateFileInFolder(input: string, folder: string, anyForm = false): ReturnType<typeof locateFile> {
+/** A file found, with the folder it must be served from when it was found as one that stays in it (`locateFileInFolder`); or the candidates; or nothing. */
+export type LocatedFile = { info: FileInfo; within?: string } | { candidates: string[] } | null;
+
+/**
+ * A relative fallback stays in its own folder, including after following symlinks. Checking a
+ * path and then following it again could meet a link put there in between, so the file is
+ * described from a descriptor shown to lie in the folder (`describeWithin`, on a file thread), and
+ * comes back with that folder (`within`), in which `fileResponse` opens it again the same way.
+ * Candidates are only names to choose from.
+ */
+export async function locateFileInFolder(input: string, folder: string, anyForm = false): Promise<LocatedFile> {
   const relative = input.trim();
   if (isAbsolute(relative) || relative.startsWith("~") || !resolve(folder, relative).startsWith(resolve(folder) + sep)) return null;
   const found = await locateFile(relative, folder, anyForm);
   if (found === null) return null;
   // a missing or unreadable target is not a fallback
-  const paths = "info" in found ? [found.info.path] : found.candidates;
-  return await fileTask<boolean>({ op: "within", paths, folder }) ? found : null;
+  if ("candidates" in found) return await fileTask<boolean>({ op: "within", paths: found.candidates, folder }) ? found : null;
+  return await fileTask<{ info: FileInfo; within: string } | null>({ op: "describe", path: found.info.path, folder });
 }
 
-/** Try every exact place before opening a name stored in another form. */
-export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>): ReturnType<typeof locateFile> {
+/**
+ * The file at `path` described from a descriptor shown to lie in `folder` (`openAuthorized`), with
+ * the folder as it resolves; null for anything else.
+ */
+export function describeWithin(path: string, folder: string): { info: FileInfo; within: string } | null {
+  let within: string;
+  try { within = realpathSync(folder); } catch { return null; }
+  const file = openAuthorized(path, [within], true);
+  if (file === null) return null;
+  try {
+    const described = fileInfo(path);
+    if (described === null) return null;
+    const modified = fstatSync(file.fd).mtime.toISOString();
+    return { info: { ...described, size: file.size, modified, kind: kindOf(described.mime, path, file.fd) }, within };
+  } catch { return null; } finally { release(file.fd); }
+}
+
+/**
+ * Try every exact place before opening a name stored in another form. A file named by a path in
+ * the scratch folder (the viewer opens what it found there by the path it was given, and a choice
+ * among candidates by its own) is still that folder's: found and served as `locateFileInFolder`
+ * does. `mayBeScratch` tells, without asking for the folder, whether a path can lie in one.
+ */
+export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>, mayBeScratch: (path: string) => boolean = () => false): Promise<LocatedFile> {
   const exact = await locateFile(input, cwd);
+  if (exact !== null && "info" in exact && mayBeScratch(exact.info.path)) {
+    const folder = await scratchFolder();
+    if (folder !== null && exact.info.path.startsWith(resolve(folder) + sep)) return locateFileInFolder(relativePath(resolve(folder), exact.info.path), folder);
+  }
   if (exact !== null) return exact;
   let folder: string | null = null;
   if (cwd !== null && !isAbsolute(input.trim()) && !input.trim().startsWith("~")) {
@@ -488,9 +524,9 @@ const hiddenBelow = (folder: string, path: string): boolean => path.slice(folder
  * The first of `roots` (resolved folders) that `file` (a resolved path) lies in, when it has no
  * hidden name below that folder (`.ssh/`, `.env`).
  */
-function rootOf(file: string, roots: readonly string[]): string | undefined {
+function rootOf(file: string, roots: readonly string[], hidden = false): string | undefined {
   const root = roots.find((candidate) => file.startsWith(candidate.endsWith(sep) ? candidate : candidate + sep));
-  if (root === undefined || hiddenBelow(root.endsWith(sep) ? root.slice(0, -1) : root, file)) return undefined;
+  if (root === undefined || (!hidden && hiddenBelow(root.endsWith(sep) ? root.slice(0, -1) : root, file))) return undefined;
   return root;
 }
 
@@ -530,7 +566,7 @@ export function release(fd: number): void {
 }
 
 /** A file a page may read, open: its descriptor, what it was asked as and allowed under, and the file's type, identity, size and modification time. */
-interface Authorized { fd: number; requested: string; file: string; roots: readonly string[]; mime: string; dev: bigint; ino: bigint; size: number; mtimeNs: bigint }
+export interface Authorized { fd: number; requested: string; file: string; roots: readonly string[]; mime: string; dev: bigint; ino: bigint; size: number; mtimeNs: bigint }
 
 /**
  * `requested` opened for a page to read, when what was opened is a file in one of `roots` with no
@@ -549,18 +585,22 @@ interface Authorized { fd: number; requested: string; file: string; roots: reado
  *   lists: anyone allowed to write to a folder on the way can race them. That is outside the one
  *   user this server serves.
  * - Anywhere else, nothing is authorized.
- * The caller reads only from the descriptor and closes it (`release`).
+ * `hidden` lets a file with a hidden name below its root through too. `cell`: where a file thread
+ * names the descriptor the moment it is open (`file-pool.ts`), so a thread ended mid-check leaves
+ * none open; a refused one is taken back from it before it is closed. The caller reads only from
+ * the descriptor and closes it (`release`).
  */
-function openAuthorized(requested: string, roots: readonly string[]): Authorized | null {
+export function openAuthorized(requested: string, roots: readonly string[], hidden = false, cell?: Int32Array<SharedArrayBuffer>): Authorized | null {
   const hooks = pageFileHooks;
   let file: string;
   try {
     file = realpathSync(requested);
-    if (rootOf(file, roots) === undefined || !statSync(file).isFile()) return null;
+    if (rootOf(file, roots, hidden) === undefined || !statSync(file).isFile()) return null;
   } catch { return null; }
   hooks.afterResolve?.(file);
   let fd: number;
   try { fd = openSync(file, OPEN_FLAGS); } catch { return null; }
+  if (cell !== undefined) Atomics.store(cell, 0, fd);
   hooks.opened?.(fd);
   let kept = false;
   try {
@@ -568,12 +608,12 @@ function openAuthorized(requested: string, roots: readonly string[]): Authorized
     if (!opened.isFile() || opened.ino === 0n) return null;
     hooks.afterOpen?.(file);
     const again = realpathSync(requested);
-    const root = rootOf(again, roots);
+    const root = rootOf(again, roots, hidden);
     if (root === undefined) return null;
     hooks.beforeIdentity?.(again);
     const named = statSync(again, { bigint: true });
     if (named.dev !== opened.dev || named.ino !== opened.ino) return null;
-    if (!openedWithin(fd, again, root, roots)) return null;
+    if (!openedWithin(fd, again, root, roots, hidden)) return null;
     hooks.afterAuthorize?.(requested);
     // what is handed out (an address's size, a HEAD's length) is the file as it is once authorized:
     // one written over in place since it was first looked at is refused, not described by that look
@@ -584,17 +624,18 @@ function openAuthorized(requested: string, roots: readonly string[]): Authorized
   } catch {
     return null;
   } finally {
-    if (!kept) release(fd);
+    // a descriptor the pool already took back from the cell (`abandon`) is closed there
+    if (!kept && (cell === undefined || Atomics.compareExchange(cell, 0, fd, -1) === fd)) release(fd);
   }
 }
 
 /** This platform's proof that the file open at `fd` (found at `file`, under `root`) lies in `roots` (`openAuthorized`). */
-function openedWithin(fd: number, file: string, root: string, roots: readonly string[]): boolean {
+function openedWithin(fd: number, file: string, root: string, roots: readonly string[], hidden = false): boolean {
   const platform = pageFileHooks.platform ?? process.platform;
   if (platform === "linux") {
     let opened: string;
     try { opened = (pageFileHooks.readlink ?? readlinkSync)(`/proc/self/fd/${fd}`); } catch { return false; }
-    return !opened.endsWith(" (deleted)") && rootOf(opened, roots) !== undefined;
+    return !opened.endsWith(" (deleted)") && rootOf(opened, roots, hidden) !== undefined;
   }
   if (platform === "darwin") return ownedFolders(root, file, pageFileHooks.uid ? pageFileHooks.uid() : process.getuid?.());
   return platform === "win32";
@@ -700,15 +741,18 @@ interface PageAsset { target: string; mime: string; size: number; data: string |
  * a video or sound that does not fit is given an address to play from instead
  * (`PAGE_MEDIA_PATH`, up to `PAGE_MEDIA_PER_RENDER` files), the one thing this server answers the
  * page; each address is handed to `grant` (by default kept at once, `keepPageMedia`). Null when
- * the page is not a file of at most `EMBED_PAGE_BYTES`, or changed while it was read.
+ * the page is not a file of at most `EMBED_PAGE_BYTES`, or changed while it was read, or, with
+ * `within` (a page found as one that stays in that folder, `locateFileInFolder`), when the page
+ * opened is not shown to lie in it as `openAuthorized` shows it.
  */
-export function pageWithLocalFiles(path: string, media: PageMedia | null = null, grant: (given: PageMediaGrant) => void = (given) => keepPageMedia([given])): string | null {
+export function pageWithLocalFiles(path: string, media: PageMedia | null = null, grant: (given: PageMediaGrant) => void = (given) => keepPageMedia([given]), within: string | null = null): string | null {
   // the page's path is resolved once, before the page is opened (a page that is a link, to the file it
   // leads to), and the page read must be that file, proven from its descriptor (`pageOpenedAs`), never by
   // looking a path up again; its files come from that file's folder: a folder swapped for a link between
   // two lookups would otherwise serve another folder's page, or make it the folder the page's files come from
   let file: string;
   try { file = realpathSync(path); } catch { return null; }
+  if (within !== null && rootOf(file, [within], true) === undefined) return null;
   const folder = dirname(file);
   pageFileHooks.pageFolder?.(folder);
   let html: string;
@@ -718,6 +762,7 @@ export function pageWithLocalFiles(path: string, media: PageMedia | null = null,
   try {
     const page = fstatBig(fd);
     if (!page.isFile() || page.size > BigInt(EMBED_PAGE_BYTES) || !pageOpenedAs(fd, file, page)) return null;
+    if (within !== null && !openedWithin(fd, file, within, [within], true)) return null;
     // and the asked path still leads there: a folder that was a link only while it was looked up, put
     // back since, made that lookup another folder's page
     if (realpathSync(path) !== file) return null;
@@ -845,9 +890,11 @@ export function isHtmlPage(info: FileInfo): boolean {
  * `request` gives the method and Range: a HEAD sends no body, a GET a Range asks for gets that
  * range (`byteRange`). The page is rendered, and the file opened, on a file thread (`file-pool.ts`).
  * `watched`: a `watchPageMedia` the caller began before it looked for the file, so a revocation
- * meanwhile counts too (without it, one begun here).
+ * meanwhile counts too (without it, one begun here). `within`: the folder a file found as one that
+ * stays in it came with (`locateFileInFolder`); such a file is sent only from a descriptor shown to
+ * lie in that folder (`openAuthorized`), and such a page only when the page opened lies there.
  */
-export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>): Promise<Response> {
+export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
   const name = encodeURIComponent(info.name);
   const headers = new Headers({
     "content-disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${name}`,
@@ -866,7 +913,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     const watch = media === null ? null : (watched ?? watchPageMedia());
     let rendered: RenderedPage;
     try {
-      rendered = await fileTask<RenderedPage>({ op: "render", path: info.path, media }, request?.signal);
+      rendered = await fileTask<RenderedPage>({ op: "render", path: info.path, media, within }, request?.signal);
       // gone, grown past the page limit or written over since it was found
       if (rendered.html === null) return gone();
       if (watch !== null) keepPageMedia(rendered.grants, Date.now(), watch.since);
@@ -882,7 +929,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
   const head = request?.method === "HEAD";
   // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
   const get = head ? null : { range: request?.method === "GET" ? request.headers.get("range") : null, ifRange: request?.headers.has("if-range") ?? false };
-  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, fastDiskMs: pageFileHooks.fastDiskMs }, request?.signal);
+  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, within, fastDiskMs: pageFileHooks.fastDiskMs }, request?.signal);
   if (opened === null) return gone();
   headers.set("content-type", type);
   headers.set("accept-ranges", "bytes");
