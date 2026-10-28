@@ -1,7 +1,7 @@
 /** xterm's source uses const enums in .d.ts files; TypeScript must inline them before Vite. */
 import ts from "typescript-api";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**
@@ -11,12 +11,14 @@ import { join, relative } from "node:path";
  * workers) read it while another may be emitting, and a module rewritten in place reads as missing
  * its exports (#2021). A new one is emitted into a private directory renamed into place whole; a
  * build that loses that rename to another uses the other's.
+ *
+ * TypeScript compiles the very bytes that were hashed, never the files as they are on disk by then: a
+ * source changed in between would otherwise be published under the old source's key (#2148).
  */
 export function buildXtermSource(root: string): string {
   const source = join(root, "node_modules/@xterm/xterm/src");
   const cache = join(root, "node_modules/.cache/herdr-xterm");
-  const version = JSON.parse(readFileSync(join(source, "../package.json"), "utf8")).version;
-  if (version !== "5.5.0") throw new Error("Revalidate the xterm composition backport before changing xterm versions");
+  const manifest = join(source, "../package.json");
   const files = ts.sys.readDirectory(source, [".ts"], undefined, ["**/*"]).sort();
   // the patch also edits xterm's public typings, which the emit type-checks against
   const typings = ts.sys.readDirectory(join(source, "../typings"), [".ts"], undefined, ["**/*"]).sort();
@@ -30,16 +32,29 @@ export function buildXtermSource(root: string): string {
     skipLibCheck: true, types: [], noEmitOnError: true,
   };
   const key = createHash("sha256").update(`${ts.version}\0${JSON.stringify(options)}\0`);
-  for (const file of [...files, ...typings]) {
+  // the manifest's `types` picks the typings that `@xterm/xterm` imports resolve to
+  const hashed = new Map<string, string>();
+  for (const file of [...files, ...typings, manifest]) {
     const content = readFileSync(file);
     key.update(`${relative(source, file)}\0${content.length}\0`).update(content);
+    hashed.set(canonical(file), content.toString("utf8").replace(/^\uFEFF/, ""));
   }
+  const version = JSON.parse(hashed.get(canonical(manifest))!).version;
+  if (version !== "5.5.0") throw new Error("Revalidate the xterm composition backport before changing xterm versions");
   const output = join(cache, key.digest("hex").slice(0, 16));
   if (existsSync(output)) return output;
   mkdirSync(cache, { recursive: true });
-  const staging = mkdtempSync(`${output}.tmp-`);
+  removeAbandonedStaging(cache);
+  // named after this process, so a later build can tell whether it is still being written
+  const staging = mkdtempSync(`${output}.tmp-${process.pid}-`);
   try {
-    const program = ts.createProgram(files, { ...options, outDir: staging });
+    const host = ts.createCompilerHost(options);
+    // inside xterm's package only the hashed files exist, as they were hashed
+    const xterm = canonical(join(source, "..")) + "/";
+    const { fileExists, readFile } = host;
+    host.readFile = (path) => canonical(path).startsWith(xterm) ? hashed.get(canonical(path)) : readFile(path);
+    host.fileExists = (path) => canonical(path).startsWith(xterm) ? hashed.has(canonical(path)) : fileExists(path);
+    const program = ts.createProgram(files, { ...options, outDir: staging }, host);
     const emitted = program.emit();
     // a file TypeScript could not write is only a diagnostic: never publish a build missing it
     if (emitted.emitSkipped || emitted.diagnostics.some(({ category }) => category === ts.DiagnosticCategory.Error)) {
@@ -48,11 +63,41 @@ export function buildXtermSource(root: string): string {
         getCanonicalFileName: (name) => name, getCurrentDirectory: () => root, getNewLine: () => "\n",
       }));
     }
+    // mkdtemp's 0700 would lock other users of this checkout out of the published build
+    chmodSync(staging, 0o755);
     moveIntoPlace(staging, output);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 5 });
   }
   return output;
+}
+
+/** One spelling per file for TypeScript's paths and node's alike. */
+function canonical(path: string): string {
+  const slashed = path.replaceAll("\\", "/");
+  return ts.sys.useCaseSensitiveFileNames ? slashed : slashed.toLowerCase();
+}
+
+/**
+ * Removes the staging directories of builds that died before finishing (SIGKILL, OOM, Ctrl-C), which
+ * would otherwise stay until node_modules is reinstalled. A staging directory whose process still
+ * runs belongs to a build emitting right now and is left alone.
+ */
+function removeAbandonedStaging(cache: string): void {
+  for (const name of readdirSync(cache)) {
+    const pid = Number(/\.tmp-(\d+)-[^.]+$/.exec(name)?.[1]);
+    if (pid && !running(pid)) rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 5 });
+  }
+}
+
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: alive, under another user
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 /**
