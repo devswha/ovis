@@ -101,8 +101,25 @@ export class PendingMessageStore {
       if (raw === null) this.storage().removeItem(PREFIX + owner); else this.storage().setItem(PREFIX + owner, raw);
       this.saved.set(owner, raw);
       this.unsaved.delete(owner);
+      this.settleRecovery(owner, messages);
     } catch { this.unsaved.add(owner); }
     this.notify();
+  }
+  /**
+   * Rows this page alone held (keepUnconfirmed), now saved where a reload reads them: their
+   * recovery copies go, or the text would be offered twice. Not while the PC's state is in this
+   * page's memory, which a reload does not keep; another row's or tab's copy is never touched.
+   */
+  private settleRecovery(owner: string, messages: readonly PendingMessageView[]): void {
+    if (this.recovery.size === 0) return;
+    const pane = paneStateKey(PREFIX + owner);
+    if (pane === null || !this.lifetimes.stored(pane.machineId)) return;
+    for (const message of messages) {
+      const kept = this.recovery.get(`${owner}\0${message.id}`);
+      if (kept === undefined) continue;
+      this.recovery.delete(`${owner}\0${message.id}`);
+      this.lifetimes.discard(kept);
+    }
   }
   accept(owner: string, message: PendingMessage, scope: string | null): void {
     const seen = this.removed.get(owner)?.get(message.id);
@@ -265,7 +282,8 @@ export class PendingMessageStore {
     this.write(owner, [...this.read(owner), { id, request_id: 0, text, created_at: new Date().toISOString(), state: "uncertain", error: UNCONFIRMED_SEND, serverOwned: false }]);
     // a PC whose pane state is not stored (a bridge that names no herdr, storage that refused its
     // record, a tab behind another), or storage that refused the row, keeps it in this page alone,
-    // and the message box is already empty: a copy in Recover unsent text outlives a reload. It is
+    // and the message box is already empty: a copy in Recover unsent text outlives a reload, until a
+    // later write saves the row (settleRecovery). It is
     // offered for a pane the user picks, never put back under this pane ID, which a later herdr may
     // reuse (#2172). The row's own record: discarding the row takes no other tab's copy of the same words
     const pane = paneStateKey(PREFIX + owner);

@@ -202,6 +202,29 @@ describe("pane state per herdr lifetime", () => {
     expect(reloaded.unsent()).toEqual([]);
   });
 
+  it("drops the recovery copy of a row storage refused once a later write saves it, so a reload offers it once", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    const pending = new PendingMessageStore(() => lifetimes.paneStorage, lifetimes);
+    lifetimes.onRetire((machineId) => pending.forget(machineId));
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    storage.refuse = "ovis:pending:";
+    pending.keepUnconfirmed("w1:p1", "first");
+    expect(lifetimes.unsent().map(({ text }) => text)).toEqual(["first"]);
+    // storage has room again: the next message's write saves the whole list, the first row with it
+    storage.refuse = null;
+    pending.keepUnconfirmed("w1:p1", "second");
+    expect(lifetimes.unsent()).toEqual([]);
+    const reloaded = page(storage);
+    reloaded.observe([pc("local", "herdr-a")], title);
+    const after = new PendingMessageStore(() => reloaded.paneStorage, reloaded);
+    const [first] = after.read("w1:p1");
+    expect(after.read("w1:p1").map(({ text }) => text)).toEqual(["first", "second"]);
+    after.removeCopy("w1:p1", first!.id);
+    expect(after.read("w1:p1").map(({ text }) => text)).toEqual(["second"]);
+    expect(reloaded.unsent()).toEqual([]);
+  });
+
   it("never rolls the stored state back to a herdr it outlived, and follows one that came after", () => {
     const storage = new MemoryStorage();
     const ahead = page(storage);
