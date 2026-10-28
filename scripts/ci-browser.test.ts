@@ -26,13 +26,21 @@ bash() {
 source "$1"
 `;
 
+/**
+ * A hang guard, not a speed check: the stubbed lane still forks a few processes for every browser
+ * script, and took up to 5 s on a host at load 100 of 128 cores, where a 5 s limit killed it (#2110).
+ * Each lane test gets the guard and room to report what the lane printed.
+ */
+const LANE_HANG_MS = 60_000;
+const LANE_TEST_MS = LANE_HANG_MS + 10_000;
+
 async function lane(fail = "", kept = false, ci = "") {
   const dir = mkdtempSync(join(tmpdir(), "hwc-browser-test-"));
   try {
     const child = Bun.spawn(["bash", "-c", stub, "stub", join(import.meta.dir, "ci-browser.sh")], {
       cwd: dir,
       env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
-      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5_000,
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: LANE_HANG_MS,
     });
     const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(error).toBe("");
@@ -71,7 +79,7 @@ describe("browser lane", () => {
     expect(text).toMatch(/^PASS stubbed browser step$/m);
     expect(text).toMatch(/^FAIL stubbed browser marker$/m);
     expect(text).toMatch(/^Browser lane total: seconds=\d+ exit=7$/m);
-  });
+  }, LANE_TEST_MS);
 
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
@@ -84,7 +92,7 @@ describe("browser lane", () => {
     expect(text).toMatch(/^\[\d{4}-\d\d-\d\dT[^\]]+\] SERVER listening on http:\/\/127\.0\.0\.1:3000$/m);
     expect(text).toMatch(/^PASS stubbed browser step$/m);
     expect(text).toMatch(/^FAIL stubbed browser marker$/m);
-  });
+  }, LANE_TEST_MS);
 
   it("keeps only cheap existing screenshots when CHECK_DIR is set", async () => {
     const { text, code, evidence } = await lane("", true);
@@ -96,7 +104,7 @@ describe("browser lane", () => {
     for (const script of ["ui-regression.ts", "ui-contexts-regression.ts", "key-bar-customization-demo-regression.ts"]) {
       expect(text).toMatch(new RegExp(`^\\[[^\\]]+\\] STEP=scripts/${script} EVIDENCE=$`, "m"));
     }
-  });
+  }, LANE_TEST_MS);
 
   it("creates evidence under .ci when CI has no CHECK_DIR", async () => {
     const { text, code, evidence } = await lane("", false, "1");
@@ -104,7 +112,7 @@ describe("browser lane", () => {
     expect(evidence).toBe(true);
     expect(text).toMatch(/^\[[^\]]+\] STEP=scripts\/file-viewer-regression\.ts EVIDENCE=.ci\/browser-evidence$/m);
     expect(text).toMatch(/^Browser lane total: seconds=\d+ exit=0$/m);
-  });
+  }, LANE_TEST_MS);
 });
 
 // Browser scripts that CI does not run: they are run by hand. A new browser script belongs in

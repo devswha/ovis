@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
@@ -15,6 +16,44 @@ const message = (role: string, text: string, phase?: string) => item({
   type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }], ...(phase ? { phase } : {}),
 });
 const jsonl = (...records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n");
+
+/** This thread's CPU time in milliseconds, where the system keeps a clock for it (Linux, macOS), or null. */
+const threadClock = ((): (() => number) | null => {
+  const id = process.platform === "linux" ? 3 : process.platform === "darwin" ? 16 : null;
+  if (id === null) return null;
+  try {
+    const { symbols } = dlopen(process.platform === "linux" ? "libc.so.6" : "libSystem.B.dylib", { clock_gettime: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+    const time = new BigInt64Array(2);
+    return () => {
+      if (symbols.clock_gettime(id, ptr(time)) !== 0) throw new Error("clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+      return Number(time[0]!) * 1000 + Number(time[1]!) / 1e6;
+    };
+  } catch { return null; }
+})();
+
+/**
+ * What `run` returns, and the CPU milliseconds it took: this thread's own time, else the process's.
+ * A bound in wall-clock milliseconds failed on loaded GitHub runners (1,013 to 1,062 ms against
+ * 1,000, #2142) with nothing slower in the code, because a busy host stretches the clock while the work
+ * waits for a core; it does not stretch the CPU time the work itself uses. Run up to three times
+ * while over `budget`, keeping the least: being slowed only adds time, and a real regression is
+ * over the budget on every run.
+ */
+const leastCpuMs = <T,>(budget: number, run: () => T): { result: T; ms: number } => {
+  const now = (): number => {
+    if (threadClock !== null) return threadClock();
+    const { user, system } = process.cpuUsage();
+    return (user + system) / 1000;
+  };
+  let least = Infinity;
+  let result!: T;
+  for (let round = 0; round < 3 && !(least < budget); round += 1) {
+    const start = now();
+    result = run();
+    least = Math.min(least, now() - start);
+  }
+  return { result, ms: least };
+};
 
 describe("a Codex process's own store", () => {
   it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("reads CODEX_HOME from the process's environment, and nothing from one without it", async () => {
@@ -177,9 +216,10 @@ describe("Codex conversation records", () => {
   it("bounds citation parsing with many unmatched backtick lengths", () => {
     const text = "Unmatched delimiters: " + Array.from({ length: 1000 }, (_, i) => "`".repeat(i + 1) + " x ").join("");
     const transcript = jsonl(message("assistant", `${text}<oai-mem-citation>hidden</oai-mem-citation>`));
-    const started = performance.now();
-    expect(parseCodexTranscript(transcript)[0]?.parts).toEqual([{ kind: "text", text: text.trimEnd() }]);
-    expect(performance.now() - started).toBeLessThan(1000);
+    // about 5 ms of CPU; matching each unmatched delimiter by scanning the rest of the text takes 480
+    const { result, ms } = leastCpuMs(100, () => parseCodexTranscript(transcript));
+    expect(result[0]?.parts).toEqual([{ kind: "text", text: text.trimEnd() }]);
+    expect(ms).toBeLessThan(100);
   });
 
   it("hides injected context, metadata and developer messages while preserving the real request", () => {
@@ -841,21 +881,24 @@ describe("Codex rollout resolution", () => {
   });
 
   it("reads short answers in bounded time however many unclosed links the answers hold", () => {
-    const many = answered(...Array.from({ length: 450 }, () => "](".repeat(1000)));
+    // long enough that cutting at /\]\([^)\s]*\)/ (a rescan from every unclosed "](") is over the
+    // budget: about 370 ms of CPU as written, 1,600 with that split
+    const many = answered(...Array.from({ length: 450 }, () => "](".repeat(4000)));
     const candidates = Array.from({ length: 32 }, (_, index) => ({ path: `unclosed-${index}`, text: many }));
     const screen = Array.from({ length: 400 }, () => "q".repeat(120)).join("\n");
-    const started = performance.now();
-    expect(matchShortCodexAnswers(screen, candidates)).toBeNull();
-    expect(performance.now() - started).toBeLessThan(1000);
+    const { result, ms } = leastCpuMs(1000, () => matchShortCodexAnswers(screen, candidates));
+    expect(result).toBeNull();
+    expect(ms).toBeLessThan(1000);
   });
 
   it("reads short answers in bounded time however many links a large answer has", () => {
+    // about 220 ms of CPU; work per link that grows with the links before it (an unshift) takes 6 s
     const huge = answered("[abcdefghijklmnop](/a)".repeat(40_000));
     const candidates = Array.from({ length: 32 }, (_, index) => ({ path: `large-${index}`, text: huge }));
     const screen = Array.from({ length: 400 }, () => "q".repeat(120)).join("\n");
-    const started = performance.now();
-    expect(matchShortCodexAnswers(screen, candidates)).toBeNull();
-    expect(performance.now() - started).toBeLessThan(1000);
+    const { result, ms } = leastCpuMs(1000, () => matchShortCodexAnswers(screen, candidates));
+    expect(result).toBeNull();
+    expect(ms).toBeLessThan(1000);
   });
 
   it("does not bind using user context, tool output or a previous session above the welcome card", () => {
