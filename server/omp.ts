@@ -49,7 +49,9 @@ const VALUE_OPTIONS = new Set([
  * What an omp command line says about where it keeps its session: the last of each option wins.
  * `sessionDirValue` is the last `--session-dir`'s value ("" for an empty one, undefined when it
  * ends argv without one or none is given). `extensions` are the files `-e`, `--extension`, `--hook`
- * and `--trusted-extension` name, which omp loads even under `--no-extensions` (`noExtensions`).
+ * and `--trusted-extension` name, which omp loads even when it discovers none (`noExtensions`):
+ * under `--no-extensions`, and under `--trusted-extension`, which loads only its own files (omp
+ * refuses it together with the others).
  */
 export interface OmpLaunch {
   profile: string | null; sessionDir: boolean; cwd: string | null; sessionDirValue?: string;
@@ -97,7 +99,10 @@ export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
     // a moved store counts even without its value: omp's environment can move it too
     if (word === "--session-dir") { sessionDir = true; sessionDirValue = value; }
     else if (word === "--cwd" && value !== undefined) cwd = value;
-    else if (EXTENSION_OPTIONS.has(word) && value) extensions.push(value);
+    else if (EXTENSION_OPTIONS.has(word) && value) {
+      extensions.push(value);
+      if (word === "--trusted-extension") noExtensions = true;
+    }
     else if (word === "--no-extensions") noExtensions = true;
   }
   return { profile, sessionDir, cwd: cwd || null, sessionDirValue, extensions, noExtensions };

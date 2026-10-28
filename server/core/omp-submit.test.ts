@@ -203,12 +203,13 @@ describe("a message sent to omp", () => {
   });
 
   // omp 18.8.7 loads the integration from where these put it, so each waits for the report
-  for (const { name, place } of [
+  for (const { name, place, environ } of [
     { name: "in the project's .omp/extensions", place: () => { ompCwd = join(root, "project"); return join(ompCwd, ".omp", "extensions"); } },
     { name: "named by -e", place: () => { const dir = join(root, "elsewhere"); ompArgv = ["omp", "-e", join(dir, "herdr-omp-agent-state.ts")]; return dir; } },
     { name: "named by --hook under --no-extensions", place: () => { const dir = join(root, "elsewhere"); ompArgv = ["omp", "--no-extensions", "--hook", join(dir, "herdr-omp-agent-state.ts")]; return dir; } },
-    { name: "in the agent directory PI_CODING_AGENT_DIR names", place: () => join(root, "custom-agent", "extensions") },
-  ]) it.skipIf(!posix)(`waits for the report of an integration ${name}`, async () => {
+    // only Linux shows the server another process's environment
+    { name: "in the agent directory PI_CODING_AGENT_DIR names", place: () => join(root, "custom-agent", "extensions"), environ: true },
+  ]) it.skipIf(!posix || environ === true && process.platform !== "linux")(`waits for the report of an integration ${name}`, async () => {
     // Given: the integration is not in the default agent directory, but where this omp loads it.
     rmSync(integration);
     const dir = place();
@@ -228,8 +229,8 @@ describe("a message sent to omp", () => {
     expect(count("pane.send_keys")).toBe(0);
   });
 
-  it.skipIf(!posix)("sends at once to a starting omp run with --no-extensions, which loads no installed integration", async () => {
-    ompArgv = ["omp", "--no-extensions"];
+  for (const argv of [["omp", "--no-extensions"], ["omp", "--trusted-extension", "/opt/other.ts"]]) it.skipIf(!posix)(`sends at once to a starting \`${argv.join(" ")}\`, which loads no installed integration`, async () => {
+    ompArgv = argv;
     ompPid = await startedNow();
     await submitter()("w:p1", "/effort", "/effort", Date.now());
     expect(count("agent.prompt")).toBe(1);

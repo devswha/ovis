@@ -79,6 +79,9 @@ it("sees herdr's omp integration wherever omp loads extensions from, and only th
     expect(loads(["omp"], null, home)).toBe(true);
     expect(loads(["omp", "--session-dir", "/tmp/s"], null, home)).toBe(true);
     expect(loads(["omp", "--no-extensions"], null, home)).toBe(false);
+    // a trusted extension is the only one omp loads
+    expect(loads(["omp", "--trusted-extension", "/opt/other.ts"], null, home)).toBe(false);
+    expect(loads(["omp", "--trusted-extension=/opt/herdr-omp-agent-state.ts"], null, home)).toBe(true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -88,7 +91,7 @@ it("reads the extension files and --no-extensions from omp's argv", () => {
   const read = (argv: string[]) => { const launch = ompLaunch(argv); return launch && { extensions: launch.extensions, noExtensions: launch.noExtensions }; };
   expect(read(["omp"])).toEqual({ extensions: [], noExtensions: false });
   expect(read(["omp", "-e", "a.ts", "--extension=b.ts", "--hook", "c.ts", "--no-extensions"])).toEqual({ extensions: ["a.ts", "b.ts", "c.ts"], noExtensions: true });
-  expect(read(["omp", "--trusted-extension", "d.ts"])).toEqual({ extensions: ["d.ts"], noExtensions: false });
+  expect(read(["omp", "--trusted-extension", "d.ts"])).toEqual({ extensions: ["d.ts"], noExtensions: true });
   // a value is never an option, and nothing after the terminator is one
   expect(read(["omp", "--model", "--no-extensions", "--", "-e", "x.ts"])).toEqual({ extensions: [], noExtensions: false });
 });

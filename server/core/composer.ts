@@ -105,11 +105,11 @@ async function untilOmpReported(paneId: string, pane: HerdrPane, inTime: () => v
     if (resolveAgent(pane).agent !== "omp") throw new HerdrError("pending_target_changed", "The omp this message waited for stopped while it started; nothing was sent");
     if (pane.agent_session?.source === "herdr:omp") { reported = true; break; }
   }
-  if (!reported) console.warn(`[omp] ${paneId}: herdr's omp integration reported no session within ${startupMs / 1000} s of omp starting; sending anyway`);
   // reported or out of time, a pane restarted into another omp meanwhile is not the one the message waited for
   // (a lookup that finds no omp proves nothing: the look above already found the pane's agent still omp)
   const now = (await ompProcess(paneId))?.pid ?? null;
   if (now !== null && now !== pid) throw new HerdrError("pending_target_changed", "The omp this message waited for was replaced while it started; nothing was sent");
+  if (!reported) console.warn(`[omp] ${paneId}: herdr's omp integration reported no session within ${startupMs / 1000} s of omp starting; sending anyway`);
   return pane;
 }
 
