@@ -512,6 +512,8 @@ export const pageFileHooks: {
   fstat?: (fd: number) => BigIntStats;
   readlink?: (path: string) => string;
   read?: (fd: number, buffer: Buffer, position: number) => Promise<number>;
+  /** the synchronous read a file thread serves a file with (`file-tasks.ts` `open`) */
+  readSync?: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number) => number;
   /** how quickly a disk must answer for a large file to be sent whole (`FAST_DISK_MS`); -1 streams every one */
   fastDiskMs?: number;
   opened?: (fd: number) => void;

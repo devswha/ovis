@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeSync, fstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { FileInfo } from "../shared/protocol.ts";
-import { FileBusyError, filePoolSize, fileTask, holdFilePool, setFilePoolOptions } from "./file-pool.ts";
+import { FileBusyError, filePoolSize, fileTask, fileThreadsClosed, holdFilePool, setFilePoolOptions } from "./file-pool.ts";
 import type { FileTask, OpenedFile } from "./file-tasks.ts";
 
 const fake = new URL("./file-worker.fake.ts", import.meta.url);
@@ -150,6 +150,29 @@ describe("file threads", () => {
     // the thread is ended mid-task, as one that fails would be: what it opened is never handed over
     setFilePoolOptions();
     await expect(opening).rejects.toThrow("replaced");
+    await fileThreadsClosed();
+    expect(() => fstatSync(fd)).toThrow();
+  });
+
+  it("keeps a descriptor its thread is reading open until that thread is gone, when the last server stops", async () => {
+    setUp({ workers: 1, waiting: 0, deadlineMs: 30_000 });
+    const fifo = join(root, "stall");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const release = holdFilePool();
+    const hold = gate();
+    const reading = fileTask<OpenedFile | null>({ op: "open", path: file, get: whole, readGate: { cells: hold.buffer, fifo } } as FileTask);
+    // the thread is inside the read of `file`, blocked in a system call ending it cannot cut short
+    const fd = await hold.ran();
+    release();
+    await expect(reading).rejects.toThrow("stopped");
+    // the request is answered, but the read still uses the descriptor: it stays open, and its number is not handed out again
+    expect(fstatSync(fd).size).toBe(5);
+    const other = openSync(big, "r");
+    expect(other).not.toBe(fd);
+    closeSync(other);
+    // the read returns, the thread is gone, and only then is its descriptor closed
+    closeSync(openSync(fifo, "w"));
+    await fileThreadsClosed();
     expect(() => fstatSync(fd)).toThrow();
   });
 
@@ -168,6 +191,7 @@ describe("file threads", () => {
     second();
     expect(filePoolSize()).toEqual({ threads: 0, idle: 0, waiting: 0 });
     await expect(opening).rejects.toThrow("stopped");
+    await fileThreadsClosed();
     expect(() => fstatSync(fd)).toThrow();
     // a later server starts new ones
     const later = holdFilePool();

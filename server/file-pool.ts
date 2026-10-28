@@ -55,7 +55,8 @@ let options = DEFAULTS;
 interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean; unlisten?: () => void }
 /** Bun's Worker, which the DOM's type does not describe: `unref` lets the process end with the thread idle. */
 type BunWorker = Worker & { ref(): void; unref(): void };
-interface Thread { worker: BunWorker; pending: Pending | null }
+/** `orphaned`: the task of a thread ended while it ran, whose descriptor is closed once it is gone; `closed`: once it is gone. */
+interface Thread { worker: BunWorker; pending: Pending | null; orphaned: FileTask | null; closed: Promise<void> }
 
 const threads = new Set<Thread>();
 const idle: Thread[] = [];
@@ -72,22 +73,36 @@ export function setFilePoolOptions(next: Partial<PoolOptions> = {}): void {
 }
 
 /**
- * Every thread ended, a busy one too, and every task under way or waiting failed. A thread inside
- * a system call ends once that call returns: what it was asked is refused now, and what it opened
- * is closed (`abandon`).
+ * Every thread ended, a busy one too, and every task under way or waiting failed now. A thread
+ * inside a system call (a read on a stalled disk) ends only once that call returns: what it opened
+ * is closed when it has ended (its `close`), never under a read still in flight.
  */
 function endThreads(reason: string): void {
   idle.length = 0;
   for (const thread of [...threads]) {
     threads.delete(thread);
-    if (thread.pending !== null) {
-      settle(thread.pending, new Error(reason));
-      abandon(thread.pending.task);
-    }
-    thread.pending = null;
+    orphan(thread, new Error(reason));
+    ending.add(thread.closed);
+    void thread.closed.then(() => ending.delete(thread.closed));
     void thread.worker.terminate();
   }
   for (const pending of queue.splice(0)) settle(pending, new Error(reason));
+}
+
+/** Threads ended and not yet gone. */
+const ending = new Set<Promise<void>>();
+
+/** Once every thread ended so far is gone, and what they opened is closed (tests). */
+export async function fileThreadsClosed(): Promise<void> {
+  await Promise.all([...ending]);
+}
+
+/** A thread's task refused now; what it opened is closed once the thread is gone (`start`'s `close`). */
+function orphan(thread: Thread, error: Error): void {
+  if (thread.pending === null) return;
+  settle(thread.pending, error);
+  thread.orphaned = thread.pending.task;
+  thread.pending = null;
 }
 
 let holders = 0;
@@ -159,7 +174,8 @@ function start(): Thread {
   const worker = new Worker(options.worker) as BunWorker;
   // an idle thread does not keep the server's process alive
   worker.unref();
-  const thread: Thread = { worker, pending: null };
+  let gone = () => {};
+  const thread: Thread = { worker, pending: null, orphaned: null, closed: new Promise<void>((done) => { gone = done; }) };
   threads.add(thread);
   worker.addEventListener("message", (event: MessageEvent<{ result?: FileTaskResult; error?: string }>) => {
     const pending = thread.pending;
@@ -175,16 +191,18 @@ function start(): Thread {
     if (!threads.delete(thread)) return;
     const at = idle.indexOf(thread);
     if (at >= 0) idle.splice(at, 1);
-    if (thread.pending !== null) {
-      settle(thread.pending, error);
-      abandon(thread.pending.task);
-    }
-    thread.pending = null;
+    orphan(thread, error);
     const waiting = queue.shift();
     if (waiting !== undefined) run(start(), waiting);
   };
   worker.addEventListener("error", (event) => { end(new Error(`a file thread failed: ${event.message}`)); void worker.terminate(); });
-  worker.addEventListener("close", () => end(new Error("a file thread ended")));
+  // gone: no call of its can still use what it opened (Bun reports it only after a blocked system call returns)
+  worker.addEventListener("close", () => {
+    end(new Error("a file thread ended"));
+    if (thread.orphaned !== null) abandon(thread.orphaned);
+    thread.orphaned = null;
+    gone();
+  });
   return thread;
 }
 
@@ -221,7 +239,7 @@ function openedCell(): Int32Array<SharedArrayBuffer> {
   return cell;
 }
 
-/** The descriptor a task's thread opened and will never hand over (it failed or was ended), closed. */
+/** The descriptor a task's thread opened and will never hand over (it failed or was ended, and is gone), closed. */
 function abandon(task: FileTask): void {
   if (task.op !== "open" || task.opened === undefined) return;
   const fd = Atomics.exchange(task.opened, 0, -1);

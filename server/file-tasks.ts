@@ -102,7 +102,7 @@ function open(path: string, get: { range: string | null; ifRange: boolean } | nu
   const [start, end] = range ?? [0, size - 1];
   const length = end - start + 1;
   if (length > STREAM_CHUNK_BYTES) {
-    try { readSync(fd, new Uint8Array(PROBE_BYTES), 0, PROBE_BYTES, start); } catch { close(); return null; }
+    try { (pageFileHooks.readSync ?? readSync)(fd, new Uint8Array(PROBE_BYTES), 0, PROBE_BYTES, start); } catch { close(); return null; }
     if (performance.now() - began >= fastDiskMs) return { size, range, bytes: null, fd, fast: false };
     close();
     return { size, range, bytes: null, fd: null, fast: true };
@@ -111,7 +111,7 @@ function open(path: string, get: { range: string | null; ifRange: boolean } | nu
   let got = 0;
   try {
     while (got < length) {
-      const read = readSync(fd, bytes, got, length - got, start + got);
+      const read = (pageFileHooks.readSync ?? readSync)(fd, bytes, got, length - got, start + got);
       if (read === 0) break;
       got += read;
     }
