@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { Terminal } from "@xterm/xterm";
 
-import { adjustTerminalGlyphs, coversAny, displayText, followLateFaces, glyphFit, iconScale, type LateFace, oversizedIcon, textPresentation } from "./terminalGlyphs.ts";
+import { adjustTerminalGlyphs, coversAny, displayText, followLateFaces, glyphFit, graphemes, iconScale, type LateFace, oversizedIcon, stretchedView, textPresentation } from "./terminalGlyphs.ts";
 
 // iPhone Safari at 13px: Menlo cells are 7.84px, Hangul from Apple SD Gothic Neo 11.24px
 const IOS_CELL = 7.8367;
@@ -343,6 +343,30 @@ describe("adjustTerminalGlyphs fitting wide glyphs", () => {
     expect(px("padding-left") * stretch * 2).toBeCloseTo(2 * 7.8 - 13 * stretch, 5);
     // laid out unstretched, the run with its margin ends where its three syllables' six cells end
     expect(px("padding-left") + 3 * (13 + px("letter-spacing")) + px("margin-right")).toBeCloseTo(6 * 7.8, 5);
+  });
+
+  it("counts a syllable with a mark that does not compose as one character, so the next column stays", () => {
+    page = glyphPage([face('"Symbols Nerd Font Mono"', ICON_RANGE)], []);
+    // NFC keeps U+0301 after the syllable: two characters in four cells
+    const run = page.draw("한\u0301글", "", `${2 * 7.8 - 13}px`);
+    expect(graphemes(run.textContent)).toBe(2);
+    const px = (property: string): number => Number.parseFloat(declared(run, property)!);
+    expect(px("padding-left") + 2 * (13 + px("letter-spacing")) + px("margin-right")).toBeCloseTo(4 * 7.8, 5);
+  });
+});
+
+describe("stretchedView", () => {
+  it("adds the stretch to xterm's move of a long composition, counting the stretched width", () => {
+    expect(stretchedView("translateX(min(0px, calc(40px - 100%)))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(40px - 110%))) scaleX(1.1)");
+    // as Chromium gives the same value back
+    expect(stretchedView("translateX(min(0px, -100% + 40px))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(40px - 110%))) scaleX(1.1)");
+    expect(stretchedView("translateX(min(0px, calc(-3.5px - 100%)))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(-3.5px - 110%))) scaleX(1.1)");
+    expect(stretchedView("translateX(min(0px, -100% - 3.5px))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(-3.5px - 110%))) scaleX(1.1)");
+  });
+
+  it("is the stretch alone with no move, and xterm's move alone with no stretch", () => {
+    expect(stretchedView("", "scaleX(1.08)")).toBe("scaleX(1.08)");
+    expect(stretchedView("translateX(min(0px, calc(40px - 100%)))", "")).toBe("translateX(min(0px, calc(40px - 100%)))");
   });
 });
 

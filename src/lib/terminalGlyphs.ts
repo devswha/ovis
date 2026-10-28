@@ -235,6 +235,33 @@ export function iconScale(widths: readonly number[], cellWidth: number): number 
   return Math.min(1, ...widths.map((width) => cellWidth / width));
 }
 
+let segmenter: Intl.Segmenter | undefined;
+
+/** How many characters a text shows: letter-spacing is added once a grapheme, and a span's cells are counted the same way. */
+export function graphemes(text: string): number {
+  segmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  let count = 0;
+  for (const _ of segmenter.segment(text)) count += 1;
+  return count;
+}
+
+/**
+ * The composition view's transform with a glyph stretch added. xterm moves a long text at the right
+ * edge left by `translateX(min(0px, calc(<room>px - 100%)))`, 100% being the box's width, and a
+ * browser gives that back in its own form (Chromium: `min(0px, -100% + <room>px)`): the move is
+ * written again from its room with the stretched width, the stretch applying first, so the text
+ * still ends at the edge.
+ */
+export function stretchedView(base: string, stretch: string): string {
+  if (stretch === "") return base;
+  if (base === "") return stretch;
+  // the last length is the room, signed (Chromium writes a negative one as `-100% - 3.5px`)
+  const room = base.includes("100%") ? base.match(/(?:-\s*)?[\d.]+px(?![\s\S]*px)/)?.[0].replace(/\s/g, "") : undefined;
+  if (room === undefined) return `${base} ${stretch}`;
+  const factor = Number(stretch.match(/^scaleX\(([\d.]+)\)$/)?.[1] ?? 1);
+  return `translateX(min(0px, calc(${room} - ${+(100 * factor).toFixed(4)}%))) ${stretch}`;
+}
+
 /** The text to draw for a cell span: composed when it carries marks or decomposed Hangul. */
 export function displayText(text: string): string {
   return DECOMPOSED.test(text) ? text.normalize("NFC") : text;
@@ -445,7 +472,7 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
       const spaced = fit.spacing / fit.stretch;
       const half = spaced / 2;
       const slot = glyphWidth + spacing;
-      const margin = fit.stretch === 1 ? -half : [...shown].length * slot * (1 - 1 / fit.stretch) - half;
+      const margin = fit.stretch === 1 ? -half : graphemes(shown) * slot * (1 - 1 / fit.stretch) - half;
       const stretch = fit.stretch !== 1 ? `transform:scaleX(${fit.stretch});transform-origin:0 0;` : "";
       // appended in one write: later declarations win over xterm's letter-spacing
       span.style.cssText += `;${fit.scale !== 1 ? `font-size:${fontSize * fit.scale}px;` : ""}${stretch}letter-spacing:${spaced}px;padding-left:${half}px;margin-right:${margin}px;clip-path:inset(0 ${half}px 0 0)`;
@@ -527,6 +554,10 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
    */
   const view = screen.querySelector<HTMLElement>(".composition-view");
   const probe = document.createElement("span").style;
+  // xterm's own transform of the box (a long text at the right edge is moved left to show its end),
+  // which the stretch is added to, and the transform this module wrote last
+  let viewBase = "";
+  let viewWritten = "";
   const fitView = (): void => {
     if (!view) return;
     const { fontFamily, fontSize, fontWeight } = term.options;
@@ -560,15 +591,22 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     }
     // each write is a mutation this observer sees again: only what differs is written, compared
     // as the browser stores it (15.600000000000001px reads back rounded)
+    if (view.style.transform !== viewWritten) viewBase = view.style.transform;
+    probe.transform = stretchedView(viewBase, stretch);
+    // a transform the browser cannot read keeps xterm's, and the glyph its own width
+    if (stretch !== "" && probe.transform === "") {
+      probe.transform = viewBase;
+      stretch = "";
+      spacing = padding = "";
+    }
     probe.fontSize = size;
     probe.letterSpacing = spacing;
     probe.paddingLeft = padding;
-    probe.transform = stretch;
     if (view.style.fontSize !== probe.fontSize) view.style.fontSize = probe.fontSize;
-    if (view.style.transform !== probe.transform) {
-      view.style.transform = probe.transform;
-      view.style.transformOrigin = stretch === "" ? "" : "0 0";
-    }
+    if (view.style.transform !== probe.transform) view.style.transform = probe.transform;
+    viewWritten = view.style.transform;
+    const origin = stretch === "" ? "" : "0 0";
+    if (view.style.transformOrigin !== origin) view.style.transformOrigin = origin;
     if (view.style.letterSpacing !== probe.letterSpacing) view.style.letterSpacing = probe.letterSpacing;
     if (view.style.paddingLeft !== probe.paddingLeft) view.style.paddingLeft = probe.paddingLeft;
   };
