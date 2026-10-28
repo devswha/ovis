@@ -7,7 +7,8 @@
  * whole tree again, server changes merged in that window included.
  *
  *   bun scripts/release-guards.ts --base <sha>      CI (ci.yml, Fast checks): a remote-vN tag may still be unpublished
- *   bun scripts/release-guards.ts --release X.Y.Z   release.yml preflight: remote-vN must be published from this tree
+ *   bun scripts/release-guards.ts --release X.Y.Z   release.yml preflight: remote-vN must be published from this tree,
+ *                                                   its manifest and archives downloadable, not only tagged
  *   bun scripts/release-guards.ts --worker-deployed after `wrangler deploy`: records the Worker in telemetry/deployed.json
  *
  * Reads tags, so a shallow checkout fetches them first (ci.yml does).
@@ -67,6 +68,45 @@ export function bundleProblems({ version, published, changed, publishing }: Bund
   if (changed.length === 0) return [];
   const shown = changed.slice(0, 10).join(", ") + (changed.length > 10 ? `, and ${changed.length - 10} more` : "");
   return [`The remote bundle's inputs changed since remote-v${version} (${shown}), so remote PCs would keep the old server. Raise REMOTE_BUNDLE_VERSION in ${MACHINES} from ${version} to ${next} in the release PR (or, when it already merged, in a follow-up PR); after it merges, push remote-v${next} on the merged commit and wait for the Remote PC bundles workflow before running Release (docs/development.md#releasing).`];
+}
+
+/** The manifest a remote PC downloads its bundle by (bundleManifestSource in server/remote-bundle.ts). */
+export const manifestUrl = (version: number): string => `https://github.com/devswha/ovis/releases/download/remote-v${version}/manifest.json`;
+/** Every platform server/remote-bundle.ts installs a bundle on; the Remote PC bundles workflow publishes all of them. */
+export const BUNDLE_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"];
+export type Get = (url: string, init: RequestInit) => Promise<Response>;
+
+/**
+ * Why remote-v<version>, tagged, is not published yet: the Remote PC bundles workflow uploads the
+ * manifest and the archives only after building and testing them, so a Release run started in
+ * between would ship an app whose remote PCs find no bundle. Reads what remote PCs read.
+ */
+export async function publishedProblems(version: number, get: Get = fetch): Promise<string[]> {
+  const url = manifestUrl(version);
+  const wait = `Wait for the Remote PC bundles workflow of the tag remote-v${version} to publish it (rerun it if it failed), then run Release again (docs/development.md#releasing).`;
+  const read = async (target: string, method: "GET" | "HEAD"): Promise<Response | string> => {
+    try {
+      const response = await get(target, { method, signal: AbortSignal.timeout(30_000) });
+      return response.ok ? response : `${target} answered ${response.status}`;
+    } catch (error) {
+      return `${target} could not be read (${(error as Error).message})`;
+    }
+  };
+  const answer = await read(url, "GET");
+  if (typeof answer === "string") return [`remote-v${version} is tagged but not published: ${answer}. ${wait}`];
+  let manifest: { version?: unknown; assets?: Record<string, { url?: unknown; sha256?: unknown } | undefined> };
+  try { manifest = (await answer.json()) as typeof manifest; } catch { return [`remote-v${version} is not published: ${url} is not JSON. ${wait}`]; }
+  if (manifest.version !== String(version)) return [`remote-v${version} is not published: ${url} names version ${JSON.stringify(manifest.version)}. ${wait}`];
+  const missing: string[] = [];
+  const assets: string[] = [];
+  for (const platform of BUNDLE_PLATFORMS) {
+    const asset = manifest.assets?.[platform];
+    if (typeof asset?.url === "string" && asset.url.startsWith("https://") && typeof asset.sha256 === "string" && /^[a-f0-9]{64}$/.test(asset.sha256)) assets.push(asset.url);
+    else missing.push(platform);
+  }
+  if (missing.length > 0) return [`remote-v${version} is not published for every platform: ${url} has no bundle for ${missing.join(", ")}. ${wait}`];
+  const unreachable = (await Promise.all(assets.map((asset) => read(asset, "HEAD")))).filter((result) => typeof result === "string");
+  return unreachable.length > 0 ? [`remote-v${version} is not published: ${unreachable.join("; ")}. ${wait}`] : [];
 }
 
 /** The deployed Worker's source: telemetry/worker.ts and the shared schema it validates with, which is all it bundles. */
@@ -161,6 +201,11 @@ if (import.meta.main) {
     const base = args[0] === "--base" ? args[1] : undefined;
     if (base && !git(root, "show", `${base}:package.json`).ok) console.log(`::warning::Cannot read package.json at --base ${base}; checking HEAD as a release.`);
     const verdict = check(root, publishing, base || undefined);
+    if (publishing && verdict.version !== null) {
+      // a missing tag is already a problem above; a tag alone is not a published bundle
+      const bundle = Number(bundleVersion(readFileSync(join(root, MACHINES), "utf8")));
+      if (git(root, "rev-parse", "-q", "--verify", `refs/tags/remote-v${bundle}`).ok) verdict.problems.push(...await publishedProblems(bundle));
+    }
     if (publishing && verdict.version !== args[1]) verdict.problems.unshift(`package.json version ${verdict.version} is not the requested ${args[1] ?? "(none)"}.`);
     if (verdict.version === null) console.log("Not a release (package.json's version is tagged, or the base already has it): nothing to check.");
     for (const problem of verdict.problems) console.error(`::error::${problem}`);
