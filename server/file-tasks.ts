@@ -13,8 +13,8 @@ export type FileTask =
   | { op: "info"; path: string }
   | { op: "named"; path: string }
   | { op: "within"; paths: string[]; folder: string }
-  /** a file the scratch fallback found, described from what was opened in `folder` (`describeWithin`) */
-  | { op: "describe"; path: string; folder: string }
+  /** a file the scratch fallback found, described from what was opened in `folder` (`describeWithin`); `opened` as for `open` */
+  | { op: "describe"; path: string; folder: string; opened?: Int32Array<SharedArrayBuffer> }
   | { op: "walk"; cwd: string }
   /** `within`: the folder a page found in it must have been opened in (`pageWithLocalFiles`) */
   | { op: "render"; path: string; media: PageMedia | null; within?: string | null }
@@ -52,7 +52,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "info": return fileInfo(task.path);
     case "named": return pathsByName(task.path).map(fileInfo).filter((info) => info !== null);
     case "within": return within(task.paths, task.folder);
-    case "describe": return describeWithin(task.path, task.folder);
+    case "describe": return describeWithin(task.path, task.folder, task.opened);
     case "walk": return walkFiles(task.cwd);
     case "render": return render(task.path, task.media, task.within ?? null);
     case "open": return open(task.path, task.get, task.opened, task.fastDiskMs ?? FAST_DISK_MS, task.within ?? null);

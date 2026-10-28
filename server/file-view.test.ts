@@ -1452,18 +1452,20 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
   });
 
   it("finds a path in the folder only there, in any name form, never past it", async () => {
-    const nfd = "é.txt".normalize("NFD");
-    const { cwd, scratch } = fixture(nfd, "INSIDE", "OUTSIDE-SECRET");
-    // a file system that stores one form for both cannot hold the swapped name beside it
-    if (existsSync(join(scratch, nfd.normalize("NFC")))) return;
-    const mayBeScratch = (path: string) => path.startsWith(scratch);
-    const stat = await fromScratch(nfd, cwd, scratch);
-    // the file the viewer was told of gone, and a link to the file outside put there under the other form of its name
-    unlinkSync(join(scratch, nfd));
-    symlinkSync(join(scratch, "..", nfd), join(scratch, nfd.normalize("NFC")));
-    const byPath = await fileView.findFile(stat.info.path, cwd, async () => scratch, mayBeScratch);
-    if (byPath !== null && "info" in byPath) expect(await (await fileResponse(byPath.info, false, false, null, null, undefined, byPath.within ?? null)).text()).not.toContain("OUTSIDE-SECRET");
-    expect(byPath).toBeNull();
+    for (const [stored, swapped] of [["NFD", "NFC"], ["NFC", "NFD"]] as const) {
+      const name = "é.txt".normalize(stored);
+      const { cwd, scratch } = fixture(name, "INSIDE", "OUTSIDE-SECRET");
+      // a file system that stores one form for both cannot hold the swapped name beside it
+      if (existsSync(join(scratch, name.normalize(swapped)))) return;
+      const mayBeScratch = (path: string) => path.startsWith(scratch);
+      const stat = await fromScratch(name, cwd, scratch);
+      // the file the viewer was told of gone, and a link to the file outside put there under the other form of its name
+      unlinkSync(join(scratch, name));
+      symlinkSync(join(scratch, "..", name), join(scratch, name.normalize(swapped)));
+      const byPath = await fileView.findFile(stat.info.path, cwd, async () => scratch, mayBeScratch);
+      if (byPath !== null && "info" in byPath) expect(await (await fileResponse(byPath.info, false, false, null, null, undefined, byPath.within ?? null)).text()).not.toContain("OUTSIDE-SECRET");
+      expect(byPath).toBeNull();
+    }
   });
 
   it("keeps sending the file it opened when a link is swapped in while it is sent", async () => {
@@ -1496,6 +1498,18 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     expect(runFileTask({ op: "open", path: found.info.path, get: { range: null, ifRange: false }, opened: refused, within: found.within })).toBeNull();
     // taken back before it was closed: the pool never closes that number again (`abandon`)
     expect(Atomics.load(refused, 0)).toBe(-1);
+  });
+
+  it("names the descriptor a file thread describes a file in the folder from in its cell, and takes it back", async () => {
+    const { scratch } = fixture("note.txt", "INSIDE", "OUTSIDE-SECRET");
+    const described = new Int32Array(new SharedArrayBuffer(4));
+    described[0] = -1;
+    let named = -1;
+    pageFileHooks.afterAuthorize = () => { named = Atomics.load(described, 0); };
+    expect(runFileTask({ op: "describe", path: join(scratch, "note.txt"), folder: scratch, opened: described })).toMatchObject({ info: { size: 6 }, within: realpathSync(scratch) });
+    delete pageFileHooks.afterAuthorize;
+    expect(named).toBeGreaterThanOrEqual(0);
+    expect(Atomics.load(described, 0)).toBe(-1);
   });
 
   it("still serves the file in the folder whole, by range and to a HEAD", async () => {

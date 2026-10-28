@@ -9,7 +9,10 @@
  * - with a `readGate` (two Int32 cells and a FIFO's path), stops inside the file read itself: it
  *   records the descriptor being read in cell 1 (`Atomics.notify`), then opens the FIFO for reading,
  *   a real system call that blocks until a writer opens it (which ending the thread cannot cut
- *   short), and then reads, as a read on a stalled disk would.
+ *   short), and then reads, as a read on a stalled disk would;
+ * - with an `authorizeGate` (the same shape), stops once the file is authorized, before the task
+ *   answers: it records the descriptor the task named in its cell (`opened`) in cell 1, then waits
+ *   on the FIFO the same way, as a check on a stalled disk would.
  */
 import { closeSync, openSync, readSync } from "node:fs";
 
@@ -18,7 +21,9 @@ import { pageFileHooks } from "./file-view.ts";
 
 declare const self: Worker;
 
-self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; readGate?: { cells: SharedArrayBuffer; fifo: string } }>) => {
+type Gate = { cells: SharedArrayBuffer; fifo: string };
+
+self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; readGate?: Gate; authorizeGate?: Gate }>) => {
   const task = event.data;
   if ("path" in task && (task.path.endsWith("/stuck") || (task.op === "open" && task.path.endsWith("/held-open")))) return;
   const readGate = task.readGate;
@@ -31,8 +36,17 @@ self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; rea
       return readSync(fd, buffer, offset, length, position);
     };
   }
+  const authorizeGate = task.authorizeGate;
+  if (authorizeGate !== undefined) {
+    pageFileHooks.afterAuthorize = () => {
+      const cells = new Int32Array(authorizeGate.cells);
+      Atomics.store(cells, 1, "opened" in task && task.opened !== undefined ? task.opened[0]! : -2);
+      Atomics.notify(cells, 1);
+      closeSync(openSync(authorizeGate.fifo, "r"));
+    };
+  }
   let result;
-  try { result = runFileTask(task); } finally { delete pageFileHooks.readSync; }
+  try { result = runFileTask(task); } finally { delete pageFileHooks.readSync; delete pageFileHooks.afterAuthorize; }
   if (task.gate !== undefined) {
     const cells = new Int32Array(task.gate);
     // the descriptor the thread opened, handed over or not (the cell `open` names it in)

@@ -154,6 +154,23 @@ describe("file threads", () => {
     expect(() => fstatSync(fd)).toThrow();
   });
 
+  it("closes a descriptor a scratch file's description opened, when its thread is ended mid-check", async () => {
+    setUp({ workers: 1, waiting: 0, deadlineMs: 30_000 });
+    const fifo = join(root, "stall");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const hold = gate();
+    const describing = fileTask({ op: "describe", path: file, folder: root, authorizeGate: { cells: hold.buffer, fifo } } as FileTask);
+    // the thread holds the file open inside its check, blocked in a system call ending it cannot cut short
+    const fd = await hold.ran();
+    expect(fstatSync(fd).size).toBe(5);
+    setFilePoolOptions();
+    await expect(describing).rejects.toThrow("replaced");
+    // the call returns, the thread is gone, and what it opened is closed
+    closeSync(openSync(fifo, "w"));
+    await fileThreadsClosed();
+    expect(() => fstatSync(fd)).toThrow();
+  });
+
   it("keeps a descriptor its thread is reading open until that thread is gone, when the last server stops", async () => {
     setUp({ workers: 1, waiting: 0, deadlineMs: 30_000 });
     const fifo = join(root, "stall");

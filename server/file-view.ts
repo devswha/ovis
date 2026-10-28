@@ -140,19 +140,23 @@ export async function locateFileInFolder(input: string, folder: string, anyForm 
 
 /**
  * The file at `path` described from a descriptor shown to lie in `folder` (`openAuthorized`), with
- * the folder as it resolves; null for anything else.
+ * the folder as it resolves; null for anything else. `cell`: where a file thread names the
+ * descriptor while it is open (`openAuthorized`), taken back before it is closed.
  */
-export function describeWithin(path: string, folder: string): { info: FileInfo; within: string } | null {
+export function describeWithin(path: string, folder: string, cell?: Int32Array<SharedArrayBuffer>): { info: FileInfo; within: string } | null {
   let within: string;
   try { within = realpathSync(folder); } catch { return null; }
-  const file = openAuthorized(path, [within], true);
+  const file = openAuthorized(path, [within], true, cell);
   if (file === null) return null;
   // nothing here opens the path again: the type comes from its name, the rest from the descriptor
   try {
     const mime = mimeOf(path);
     const modified = fstatSync(file.fd).mtime.toISOString();
     return { info: { path, name: basename(path), size: file.size, modified, mime, kind: kindOf(mime, path, file.fd) }, within };
-  } catch { return null; } finally { release(file.fd); }
+  } catch { return null; } finally {
+    // one the pool already took back from the cell (`abandon`) is closed there
+    if (cell === undefined || Atomics.compareExchange(cell, 0, file.fd, -1) === file.fd) release(file.fd);
+  }
 }
 
 /**
