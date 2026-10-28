@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { loadKatex, Markdown } from "../components/Markdown.tsx";
@@ -239,6 +240,24 @@ describe("foldCode", () => {
   });
 });
 
+/**
+ * This thread's CPU time in milliseconds, where the system keeps a clock for it (Linux, macOS), or
+ * null. process.threadCpuUsage() counts in whole ticks of a millisecond, so a run of two read none
+ * on a busy runner, and the ratio was infinite.
+ */
+const threadClock = ((): (() => number) | null => {
+  const id = process.platform === "linux" ? 3 : process.platform === "darwin" ? 16 : null;
+  if (id === null) return null;
+  try {
+    const { symbols } = dlopen(process.platform === "linux" ? "libc.so.6" : "libSystem.B.dylib", { clock_gettime: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+    const time = new BigInt64Array(2);
+    return () => {
+      if (symbols.clock_gettime(id, ptr(time)) !== 0) throw new Error("clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+      return Number(time[0]!) * 1000 + Number(time[1]!) / 1e6;
+    };
+  } catch { return null; }
+})();
+
 describe("text no one wrote by hand", () => {
   // what an agent prints, or a changelog holds, is not always prose: the page parses it while it
   // draws, so a line that takes seconds freezes the tab, and one that nests without end crashes it
@@ -247,11 +266,12 @@ describe("text no one wrote by hand", () => {
    * text takes under thirty times as long (linear is ten, a search of the rest of the line from
    * every character a hundred). A budget in milliseconds failed on GitHub's runners with nothing
    * slower in the parser, so this counts the CPU time this thread spent, which a busy runner does
-   * not stretch as it does the clock (the process's time also counts the garbage collector's
-   * threads, and reached 32 on a busy runner, #2084). Small and large are timed in turn, up to five
-   * rounds, and the fastest of each are compared: being preempted or slowed only adds time, so the
-   * fastest run is the one closest to the parser's own work. A count of the parser's steps would
-   * not see what some of these cases guard against, a regular expression backtracking in one call.
+   * not stretch as it does the clock (the process's time also counts the compiler's and the garbage
+   * collector's threads, and reached 32 on a busy runner, #2084). Small and large are timed in
+   * turn, up to five rounds, and the fastest of each are compared: being preempted or slowed only
+   * adds time, so the fastest run is the one closest to the parser's own work. A count of the
+   * parser's steps would not see what some of these cases guard against, a regular expression
+   * backtracking in one call.
    */
   const linear = <T,>(text: (size: number) => string, size: number, parse: (text: string) => T): T => {
     const small = text(size / 10);
@@ -260,17 +280,20 @@ describe("text no one wrote by hand", () => {
     parse(small);
     const read = parse(large);
     const cpu = (): number => {
-      const { user, system } = process.threadCpuUsage();
+      if (threadClock !== null) return threadClock();
+      const { user, system } = process.cpuUsage();
       return (user + system) / 1000;
     };
-    // a parse of microseconds is timed over as many runs as take two milliseconds
+    // a parse of microseconds is timed over as many runs as take two milliseconds; twenty where the
+    // process's clock may count in steps of milliseconds, so no run of the small text reads none
+    const shortest = threadClock === null ? 20 : 2;
     let runs = 1;
     const timed = (input: string): number => {
       const start = cpu();
       for (let run = 0; run < runs; run += 1) parse(input);
       return cpu() - start;
     };
-    while (timed(small) < 2) runs *= 2;
+    while (timed(small) < shortest) runs *= 2;
     let fastestSmall = Infinity;
     let fastestLarge = Infinity;
     for (let round = 0; round < 5 && !(fastestLarge / fastestSmall < 30); round += 1) {
