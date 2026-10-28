@@ -1,8 +1,6 @@
 import type { IBuffer, ILink, ILinkProvider } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
 
-export { fileUriPath };
-
 /** what a name is made of: letters, digits and the marks that complete them (a decomposed `é` is two) */
 const NAME = "\\p{L}\\p{N}\\p{M}_";
 /**
@@ -40,7 +38,6 @@ export function openWebLink(uri: string): void {
   link.rel = "noopener noreferrer";
   link.click();
 }
-
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).

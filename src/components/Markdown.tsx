@@ -4,7 +4,7 @@ import { BookOpen, Check, Copy, ImageOff, Maximize2 } from "lucide-react";
 import { foldCode, mathNestsTooDeep, parseInline, parseMarkdown, type InlineNode, type ListBlock, type MarkdownBlock } from "../../shared/markdown.ts";
 import { codeIsFilePath, OpenFileContext, splitFilePaths } from "../lib/filePaths.ts";
 import { FilePathLink } from "./FilePathLink.tsx";
-import { fileUriPath } from "../lib/terminalFileLinks.ts";
+import { fileUriPath } from "../../shared/fileUri.ts";
 import { WebPanelContext } from "../lib/webPanel.ts";
 import { MachineContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";

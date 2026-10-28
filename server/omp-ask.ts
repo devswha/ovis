@@ -61,7 +61,7 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
 
 /**
  * `markdown` as omp draws it, when the card draws the same characters: the card's Markdown scanner
- * (src/lib/markdown.ts, the chat's) is not CommonMark. It takes `*.log and *.tmp` for emphasis and keeps
+ * (shared/markdown.ts, the chat's) is not CommonMark. It takes `*.log and *.tmp` for emphasis and keeps
  * a backslash before an escaped mark, so the card would show other words than omp, and an option could
  * read as another one. Where they part, null: the card stays as drawn.
  */

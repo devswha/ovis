@@ -30,7 +30,7 @@ export interface ListBlock {
 
 export type MarkdownBlock =
   | { type: "math"; value: string }
-  /** `align`: centered by the HTML a README wrote it in (lib/markdownHtml.ts) */
+  /** `align`: centered by the HTML a README wrote it in (markdownHtml.ts) */
   | { type: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; content: InlineNode[]; align?: "center" }
   | { type: "paragraph"; lines: InlineNode[][]; align?: "center" }
   | ListBlock
@@ -370,7 +370,7 @@ export function foldCode(value: string): { head: string; lines: number } | null 
 /** Quotes nest by one call each: past this many levels, what is left is read as plain lines. */
 const MAX_QUOTE_DEPTH = 32;
 
-/** `html`: a file's markdown, whose HTML blocks are read as markdown (lib/markdownHtml.ts); an agent's text keeps them as text */
+/** `html`: a file's markdown, whose HTML blocks are read as markdown (markdownHtml.ts); an agent's text keeps them as text */
 export function parseMarkdown(source: string, depth = 0, html = false): MarkdownBlock[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
