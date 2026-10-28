@@ -2381,8 +2381,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Codex is read only from the live footer beneath its composer; an answer quoting the /model
   picker or a draft cannot supply a model, and while a popup hides the footer the model is unknown.
   Only the live screen is read: the viewport, while herdr reports it at the bottom with the same
-  history before and after the read, or, where herdr reports no scroll, whose whole text is the live
-  screen's. History can show an older frame with a model the agent no
+  history before and after the read; where herdr reports no scroll, nothing proves the live screen
+  and no model is named. History can show an older frame with a model the agent no
   longer runs, so while the terminal is scrolled up (on this device or another) no model is named
   until it is back at the bottom; herdr's detection read is no stand-in, since on a short screen it
   reaches up into the history above. A Codex started in a terminal

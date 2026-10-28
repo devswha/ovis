@@ -2791,7 +2791,7 @@ describe("a model drawn only in the history above the live screen", () => {
   /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
    * each scroll position herdr reports in turn (offset from the bottom, rows of history; null for none,
    * as herdr's scroll is optional; "fail" for a lookup that fails), the last one from then on. */
-  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null | "fail")[] = [[0, 30]], detected = history + live): string => {
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null | "fail")[] = [[0, 30]]): string => {
     const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
     mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
     mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
@@ -2804,7 +2804,7 @@ describe("a model drawn only in the history above the live screen", () => {
       if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
       throw new Error(`unexpected RPC: ${method}`);
     }));
-    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? detected : live }) as never));
+    mocks.push(spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? history + live : live }) as never));
     return pane.pane_id;
   };
 
@@ -2838,42 +2838,37 @@ describe("a model drawn only in the history above the live screen", () => {
     // a scroll known for one read and not the other proves nothing
     expect(await named([null, [0, 30]])).toBeNull();
     expect(await named([[0, 30], null])).toBeNull();
-    // a lookup that failed is no answer, not a scroll herdr does not report
+    // nor does a lookup that failed
     expect(await named(["fail", "fail"])).toBeNull();
     expect(await named([[0, 30], "fail"])).toBeNull();
   });
 
-  // herdr's pane.get may report no scroll: then the viewport is the live screen only when its whole text is
-  it("names the model a start screen states when herdr reports no scroll, and the live screen is the viewport", async () => {
+  // herdr's pane.get may report no scroll, and then gives no geometry: a viewport scrolled up into the blank
+  // rows under a short screen reads the same as the live one, so nothing proves the screen and none is read
+  it("names no model a start screen states when herdr reports no scroll", async () => {
     const codex = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
     const screens = [
-      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n", model: "claude-haiku-5-5", effort: null },
-      { agent: "codex", frame: codex, model: "gpt-6.1-sol", effort: "low" },
-      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n", model: "claude-opus-5-5", effort: "xhigh" },
+      { agent: "claude", frame: " \u2590\u259b\u2588\u2588\u2588\u259c\u258c   Claude Code v2.1.296\n\u259d\u259c\u2588\u2588\u2588\u2588\u2588\u259b\u2598  Haiku 5.5 \u00b7 Claude Max\n\u276f Try a task\n" },
+      { agent: "codex", frame: codex },
+      { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n" },
     ];
-    for (const { agent, frame, model, effort } of screens) {
-      // an agent this server started, before its first message
-      const id = shown(agent, "idle", "", frame, [null]);
-      launchedAgents.launched(id, agent);
-      expect(await paneConversation(id, join(root, ".codex"))).toMatchObject({ turns: [], screen: true, metadata: { model, reasoning_effort: effort } });
-      launchedAgents.forget(id);
-      for (const mock of mocks.splice(0)) mock.mockRestore();
+    for (const { agent, frame } of screens) {
+      // an agent this server started, before its first message: the same frame names its model with a scroll
+      const cases: [[number, number] | null, "named" | null][] = [[[0, 30], "named"], [null, null]];
+      for (const [scroll, model] of cases) {
+        const id = shown(agent, "idle", "", frame, [scroll]);
+        launchedAgents.launched(id, agent);
+        const answer = await paneConversation(id, join(root, ".codex"));
+        expect(answer.metadata?.model === null ? null : "named").toBe(model);
+        launchedAgents.forget(id);
+        for (const mock of mocks.splice(0)) mock.mockRestore();
+      }
     }
-    // a Codex started in the terminal: the terminal stands in, with its model
+    // a Codex started in the terminal: the terminal stands in, naming no model
     const terminal = shown("codex", "working", "", codex, [null]);
     const answer = await paneConversation(terminal, join(root, ".codex")).catch((error: unknown) => error);
-    expect((answer as ConversationUnavailable).screen).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "low" });
-    for (const mock of mocks.splice(0)) mock.mockRestore();
-    // the same rows, read with trailing spaces, CRLF line ends and blank rows below: still the live screen
-    const padded = shown("codex", "working", "", codex, [null], `${codex.split("\n").map((row) => `${row}   `).join("\r\n")}\r\n\r\n   \r\n`);
-    const same = await paneConversation(padded, join(root, ".codex")).catch((error: unknown) => error);
-    expect((same as ConversationUnavailable).screen).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "low" });
-    for (const mock of mocks.splice(0)) mock.mockRestore();
-    // a short screen whose detection read also reaches the history above: no proof, no model
-    const short = shown("codex", "working", "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6-Luna medium \u00b7 /tmp/project\n  ? for shortcuts\n", codex, [null]);
-    const unproven = await paneConversation(short, join(root, ".codex")).catch((error: unknown) => error);
-    expect(unproven).toBeInstanceOf(ConversationUnavailable);
-    expect((unproven as ConversationUnavailable).screen).toBeUndefined();
+    expect(answer).toBeInstanceOf(ConversationUnavailable);
+    expect((answer as ConversationUnavailable).screen).toBeUndefined();
   });
 });
 
