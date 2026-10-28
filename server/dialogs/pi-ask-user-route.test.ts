@@ -409,6 +409,21 @@ test("pi's own dialogs keep their cards, except while a pi-ask form holds the ke
   });
 });
 
+test("pi's own dialog answers by keys when the extension says no form is open, whatever the session file says", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    // the session file still holds the ask_user call (a /tree move away from it writes nothing),
+    // but pi's live state, through the extension, has no pi-ask form open
+    pane.bridge.state.flows = [];
+    pane.bridge.state.openCalls = [];
+    pane.screen = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
+    const card = (await pane.read())!;
+    expect(card).toMatchObject({ question: "Choose a color" });
+    expect((await pane.answer(card.id, { option_index: 0 })).status).toBe(200);
+    expect(pane.keys).toEqual(["enter"]);
+  });
+});
+
 test("an answer never leaves for a pi the pane no longer has in front", async () => {
   if (!posix) return;
   await withBridgedPane(async (pane) => {

@@ -190,20 +190,20 @@ export function piAskUserOpen(transcript: string): boolean {
 /**
  * Whether the pane's foreground pi has a pi-ask form open, as its extension says, with no session
  * needed: pi writes no session file before its first answer, and a form from `/answer` needs no
- * tool call. Only "inactive" is proof of none: the extension is not installed where the pane's pi
- * would run it, or every one of the pane's foreground pids it serves says no form is open.
- * "unknown" (the pane's processes unreadable, a socket that is not this user's alone, a read that
- * failed or answers for another pid) is never room for keys. Every candidate socket is asked: more
- * than one is no reason to stop.
+ * tool call. "inactive": the pane's pi answered through the extension that no form is open, from
+ * pi-ask's live state (a /tree move that writes nothing leaves the session file behind it).
+ * "absent": no extension serves the pane's pi, so it cannot say. "unknown" (the pane's processes
+ * unreadable, a socket that is not this user's alone, a read that failed or answers for another
+ * pid) is never room for keys. Every candidate socket is asked: more than one is no reason to stop.
  */
-export type PiAskActivity = "active" | "inactive" | "unknown";
+export type PiAskActivity = "active" | "inactive" | "absent" | "unknown";
 export async function piAskActivity(paneId: string, signal?: AbortSignal): Promise<PiAskActivity> {
-  if (process.platform === "win32") return "inactive";
+  if (process.platform === "win32") return "absent";
   const { pids, agentDirs } = await piPaneAgentDirs(paneId);
   const directories = agentDirs.map((agentDir) => join(agentDir, PI_ASK_BRIDGE_DIRECTORY)).filter((directory) => existsSync(directory));
-  if (directories.length === 0) return "inactive";
+  if (directories.length === 0) return "absent";
   if (pids === null) return "unknown";
-  let activity: PiAskActivity = "inactive";
+  let activity: PiAskActivity = "absent";
   for (const directory of directories) {
     for (const pid of pids) {
       const socket = join(directory, `${pid}.sock`);
@@ -212,6 +212,7 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
       const state = await bridgeState(socket, signal);
       if (!state || state.pid !== pid) activity = "unknown";
       else if (state.flows.length > 0) return "active";
+      else if (activity === "absent") activity = "inactive";
     }
   }
   return activity;

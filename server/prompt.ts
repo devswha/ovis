@@ -661,14 +661,16 @@ const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall
 
 /**
  * Whether no key may go into the pi pane now: the pane's pi has a pi-ask form open, or cannot be
- * shown not to (piAskActivity), or, without the extension, its session holds an open ask_user call.
- * pi-ask takes no typed keys (its docs/remote-events.md). `transcript`: piTranscriptPath's answer when
- * already read.
+ * shown not to (piAskActivity), or, with no extension to ask, its session file holds an open
+ * ask_user call. The extension's live answer outranks the file, which a /tree move can leave
+ * behind. pi-ask takes no typed keys (its docs/remote-events.md). `transcript`: piTranscriptPath's
+ * answer when already read.
  */
 async function piAskRefusesKeys(paneId: string, transcript?: Awaited<ReturnType<typeof piTranscriptPath>>, signal?: AbortSignal): Promise<boolean> {
+  const activity = await piAskActivity(paneId, signal);
+  if (activity !== "absent") return activity !== "inactive";
   const session = transcript === undefined ? await piTranscriptPath(paneId).catch(() => null) : transcript;
-  if (session && "path" in session && piAskUserOpen(session.path)) return true;
-  return await piAskActivity(paneId, signal) !== "inactive";
+  return !!session && "path" in session && piAskUserOpen(session.path);
 }
 
 /** A pi-ask form opened under a key-driven answer: nothing more is sent. */
