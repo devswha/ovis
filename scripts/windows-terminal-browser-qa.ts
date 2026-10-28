@@ -181,9 +181,22 @@ try {
   await cdp.detach();
   assert.deepEqual(errors, []);
   console.log("PASS native Windows mirror text insertion and IME preserve the phone viewport");
+} catch (error) {
+  // a failing cleanup below would otherwise replace this error
+  console.error(error);
+  throw error;
 } finally {
   await browser?.close();
   server?.stop();
   if (workspace) await workspaceClose(workspace);
-  rmSync(root, { recursive: true, force: true });
+  // the closed pane's PowerShell holds its folder (EBUSY) until it has exited
+  await until(async () => {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EBUSY") return false;
+      throw error;
+    }
+  }, "the closed pane's shell lets go of the test folder");
 }
