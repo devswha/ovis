@@ -1479,7 +1479,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
           // right before each key: a pi-ask form that opened since the read takes none of them
           if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
-          // and an omp stopped behind its shell since the read takes none either: the shell would
+          // and an omp stopped behind its shell since the read takes none either: the shell would. A stop between
+          // this look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground
           if (agent === "omp" && !(await ompOwnsInput(body.pane_id))) throw new OmpNotInFront();
           const first = !move && !committed;
           if (!move) committed = true;
