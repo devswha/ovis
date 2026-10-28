@@ -1221,9 +1221,12 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
       const deadline = Date.now() + 10_000;
       let asked: string | undefined;
       let seen = "";
+      // the latest grid asked, once no font face can still arrive and refit the terminal
+      const latest = () => page.evaluate(() => document.fonts.status === "loaded" ? (window as unknown as { asked_: string[] }).asked_.at(-1) : undefined);
       while (Date.now() < deadline) {
-        asked = await page.evaluate(() => (window as unknown as { asked_: string[] }).asked_.at(-1));
-        if (asked) { seen = await size(); if (seen === asked) return asked; }
+        asked = await latest();
+        // a grid asked while the shell answered is waited for in turn
+        if (asked) { seen = await size(); if (seen === asked && await latest() === asked) return asked; }
         await Bun.sleep(100);
       }
       throw new Error(asked ? `${what}: the pane is ${seen}, not ${asked}` : `${what}: the window never asked for a grid`);
