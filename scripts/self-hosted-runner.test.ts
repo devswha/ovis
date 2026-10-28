@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -53,6 +53,11 @@ function runRunner(options: {
   grepReadError?: boolean;
   /** more launcher arguments, after --count */
   args?: string[];
+  /** XDG_CACHE_HOME for the launcher, kept after the run; a fresh one inside the run's temp dir otherwise */
+  cacheHome?: string;
+  gitFetchExitCode?: number;
+  /** exit status of the container that builds the Bun cache */
+  cacheBuildExitCode?: number;
 } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), "herdr-self-hosted-runner-test-"));
   const binDir = join(tempDir, "bin");
@@ -72,24 +77,30 @@ case " $* " in
     ;;
 esac
 `);
+    // one line per call: the Bun cache build's script spans several
     writeFileSync(join(binDir, "docker"), `#!/bin/sh
-printf 'docker %s\\n' "$*" >> "$RUNNER_TEST_LOG"
+printf 'docker %s\\n' "$(printf '%s' "$*" | tr '\\n' ' ')" >> "$RUNNER_TEST_LOG"
 case "$1" in
   image) exit 0 ;;
   run)
     # the shared network namespace container is detached and reads no token
     [ "$2" = -d ] && exit 0
-    IFS= read -r token || exit 1
     shift
     name=""
     while [ "$#" -gt 0 ]; do
       if [ "$1" = --name ]; then
         name="$2"
         shift 2
+      elif [ "$1" = -v ] && [ "\${2%:/cache/bun}" != "$2" ]; then
+        touch "\${2%:/cache/bun}/package@1.0.0"
+        shift 2
       else
         shift
       fi
     done
+    # the Bun cache build (it filled the directory mounted at /cache/bun above) reads no token
+    case "$name" in *-cache) exit "\${DOCKER_CACHE_EXIT:-0}" ;; esac
+    IFS= read -r token || exit 1
     if [ "\${name##*-}" = "\${DOCKER_FAIL_SLOT:-}" ]; then
       exit "\${DOCKER_EXIT_CODE:-42}"
     fi
@@ -98,8 +109,36 @@ case "$1" in
   *) exit 0 ;;
 esac
 `);
+    // the launcher's git mirror: no network, and HEAD resolves once symbolic-ref has named the branch
+    writeFileSync(join(binDir, "git"), `#!/bin/sh
+printf 'git %s\\n' "$*" >> "$RUNNER_TEST_LOG"
+dir=""
+while :; do
+  case "$1" in
+    -C) dir="$2"; shift 2 ;;
+    -c) shift 2 ;;
+    *) break ;;
+  esac
+done
+for last; do :; done
+case "$1" in
+  init) mkdir -p "$last/objects" ;;
+  fetch) exit "\${GIT_FETCH_EXIT:-0}" ;;
+  ls-remote) printf 'ref: refs/heads/main\\tHEAD\\n' ;;
+  symbolic-ref) touch "$dir/head-set" ;;
+  rev-parse)
+    case "$last" in
+      HEAD) [ -f "$dir/head-set" ] || exit 1; echo ${commitSha} ;;
+      HEAD:bun.lock) echo ${lockBlob} ;;
+      'HEAD^{commit}') echo ${commitSha} ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+exit 0
+`);
     chmodSync(join(binDir, "gh"), 0o755);
     chmodSync(join(binDir, "docker"), 0o755);
+    chmodSync(join(binDir, "git"), 0o755);
     const envFile = join(tempDir, "host.env");
     if (options.envFile === "present") writeFileSync(envFile, "# P620\n\nCHECK_HOST_MAX_RUNS=6\nCHECK_HOST_BROWSER_WORKERS=10\n");
     if (options.envFile === "bare") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nGH_TOKEN\n");
@@ -126,6 +165,9 @@ esac
         ...process.env,
         PATH: path,
         RUNNER_TEST_LOG: logPath,
+        XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
+        GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
+        DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
         GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
         DOCKER_EXIT_CODE: String(options.dockerExitCode ?? 42),
         DOCKER_FAIL_SLOT: String(options.failedSlot ?? ""),
@@ -141,6 +183,10 @@ esac
 
 /** A runner container: it reads its registration token on stdin. */
 const runnerRun = /^docker run --rm -i /;
+/** What the git stub reports for the mirror's default branch and its bun.lock. */
+const commitSha = "1".repeat(40);
+const lockBlob = "2".repeat(40);
+const cacheBuild = /^docker run --rm --name herdr-ci-.+-cache /;
 
 describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () => {
   it("runs without CPU or memory quotas by default", () => {
@@ -278,6 +324,104 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("--reserved");
       expect(calls).toBe("");
+    }
+  });
+
+  it("refreshes the host caches before the first runner and hands them to every runner read-only", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      const { result, calls } = runRunner({ count: 2, cacheHome });
+      expect(result.status).toBe(0);
+      const lines = calls.split("\n");
+      const cacheDir = join(cacheHome, "ovis-ci-runner");
+      const mirror = join(cacheDir, "git/repo.git");
+      // this repository's branches and tags only, from GitHub
+      expect(lines).toContain(`git -C ${mirror} config remote.origin.url https://github.com/owner/repo.git`);
+      expect(lines.filter((call) => call.includes("remote.origin.fetch")).map((call) => call.split(" ").at(-1)))
+        .toEqual(["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
+      const fetched = lines.findIndex((call) => call.startsWith(`git -C ${mirror} fetch `));
+      const runners = lines.map((call, index) => ({ call, index })).filter(({ call }) => runnerRun.test(call));
+      expect(runners).toHaveLength(2);
+      for (const { call, index } of runners) {
+        expect(index).toBeGreaterThan(fetched);
+        expect(fetched).toBeGreaterThanOrEqual(0);
+        expect(call).toContain(`-v ${cacheDir}:/cache:ro `);
+        expect(call).toContain("-e GIT_ALTERNATE_OBJECT_DIRECTORIES=/cache/git/repo.git/objects ");
+        expect(call.match(/-v \S+/g)).toEqual([`-v ${cacheDir}:/cache:ro`]);
+        expect(call).toContain("--security-opt no-new-privileges --cap-drop ALL --pids-limit 8192 ");
+        expect(call).toEndWith(" herdr-ci-runner:local");
+      }
+      expect(readlinkSync(join(cacheDir, "bun/current"))).toBe(lockBlob);
+      expect(readdirSync(join(cacheDir, "bun", lockBlob))).toEqual(["package@1.0.0"]);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it("builds the Bun cache from the default branch's lockfile only, hardened, read-only to it and without package scripts", () => {
+    const { result, calls } = runRunner();
+    expect(result.status).toBe(0);
+    const builds = calls.split("\n").filter((call) => cacheBuild.test(call));
+    expect(builds).toHaveLength(1);
+    const build = builds[0]!;
+    expect(build).toContain("--security-opt no-new-privileges --cap-drop ALL --pids-limit 8192 ");
+    expect(build).toContain(`-e COMMIT=${commitSha} `);
+    expect(build).toMatch(/-v \S+\/git\/repo\.git:\/cache\/git\/repo\.git:ro /);
+    expect(build).toContain("bun install --frozen-lockfile --ignore-scripts");
+    expect(build).not.toContain("--network");
+    expect(build).not.toContain("docker.sock");
+  });
+
+  it("mounts no cache and touches no mirror with --no-cache", () => {
+    const { result, calls } = runRunner({ args: ["--no-cache"] });
+    expect(result.status).toBe(0);
+    expect(calls).not.toContain("git ");
+    expect(calls).not.toContain("/cache");
+    expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+  });
+
+  it("still starts the runners when a refresh fails, and retries a failed Bun cache build only after 30 minutes", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      const first = runRunner({ cacheHome, gitFetchExitCode: 1, cacheBuildExitCode: 1 });
+      expect(first.result.status).toBe(0);
+      expect(first.result.stderr).toContain("[cache] could not refresh the git mirror");
+      expect(first.result.stderr).toContain("[cache] could not build the Bun cache");
+      expect(first.calls.split("\n").filter((call) => cacheBuild.test(call))).toHaveLength(1);
+      expect(first.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      const bun = join(cacheHome, "ovis-ci-runner/bun");
+      // nothing half-built is left for a runner to read
+      expect(readdirSync(bun)).toEqual([`.failed-${lockBlob}`]);
+      const again = runRunner({ cacheHome });
+      expect(again.result.status).toBe(0);
+      expect(again.calls.split("\n").filter((call) => cacheBuild.test(call))).toEqual([]);
+      const past = new Date(Date.now() - 31 * 60_000);
+      utimesSync(join(bun, `.failed-${lockBlob}`), past, past);
+      const later = runRunner({ cacheHome });
+      expect(later.calls.split("\n").filter((call) => cacheBuild.test(call))).toHaveLength(1);
+      expect(readdirSync(bun).sort()).toEqual([lockBlob, "current"]);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a replaced Bun cache for an hour after it was replaced, then removes it", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      const bun = join(cacheHome, "ovis-ci-runner/bun");
+      const hoursAgo = new Date(Date.now() - 2 * 3_600_000);
+      for (const version of ["replaced-earlier", "replaced-now"]) {
+        mkdirSync(join(bun, version), { recursive: true });
+        utimesSync(join(bun, version), hoursAgo, hoursAgo);
+      }
+      // a symlink as the launcher writes it: the default branch's lockfile was replaced-now's until this run
+      spawnSync("ln", ["-s", "replaced-now", join(bun, "current")]);
+      const { result } = runRunner({ cacheHome });
+      expect(result.status).toBe(0);
+      expect(readlinkSync(join(bun, "current"))).toBe(lockBlob);
+      expect(readdirSync(bun).sort()).toEqual([lockBlob, "current", "replaced-now"]);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
     }
   });
 
