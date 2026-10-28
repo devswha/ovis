@@ -2138,8 +2138,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   when the agent records no id), so appended updates and the next poll keep it open, focused and
   where the reader left it. When the second update turns a single row into the run, the run opens
   if that row was open, and the keyboard's focus stays on that update inside it (on the run's head
-  when it is folded), never dropped to the page. This follows the app's own Codex-style work block (Codex app, Claude
-  app: one row per action, folded under the turn); Agent of Empires' todo cards gave only the
+  when it is folded), never dropped to the page, also while the reader is in another app. This
+  follows the app's own Codex-style work block (Codex app, Claude app: one row per action, folded
+  under the turn); Agent of Empires' todo cards gave only the
   evidence that contiguous plan updates read better as one item, and none of its code is used.
 
 ### Plan (`.bg-tasks-plan`, `.bg-step`, `.plan-count`)

@@ -6,8 +6,8 @@ export interface ChatRowMemory {
   readonly outputs: Map<string, string>;
   /** an agent turn's part index → the name of the run of work it was in when last drawn (runNames) */
   readonly runs: Map<number, string>;
-  /** the row whose head holds the keyboard's focus (useRowFocus) */
-  focused?: string;
+  /** the row whose head holds the keyboard's focus (useRowFocus): one object per focus, so a head that left can tell its record from a newer one */
+  focused?: { readonly key: string };
 }
 
 export const ChatRowMemoryContext = createContext<ChatRowMemory | null>(null);
@@ -26,7 +26,9 @@ export function useChatRowToggle(key: string, initial: boolean | null) {
  * Keeps the keyboard's focus on a row when the element drawing it is replaced: a todo update the
  * next one folds into a Plan row (#1601). The head records that it holds the focus; a head drawn
  * again for that row, or for a row taking its place (`from`), takes the focus back if it fell to
- * the page because the old element left. Focus the reader moved elsewhere is never taken.
+ * the page because the old element left. Focus the reader moved elsewhere is never taken, and a
+ * head that leaves with no head taking its place in the same render ends the record: a row drawn
+ * later, scrolled back or opened again, never takes the focus.
  */
 export function useRowFocus<T extends HTMLElement>(key: string, from: readonly string[] = []) {
   const memory = useContext(ChatRowMemoryContext);
@@ -35,14 +37,23 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
   useLayoutEffect(() => {
     const focused = memory?.focused;
     const head = ref.current;
-    if (head === null || focused === undefined || (focused !== key && !from.includes(focused))) return;
-    const active = document.activeElement;
-    if (active === null || active === document.body) head.focus({ preventScroll: true });
+    if (head !== null && focused !== undefined && (focused.key === key || from.includes(focused.key))) {
+      const active = document.activeElement;
+      // focusing it records a new object (onFocus), which the cleanup below leaves alone
+      if (active === null || active === document.body) head.focus({ preventScroll: true });
+    }
+    return () => {
+      // the heads drawn in its place in this render have run the effect above by the time this
+      // microtask runs; a record none of them took is ended
+      const left = memory?.focused;
+      if (memory && left !== undefined && left.key === key) queueMicrotask(() => { if (memory.focused === left) memory.focused = undefined; });
+    };
   }, []);
-  const onFocus = useCallback(() => { if (memory) memory.focused = key; }, [memory, key]);
-  // a head that leaves the page takes no blur from it: the record stays for the head that replaces it
+  const onFocus = useCallback(() => { if (memory) memory.focused = { key }; }, [memory, key]);
+  // a head that leaves the page takes no blur from it, and the window losing the focus is no move
+  // away: the record stays for the head that replaces it while the reader is in another app
   const onBlur = useCallback((event: FocusEvent<T>) => {
-    if (memory && memory.focused === key && event.currentTarget.isConnected) memory.focused = undefined;
+    if (memory && memory.focused?.key === key && event.currentTarget.isConnected && document.hasFocus()) memory.focused = undefined;
   }, [memory, key]);
   return { ref, onFocus, onBlur };
 }
