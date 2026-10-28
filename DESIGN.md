@@ -541,10 +541,19 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   Latin and Korean only. Kanji and Chinese text fall through `--font-ui` to the device's sans-serif,
   so a Japanese line is kana in Pretendard beside kanji in the device's face, and Chinese is
   the device's face almost throughout. The app ships no Japanese or Chinese face.
-- JetBrains Mono regular is the code face of the chat and the chrome, loaded under the family
-  name `"JetBrains Mono Web"`. The name is the app's own so that the terminal never takes it:
-  xterm's stack (`src/lib/fontFamily.ts`) names `"JetBrains Mono"`, sizes every cell from the
-  first font that matches, and keeps meaning the copy installed on the device.
+- JetBrains Mono (regular and bold) is the code face of the terminal, the chat and the chrome,
+  loaded under the family name `"JetBrains Mono Web"` from the bundled files only. It is the
+  terminal's first text font on every device (`src/lib/fontFamily.ts`). Measured at 13px, Chrome,
+  Safari and Ovis for Mac on a Mac and Chrome on Linux draw the same 7.8px cell and 17px row:
+  before, each device's own font sized it (Menlo, Noto Sans Mono CJK KR), and an installed
+  JetBrains Mono drew in Chrome while Safari and Ovis for Mac's canvas could not see it, so the
+  same Mac showed 17px rows in Chrome and 16.5px in the app. It is never a `local()` copy,
+  which the app's canvas cannot measure either. A font typed in Settings still goes ahead of it. The
+  terminal opens without it until it has loaded and the font effect then sets it, as for a typed
+  font: xterm measures a cell once, when the family is set. A new terminal's pane is attached only
+  once that first font is set (within the font effect's 3 s wait), so its pty is sized for the
+  face's grid, not for a fallback's and then again. Zed likewise draws its terminal in a
+  face it ships (`.ZedMono`) rather than the system's.
 - Ovis Hangul Mono is the terminal's Hangul: the syllables and compatibility jamo of D2Coding
   1.3.2, renamed because its license reserves the name, 265 KB regular and 277 KB bold, each
   fetched only once a pane prints Korean that reaches it (`unicode-range`, `PaneTerminal.css`): a
@@ -1299,8 +1308,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   capped at 2,000 keys, oldest first, never pruned by a tab's pane or PC roster. A record this
   browser writes is also sent to its server (`POST /api/seen`, shared/seen.ts), which keeps the
   greatest finish per `(PC, epoch, pane)` in `seen.json` (500 records, oldest first out; a PC's
-  records of an epoch other than the one the PC told this server since it started, never a snapshot
-  restored from `machines.json`, are neither handed out nor taken, and the next write drops them) and hands
+  records of a herdr run known to have ended are neither handed out nor taken, and the next write
+  drops them: this server's own PC is only in the run its finish epoch names now, an earlier
+  process's included; another PC's run ended once a read that started after every report this server
+  held of it named another run. A snapshot restored from `machines.json` or a report that may be late
+  proves no run ended; a late snapshot or status of a run its own server was read moving on from is
+  neither kept nor told, as `server/finish-epoch-ledger.ts` says) and hands
   them to every browser as `seen` events on `/api/machines/events`: all of them when the stream
   opens, then each change. A received record is laid over this browser's own with the same
   max-finish rule, so it can mark a finish read, never bring a dot back. Each finish is sent once
@@ -1455,12 +1468,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Under Name, the launch's own choices, each only where the agent's CLI documents it
   (`lib/agentLaunchMode.ts` launchCapabilities; today Claude Code and Codex): **Model**, a `.input`
   whose empty value is the agent's own and whose datalist offers the aliases the agent documents
-  (`sonnet`, `opus`, `haiku`), and **Effort**, a `.select` of the agent's documented levels after
-  **Agent default**, the two side by side (`.new-session-launch`, stacked where a column would fall
-  under 9rem). A model that is not one word, or a choice the picked agent's launch does not take,
-  disables Start and says so under its field in the blocked colour (`aria-invalid`, `role="alert"`);
-  picking another agent drops the choices its launch does not take. The agent picker's rows carry a
-  `.menu-item-hint` (**model, effort**) beside the agents whose launch takes them.
+  (`sonnet`, `opus`, `haiku`), **Effort**, a `.select` of the agent's documented levels after
+  **Agent default** (Claude Code's: low, medium, high, xhigh, max), and, for Claude Code alone,
+  **Ultracode** after Effort: Settings' own `Toggle` (`role="switch"`, `.settings-toggle`) under an
+  uppercase field `<label>` tied to it as Model's and Effort's are, its track pulled to the fields'
+  left edge (`.new-session-ultracode`), with the hint "Dynamic workflows at any effort level. Needs
+  Claude Code 2.1.284 or later." (`aria-describedby`). The label is Claude Code's own term and
+  stays English in every language. The fields sit side by side (`.new-session-launch`) and wrap
+  where a column would fall under 9rem: one row at desktop width, while on a phone Ultracode wraps
+  to a row of its own under Model and Effort. Ultracode is off at every opening, and off adds
+  nothing to the launch, so Claude Code's own settings decide, as Agent default does; on adds
+  `--settings '{"ultracode":true}'` after `--effort`, which keeps the level picked. A model that is
+  not one word, or a model or effort the picked agent's launch does not take, disables Start and
+  says so under its field in the blocked colour (`aria-invalid`, `role="alert"`); picking another
+  agent drops the choices its launch does not take (Ultracode goes off for any agent but Claude
+  Code). A switch left on where it is not shown, as when the agent list turns a remembered Claude
+  Code into a shell without a pick, neither disables Start nor goes with the launch
+  (`lib/newSession.ts` dialogLaunch). The agent picker's rows carry a `.menu-item-hint` (**model,
+  effort**) beside the agents whose launch takes them.
 - **First message** is a `.input` textarea (three rows, grown by hand) whose hint says where it goes.
   Codex takes it as its own positional argument behind `--` (`codex [OPTIONS] [PROMPT]`; clap matches
   a subcommand only before the separator, verified on codex 0.163.0: `codex -- logout` starts the TUI),
@@ -1481,6 +1506,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the dialog stays open saying so, with **Open**. A Codex message with a tab or a line break is no
   one-line argument: it goes as `first_message` instead. The bridge checks the model, the effort and
   Codex's argument by the dialog's own rules (`shared/launch-rules.ts`); switching agents clears the model.
+  It still takes Claude Code's `--effort ultracode` (xhigh with Ultracode on) from an older page or
+  another client, and passes `--settings` on as the agent's own flag; on a Windows PC its inline
+  JSON goes as the path of a file holding the same text (`server/claude-settings-file.ts`).
   Under the message, **Skills**: the agent's skills in the folder before any process exists
   (`GET /api/agent/commands?agent=&cwd=`, the pane commands route without a pane: the bridge's
   tables and a disk scan, no agent started; a device that may only watch is refused it as it is a
@@ -1508,7 +1536,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`--model`, `--effort`, the positional prompt): here they are fields of the existing dialog, not a
   second launcher, because the dialog already owns the agent, the folder and the launch; the skills
   row is the composer's `/` and `$` menu brought forward to before the agent runs, as chips because
-  a dialog has no caret to complete at until the message is typed.
+  a dialog has no caret to complete at until the message is typed. Ultracode follows Claude Code's
+  own `/effort` slider, where since 2.1.284 it is a switch beside the levels rather than one of
+  them.
 - The browser demo answers `GET /api/agent/commands` with a few fictional skills per agent (`$` ones
   for Codex) and records nothing: a tab started from it is the demo's own new pane.
 
