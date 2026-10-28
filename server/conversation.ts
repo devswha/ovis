@@ -35,15 +35,16 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
+import { herdrRpc, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
 import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
+import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -76,6 +77,7 @@ import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
 import { commandTranscriptRecords, PI_EVIDENCE_TYPES, type CommandTranscriptRecord } from "./outcome.ts";
 import { type ClaudeBranch, claudeForks, followClaudeBranch, type PromptChain, turnStarts } from "./transcript-turns.ts";
 import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
+import { userHome } from "./user-home.ts";
 
 export { isOmoProcess } from "./omo.ts";
 export { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
@@ -831,7 +833,7 @@ export async function paneRunsOmo(paneId: string, known?: KnownProcesses): Promi
     "pane.process_info",
     { pane_id: paneId },
   ).catch(() => null);
-  const home = process.env["HOME"] ?? "";
+  const home = userHome();
   return (info?.process_info?.foreground_processes ?? []).some((process) =>
     // a pid herdr does not report keeps the argv-only proof and fails the custom one closed
     omoProcessIdentity({
@@ -874,7 +876,7 @@ export async function paneProcessRoots(paneId: string, agent: string | null | un
     "pane.process_info", { pane_id: paneId },
   ).catch(() => null);
   const processes = info?.process_info as ProcessInfo | undefined;
-  const home = process.env["HOME"] ?? "";
+  const home = userHome();
   const directory = (path: string | null): string | null => {
     try { return path && statSync(path).isDirectory() ? path : null; } catch { return null; }
   };
@@ -978,7 +980,7 @@ export async function claudePanePid(pane: HerdrPane): Promise<number | null> {
 async function claudeTranscriptPath(paneId: string, cwds: readonly (string | null | undefined)[], onProcess?: (pid: number, attach: boolean) => void, known?: KnownProcesses): Promise<string> {
   const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: paneId });
   let session = info.agent.agent_session?.value;
-  const home = process.env["HOME"] ?? "";
+  const home = userHome();
   const processes = await claudeProcesses(paneId, known);
   const only = processes.length === 1 ? processes[0] : undefined;
   let processDir: string | null = null;
@@ -1064,20 +1066,20 @@ export function betweenAuthorizationForTests(between: ((stage: "before" | "after
  * and held to be the root named; the path down to the transcript is opened component by component
  * through descriptors, no link followed, and must reach the file authorized; the blob store is then
  * opened beside the held root, by the root's own parent. So nothing swapped above the store, before or
- * after this, can lend another store's identity. Linux only (Node has no descriptor-relative open
- * elsewhere: openBlob); there, and for a layout with no blob store, `blobs` is null and no blob is read.
+ * after this, can lend another store's identity. Only where a directory can be held and opened through
+ * (held-open.ts: Linux, macOS, Windows); elsewhere, and for a layout with no blob store, `blobs` is null
+ * and no blob is read.
  */
 export function ompAuthorizedTranscript(authorized: { path: string; root: string; identity: string }): { path: string; blobs: string | null } {
-  return { path: authorized.path, blobs: process.platform === "linux" ? ompBlobIdentity(authorized) : null };
+  return { path: authorized.path, blobs: heldOpenPlatform(process.platform) ? ompBlobIdentity(authorized) : null };
 }
 
 function ompBlobIdentity({ path, root, identity }: { path: string; root: string; identity: string }): string | null {
   const parts = relative(root, path).split(sep);
   // omp's managed store: <data>/sessions/<cwd>/<id>.jsonl, or a subagent's file a level below it
   if (basename(root) !== "sessions" || parts.length < 2 || parts.length > 3) return null;
-  const held: number[] = [];
-  const open = (at: string, flags: number) => { const fd = openSync(at, flags | constants.O_NOFOLLOW); held.push(fd); return fd; };
-  const identityOf = (fd: number) => { const stat = fstatSync(fd); return `${stat.dev}:${stat.ino}`; };
+  const held: Held[] = [];
+  const keep = (entry: Held) => { held.push(entry); return entry; };
   try {
     // one descriptor of the agent data directory, opened once and held: the transcript and the blob store
     // are both reached from it, so a directory renamed or moved after this open moves neither
@@ -1085,26 +1087,22 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
     // trusted, as the user's own arrangement then (a process that can rename inside it runs as the user);
     // from this open on, nothing is reached by path again
     betweenAuthorization?.("before");
-    const data = open(dirname(root), constants.O_RDONLY | constants.O_DIRECTORY);
-    if (readlinkSync(`/proc/self/fd/${data}`) !== dirname(root)) return null;
+    const data = keep(openHeldDirectory(dirname(root)));
+    if (!data.isAt(dirname(root))) return null;
     betweenAuthorization?.("after");
-    let at = open(`/proc/self/fd/${data}/sessions`, constants.O_RDONLY | constants.O_DIRECTORY);
-    for (const [index, name] of parts.entries()) {
-      const last = index === parts.length - 1;
-      at = open(`/proc/self/fd/${at}/${name}`, constants.O_RDONLY | (last ? constants.O_NONBLOCK : constants.O_DIRECTORY));
-    }
+    let at = keep(data.open("sessions", "directory"));
+    for (const [index, name] of parts.entries()) at = keep(at.open(name, index === parts.length - 1 ? "file" : "directory"));
     // the very file authorized, under this data directory's own sessions
-    if (identityOf(at) !== identity) return null;
-    return identityOf(open(`/proc/self/fd/${data}/blobs`, constants.O_RDONLY | constants.O_DIRECTORY));
-  } catch { return null; } finally { for (const fd of held) closeSync(fd); }
+    if (at.stat().identity !== identity) return null;
+    return keep(data.open("blobs", "directory")).stat().identity;
+  } catch { return null; } finally { for (const entry of held) entry.close(); }
 }
 
 async function ompTranscriptPath(paneId: string, cwd: string): Promise<{ path: string; blobs: string | null }> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
-  // a Windows bridge starts with HOME set to the profile directory (remote-entry.ts)
-  const home = process.env["HOME"] ?? "";
+  const home = userHome();
   const route = process.platform === "win32" ? null : await ompPaneRoute(paneId);
   // an omp whose store nothing proves, or two keeping different ones
   if (route === "unproved") throw new ConversationUnavailable("no_session_path");
@@ -1367,6 +1365,25 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
 }
 
 /**
+ * The pane's live screen, or "" when nothing proves it: herdr's viewport, read while herdr reports
+ * it at the bottom with the same history before and after the read. Scrolled up, on this device or
+ * another, the viewport is history; and herdr's detection read is no stand-in, since on a short
+ * screen it reaches up into the history above (herdr 0.9.5: a cleared 7-row screen read as 34 rows).
+ * Whatever the agent drew there before (another model, a conversation) is not what it shows now.
+ * A scroll herdr does not report, or a lookup that fails, proves nothing either: pane.get then gives
+ * no geometry, and a viewport scrolled up into the blank rows under a short screen reads the same
+ * as the live one, so no screen is read rather than guessed (unlike viewportShowsLive's text check).
+ */
+async function bottomViewport(paneId: string): Promise<string> {
+  const scroll = () => paneScrollInfo(paneId).catch(() => null);
+  const before = await scroll();
+  if (before?.offset_from_bottom !== 0) return "";
+  const text = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
+  const after = text === "" ? null : await scroll();
+  return after?.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
+}
+
+/**
  * pane -> agent session -> transcript turns. Read-only, same-user files only.
  * Claude sessions are looked up by id under ~/.claude/projects; omp sessions
  * come from herdr or the pane's omp process (ompTranscriptPath); omo sessions are resolved from its own store by
@@ -1385,11 +1402,11 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
 
   // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
   // that cannot be read leaves it unknown. omp follows its transcript only: catalog discovery
-  // can refresh the CLI's OAuth credentials and is never initiated by the bridge.
-  const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> => {
-    const screen = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
-    return startScreenMetadata(source, screen);
-  };
+  // can refresh the CLI's OAuth credentials and is never initiated by the bridge. Only the live
+  // screen counts (bottomViewport): history can show an older frame of the agent, with a model it
+  // no longer runs.
+  const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> =>
+    startScreenMetadata(source, await bottomViewport(paneId));
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata): Promise<RecognizedConversation> => {
     // what the screen states can change with the pane's output, with no file to watch: the chat re-reads on it
     const screen = readsStartScreen(source);
@@ -1426,7 +1443,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       // a Codex that reported no session yet (one started in the terminal): the terminal stands in
       // for the chat, and Codex's live status line still states the model and effort it runs at
       if (pane.agent === "codex" && page.before === undefined && page.since === undefined && page.from === undefined) {
-        const text = await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 2_000 }).then((read) => read.text, () => "");
+        const text = await bottomViewport(paneId);
         const screen = startScreenMetadata("codex-transcript", text);
         // unless it has begun no conversation at all: then it has its greeting, as one this server
         // started does. At work or asking, its first turn may have begun.

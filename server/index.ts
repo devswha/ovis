@@ -11,7 +11,7 @@ import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts
 import { accessSync, constants, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { DevicePairedEvent, HealthAuth, PendingMessage, SecuritySummary } from "../shared/protocol.ts";
+import type { DevicePairedEvent, HealthAuth, PendingMessage, SecuritySummary, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { authClient, deviceCookieValue, bearerMatches, handleAuthRequest, isAuthenticated, isSecureRequest, parseCookies, presentedToken, presentedTokenHeld, recordPresentedTokenFailure, requiresAuth, unauthorizedJson } from "./auth.ts";
 import { bindScope, cameThroughProxy, decideAccess, forwardingHeaders, isLoopbackAddress, isLoopbackBind, isServeOwnerRequest, lanExposed, observedIngress } from "./access.ts";
@@ -53,7 +53,7 @@ import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity, loopbackRelay, registerBridge, relayTarget } from "./bridge.ts";
 import { handleMachineRequest, nonCanonicalPath, slowMachinePath } from "./machine-api.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
-import { HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
+import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
 import { readHerdrUi } from "./herdr-ui.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { MachineRelay } from "./machine-relay.ts";
@@ -158,6 +158,8 @@ export function createServer(
     /** voice input's key, provider and models; tests pass one with their own env and fetch */
     voice?: VoiceService;
     machines?: boolean;
+    /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
+    bridgeOnly?: boolean;
     /** Read-only saved profiles from the local herdr client; tests supply their own catalog. */
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     /** herdr's config.toml, for its sidebar rows (server/herdr-sidebar.ts) and its copy_on_select (server/herdr-ui.ts); unset, where herdr itself reads it. Tests pass a temp file. */
@@ -246,7 +248,11 @@ export function createServer(
   const openCodeState = new OpenCodePromptState();
   const draftTimer = setInterval(() => openCodeState.prune(), 60_000);
   draftTimer.unref();
-  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence }, devices, preferences, usage, usageLogin, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  // a snapshot as a browser is told it, wherever it goes: without the token values herdr's sidebar rows hide (#2160).
+  // A bridge this app starts on a PC (`bridgeOnly`, server/remote-entry.ts) serves only its connection server, with
+  // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
+  const browserSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
+  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
@@ -286,8 +292,9 @@ export function createServer(
       // the connection server that reaches this one as its PC reads its update status and asks for the
       // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
       // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
-      // custom header (update-api.ts), and whoever holds the token already drives every pane here
-      const bridgeUpdatePath = pathname === "/api/updates" || pathname === "/api/updates/install";
+      // custom header (update-api.ts), and whoever holds the token already drives every pane here. Only those two
+      // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
+      const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
       const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
       const ip = bunServer.requestIP(request);
       const loopback = ip !== null && isLoopbackAddress(ip.address);
@@ -420,7 +427,7 @@ export function createServer(
           if (!machines?.endpoint(machineId)) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
           let relay: MachineRelay | undefined;
           try {
-            relay = new MachineRelay(machines, machineId, readOnly);
+            relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot);
             await relay.ready;
             const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly }) });
             if (upgraded) return undefined;
@@ -428,7 +435,7 @@ export function createServer(
           } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
           return new Response("websocket upgrade required", { status: 426 });
         }
-        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly }) });
+        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized }) });
         if (upgraded) return undefined;
         return new Response("websocket upgrade required", { status: 426 });
       }
@@ -543,7 +550,9 @@ export function createServer(
       if (pathname === "/api/session") {
         setRequestRoute(pathname);
         try {
-          return jsonResponse({ snapshot: await clientSnapshot() });
+          // another Ovis server reading this PC (its bridge token) applies its own rows; a browser gets this server's
+          const snapshot = await clientSnapshot();
+          return jsonResponse({ snapshot: bridgeAuthorized ? snapshot : browserSnapshot(snapshot) });
         } catch (error) {
           return errorResponse(error);
         }
