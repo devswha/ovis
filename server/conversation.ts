@@ -1373,7 +1373,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
  * screen it reaches up into the history above (herdr 0.9.5: a cleared 7-row screen read as 34 rows).
  * Whatever the agent drew there before (another model, a conversation) is not what it shows now.
  */
-async function liveScreen(paneId: string): Promise<string> {
+async function bottomViewport(paneId: string): Promise<string> {
   const scroll = () => paneScrollInfo(paneId).catch(() => null);
   const before = await scroll();
   if (before?.offset_from_bottom !== 0) return "";
@@ -1402,10 +1402,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
   // that cannot be read leaves it unknown. omp follows its transcript only: catalog discovery
   // can refresh the CLI's OAuth credentials and is never initiated by the bridge. Only the live
-  // screen counts (liveScreen): history can show an older frame of the agent, with a model it no
-  // longer runs.
+  // screen counts (bottomViewport): history can show an older frame of the agent, with a model it
+  // no longer runs.
   const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> =>
-    startScreenMetadata(source, await liveScreen(paneId));
+    startScreenMetadata(source, await bottomViewport(paneId));
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata): Promise<RecognizedConversation> => {
     // what the screen states can change with the pane's output, with no file to watch: the chat re-reads on it
     const screen = readsStartScreen(source);
@@ -1442,7 +1442,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       // a Codex that reported no session yet (one started in the terminal): the terminal stands in
       // for the chat, and Codex's live status line still states the model and effort it runs at
       if (pane.agent === "codex" && page.before === undefined && page.since === undefined && page.from === undefined) {
-        const text = await liveScreen(paneId);
+        const text = await bottomViewport(paneId);
         const screen = startScreenMetadata("codex-transcript", text);
         // unless it has begun no conversation at all: then it has its greeting, as one this server
         // started does. At work or asking, its first turn may have begun.
