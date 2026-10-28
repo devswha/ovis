@@ -50,6 +50,22 @@ describe("PC connection ownership", () => {
     socket.receive(snapshot);
     expect(session.connection).toBeNull();
   });
+  it("owns a queued send's receipt from the features frame on, before the snapshot that waits on herdr", () => {
+    const { session, socket, store } = setup();
+    const owner = paneStorageId("local", "w1:p1");
+    session.connect();
+    socket.receive({ type: "features", features: ["submit", "pending-input"], connection: "c1" });
+    expect(session.connection).toBe("c1");
+    // the send left once the features were known; its receipt and the live list come before the snapshot
+    session.acceptPending("w1:p1", message("p1"), session.epoch);
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
+    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["queued", true]]);
+    // the snapshot keeps that scope: the row stays the connection's own
+    const scope = session.scope;
+    socket.receive({ ...snapshot, connection: "c1" } as ServerMessage);
+    expect(session.scope).toBe(scope);
+    expect(store.isOwned(owner, "p1", session.scope)).toBe(true);
+  });
   it("lends its sessions to a peek without making one", () => {
     const made: string[] = [];
     const registry = new MachineSessionRegistry((machineId) => { made.push(machineId); return setup(machineId).session; });

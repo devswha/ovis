@@ -1,5 +1,5 @@
 /**
- * The WebSocket of a browser connection: it admits the connection, sends the first snapshot, and hands each
+ * The WebSocket of a browser connection: it admits the connection, sends its features and the first snapshot, and hands each
  * frame to the handler of its type. FrameHandlers has one for every type a client sends, so a new frame type
  * without one fails the build instead of being dropped.
  */
@@ -100,6 +100,9 @@ export function createSocket({ clients, present, stopped, admit, setRole, watchP
       if (!admit(client)) return;
       if (client.data.relay) { client.data.relay.bind(client as ServerWebSocket<unknown>); return; }
       clients.add(client);
+      // before the snapshot, which waits on herdr (seconds after a restart or under load, or never when the
+      // read fails): a client sends nothing until it knows what this server takes, and that needs no herdr
+      send(client, { type: "features", features: SERVER_FEATURES, connection: client.data.connectionId });
       const snapshot = clientSnapshot();
       countVisit(snapshot);
       try {
