@@ -112,8 +112,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < -4) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // A roster leaves without the values their hide rules hide (withoutHiddenTokens), so no browser holds one;
-          // the rules' decisions for the values it keeps (decidedRowTokens) go first, in the same write, covering the
-          // roster the browser holds until the new one lands. New rows are told with the roster again under them.
+          // the rules' decisions (decidedRowTokens) go first, in the same write, showing the values of this roster and
+          // of the one the browser holds until it lands, and hiding any other where a rule hides, as a value kept from
+          // a roster told under other rows. New rows are told with the roster again under them.
           // Read before listening: a change this read finds is told to the browsers already listening, and to this one once.
           let rows = herdrSidebar?.get() ?? null;
           let reported = new Map<string, Set<string>>();

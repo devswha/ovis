@@ -120,33 +120,35 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     ];
     const agents = [{ pane_id: "w1:p3", agent: "codex", tokens: { quota: "5h 10% · Wk 9%", load: 99 } }];
     const told = decidedRowTokens(raw, reportedTokenValues([machineWith(panes, agents), { id: "away", state: "disconnected", snapshot: null } as unknown as Machine]));
+    // a place with hide rules shows the reported values it draws, and hides any other
+    const rest = { contains: "", hide: true };
     expect(told).toEqual({
       rows: [
-        { name: "quota", rules: [{ equals: "5h 100% · Wk 3%", hide: true }] },
-        { name: "load", rules: [{ equals: "95", hide: true }] },
-        { name: "eta", rules: [{ equals: "soon", hide: true }] },
+        { name: "quota", rules: [{ equals: "5h 10% · Wk 9%" }, { equals: "5h 40% · wk 70%" }, rest] },
+        { name: "load", rules: [{ equals: "12" }, rest] },
+        { name: "eta", rules: [rest] },
         { name: "eta" },
         { name: "model" },
       ],
       // the first rule that matches decides: "5h 40%…" matches one that does not hide
-      by_agent: { codex: [{ name: "quota", rules: [{ equals: "5h 10% · Wk 9%", hide: true }, { equals: "5h 100% · Wk 3%", hide: true }] }] },
+      by_agent: { codex: [{ name: "quota", rules: [{ equals: "5h 40% · wk 70%" }, rest] }] },
     });
     const text = JSON.stringify(told);
-    for (const operand of ["private-literal", "80", "WK", "5h 4", "starts_with", "contains", "gt", "ignore_case"]) expect(text).not.toContain(operand);
+    for (const operand of ["private-literal", "80", "WK", "starts_with", "\"contains\":\"W", "gt", "ignore_case"]) expect(text).not.toContain(operand);
     // every reported value draws as the config's own rules draw it, under every agent's rows
     for (const agent of ["claude", "codex", null]) {
       for (const tokens of [...panes.map((pane) => pane.tokens), ...agents.map((record) => record.tokens)]) {
         expect(paneTokenValues(told, agent, tokens)).toEqual(paneTokenValues(raw, agent, tokens));
       }
     }
-    // no rows, or no value a rule hides: nothing to decide
+    // no rows: nothing to decide; no value reported: each place with hide rules hides whatever comes
     // values from two rosters are decided together
-    expect(decidedRowTokens(raw, reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "81" } }])]), reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "95" } }])]))?.rows?.[1])
-      .toEqual({ name: "load", rules: [{ equals: "81", hide: true }, { equals: "95", hide: true }] });
+    expect(decidedRowTokens(raw, reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "50" } }])]), reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "95" } }, { pane_id: "w1:p2", tokens: { load: "12" } }])]))?.rows?.[1])
+      .toEqual({ name: "load", rules: [{ equals: "12" }, { equals: "50" }, rest] });
     expect(decidedRowTokens(null, reportedTokenValues([machineWith(panes)]))).toBeNull();
     expect(decidedRowTokens(raw)).toEqual({
-      rows: [{ name: "quota" }, { name: "load" }, { name: "eta" }, { name: "eta" }, { name: "model" }],
-      by_agent: { codex: [{ name: "quota" }] },
+      rows: [{ name: "quota", rules: [rest] }, { name: "load", rules: [rest] }, { name: "eta", rules: [rest] }, { name: "eta" }, { name: "model" }],
+      by_agent: { codex: [{ name: "quota", rules: [rest] }] },
     });
   });
 });
@@ -194,7 +196,7 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     expect(shown[1]).toBe(machines[1]!);
     // what the browser draws from them, with the rules decided for the values they keep, is what the config draws
     const told = decidedRowTokens(raw, reportedTokenValues(shown));
-    expect(JSON.stringify(told)).not.toMatch(/private-literal|starts_with|contains|"gt"|ignore_case/);
+    expect(JSON.stringify(told)).not.toMatch(/private-literal|starts_with|"contains":"[^"]|"gt"|ignore_case/);
     panes.forEach((pane, index) => {
       const record = agents.find((candidate) => candidate.pane_id === pane.pane_id);
       const agent = pane.agent.trim() || record?.agent || null;
@@ -413,14 +415,17 @@ describe("the machine events", () => {
       // hidden wherever named: in no roster; drawn at its other place: that place is decided, without the operand
       report({ quota: "off · A", eta: "soon" });
       emit!({ type: "machines", machines: [machine] });
-      const events = await first.until(4);
-      expect(events[2]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota" }, { name: "eta", rules: [{ equals: "soon", hide: true }] }, { name: "eta" }], by_agent: {} } });
+      // the decision already covers what the browser held and draws, so only the roster comes
+      const events = await first.until(3);
+      expect(events.map((event) => event.type)).toEqual(["herdr-sidebar", "machines", "machines"]);
       expect(drawn()).toEqual(["soon"]);
       // a poll that lands before the stream's queued roster, with the browser's rows a step behind
       report({ quota: "off · B", eta: "soon" });
       await poll();
       emit!({ type: "machines", machines: [machine] });
-      await first.until(5);
+      // once the browser holds no drawn quota or eta, a place with hide rules hides whatever comes there
+      const rest = { contains: "", hide: true };
+      expect((await first.until(5))[3]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota", rules: [rest] }, { name: "eta", rules: [rest] }, { name: "eta" }], by_agent: {} } });
     } finally { await first.close(); }
     // a reconnect while the browser holds the last roster, the value changed meanwhile
     report({ quota: "off · C", eta: "soon" });
@@ -430,14 +435,27 @@ describe("the machine events", () => {
       expect(drawn()).toEqual(["soon"]);
       report({ quota: "5h 50%", eta: "later" });
       emit!({ type: "machines", machines: [machine] });
-      await second.until(3);
+      await second.until(4);
       expect(drawn()).toEqual(["5h 50%", "later"]);
       // new rows: the roster is told again under them, its decision first
       writeFileSync(path, `[ui.sidebar.agents]\nrows = [[{ token = "$eta", rules = [{ contains = "late", hide = true }] }, { token = "$quota", rules = [{ starts_with = "off", hide = true }] }]]`);
-      const events = await second.until(5);
-      expect(events.slice(3).map((event) => event.type)).toEqual(["herdr-sidebar", "machines"]);
+      const events = await second.until(6);
+      expect(events.slice(4).map((event) => event.type)).toEqual(["herdr-sidebar", "machines"]);
       expect(drawn()).toEqual(["5h 50%"]);
     } finally { await second.close(); }
-    expect(text).not.toMatch(/private-literal|starts_with|contains|"off ·/);
+    // every hidden value stayed on the server; rows that do not name a token then let its value go
+    expect(text).not.toMatch(/private-literal|starts_with|"contains":"[^"]|"off ·/);
+    // the rows change while the browser is away, and it keeps a roster told under rows that did not name quota
+    writeFileSync(path, `[ui.sidebar.agents]\nrows = [["$eta"]]`);
+    report({ quota: "off · D", eta: "soon" });
+    await poll();
+    writeFileSync(path, `[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ starts_with = "off", hide = true }] }, "$eta"]]`);
+    const third = await open();
+    try {
+      // the reconnect's decision, read with that kept roster before its own lands, hides the value it never decided
+      await third.until(2);
+      expect(drawn()).toEqual(["soon"]);
+    } finally { await third.close(); }
+    expect(text).not.toMatch(/private-literal|starts_with|"contains":"[^"]/);
   });
 });

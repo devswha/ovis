@@ -195,20 +195,22 @@ export function reportedTokenValues(machines: readonly Machine[]): Map<string, S
 }
 
 /**
- * What browsers are told of the rows (#1349): the rows' tokens as they are, with each place's hide
- * rules decided here for the values reported (reportedTokenValues, of one roster or of several):
- * one `equals` rule that hides for each such value they hide, and no rule where they hide none. The
- * rules' own operands (a literal no pane reports, a number's bound) stay on this PC, while a
- * browser, an older one too, draws the same tokens for those values (shared/pane-tokens.ts
- * paneTokenValues). Told with rosters withoutHiddenTokens, these rules only place a token named
- * twice (hidden at one place, drawn at another): a decision that lands late moves it, never shows it.
+ * What browsers are told of the rows (#1349): the rows' tokens as they are, with the hide rules of
+ * each place that has them decided here for the values reported (reportedTokenValues, of one roster
+ * or of several): an `equals` rule that shows each such value the place draws, then one that hides
+ * any other (`contains: ""` matches every value). The rules' own operands (a literal no pane
+ * reports, a number's bound) stay on this PC, while a browser, an older one too, draws the same
+ * tokens for those values (shared/pane-tokens.ts paneTokenValues). A value the server has not
+ * decided, as one a browser kept from a roster told under other rows, is hidden there: a decision
+ * that lands out of step with a roster can hide a value for a moment, never show one.
  */
 export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: ReadonlyMap<string, ReadonlySet<string>>[]): AgentRowTokens | null {
   if (layout === null) return null;
   const valuesOf = (name: string): string[] => [...new Set(reported.flatMap((values) => [...values.get(name) ?? []]))];
   const decide = (specs: PaneTokenSpec[]): PaneTokenSpec[] => specs.map(({ name, rules }) => {
-    const hidden = rules === undefined ? [] : valuesOf(name).filter((value) => rules.find((rule) => paneTokenRuleMatches(rule, value))?.hide).sort();
-    return hidden.length === 0 ? { name } : { name, rules: hidden.map((value) => ({ equals: value, hide: true })) };
+    if (rules === undefined) return { name };
+    const shown = valuesOf(name).filter((value) => !rules.find((rule) => paneTokenRuleMatches(rule, value))?.hide).sort();
+    return { name, rules: [...shown.map((value): PaneTokenRule => ({ equals: value })), { contains: "", hide: true }] };
   });
   return { rows: layout.rows && decide(layout.rows), by_agent: Object.fromEntries(Object.entries(layout.by_agent).map(([agent, specs]) => [agent, decide(specs)])) };
 }
