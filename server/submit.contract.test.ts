@@ -516,6 +516,33 @@ describe("WebSocket submit", () => {
     }
   }, 30_000);
 
+  for (const code of ["agent_not_ready", "agent_not_found"]) {
+    for (const ending of ["\\", "x"]) {
+      it(`keeps attached paste framing after ${code} for a message ending in ${JSON.stringify(ending)}`, async () => {
+        const socket = await Socket.connect();
+        await attached(socket, agent.pane);
+        const prompt = spyOn(herdr, "agentPrompt").mockRejectedValue(new herdr.HerdrError(code, "not ready"));
+        const sendText = spyOn(herdr, "paneSendText").mockResolvedValue(undefined);
+        const sendKeys = spyOn(herdr, "paneSendKeys").mockResolvedValue(undefined);
+        try {
+          const text = `first line\nlast${ending}`;
+          const payload = paste(text.replace(/\n/g, "\r"));
+          const result = socket.result(37);
+          socket.send({ type: "submit", id: 37, pane_id: agent.pane, text, payload });
+          expect(await result).toMatchObject({ ok: true });
+          expect(prompt).toHaveBeenCalledWith(agent.pane, `${text}${ending === "\\" ? " " : ""}`, undefined, expect.any(Function));
+          expect(sendText).toHaveBeenCalledWith(agent.pane, paste(`first line\rlast${ending}${ending === "\\" ? " " : ""}`), undefined, expect.any(Function));
+          expect(sendKeys).toHaveBeenCalledWith(agent.pane, ["Enter"], undefined, expect.any(Function));
+        } finally {
+          prompt.mockRestore();
+          sendText.mockRestore();
+          sendKeys.mockRestore();
+          socket.close();
+        }
+      });
+    }
+  }
+
   it("refuses an immediate Claude chat send over a live draft without calling agent.prompt or typing", async () => {
     const socket = await Socket.connect();
     const screen = mockClaudeInput(agent.pane, claudeInputScreen("❯ still typing"));
