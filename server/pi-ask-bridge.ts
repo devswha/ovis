@@ -176,12 +176,6 @@ async function submit(socket: string, request: PiAskSubmitRequest, signal: Abort
 
 export interface BoundPiAskFlow { socket: string; pid: number; sessionFile: string; flow: PiAskFlow }
 
-/**
- * What the pane's pi says through the extension. `active`: it has a pi-ask form open, a card or
- * not (a form from `/answer`, one for another session): no key-driven card may answer it.
- * `card`: the one form the card answers, when every fact agrees.
- */
-export interface PiAskBinding { active: boolean; card: BoundPiAskFlow | null }
 
 async function foregroundPids(paneId: string): Promise<number[]> {
   return ((await paneProcessInfo(paneId).catch(() => undefined))?.foreground_processes ?? [])
@@ -196,23 +190,31 @@ export function piAskUserOpen(transcript: string): boolean {
 /**
  * Whether the pane's foreground pi has a pi-ask form open, as its extension says, with no session
  * needed: pi writes no session file before its first answer, and a form from `/answer` needs no
- * tool call. A socket of the pane's own foreground pi that does not answer counts as open too: not
- * knowing never makes room for keys.
+ * tool call. Only "inactive" is proof of none: the extension is not installed where the pane's pi
+ * would run it, or every one of the pane's foreground pids it serves says no form is open.
+ * "unknown" (the pane's processes unreadable, a socket that is not this user's alone, a read that
+ * failed or answers for another pid) is never room for keys. Every candidate socket is asked: more
+ * than one is no reason to stop.
  */
-export async function piAskActiveInPane(paneId: string, signal?: AbortSignal): Promise<boolean> {
-  if (process.platform === "win32") return false;
+export type PiAskActivity = "active" | "inactive" | "unknown";
+export async function piAskActivity(paneId: string, signal?: AbortSignal): Promise<PiAskActivity> {
+  if (process.platform === "win32") return "inactive";
   const { pids, agentDirs } = await piPaneAgentDirs(paneId);
-  for (const agentDir of agentDirs) {
-    const directory = join(agentDir, PI_ASK_BRIDGE_DIRECTORY);
-    if (!existsSync(directory)) continue;
+  const directories = agentDirs.map((agentDir) => join(agentDir, PI_ASK_BRIDGE_DIRECTORY)).filter((directory) => existsSync(directory));
+  if (directories.length === 0) return "inactive";
+  if (pids === null) return "unknown";
+  let activity: PiAskActivity = "inactive";
+  for (const directory of directories) {
     for (const pid of pids) {
       const socket = join(directory, `${pid}.sock`);
-      if (!ownSocket(socket)) continue;
+      try { lstatSync(socket); } catch { continue; }
+      if (!ownSocket(socket)) { activity = "unknown"; continue; }
       const state = await bridgeState(socket, signal);
-      if (!state || state.pid !== pid || state.flows.length > 0) return true;
+      if (!state || state.pid !== pid) activity = "unknown";
+      else if (state.flows.length > 0) return "active";
     }
   }
-  return false;
+  return activity;
 }
 
 /**
@@ -223,19 +225,17 @@ export async function bindPiAsk(
   paneId: string,
   transcript: { path: string; agentDir: string | null },
   signal?: AbortSignal,
-): Promise<PiAskBinding> {
-  const none: PiAskBinding = { active: false, card: null };
-  if (process.platform === "win32" || transcript.agentDir === null) return none;
+): Promise<BoundPiAskFlow | null> {
+  if (process.platform === "win32" || transcript.agentDir === null) return null;
   const directory = join(transcript.agentDir, PI_ASK_BRIDGE_DIRECTORY);
   // without the extension, nothing more is asked of herdr
-  if (!existsSync(directory)) return none;
+  if (!existsSync(directory)) return null;
   const sockets = [...new Set(await foregroundPids(paneId))].map((pid) => ({ pid, socket: join(directory, `${pid}.sock`) })).filter(({ socket }) => ownSocket(socket));
-  if (sockets.length !== 1) return none;
+  if (sockets.length !== 1) return null;
   const { pid, socket } = sockets[0]!;
   const state = await bridgeState(socket, signal);
-  if (!state || state.pid !== pid) return none;
-  const active = state.flows.length > 0;
-  if (typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, transcript.path) || !Array.isArray(state.openCalls)) return { active, card: null };
+  if (!state || state.pid !== pid) return null;
+  if (typeof state.sessionFile !== "string" || !sameFile(state.sessionFile, transcript.path) || !Array.isArray(state.openCalls)) return null;
   // pi's live branch, not the file's last line: a /tree move writes nothing. Only a form whose call
   // pi-ask still waits on there counts: one it dropped without a completed event has its call
   // settled, and one with no call (`/answer`, `/ask:replay`) is never a card
@@ -245,7 +245,7 @@ export async function bindPiAsk(
     return typeof toolCallId === "string" && open.includes(toolCallId);
   });
   const flow = waiting.length === 1 ? validFlow(waiting[0]) : null;
-  return { active, card: flow ? { socket, pid, sessionFile: state.sessionFile, flow } : null };
+  return flow ? { socket, pid, sessionFile: state.sessionFile, flow } : null;
 }
 
 interface Draft { flowId: string; identity: string; stepIndex: number; answers: Record<string, PiAskRemoteAnswer>; revision: number }
@@ -407,7 +407,7 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
   // still answers on its socket with its own form and session, so the foreground is read again
   // last, right before the answer leaves
   const transcript = await piTranscriptPath(paneId).catch(() => null);
-  const card = transcript && "path" in transcript && sameFile(transcript.path, form.transcript) ? (await bindPiAsk(paneId, transcript, signal)).card : null;
+  const card = transcript && "path" in transcript && sameFile(transcript.path, form.transcript) ? await bindPiAsk(paneId, transcript, signal) : null;
   if (!card || card.socket !== form.socket || card.pid !== form.pid || !sameFlow(card.flow, form.flow) || !(await foregroundPids(paneId)).includes(form.pid)) {
     drafts.delete(paneId);
     return done(changed());

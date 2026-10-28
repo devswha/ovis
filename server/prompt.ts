@@ -11,7 +11,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, pa
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader } from "./omo-ask.ts";
-import { answerPiAskUser, bindPiAsk, piAskActiveInPane, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
+import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserOpen, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
@@ -658,6 +658,21 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
+
+/**
+ * Whether no key may go into the pi pane now: the pane's pi has a pi-ask form open, or cannot be
+ * shown not to (piAskActivity), or, without the extension, its session holds an open ask_user call.
+ * pi-ask takes no typed keys (its docs/remote-events.md). `transcript`: piTranscriptPath's answer when
+ * already read.
+ */
+async function piAskRefusesKeys(paneId: string, transcript?: Awaited<ReturnType<typeof piTranscriptPath>>, signal?: AbortSignal): Promise<boolean> {
+  const session = transcript === undefined ? await piTranscriptPath(paneId).catch(() => null) : transcript;
+  if (session && "path" in session && piAskUserOpen(session.path)) return true;
+  return await piAskActivity(paneId, signal) !== "inactive";
+}
+
+/** A pi-ask form opened under a key-driven answer: nothing more is sent. */
+class PiAskFormOpen extends Error {}
 async function readKnownPrompt(
   paneId: string,
   pane: { cwd?: string | null; agent_status?: string; agent_session?: HerdrPane["agent_session"] },
@@ -815,11 +830,9 @@ async function readKnownPrompt(
   if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
-  let piAskActive = false;
   if (piTranscript && "path" in piTranscript) {
-    const bound = await bindPiAsk(paneId, piTranscript, signal);
-    if (bound.card) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, bound.card)) };
-    piAskActive = bound.active;
+    const card = await bindPiAsk(paneId, piTranscript, signal);
+    if (card) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, card)) };
   }
   let screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
@@ -887,9 +900,9 @@ async function readKnownPrompt(
   // card guesses them; the terminal answers it. The pane's pi says so through the extension (any
   // open form, a card or not, with or without a session written yet); without it, an open
   // ask_user call in the session does
+  // asked after the screen read, so a form that opened during it counts
   const fallbackCard = !prompt || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback") === true;
-  if (fallbackCard && (piAskActive || (piTranscript && "path" in piTranscript && piAskUserOpen(piTranscript.path))
-    || agent === "pi" && await piAskActiveInPane(paneId, signal))) return { prompt: null, screen, suppressFallback: true };
+  if (fallbackCard && agent === "pi" && await piAskRefusesKeys(paneId, piTranscript, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
@@ -1287,7 +1300,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         try {
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            send: key => paneSendKeys(body.pane_id, [key]),
+            send: async key => {
+              if (await piAskRefusesKeys(body.pane_id, undefined, deadline)) throw new PiAskFormOpen();
+              await paneSendKeys(body.pane_id, [key]);
+            },
             read: async () => {
               if (!active()) return null;
               const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
@@ -1297,6 +1313,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (!moved) return promptChanged();
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
+        } catch (error) {
+          if (error instanceof PiAskFormOpen) return promptChanged();
+          throw error;
         } finally { answersUnderWay.delete(body.pane_id); }
       }
 
@@ -1417,6 +1436,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
+          // right before each key: a pi-ask form that opened since the read takes none of them
+          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, undefined, deadline)) throw new PiAskFormOpen();
           const first = !move && !committed;
           if (!move) committed = true;
           try {
@@ -1514,6 +1535,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
+        if (error instanceof PiAskFormOpen) return promptChanged();
         throw error;
       } finally {
         answersUnderWay.delete(body.pane_id);
