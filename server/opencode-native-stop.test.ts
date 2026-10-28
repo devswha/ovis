@@ -31,10 +31,16 @@ function opencodeService(name: string) {
   const dir = join(root, name);
   const streamOpened = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
+  const lookupSeen = Promise.withResolvers<void>();
+  let held: (() => void)[] | null = null;
   const service = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: dir } });
-    if (url.pathname.startsWith("/api/session/")) return Response.json({ data: { id: decodeURIComponent(url.pathname.split("/").at(-1)!) } });
+    if (url.pathname.startsWith("/api/session/")) {
+      const answer = () => Response.json({ data: { id: decodeURIComponent(url.pathname.split("/").at(-1)!) } });
+      lookupSeen.resolve();
+      return held ? new Promise<Response>((resolve) => held!.push(() => resolve(answer()))) : answer();
+    }
     if (url.pathname === "/api/event") {
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) { controller.enqueue(new TextEncoder().encode("data: {\"type\":\"server.connected\",\"data\":{}}\n\n")); streamOpened.resolve(); },
@@ -43,9 +49,13 @@ function opencodeService(name: string) {
     }
     return new Response(null, { status: 404 });
   } });
-  cleanups.push(() => service.stop(true));
+  const release = () => { for (const answer of held?.splice(0) ?? []) answer(); held = null; };
+  cleanups.push(() => { release(); service.stop(true); });
   mkdirSync(dir, { recursive: true });
-  return { dir, service, streamOpened: streamOpened.promise, streamClosed: streamClosed.promise };
+  return {
+    dir, service, streamOpened: streamOpened.promise, streamClosed: streamClosed.promise, lookupSeen: lookupSeen.promise,
+    hold() { held = []; }, release,
+  };
 }
 
 function useService(fake: ReturnType<typeof opencodeService>): void {
@@ -102,4 +112,18 @@ it("opens no stream for a verification that arrives after the last server stoppe
   server();
   expect(await openCodePaneService(opencodePane("p_late"))).not.toBeNull();
   expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_late"] });
+});
+
+it("keeps a verification under way at the last server's stop from opening a stream once a new server runs", async () => {
+  const fake = opencodeService("restart");
+  useService(fake);
+  const first = server();
+  fake.hold();
+  const verifying = openCodePaneService(opencodePane("p_restart"));
+  await within(fake.lookupSeen, "the session lookup");
+  first.stop();
+  server();
+  fake.release();
+  expect(await verifying).toBeNull();
+  expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
 });
