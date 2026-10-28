@@ -13,22 +13,22 @@ import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteSubmitted
 const roots: string[] = [];
 afterEach(() => { mock.restore(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-// An argv-silent custom OmO is known by its session holder alone; the bundled Claude SDK child it runs a turn in
-// looks like omo by its path and exits when the turn ends, while the OmO and its session stay (#1985).
-it("keeps a command's outcome on a custom OmO whose SDK child exits at the end of the turn", async () => {
+type Foreground = { pid: number; name: string; argv: string[] };
+
+/**
+ * An OmO pane whose session holders are `holderPids`, with herdr giving no per-process cwd (macOS), so the pane's
+ * own directory places them. Each listed process runs under one start time, and is gone once it is not listed.
+ */
+function omoPane(holderPids: number[]) {
   const root = mkdtempSync(join(tmpdir(), "ovis-outcome-omo-holder-")); roots.push(root);
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
   mkdirSync(cwd, { recursive: true });
   const holders = join(agentDir, "sessions", omo.omoSessionFolder(cwd), "session-holders", "sess-1");
   mkdirSync(holders, { recursive: true });
-  writeFileSync(join(holders, "41001.json"), JSON.stringify({ pid: 41001, processStartedAtMs: 1_000, cwd }));
-  // herdr gives no per-process cwd here (macOS): the pane's own directory places the OmO
-  const parent = { pid: 41001, name: "run", argv: ["/opt/team-ai/bin/run"] };
-  const sdk = { pid: 41002, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
-  let foreground: { pid: number; name: string; argv: string[] }[] = [parent, sdk];
-  const listed = (pid: number) => foreground.some((entry) => entry.pid === pid);
-  // each process runs under one start time while it is listed, and is gone once it is not
+  for (const pid of holderPids) writeFileSync(join(holders, `${pid}.json`), JSON.stringify({ pid, processStartedAtMs: 1_000, cwd }));
+  const state = { foreground: [] as Foreground[] };
+  const listed = (pid: number) => state.foreground.some((entry) => entry.pid === pid);
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => listed(pid) ? 1_000 : null);
   spyOn(processStart, "processStartedAt").mockImplementation((pid) => listed(pid) ? 1_000 : null);
   spyOn(processStart, "processAlive").mockImplementation((pid) => listed(pid));
@@ -36,7 +36,7 @@ it("keeps a command's outcome on a custom OmO whose SDK child exits at the end o
 
   const pane = { pane_id: "outcome-omo-holder", terminal_id: "term", workspace_id: "w", tab_id: "t", focused: false, revision: 0,
     agent: "omo", agent_status: "idle", cwd, agent_session: null } as HerdrPane;
-  const info = () => ({ pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: foreground });
+  const info = () => ({ pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: state.foreground });
   spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture" }));
   spyOn(client, "paneRead").mockResolvedValue({ ...pane, text: "", source: "detection", format: "text", truncated: false } as Awaited<ReturnType<typeof client.paneRead>>);
   spyOn(client, "paneProcessInfo").mockImplementation(async () => info());
@@ -50,25 +50,56 @@ it("keeps a command's outcome on a custom OmO whose SDK child exits at the end o
     const url = new URL(`http://localhost/api/pane/prompt?pane_id=${pane.pane_id}`);
     return (await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse).outcomes?.map(({ id }) => id);
   };
+  const send = async () => {
+    const row: SlashCommand = { name: "context", source: "builtin", description: "", forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+    const command = commandSendFrom(pane, "omo", [row], "/context");
+    if (!command) throw new Error("fixture command was not recorded");
+    bindCommandProcess(pane.pane_id, command, info(), pane);
+    await command.visibility?.binding;
+    noteSubmitted(pane.pane_id, command.text, command);
+    return command;
+  };
+  // herdr reports the session the OmO started, under the label it gives an OmO pane
+  const reportSession = () => { pane.agent_session = { agent: "pi", kind: "path", source: "herdr:pi", value: join(root, "omo-first.jsonl") }; };
+  return { state, served, send, reportSession };
+}
 
-  const row: SlashCommand = { name: "context", source: "builtin", description: "", forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
-  const command = commandSendFrom(pane, "omo", [row], "/context");
-  if (!command) throw new Error("fixture command was not recorded");
-  bindCommandProcess(pane.pane_id, command, info(), pane);
-  await command.visibility?.binding;
-  noteSubmitted(pane.pane_id, command.text, command);
+// an argv-silent custom OmO, known by its session holder alone, and the bundled Claude SDK child it runs a turn in,
+// which looks like omo by its path and exits when the turn ends while the OmO and its session stay (#1985)
+const parent: Foreground = { pid: 41001, name: "run", argv: ["/opt/team-ai/bin/run"] };
+const sdk: Foreground = { pid: 41002, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
+
+it("keeps a command's outcome on a custom OmO whose SDK child exits at the end of the turn", async () => {
+  const fixture = omoPane([parent.pid]);
+  fixture.state.foreground = [parent, sdk];
+  const command = await fixture.send();
   expect(command.visibility?.process?.pid).toBe(parent.pid);
-  expect(await served()).toEqual([command.id]);
+  expect(await fixture.served()).toEqual([command.id]);
 
-  // the turn ended: the SDK child is gone, the OmO it went to runs on, and herdr reports the session it started
-  // (under the label it gives an OmO pane): the send's row is adopted into it
-  foreground = [parent];
-  expect(await served()).toEqual([command.id]);
-  pane.agent_session = { agent: "pi", kind: "path", source: "herdr:pi", value: join(root, "omo-first.jsonl") };
-  expect(await served()).toEqual([command.id]);
-  expect(await served()).toEqual([command.id]);
+  // the turn ended: the SDK child is gone, the OmO it went to runs on, and its session is adopted
+  fixture.state.foreground = [parent];
+  expect(await fixture.served()).toEqual([command.id]);
+  fixture.reportSession();
+  expect(await fixture.served()).toEqual([command.id]);
+  expect(await fixture.served()).toEqual([command.id]);
 
   // the OmO itself is gone: its row goes with it
-  foreground = [];
-  expect(await served()).toBeUndefined();
+  fixture.state.foreground = [];
+  expect(await fixture.served()).toBeUndefined();
+});
+
+it("keeps the OmO a command was bound to when another holder of the session comes before it, without reading holders on each poll", async () => {
+  const peer: Foreground = { pid: 41003, name: "run", argv: ["/opt/team-ai/bin/run-peer"] };
+  const fixture = omoPane([parent.pid, peer.pid]);
+  fixture.state.foreground = [parent, peer, sdk];
+  const command = await fixture.send();
+  expect(command.visibility?.process?.pid).toBe(parent.pid);
+  const holderReads = spyOn(omo, "heldOmoProcess");
+
+  fixture.state.foreground = [peer, parent, sdk];
+  fixture.reportSession();
+  expect(await fixture.served()).toEqual([command.id]);
+  fixture.state.foreground = [peer, parent];
+  expect(await fixture.served()).toEqual([command.id]);
+  expect(holderReads).not.toHaveBeenCalled();
 });

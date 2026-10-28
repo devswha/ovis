@@ -54,7 +54,7 @@ type PaneCommandSend = CommandSend & {
     discovering: boolean;
     identity: string;
     /** The agent process the send went to (bindCommandProcess); null when it could not be told, none when not bound. */
-    process?: { readonly pid: number; readonly started: number | null } | null;
+    process?: { readonly pid: number; readonly started: number | null; readonly held?: true } | null;
     /**
      * No foreground process matched the agent when binding (native Windows lists only the shell; an executable
      * named otherwise than its kind), or the read failed: nothing can show a replacement, so the session the same
@@ -90,14 +90,16 @@ const outcomeIdentity = (pane: HerdrPane): string => JSON.stringify([pane.termin
 /**
  * The agent process in front (agentProcessInFront, as a pending send is bound), keyed by its pid and, on Linux, its
  * start time; never the process-group id. `held`: the OmO process holding a session (heldOmoProcess), which an
- * argv-silent custom OmO is known by alone, so a send is not bound to its bundled SDK child. With `bound`, that
- * process only, while herdr still lists it as one of the agent's, or as the OmO holding the session: Windows hands a
- * finished agent's pid to the next process at once, and that one is no agent.
+ * argv-silent custom OmO is known by alone, so a send is not bound to its bundled SDK child; a process bound so is
+ * marked `held`. With `bound`, that process only, while herdr still lists it as one of the agent's, or it was bound
+ * as the OmO holding the session (a holder counts only where its start is readable, so never on Windows, which hands
+ * a finished agent's pid to the next process at once; Linux compares that start on each poll).
  */
-function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number, held?: number | null): { pid: number; started: number | null } | null {
+function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number, held?: number | null):
+  { pid: number; started: number | null; held?: true } | null {
   const running = agentProcessInFront(info, agent, bound, held);
   return running && (bound === undefined || running.pid === bound && (running.pid === held || agentProcesses([running], agent).length > 0))
-    ? { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null } : null;
+    ? { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null, ...running.pid === held ? { held: true as const } : {} } : null;
 }
 
 /** The OmO process holding a session among `info`'s, for an OmO send only; read without holding the event loop. */
@@ -152,10 +154,11 @@ export function bindCommandProcess(paneId: string, command: PaneCommandSend | un
 }
 
 /** Whether the send's bound process still runs in the pane; replaced only on proof, never on one look. */
-function checkBoundProcess(visibility: NonNullable<PaneCommandSend["visibility"]>, agent: string, processes: ProcessInfo, held: number | null):
+function checkBoundProcess(visibility: NonNullable<PaneCommandSend["visibility"]>, agent: string, processes: ProcessInfo):
   { pid: number; started: number | null } | null {
   const original = visibility.process!;
-  const current = outcomeProcess(processes, agent, original.pid, held);
+  // bound as the OmO holding the session, it is still that one: no holder is read again on a poll
+  const current = outcomeProcess(processes, agent, original.pid, original.held ? original.pid : null);
   if (current) {
     visibility.misses = 0;
     if (original.started !== null && current.started !== null && original.started !== current.started) visibility.replaced = true;
@@ -278,8 +281,6 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
       processesRead = true;
     } catch { /* no answer this poll */ }
   }
-  // a bound custom OmO is known as one only by the session it holds
-  const held = processes && watched.some((sent) => sent.agent === "omo") ? await heldOmoOf(pane, "omo", processes) : null;
   for (const [index, sent] of commands.entries()) {
     const visibility = sent.visibility;
     if (!visibility || visibility.replaced) continue;
@@ -296,7 +297,7 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
       && (now >= sent.at + STALE_SESSION_LAG_MS || commands.slice(index + 1).some((later) => later.sessionChange))) {
       visibility.discovering = false;
     }
-    const current = processes && watched.includes(sent) ? checkBoundProcess(visibility, sent.agent, processes, sent.agent === "omo" ? held : null) : null;
+    const current = processes && watched.includes(sent) ? checkBoundProcess(visibility, sent.agent, processes) : null;
     // A send's own session is adopted while its bound process runs. With no process bound (native Windows
     // lists only the shell; an executable named otherwise than its kind), nothing can show a replacement,
     // so the session that appears in the same terminal is taken as its own, when it is the same agent's:
