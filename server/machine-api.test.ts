@@ -11,7 +11,11 @@ const TOTAL_BYTES = 32 * 1024 * 1024;
 function managerStandIn() {
   const listeners = new Set<(event: MachineEvent) => void>();
   const manager = { subscribe: (listener: (event: MachineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } } as unknown as MachineManager;
-  return { manager, emit: (event: MachineEvent) => { for (const listener of [...listeners]) listener(event); }, listening: () => listeners.size };
+  return {
+    manager, emit: (event: MachineEvent) => { for (const listener of [...listeners]) listener(event); }, listening: () => listeners.size,
+    /** the stream opened last, by its listener: whether it still listens */
+    newest: () => { const listener = [...listeners].at(-1); return () => listener !== undefined && listeners.has(listener); },
+  };
 }
 
 const status = (index: number): MachineEvent => ({
@@ -24,9 +28,9 @@ const large = (bytes: number): MachineEvent => ({
 });
 const frameBytes = (event: MachineEvent): number => `data: ${JSON.stringify(event)}\n\n`.length;
 
-async function open(manager: MachineManager) {
+async function open(manager: MachineManager, onRevoke?: (end: () => void) => () => void) {
   const abort = new AbortController();
-  const response = await handleMachineRequest(new Request("http://127.0.0.1:7317/api/machines/events", { signal: abort.signal }), manager);
+  const response = await handleMachineRequest(new Request("http://127.0.0.1:7317/api/machines/events", { signal: abort.signal }), manager, onRevoke);
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -81,6 +85,50 @@ describe("the machine events stream", () => {
     }
   });
 
+  it("gives a stream that opens with a roster larger than every stream's budget that roster and what follows it", async () => {
+    const { manager, emit } = managerStandIn();
+    const stream = await open(manager);
+    try {
+      emit(large(TOTAL_BYTES + 1024 * 1024));
+      for (let index = 0; index < 20; index++) emit(status(index));
+      expect(await stream.readUntil(21)).toBe("open");
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("gives seven browsers opening together a 5,000-pane roster each, ending none of them", async () => {
+    const { manager, emit, listening } = managerStandIn();
+    const streams = await Promise.all(Array.from({ length: 7 }, () => open(manager)));
+    try {
+      emit(large(5_339_058));
+      emit(status(0));
+      expect(listening()).toBe(7);
+      for (const stream of streams) expect(await stream.readUntil(2)).toBe("open");
+    } finally {
+      await Promise.all(streams.map((stream) => stream.close()));
+    }
+  });
+
+  it("ends a revoked device's stream cleanly while it keeps up, and drops what waits for one that stopped reading", async () => {
+    const { manager, emit } = managerStandIn();
+    const revokes: (() => void)[] = [];
+    const onRevoke = (end: () => void) => { revokes.push(end); return () => undefined; };
+    const reading = await open(manager, onRevoke);
+    const stalled = await open(manager, onRevoke);
+    try {
+      emit(status(0));
+      expect(await reading.readUntil(1)).toBe("open");
+      for (let index = 1; index < 100; index++) emit(status(index));
+      expect(await reading.readUntil(100)).toBe("open");
+      for (const revoke of revokes) revoke();
+      expect(await reading.readUntil(101)).toBe("ended");
+      expect(await stalled.readUntil(1)).toBe("failed");
+    } finally {
+      await Promise.all([reading.close(), stalled.close()]);
+    }
+  });
+
   it("ends a stream that stopped reading past 4 MiB, and drops what waited for it", async () => {
     const { manager, emit, listening } = managerStandIn();
     const stream = await open(manager);
@@ -128,6 +176,30 @@ describe("the machine events stream", () => {
       expect(listening()).toBe(0);
     } finally {
       await stream.close();
+    }
+  });
+
+  it("ends the streams with the most waiting first when all of them pass 32 MiB, not one that has little", async () => {
+    const { manager, emit, listening, newest } = managerStandIn();
+    const backlogged = await Promise.all(Array.from({ length: 9 }, () => open(manager)));
+    try {
+      // nine streams at 3.55 MiB each (31.95 MiB), under their own 4 MiB
+      const frames = Math.floor(3.55 * 1024 * 1024 / frameBytes(status(0)));
+      for (let sent = 0; sent < frames; sent++) emit(status(0));
+      expect(listening()).toBe(9);
+      // a stream opened now holds only what comes after it
+      const late = await open(manager);
+      const lateListens = newest();
+      try {
+        for (let sent = 0; sent < 2_000 && listening() === 10; sent++) emit(status(0));
+        expect(listening()).toBe(9);
+        expect(lateListens()).toBe(true);
+        expect(machineEventsQueuedBytes()).toBeLessThanOrEqual(TOTAL_BYTES);
+      } finally {
+        await late.close();
+      }
+    } finally {
+      await Promise.all(backlogged.map((stream) => stream.close()));
     }
   });
 

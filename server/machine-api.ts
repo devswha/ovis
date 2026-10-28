@@ -22,13 +22,27 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
 export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 /**
  * What every machine events stream together may hold for browsers that fell behind, watching devices
- * included. Past it the streams with the most waiting are ended first: a browser that keeps up holds
- * next to nothing, so it is not the one cut off.
+ * included: each stream's backlog, what waits beyond the one large frame it may hold. A roster that
+ * is only waiting to be read is no backlog, so a stream that opens with one neither ends nor ends
+ * another. Past the total, the streams with the most backlog are ended first: a browser that keeps
+ * up has next to none, so it is not the one cut off.
  */
 export const MACHINE_EVENTS_TOTAL_BYTES = 32 * 1024 * 1024;
 
-interface EventsQueue { queued: () => number; drop: () => void }
+/**
+ * `backlog`: what the stream holds beyond its large frame. `told`: its backlog when it was last
+ * written to; a queue only shrinks between writes, and its large frame leaves with what is before it,
+ * so the backlog never grows between them and `told` is never less.
+ */
+interface EventsQueue { queued: () => number; backlog: () => number; drop: () => void; told: number }
 const eventsQueues = new Set<EventsQueue>();
+/** The sum of every stream's `told`: never less than all their backlogs, so the total is counted exactly only near it. */
+let toldTotal = 0;
+const forgetQueue = (queue: EventsQueue): void => {
+  if (!eventsQueues.delete(queue)) return;
+  toldTotal -= queue.told;
+  queue.told = 0;
+};
 /** Bytes waiting in every open machine events stream. */
 export const machineEventsQueuedBytes = (): number => {
   let total = 0;
@@ -126,20 +140,19 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       const cleanup = () => {
         stop?.(); stopPreferences?.(); stopSidebar?.(); stopSeen?.(); stopPairings?.(); unwatchDevice?.(); clearInterval(heartbeat);
         request.signal.removeEventListener("abort", close);
-        if (queue) eventsQueues.delete(queue);
+        if (queue) forgetQueue(queue);
       };
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           let closed = false;
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
-          // fallen behind or revoked: an error, not a close, so what waits is dropped instead of still delivered
+          // fallen behind: an error, not a close, so what waits is dropped instead of still delivered
           const drop = () => { if (closed) return; closed = true; cleanup(); try { controller.error(new Error("machine events: stream ended")); } catch {} };
-          unwatchDevice = onRevoke?.(drop);
+          // a revoked device that keeps up gets a clean end; one with a backlog waiting is not reading it, so that is dropped
+          unwatchDevice = onRevoke?.(() => { if ((queue?.queued() ?? 0) > 0) drop(); else close(); });
           if (closed) return;
           const queued = () => MACHINE_EVENTS_QUEUE_BYTES - (controller.desiredSize ?? MACHINE_EVENTS_QUEUE_BYTES);
-          queue = { queued, drop };
-          eventsQueues.add(queue);
           // frames larger than the bound, by where they end in the stream: each counts only until it has left the queue
           let written = 0;
           const large: { end: number; bytes: number }[] = [];
@@ -148,23 +161,35 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             while (large.length > 0 && large[0]!.end <= left) large.shift();
             return large.reduce((most, frame) => Math.max(most, frame.bytes), 0);
           };
+          const backlog = () => queued() - largeQueued();
+          const own: EventsQueue = { queued, backlog, drop, told: 0 };
+          queue = own;
+          eventsQueues.add(own);
+          const retell = (): void => { const now = backlog(); toldTotal += now - own.told; own.told = now; };
           const send = (text: string) => {
             if (closed) return;
             const bytes = encoder.encode(text);
-            if (queued() > MACHINE_EVENTS_QUEUE_BYTES + largeQueued()) { drop(); return; }
-            // over the total: the streams with the most waiting go first, this one too if it is that one
-            for (let total = machineEventsQueuedBytes() + bytes.byteLength; total > MACHINE_EVENTS_TOTAL_BYTES;) {
-              let most: EventsQueue | undefined;
-              for (const other of eventsQueues) if (most === undefined || other.queued() > most.queued()) most = other;
-              const waiting = most?.queued() ?? 0;
-              if (most === undefined || waiting === 0) break;
-              most.drop();
-              if (most === queue) return;
-              total -= waiting;
+            retell();
+            if (own.told > MACHINE_EVENTS_QUEUE_BYTES) { drop(); return; }
+            // a large frame waits on its own allowance; a second one behind it ends the stream at its next frame
+            const counted = bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES ? 0 : bytes.byteLength;
+            if (toldTotal + counted > MACHINE_EVENTS_TOTAL_BYTES) {
+              // perhaps over the total: count every backlog exactly, then end the streams with the most first,
+              // this one too if it is that one
+              toldTotal = 0;
+              for (const other of eventsQueues) { other.told = other.backlog(); toldTotal += other.told; }
+              while (toldTotal + counted > MACHINE_EVENTS_TOTAL_BYTES) {
+                let most: EventsQueue | undefined;
+                for (const other of eventsQueues) if (most === undefined || other.told > most.told) most = other;
+                if (most === undefined || most.told === 0) break;
+                most.drop();
+                if (most === own) return;
+              }
             }
+            try { controller.enqueue(bytes); } catch { drop(); return; }
             written += bytes.byteLength;
             if (bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES) large.push({ end: written, bytes: bytes.byteLength });
-            try { controller.enqueue(bytes); } catch { drop(); }
+            retell();
           };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // A roster leaves without the values their hide rules hide (withoutHiddenTokens), so no browser holds one;
