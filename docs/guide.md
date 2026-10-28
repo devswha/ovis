@@ -221,8 +221,10 @@ only your user can open, `herdr-web-ui-ask/<pid>.sock` in the same directory, an
 card's answer to pi-ask as its submit event: the form then shows as a card with one question per
 step, its options and **Type your own answer**. The card shows only when the pane's pi process
 answers on that socket, writes the session herdr reports for the pane, has one form open and
-that form's `ask_user` call is still unanswered in the session; anything else, a form opened by
-`/answer` or `/ask:replay`, Windows, and pi without the extension use Terminal. Notes and
+that form's `ask_user` call is still unanswered on pi's current branch (after a `/tree` move
+too); anything else, a form opened by `/answer` or `/ask:replay`, Windows, and pi without the
+extension use Terminal. While a pi-ask form is open and shows no card, the chat offers no
+generic card either: pi-ask is never answered with typed keys. Notes and
 **Elaborate** stay in Terminal. Checked with pi 1.4.0 and pi-ask 1.2.0.
 
 Command Code chat needs the session herdr reports for the pane. Command Code sends that report
