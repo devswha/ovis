@@ -41,19 +41,28 @@ describe("bundleProblems", () => {
 });
 
 describe("publishedProblems", () => {
-  /** GitHub as remote PCs see it: whatever `files` serves answers 200, anything else 404 */
+  /**
+   * GitHub as remote PCs see it: a manifest URL answers its JSON (a string as written); an archive
+   * of `size` bytes answers a GET of its first byte the way GitHub does (206, `bytes 0-0/<size>`);
+   * a HEAD answers 200 for anything, so only a GET can tell; anything else 404.
+   */
   const github = (files: Record<string, unknown>): Get => async (url, init) => {
+    if (init.method === "HEAD") return new Response(null, { status: 200 });
     if (!(url in files)) return new Response("Not Found", { status: 404 });
-    return new Response(init.method === "HEAD" ? null : JSON.stringify(files[url]), { status: 200 });
+    const file = files[url];
+    if (typeof file === "number") return new Response("x", { status: 206, headers: { "content-range": `bytes 0-0/${file}` } });
+    return new Response(typeof file === "string" ? file : JSON.stringify(file), { status: 200 });
   };
   const asset = (platform: string) => `https://github.com/devswha/ovis/releases/download/remote-v39/herdr-web-ui-${platform}.tgz`;
   const manifest = (version: string, platforms = BUNDLE_PLATFORMS) => ({ version, assets: Object.fromEntries(platforms.map((platform) => [platform, { url: asset(platform), sha256: "a".repeat(64) }])) });
-  const archives = Object.fromEntries(BUNDLE_PLATFORMS.map((platform) => [asset(platform), ""]));
+  const archives: Record<string, number> = Object.fromEntries(BUNDLE_PLATFORMS.map((platform) => [asset(platform), 214_845_782]));
 
-  it("reads the manifest URL remote PCs download, for every platform they install on", async () => {
+  it("reads the manifest URL remote PCs download, for every platform the bundle workflow publishes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "hwc-bundles-"));
     made.push(directory);
     for (const platform of BUNDLE_PLATFORMS) expect(await bundleManifestSource(platform, { directory, manifest: "" })).toBe(manifestUrl(Number(REMOTE_BUNDLE_VERSION)));
+    const published = /assert len\(result\['assets'\]\) == (\d+)/.exec(readFileSync(join(import.meta.dir, "..", BUNDLE_WORKFLOW), "utf8"))?.[1];
+    expect(BUNDLE_PLATFORMS).toHaveLength(Number(published));
   });
 
   it("passes a bundle whose manifest and archives are all published", async () => {
@@ -74,6 +83,13 @@ describe("publishedProblems", () => {
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39", BUNDLE_PLATFORMS.slice(1)), ...archives })))[0]).toContain("no bundle for linux-x64");
     const { [asset("win32-x64")]: _, ...partial } = archives;
     expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39"), ...partial })))[0]).toContain(`${asset("win32-x64")} answered 404`);
+    expect((await publishedProblems(39, github({ [manifestUrl(39)]: manifest("39"), ...archives, [asset("linux-arm64")]: 0 })))[0]).toContain(`${asset("linux-arm64")} is empty`);
+  });
+
+  it("fails a manifest remote PCs would refuse as too large, and one that is not JSON", async () => {
+    const padded = JSON.stringify({ ...manifest("39"), padding: "x".repeat(1024 * 1024) });
+    expect((await publishedProblems(39, github({ [manifestUrl(39)]: padded, ...archives })))[0]).toContain("is larger than remote PCs accept");
+    expect((await publishedProblems(39, github({ [manifestUrl(39)]: "<html>", ...archives })))[0]).toContain("is not JSON");
   });
 });
 
@@ -175,7 +191,7 @@ describe("check", () => {
     const archive = (platform: string) => `https://github.com/devswha/ovis/releases/download/remote-v2/herdr-web-ui-${platform}.tgz`;
     const published: Get = async (url) => url === manifestUrl(2)
       ? Response.json({ version: "2", assets: Object.fromEntries(BUNDLE_PLATFORMS.map((platform) => [platform, { url: archive(platform), sha256: "b".repeat(64) }])) })
-      : new Response(null, { status: BUNDLE_PLATFORMS.some((platform) => url === archive(platform)) ? 200 : 404 });
+      : BUNDLE_PLATFORMS.some((platform) => url === archive(platform)) ? new Response("x", { status: 206, headers: { "content-range": "bytes 0-0/1000" } }) : new Response("Not Found", { status: 404 });
     expect(await releaseCheck(dir, published)).toEqual({ version: "1.1.0", problems: [] });
   });
 

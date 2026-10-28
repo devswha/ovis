@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { releaseNotes } from "./release-notes.ts";
 import { SUMMARIES_FILE } from "../server/release-notes.ts";
+import { discard, readCappedJson, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "../server/remote-json.ts";
 
 const root = resolve(import.meta.dir, "..");
 const MACHINES = "shared/machines.ts";
@@ -84,18 +85,25 @@ export type Get = (url: string, init: RequestInit) => Promise<Response>;
 export async function publishedProblems(version: number, get: Get = fetch): Promise<string[]> {
   const url = manifestUrl(version);
   const wait = `Wait for the Remote PC bundles workflow of the tag remote-v${version} to publish it (rerun it if it failed), then run Release again (docs/development.md#releasing).`;
-  const read = async (target: string, method: "GET" | "HEAD"): Promise<Response | string> => {
+  const signal = AbortSignal.timeout(60_000);
+  const read = async (target: string, headers: Record<string, string> = {}): Promise<Response | string> => {
     try {
-      const response = await get(target, { method, signal: AbortSignal.timeout(30_000) });
-      return response.ok ? response : `${target} answered ${response.status}`;
+      const response = await get(target, { headers, signal });
+      if (response.ok) return response;
+      await discard(response);
+      return `${target} answered ${response.status}`;
     } catch (error) {
       return `${target} could not be read (${(error as Error).message})`;
     }
   };
-  const answer = await read(url, "GET");
+  const answer = await read(url);
   if (typeof answer === "string") return [`remote-v${version} is tagged but not published: ${answer}. ${wait}`];
   let manifest: { version?: unknown; assets?: Record<string, { url?: unknown; sha256?: unknown } | undefined> } | null;
-  try { manifest = (await answer.json()) as typeof manifest; } catch { return [`remote-v${version} is not published: ${url} is not JSON. ${wait}`]; }
+  // read the way remote PCs read it: at most REMOTE_LIMITS.bundleManifest bytes
+  try { manifest = await readCappedJson<typeof manifest>(answer, REMOTE_LIMITS.bundleManifest); } catch (error) {
+    const why = error instanceof RemoteResponseTooLarge ? "is larger than remote PCs accept" : error instanceof RemoteResponseInvalid ? "is not JSON" : `could not be read (${(error as Error).message})`;
+    return [`remote-v${version} is not published: ${url} ${why}. ${wait}`];
+  }
   if (manifest?.version !== String(version)) return [`remote-v${version} is not published: ${url} names version ${JSON.stringify(manifest?.version ?? null)}. ${wait}`];
   const missing: string[] = [];
   const assets: string[] = [];
@@ -105,7 +113,14 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
     else missing.push(platform);
   }
   if (missing.length > 0) return [`remote-v${version} is not published for every platform: ${url} has no bundle for ${missing.join(", ")}. ${wait}`];
-  const unreachable = (await Promise.all(assets.map((asset) => read(asset, "HEAD")))).filter((result) => typeof result === "string");
+  // the GET remote PCs download with, for its first byte only: the archive answers and is not empty
+  const unreachable = (await Promise.all(assets.map(async (asset) => {
+    const response = await read(asset, { range: "bytes=0-0" });
+    if (typeof response === "string") return response;
+    await discard(response);
+    const size = Number(/\/(\d+)$/.exec(response.headers.get("content-range") ?? "")?.[1] ?? (response.status === 200 ? response.headers.get("content-length") : 0));
+    return size > 0 ? null : `${asset} is empty`;
+  }))).filter((result) => result !== null);
   return unreachable.length > 0 ? [`remote-v${version} is not published: ${unreachable.join("; ")}. ${wait}`] : [];
 }
 
