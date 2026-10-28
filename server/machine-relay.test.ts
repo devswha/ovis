@@ -4,6 +4,8 @@ import { MachineRelay, RelayStallClock, upstreamCloseCode } from "./machine-rela
 import type { MachineManager } from "./machines.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS } from "./output-window.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
+import { agentRowTokens, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
 
 /** Samples every 100 ms like the relay's timer, returning the first close code. */
 function run(clock: RelayStallClock, buffered: (at: number) => number, from: number, until: number): number {
@@ -132,5 +134,37 @@ describe("MachineRelay stall timer", () => {
     expect(closes).toEqual([]);
     relay.tick(OUTPUT_STALL_MS);
     expect(closes).toEqual([OUTPUT_STALLED_CLOSE_CODE]);
+  });
+});
+
+describe("MachineRelay snapshot frames", () => {
+  test("tells the browser a PC's snapshot without the token values this server's rows hide, and every other frame as it came (#2160)", async () => {
+    const snapshot = { workspaces: [], tabs: [], panes: [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "t1", agent: "claude", tokens: { quota: "off · private", eta: "soon" } }], agents: [] };
+    const output = JSON.stringify({ type: "pty-data", pane_id: "w1:p1", data: "off · private" });
+    const upstream = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      fetch(request, server) { return server.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
+      websocket: { open(socket) { socket.send(JSON.stringify({ type: "snapshot", snapshot, features: [] })); socket.send(output); }, message() {} },
+    });
+    const manager = { endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }), trackTerminal: () => () => {} } as unknown as MachineManager;
+    const rows = agentRowTokens(Bun.TOML.parse(`[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ starts_with = "off", hide = true }] }, "$eta"]]`));
+    const relay = new MachineRelay(manager, "pc", true, (read: SessionSnapshot) => snapshotWithoutHiddenTokens(rows, read));
+    const sent: string[] = [];
+    const both = Promise.withResolvers<void>();
+    const deadline = setTimeout(() => both.reject(new Error("timed out waiting for the relayed frames")), 5_000);
+    try {
+      await relay.ready;
+      relay.bind({ getBufferedAmount: () => 0, send: (raw: string) => { sent.push(raw); if (sent.length === 2) both.resolve(); return raw.length; }, close: () => {} } as unknown as ServerWebSocket<unknown>);
+      if (sent.length >= 2) both.resolve();
+      await both.promise;
+      const told = JSON.parse(sent[0]!) as { type: string; snapshot: { panes: { tokens: unknown }[] } };
+      expect(told.type).toBe("snapshot");
+      expect(told.snapshot.panes[0]!.tokens).toEqual({ eta: "soon" });
+      expect(sent[1]).toBe(output);
+    } finally {
+      clearTimeout(deadline);
+      relay.close();
+      upstream.stop(true);
+    }
   });
 });
