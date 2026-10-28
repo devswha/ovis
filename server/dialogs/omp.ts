@@ -256,9 +256,12 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
  * takes them before any other key (bound to Enter, the select on Deny would approve). Deny is then answered
  * by moving to it, while fewer details than omp scrolls at show that none are hidden.
  *
- * omp cuts a long detail at the panel's edge and summarizes a multi-line one, so two calls can draw the same
- * panel: the card's id also reads the screen above it, which the last call's output changes.
+ * omp cuts a detail at the panel's edge or past its length (`[…120ch elided…]`) and summarizes a multi-line one
+ * (`… +2 lines in the tool call`, or 18.13's one row ending ` …`): two calls could then draw the same panel, and
+ * a card read for one would answer the other. Only a panel that shows the whole call is a card. Not the screen
+ * above it: omp keeps redrawing the transcript there (a running tool's elapsed time) while it waits.
  */
+const OMP_DETAIL_CUT_RE = /…|\bin the tool call$/;
 /** a key may hold a space: the Nerd Font preset joins a modifier icon to its key with one (`\u{f0634} O`, Ctrl+O on macOS) */
 const OMP_APPROVAL_HINT_RE = /^(?:(\S+) choose · (\S.*?) select · )?(\S.*?) approve · (\S.*?) deny(?: · \S.*? (?:details|less))?( · \S.*? scroll)?( · type to deny and steer)?$/;
 const OMP_APPROVAL_CLIPPED_HINT_RE = /^(\S+) choose · (\S.*?) select · (\S.*?) approve · .*…$/;
@@ -358,15 +361,14 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const title = top >= 0 ? OMP_APPROVAL_TOP_RE.exec(lines[top]!) : null;
   if (!title) return null;
   const rows = lines.slice(top + 1, bottom - 2).map((line) => OMP_PANEL_ROW_RE.exec(line)![1]!);
-  const above = { call: lines.slice(0, top).filter(Boolean).join("\n") };
   const card = { kind: "approval" as const, title: title[1]!, question: title[1]!, multi_select: false, custom_option_index: null };
   const internal = { responder: "omp-approval" as const, checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null };
   if (chooseKeys === undefined) {
-    if (rows.length === 0 || !denyKey) return null;
+    if (rows.length === 0 || !denyKey || rows.some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
     return finishPrompt("omp", {
       ...card, body: rows.join("\n").trim() || null,
       options: [{ label: own("Approve"), description: null }, { label: own("Deny"), description: null }],
-    }, { ...internal, menuLabels: ["Approve", "Deny"], selectedIndex: -1, optionSteps: [keySteps([approveKey]), keySteps([denyKey])] }, above);
+    }, { ...internal, menuLabels: ["Approve", "Deny"], selectedIndex: -1, optionSteps: [keySteps([approveKey]), keySteps([denyKey])] });
   }
   const selectKey = ompHintKey(selectDrawn!);
   if ((chooseKeys !== "↑/↓" && chooseKeys !== "Up/Down") || !selectKey) return null;
@@ -376,7 +378,7 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const menu = ompChoices(rows);
   if (!menu) return null;
   const { choices, first, approve } = menu;
-  if (clipped && first >= OMP_APPROVAL_DETAIL_ROWS) return null;
+  if ((clipped && first >= OMP_APPROVAL_DETAIL_ROWS) || rows.slice(0, first).some((row) => OMP_DETAIL_CUT_RE.test(row))) return null;
   const cursor = choices.findIndex((choice) => choice.cursor);
   // the toggle answers nothing: it changes which grants the rows under it record
   const offered = choices.flatMap((choice, row) => choice.toggle ? [] : [{ ...choice, row }]);
@@ -390,7 +392,7 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
     optionSteps: offered.map((choice) => choice.row === approve && plainKey ? keySteps([plainKey])
       : denyKey && choice.row === choices.length - 1 ? keySteps([denyKey])
       : keySteps([...navigationKeys(choice.row - cursor), selectKey])),
-  }, above);
+  });
 }
 
 /** Whether omp's approval panel (not the older menu) is what the screen ends in. */

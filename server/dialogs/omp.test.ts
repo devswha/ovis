@@ -115,10 +115,14 @@ describe("omp tool approval (#2059)", () => {
   });
 
   it("offers 18.13's grants, but not the toggle over them, which answers nothing", () => {
-    const prompt = parseInteractivePrompt("omp", approval("18.13.2-unicode-wide-grants"));
+    const shown = approval("18.13.2-unicode-wide-grants");
+    // the recording summarizes the written content (`Content: fictional \u2026`): no card, as for any call shown in part
+    expect(shown).toContain("\u2502 Path: notes/fixture.txt \u00b7 Content: fictional \u2026 ");
+    expect(parseInteractivePrompt("omp", shown)).toBeNull();
+    const prompt = parseInteractivePrompt("omp", redraw(shown, "\u2502 Path: notes/fixture.txt ", "Path: notes/fixture.txt"));
     expect(prompt).toMatchObject({ title: "Allow tool: write" });
     expect(prompt!.body!.split("\n")).toEqual([
-      "Reason: target not yet approved", "Path: notes/fixture.txt \u00b7 Content: fictional \u2026", expect.stringMatching(/^Folder: \/fixture\/.*\/cwd\/notes$/),
+      "Reason: target not yet approved", "Path: notes/fixture.txt", expect.stringMatching(/^Folder: \/fixture\/.*\/cwd\/notes$/),
     ]);
     expect(labels(prompt)).toEqual([expect.stringMatching(/^Approve Directory: \/fixture\/.*\/notes$/), "Approve File", "Approve Once", "Deny"]);
     expect(steps(prompt, 0)).toEqual([{ keys: [KEY.up] }, { keys: [KEY.up] }, { keys: [KEY.enter] }]);
@@ -208,15 +212,30 @@ describe("omp tool approval (#2059)", () => {
     }
   });
 
-  it("gives another call drawn as the same panel another card, by the screen above it", () => {
-    // omp cuts a long detail at the panel's edge and summarizes a multi-line one: the panel alone can repeat
+  it("shows no card for a call omp cuts or summarizes, which another call could draw the same", () => {
     for (const name of ["18.10.4-unicode-wide", "18.13.2-unicode-wide"]) {
       const shown = approval(name);
-      const next = shown.replace("\u2502 $ ls -la ", "\u2502 $ rm -r ");
-      expect(next, name).not.toBe(shown);
-      expect(parseInteractivePrompt("omp", next)?.body, name).toBe(parseInteractivePrompt("omp", shown)?.body);
-      expect(parseInteractivePrompt("omp", next)?.id, name).not.toBe(parseInteractivePrompt("omp", shown)?.id);
+      for (const detail of [
+        "Command: echo harmless \u2026", "Command: echo harmless \u2026 +1 line in the tool call", "Content: 40 lines in the tool call",
+        "Command: echo [\u2026120ch elided\u2026]", `Command: ${"x".repeat(60)}\u2026`,
+      ]) {
+        expect(parseInteractivePrompt("omp", redraw(shown, "\u2502 Command: ls -la ", detail)), `${name} ${detail}`).toBeNull();
+      }
+      // a whole call is read, and another whole call is another card
+      const other = parseInteractivePrompt("omp", redraw(shown, "\u2502 Command: ls -la ", "Command: rm -r notes"));
+      expect(other?.body, name).toBe("Command: rm -r notes");
+      expect(other?.id, name).not.toBe(parseInteractivePrompt("omp", shown)?.id);
     }
+  });
+
+  it("keeps one card while omp redraws the transcript above the panel", () => {
+    // 18.13's bash box ticks its elapsed time on its border while the call waits for approval
+    const shown = approval("18.13.2-unicode-wide");
+    // the first bottom border is the bash box's, over the panel's
+    const box = shown.split("\n").find((line) => /^\u2570\u2500+\u256f$/.test(line))!;
+    const ticked = shown.replace(box, `\u2570\u2500\u2500\u2500 elapsed 3.0s ${"\u2500".repeat([...box].length - 19)}\u256f`);
+    expect(ticked).not.toBe(shown);
+    expect(parseInteractivePrompt("omp", ticked)?.id).toBe(parseInteractivePrompt("omp", shown)?.id);
   });
 
   it("keeps one card while the countdown in the title ticks", () => {
