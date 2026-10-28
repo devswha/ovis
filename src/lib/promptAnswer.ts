@@ -30,8 +30,8 @@ function boundLetter(label: string): string | null {
 const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /** one case for every letter, as Unicode folds it: `Straße`, `STRASSE` and `STRAẞE` are `strasse`, a final `ς` is `σ` */
-const folded = (text: string): string => text.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")
-  .replaceAll("ß", "ss").replaceAll("ς", "σ");
+const folded = (text: string): string => text.normalize("NFKC").toUpperCase().toLowerCase()
+  .replaceAll("ß", "ss").replaceAll("ς", "σ").normalize("NFKC"); // last: `ẞ` and an acute is `sś`, as `SS` and an acute is
 
 /**
  * What a name reads as, for telling rows apart (#2220): its letters, marks and digits, in one Unicode form

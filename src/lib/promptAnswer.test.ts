@@ -166,7 +166,8 @@ describe("answering a prompt from the chat", () => {
       ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", null],
       ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
       // names that differ only by Unicode case folding (ß and ss, ẞ and SS, final ς and σ) are twins too
-      ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"]] as const).flatMap(([kind, a, b]): Case[] => {
+      ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"],
+        ["ẞ and SS under an acute", "Keep **STRA\u1E9E\u0301E**", "Keep **STRASS\u0301E**"]] as const).flatMap(([kind, a, b]): Case[] => {
         const rows = [a, b, "Remote relay"];
         const [typedA, typedB] = [a, b].map((label) => label.replaceAll("**", ""));
         return [
