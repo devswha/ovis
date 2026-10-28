@@ -636,7 +636,9 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
   // show immediately; only an unrecognized screen waits for this bounded settling window.
   const settling = Date.now() - (formsAnswered.get(paneId) ?? 0) < FORM_SETTLE_MS;
-  if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || settling) {
+  // a pi pane gets no generic card: its Enter/Esc would be keys guessed into pi, which may be
+  // showing pi-ask's form (it takes no typed keys); the terminal answers what no reader knows
+  if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || agent === "pi" || settling) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
   }
@@ -903,6 +905,7 @@ async function readKnownPrompt(
   // the terminal answers it. The pane's pi says so through the extension (any open form, a card or
   // not, with or without a session written yet); without it, an open ask_user call in the session
   // does. Asked after the screen read, so a form that opened during it counts
+  if (agent === "pi" && (prompt === null || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))) return { prompt: null, screen, suppressFallback: true };
   if (agent === "pi" && await piAskRefusesKeys(paneId, piTranscript, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);

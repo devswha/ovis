@@ -37,6 +37,8 @@ async function withBridgedPane(run: (pane: {
   onScreen?: () => void;
   /** the pane's screen, the recorded pi-ask form unless set */
   screen?: string;
+  /** the pane's foreground pids as herdr reports them; unless set, `foreground` and the other pis */
+  foregroundList?: number[];
   /** further foreground pis with the extension, each answering with its own state */
   others: Map<number, PiAskBridgeState>;
   bridge: Bridge;
@@ -77,7 +79,7 @@ async function withBridgedPane(run: (pane: {
   }));
   const pane = {
     status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, keys: [] as string[],
-    onScreen: undefined as (() => void) | undefined, screen: undefined as string | undefined, others, bridge, session, root,
+    onScreen: undefined as (() => void) | undefined, screen: undefined as string | undefined, foregroundList: undefined as number[] | undefined, others, bridge, session, root,
     read: async (): Promise<InteractivePrompt | null> => {
       const url = new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${id}`);
       const response = (await handlePromptRequest(new Request(url), url))!;
@@ -107,7 +109,7 @@ async function withBridgedPane(run: (pane: {
         return reply({ read: { text: pane.screen ?? fixture.screen } });
       }
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [pane.foreground, ...others.keys()].map((pid) => ({ pid, argv: ["fictional-shell"] })) } });
+      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: (pane.foregroundList ?? [pane.foreground, ...others.keys()]).map((pid) => ({ pid, argv: ["fictional-shell"] })) } });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
         pane.keys.push(...(request.params?.keys ?? [`text:${request.params?.text}`]));
         return reply({});
@@ -338,6 +340,9 @@ test("an open pi-ask form in a session pi has not written yet is never a card of
   }, { written: false });
 });
 
+/** pi's own select dialog, as pi draws it. */
+const PI_SELECT = "────────────────────────\n Choose a color\n\n → Red\n   Blue\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel";
+
 /** A form from /answer: no tool call, no card, but pi-ask's all the same. */
 const answerForm = (state: PiAskBridgeState) => ({ ...state.flows[0]!, flowId: "flow:answer", toolCallId: undefined, source: "answer" });
 /** No open call, in the session file or on pi's live branch: only a form pi-ask reports is open. */
@@ -376,9 +381,10 @@ test("a pi-ask form that opens during the read or before the keys gets none of t
     noCall(pane);
     const form = answerForm(pane.bridge.state);
     pane.bridge.state.flows = [];
-    // with no form open, the blocked pane's unknown screen keeps its generic card, as on main
+    // with no form open, pi's own dialog keeps its card
+    pane.screen = PI_SELECT;
     const card = (await pane.read())!;
-    expect(card.fallback).toBe(true);
+    expect(card).toMatchObject({ question: "Choose a color" });
     // the form opens while the answer is on its way, after its own read of the pane
     let reads = 0;
     const before = await (async () => { let n = 0; pane.onState = () => { n++; }; await pane.read(); pane.onState = undefined; return n; })();
@@ -448,6 +454,43 @@ test("an open call on pi's live branch holds the keys even when pi-ask reported 
     expect(card).toBeNull();
     expect(pane.keys).toEqual([]);
   });
+});
+
+test("a pi pane gets no generic card of guessed keys at all", async () => {
+  if (!posix) return;
+  // a blocked pi pane whose screen no reader knows, with no pi-ask form anywhere: still no card
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    pane.bridge.state.flows = [];
+    const card = await pane.read();
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
+  }, { bridge: false });
+});
+
+test("a key never goes to a pi that came in front while the last check read another", async () => {
+  if (!posix) return;
+  await withBridgedPane(async (pane) => {
+    noCall(pane);
+    pane.screen = PI_SELECT;
+    pane.bridge.state.flows = [];
+    // pi B, with a pi-ask form open, is not in front yet
+    pane.others.get(PID + 9)!.flows = [answerForm(pane.bridge.state)];
+    pane.foregroundList = [PID];
+    const card = (await pane.read())!;
+    expect(card).toMatchObject({ question: "Choose a color" });
+    let n = 0;
+    pane.onState = () => { n++; };
+    await pane.read();
+    const perRead = n;
+    let reads = 0;
+    // while the last check before the Enter reads pi A's state ("no form"), herdr's foreground becomes pi B
+    pane.onState = () => { if (++reads === perRead + 1) pane.foregroundList = [PID + 9]; };
+    const sent = await pane.answer(card.id, { option_index: 0 });
+    expect(pane.keys).toEqual([]);
+    expect(sent.status).toBe(409);
+  }, { others: [PID + 9] });
 });
 
 test("an answer never leaves for a pi the pane no longer has in front", async () => {

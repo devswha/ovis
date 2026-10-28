@@ -222,7 +222,11 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
       else undecided = true;
     }
   }
-  return unknown ? "unknown" : undecided || !answered ? "absent" : "inactive";
+  if (unknown) return "unknown";
+  // the answer is for the pis in front when the reads began: another one in front now is not known
+  const after = await foregroundPids(paneId).catch(() => null);
+  if (after === null || [...new Set(after)].sort().join() !== [...new Set(pids)].sort().join()) return "unknown";
+  return undecided || !answered ? "absent" : "inactive";
 }
 
 /**
