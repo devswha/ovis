@@ -87,7 +87,7 @@ it.each([
   expect(frame.messages.map((message) => message.state)).toEqual([state]);
 });
 
-it.each(["blocked", "working", "queue held", "foreground changed", "lease lost", "unchanged"] as const)(
+it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged"] as const)(
   "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
     try {
@@ -128,6 +128,7 @@ it.each(["blocked", "working", "queue held", "foreground changed", "lease lost",
           if (change === "blocked" || change === "working") pane.agent_status = change;
           if (change === "queue held") held = true;
           if (change === "foreground changed") foreground = [{ pid: 41002, name: "pi" }];
+          if (change === "foreground disappeared") foreground = [];
           if (change === "lease lost") facts.samePty = false;
         }));
       let tail: Promise<unknown> = Promise.resolve();

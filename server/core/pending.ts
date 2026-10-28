@@ -535,10 +535,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       authorizePending(owner, paneId, lease);
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
+      const beforeCapturePid = beforeEnter.identity.processPid;
       const piAnchor = await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null);
       if (piAnchor !== undefined) {
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true);
         if (automatic && (beforeEnter.working || queueHeld(paneId))) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
+        await stillInFront(paneId, beforeCapturePid);
       }
       const steering = !automatic && beforeEnter.working;
       committing(steering);
