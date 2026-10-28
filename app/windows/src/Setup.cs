@@ -205,6 +205,21 @@ namespace Ovis
             return end > at && int.TryParse(first.Substring(at + 5, end - at - 5), out pid) && pid > 0 ? pid : (int?)null;
         }
 
+        /// <summary>The bridge health's answer is the app's own: `ok: true` with an integer `bridge_protocol` (server/index.ts).</summary>
+        public static bool BridgeHealth(string json)
+        {
+            try
+            {
+                var root = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                object ok, protocol;
+                return root != null && root.TryGetValue("ok", out ok) && ok is bool && (bool)ok && root.TryGetValue("bridge_protocol", out protocol) && protocol is int;
+            }
+            catch (Exception exception) when (exception is ArgumentException || exception is InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
         /// <summary>
         /// Why the server needs an update. herdr's list is never taken for the version that runs: a stopped server known
         /// only by it is started first, as it may have updated itself, and a running one that does not say its version

@@ -23,6 +23,8 @@ namespace Ovis
         public string RunningVersion;
         /// <summary>The live server process `plugin.ts status` names (`(pid N)`), which it reports whether herdr answers or not.</summary>
         public int? Pid;
+        /// <summary>Not running as herdr sees it, but a recorded process lives and the app answers its bridge health on its port.</summary>
+        public bool AliveWithoutHerdr;
         /// <summary>The answering server says it runs without the update supervisor: not one the plugin's start runs, or one whose supervisor has not reported yet.</summary>
         public bool Unmanaged;
     }
@@ -114,9 +116,9 @@ namespace Ovis
                 return;
             }
             Set(Phase.Working, title);
-            // a server process the plugin recorded counts though herdr is down (its health then fails): the update
-            // stops it, so a failed one must start it again
-            var wasRunning = Status != null && (Status.Running || Status.Pid != null);
+            // a server that outlived herdr counts though its health, which asks herdr, fails: the update stops it, so a
+            // failed one must start it again. Its recorded pid alone is not enough: a stale one can name another program.
+            var wasRunning = Status != null && (Status.Running || Status.AliveWithoutHerdr);
             // the release is settled before anything stops, so a PC that cannot reach GitHub keeps its server running
             var tags = await Run.Program("git", new[] { "ls-remote", "--tags", "--refs", Links.Repository, "v*" }, Append, true);
             var tag = Setup.UpdateTag(tags.Status == 0 ? tags.Output : null, AppVersion);
@@ -375,6 +377,7 @@ namespace Ovis
             var result = await Run.Program("bun", new[] { PluginScript(plugin), "status" }, null, false);
             var words = (result.Output.Split('\n').FirstOrDefault() ?? "").Split(' ');
             var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output), Pid = Setup.StatusPid(result.Output) };
+            if (!status.Running && status.Pid != null && status.Origin != null) status.AliveWithoutHerdr = await BridgeAnswers(status.Origin);
             if (!status.Running || status.Origin == null) return status;
             try
             {
@@ -406,6 +409,27 @@ namespace Ovis
                 // no version from the server: one that runs is then one whose version cannot be read
             }
             return await WithAccess(status);
+        }
+
+        /// <summary>
+        /// Whether the app itself holds its port: its bridge health (`/api/health?scope=bridge`, open, answered by every
+        /// release since 0.3.0) needs no herdr, so it tells a server that outlived herdr from a stale pid file naming
+        /// another program.
+        /// </summary>
+        private static async Task<bool> BridgeAnswers(string origin)
+        {
+            try
+            {
+                using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+                using (var answer = await client.GetAsync(origin.TrimEnd('/') + "/api/health?scope=bridge"))
+                {
+                    return answer.IsSuccessStatusCode && Setup.BridgeHealth(await answer.Content.ReadAsStringAsync());
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException || exception is TaskCanceledException || exception is ArgumentException || exception is InvalidOperationException)
+            {
+                return false;
+            }
         }
 
         /// <summary>

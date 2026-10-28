@@ -171,6 +171,12 @@ namespace Ovis
                     Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317\nconfig: none (settings go in C:\\x (pid 9)\\env)\n"));
                     Equal((int?)null, Setup.StatusPid("down http://127.0.0.1:7317 (pid x)\n"));
                     Equal((int?)null, Setup.StatusPid(null));
+                    // the app's own bridge health, which needs no herdr, and not another program's answer on the port
+                    Equal(true, Setup.BridgeHealth("{\"ok\":true,\"auth\":{\"required\":false,\"authenticated\":true},\"bridge_protocol\":1}"));
+                    Equal(false, Setup.BridgeHealth("{\"ok\":true}"));
+                    Equal(false, Setup.BridgeHealth("{\"ok\":false,\"bridge_protocol\":1}"));
+                    Equal(false, Setup.BridgeHealth("{\"ok\":true,\"bridge_protocol\":\"1\"}"));
+                    Equal(false, Setup.BridgeHealth("<html>"));
                     Equal("0.4.22", Setup.UpdatesVersion("{\"managed\":true,\"current_revision\":\"abc\",\"current_version\":\"0.4.22\",\"latest_version\":\"0.4.22\"}"));
                     Equal(null, Setup.UpdatesVersion("{\"managed\":false,\"current_version\":null}"));
                     Equal(null, Setup.UpdatesVersion("{\"error\":{\"code\":\"unauthorized\"}}"));
