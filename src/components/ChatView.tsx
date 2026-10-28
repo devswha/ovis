@@ -1124,8 +1124,11 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
   const work = turnWork(turn.parts, rowKey);
   // a run keeps its block and fold while its parts change (runNames); the stand-in is named by the
   // part that will start the turn's first run, and is drawn only while the turn has none
-  const names = runNames(runs, work.at, memory?.runs ?? new Map());
-  named.current = new Map(runs.flatMap((run, index) => run.parts.map((part) => [work.at.get(part)!, names[index]!] as const)));
+  const drawn = (run: WorkSegment): boolean => visibleWorkParts(run.parts, showThinking).length > 0;
+  const names = runNames(runs, work.at, memory?.runs ?? new Map(), drawn);
+  // only a run that draws a block leaves its name: one of hidden reasoning alone has no fold, and its
+  // name would take a drawn block's fold away once the two merge (#2111)
+  named.current = new Map(runs.flatMap((run, index) => drawn(run) ? run.parts.map((part) => [work.at.get(part)!, names[index]!] as const) : []));
   // `null`: the head standing in while the running turn has no work yet
   const block = (run: WorkSegment | null) => {
     const isHead = run === null || run === head;

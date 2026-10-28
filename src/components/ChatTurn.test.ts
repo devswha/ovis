@@ -163,6 +163,25 @@ describe("an agent turn's folded work, drawn again", () => {
     }
   });
 
+  it("keeps a block folded when it merges with reasoning the chat does not show (#2111)", async () => {
+    const reasoning: ConversationPart = { kind: "thinking", text: "Weighing it." };
+    // the hidden reasoning is a run of its own that draws no block: one block, the tools'
+    await draw([reasoning, text("Checking."), tool("ls")]);
+    expect(opened()).toEqual([true]);
+    await toggle(0);
+    expect(opened()).toEqual([false]);
+    // the words become commentary: reasoning, words and tools are one run, still the folded block
+    await draw([reasoning, commentary("Checking."), tool("ls")]);
+    expect(opened()).toEqual([false]);
+    await remount([reasoning, commentary("Checking."), tool("ls")]);
+    expect(opened()).toEqual([false]);
+    // the words become the answer: the reasoning is a hidden run again, and the tools keep the fold
+    await draw([reasoning, answer("Checking."), tool("ls")]);
+    expect(opened()).toEqual([false]);
+    await remount([reasoning, answer("Checking."), tool("ls")]);
+    expect(opened()).toEqual([false]);
+  });
+
   it("keeps a merged block's fold when a part leaves it", async () => {
     await draw([tool("ls"), text("One shelf."), commentary("Checking it.")]);
     expect(opened()).toEqual([false, true]);

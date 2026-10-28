@@ -55,11 +55,14 @@ export function turnSegments(parts: ConversationPart[]): TurnSegment[] {
  * in), a part leaves it, or it splits or merges with another run (#2063). `previous` holds the name
  * of the run each part was in when the turn was last drawn, by part index. A run takes the first
  * of those names among its own parts that no earlier run has taken. Only then does a run with none
- * get `work:<start>`, so a new run never takes the name of a run already shown.
+ * get `work:<start>`, so a new run never takes the name of a run already shown. A run that draws no
+ * block (`drawn`: hidden reasoning alone) keeps no name: it has no fold, and would take a drawn
+ * block's from it when the two split (#2111).
  */
-export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<ConversationPart, number>, previous: ReadonlyMap<number, string>): string[] {
+export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<ConversationPart, number>, previous: ReadonlyMap<number, string>, drawn: (run: WorkSegment) => boolean = () => true): string[] {
   const used = new Set<string>();
   const kept = runs.map((run) => {
+    if (!drawn(run)) return undefined;
     const name = run.parts.map((part) => previous.get(at.get(part)!)).find((name) => name !== undefined && !used.has(name));
     if (name !== undefined) used.add(name);
     return name;
