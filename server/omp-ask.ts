@@ -75,7 +75,7 @@ function drawn(markdown: string, question: boolean): string | null {
  * `markdown` as the card draws it (src/components/PromptCard.tsx), put in omp's terms to compare: the
  * question through the chat's block scanner, with a link's address after its words; a label or a
  * description through its inline scanner, links as their words. Null for what has no such text
- * (math, a table, a quote, a task box).
+ * (math, a picture, a table, a quote, a task box).
  */
 function cardDrawn(markdown: string, question: boolean): string | null {
   try {
@@ -101,14 +101,14 @@ function cardInline(nodes: InlineNode[], addresses: boolean): string {
   return nodes.map((node): string => {
     switch (node.type) {
       case "text": case "code": return node.value;
-      case "image": return node.alt;
       case "strong": case "em": case "del": return cardInline(node.children, addresses);
       case "link": case "file": {
         const words = cardInline(node.children, false);
         const href = node.type === "link" ? node.href : node.path;
         return addresses && href && words !== href && words !== href.replace(/^mailto:/, "") ? `${words} (${href})` : words;
       }
-      case "math": return undrawn();
+      // omp draws a picture's alt text; the card draws the picture, or `!` and its address
+      case "math": case "image": return undrawn();
     }
   }).join("");
 }

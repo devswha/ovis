@@ -151,6 +151,10 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     const globs = card(drawnScreen.slice(0, at) + "Keep *.log and *.tmp?".padEnd(row.length) + drawnScreen.slice(at + row.length));
     const asked = withArgs(open(version), (args) => { args.questions[0]!.question = "Keep *.log and *.tmp?"; });
     expect(ompMarkdownPrompt(globs, asked)).toBe(globs);
+    // a picture: omp draws its alt text, the card its picture or `!` and its address
+    const picture = card(drawnScreen.slice(0, at) + "Use production or staging?".padEnd(row.length) + drawnScreen.slice(at + row.length));
+    const pictured = withArgs(open(version), (args) => { args.questions[0]!.question = "Use ![production](/etc/prod.conf) or staging?"; });
+    expect(ompMarkdownPrompt(picture, pictured)).toBe(picture);
   });
 
   it("closes an omp session's ask call at its result and at the next user message", () => {
