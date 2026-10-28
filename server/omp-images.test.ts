@@ -1,11 +1,12 @@
 import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
 import { aroundBlobOpenForTests, blobPlatformForTests, ompBlobAnchor, ompBlobPicture } from "./codex-images.ts";
 import { betweenAuthorizationForTests, forgetTranscriptState, ompAuthorizedTranscript, ompTranscriptImage, transcriptPage } from "./conversation.ts";
+import { heldOpenPlatform } from "./held-open.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 import { ompBlobStore } from "./omp.ts";
 import { parseOmpTranscript } from "./transcript-records.ts";
@@ -19,7 +20,11 @@ const BLOB = readFileSync(new URL("./fixtures/omp-pictures-18.8.7-blob.webp", im
 const DIGEST = createHash("sha256").update(BLOB).digest("hex");
 const CALL = (JSON.parse(FIXTURE.split("\n").find((line) => line.includes('"toolCall"'))!) as { message: { content: { id: string }[] } }).message.content[0]!.id;
 
-const root = mkdtempSync(join(tmpdir(), "herdr-omp-images-"));
+// the real path: a blob store is held to be the directory its path names, and macOS's temporary
+// directory is under a link (/var), Windows' can be named by a short 8.3 name
+const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omp-images-")));
+/** A link to the directory `target` at `path`: on Windows a junction, which anyone can make there. */
+const linkDirectory = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
 afterAll(() => { rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
 
 /** An omp agent directory holding one session of `text` and the blobs given, as omp lays them out. */
@@ -54,9 +59,9 @@ const result = (entry: string, id: string, content: unknown[]) => ({ type: "mess
 const answer = (entry: string, text: string) => ({ type: "message", id: entry, parentId: "r1", timestamp: at, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 4 } });
 const clear = { type: "custom", customType: "context_clear", id: "x1", parentId: "a2", timestamp: at };
 
-// omp's blob pictures are read through a store descriptor, which only Linux offers (openBlob); elsewhere
-// they are refused by design, and the non-Linux branch is run here with blobPlatformForTests
-describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", () => {
+// omp's blob pictures are read through a held store (openBlob, held-open.ts), which Linux, macOS and
+// Windows offer; elsewhere they are refused by design, a branch run here with blobPlatformForTests
+describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the chat", () => {
   it("names the recorded session's prompt and tool pictures by ref only, and serves their exact bytes", async () => {
     const { path } = store("recorded", FIXTURE);
     expect(refs(path)).toEqual([
@@ -121,7 +126,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     // this session's agent directory keeps no store of its own: its `blobs` is a link to another's
     const linked = store("blob-dir-linked", records, {});
     rmSync(linked.blobs, { recursive: true });
-    symlinkSync(other.blobs, linked.blobs);
+    linkDirectory(other.blobs, linked.blobs);
     // named by the layout, and refused where a blob is read: no picture in the page, none served
     expect(ompBlobStore(linked.path)).toBe(linked.blobs);
     expect(refs(linked.path)).toEqual([[], []]);
@@ -148,8 +153,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
   });
 
-  // Linux opens the blob through a descriptor of its store; Node has no such open elsewhere
-  it.skipIf(process.platform !== "linux")("serves nothing when a link to another store is swapped in as the store or the blob is opened", async () => {
+  it("serves nothing when a link to another store is swapped in as the store or the blob is opened", async () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     // the other omp's store holds the blob; this one's does not
     const other = store("swap-other", records);
@@ -167,7 +171,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
       aroundBlobOpenForTests((opening, open) => {
         if (opening !== swap.at) return open();
         renameSync(swap.place, `${swap.place}-aside`);
-        symlinkSync(swap.link, swap.place);
+        linkDirectory(swap.link, swap.place);
         swapped += 1;
         try { return open(); } finally { unlinkSync(swap.place); renameSync(`${swap.place}-aside`, swap.place); }
       });
@@ -201,7 +205,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     // the agent directory above the store is a link to the other omp's for the whole read: the store
     // checks and opens alike go through it, so only where the opened store really is tells them apart
     renameSync(agent, `${agent}-aside`);
-    symlinkSync(join(other.blobs, ".."), agent);
+    linkDirectory(join(other.blobs, ".."), agent);
     try {
       expect(ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
     } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
@@ -223,7 +227,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     // after the transcript was authorized, this omp's agent directory becomes a link to the other's
     const agent = join(own.blobs, "..");
     renameSync(agent, `${agent}-aside`);
-    symlinkSync(join(other.blobs, ".."), agent);
+    linkDirectory(join(other.blobs, ".."), agent);
     try {
       expect(await ompTranscriptImage(authorized.path, "pi-prompt:u1:0", authorized.blobs)).toBeNull();
       // the same read with no authorized store serves nothing either
@@ -239,7 +243,7 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     const checked = authorizedTranscript(own.path, sessions(own.blobs))!;
     const ownIdentity = ompBlobAnchor(own.blobs)!.identity;
     const otherAgent = join(other.blobs, "..");
-    betweenAuthorizationForTests((stage) => { if (stage !== "after") return; renameSync(agent, `${agent}-aside`); symlinkSync(join(other.blobs, ".."), agent); });
+    betweenAuthorizationForTests((stage) => { if (stage !== "after") return; renameSync(agent, `${agent}-aside`); linkDirectory(join(other.blobs, ".."), agent); });
     try {
       expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ownIdentity });
     } finally { betweenAuthorizationForTests(null); unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
@@ -291,10 +295,10 @@ describe.skipIf(process.platform !== "linux")("omp's pictures reach the chat", (
     expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
   });
 
-  it("reads no omp blob where Node cannot open it through its store, and shows the inline pictures still", async () => {
+  it("reads no omp blob where no directory can be held and opened through, and shows the inline pictures still", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
     const { path } = store("no-descriptor-open", jsonl(prompt("u1", [{ type: "text", text: "two" }, { type: "image", mimeType: "image/png", data: png.toString("base64") }, picture()]), answer("a1", "both")));
-    blobPlatformForTests("darwin");
+    blobPlatformForTests("freebsd");
     try {
       forgetTranscriptState();
       // the blob keeps its place, empty: the inline picture before it is named and served as ever
