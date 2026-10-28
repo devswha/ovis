@@ -264,12 +264,12 @@ export class PendingMessageStore {
     this.refresh(owner);
     this.write(owner, [...this.read(owner), { id, request_id: 0, text, created_at: new Date().toISOString(), state: "uncertain", error: UNCONFIRMED_SEND, serverOwned: false }]);
     // a PC whose pane state is not stored (a bridge that names no herdr, storage that refused its
-    // record, a tab behind another) keeps the row in this page alone, and the message box is already
-    // empty: a copy in Recover unsent text outlives a reload. It is offered for a pane the user picks,
+    // record, a tab behind another), or storage that refused the row, keeps it in this page alone,
+    // and the message box is already empty: a copy in Recover unsent text outlives a reload. It is offered for a pane the user picks,
     // never put back under this pane ID, which a later herdr may reuse (#2172). The row's own record:
     // discarding the row takes no other tab's copy of the same words
     const pane = paneStateKey(PREFIX + owner);
-    if (pane === null || this.lifetimes.stored(pane.machineId)) return;
+    if (pane === null || this.lifetimes.stored(pane.machineId) && !this.unsaved.has(owner)) return;
     const kept = this.lifetimes.keep(pane.machineId, pane.paneId, "pending", text, true);
     if (kept !== null) this.recovery.set(`${owner}\0${id}`, kept);
   }

@@ -165,6 +165,16 @@ describe("pane state per herdr lifetime", () => {
     pending.removeCopy("w1:p1", second!.id);
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`)).toEqual(["w1:p2=no"]);
 
+    // storage that refuses the row on a stored PC: the row is in this page alone, its text in recovery
+    const full = new MemoryStorage();
+    const refusing = page(full);
+    const unsaved = new PendingMessageStore(() => refusing.paneStorage, refusing);
+    refusing.observe([pc("local", "herdr-a")], title);
+    full.refuse = "ovis:pending:";
+    unsaved.keepUnconfirmed("w1:p1", "deploy the fix");
+    expect(unsaved.isUnsaved("w1:p1")).toBe(true);
+    expect(refusing.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["pending:deploy the fix"]);
+
     const stored = new MemoryStorage();
     const proven = page(stored);
     const kept = new PendingMessageStore(() => proven.paneStorage, proven);
