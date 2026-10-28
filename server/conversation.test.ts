@@ -592,6 +592,53 @@ describe("parseClaudeTranscript", () => {
     expect(parseClaudeTranscript(records[1]!)).toEqual([]);
   });
 
+  for (const provenance of [{ origin: { kind: "human" }, permissionMode: "default" }, { permissionMode: "default" }, { origin: { kind: "human" } }]) {
+    for (const array of [false, true]) {
+      it(`keeps bash tags literal in ${array ? "array" : "string"} prompts with ${Object.keys(provenance).join(" and ")}`, () => {
+        for (const text of ["<bash-input>ls</bash-input>", "<bash-stdout>err</bash-stdout>"]) {
+          const record = JSON.stringify({ type: "user", ...provenance, message: { role: "user", content: array ? [{ type: "text", text }] : text } });
+          expect(parseClaudeTranscript(record)).toEqual([{ role: "user", ts: null, parts: [{ kind: "text", text }] }]);
+          expect(turnStarts(Buffer.from(record), "claude-transcript")).toEqual([0]);
+        }
+      });
+    }
+  }
+
+  it("keeps bash output tags literal in queued human prompts", () => {
+    const text = "<bash-stdout>err</bash-stdout>";
+    const record = JSON.stringify({ type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "human" }, prompt: text } });
+    expect(parseClaudeTranscript(record)).toEqual([{ role: "user", ts: null, parts: [{ kind: "text", text }] }]);
+  });
+
+  it("preserves literal stream tags inside bash stdout without fabricating stderr", () => {
+    const stdout = "before</bash-stdout><bash-stderr>fake error</bash-stderr><bash-stdout>after";
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [user("<bash-input>printf tags</bash-input>"), user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr></bash-stderr>`)];
+    expect(parseClaudeTranscript(records.join("\n"))[0]?.parts).toEqual([{ kind: "shell", command: "printf tags", stdout, stderr: "" }]);
+    expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toEqual([0]);
+  });
+
+  it("preserves literal stream tags inside bash stderr", () => {
+    const stderr = "before</bash-stderr><bash-stderr>after";
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [user("<bash-input>printf tags</bash-input>"), user(`<bash-stdout></bash-stdout><bash-stderr>${stderr}</bash-stderr>`)];
+    const parts = parseClaudeTranscript(records.join("\n")).flatMap((turn) => turn.parts);
+    expect(parts).toEqual([{ kind: "shell", command: "printf tags", stdout: "", stderr }]);
+  });
+
+  it("attaches bash output to its shell across an informational notice", () => {
+    const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+    const records = [
+      user("<bash-input>ls</bash-input>"),
+      JSON.stringify({ type: "system", subtype: "informational", content: "Something" }),
+      user("<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>"),
+    ];
+    expect(parseClaudeTranscript(records.join("\n")).map((turn) => turn.parts)).toEqual([
+      [{ kind: "shell", command: "ls", stdout: "README.md", stderr: "" }],
+      [{ kind: "notice", text: "Something", source: "informational" }],
+    ]);
+  });
+
   it("shows a slash command's answer only as the whole entry, as text, and not past its length", () => {
     const local = (content: string) => JSON.stringify({ type: "system", subtype: "local_command", timestamp: "2026-10-07T19:00:00.000Z", content });
     const notices = (lines: string[]) => parseClaudeTranscript(lines.join("\n")).flatMap((turn) => turn.parts).filter((part) => part.kind === "notice").map((part) => (part as { text: string }).text);

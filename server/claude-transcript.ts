@@ -7,11 +7,11 @@ import { trimOutput } from "./tool-output.ts";
 import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 
 /** Slash-command and bookkeeping entries Claude logs as user turns — not conversations. */
-export function isCommandEntry(text: string): boolean {
+export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
   return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
     // bash-mode output, only as the whole entry: the parser joins it to its command
-    || (text.startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
+    || (!("origin" in entry) && !("permissionMode" in entry) && text.trimStart().startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
 /**
@@ -40,16 +40,20 @@ function taggedStreams(content: unknown, tag: "local-command" | "bash"): { strea
     if (at === content.length) break;
     const stream = content.startsWith(`<${tag}-stdout>`, at) ? "stdout" : content.startsWith(`<${tag}-stderr>`, at) ? "stderr" : null;
     if (stream === null) return null;
+    // Bash has at most one stdout envelope followed by one stderr envelope. Printed tags are
+    // opaque payload, never extra streams; unsupported envelope order stays visible as raw text.
+    if (tag === "bash" && (streams.some((part) => part.stream === stream) || streams.at(-1)?.stream === "stderr")) return null;
     const start = at + `<${tag}-${stream}>`.length;
     // a closing tag the output prints itself ends nothing: the stream's own one is at the end of
     // the entry or before the next stream. Each candidate looks only at the whitespace after it.
     const close = `</${tag}-${stream}>`;
-    let end = content.indexOf(close, start);
+    let end = tag === "bash" ? content.lastIndexOf(close) : content.indexOf(close, start);
     let next = 0;
     while (end !== -1) {
       next = end + close.length;
       while (next < content.length && /\s/.test(content[next]!)) next++;
       if (next === content.length || content.startsWith(`<${tag}-stdout>`, next) || content.startsWith(`<${tag}-stderr>`, next)) break;
+      if (tag === "bash") return null;
       end = content.indexOf(close, end + close.length);
     }
     if (end === -1) return null;
@@ -158,6 +162,8 @@ export interface TranscriptEntry {
   parentUuid?: string | null;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  origin?: unknown;
+  permissionMode?: unknown;
   /** "updates": Claude Code shows the entry's thinking text as a progress message, not as reasoning */
   thinkingDisplay?: unknown;
   message?: { role?: string; content?: unknown; stop_reason?: unknown };
@@ -320,7 +326,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     const queued = entry.type === "attachment" ? entry.attachment : undefined;
     if (queued?.commandMode === "task-notification" && typeof queued.prompt === "string" && notified(queued.prompt, entry.timestamp ?? null)) return;
     if (queued?.type === "queued_command" && queued.commandMode === "prompt" && queued.origin?.kind === "human") {
-      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim())) {
+      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim(), queued)) {
         turns.push({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(queued.prompt) }] });
       }
       return;
@@ -364,20 +370,22 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         return;
       }
       // bash mode: the command opens a turn like a prompt, and the entry after it holds what it printed
-      const command = BASH_INPUT.exec(content)?.[1];
+      const own = !("origin" in entry) && !("permissionMode" in entry);
+      const command = own ? BASH_INPUT.exec(content)?.[1] : undefined;
       if (command !== undefined) {
         pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "shell", command }] }, entry);
         return;
       }
-      const printed = taggedStreams(content, "bash");
-      const shell = turns.at(-1)?.parts[0];
+      const printed = own ? taggedStreams(content, "bash") : null;
+      const shell = state.lastPrompt?.turn.parts[0];
       if (printed !== null && shell?.kind === "shell" && shell.stdout === undefined) {
         // an output's first line keeps its indent: only the blank end goes
         const of = (stream: "stdout" | "stderr") => capNotice(printed.filter((part) => part.stream === stream).map(({ text }) => text.trimEnd()).join("\n"));
         shell.stdout = of("stdout");
         shell.stderr = of("stderr");
       }
-      if (isCommandEntry(content)) return;
+      if (printed !== null) return;
+      if (isCommandEntry(content, entry)) return;
       pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(content) }] }, entry);
       return;
     }
@@ -394,7 +402,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           invocations.push({ kind: "skill", skill: invocation.skill });
           return [invocation.text];
         }
-        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim()) ? [part.text] : [];
+        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim(), entry) ? [part.text] : [];
       }).join("\n");
       for (const [index, block] of content.entries()) {
         if (typeof block !== "object" || block === null) continue;
