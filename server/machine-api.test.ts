@@ -1,19 +1,28 @@
 import { describe, expect, it } from "bun:test";
 import type { MachineEvent } from "../shared/machines.ts";
-import { handleMachineRequest, MACHINE_EVENTS_QUEUE_BYTES, MACHINE_EVENTS_QUEUE_FRAMES } from "./machine-api.ts";
+import { handleMachineRequest, machineEventsQueuedBytes } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
-/** A roster stand-in whose one listener the test drives, as the status hub drives the real one. */
+// The agreed policy, written out rather than read from the code: raising either must fail here.
+const STREAM_BYTES = 4 * 1024 * 1024;
+const TOTAL_BYTES = 32 * 1024 * 1024;
+
+/** A roster stand-in that tells every open stream, as the status hub tells the real one. */
 function managerStandIn() {
-  let listener: ((event: MachineEvent) => void) | null = null;
-  const manager = { subscribe: (next: (event: MachineEvent) => void) => { listener = next; return () => { listener = null; }; } } as unknown as MachineManager;
-  return { manager, emit: (event: MachineEvent) => listener?.(event), listening: () => listener !== null };
+  const listeners = new Set<(event: MachineEvent) => void>();
+  const manager = { subscribe: (listener: (event: MachineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } } as unknown as MachineManager;
+  return { manager, emit: (event: MachineEvent) => { for (const listener of [...listeners]) listener(event); }, listening: () => listeners.size };
 }
 
 const status = (index: number): MachineEvent => ({
   type: "machine-message", machine_id: "local",
   message: { type: "pane-status", pane_id: `p${index}`, agent_status: "working", finish_epoch: "e", finish_id: 0 },
 });
+const large = (bytes: number): MachineEvent => ({
+  type: "machine-message", machine_id: "local",
+  message: { type: "pane-status", pane_id: "x".repeat(bytes), agent_status: "idle", finish_epoch: "e", finish_id: 0 },
+});
+const frameBytes = (event: MachineEvent): number => `data: ${JSON.stringify(event)}\n\n`.length;
 
 async function open(manager: MachineManager) {
   const abort = new AbortController();
@@ -22,22 +31,23 @@ async function open(manager: MachineManager) {
   const decoder = new TextDecoder();
   let buffer = "";
   const events: MachineEvent[] = [];
-  /** reads until `count` events have come, or the stream ended: whether it is still open */
-  const readUntil = async (count: number): Promise<boolean> => {
+  /** reads until `count` events have come: "open", or how the stream ended ("ended" delivers what it held, "failed" drops it) */
+  const readUntil = async (count: number): Promise<"open" | "ended" | "failed"> => {
     while (events.length < count) {
-      const { value, done } = await reader.read();
-      if (done) return false;
-      buffer += decoder.decode(value, { stream: true });
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try { chunk = await reader.read(); } catch { return "failed"; }
+      if (chunk.done) return "ended";
+      buffer += decoder.decode(chunk.value, { stream: true });
       for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         if (frame.startsWith("data: ")) events.push(JSON.parse(frame.slice(6)) as MachineEvent);
       }
     }
-    return true;
+    return "open";
   };
   const close = async () => { abort.abort(); await reader.cancel().catch(() => undefined); };
-  return { reader, events, readUntil, close };
+  return { events, readUntil, close };
 }
 
 describe("the machine events stream", () => {
@@ -45,66 +55,105 @@ describe("the machine events stream", () => {
     const { manager, emit } = managerStandIn();
     const stream = await open(manager);
     try {
-      // herdr hands a burst over in one socket read: every frame is written before the browser reads one
+      // a burst is told before the browser reads any of it: every frame is written before it reads one
       for (let index = 0; index < 300; index++) emit(status(index));
-      expect(await stream.readUntil(300)).toBe(true);
+      expect(await stream.readUntil(300)).toBe("open");
       expect(stream.events.map((event) => event.type === "machine-message" && event.message.type === "pane-status" ? event.message.pane_id : null))
         .toEqual(Array.from({ length: 300 }, (_, index) => `p${index}`));
       emit(status(300));
-      expect(await stream.readUntil(301)).toBe(true);
+      expect(await stream.readUntil(301)).toBe("open");
     } finally {
       await stream.close();
     }
   });
 
-  it("keeps a stream open after a frame larger than the byte bound, as a roster of thousands of panes is", async () => {
+  it("keeps a stream open after a frame larger than its allowance, as a roster of thousands of panes is", async () => {
     const { manager, emit } = managerStandIn();
     const stream = await open(manager);
     try {
-      const roster: MachineEvent = { type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: "x".repeat(MACHINE_EVENTS_QUEUE_BYTES + 1024), agent_status: "idle", finish_epoch: "e", finish_id: 0 } };
-      emit(roster);
+      emit(large(STREAM_BYTES + 1024));
       for (let index = 0; index < 20; index++) emit(status(index));
-      expect(await stream.readUntil(21)).toBe(true);
+      expect(await stream.readUntil(21)).toBe("open");
       emit(status(20));
-      expect(await stream.readUntil(22)).toBe(true);
+      expect(await stream.readUntil(22)).toBe("open");
     } finally {
       await stream.close();
     }
   });
 
-  it("ends a stream that stopped reading once more than the bound of large frames waits", async () => {
+  it("ends a stream that stopped reading past 4 MiB, and drops what waited for it", async () => {
     const { manager, emit, listening } = managerStandIn();
     const stream = await open(manager);
     try {
-      const large: MachineEvent = { type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: "x".repeat(MACHINE_EVENTS_QUEUE_BYTES), agent_status: "idle", finish_epoch: "e", finish_id: 0 } };
-      // the check comes before each write: the frame that finds six already waiting still goes in
-      for (let sent = 0; sent <= MACHINE_EVENTS_QUEUE_FRAMES; sent++) emit(large);
-      expect(listening()).toBe(true);
-      emit(large);
-      expect(listening()).toBe(false);
+      const within = Math.floor(STREAM_BYTES / frameBytes(status(0)));
+      for (let sent = 0; sent < within; sent++) emit(status(0));
+      expect(listening()).toBe(1);
+      emit(status(0));
+      emit(status(0));
+      expect(listening()).toBe(0);
+      // errored, not closed: the 4 MiB that waited is not still handed to a browser that stopped reading
+      expect(await stream.readUntil(1)).toBe("failed");
+      expect(stream.events).toEqual([]);
+      expect(machineEventsQueuedBytes()).toBe(0);
     } finally {
       await stream.close();
     }
   });
 
-  it("still ends the stream of a browser that stopped reading, once what waits for it passes the bound", async () => {
+  it("gives a large frame room only while it waits: once read, the stream is held to 4 MiB again", async () => {
     const { manager, emit, listening } = managerStandIn();
     const stream = await open(manager);
     try {
-      const frame = status(0);
-      const size = `data: ${JSON.stringify(frame)}\n\n`.length;
-      const within = Math.floor(MACHINE_EVENTS_QUEUE_BYTES / size);
-      for (let sent = 0; sent < within; sent++) emit(frame);
-      // everything up to the byte bound waits for the browser; a frame count would have ended it long before
-      expect(listening()).toBe(true);
-      emit(frame);
-      emit(frame);
-      expect(listening()).toBe(false);
-      // what was queued before the bound is still delivered, then the stream ends
-      expect(await stream.readUntil(Number.MAX_SAFE_INTEGER)).toBe(false);
-      expect(stream.events.length).toBe(within + 1);
+      emit(large(2 * STREAM_BYTES));
+      expect(await stream.readUntil(1)).toBe("open");
+      const within = Math.floor(STREAM_BYTES / frameBytes(status(0)));
+      for (let sent = 0; sent < within; sent++) emit(status(0));
+      expect(listening()).toBe(1);
+      emit(status(0));
+      emit(status(0));
+      expect(listening()).toBe(0);
     } finally {
       await stream.close();
     }
+  });
+
+  it("ends a stream that stopped reading with a second large frame waiting behind the first", async () => {
+    const { manager, emit, listening } = managerStandIn();
+    const stream = await open(manager);
+    try {
+      emit(large(STREAM_BYTES + 1024));
+      emit(large(STREAM_BYTES + 1024));
+      expect(listening()).toBe(1);
+      emit(status(0));
+      expect(listening()).toBe(0);
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("holds every stream together to 32 MiB, ending the stalled ones and not one that keeps up", async () => {
+    const { manager, emit, listening } = managerStandIn();
+    // twelve browsers that stopped reading, watching devices or not: 12 x 3.5 MiB would be 42 MiB
+    const stalled = await Promise.all(Array.from({ length: 12 }, () => open(manager)));
+    try {
+      const frames = Math.floor(3.5 * 1024 * 1024 / frameBytes(status(0)));
+      for (let sent = 0; sent < frames; sent++) {
+        emit(status(0));
+        expect(machineEventsQueuedBytes()).toBeLessThanOrEqual(TOTAL_BYTES);
+      }
+      expect(listening()).toBeLessThan(12);
+      expect(listening()).toBeGreaterThan(0);
+      const healthy = await open(manager);
+      try {
+        for (let index = 0; index < 300; index++) emit(status(index));
+        expect(await healthy.readUntil(300)).toBe("open");
+        expect(machineEventsQueuedBytes()).toBeLessThanOrEqual(TOTAL_BYTES);
+      } finally {
+        await healthy.close();
+      }
+    } finally {
+      await Promise.all(stalled.map((stream) => stream.close()));
+    }
+    expect(machineEventsQueuedBytes()).toBe(0);
   });
 });

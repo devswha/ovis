@@ -13,16 +13,28 @@ import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResp
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
 
 /**
- * How far a browser's machine events may fall behind before its stream is ended (it reconnects and
+ * How far one browser's machine events may fall behind before its stream is ended (it reconnects and
  * reads the roster afresh). Counted in bytes, not frames: a burst of status changes from 20 or more
  * agents queues more small frames than a frame count allowed before the browser has read any.
+ * A frame larger than this (the roster of thousands of panes) is let through on top of it while it
+ * is still queued, never afterwards, so a stream opening with one does not end at its next frame.
  */
 export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 /**
- * Never less than this many of the stream's largest frame: a roster frame larger than the byte bound
- * (thousands of panes) must not end every stream right after it opens, so the browser never loops.
+ * What every machine events stream together may hold for browsers that fell behind, watching devices
+ * included. Past it the streams with the most waiting are ended first: a browser that keeps up holds
+ * next to nothing, so it is not the one cut off.
  */
-export const MACHINE_EVENTS_QUEUE_FRAMES = 6;
+export const MACHINE_EVENTS_TOTAL_BYTES = 32 * 1024 * 1024;
+
+interface EventsQueue { queued: () => number; drop: () => void }
+const eventsQueues = new Set<EventsQueue>();
+/** Bytes waiting in every open machine events stream. */
+export const machineEventsQueuedBytes = (): number => {
+  let total = 0;
+  for (const queue of eventsQueues) total += queue.queued();
+  return total;
+};
 
 /**
  * A PC route whose answer can take longer than the proxy's usual 75 s: a worktree's creation waits on
@@ -110,25 +122,49 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       let unwatchDevice: (() => void) | undefined;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let close = () => {};
+      let queue: EventsQueue | undefined;
       const cleanup = () => {
         stop?.(); stopPreferences?.(); stopSidebar?.(); stopSeen?.(); stopPairings?.(); unwatchDevice?.(); clearInterval(heartbeat);
         request.signal.removeEventListener("abort", close);
+        if (queue) eventsQueues.delete(queue);
       };
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           let closed = false;
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
-          unwatchDevice = onRevoke?.(close);
+          // fallen behind or revoked: an error, not a close, so what waits is dropped instead of still delivered
+          const drop = () => { if (closed) return; closed = true; cleanup(); try { controller.error(new Error("machine events: stream ended")); } catch {} };
+          unwatchDevice = onRevoke?.(drop);
           if (closed) return;
-          let largest = 0;
+          const queued = () => MACHINE_EVENTS_QUEUE_BYTES - (controller.desiredSize ?? MACHINE_EVENTS_QUEUE_BYTES);
+          queue = { queued, drop };
+          eventsQueues.add(queue);
+          // frames larger than the bound, by where they end in the stream: each counts only until it has left the queue
+          let written = 0;
+          const large: { end: number; bytes: number }[] = [];
+          const largeQueued = (): number => {
+            const left = written - queued();
+            while (large.length > 0 && large[0]!.end <= left) large.shift();
+            return large.reduce((most, frame) => Math.max(most, frame.bytes), 0);
+          };
           const send = (text: string) => {
             if (closed) return;
             const bytes = encoder.encode(text);
-            largest = Math.max(largest, bytes.byteLength);
-            const queued = MACHINE_EVENTS_QUEUE_BYTES - (controller.desiredSize ?? 0);
-            if (queued > Math.max(MACHINE_EVENTS_QUEUE_BYTES, MACHINE_EVENTS_QUEUE_FRAMES * largest)) { close(); return; }
-            try { controller.enqueue(bytes); } catch { close(); }
+            if (queued() > MACHINE_EVENTS_QUEUE_BYTES + largeQueued()) { drop(); return; }
+            // over the total: the streams with the most waiting go first, this one too if it is that one
+            for (let total = machineEventsQueuedBytes() + bytes.byteLength; total > MACHINE_EVENTS_TOTAL_BYTES;) {
+              let most: EventsQueue | undefined;
+              for (const other of eventsQueues) if (most === undefined || other.queued() > most.queued()) most = other;
+              const waiting = most?.queued() ?? 0;
+              if (most === undefined || waiting === 0) break;
+              most.drop();
+              if (most === queue) return;
+              total -= waiting;
+            }
+            written += bytes.byteLength;
+            if (bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES) large.push({ end: written, bytes: bytes.byteLength });
+            try { controller.enqueue(bytes); } catch { drop(); }
           };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // A roster leaves without the values their hide rules hide (withoutHiddenTokens), so no browser holds one;
