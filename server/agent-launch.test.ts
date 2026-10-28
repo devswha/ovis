@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -20,7 +20,7 @@ describe("agentLaunch", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
   const settingsDir = (): string => {
-    const root = mkdtempSync(join(tmpdir(), "ovis-agent-launch-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-agent-launch-")));
     roots.push(root);
     return join(root, "claude-settings");
   };

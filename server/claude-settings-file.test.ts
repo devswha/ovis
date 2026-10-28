@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -13,7 +14,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const tempRoot = (): string => {
-  const root = mkdtempSync(join(tmpdir(), "claude-settings-file-"));
+  // macOS's system temporary directory can itself be reached through /var's symlink.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "claude-settings-file-")));
   roots.push(root);
   return root;
 };
@@ -157,6 +159,65 @@ describe("settingsFile", () => {
 
 describe("agentStartArgs", () => {
   const args = ["--effort", "medium", "--settings", ULTRACODE];
+
+  for (const component of ["claude-settings", "ovis"]) {
+    it(`keeps inline JSON and writes nothing outside a redirected ${component} directory`, () => {
+      const root = tempRoot();
+      const outside = join(root, "outside");
+      mkdirSync(outside);
+      const dir = join(root, "ovis", "claude-settings");
+      if (component === "claude-settings") mkdirSync(dirname(dir));
+      symlinkSync(outside, component === "ovis" ? dirname(dir) : dir, "junction");
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(agentStartArgs("claude", args, { platform: "win32", dir })).toBe(args);
+        expect(readdirSync(outside)).toEqual([]);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+  }
+
+  it("keeps inline JSON instead of reusing a linked matching settings file", () => {
+    const root = tempRoot();
+    const dir = join(root, "claude-settings");
+    mkdirSync(dir);
+    const outside = join(root, "outside.json");
+    writeFileSync(outside, ULTRACODE);
+    const path = join(dir, `${createHash("sha256").update(ULTRACODE).digest("hex")}.json`);
+    symlinkSync(outside, path, "file");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(agentStartArgs("claude", args, { platform: "win32", dir })).toBe(args);
+      expect(readFileSync(outside, "utf8")).toBe(ULTRACODE);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("refuses a matching entry replaced by a symlink during open", () => {
+    const root = tempRoot();
+    const dir = join(root, "claude-settings");
+    const path = settingsFile(ULTRACODE, dir);
+    const outside = join(root, "outside.json");
+    writeFileSync(outside, ULTRACODE);
+    const open = fs.openSync;
+    const opens = spyOn(fs, "openSync").mockImplementation((...parameters) => {
+      if (parameters[0] === path && (Number(parameters[1]) & fs.constants.O_CREAT) === 0) {
+        rmSync(path);
+        symlinkSync(outside, path, "file");
+      }
+      return open(...parameters);
+    });
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(agentStartArgs("claude", args, { platform: "win32", dir })).toBe(args);
+      expect(readFileSync(outside, "utf8")).toBe(ULTRACODE);
+    } finally {
+      opens.mockRestore();
+      logged.mockRestore();
+    }
+  });
 
   it("hands Claude Code's args on unchanged off Windows, and other agents' on Windows", () => {
     const dir = join(tempRoot(), "claude-settings");

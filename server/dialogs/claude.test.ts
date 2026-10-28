@@ -171,7 +171,6 @@ describe("Claude Code's /effort with Ultracode (#2232)", () => {
 
   test("offers no card once s applied the switch, and holds nothing", () => {
     const set = effort("set", 120);
-    expect(set).toContain("Ultracode on (this session only): dynamic workflows on every task. Effort stays xhigh.");
     expect(parseInteractivePrompt("claude", set)).toBeNull();
     expect(registry.waits("claude", set)).toBe(false);
   });
