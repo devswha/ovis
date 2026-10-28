@@ -329,6 +329,19 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     }
   });
 
+  it.skipIf(process.platform !== "win32")("holds a store to its path only when every name on it is walked: no `/`, no device path", () => {
+    const real = join(root, "walk-real");
+    mkdirSync(join(real, "agent", "blobs"), { recursive: true });
+    linkDirectory(real, join(root, "walk-link"));
+    const store = openHeldDirectory(join(real, "agent", "blobs"));
+    try {
+      // the link's names written with `/`, which Windows reads as `\`, or under the device namespace:
+      // a root parsed from either would open the link unseen
+      const hidden = [`${join(root, "walk-link")}/agent\\blobs`, `\\\\.\\${join(root, "walk-link", "agent", "blobs")}`, join(root, "walk-link", "agent", "blobs")];
+      expect([store.isAt(join(real, "agent", "blobs")), ...hidden.map((path) => store.isAt(path))]).toEqual([true, false, false, false]);
+    } finally { store.close(); }
+  });
+
   it.skipIf(caseSensitive === null)("holds a store to its own name where letter case tells two directories apart", () => {
     const dir = caseSensitive!;
     mkdirSync(join(dir, "Box"));

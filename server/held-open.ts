@@ -142,6 +142,7 @@ const system32 = () => join(process.env["SystemRoot"] || process.env["windir"] |
 const openKernel = () => dlopen(join(system32(), "kernel32.dll"), {
   CreateFileW: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i64 },
   GetFileInformationByHandle: { args: [FFIType.i64, FFIType.ptr], returns: FFIType.i32 },
+  GetFileInformationByHandleEx: { args: [FFIType.i64, FFIType.u32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
   GetFileType: { args: [FFIType.i64], returns: FFIType.u32 },
   GetFinalPathNameByHandleW: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.u32], returns: FFIType.u32 },
   ReadFile: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
@@ -155,24 +156,46 @@ const windowsApi = () => windows ??= { kernel: openKernel(), ntdll: openNtdll() 
 
 /**
  * An absolute Windows path as its root (`C:\`, or a share's `\\server\share\`) and the names below it,
- * a `\\?\` prefix taken off; null for any other form (a relative or device path).
+ * a `\\?\` prefix taken off; null for any other form: a relative path, a device path (`\\.\`), or one
+ * with a `/` anywhere, which Windows reads as a separator, so a root could hide names below it.
  */
 function windowsPathParts(path: string): { root: string; names: string[] } | null {
+  if (/[/\0]/.test(path)) return null;
   const plain = path.startsWith("\\\\?\\UNC\\") ? `\\\\${path.slice(8)}` : path.startsWith("\\\\?\\") ? path.slice(4) : path;
   const drive = /^([A-Za-z]:)\\(.*)$/s.exec(plain);
-  const share = drive === null ? /^\\\\([^\\]+)\\([^\\]+)(?:\\(.*))?$/s.exec(plain) : null;
+  // a server and a share are names, never `.` or `?` (the device and the long-path namespaces)
+  const share = drive === null ? /^\\\\([^\\:*?"<>|.][^\\:*?"<>|]*)\\([^\\:*?"<>|]+)(?:\\(.*))?$/s.exec(plain) : null;
   const [root, rest] = drive !== null ? [`${drive[1]}\\`, drive[2]!] : share !== null ? [`\\\\${share[1]}\\${share[2]}\\`, share[3] ?? ""] : [null, ""];
   return root === null ? null : { root, names: rest.split("\\").filter((name) => name !== "") };
 }
 
+/** A 64-bit file index that names no one file: 0 (none kept) and all ones (none unique), MS-FSCC 2.1.9. */
+const NO_FILE_INDEX = new Set([0n, 0xffff_ffff_ffff_ffffn]);
+
 /** BY_HANDLE_FILE_INFORMATION: attributes, volume serial, size and file index, of the handle itself. */
-function handleInformation(handle: bigint): { attributes: number; identity: string; size: number } {
+function handleInformation(handle: bigint): { attributes: number; identity: string | null; size: number } {
   const info = Buffer.alloc(52);
   if (windowsApi().kernel.GetFileInformationByHandle(handle, info) === 0) throw new Error("GetFileInformationByHandle failed");
   const index = (BigInt(info.readUInt32LE(44)) << 32n) | BigInt(info.readUInt32LE(48));
   const size = (info.readUInt32LE(32) * 2 ** 32) + info.readUInt32LE(36);
-  // the volume's serial and the file index, as a bigint stat gives them (st_dev, st_ino)
-  return { attributes: info.readUInt32LE(0), identity: `${info.readUInt32LE(28)}:${index}`, size };
+  // the volume's serial and the file index, as a bigint stat gives them (st_dev, st_ino); none when
+  // the file system gives no index of its own
+  return { attributes: info.readUInt32LE(0), identity: NO_FILE_INDEX.has(index) ? null : `${info.readUInt32LE(28)}:${index}`, size };
+}
+
+/** FileIdInfo, the class GetFileInformationByHandleEx answers FILE_ID_INFO for. */
+const FILE_ID_INFO_CLASS = 0x12;
+
+/**
+ * The handle's full identity (FILE_ID_INFO: the volume's 64-bit serial and the 128-bit file id, which
+ * ReFS keeps where the 64-bit index cannot say), or null when the file system names the file by none.
+ */
+function fullIdentity(handle: bigint): string | null {
+  const info = Buffer.alloc(24);
+  if (windowsApi().kernel.GetFileInformationByHandleEx(handle, FILE_ID_INFO_CLASS, info, info.byteLength) === 0) return null;
+  const id = info.subarray(8);
+  if (id.every((byte) => byte === 0) || id.every((byte) => byte === 0xff)) return null;
+  return `${info.readBigUInt64LE(0)}:${id.toString("hex")}`;
 }
 
 /**
@@ -203,6 +226,8 @@ class WindowsHeld implements Held {
 
   stat() {
     const { attributes, identity, size } = handleInformation(this.handle);
+    // an index that names no one file proves no identity: refused, as every caller compares it
+    if (identity === null) throw new Error("no file index");
     const file = (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) === 0 && windowsApi().kernel.GetFileType(this.handle) === FILE_TYPE_DISK;
     return { identity, file, size };
   }
@@ -221,22 +246,26 @@ class WindowsHeld implements Held {
    * Windows names one directory several ways (a short 8.3 name, another letter case), so the path is
    * walked rather than compared: from its root, each name opened through the directory before it and
    * refused as a reparse point (a junction, a symbolic link, a mount point), down to the very object
-   * held (its volume and file index). The system resolves each name as any open would, in that
-   * directory's own case rules, and no spelling can stand in for another directory.
+   * held (its full identity, fullIdentity). The system resolves each name as any open would, in that
+   * directory's own case rules, and no spelling can stand in for another directory. The root itself
+   * must be one: a drive that names a folder elsewhere (subst, a mapped share) is refused.
    */
   isAt(path: string): boolean {
     const parts = windowsPathParts(path);
     if (parts === null) return false;
-    const walked: Held[] = [];
+    const walked: WindowsHeld[] = [];
     try {
-      let at: Held = WindowsHeld.directory(parts.root);
+      let at = WindowsHeld.directory(parts.root);
       walked.push(at);
+      // drive letters, servers and shares are named regardless of case
+      if (at.path()?.toUpperCase() !== parts.root.toUpperCase()) return false;
       for (const name of parts.names) { at = at.open(name, "directory"); walked.push(at); }
-      return at.stat().identity === this.stat().identity;
+      const [reached, held] = [fullIdentity(at.handle), fullIdentity(this.handle)];
+      return reached !== null && reached === held;
     } catch { return false; } finally { for (const entry of walked) entry.close(); }
   }
 
-  open(name: string, as: "directory" | "file"): Held {
+  open(name: string, as: "directory" | "file"): WindowsHeld {
     const units = Buffer.from(entryName(name), "utf16le");
     // one allocation, passed to the call itself, holds the structures and the name they point into:
     // a pointer written into a buffer keeps nothing alive, so a separate name could be collected first
