@@ -44,9 +44,10 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
     }
     return () => {
       // the heads drawn in its place in this render have run the effect above by the time this
-      // microtask runs; a record none of them took is ended
+      // microtask runs; a record none of them took is ended. A head still on the page (StrictMode's
+      // rehearsed unmount keeps the element) has not left.
       const left = memory?.focused;
-      if (memory && left !== undefined && left.key === key) queueMicrotask(() => { if (memory.focused === left) memory.focused = undefined; });
+      if (memory && left !== undefined && left.key === key) queueMicrotask(() => { if (memory.focused === left && head?.isConnected !== true) memory.focused = undefined; });
     };
   }, []);
   const onFocus = useCallback(() => { if (memory) memory.focused = { key }; }, [memory, key]);
