@@ -165,6 +165,20 @@ describe("answering a prompt from the chat", () => {
       ["single: the number of a distinct row beside twins", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "3", { option_index: 2 }],
       ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", null],
       ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
+      // names that differ only by Unicode case folding (ß and ss, ẞ and SS, final ς and σ) are twins too
+      ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"]] as const).flatMap(([kind, a, b]): Case[] => {
+        const rows = [a, b, "Remote relay"];
+        const [typedA, typedB] = [a, b].map((label) => label.replaceAll("**", ""));
+        return [
+          [`single: ${kind}, the first name`, rows, false, true, typedA!, custom(typedA!)],
+          [`single: ${kind}, the second name`, rows, false, true, typedB!, custom(typedB!)],
+          [`single: ${kind}, by number`, rows, false, true, "2", custom("2")],
+          [`multi: ${kind}, the first name`, rows, true, false, typedA!, null],
+          [`multi: ${kind}, by number`, rows, true, false, "1", null],
+          [`multi: ${kind}, in a mixed list`, rows, true, false, "1 2", null],
+          [`multi: ${kind}, a distinct row beside them`, rows, true, false, "3", { option_indices: [2] }],
+        ];
+      }),
       ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
       ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
     ];

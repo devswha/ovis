@@ -29,13 +29,17 @@ function boundLetter(label: string): string | null {
  */
 const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
+/** one case for every letter, as Unicode folds it: `Straße`, `STRASSE` and `STRAẞE` are `strasse`, a final `ς` is `σ` */
+const folded = (text: string): string => text.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")
+  .replaceAll("ß", "ss").replaceAll("ς", "σ");
+
 /**
  * What a name reads as, for telling rows apart (#2220): its letters, marks and digits, in one Unicode form
  * by look and one case, nothing else. Marks a page does not draw, spacing, punctuation, blanks such as
  * U+2800 and controls such as U+007F all go. Two rows with one skeleton may look the same, so a typed
  * answer picks neither. That over-refuses pairs like `production.` and `production`; a click still picks them.
  */
-const skeleton = (text: string): string => text.normalize("NFKC").toLowerCase()
+const skeleton = (text: string): string => folded(text)
   .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[^\p{L}\p{M}\p{N}]/gu, "");
 
 function bareLabel(label: string): string {
