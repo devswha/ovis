@@ -204,6 +204,9 @@ it("passes a PC's session on without the token values this server's sidebar rows
     expect(text).not.toContain("off · private");
     expect((JSON.parse(text) as { snapshot: { panes: { tokens: unknown }[] } }).snapshot.panes[0]!.tokens).toEqual({ eta: "soon" });
   }
+  // any other method the PC answers with a body is filtered too (its session route takes them all)
+  const asked = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/session", { method: "OPTIONS", headers: { "x-herdr-machine": "1" } }), manager, undefined, undefined, true, sidebar);
+  expect(await asked.text()).not.toContain("off · private");
   // a HEAD has no body to filter: it is answered as before
   expect((await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/session", { method: "HEAD" }), manager, undefined, undefined, true, sidebar)).status).toBe(200);
   // a server whose config names no rows passes the session on whole

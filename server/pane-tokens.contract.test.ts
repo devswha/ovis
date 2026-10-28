@@ -110,10 +110,15 @@ describe("a browser's own snapshots", () => {
   }, 60_000);
 
   it("leaves them in every snapshot of a bridge this app starts on a PC, whose only client is its connection server", async () => {
-    // as server/remote-entry.ts starts one: no machines, its registered credential as its token
+    // as server/remote-entry.ts starts one: no machines, bridge only, its registered credential as its token
     const bridgeState = mkdtempSync(join(tmpdir(), "ovis-test-pane-tokens-bridge-"));
-    const managed = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bridgeState, token: "registered-credential", machines: false, tailscaleOwner: null, herdrConfigPath });
+    const managed = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bridgeState, token: "registered-credential", machines: false, bridgeOnly: true, tailscaleOwner: null, herdrConfigPath });
+    // a server without machines that browsers do reach still leaves them out
+    const plainState = mkdtempSync(join(tmpdir(), "ovis-test-pane-tokens-plain-"));
+    const plain = createServer({ port: 0, hostname: "127.0.0.1", stateDir: plainState, token: "browser-token", machines: false, tailscaleOwner: null, herdrConfigPath });
     try {
+      const browserRead = await fetch(`http://127.0.0.1:${plain.port}/api/session`, { headers: { authorization: "Bearer browser-token" } });
+      expect(tokensIn(((await browserRead.json()) as { snapshot: Snapshot }).snapshot)).toEqual({ eta: "soon" });
       const response = await fetch(`http://127.0.0.1:${managed.port}/api/session`, { headers: { authorization: "Bearer registered-credential" } });
       expect(tokensIn(((await response.json()) as { snapshot: Snapshot }).snapshot)).toEqual({ quota: "off · private", eta: "soon" });
       const socket = authenticatedWebSocket(`ws://127.0.0.1:${managed.port}/ws`, "registered-credential");
@@ -123,7 +128,9 @@ describe("a browser's own snapshots", () => {
       try { expect(tokensIn(await frame.promise)).toEqual({ quota: "off · private", eta: "soon" }); } finally { clearTimeout(deadline); socket.close(); }
     } finally {
       managed.stop();
+      plain.stop();
       rmSync(bridgeState, { recursive: true, force: true });
+      rmSync(plainState, { recursive: true, force: true });
     }
   }, 60_000);
 
