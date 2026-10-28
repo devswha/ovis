@@ -1081,7 +1081,7 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
     // from this open on, nothing is reached by path again
     betweenAuthorization?.("before");
     const data = keep(openHeldDirectory(dirname(root)));
-    if (data.path() !== dirname(root)) return null;
+    if (!data.isAt(dirname(root))) return null;
     betweenAuthorization?.("after");
     let at = keep(data.open("sessions", "directory"));
     for (const [index, name] of parts.entries()) at = keep(at.open(name, index === parts.length - 1 ? "file" : "directory"));

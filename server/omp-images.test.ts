@@ -21,7 +21,8 @@ const DIGEST = createHash("sha256").update(BLOB).digest("hex");
 const CALL = (JSON.parse(FIXTURE.split("\n").find((line) => line.includes('"toolCall"'))!) as { message: { content: { id: string }[] } }).message.content[0]!.id;
 
 // the real path: a blob store is held to be the directory its path names, and macOS's temporary
-// directory is under a link (/var), Windows' can be named by a short 8.3 name
+// directory is under a link (/var). On Windows it keeps a short 8.3 name where the temporary directory
+// has one (GitHub's runners: C:\Users\RUNNER~1), a spelling of the store's path it is served by too
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omp-images-")));
 /** A link to the directory `target` at `path`: on Windows a junction, which anyone can make there. */
 const linkDirectory = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
@@ -303,6 +304,21 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     expect(ompAuthorizedTranscript(authorizedTranscript(named, join(blobs, "..", "sessions"))!)).toEqual({ path: named, blobs: ompBlobAnchor(blobs)!.identity });
   });
 
+  it.skipIf(process.platform !== "win32")("serves a store named by another spelling of its path: a short 8.3 name, another letter case", async () => {
+    const { blobs } = store("a-store-of-a-long-name", jsonl(prompt("u1", [picture()])));
+    const { dlopen, FFIType } = await import("bun:ffi");
+    const kernel = dlopen("kernel32.dll", { GetShortPathNameW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.u32 } });
+    const answer = Buffer.alloc(2 * 32_768);
+    const units = kernel.symbols.GetShortPathNameW(Buffer.from(`${blobs}\0`, "utf16le"), answer, 32_768);
+    kernel.close();
+    const short = answer.toString("utf16le", 0, units * 2);
+    // a volume that makes no short names gives the path back as it is
+    expect(short === blobs || short.includes("~")).toBe(true);
+    for (const spelling of [short, blobs.toUpperCase(), blobs.toLowerCase()]) {
+      expect([spelling, ompBlobPicture(spelling, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType]).toEqual([spelling, "image/webp"]);
+    }
+  });
+
   it("reads no omp blob where no directory can be held and opened through, and shows the inline pictures still", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
     const { path } = store("no-descriptor-open", jsonl(prompt("u1", [{ type: "text", text: "two" }, { type: "image", mimeType: "image/png", data: png.toString("base64") }, picture()]), answer("a1", "both")));
@@ -354,7 +370,8 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     expect(total).toBeGreaterThan(30_000);
     expect(mostLarge).toBeLessThanOrEqual(2);
     expect(most).toBeLessThanOrEqual(400);
-  });
+    // counts, not time, are asserted: a 40 MiB transcript of 30,000 records takes about 4 s on Windows
+  }, 30_000);
 
   it("lets the event loop run between windows while it looks through a large transcript", async () => {
     const pad = "x".repeat(20 * 1024 * 1024);

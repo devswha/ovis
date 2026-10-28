@@ -21,6 +21,11 @@ export interface Held {
   stat(): { identity: string; file: boolean; size: number };
   /** Where the held object is now, as the system names the open object; null when it cannot say. */
   path(): string | null;
+  /**
+   * Whether the held object is the one `path` names now: no link or other directory stands between.
+   * Windows names one path several ways (a short 8.3 name, another letter case), each the same entries.
+   */
+  isAt(path: string): boolean;
   /** The entry `name` of this held directory, opened through it, a link there not followed but refused. */
   open(name: string, as: "directory" | "file"): Held;
   /** Reads `length` bytes at `position` into `buffer` at `offset`: how many were read. */
@@ -56,6 +61,7 @@ abstract class DescriptorHeld implements Held {
   constructor(protected readonly fd: number) {}
   abstract path(): string | null;
   abstract open(name: string, as: "directory" | "file"): Held;
+  isAt(path: string): boolean { return this.path() === path; }
   stat() {
     const stat = fstatSync(this.fd, { bigint: true });
     return { identity: `${stat.dev}:${stat.ino}`, file: stat.isFile(), size: Number(stat.size) };
@@ -138,6 +144,7 @@ const openKernel = () => dlopen(join(system32(), "kernel32.dll"), {
   GetFileInformationByHandle: { args: [FFIType.i64, FFIType.ptr], returns: FFIType.i32 },
   GetFileType: { args: [FFIType.i64], returns: FFIType.u32 },
   GetFinalPathNameByHandleW: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.u32], returns: FFIType.u32 },
+  GetLongPathNameW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.u32 },
   ReadFile: { args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   CloseHandle: { args: [FFIType.i64], returns: FFIType.i32 },
 }).symbols;
@@ -146,6 +153,30 @@ const openNtdll = () => dlopen(join(system32(), "ntdll.dll"), {
 }).symbols;
 let windows: { kernel: ReturnType<typeof openKernel>; ntdll: ReturnType<typeof openNtdll> } | undefined;
 const windowsApi = () => windows ??= { kernel: openKernel(), ntdll: openNtdll() };
+
+/**
+ * `path` with every short 8.3 component spelled long (GetLongPathNameW): the same entries by the same
+ * names, no link followed, so a junction on the way stays the junction's own name. Null when it is gone.
+ */
+function longPath(path: string): string | null {
+  const answer = Buffer.alloc(FINAL_PATH_UNITS * 2);
+  const units = windowsApi().kernel.GetLongPathNameW(Buffer.from(`${path}\0`, "utf16le"), answer, FINAL_PATH_UNITS);
+  return units === 0 || units >= FINAL_PATH_UNITS ? null : answer.toString("utf16le", 0, units * 2);
+}
+
+/**
+ * Whether two Windows paths spell the same names but for letter case, one UTF-16 unit against one: a
+ * case mapping that changes a name's length (`\u00df` to `SS`) never makes two names one.
+ */
+function sameWindowsPath(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  for (let at = 0; at < left.length; at += 1) {
+    if (left[at] === right[at]) continue;
+    const [one, other] = [left[at]!.toUpperCase(), right[at]!.toUpperCase()];
+    if (one.length !== 1 || one !== other) return false;
+  }
+  return true;
+}
 
 /** BY_HANDLE_FILE_INFORMATION: attributes, volume serial, size and file index, of the handle itself. */
 function handleInformation(handle: bigint): { attributes: number; identity: string; size: number } {
@@ -197,6 +228,13 @@ class WindowsHeld implements Held {
     const named = answer.toString("utf16le", 0, units * 2);
     if (named.startsWith("\\\\?\\UNC\\")) return `\\\\${named.slice(8)}`;
     return named.startsWith("\\\\?\\") ? named.slice(4) : named;
+  }
+
+  isAt(path: string): boolean {
+    // the handle's own path has every junction on the way resolved: one there makes the two differ
+    const held = this.path();
+    const named = longPath(path);
+    return held !== null && named !== null && sameWindowsPath(held, named);
   }
 
   open(name: string, as: "directory" | "file"): Held {

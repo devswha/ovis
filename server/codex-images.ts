@@ -228,7 +228,7 @@ function openBlob(blobs: string, digest: string, checked: string): Held | null {
     // the directory opened must be the one checked, not one moved into its place since
     if (store.stat().identity !== checked) return null;
     // a link above the store is followed by the open: the directory opened must be the one named
-    if (store.path() !== blobs) return null;
+    if (!store.isAt(blobs)) return null;
     return opened("blob", () => store.open(digest, "file"));
   } catch { return null; } finally { store.close(); }
 }
