@@ -21,22 +21,30 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
  */
 export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 /**
- * What every machine events stream together may hold for browsers that fell behind, watching devices
- * included: each stream's backlog, what waits beyond the one large frame it may hold. A roster that
- * is only waiting to be read is no backlog, so a stream that opens with one neither ends nor ends
- * another. Past the total, the streams with the most backlog are ended first: a browser that keeps
- * up has next to none, so it is not the one cut off.
+ * What every machine events stream together may hold, every queued byte counted, large frames and
+ * watching devices included. Past it, the streams that stopped reading are ended, the one holding
+ * the most first: a stream whose queue has not emptied for MACHINE_EVENTS_STALL_MS. A stream that
+ * has just been sent its roster has not stopped reading, so it is neither ended nor ends another.
  */
 export const MACHINE_EVENTS_TOTAL_BYTES = 32 * 1024 * 1024;
+/** How long a queue may stay unemptied before its stream counts as stopped reading. */
+export const MACHINE_EVENTS_STALL_MS = 30_000;
+/**
+ * What every stream together may hold even while none has stopped reading yet (browsers opening at
+ * once with large rosters): past it a frame is refused and its stream ended, and the browser opens it
+ * again. A frame its stream is alone in holding always goes, so one roster larger than this does too.
+ */
+export const MACHINE_EVENTS_CEILING_BYTES = 64 * 1024 * 1024;
+/** When a queue last stopped being empty is read from this; tests move it on instead of waiting. */
+export const machineEventsClock = { now: (): number => performance.now() };
 
 /**
- * `backlog`: what the stream holds beyond its large frame. `told`: its backlog when it was last
- * written to; a queue only shrinks between writes, and its large frame leaves with what is before it,
- * so the backlog never grows between them and `told` is never less.
+ * `told`: what the stream held when it was last written to; a queue only shrinks between writes, so it
+ * is never less. `since`: when its queue last went from empty to holding a frame.
  */
-interface EventsQueue { queued: () => number; backlog: () => number; drop: () => void; told: number }
+interface EventsQueue { queued: () => number; drop: () => void; told: number; since: number }
 const eventsQueues = new Set<EventsQueue>();
-/** The sum of every stream's `told`: never less than all their backlogs, so the total is counted exactly only near it. */
+/** The sum of every stream's `told`: never less than what all of them hold, so the total is counted exactly only near it. */
 let toldTotal = 0;
 const forgetQueue = (queue: EventsQueue): void => {
   if (!eventsQueues.delete(queue)) return;
@@ -136,10 +144,13 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       let unwatchDevice: (() => void) | undefined;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let close = () => {};
+      let drop = () => {};
       let queue: EventsQueue | undefined;
+      // the browser went away: what still waits for it is dropped, not kept for a reader that is gone
+      const aborted = () => drop();
       const cleanup = () => {
         stop?.(); stopPreferences?.(); stopSidebar?.(); stopSeen?.(); stopPairings?.(); unwatchDevice?.(); clearInterval(heartbeat);
-        request.signal.removeEventListener("abort", close);
+        request.signal.removeEventListener("abort", aborted);
         if (queue) forgetQueue(queue);
       };
       const encoder = new TextEncoder();
@@ -147,8 +158,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         start(controller) {
           let closed = false;
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
-          // fallen behind: an error, not a close, so what waits is dropped instead of still delivered
-          const drop = () => { if (closed) return; closed = true; cleanup(); try { controller.error(new Error("machine events: stream ended")); } catch {} };
+          // fallen behind, refused or gone: an error, not a close, so what waits is dropped instead of still delivered
+          drop = () => { if (closed) return; closed = true; cleanup(); try { controller.error(new Error("machine events: stream ended")); } catch {} };
           // a revoked device that keeps up gets a clean end; one with a backlog waiting is not reading it, so that is dropped
           unwatchDevice = onRevoke?.(() => { if ((queue?.queued() ?? 0) > 0) drop(); else close(); });
           if (closed) return;
@@ -161,31 +172,35 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             while (large.length > 0 && large[0]!.end <= left) large.shift();
             return large.reduce((most, frame) => Math.max(most, frame.bytes), 0);
           };
-          const backlog = () => queued() - largeQueued();
-          const own: EventsQueue = { queued, backlog, drop, told: 0 };
+          const own: EventsQueue = { queued, drop, told: 0, since: 0 };
           queue = own;
           eventsQueues.add(own);
-          const retell = (): void => { const now = backlog(); toldTotal += now - own.told; own.told = now; };
+          const retell = (): void => { const now = queued(); toldTotal += now - own.told; own.told = now; };
+          const stalled = (other: EventsQueue, now: number): boolean => other.told > 0 && now - other.since >= MACHINE_EVENTS_STALL_MS;
           const send = (text: string) => {
             if (closed) return;
             const bytes = encoder.encode(text);
+            const now = machineEventsClock.now();
             retell();
-            // the backlog this frame adds: all of it, but for a large frame only what the large one already waiting
-            // leaves uncovered (none when it is the first), so a second large frame is counted as soon as it comes
+            if (own.told === 0) own.since = now;
+            // the backlog this frame adds beyond the one large frame a stream may hold: all of a small frame, of a
+            // large one what the large one already waiting leaves uncovered (none when it is the first)
             const counted = bytes.byteLength > MACHINE_EVENTS_QUEUE_BYTES ? Math.min(bytes.byteLength, largeQueued()) : bytes.byteLength;
-            if (own.told + counted > MACHINE_EVENTS_QUEUE_BYTES) { drop(); return; }
-            if (toldTotal + counted > MACHINE_EVENTS_TOTAL_BYTES) {
-              // perhaps over the total: count every backlog exactly, then end the streams with the most first,
-              // this one too if it is that one
+            if (own.told - largeQueued() + counted > MACHINE_EVENTS_QUEUE_BYTES) { drop(); return; }
+            if (toldTotal + bytes.byteLength > MACHINE_EVENTS_TOTAL_BYTES) {
+              // perhaps over the total: count every stream exactly, then end those that stopped reading, the one
+              // holding the most first, this one too if it is that one
               toldTotal = 0;
-              for (const other of eventsQueues) { other.told = other.backlog(); toldTotal += other.told; }
-              while (toldTotal + counted > MACHINE_EVENTS_TOTAL_BYTES) {
+              for (const other of eventsQueues) { other.told = other.queued(); toldTotal += other.told; }
+              while (toldTotal + bytes.byteLength > MACHINE_EVENTS_TOTAL_BYTES) {
                 let most: EventsQueue | undefined;
-                for (const other of eventsQueues) if (most === undefined || other.told > most.told) most = other;
-                if (most === undefined || most.told === 0) break;
+                for (const other of eventsQueues) if (stalled(other, now) && (most === undefined || other.told > most.told)) most = other;
+                if (most === undefined) break;
                 most.drop();
                 if (most === own) return;
               }
+              // still past the ceiling with no stopped reader left to end: refused, unless this stream is alone in holding any
+              if (toldTotal + bytes.byteLength > MACHINE_EVENTS_CEILING_BYTES && toldTotal - own.told > 0) { drop(); return; }
             }
             try { controller.enqueue(bytes); } catch { drop(); return; }
             written += bytes.byteLength;
@@ -240,8 +255,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           stopPairings = pairings?.subscribe((event) => send(`data: ${JSON.stringify(event satisfies MachineEvent)}\n\n`));
           if (closed) { cleanup(); return; }
           heartbeat = setInterval(() => send(": heartbeat\n\n"), 15_000);
-          request.signal.addEventListener("abort", close, { once: true });
-          if (request.signal.aborted) close();
+          request.signal.addEventListener("abort", aborted, { once: true });
+          if (request.signal.aborted) aborted();
         },
         cancel() { close(); },
       }, new ByteLengthQueuingStrategy({ highWaterMark: MACHINE_EVENTS_QUEUE_BYTES }));
