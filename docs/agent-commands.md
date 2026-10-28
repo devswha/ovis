@@ -188,7 +188,9 @@ Recognized Hermes informational result cards remain available.
   the exact text; a `model_change`, `thinking_level_change` or `compaction` record in pi, omp, gjc
   and OmO sessions (omp's `/handoff` writes a compaction with method `handoff`); a `compacted`
   record for Codex `/compact`. Records are claimed in send order, so two equal sends never share
-  one, and a rewritten transcript drops what it no longer holds. In pi, only the session's active
+  one, and a rewritten transcript drops what it no longer holds. Known limit: a pi-family send the
+  agent dropped without a record takes the record of a later equal send on the same branch, and
+  that later send ends as unknown. In pi, only the session's active
   branch counts: a send stays with the branch it was sent on, also after the session goes to
   another branch and `/tree` comes back to it, unless meanwhile something was written under that
   branch's last entry or a record a result could be was written elsewhere (`resumedBranch` in

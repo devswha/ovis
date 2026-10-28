@@ -1589,8 +1589,9 @@ const commandTranscripts = new Map<string, {
   partialStart: number; records: CommandTranscriptRecord[]; identity: string;
   /** pi: the active branch's name and its last node, which an append that runs on from it keeps */
   branch: string; leaf: string | null; answer: CommandTranscript | null;
-  /** pi: the last node each recent branch was read at, newest last, so a session that comes back to one keeps its name */
-  branches: Map<string, string>;
+  /** pi: the last node each recent branch was read at (id and byte offset), newest last, so a session that comes back
+   * to one keeps its name */
+  branches: Map<string, { id: string; offset: number }>;
 }>();
 const REMEMBERED_BRANCHES = 8;
 
@@ -1636,7 +1637,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const identity = append ? cached.identity : `${source}\0${path}\0${file}:${stat.size}:${stat.mtimeMs}`;
   let branch = "";
   let leaf: string | null = null;
-  let branches = new Map<string, string>();
+  let branches = new Map<string, { id: string; offset: number }>();
   if (source === "pi-transcript") {
     const nodes = current.filter(record => typeof record.entry.id === "string");
     const byId = new Map(nodes.map((record, index) => [String(record.entry.id), { record, index }]));
@@ -1672,7 +1673,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
       : createHash("sha256").update(forks.map(({ entry }) => String(entry.id)).join("\0")).digest("hex"));
     if (branch !== "unresolved" && leaf !== null) {
       branches.delete(branch);
-      branches.set(branch, leaf);
+      branches.set(branch, { id: leaf, offset: current.at(-1)!.offset });
       if (branches.size > REMEMBERED_BRANCHES) branches.delete(branches.keys().next().value!);
     }
   }
@@ -1685,17 +1686,17 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
 
 /**
  * The remembered pi branch (`branches`: name to the node it was last read at) that `path` runs on from. Its node is on
- * the path, and of what was written since (that node was then the file's last), nothing off the path is under it, and
+ * the path, the same entry at the same offset (a later entry may reuse its id), and of what was written since (that node was then the file's last), nothing off the path is under it, and
  * nothing off the path is a record a send's result could be (`PI_EVIDENCE_TYPES`): a result written on the branch the
  * session went to must not leave a send waiting on its old branch for a later identical send's. `nodes` are the
  * window's nodes in file order.
  */
-function resumedBranch(branches: ReadonlyMap<string, string>, nodes: readonly CommandTranscriptRecord[], path: readonly CommandTranscriptRecord[]): string | null {
+function resumedBranch(branches: ReadonlyMap<string, { id: string; offset: number }>, nodes: readonly CommandTranscriptRecord[], path: readonly CommandTranscriptRecord[]): string | null {
   const onPath = new Map(path.map((record) => [String(record.entry.id), record]));
   for (const [name, leaf] of branches) {
-    const at = onPath.get(leaf);
-    if (!at) continue;
-    const under = new Set([leaf]);
+    const at = onPath.get(leaf.id);
+    if (!at || at.offset !== leaf.offset) continue;
+    const under = new Set([leaf.id]);
     const alone = nodes.every(({ entry, offset }) => {
       if (offset <= at.offset) return true;
       const id = String(entry.id);

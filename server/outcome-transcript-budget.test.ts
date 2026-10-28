@@ -309,6 +309,33 @@ it("names a pi branch afresh on coming back to its last entry when something els
   }
 });
 
+it("does not take a later entry that reuses a remembered pi branch's last id for that branch", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "outcome-pi-reused-id-"));
+  const path = join(root, "session.jsonl");
+  const line = (entry: object) => JSON.stringify(entry) + "\n";
+  const big = (id: string, parentId: string, mebibytes: number) => line({ type: "message", id, parentId,
+    message: { role: "assistant", content: "x".repeat(mebibytes * 1024 * 1024) } });
+  fs.writeFileSync(path, line({ type: "message", id: "root", parentId: null }) + line({ type: "message", id: "a0", parentId: "root" })
+    + line({ type: "message", id: "a1", parentId: "a0" }));
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
+  try {
+    const before = await conversation.readCommandTranscript("reused-id");
+    fs.appendFileSync(path, big("b0", "root", 15));
+    await conversation.readCommandTranscript("reused-id");
+    // another entry with a1's id, then enough that the window no longer holds the first a1
+    fs.appendFileSync(path, line({ type: "message", id: "a1", parentId: "b0" }));
+    expect(await conversation.readCommandTranscript("reused-id")).toBeNull();
+    fs.appendFileSync(path, big("b1", "a1", 2));
+    const after = await conversation.readCommandTranscript("reused-id");
+    expect(after?.records.map(({ entry }) => entry.id)).toEqual(["a1", "b1"]); // control: the first a1 is cut away
+    expect(after?.identity).not.toBe(before?.identity);
+  } finally {
+    binding.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("names a pi branch afresh when an append cuts its last entry away and forks after the window's first entry", async () => {
   const root = fs.mkdtempSync(join(tmpdir(), "outcome-pi-leaf-cut-fork-"));
   const path = join(root, "session.jsonl");
