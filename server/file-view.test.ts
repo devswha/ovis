@@ -1395,7 +1395,8 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
   };
   /** A body sent from its descriptor's own path keeps that descriptor until the body and its answer are collected: once both are gone, each is closed. */
   const bodiesCollected = async () => {
-    const deadline = Date.now() + 5_000;
+    // within the test's own timeout, so a slow collection fails here, with the descriptors named
+    const deadline = Date.now() + 3_000;
     while (live.size > 0) {
       if (Date.now() > deadline) throw new Error(`descriptors still open after collection: ${[...live].join(", ")}`);
       Bun.gc(true);
@@ -1507,8 +1508,11 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
   it("sends a file larger than one read with its exact length, whole and by range", async () => {
     // only Linux names an open file by its descriptor (`/proc/self/fd`); elsewhere it is streamed without one
     if (process.platform !== "linux") return;
-    const size = STREAM_CHUNK_BYTES + 4096;
-    const { cwd, scratch } = fixture("big.bin", "B".repeat(size), "OUTSIDE-SECRET");
+    const size = 2 * STREAM_CHUNK_BYTES + 4096;
+    // bytes that tell their own offset, so a range sent from the wrong place is seen
+    const bytes = Buffer.from(Array.from({ length: size }, (_, at) => at % 251));
+    const { cwd, scratch } = fixture("big.bin", "", "OUTSIDE-SECRET");
+    writeFileSync(join(scratch, "big.bin"), bytes);
     // a disk that answers at once, whatever this machine's load: the case a file body is for
     pageFileHooks.fastDiskMs = 60_000;
     await (async () => {
@@ -1517,12 +1521,14 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
       try {
         const whole = await fetch(server.url);
         expect(whole.headers.get("content-length")).toBe(String(size));
-        expect((await whole.text()).length).toBe(size);
-        const part = await fetch(server.url, { headers: { range: `bytes=10-${STREAM_CHUNK_BYTES + 9}` } });
+        expect(Buffer.from(await whole.arrayBuffer()).equals(bytes)).toBe(true);
+        // more than one read: sent as a file body, not read before the headers
+        const [first, last] = [10, STREAM_CHUNK_BYTES + 5000];
+        const part = await fetch(server.url, { headers: { range: `bytes=${first}-${last}` } });
         expect(part.status).toBe(206);
-        expect(part.headers.get("content-range")).toBe(`bytes 10-${STREAM_CHUNK_BYTES + 9}/${size}`);
-        expect(part.headers.get("content-length")).toBe(String(STREAM_CHUNK_BYTES));
-        expect((await part.text()).length).toBe(STREAM_CHUNK_BYTES);
+        expect(part.headers.get("content-range")).toBe(`bytes ${first}-${last}/${size}`);
+        expect(part.headers.get("content-length")).toBe(String(last - first + 1));
+        expect(Buffer.from(await part.arrayBuffer()).equals(bytes.subarray(first, last + 1))).toBe(true);
       } finally { await server.stop(true); }
     })();
     await bodiesCollected();

@@ -924,8 +924,17 @@ export function isHtmlPage(info: FileInfo): boolean {
  */
 const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((held) => {
   held.left -= 1;
-  if (held.left === 0) release(held.fd);
+  if (held.left > 0) return;
+  bodiesHeld -= 1;
+  try { release(held.fd); } catch { /* already closed */ }
 });
+/**
+ * Such bodies waiting to be collected; past `BODY_DESCRIPTORS` (a player seeking through a long
+ * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
+ * so descriptors held for collection stay bounded.
+ */
+let bodiesHeld = 0;
+const BODY_DESCRIPTORS = 256;
 
 export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
   const name = encodeURIComponent(info.name);
@@ -981,10 +990,16 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once);
     // a scratch file (`within`) by its descriptor's own path, the file that descriptor holds
     headers.delete("content-length");
+    if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) {
+      // too many such bodies wait to be collected: this one is streamed from its descriptor, without a length
+      headers.set("content-length", String(length));
+      return new Response(descriptorBody(opened.fd, start, length, null), { status, headers });
+    }
     const body = Bun.file(opened.fd === null ? info.path : `/proc/self/fd/${opened.fd}`, { type }).slice(start, end + 1, type);
     const response = new Response(body, { status, headers });
     if (opened.fd !== null) {
       const held = { fd: opened.fd, left: 2 };
+      bodiesHeld += 1;
       bodyDescriptors.register(body, held);
       bodyDescriptors.register(response, held);
     }
