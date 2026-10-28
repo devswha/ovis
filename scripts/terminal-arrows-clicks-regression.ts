@@ -18,10 +18,10 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const probe = resolve("scripts/fixtures/modifier-probe.py");
 
-async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>, label: string | (() => string)): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (!(await check())) {
-    assert(Date.now() < deadline, `timed out: ${label}`);
+    assert(Date.now() < deadline, `timed out: ${typeof label === "string" ? label : label()}`);
     await Bun.sleep(20);
   }
 }
@@ -60,7 +60,8 @@ async function mark(s: Session, label: string, from = s.frames.length): Promise<
   await s.page.locator(".xterm-helper-textarea").focus();
   await s.page.keyboard.press(MARK);
   let read = "";
-  await until(() => (read += s.received()).endsWith(MARK), `${label}: the mark received`);
+  await until(() => (read += s.received()).includes(MARK), () => `${label}: the mark received (read ${JSON.stringify(read)})`);
+  assert.equal(read.slice(read.indexOf(MARK)), MARK, `${label}: nothing read after the mark`);
   const at = () => s.frames.findIndex((frame, i) => i >= from && frame.type === "input" && frame.text === MARK);
   await until(() => at() >= 0, `${label}: the mark's frame reported`);
   return { read: read.slice(0, -MARK.length), frames: s.frames.slice(from, at()) };
@@ -158,26 +159,34 @@ try {
     // herdr has no barrier for bytes in that pty, so the server holds the arrow KEY_SETTLE_MS after the
     // letter (TYPED_SETTLE_MS after an ESC, which herdr holds ~150ms): a margin, not an
     // acknowledgement (#634), which a stall on a busy PC outlasts. server/core/key-settle.test.ts
-    // proves the hold; here the letter is read before its arrow is pressed. A letter typed while the
-    // arrow waits goes behind it in the pane's queue, which is order by construction: pressed at once.
+    // proves the hold with the shipped settle values; here the letter is read before its arrow is
+    // pressed. A letter typed while the arrow waits goes behind it in the pane's queue, which is order
+    // by construction: pressed at once.
     let got = "";
     for (let round = 0; round < 5; round += 1) {
       await s.page.keyboard.press("a");
-      await until(() => (got += s.received()).endsWith("a"), "a letter received");
+      await until(() => (got += s.received()).length >= round * 5 + 1, "a letter received");
       await s.page.keyboard.press("ArrowLeft");
       await s.page.keyboard.press("b");
-      await until(() => (got += s.received()).endsWith("b"), "an arrow and the letter after it received");
+      await until(() => (got += s.received()).length >= round * 5 + 5, "an arrow and the letter after it received");
     }
     assert.equal(got, "a\x1b[Db".repeat(5), "an arrow between two letters arrives between them");
+    // Diagnostic only: a letter, an arrow and a letter pressed at once, where only the settle margin
+    // keeps the arrow behind the first letter. Logged, not asserted.
+    await s.page.keyboard.press("a");
+    await s.page.keyboard.press("ArrowLeft");
+    await s.page.keyboard.press("b");
+    const together = (await mark(s, "a, ArrowLeft and b at once")).read;
+    console.log(`a, ArrowLeft and b pressed at once arrived ${together === "a\x1b[Db" ? "in order" : `as ${JSON.stringify(together)}: the arrow outran the settle margin`}`);
     got = "";
     await s.page.keyboard.press("Escape");
-    await until(() => (got += s.received()) === "\x1b", "Escape received");
+    await until(() => (got += s.received()).length >= 1, "Escape received");
     await s.page.keyboard.press("ArrowUp");
     await until(() => (got += s.received()).length >= 4, "ArrowUp received");
     assert.equal(got, "\x1b\x1b[A", "an arrow after an Escape arrives after it");
     // Ctrl+arrow and Shift+arrow were never plain arrows: they keep the path they had. The earlier
     // keys' frames, which Playwright may report late, are all reported once a mark's is.
-    await mark(s, "the keys before Ctrl+ArrowLeft");
+    assert.equal((await mark(s, "the keys before Ctrl+ArrowLeft")).read, "", "nothing more after the Escape and ArrowUp");
     const before = s.frames.length;
     await s.page.keyboard.press("Control+ArrowLeft");
     const chord = await mark(s, "Ctrl+ArrowLeft", before);
@@ -212,7 +221,7 @@ try {
         if (i % 7 === 3) {
           const letter = tokens.push({ text: "x", sent: performance.now() }) - 1;
           await s.page.keyboard.press("x");
-          await until(() => tokens[letter]!.arrived !== undefined, "a letter between held repeats received");
+          await until(() => tokens[letter]!.arrived !== undefined, () => `a letter between held repeats received in order (left over ${JSON.stringify(buffer)})`);
           due = Math.max(due, performance.now());
         }
       }

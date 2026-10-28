@@ -2,12 +2,16 @@ import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import * as client from "../herdr/client.ts";
 import { type Client, connectionData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
+import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 
 afterEach(() => mock.restore());
 
-/** long enough that a key sent without waiting (a few ms) cannot pass for one that waited */
-const KEY_SETTLE_MS = 120;
-const TYPED_SETTLE_MS = 240;
+/**
+ * What the settle must outlast, measured on herdr 0.9.3 (#634): a letter crosses the sidecar and the
+ * attach in about 2 ms, so a key waits several times that; herdr holds a lone ESC ~150 ms.
+ */
+const PTY_PIPELINE_MARGIN_MS = 20;
+const HERDR_ESC_HOLD_MS = 150;
 
 /**
  * One connection attached and ready on pane w:p1, its pty writes and herdr's RPCs written down with
@@ -45,7 +49,7 @@ it("sends a key KEY_SETTLE_MS after the letter typed into the pty before it", as
   await keys(["left"]);
   expect(events.map((e) => e.what)).toEqual(["pty \"a\"", "keys left"]);
   // timers count whole milliseconds: one may fire up to a millisecond before Date.now() says it is due
-  expect(gap("pty \"a\"", "keys left")).toBeGreaterThanOrEqual(KEY_SETTLE_MS - 1);
+  expect(gap("pty \"a\"", "keys left")).toBeGreaterThanOrEqual(Math.max(KEY_SETTLE_MS, PTY_PIPELINE_MARGIN_MS) - 1);
 });
 
 it("sends a key TYPED_SETTLE_MS after typing that ended in an ESC, which herdr holds a moment", async () => {
@@ -53,7 +57,7 @@ it("sends a key TYPED_SETTLE_MS after typing that ended in an ESC, which herdr h
   type("\x1b");
   await keys(["up"]);
   expect(events.map((e) => e.what)).toEqual(["pty \"\\u001b\"", "keys up"]);
-  expect(gap("pty \"\\u001b\"", "keys up")).toBeGreaterThanOrEqual(TYPED_SETTLE_MS - 1);
+  expect(gap("pty \"\\u001b\"", "keys up")).toBeGreaterThanOrEqual(Math.max(TYPED_SETTLE_MS, HERDR_ESC_HOLD_MS) - 1);
 });
 
 it("types a letter that comes while a key waits after the key, through herdr, not into the pty", async () => {
