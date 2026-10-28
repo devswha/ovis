@@ -565,6 +565,29 @@ describe("parseClaudeTranscript", () => {
     expect(notices([info("Message expired", "2026-10-08T08:06:31.117Z"), info("Message expired", "2026-10-08T08:06:31.118Z")])).toEqual(["Message expired\nMessage expired"]);
   });
 
+  it("shows a bash-mode command with what it printed as one turn, which only the command opens", () => {
+    const user = (content: string, ts: string) => JSON.stringify({ type: "user", timestamp: ts, message: { role: "user", content } });
+    const records = [
+      user('<bash-input>echo "Hello"</bash-input>', "2026-10-27T03:00:00.000Z"),
+      user("<bash-stdout>Hello</bash-stdout><bash-stderr></bash-stderr>", "2026-10-27T03:00:00.100Z"),
+      user("<bash-input>ls extra</bash-input>", "2026-10-27T03:00:01.000Z"),
+      user("<bash-stdout></bash-stdout><bash-stderr>\u001b[31mls: extra: No such file or directory\u001b[39m</bash-stderr>", "2026-10-27T03:00:01.100Z"),
+      // a command whose output was not recorded, then a prompt that quotes the tags
+      user("<bash-input>sleep 60</bash-input>", "2026-10-27T03:00:02.000Z"),
+      user("Why does <bash-input>ls</bash-input> show here?", "2026-10-27T03:00:03.000Z"),
+    ];
+    expect(parseClaudeTranscript(records.join("\n"))).toEqual([
+      { role: "user", ts: "2026-10-27T03:00:00.000Z", parts: [{ kind: "shell", command: 'echo "Hello"', stdout: "Hello", stderr: "" }] },
+      { role: "user", ts: "2026-10-27T03:00:01.000Z", parts: [{ kind: "shell", command: "ls extra", stdout: "", stderr: "ls: extra: No such file or directory" }] },
+      { role: "user", ts: "2026-10-27T03:00:02.000Z", parts: [{ kind: "shell", command: "sleep 60" }] },
+      { role: "user", ts: "2026-10-27T03:00:03.000Z", parts: [{ kind: "text", text: "Why does <bash-input>ls</bash-input> show here?" }] },
+    ]);
+    // a page never starts at an output: it would lose its command
+    expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toHaveLength(4);
+    // an output with no command before it is left out
+    expect(parseClaudeTranscript(records[1]!)).toEqual([]);
+  });
+
   it("shows a slash command's answer only as the whole entry, as text, and not past its length", () => {
     const local = (content: string) => JSON.stringify({ type: "system", subtype: "local_command", timestamp: "2026-10-07T19:00:00.000Z", content });
     const notices = (lines: string[]) => parseClaudeTranscript(lines.join("\n")).flatMap((turn) => turn.parts).filter((part) => part.kind === "notice").map((part) => (part as { text: string }).text);
