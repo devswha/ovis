@@ -2790,14 +2790,15 @@ describe("a model drawn only in the history above the live screen", () => {
   });
   /** A pane whose viewport (at the bottom) shows `live`, and whose detection read also reaches `history`;
    * each scroll position herdr reports in turn (offset from the bottom, rows of history; null for none,
-   * as herdr's scroll is optional), the last one from then on. */
-  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null)[] = [[0, 30]], detected = history + live): string => {
+   * as herdr's scroll is optional; "fail" for a lookup that fails), the last one from then on. */
+  const shown = (agent: string, status: string, history: string, live: string, scrolls: ([number, number] | null | "fail")[] = [[0, 30]], detected = history + live): string => {
     const pane = { pane_id: `screen-history-${agent}`, cwd: root, foreground_cwd: root, agent, agent_status: status } as HerdrPane;
     mocks.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as SessionSnapshot));
     mocks.push(spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
       if (method === "agent.get") return { agent: { agent } } as never;
       if (method === "pane.get") {
         const scroll = scrolls.length > 1 ? scrolls.shift()! : scrolls[0]!;
+        if (scroll === "fail") throw new herdr.HerdrError("connect_failed", "fixture: pane.get failed");
         return { pane: { ...pane, ...(scroll === null ? {} : { scroll: { offset_from_bottom: scroll[0], max_offset_from_bottom: scroll[1], viewport_rows: 40 } }) } } as never;
       }
       if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
@@ -2823,7 +2824,7 @@ describe("a model drawn only in the history above the live screen", () => {
 
   it("names the model only when the viewport stayed at the bottom, with the same history, around its read", async () => {
     const frame = "  >_ OpenAI Codex (v0.163.0)\n\n\u203a Ask Codex to do anything\n\n  GPT-6.1-Sol low \u00b7 /tmp/project\n  ? for shortcuts\n";
-    const named = async (scrolls: ([number, number] | null)[]) => {
+    const named = async (scrolls: ([number, number] | null | "fail")[]) => {
       const id = shown("codex", "working", "", frame, scrolls);
       const answer = await paneConversation(id, join(root, ".codex")).catch((error: unknown) => error);
       for (const mock of mocks.splice(0)) mock.mockRestore();
@@ -2837,6 +2838,9 @@ describe("a model drawn only in the history above the live screen", () => {
     // a scroll known for one read and not the other proves nothing
     expect(await named([null, [0, 30]])).toBeNull();
     expect(await named([[0, 30], null])).toBeNull();
+    // a lookup that failed is no answer, not a scroll herdr does not report
+    expect(await named(["fail", "fail"])).toBeNull();
+    expect(await named([[0, 30], "fail"])).toBeNull();
   });
 
   // herdr's pane.get may report no scroll: then the viewport is the live screen only when its whole text is

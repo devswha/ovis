@@ -1375,14 +1375,16 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
  * Whatever the agent drew there before (another model, a conversation) is not what it shows now.
  */
 async function bottomViewport(paneId: string): Promise<string> {
-  const scroll = () => paneScrollInfo(paneId).catch(() => null);
+  // a lookup that failed is no answer at all, unlike one that reports no scroll
+  const scroll = () => paneScrollInfo(paneId).catch(() => undefined);
   const read = (source: "visible" | "detection") =>
     paneRead({ paneId, source, format: "text", timeoutMs: 2_000 }).then((answer) => answer.text, () => "");
   const before = await scroll();
-  if (before !== null && before.offset_from_bottom !== 0) return "";
+  if (before === undefined || (before !== null && before.offset_from_bottom !== 0)) return "";
   const text = await read("visible");
   if (text === "") return "";
   const after = await scroll();
+  if (after === undefined) return "";
   if (before !== null && after !== null) {
     return after.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
   }
