@@ -39,10 +39,15 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
         expect(answerKeys(rich, answer)).toEqual(answerKeys(single, answer));
       }
 
-      // a question omp cut at four rows is matched by what it shows, and given whole
+      // a question omp cut at four rows, which its footer offers to expand, is matched by what it
+      // shows and given whole; at 60 columns the footer is cut before `expand`, and the card stays as drawn
       const multi = card(screen(version, "multi", width));
       expect(multi.question.endsWith("…")).toBe(true);
       const richMulti = ompMarkdownPrompt(multi, open(version));
+      if (width === 60) {
+        expect(richMulti).toBe(multi);
+        return;
+      }
       expect(richMulti).toMatchObject({
         id: multi.id, text_format: "markdown", multi_select: true,
         question: "Pick the **targets**:\n\n- Desktop *first*\n- Phone `390px`\n\n```sh\nbun run qa\n```",
@@ -77,6 +82,11 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       ["code with an underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local_socket`"; })],
       ["code with an asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local*socket`"; })],
       ["an address with an underscore", withArgs(asks, (args) => { args.questions[0]!.question = args.questions[0]!.question.replace("/guide", "/gui_de"); })],
+      // and a mark that pairs with nothing, as a glob or a path
+      ["an unpaired asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` *socket"; })],
+      ["an unpaired underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` _socket"; })],
+      // Markdown omp draws in its own way: a table
+      ["a table in the question", withArgs(asks, (args) => { args.questions[0]!.question += "\n\n| a | b |\n|---|---|\n| 1 | 2 |"; })],
       ["another description", withArgs(asks, (args) => { args.questions[0]!.options[0]!.description = "Keeps the **session** elsewhere."; })],
       ["a description omp does not show", withArgs(asks, (args) => { delete args.questions[0]!.options[0]!.description; })],
       ["one more option", withArgs(asks, (args) => { args.questions[0]!.options.push({ label: "Third" }); })],
@@ -92,6 +102,11 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     expect(ending.question).toBe("Which route should carry the fixture session\u2026");
     const longer = withArgs(asks, (args) => { args.questions[0]!.question = "Which **route** should carry the `fixture` session into production?"; });
     expect(ompMarkdownPrompt(ending, longer)).toBe(ending);
+    // nor is one that fills four rows while omp's footer offers nothing to expand
+    const full = screen(version, "multi", 120).replace(" \u00b7 Ctrl+O expand", "               ");
+    const unexpanded = card(full);
+    expect(unexpanded.question.endsWith("\u2026")).toBe(true);
+    expect(ompMarkdownPrompt(unexpanded, open(version))).toBe(unexpanded);
     // omp's review of the answers is no question card
     const review = card(readFileSync(fixture("18.12.6-submit-60.txt"), "utf8"));
     expect(review.title).toBe("Review answers");

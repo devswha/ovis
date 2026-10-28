@@ -20,6 +20,11 @@ export const OMP_MULTI_CLIPPED_HINT_RE = /(?:space|␠|␣)\s+toggle.*(?:enter|�
 
 export const OMP_REVIEW_HINT_RE = /(?:enter|⏎)\s+submit.*↑\/↓\s*scroll.*(?:esc|⎋)\s*cancel/i;
 
+/** omp shows a question in at most this many rows, the last one cut with `…` (pi-tui ask-dialog.ts `MAX_HEADER_ROWS`) */
+const OMP_QUESTION_ROWS = 4;
+
+const OMP_EXPAND_HINT_RE = /\s\u00b7\s\S+\sexpand(?:\s\u00b7|$)/;
+
 const OMP_TABS_HINT_RE = /(?:tab|⇥).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥)/i;
 
 /** OMP options have a marker; their descriptions and wrapped labels are indented below them. */
@@ -209,7 +214,10 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
     options: optionRows.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: row.description ?? null })),
     multi_select: multiSelect, custom_option_index: multiSelect ? null : optionRows.length,
   }, {
-    responder: "omp-question", menuLabels: rows.map((row) => row.label), selectedIndex, ompQuestionRows: questionRows,
+    responder: "omp-question", menuLabels: rows.map((row) => row.label), selectedIndex,
+    // omp offers `<key> expand` only for a question past its four rows or a description past its two
+    // (pi-tui ask-dialog.ts `#expandHint`, 18.12.6 to 18.13.2); a footer cut short shows neither
+    ...(questionRows === OMP_QUESTION_ROWS && OMP_EXPAND_HINT_RE.test(hint) ? { ompQuestionCut: true as const } : {}),
     checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []),
     customMenuIndex: customIndex, rejectWithEscapeIndex: null,
     // OMP's Other row opens its own text prompt on Enter. The ordinary Enter in

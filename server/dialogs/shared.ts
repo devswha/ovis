@@ -146,8 +146,8 @@ export type ParsedPrompt = InteractivePrompt & {
   /** Installed questionnaire editor contents; absent outside its guarded input mode. */
   piQuestionnaireInput?: string;
   piQuestionnaireInputRows?: string[];
-  /** how many rows omp's question takes in its Ask panel, blank ones included: four when omp cut it (server/omp-ask.ts) */
-  ompQuestionRows?: number;
+  /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
+  ompQuestionCut?: true;
   menuLabels: string[];
   selectedIndex: number;
   checkedOptionIndices: number[];

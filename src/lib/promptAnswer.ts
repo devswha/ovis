@@ -53,9 +53,10 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   const words = promptWords(prompt);
   const names = (label: string): boolean => label.toLowerCase() === lower || bareLabel(label) === lower || boundLetter(label) === lower;
   // an option's own words first: a translated label never takes the words another option shows
-  const named = valid.find((index) => names(prompt.options[index]!.label))
-    ?? (prompt.text_format === "markdown" ? valid.find((index) => names(shownWords(parseInline(prompt.options[index]!.label, false)))) : undefined)
-    ?? valid.find((index) => names(words.label(index)));
+  // an omp card in Markdown is named by the words it shows alone: its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
+  const named = prompt.text_format === "markdown"
+    ? valid.find((index) => names(shownWords(parseInline(prompt.options[index]!.label, false))))
+    : valid.find((index) => names(prompt.options[index]!.label)) ?? valid.find((index) => names(words.label(index)));
   if (named !== undefined) return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }
