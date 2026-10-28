@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { MachineEvent } from "../shared/machines.ts";
-import { handleMachineRequest, MACHINE_EVENTS_QUEUE_BYTES } from "./machine-api.ts";
+import { handleMachineRequest, MACHINE_EVENTS_QUEUE_BYTES, MACHINE_EVENTS_QUEUE_FRAMES } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
 /** A roster stand-in whose one listener the test drives, as the status hub drives the real one. */
@@ -57,16 +57,49 @@ describe("the machine events stream", () => {
     }
   });
 
+  it("keeps a stream open after a frame larger than the byte bound, as a roster of thousands of panes is", async () => {
+    const { manager, emit } = managerStandIn();
+    const stream = await open(manager);
+    try {
+      const roster: MachineEvent = { type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: "x".repeat(MACHINE_EVENTS_QUEUE_BYTES + 1024), agent_status: "idle", finish_epoch: "e", finish_id: 0 } };
+      emit(roster);
+      for (let index = 0; index < 20; index++) emit(status(index));
+      expect(await stream.readUntil(21)).toBe(true);
+      emit(status(20));
+      expect(await stream.readUntil(22)).toBe(true);
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("ends a stream that stopped reading once more than the bound of large frames waits", async () => {
+    const { manager, emit, listening } = managerStandIn();
+    const stream = await open(manager);
+    try {
+      const large: MachineEvent = { type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: "x".repeat(MACHINE_EVENTS_QUEUE_BYTES), agent_status: "idle", finish_epoch: "e", finish_id: 0 } };
+      for (let sent = 0; sent <= MACHINE_EVENTS_QUEUE_FRAMES + 1 && listening(); sent++) emit(large);
+      expect(listening()).toBe(false);
+    } finally {
+      await stream.close();
+    }
+  });
+
   it("still ends the stream of a browser that stopped reading, once what waits for it passes the bound", async () => {
     const { manager, emit, listening } = managerStandIn();
     const stream = await open(manager);
     try {
       const frame = status(0);
       const size = `data: ${JSON.stringify(frame)}\n\n`.length;
-      for (let written = 0; written <= MACHINE_EVENTS_QUEUE_BYTES + size && listening(); written += size) emit(frame);
+      const within = Math.floor(MACHINE_EVENTS_QUEUE_BYTES / size);
+      for (let sent = 0; sent < within; sent++) emit(frame);
+      // everything up to the byte bound waits for the browser; a frame count would have ended it long before
+      expect(listening()).toBe(true);
+      emit(frame);
+      emit(frame);
       expect(listening()).toBe(false);
       // what was queued before the bound is still delivered, then the stream ends
       expect(await stream.readUntil(Number.MAX_SAFE_INTEGER)).toBe(false);
+      expect(stream.events.length).toBe(within + 1);
     } finally {
       await stream.close();
     }

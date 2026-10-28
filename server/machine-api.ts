@@ -13,15 +13,21 @@ import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResp
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
 
 /**
+ * How far a browser's machine events may fall behind before its stream is ended (it reconnects and
+ * reads the roster afresh). Counted in bytes, not frames: a burst of status changes from 20 or more
+ * agents queues more small frames than a frame count allowed before the browser has read any.
+ */
+export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
+/**
+ * Never less than this many of the stream's largest frame: a roster frame larger than the byte bound
+ * (thousands of panes) must not end every stream right after it opens, so the browser never loops.
+ */
+export const MACHINE_EVENTS_QUEUE_FRAMES = 6;
+
+/**
  * A PC route whose answer can take longer than the proxy's usual 75 s: a worktree's creation waits on
  * git and then an agent's start, and a resume on the agent's start and then the check of its store.
  */
-/**
- * How far a browser's machine events may fall behind before its stream is ended (it reconnects and
- * reads the roster afresh). Counted in bytes, not frames: herdr hands a burst of status changes over
- * in one socket read, so hundreds of small frames are written before the response is drained once.
- */
-export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 export const slowMachinePath = (path: string): boolean => path === "worktree/create" || path === "sessions/resume";
 
 /**
@@ -115,7 +121,15 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
           unwatchDevice = onRevoke?.(close);
           if (closed) return;
-          const send = (text: string) => { if (closed) return; if ((controller.desiredSize ?? 0) < 0) { close(); return; } try { controller.enqueue(encoder.encode(text)); } catch { close(); } };
+          let largest = 0;
+          const send = (text: string) => {
+            if (closed) return;
+            const bytes = encoder.encode(text);
+            largest = Math.max(largest, bytes.byteLength);
+            const queued = MACHINE_EVENTS_QUEUE_BYTES - (controller.desiredSize ?? 0);
+            if (queued > Math.max(MACHINE_EVENTS_QUEUE_BYTES, MACHINE_EVENTS_QUEUE_FRAMES * largest)) { close(); return; }
+            try { controller.enqueue(bytes); } catch { close(); }
+          };
           // herdr's sidebar rows are this PC's config, as herdr's own sidebar takes the client's for every PC.
           // A roster leaves without the values their hide rules hide (withoutHiddenTokens), so no browser holds one;
           // the rules' decisions (decidedRowTokens) go first, in the same write, showing the values of this roster and
