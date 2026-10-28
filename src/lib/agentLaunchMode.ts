@@ -8,9 +8,9 @@
  * reference documents the flag or argument (launchCapabilities); nothing is guessed for the rest.
  * The bridge checks them again by the same rules (shared/launch-rules.ts).
  */
-import { argumentText, CLAUDE_EFFORTS, CODEX_EFFORTS, MODEL_NAME } from "../../shared/launch-rules.ts";
+import { argumentText, CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORTS, CLAUDE_ULTRACODE_SETTINGS, CODEX_EFFORTS, MODEL_NAME } from "../../shared/launch-rules.ts";
 
-export { CLAUDE_EFFORTS, CODEX_EFFORTS };
+export { CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORTS, CODEX_EFFORTS };
 
 /** Claude Code's `--permission-mode` choices; "default" leaves the flag out */
 export const CLAUDE_LAUNCH_MODES = ["default", "acceptEdits", "auto", "plan", "dontAsk", "bypassPermissions"] as const;
@@ -32,6 +32,8 @@ export interface LaunchCapabilities {
   model: boolean;
   /** the effort levels the agent names; empty: its launch takes none */
   efforts: readonly string[];
+  /** Ultracode is a switch of its own beside the level (`--settings`, CLAUDE_ULTRACODE_SETTINGS) */
+  ultracode: boolean;
   /**
    * the first prompt goes on the command line after an end-of-options separator, which the agent's
    * parser verifiably takes as the prompt and never as a subcommand or a flag; otherwise the bridge
@@ -40,7 +42,7 @@ export interface LaunchCapabilities {
   positionalPrompt: boolean;
 }
 
-const NO_CAPABILITIES: LaunchCapabilities = { model: false, efforts: [], positionalPrompt: false };
+const NO_CAPABILITIES: LaunchCapabilities = { model: false, efforts: [], ultracode: false, positionalPrompt: false };
 
 const CAPABILITIES: Readonly<Record<string, LaunchCapabilities>> = {
   // `claude "query"` starts an interactive session with that prompt; `--model` takes an alias (sonnet,
@@ -50,7 +52,7 @@ const CAPABILITIES: Readonly<Record<string, LaunchCapabilities>> = {
   // `--` to the operands, and _parseCommand dispatches operands[0]); verified on claude 2.1.304 in an
   // isolated HOME on 2026-10-20: `claude -- update` ran the updater, while `claude -- --help` and
   // `claude -- '-p x'` were prompts. So a first message for Claude Code is the bridge's pending message.
-  claude: { model: true, efforts: CLAUDE_EFFORTS, positionalPrompt: false },
+  claude: { model: true, efforts: CLAUDE_EFFORT_LEVELS, ultracode: true, positionalPrompt: false },
   // `codex [OPTIONS] [PROMPT]`: "Optional user prompt to start the session" (codex-rs/tui/src/cli.rs);
   // `--model`/`-m` (codex-rs/utils/cli/src/shared_options.rs); `-c model_reasoning_effort=<level>` is
   // a config.toml override on the command line (codex-rs/utils/cli/src/config_override.rs), 2026-10-20.
@@ -59,7 +61,7 @@ const CAPABILITIES: Readonly<Record<string, LaunchCapabilities>> = {
   // the PROMPT positional whatever it says; verified on codex 0.163.0 in an isolated CODEX_HOME on
   // 2026-10-20: `codex -- logout`, `-- update`, `-- --help` and `-- '-p x'` all started the TUI, and
   // `codex -- logout extra` failed with the root `[PROMPT]` usage, `codex logout extra` with the subcommand's
-  codex: { model: true, efforts: CODEX_EFFORTS, positionalPrompt: true },
+  codex: { model: true, efforts: CODEX_EFFORTS, ultracode: false, positionalPrompt: true },
 };
 
 /**
@@ -84,6 +86,8 @@ export function launchCapabilities(kind: string): LaunchCapabilities {
 export interface LaunchChoices {
   model?: string;
   effort?: string;
+  /** Ultracode on, at the chosen effort or the agent's own; ignored where the launch takes no Ultracode */
+  ultracode?: boolean;
   prompt?: string;
 }
 
@@ -124,6 +128,7 @@ export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunch
   if (choices.effort && can.efforts.includes(choices.effort)) {
     args.push(...(kind === "codex" ? ["-c", `model_reasoning_effort=${choices.effort}`] : ["--effort", choices.effort]));
   }
+  if (choices.ultracode && can.ultracode) args.push("--settings", CLAUDE_ULTRACODE_SETTINGS);
   // the prompt last, after the end-of-options separator: nothing it says can be a flag or a subcommand there
   if (firstPromptDelivery(kind, choices.prompt) === "positional") args.push("--", choices.prompt!.trim());
   return args.length === 0 ? undefined : args;

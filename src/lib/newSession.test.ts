@@ -23,6 +23,12 @@ describe("newSessionLaunch", () => {
     expect(newSessionLaunch({ agent: "", model: "", effort: "", prompt: "" }, plain)).toEqual({ agent: null, prompt: null });
   });
 
+  it("starts Claude Code with Ultracode on at the chosen effort", () => {
+    expect(newSessionLaunch({ agent: "claude", model: "", effort: "medium", ultracode: true, prompt: "" }, plain))
+      .toEqual({ agent: { kind: "claude", args: ["--effort", "medium", "--settings", '{"ultracode":true}'] }, prompt: null });
+    expect(newSessionLaunch({ agent: "codex", model: "", effort: "", ultracode: true, prompt: "" }, plain)).toEqual({ agent: { kind: "codex" }, prompt: null });
+  });
+
   it("names the first choice an agent's launch does not take, and queues nothing for it", () => {
     expect(newSessionLaunch({ agent: "omp", model: "gpt-5", effort: "", prompt: "" }, plain)).toEqual({ fault: "model" });
     expect(newSessionLaunch({ agent: "omp", model: "", effort: "high", prompt: "" }, plain)).toEqual({ fault: "effort" });

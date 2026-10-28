@@ -61,6 +61,7 @@ export const WORKSPACE_KO: Record<string, string> = {
   "One model name, without spaces.": "띄어쓰기 없는 모델 이름 하나를 적으세요.",
   "Effort": "노력 수준",
   "Levels depend on the model.": "고를 수 있는 수준은 모델에 따라 다릅니다.",
+  "Ultracode: a workflow for each task": "Ultracode: 작업마다 워크플로로 진행",
   "First message": "첫 메시지",
   "Optional": "선택",
   "Sent to {agent} as it starts.": "{agent}가 시작할 때 함께 보냅니다.",

@@ -12,6 +12,20 @@
  */
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 /**
+ * The levels a new Claude Code session offers. `ultracode` is not one: since Claude Code 2.1.284 it
+ * is "its own toggle in `/effort`" that "no longer forces xhigh effort and stays on at any effort
+ * level", while `--effort ultracode` still "turn[s] it on and also set[s] the level to `xhigh`"
+ * (CHANGELOG 2.1.284, code.claude.com/docs/en/model-config, read 2026-10-28). A launch turns it on
+ * with the `ultracode` setting instead (CLAUDE_ULTRACODE_SETTINGS); `agent.args` still takes the flag.
+ */
+export const CLAUDE_EFFORT_LEVELS = CLAUDE_EFFORTS.filter((level) => level !== "ultracode");
+/**
+ * `--settings` for a Claude Code session with Ultracode on: "set `"ultracode": true` in a settings
+ * file, with `--settings`" (code.claude.com/docs/en/model-config). The key "doesn't change the
+ * session's effort level" (code.claude.com/docs/en/settings-reference#ultracode, read 2026-10-28).
+ */
+export const CLAUDE_ULTRACODE_SETTINGS = '{"ultracode":true}';
+/**
  * Codex's `model_reasoning_effort` levels: "such as low, medium, high, xhigh, max, or ultra. Available
  * levels depend on the model and client." (developers.openai.com/codex/config-reference, read 2026-10-20)
  */

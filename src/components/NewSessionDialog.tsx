@@ -102,6 +102,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [name, setName] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [ultracode, setUltracode] = useState(false);
   const [prompt, setPrompt] = useState("");
   /** the picked agent's skills in the folder, once listed; null while none were asked for or the answer is on its way */
   const [skills, setSkills] = useState<{ rows: SlashCommand[]; note: string | null } | null>(null);
@@ -146,6 +147,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     setName(filled?.name ?? "");
     setModel("");
     setEffort("");
+    setUltracode(false);
     setPrompt("");
     setSkills(null);
     setError(null);
@@ -224,7 +226,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const pendingLabel = selectedAgent ? t("Starting {agent}… up to 60s", { agent: selectedAgent.label }) : t("Starting shell…");
   const fieldsDisabled = pending || createdPaneId !== null;
   const can = launchCapabilities(agentKind);
-  const launched = newSessionLaunch({ agent: agentKind, model, effort, prompt }, settings);
+  const launched = newSessionLaunch({ agent: agentKind, model, effort, ultracode, prompt }, settings);
   const fault = "fault" in launched ? launched.fault : null;
   const launch = "fault" in launched ? null : launched;
   const suggestions = modelSuggestions(agentKind);
@@ -241,6 +243,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const next = launchCapabilities(kind);
     if (!next.model || kind !== agentKind) setModel("");
     if (!next.efforts.includes(effort)) setEffort("");
+    if (!next.ultracode) setUltracode(false);
   };
 
   const insertSkill = (skill: SlashCommand): void => {
@@ -407,6 +410,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>
+              {/* Claude Code's /effort keeps Ultracode a switch beside the level, not a level (shared/launch-rules.ts) */}
+              {can.ultracode && <label className="new-session-check">
+                <input type="checkbox" checked={ultracode} disabled={fieldsDisabled} onChange={(event) => setUltracode(event.target.checked)} />
+                {t("Ultracode: a workflow for each task")}
+              </label>}
               <span id="new-session-effort-hint" className="field-hint">{t("Levels depend on the model.")}</span>
             </div>}
           </div>}

@@ -141,6 +141,16 @@
   min-width: 0;
 }
 
+/* Ultracode under the effort select: a switch beside the level, as in Claude Code's /effort */
+.new-session-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
 .new-session-launch .input,
 .new-session-launch .select {
   width: 100%;

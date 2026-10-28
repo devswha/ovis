@@ -61,6 +61,7 @@ export const WORKSPACE_JA: Record<string, string> = {
   "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
   "Effort": "推論レベル",
   "Levels depend on the model.": "選べるレベルはモデルによって異なります。",
+  "Ultracode: a workflow for each task": "Ultracode: タスクごとにワークフローで進める",
   "First message": "最初のメッセージ",
   "Optional": "任意",
   "Sent to {agent} as it starts.": "{agent} の起動時に一緒に送ります。",

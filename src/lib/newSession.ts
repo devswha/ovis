@@ -15,6 +15,8 @@ export interface NewSessionFields {
   agent: string;
   model: string;
   effort: string;
+  /** Claude Code's Ultracode, beside the effort level (LaunchCapabilities.ultracode) */
+  ultracode?: boolean;
   prompt: string;
 }
 
@@ -31,7 +33,7 @@ export function newSessionLaunch(fields: NewSessionFields, modes: { claudeLaunch
   const via = firstPromptDelivery(fields.agent, fields.prompt);
   const text = fields.prompt.trim();
   return {
-    agent: launchAgent(fields.agent, modes, { model: fields.model, effort: fields.effort, prompt: via === "positional" ? text : "" }),
+    agent: launchAgent(fields.agent, modes, { model: fields.model, effort: fields.effort, ultracode: fields.ultracode ?? false, prompt: via === "positional" ? text : "" }),
     prompt: via === null ? null : { text, via },
   };
 }

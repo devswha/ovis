@@ -61,6 +61,7 @@ export const WORKSPACE_ZH: Record<string, string> = {
   "One model name, without spaces.": "填写一个不含空格的模型名称。",
   "Effort": "推理强度",
   "Levels depend on the model.": "可选的级别取决于模型。",
+  "Ultracode: a workflow for each task": "Ultracode：每个任务都用工作流执行",
   "First message": "第一条消息",
   "Optional": "可选",
   "Sent to {agent} as it starts.": "随 {agent} 启动一起发送。",

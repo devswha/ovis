@@ -16,6 +16,8 @@ describe("an agent's launch arguments", () => {
   });
   it("takes only a one-word model and the effort levels each agent names", () => {
     expect(launchArgsFault("claude", ["--permission-mode", "plan", "--model", "opus[1m]", "--effort", "ultracode"])).toBeNull();
+    // the new session dialog's Ultracode: the level stays its own
+    expect(launchArgsFault("claude", ["--effort", "medium", "--settings", '{"ultracode":true}'])).toBeNull();
     expect(launchArgsFault("claude", ["--model", "--dangerously-skip-permissions"])).toContain("--model");
     expect(launchArgsFault("claude", ["--model"])).toContain("--model");
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toContain("--effort");
