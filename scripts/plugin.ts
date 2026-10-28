@@ -261,8 +261,8 @@ function provedServer(): number | null {
 
 /**
  * What the record says of the process under `pid`: "replaced" once the recorded server is proved
- * gone or another process holds its pid (the pid is free, the PC restarted after it was recorded,
- * or another birth runs there now); "unrecorded" when no record of its identity was kept (a server
+ * gone or another process holds its pid (the pid is free, another birth runs there now, or, for a
+ * record without a birth, the PC restarted after it was recorded); "unrecorded" when no record of its identity was kept (a server
  * started by a version before this one); else "ours". A birth that could not be read, when it was
  * recorded or now, proves nothing either way, so the server counts as ours.
  */
@@ -274,13 +274,15 @@ function recordedServer(pid: number): "ours" | "replaced" | "unrecorded" {
     recordedAt = statSync(OWNER_FILE).mtimeMs;
   } catch { /* none kept */ }
   if (owner?.pid !== pid) return "unrecorded";
-  // every process from before a restart is gone, whatever now holds its pid
-  if (recordedAt < Date.now() - uptime() * 1000 - 1000) return "replaced";
   const now = readProcessBirth(pid);
   if (now.state === "absent") return "replaced";
+  // a recorded birth alone decides (Linux's carries the boot id): the wall clock can step forward
+  // (NTP on a PC without a clock of its own, a resumed VM) and make a live server look older than this boot
   const birth = parseBirth(owner.birth);
   if (birth !== null && birth.platform === process.platform) return now.state === "unknown" || now.birth.value === birth.value ? "ours" : "replaced";
   if (owner.birth_unknown !== true) return "unrecorded";
+  // no birth to compare: a record from before this boot names a process that is gone
+  if (recordedAt < Date.now() - uptime() * 1000 - 1000) return "replaced";
   return now.state === "identified" && startedAfter(now.birth.value, recordedAt) ? "replaced" : "ours";
 }
 

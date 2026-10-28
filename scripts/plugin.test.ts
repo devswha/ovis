@@ -366,6 +366,22 @@ describe("starts at the same moment", () => {
     }
   });
 
+  it("keep a server whose birth matches though the clock stepped forward past the record", async () => {
+    // the wall clock jumped (NTP on a PC without a clock of its own, a resumed VM): the record now
+    // looks older than this boot, though the very process it names runs
+    const { server, root } = recordedSleeper((pid) => { const reading = readProcessBirth(pid); return reading.state === "identified" ? reading.birth : null; });
+    const beforeBoot = (Date.now() - uptime() * 1000) / 1000 - 3600;
+    utimesSync(join(scratch, "state", "server.owner"), beforeBoot, beforeBoot);
+    try {
+      const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(existsSync(join(scratch, "spawned")), "regression: a live server with its own birth was taken for one from before this boot").toBe(false);
+      expect(started.err).toContain(`Ovis (pid ${server.pid}) is still running but does not answer`);
+      const stopped = await run("stop", { HERDR_PLUGIN_ROOT: root, PORT: "1" });
+      expect(stopped.out).toContain(`stopped Ovis (pid ${server.pid})`);
+      expect(() => process.kill(server.pid!, 0)).toThrow();
+    } finally { try { process.kill(-server.pid!, "SIGKILL"); } catch { /* stopped */ } }
+  }, 30_000);
+
   it("leave a server alone whose birth could not be read when it was started, while it still runs", async () => {
     const { server, root } = recordedSleeper(() => undefined);
     writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify({ pid: server.pid, birth_unknown: true }));
