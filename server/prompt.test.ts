@@ -4441,6 +4441,26 @@ ${omoRule}
     expect(parseInteractivePrompt("pi", clippedSharedForm, null, false, openOmoAsks(`${twoMulti}${decoyShared}`))).toMatchObject({ question: "Deploy now?" });
   });
 
+  test("keeps a clipped typed-answer card when another call's labels share only its first wrapped line, and refuses a true twin (#2092)", () => {
+    // a 60-column pane wraps the first option after 54 characters; only its first row tells the calls apart from a rough look
+    const prefix = "Continue deployment after completing the release safety".slice(0, 54);
+    const call = (id: string, tails: string[]) => JSON.stringify({ type: "message", message: { role: "assistant", stopReason: "toolUse",
+      content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false,
+        questions: tails.map((tail, at) => ({ header: `Q${at}`, question: `Question ${id}${at}`, options: [{ label: prefix + tail }, { label: "Cancel" }] })) } }] } }) + "\n";
+    const rule = "\u2500".repeat(60);
+    const screen = [rule, ` \u2192 1. ${prefix}`, "y checks", "   2. Cancel", "   Type your own answer...",
+      " Your answer (enter to save, \u2191\u2193 back to options, esc to", " discard)", " > custom draft", " Submit (0/1 answered) \u2014 Enter advances",
+      " enter save and next  \u2191\u2193 back to options  tab next question", " esc discard", rule, "/tmp/work \u2022 main", "(\ud83d\ude3a OmO Native)", ""].join("\n");
+    const actual = call("visible", ["y checks"]);
+    const read = (calls: string) => parseInteractivePrompt("pi", screen, null, false, openOmoAsks(calls));
+    const alone = read(actual);
+    expect(alone).toMatchObject({ agent: "omo", kind: "menu", question: "Question visible0" });
+    // another call whose questions cannot be the form on screen: the card stays
+    expect(read(`${actual}${call("incompatible", ["y report", "y summary"])}`)?.id).toBe(alone!.id);
+    // a call two of whose questions are the form on screen: no card
+    expect(read(`${actual}${call("twin", ["y checks", "y checks"])}`)).toBeNull();
+  });
+
   test.skipIf(process.platform !== "linux")("answers no call when the opened form is clipped and another call fits it too (#2092)", async () => {
     await withOmo(async (pane) => {
       writeFileSync(pane.omo!.path, JSON.stringify({ type: "session", id: "qa-session-488", cwd: pane.cwd }) + "\n" + twoShared + decoyShared);

@@ -298,7 +298,16 @@ function parseOmoTyping(screen: string, ask: OmoAsk | null, trusted: boolean): P
   let tabs: OmoForm["tabs"];
   let question: string;
   if (known) {
-    const fit = form ? form.tabs.findIndex((tab) => tab.current) : view.rows.length > 0 ? askedQuestion(view, known) : -1;
+    // as parseOmoQuestion matches it, but for the choice mode, which the typing hint does not show: only a question
+    // whose whole labels are the rows in view makes the cut-off form ambiguous (#2092)
+    const width = screenWidth(lines);
+    const shownLabels = view.rows.map((row) => joinWrapped(row.label, width, /^(?:\u2192\s+)?\d+\.\s+/).replace(/\s+\u2713$/, ""));
+    const shows = (at: number): boolean => {
+      const asked = known.questions[at]!;
+      return (view.question.length === 0 || sameText(joinWrapped(view.question, width), asked.question))
+        && view.rows.every((row, rowAt) => sameText(shownLabels[rowAt]!, asked.options[row.number - 1]!.label));
+    };
+    const fit = form ? form.tabs.findIndex((tab) => tab.current) : view.rows.length > 0 ? askedQuestion(view, known, shows) : -1;
     if (fit === AMBIGUOUS) return AMBIGUOUS;
     index = fit;
     if (index < 0) return null;
