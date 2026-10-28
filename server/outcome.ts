@@ -34,6 +34,8 @@ export interface CommandSend {
   readonly note?: string;
   /** the skills that note is about, by id */
   readonly unattached?: readonly string[];
+  /** Whether this send's echoes were counted against earlier same-command sends on screens cut at Claude's side panel. */
+  countedCut?: boolean;
   dialogId?: string;
   dialogObserved?: true;
   /** Any later delivery ends this send's unowned card and preview window. */
@@ -250,12 +252,12 @@ const screenLines = (screen: string): string[] => screen.replace(ANSI_RE, "").sp
  * parsePrompt reads its cards, only when every one of them shows the panel: a table's divider can pass for the panel's
  * edge on one screen and not the next, and a cut on one side alone loses the anchor between them.
  */
-function readAlike(agent: string, ...screens: string[]): string[][] {
+function readAlike(agent: string, ...screens: string[]): { lines: string[][]; cut: boolean } {
   if (agent === "claude") {
     const cut = screens.map(withoutClaudeSidePanel);
-    if (cut.every((text, index) => text !== screens[index])) return cut.map(screenLines);
+    if (cut.every((text, index) => text !== screens[index])) return { lines: cut.map(screenLines), cut: true };
   }
-  return screens.map(screenLines);
+  return { lines: screens.map(screenLines), cut: false };
 }
 /** Chrome belongs to the agent, not one command; the first applicable result reader supplies it. */
 function withoutChrome(lines: string[], agent: string, readers: readonly DialogReader[]): string[] | null {
@@ -330,14 +332,14 @@ const sendAnchor = (snapshot: readonly string[], lines: readonly string[], snaps
  * Fewer complete blocks below it, or this send's row missing, leaves the earlier sends' blocks ambiguous and this send
  * unreserved.
  */
-function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[]): boolean {
+function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[], read: (send: CommandSend) => string[]): boolean {
   const known = [...same].reverse().find((candidate) => candidate.top !== undefined
     && typeof candidate.resultEchoes?.[reader.id] === "number"
     && typeof candidate.resultEchoLimit?.[reader.id] === "number");
   const owed = known?.resultEchoLimit?.[reader.id];
   if (!known || typeof owed !== "number" || known.top === undefined || sent.top === undefined) return false;
-  const [knownLines, full] = readAlike(sent.agent, known.screen, sent.screen) as [string[], string[]];
-  const before = withoutChrome(knownLines, sent.agent, readers);
+  const full = read(sent);
+  const before = withoutChrome(read(known), sent.agent, readers);
   const lines = withoutChrome(full, sent.agent, readers);
   if (before === null || lines === null) return false;
   let last = before.length - 1;
@@ -359,20 +361,23 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
   const reservations: Record<string, number | null> = {};
   const same = previous.filter((candidate) => candidate.agent === sent.agent && candidate.identity === sent.identity && normalize(candidate.text) === normalize(sent.text));
   const prior = same.at(-1);
-  const [own, earlier] = prior ? readAlike(sent.agent, sent.screen, prior.screen) : readAlike(sent.agent, sent.screen);
-  const lines = withoutChrome(own!, sent.agent, readers);
+  // every screen counted here is read alike, and ownership later reads its screens as these were read
+  const alike = readAlike(sent.agent, sent.screen, ...same.map((candidate) => candidate.screen));
+  const read = (send: CommandSend): string[] => alike.lines[send === sent ? 0 : same.indexOf(send) + 1]!;
+  if (prior) sent.countedCut = alike.cut;
+  const lines = withoutChrome(read(sent), sent.agent, readers);
   for (const reader of readers) {
     if (lines === null) { reservations[reader.id] = null; continue; }
     const echoOf = reader.echoOf ?? defaultEchoOf;
     const priorOrdinal = prior?.resultEchoes?.[reader.id];
     const priorLimit = prior?.resultEchoLimit?.[reader.id];
     if (!prior) { reservations[reader.id] = 1; continue; }
-    const past = (): number | null => printedPastEarlier(sent, same, reader, readers) ? 1 : null;
+    const past = (): number | null => printedPastEarlier(sent, same, reader, readers, read) ? 1 : null;
     if (priorOrdinal === null || priorLimit === null) { reservations[reader.id] = past(); continue; }
     // the history rows outrank the prior screen's text: on a screen of identical blocks its tail also matches the
     // screen's own bottom and counts none of the echoes printed since, so the debt would never be paid (#1550)
     if (past() === 1) { reservations[reader.id] = 1; continue; }
-    const before = withoutChrome(earlier!, sent.agent, readers);
+    const before = withoutChrome(read(prior), sent.agent, readers);
     if (before === null) { reservations[reader.id] = null; continue; }
     const anchor = sendAnchor(before, lines, prior.top, sent.top);
     if (anchor === null) {
@@ -519,7 +524,10 @@ export function ownsCommandDialog(sent: CommandSend, prompt: ParsedPrompt, scree
 
 /** The block belonging to exactly this reserved echo, never a later command's block. */
 function ownedCommandScreen(sent: CommandSend, screen: string, reader: DialogReader, readers: readonly DialogReader[], top?: number): string | null {
-  const [fullLines, sentLines] = readAlike(sent.agent, screen, sent.screen) as [string[], string[]];
+  const alike = readAlike(sent.agent, screen, sent.screen);
+  // echoes counted as drawn and read now as cut (or the reverse) number differently: no echo is this send's for sure
+  if (sent.countedCut !== undefined && sent.countedCut !== alike.cut) return null;
+  const [fullLines, sentLines] = alike.lines as [string[], string[]];
   const lines = withoutChrome(fullLines, sent.agent, readers);
   const before = withoutChrome(sentLines, sent.agent, readers);
   if (lines === null || before === null) return null;
