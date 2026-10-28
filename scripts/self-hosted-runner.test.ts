@@ -58,8 +58,8 @@ function runRunner(options: {
   gitFetchExitCode?: number;
   /** exit status of the container that builds the Bun cache */
   cacheBuildExitCode?: number;
-  /** "fetch" makes the mirror's git fetch, "build" the Bun cache build, wait until killed; each touches <tempDir>/hung first */
-  hang?: "fetch" | "build";
+  /** "fetch" makes the mirror's git fetch, "ls-remote" its default-branch query, "build" the Bun cache build, wait until killed; each touches <tempDir>/hung first */
+  hang?: "fetch" | "ls-remote" | "build";
   /** the hung stub ignores SIGTERM, as a git or docker client that will not stop; "helper": the git stub
    * stops, but leaves a child (a transport helper) that ignores it */
   stubborn?: boolean | "helper";
@@ -86,7 +86,7 @@ type RunnerOptions = NonNullable<Parameters<typeof runRunner>[0]>;
  * Starts the launcher as runRunner does, waits until its stub hangs (options.hang), then sends it
  * `signal` (none: lets it go on). Returns how it ended, within `limitMs` of the hang.
  */
-async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "build" }, signal: NodeJS.Signals | null, limitMs = 5_000) {
+async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "ls-remote" | "build" }, signal: NodeJS.Signals | null, limitMs = 5_000) {
   const { tempDir, args, env, logPath } = prepareRunner(options);
   const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
   // read as it comes: a process left holding stderr must not hold the test past its bound
@@ -196,6 +196,10 @@ case "$1" in
     fi
     exit "\${GIT_FETCH_EXIT:-0}" ;;
   ls-remote)
+    if [ -n "\${RUNNER_TEST_HANG_LSREMOTE:-}" ]; then
+      [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
+      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+    fi
     case "$RUNNER_TEST_DEFAULT_BRANCH" in
       fail) exit 128 ;;
       '') ;;
@@ -251,6 +255,7 @@ exit 0
       RUNNER_TEST_HUNG: join(tempDir, "hung"),
       ...(options.hang === "fetch" ? { RUNNER_TEST_HANG_FETCH: "1" } : {}),
       ...(options.hang === "build" ? { RUNNER_TEST_HANG_BUILD: "1" } : {}),
+      ...(options.hang === "ls-remote" ? { RUNNER_TEST_HANG_LSREMOTE: "1" } : {}),
       ...(options.stubborn ? { RUNNER_TEST_STUBBORN: options.stubborn === "helper" ? "helper" : "1" } : {}),
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
@@ -601,7 +606,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   });
 
   it.skipIf(process.platform !== "linux")("outlives no git or Bun cache build that ignores SIGTERM, and removes the build container last", async () => {
-    for (const [hang, stubborn] of [["fetch", true], ["fetch", "helper"], ["build", true]] as const) {
+    for (const [hang, stubborn] of [["fetch", true], ["fetch", "helper"], ["ls-remote", true], ["build", true]] as const) {
       const { ended, calls, stuck } = await runRunnerUntilHung({ hang, stubborn }, "SIGTERM", 20_000);
       expect(ended).toBe(143);
       // checked the moment the launcher ended: nothing of the refresh may be left

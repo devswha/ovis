@@ -174,8 +174,9 @@ refresh_mirror() {
   git_net 900 -C "$MIRROR" fetch --quiet --prune --no-write-fetch-head origin || return 1
   # The default branch, whose bun.lock alone the Bun cache follows: asked of GitHub every time, never
   # taken from the mirror's own HEAD (a new mirror's names main, whatever the repository's is).
-  head="$(git_net 120 -C "$MIRROR" ls-remote --symref origin HEAD |
-    sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')" || head=""
+  # Into a file, not a pipe: git_net runs right under this shell, which a stop then waits for.
+  git_net 120 -C "$MIRROR" ls-remote --symref origin HEAD > "$STATE_DIR/default-branch" || return 1
+  head="$(sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p' "$STATE_DIR/default-branch")"
   case "$head" in refs/heads/?*) ;; *) return 1 ;; esac
   git -C "$MIRROR" rev-parse --verify -q "$head^{commit}" >/dev/null || return 1
   if [ "$(git -C "$MIRROR" symbolic-ref -q HEAD)" != "$head" ]; then
