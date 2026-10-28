@@ -68,6 +68,10 @@ container:
   `GIT_ALTERNATE_OBJECT_DIRECTORIES=/cache/git/repo.git/objects`, so `actions/checkout` and every
   other git command of a job read objects from the mirror and fetch only what it lacks: a pull
   request's new commits. Measured: checkout 44.7 MB to 0.01 MB, the tag fetch 44.9 MB to 0.06 MB.
+  A job's checkout then holds only the objects the mirror lacks, so a step that clears the `GIT_*`
+  variables cannot read that checkout's history. Git never collects the mirror's objects on its
+  own (a job may still read one of a deleted or force-pushed branch); past 50 packs the launcher
+  joins them, keeping every object.
 - `bun/<blob of bun.lock>`, Bun's install cache for the default branch's lockfile, with `current`
   pointing at it. It is built when that lockfile changes, in a throwaway container of the runner
   image with the runners' hardening, as the host user, from a checkout of the mirror:

@@ -122,10 +122,10 @@ while :; do
 done
 for last; do :; done
 case "$1" in
-  init) mkdir -p "$last/objects" ;;
+  init) mkdir -p "$last/objects/pack" ;;
   fetch) exit "\${GIT_FETCH_EXIT:-0}" ;;
   ls-remote) printf 'ref: refs/heads/main\\tHEAD\\n' ;;
-  symbolic-ref) touch "$dir/head-set" ;;
+  symbolic-ref) [ "$2" = -q ] && exit 1; touch "$dir/head-set" ;;
   rev-parse)
     case "$last" in
       HEAD) [ -f "$dir/head-set" ] || exit 1; echo ${commitSha} ;;
@@ -327,7 +327,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
-  it("refreshes the host caches before the first runner and hands them to every runner read-only", () => {
+  it.skipIf(process.platform !== "linux")("refreshes the host caches before the first runner and hands them to every runner read-only", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
       const { result, calls } = runRunner({ count: 2, cacheHome });
@@ -336,7 +336,14 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const cacheDir = join(cacheHome, "ovis-ci-runner");
       const mirror = join(cacheDir, "git/repo.git");
       // this repository's branches and tags only, from GitHub
-      expect(lines).toContain(`git -C ${mirror} config remote.origin.url https://github.com/owner/repo.git`);
+      // set up under another name, then moved into place whole
+      const setup = lines.find((call) => call.includes(" config remote.origin.url "))!.match(/^git -C (\S+) /)![1]!;
+      expect(setup).toStartWith(join(cacheDir, "git/.new-"));
+      expect(lines).toContain(`git -C ${setup} config remote.origin.url https://github.com/owner/repo.git`);
+      // a job reads the mirror's objects in place: git never collects one on its own
+      for (const setting of ["gc.pruneExpire never", "gc.auto 0", "maintenance.auto false"]) expect(lines).toContain(`git -C ${setup} config ${setting}`);
+      expect(existsSync(join(mirror, "objects"))).toBe(true);
+      expect(existsSync(setup)).toBe(false);
       expect(lines.filter((call) => call.includes("remote.origin.fetch")).map((call) => call.split(" ").at(-1)))
         .toEqual(["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
       const fetched = lines.findIndex((call) => call.startsWith(`git -C ${mirror} fetch `));
@@ -358,7 +365,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
-  it("builds the Bun cache from the default branch's lockfile only, hardened, read-only to it and without package scripts", () => {
+  it.skipIf(process.platform !== "linux")("builds the Bun cache from the default branch's lockfile only, hardened, read-only to it and without package scripts", () => {
     const { result, calls } = runRunner();
     expect(result.status).toBe(0);
     const builds = calls.split("\n").filter((call) => cacheBuild.test(call));
@@ -372,7 +379,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(build).not.toContain("docker.sock");
   });
 
-  it("mounts no cache and touches no mirror with --no-cache", () => {
+  it.skipIf(process.platform !== "linux")("mounts no cache and touches no mirror with --no-cache", () => {
     const { result, calls } = runRunner({ args: ["--no-cache"] });
     expect(result.status).toBe(0);
     expect(calls).not.toContain("git ");
@@ -380,7 +387,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
   });
 
-  it("still starts the runners when a refresh fails, and retries a failed Bun cache build only after 30 minutes", () => {
+  it.skipIf(process.platform !== "linux")("still starts the runners when a refresh fails, and retries a failed Bun cache build only after 30 minutes", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
       const first = runRunner({ cacheHome, gitFetchExitCode: 1, cacheBuildExitCode: 1 });
@@ -405,7 +412,19 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
-  it("keeps a replaced Bun cache for an hour after it was replaced, then removes it", () => {
+  it.skipIf(process.platform !== "linux")("waits no 30 minutes after a Bun cache build the launcher's own stop ended", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      // docker stop ends the build container with 143 (SIGTERM)
+      const { result } = runRunner({ cacheHome, cacheBuildExitCode: 143 });
+      expect(result.status).toBe(0);
+      expect(readdirSync(join(cacheHome, "ovis-ci-runner/bun"))).toEqual([]);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("keeps a replaced Bun cache for an hour after it was replaced, then removes it", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
       const bun = join(cacheHome, "ovis-ci-runner/bun");

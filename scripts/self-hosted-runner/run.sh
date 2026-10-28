@@ -100,27 +100,42 @@ if [ "$CACHE" = 1 ]; then
 fi
 
 refresh_mirror() {
+  local tmp head
   if [ ! -d "$MIRROR/objects" ]; then
-    mkdir -p "$CACHE_DIR/git" &&
-      git -c init.defaultBranch=main init -q --bare "$MIRROR" &&
-      git -C "$MIRROR" config remote.origin.url "https://github.com/$REPO.git" &&
-      git -C "$MIRROR" config remote.origin.fetch '+refs/heads/*:refs/heads/*' &&
-      git -C "$MIRROR" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*' || return 1
+    # set up under another name, so a half-configured mirror never takes the real one's
+    mkdir -p "$CACHE_DIR/git" && tmp="$(mktemp -d "$CACHE_DIR/git/.new-XXXXXX")" || return 1
+    # gc.pruneExpire never: a job reads objects from the mirror without copying them, so an object
+    # of a deleted or force-pushed branch must stay while a job may still need it
+    if ! { git -c init.defaultBranch=main init -q --bare "$tmp" &&
+      git -C "$tmp" config remote.origin.url "https://github.com/$REPO.git" &&
+      git -C "$tmp" config remote.origin.fetch '+refs/heads/*:refs/heads/*' &&
+      git -C "$tmp" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*' &&
+      git -C "$tmp" config gc.pruneExpire never &&
+      git -C "$tmp" config gc.auto 0 &&
+      git -C "$tmp" config maintenance.auto false &&
+      chmod 0755 "$tmp" && mv -T "$tmp" "$MIRROR"; }; then
+      rm -rf "$tmp"
+      [ -d "$MIRROR/objects" ] || return 1
+    fi
   fi
   # no pull request refs: only this repository's own branches and tags
   GIT_TERMINAL_PROMPT=0 git -C "$MIRROR" fetch --quiet --prune --no-write-fetch-head origin || return 1
   # HEAD names the default branch, whose bun.lock the Bun cache follows
-  if ! git -C "$MIRROR" rev-parse --verify -q HEAD >/dev/null; then
-    local head
-    head="$(GIT_TERMINAL_PROMPT=0 git -C "$MIRROR" ls-remote --symref origin HEAD |
-      sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')"
-    [ -n "$head" ] && git -C "$MIRROR" symbolic-ref HEAD "$head"
+  head="$(GIT_TERMINAL_PROMPT=0 git -C "$MIRROR" ls-remote --symref origin HEAD |
+    sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')"
+  if [ -n "$head" ] && [ "$(git -C "$MIRROR" symbolic-ref -q HEAD)" != "$head" ]; then
+    git -C "$MIRROR" symbolic-ref HEAD "$head" || return 1
+  fi
+  # With automatic maintenance off, fetches add up packs: join them now and then, keeping every
+  # object (--keep-unreachable), so none a job still reads goes away.
+  if [ "$(find "$MIRROR/objects/pack" -name '*.pack' | wc -l)" -gt 50 ]; then
+    git -C "$MIRROR" repack -q -a -d --keep-unreachable || return 1
   fi
 }
 
 # One directory per bun.lock (named after its blob), and `current` pointing at the default branch's.
 refresh_bun_cache() {
-  local lock commit version tmp failed old dir
+  local lock commit version tmp failed old dir status
   lock="$(git -C "$MIRROR" rev-parse --verify -q 'HEAD:bun.lock')" || return 0
   commit="$(git -C "$MIRROR" rev-parse --verify -q 'HEAD^{commit}')" || return 1
   version="$BUN_CACHES/$lock"
@@ -134,7 +149,9 @@ refresh_bun_cache() {
     # The runner's hardening, the host user's files, no package scripts, and only what the lockfile
     # pins: --frozen-lockfile refuses to resolve anything else and Bun checks every download's
     # integrity against it. Not in the runners' network namespace: their check.ts slots are theirs.
-    if ! timeout 900 docker run --rm \
+    # --foreground keeps it in this process group, which the launcher's exit stops whole
+    status=0
+    timeout --foreground 900 docker run --rm \
       --name "$CACHE_CONTAINER" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
@@ -150,15 +167,17 @@ refresh_bun_cache() {
         git clone -q --shared --no-checkout /cache/git/repo.git /tmp/src
         cd /tmp/src
         git checkout -q --detach "$COMMIT"
-        bun install --frozen-lockfile --ignore-scripts' </dev/null >/dev/null; then
+        bun install --frozen-lockfile --ignore-scripts' </dev/null >/dev/null || status=$?
+    if [ "$status" != 0 ]; then
       docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
       rm -rf "$tmp"
-      touch "$failed"
+      # a build stopped by a signal (the launcher stopping) is no reason to wait before the next
+      if [ "$status" -lt 128 ]; then touch "$failed"; fi
       return 1
     fi
     rm -f "$failed"
-    # mktemp's 0700 would keep the runner's own user out
-    chmod 0755 "$tmp"
+    # mktemp's 0700, or a package's own modes, would keep the runner's own user out
+    chmod -R a+rX "$tmp"
     # another launcher may have finished the same lockfile first
     mv -T "$tmp" "$version" 2>/dev/null || rm -rf "$tmp"
   fi
@@ -173,6 +192,7 @@ refresh_bun_cache() {
     [ -d "$dir" ] && [ ! -L "$dir" ] && [ "${dir##*/}" != "$lock" ] || continue
     if [ -n "$(find "$dir" -maxdepth 0 -mmin +60)" ]; then rm -rf "$dir"; fi
   done
+  find "$BUN_CACHES" -maxdepth 1 -name '.failed-*' -mmin +60 -delete 2>/dev/null || true
 }
 
 # git and Docker write with the umask: the runner containers read the caches as another user.
@@ -270,12 +290,16 @@ slot_loop() {
 }
 
 PIDS=()
+CACHE_PID=""
 cleaned=0
 cleanup() {
   [ "$cleaned" = 1 ] && return
   cleaned=1
   trap '' INT TERM
   echo "stopping runner slots..." >&2
+  # the whole refresh, git and the Bun cache build included: none may outlive the launcher
+  if [ -n "$CACHE_PID" ]; then kill -TERM -- "-$CACHE_PID" 2>/dev/null || true; fi
+  docker stop -t 5 "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
   done
@@ -283,7 +307,6 @@ cleanup() {
     docker stop -t 30 "${PREFIX}${slot}" >/dev/null 2>&1 || true
   done
   wait 2>/dev/null || true
-  docker stop -t 5 "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   docker stop -t 5 "$NETNS" >/dev/null 2>&1 || true
   # Remove any runner of this host that is still registered.
   ids="$(gh api "repos/$REPO/actions/runners" --paginate \
@@ -300,8 +323,11 @@ trap 'exit 143' TERM
 if [ "$CACHE" = 1 ]; then
   refresh_caches
   if [ "$ONCE" != 1 ]; then
+    # in a process group of its own (job control on for this one start), so cleanup stops it whole
+    set -m
     cache_loop &
-    PIDS+=("$!")
+    CACHE_PID="$!"
+    set +m
   fi
 fi
 

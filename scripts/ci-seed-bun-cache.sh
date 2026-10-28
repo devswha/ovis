@@ -9,7 +9,9 @@ set -euo pipefail
 seed="${CI_HOST_BUN_CACHE:-/cache/bun/current}"
 cache="${BUN_INSTALL_CACHE_DIR:?BUN_INSTALL_CACHE_DIR is required}"
 
-if [[ ! -d "$seed" ]]; then
+# once: the launcher may point `current` at a newer version while this copies
+seed="$(readlink -e "$seed" || true)"
+if [[ -z "$seed" || ! -d "$seed" ]]; then
   echo "No Bun cache from the runner host: bun install downloads every package"
   exit 0
 fi

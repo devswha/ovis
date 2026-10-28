@@ -128,7 +128,8 @@ function seedBunCache(prepare: (seed: string) => void = () => {}) {
   }
 }
 
-describe.skipIf(process.platform === "win32")("Bun cache seeded from the runner host", () => {
+// the runner image is Linux: the script uses GNU mv -T and readlink -e
+describe.skipIf(process.platform !== "linux")("Bun cache seeded from the runner host", () => {
   it("copies the host's packages into the job's own cache", () => {
     const result = seedBunCache((seed) => {
       mkdirSync(join(seed, "left-pad@1.3.0"), { recursive: true });
