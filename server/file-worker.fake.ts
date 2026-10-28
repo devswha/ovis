@@ -7,9 +7,11 @@
  *   task opened (`Atomics.notify` on it; -2 when it opened none) and answers only once cell 0 is
  *   set, as a call that returns late would;
  * - with a `readGate` (two Int32 cells and a FIFO's path), stops inside the file read itself: it
- *   records the descriptor being read in cell 1 (`Atomics.notify`), then opens the FIFO for reading,
- *   a real system call that blocks until a writer opens it (which ending the thread cannot cut
- *   short), and then reads, as a read on a stalled disk would;
+ *   opens the FIFO (read and write, which never waits), records the descriptor being read in cell 1
+ *   (`Atomics.notify`), then blocks in a read of the FIFO, a real system call that ending the thread
+ *   cannot cut short, and then reads the file, as a read on a stalled disk would. Opened before
+ *   cell 1 is set, the FIFO always has this reader once the test sees it, so the test's release (a
+ *   write that does not wait) never waits for this thread, even one ended in the meantime;
  * - with an `authorizeGate` (the same shape), stops once the file is authorized, before the task
  *   answers, as a check on a stalled disk would: it opens the FIFO (read and write, which never
  *   waits), records the descriptor the task named in its cell (`opened`) in cell 1, then blocks in a
@@ -32,9 +34,10 @@ self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; rea
   if (readGate !== undefined) {
     pageFileHooks.readSync = (fd, buffer, offset, length, position) => {
       const cells = new Int32Array(readGate.cells);
+      const fifo = openSync(readGate.fifo, constants.O_RDWR);
       Atomics.store(cells, 1, fd);
       Atomics.notify(cells, 1);
-      closeSync(openSync(readGate.fifo, "r"));
+      try { readSync(fifo, new Uint8Array(1), 0, 1, null); } finally { closeSync(fifo); }
       return readSync(fd, buffer, offset, length, position);
     };
   }

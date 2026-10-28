@@ -189,8 +189,10 @@ describe("file threads", () => {
     const other = openSync(big, "r");
     expect(other).not.toBe(fd);
     closeSync(other);
-    // the read returns, the thread is gone, and only then is its descriptor closed
-    closeSync(openSync(fifo, "w"));
+    // the read returns (a write that never waits: the thread opened the FIFO before it said it ran), the thread is gone, and only then is its descriptor closed
+    const writer = openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
+    writeSync(writer, "x");
+    closeSync(writer);
     await fileThreadsClosed();
     expect(() => fstatSync(fd)).toThrow();
   });
