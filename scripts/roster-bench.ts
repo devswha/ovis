@@ -78,10 +78,15 @@ async function bench(): Promise<void> {
   const root = mkdtempSync(join(process.env["TMPDIR"] ?? tmpdir(), "ovis-roster-bench-"));
 
   const pool = async <T>(items: readonly T[], width: number, work: (item: T) => Promise<unknown>): Promise<void> => {
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(width, items.length) }, async () => {
-      while (next < items.length) await work(items[next++]!);
+    let next = 0, failed = false;
+    // a failure stops new work and waits for the rest, so nothing is opened after the run has unwound
+    const workers = await Promise.allSettled(Array.from({ length: Math.min(width, items.length) }, async () => {
+      while (!failed && next < items.length) {
+        try { await work(items[next++]!); } catch (error) { failed = true; throw error; }
+      }
     }));
+    const rejected = workers.find((worker) => worker.status === "rejected");
+    if (rejected) throw rejected.reason;
   };
   const report = (paneId: string, state: Phase) => herdrRpc("pane.report_agent", { pane_id: paneId, source: "roster-bench", agent: "claude", state });
   // what a roster size opened, undone last first when it ends or fails: its workspaces, server and page
@@ -140,17 +145,21 @@ async function bench(): Promise<void> {
         },
       });
       undo.push(async () => { child.kill(); await child.exited; });
-      // a server that died answers nothing: every wait on it ends with it instead of hanging the run
-      const unlessExited = <T>(wait: Promise<T>): Promise<T> =>
-        Promise.race([wait, child.exited.then((code) => { throw new Error(`roster-bench: the server exited (${code})`); })]);
+      // a server that died or stopped answering answers nothing: every wait on it ends instead of hanging the run
+      const unlessExited = <T>(wait: Promise<T>, what: string): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`roster-bench: the server did not answer ${what} within 60 s`)), 60_000); });
+        return Promise.race([wait, deadline, child.exited.then((code) => { throw new Error(`roster-bench: the server exited (${code})`); })])
+          .finally(() => clearTimeout(timer));
+      };
       const ask = (what: "stats" | "gc" | "stop"): Promise<ServerStats> => {
         const id = ++asks;
         const answer = Promise.withResolvers<ServerStats>();
         asked.set(id, answer.resolve);
         child.send({ id, ask: what });
-        return unlessExited(answer.promise);
+        return unlessExited(answer.promise, what);
       };
-      const origin = `http://127.0.0.1:${await unlessExited(port.promise)}`;
+      const origin = `http://127.0.0.1:${await unlessExited(port.promise, "with its port")}`;
 
       // the working rows' spinners would otherwise fill every window with style work of their own
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });

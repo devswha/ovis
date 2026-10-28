@@ -77,7 +77,10 @@ describe("the machine events stream", () => {
     const stream = await open(manager);
     try {
       const large: MachineEvent = { type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: "x".repeat(MACHINE_EVENTS_QUEUE_BYTES), agent_status: "idle", finish_epoch: "e", finish_id: 0 } };
-      for (let sent = 0; sent <= MACHINE_EVENTS_QUEUE_FRAMES + 1 && listening(); sent++) emit(large);
+      // the check comes before each write: the frame that finds six already waiting still goes in
+      for (let sent = 0; sent <= MACHINE_EVENTS_QUEUE_FRAMES; sent++) emit(large);
+      expect(listening()).toBe(true);
+      emit(large);
       expect(listening()).toBe(false);
     } finally {
       await stream.close();
