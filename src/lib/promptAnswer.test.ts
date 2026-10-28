@@ -87,6 +87,16 @@ describe("answering a prompt from the chat", () => {
     const linked = { ...prompt(["Keep [production](recommended)", "Keep [production]"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(linked, "Keep production")).toEqual({ option_index: 0 });
     expect(answerFromText(linked, "Keep [production]")).toEqual({ option_index: 1 });
+    // a number that is also an option's shown name: the number picks only where no other row reads so (#2220 review)
+    const numeral = { ...prompt(["`2`", "Keep production"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(numeral, "2")).toEqual({ custom_text: "2" });
+    expect(answerFromText(numeral, "1")).toEqual({ option_index: 0 });
+    const numerals = { ...prompt(["`2`", "**2**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(numerals, "2")).toEqual({ custom_text: "2" });
+    // with no typed answer, such words are refused rather than sent as a pick
+    expect(answerFromText({ ...numeral, custom_option_index: null, options: numeral.options.slice(0, 2) }, "2")).toBeNull();
+    // the row whose name is its own number is that pick
+    expect(answerFromText(prompt(["1", "2"], null), "2")).toEqual({ option_index: 1 });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
     expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });

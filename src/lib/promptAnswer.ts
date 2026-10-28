@@ -43,7 +43,6 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     return prompt.custom_option_index !== null ? { custom_text: value } : null;
   }
   const numbered = byNumber(value);
-  if (numbered !== null) return { option_index: numbered };
   const lower = spaced(value);
   // a label the bridge wrote is named as the card shows it, in the user's language, or in English
   const words = promptWords(prompt);
@@ -60,6 +59,12 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     ? only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower)
     : only((index) => prompt.options[index]!.label);
   const named = own !== undefined || prompt.text_format === "markdown" ? own : only((index) => words.label(index));
+  // a number picks its row, unless a row shows that number as its name: words that name another option,
+  // or several, pick none (an omp card's `` `2` ``, typed as "2", is not the second row)
+  if (numbered !== null) {
+    if (named === undefined || named === numbered) return { option_index: numbered };
+    return prompt.custom_option_index !== null ? { custom_text: value } : null;
+  }
   if (typeof named === "number") return { option_index: named };
   return prompt.custom_option_index !== null ? { custom_text: value } : null;
 }
