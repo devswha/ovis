@@ -83,25 +83,36 @@ function runRunner(options: {
 type RunnerOptions = NonNullable<Parameters<typeof runRunner>[0]>;
 
 /**
- * Starts the launcher as runRunner does, waits until its stub hangs (options.hang), then sends it
- * `signal` (none: lets it go on). Returns how it ended, within `limitMs` of the hang.
+ * How long a launcher may take to reach its stub's hang, or to end after it, on a loaded host. A
+ * bound, not a wait: each wait ends at its event. The hung stub (120 s) outlasts it, so a launcher
+ * that waits for the hang still ends late.
  */
-async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "ls-remote" | "build" }, signal: NodeJS.Signals | null, limitMs = 5_000) {
+const LOADED_BOUND_MS = 30_000;
+/** The longest one runRunnerUntilHung call can take: the hang, the end, and its stderr closing. */
+const HUNG_RUN_MS = 3 * LOADED_BOUND_MS;
+/** A stop "at once": under the 5 s after which run.sh's timeouts kill what ignored the stop. */
+const STOP_AT_ONCE_MS = 4_000;
+
+/**
+ * Starts the launcher as runRunner does, waits until its stub hangs (options.hang), then sends it
+ * `signal` (none: lets it go on). Returns how it ended, within `endMs` of the hang.
+ */
+async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "ls-remote" | "build" }, signal: NodeJS.Signals | null, endMs = LOADED_BOUND_MS) {
   const { tempDir, args, env, logPath } = prepareRunner(options);
   const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
   // read as it comes: a process left holding stderr must not hold the test past its bound
   const stderrText = new Response(child.stderr).text();
   try {
     const hung = join(tempDir, "hung");
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + LOADED_BOUND_MS;
     while (!existsSync(hung)) {
       if (Date.now() > deadline) throw new Error("the stub never hung");
       await Bun.sleep(10);
     }
     if (signal) child.kill(signal);
-    const ended = await Promise.race([child.exited, Bun.sleep(limitMs).then(() => "still running" as const)]);
+    const ended = await Promise.race([child.exited, Bun.sleep(endMs).then(() => "still running" as const)]);
     const stuck = spawnSync("pgrep", ["-f", tempDir], { encoding: "utf8" }).stdout.trim();
-    return { ended, stderr: await Promise.race([stderrText, Bun.sleep(1_000).then(() => "")]), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
+    return { ended, stderr: await Promise.race([stderrText, Bun.sleep(LOADED_BOUND_MS).then(() => "")]), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
   } finally {
     child.kill("SIGKILL");
     spawnSync("pkill", ["-KILL", "-f", tempDir]);
@@ -122,6 +133,11 @@ function prepareRunner(options: RunnerOptions) {
 printf 'gh %s\\n' "$*" >> "$RUNNER_TEST_LOG"
 case " $* " in
   *registration-token*)
+    # a refresh set to hang hangs before any runner starts, however soon --cache-wait runs out
+    if [ -n "\${RUNNER_TEST_HANG_FETCH:-}\${RUNNER_TEST_HANG_LSREMOTE:-}\${RUNNER_TEST_HANG_BUILD:-}" ]; then
+      tries=0
+      while [ ! -e "$RUNNER_TEST_HUNG" ] && [ "$tries" -lt 1200 ]; do sleep 0.05; tries=$((tries + 1)); done
+    fi
     if [ "\${GH_TOKEN_EXIT_CODE:-0}" -ne 0 ]; then
       exit "$GH_TOKEN_EXIT_CODE"
     fi
@@ -154,7 +170,7 @@ case "$1" in
     case "$name" in *-cache)
       if [ -n "\${RUNNER_TEST_HANG_BUILD:-}" ]; then
         [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
-        touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+        touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
       fi
       exit "\${DOCKER_CACHE_EXIT:-0}" ;;
     esac
@@ -188,17 +204,17 @@ case "$1" in
   fetch)
     if [ -n "\${RUNNER_TEST_HANG_FETCH:-}" ]; then
       if [ "\${RUNNER_TEST_STUBBORN:-}" = helper ]; then
-        (trap '' TERM; exec "$(dirname "$0")/hang-sleep" 30) &
+        (trap '' TERM; exec "$(dirname "$0")/hang-sleep" 120) &
       elif [ -n "\${RUNNER_TEST_STUBBORN:-}" ]; then
         trap '' TERM
       fi
-      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
     fi
     exit "\${GIT_FETCH_EXIT:-0}" ;;
   ls-remote)
     if [ -n "\${RUNNER_TEST_HANG_LSREMOTE:-}" ]; then
       [ -n "\${RUNNER_TEST_STUBBORN:-}" ] && trap '' TERM
-      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30
+      touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 120
     fi
     case "$RUNNER_TEST_DEFAULT_BRANCH" in
       fail) exit 128 ;;
@@ -537,13 +553,13 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
       expect(stuck).toBe("");
     }
-  });
+  }, 2 * HUNG_RUN_MS);
 
   it.skipIf(process.platform !== "linux")("stops at once on SIGTERM during the first refresh, and records no failure for a build it stopped", async () => {
     for (const hang of ["fetch", "build"] as const) {
       const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
       try {
-        const { ended, calls, stuck } = await runRunnerUntilHung({ hang, cacheHome }, "SIGTERM", 3_000);
+        const { ended, calls, stuck } = await runRunnerUntilHung({ hang, cacheHome }, "SIGTERM", STOP_AT_ONCE_MS);
         expect(ended).toBe(143);
         expect(calls).not.toContain("registration-token");
         expect(stuck).toBe("");
@@ -552,7 +568,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         rmSync(cacheHome, { recursive: true, force: true });
       }
     }
-  });
+  }, 2 * HUNG_RUN_MS);
 
   it.skipIf(process.platform !== "linux")("keeps each repository's caches apart, and sets up again a mirror of anything else", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
@@ -607,7 +623,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
 
   it.skipIf(process.platform !== "linux")("outlives no git or Bun cache build that ignores SIGTERM, and removes the build container last", async () => {
     for (const [hang, stubborn] of [["fetch", true], ["fetch", "helper"], ["ls-remote", true], ["build", true]] as const) {
-      const { ended, calls, stuck } = await runRunnerUntilHung({ hang, stubborn }, "SIGTERM", 20_000);
+      const { ended, calls, stuck } = await runRunnerUntilHung({ hang, stubborn }, "SIGTERM");
       expect(ended).toBe(143);
       // checked the moment the launcher ended: nothing of the refresh may be left
       expect(stuck).toBe("");
@@ -616,7 +632,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         expect(cacheCalls.at(-1)).toMatch(/^docker rm -f herdr-ci-.+-cache$/);
       }
     }
-  }, 60_000);
+  }, 4 * HUNG_RUN_MS);
 
   it.skipIf(process.platform !== "linux")("starts the runners without caches when the cache directory or the repository name cannot hold them", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
