@@ -70,10 +70,11 @@ export class ConversationFinishEvidence {
     const known = stored && stored.id > (remembered?.id ?? 0) ? stored : remembered ?? stored;
     if (known) {
       if (id < known.id) return false;
-      if (id === known.id && known.answer !== undefined) return answer === known.answer;
+      const previous = known.answer === undefined ? undefined : completedProof(known.answer), current = completedProof(answer);
+      // Codex dates the answer again when its task_complete lands later: the same answer, still this finish's.
+      if (id === known.id && known.answer !== undefined) return answer === known.answer || (previous !== undefined && previous.identity === current?.identity);
       if (answer === known.answer) return false;
       if (known.answer !== undefined) {
-        const previous = completedProof(known.answer), current = completedProof(answer);
         if (!previous || !current || current.identity === previous.identity || current.time <= previous.time) return false;
       }
     }
