@@ -58,13 +58,56 @@ function runRunner(options: {
   gitFetchExitCode?: number;
   /** exit status of the container that builds the Bun cache */
   cacheBuildExitCode?: number;
+  /** "fetch" makes the mirror's git fetch, "build" the Bun cache build, wait until killed; each touches <tempDir>/hung first */
+  hang?: "fetch" | "build";
+  repo?: string;
 } = {}) {
+  const { tempDir, args, env, logPath, envFile } = prepareRunner(options);
+  try {
+    const result = spawnSync("bash", args, { encoding: "utf8", timeout: 10_000, env });
+    expect(result.error).toBeUndefined();
+    // a launcher that refused its arguments ran no gh or docker command, so wrote no log
+    return { result, calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", envFile };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+type RunnerOptions = NonNullable<Parameters<typeof runRunner>[0]>;
+
+/**
+ * Starts the launcher as runRunner does, waits until its stub hangs (options.hang), then sends it
+ * `signal` (none: lets it go on). Returns how it ended, within `limitMs` of the hang.
+ */
+async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "build" }, signal: NodeJS.Signals | null, limitMs = 5_000) {
+  const { tempDir, args, env, logPath } = prepareRunner(options);
+  const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
+  try {
+    const hung = join(tempDir, "hung");
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(hung)) {
+      if (Date.now() > deadline) throw new Error("the stub never hung");
+      await Bun.sleep(10);
+    }
+    if (signal) child.kill(signal);
+    const ended = await Promise.race([child.exited, Bun.sleep(limitMs).then(() => "still running" as const)]);
+    const stuck = spawnSync("pgrep", ["-f", tempDir], { encoding: "utf8" }).stdout.trim();
+    return { ended, stderr: ended === "still running" ? "" : await new Response(child.stderr).text(), calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stuck, cacheHome: env.XDG_CACHE_HOME! };
+  } finally {
+    child.kill("SIGKILL");
+    spawnSync("pkill", ["-KILL", "-f", tempDir]);
+    await child.exited;
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function prepareRunner(options: RunnerOptions) {
   const tempDir = mkdtempSync(join(tmpdir(), "herdr-self-hosted-runner-test-"));
   const binDir = join(tempDir, "bin");
   const logPath = join(tempDir, "commands.log");
   const path = [binDir, process.env.PATH].filter(Boolean).join(delimiter);
 
-  try {
+  {
     mkdirSync(binDir);
     writeFileSync(join(binDir, "gh"), `#!/bin/sh
 printf 'gh %s\\n' "$*" >> "$RUNNER_TEST_LOG"
@@ -99,7 +142,10 @@ case "$1" in
       fi
     done
     # the Bun cache build (it filled the directory mounted at /cache/bun above) reads no token
-    case "$name" in *-cache) exit "\${DOCKER_CACHE_EXIT:-0}" ;; esac
+    case "$name" in *-cache)
+      if [ -n "\${RUNNER_TEST_HANG_BUILD:-}" ]; then touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30; fi
+      exit "\${DOCKER_CACHE_EXIT:-0}" ;;
+    esac
     IFS= read -r token || exit 1
     if [ "\${name##*-}" = "\${DOCKER_FAIL_SLOT:-}" ]; then
       exit "\${DOCKER_EXIT_CODE:-42}"
@@ -123,7 +169,13 @@ done
 for last; do :; done
 case "$1" in
   init) mkdir -p "$last/objects/pack" ;;
-  fetch) exit "\${GIT_FETCH_EXIT:-0}" ;;
+  config)
+    shift
+    [ "$1" = --add ] && shift
+    if [ "$#" -ge 2 ]; then printf '%s\\n' "$2" >> "$dir/config.$1"; else head -n 1 "$dir/config.$1" 2>/dev/null; fi ;;
+  fetch)
+    if [ -n "\${RUNNER_TEST_HANG_FETCH:-}" ]; then touch "$RUNNER_TEST_HUNG"; exec "$(dirname "$0")/hang-sleep" 30; fi
+    exit "\${GIT_FETCH_EXIT:-0}" ;;
   ls-remote) printf 'ref: refs/heads/main\\tHEAD\\n' ;;
   symbolic-ref) [ "$2" = -q ] && exit 1; touch "$dir/head-set" ;;
   rev-parse)
@@ -139,6 +191,9 @@ exit 0
     chmodSync(join(binDir, "gh"), 0o755);
     chmodSync(join(binDir, "docker"), 0o755);
     chmodSync(join(binDir, "git"), 0o755);
+    // a sleep named by its path in this run's directory, so a test can find one left running
+    copyFileSync(spawnSync("bash", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim(), join(binDir, "hang-sleep"));
+    chmodSync(join(binDir, "hang-sleep"), 0o755);
     const envFile = join(tempDir, "host.env");
     if (options.envFile === "present") writeFileSync(envFile, "# P620\n\nCHECK_HOST_MAX_RUNS=6\nCHECK_HOST_BROWSER_WORKERS=10\n");
     if (options.envFile === "bare") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nGH_TOKEN\n");
@@ -149,35 +204,31 @@ exit 0
       chmodSync(join(binDir, "grep"), 0o755);
     }
 
-    const result = spawnSync("bash", [
+    const args = [
       script,
       "--repo",
-      "owner/repo",
+      options.repo ?? "owner/repo",
       "--once",
       "--count",
       String(options.count ?? 1),
       ...(options.args ?? []),
       ...(options.envFile ? ["--env-file", envFile] : []),
-    ], {
-      encoding: "utf8",
-      timeout: 10_000,
-      env: {
-        ...process.env,
-        PATH: path,
-        RUNNER_TEST_LOG: logPath,
-        XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
-        GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
-        DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
-        GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
-        DOCKER_EXIT_CODE: String(options.dockerExitCode ?? 42),
-        DOCKER_FAIL_SLOT: String(options.failedSlot ?? ""),
-      },
-    });
-    expect(result.error).toBeUndefined();
-    // a launcher that refused its arguments ran no gh or docker command, so wrote no log
-    return { result, calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", envFile };
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    ];
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      PATH: path,
+      RUNNER_TEST_LOG: logPath,
+      RUNNER_TEST_HUNG: join(tempDir, "hung"),
+      ...(options.hang === "fetch" ? { RUNNER_TEST_HANG_FETCH: "1" } : {}),
+      ...(options.hang === "build" ? { RUNNER_TEST_HANG_BUILD: "1" } : {}),
+      XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
+      GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
+      DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
+      GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
+      DOCKER_EXIT_CODE: String(options.dockerExitCode ?? 42),
+      DOCKER_FAIL_SLOT: String(options.failedSlot ?? ""),
+    };
+    return { tempDir, args, env, logPath, envFile };
   }
 }
 
@@ -186,7 +237,7 @@ const runnerRun = /^docker run --rm -i /;
 /** What the git stub reports for the mirror's default branch and its bun.lock. */
 const commitSha = "1".repeat(40);
 const lockBlob = "2".repeat(40);
-const cacheBuild = /^docker run --rm --name herdr-ci-.+-cache /;
+const cacheBuild = /^docker run --rm --init --name herdr-ci-.+-cache /;
 
 describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () => {
   it("runs without CPU or memory quotas by default", () => {
@@ -333,7 +384,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const { result, calls } = runRunner({ count: 2, cacheHome });
       expect(result.status).toBe(0);
       const lines = calls.split("\n");
-      const cacheDir = join(cacheHome, "ovis-ci-runner");
+      // one directory per repository
+      const cacheDir = join(cacheHome, "ovis-ci-runner/owner/repo");
       const mirror = join(cacheDir, "git/repo.git");
       // this repository's branches and tags only, from GitHub
       // set up under another name, then moved into place whole
@@ -341,12 +393,13 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(setup).toStartWith(join(cacheDir, "git/.new-"));
       expect(lines).toContain(`git -C ${setup} config remote.origin.url https://github.com/owner/repo.git`);
       // a job reads the mirror's objects in place: git never collects one on its own
-      for (const setting of ["gc.pruneExpire never", "gc.auto 0", "maintenance.auto false"]) expect(lines).toContain(`git -C ${setup} config ${setting}`);
+      for (const setting of ["gc.pruneExpire never", "gc.auto 0", "maintenance.auto false", "fetch.unpackLimit 1"]) expect(lines).toContain(`git -C ${setup} config ${setting}`);
       expect(existsSync(join(mirror, "objects"))).toBe(true);
       expect(existsSync(setup)).toBe(false);
       expect(lines.filter((call) => call.includes("remote.origin.fetch")).map((call) => call.split(" ").at(-1)))
         .toEqual(["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
-      const fetched = lines.findIndex((call) => call.startsWith(`git -C ${mirror} fetch `));
+      // bounded: a stalled transfer gives up instead of holding the refresh
+      const fetched = lines.findIndex((call) => call.startsWith(`git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 -C ${mirror} fetch `));
       const runners = lines.map((call, index) => ({ call, index })).filter(({ call }) => runnerRun.test(call));
       expect(runners).toHaveLength(2);
       for (const { call, index } of runners) {
@@ -371,6 +424,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const builds = calls.split("\n").filter((call) => cacheBuild.test(call));
     expect(builds).toHaveLength(1);
     const build = builds[0]!;
+    // --init: a PID 1 that passes the deadline's SIGTERM on to the build
+    expect(build).toMatch(/^docker run --rm --init --name /);
     expect(build).toContain("--security-opt no-new-privileges --cap-drop ALL --pids-limit 8192 ");
     expect(build).toContain(`-e COMMIT=${commitSha} `);
     expect(build).toMatch(/-v \S+\/git\/repo\.git:\/cache\/git\/repo\.git:ro /);
@@ -396,7 +451,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(first.result.stderr).toContain("[cache] could not build the Bun cache");
       expect(first.calls.split("\n").filter((call) => cacheBuild.test(call))).toHaveLength(1);
       expect(first.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
-      const bun = join(cacheHome, "ovis-ci-runner/bun");
+      const bun = join(cacheHome, "ovis-ci-runner/owner/repo/bun");
       // nothing half-built is left for a runner to read
       expect(readdirSync(bun)).toEqual([`.failed-${lockBlob}`]);
       const again = runRunner({ cacheHome });
@@ -412,13 +467,80 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
-  it.skipIf(process.platform !== "linux")("waits no 30 minutes after a Bun cache build the launcher's own stop ended", () => {
+  it.skipIf(process.platform !== "linux")("waits 30 minutes after a crashed Bun cache build as after any other failure", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
-      // docker stop ends the build container with 143 (SIGTERM)
-      const { result } = runRunner({ cacheHome, cacheBuildExitCode: 143 });
-      expect(result.status).toBe(0);
-      expect(readdirSync(join(cacheHome, "ovis-ci-runner/bun"))).toEqual([]);
+      // the OOM killer or the pids limit ends the build with 137, a crash with 139
+      for (const status of [137, 139]) {
+        rmSync(join(cacheHome, "ovis-ci-runner"), { recursive: true, force: true });
+        const { result } = runRunner({ cacheHome, cacheBuildExitCode: status });
+        expect(result.status).toBe(0);
+        expect(readdirSync(join(cacheHome, "ovis-ci-runner/owner/repo/bun"))).toEqual([`.failed-${lockBlob}`]);
+      }
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("starts the runners after --cache-wait when the first refresh hangs, and leaves nothing of it running", async () => {
+    for (const hang of ["fetch", "build"] as const) {
+      const { ended, stderr, calls, stuck } = await runRunnerUntilHung({ hang, args: ["--cache-wait", "1"] }, null);
+      // --once: its one runner ran its job, so the launcher ended, stopping the hung refresh
+      expect(ended).toBe(0);
+      expect(stderr).toContain("[cache] the caches are not ready after 1s");
+      expect(calls).toContain("registration-token");
+      expect(calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      expect(stuck).toBe("");
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("stops at once on SIGTERM during the first refresh, and records no failure for a build it stopped", async () => {
+    for (const hang of ["fetch", "build"] as const) {
+      const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+      try {
+        const { ended, calls, stuck } = await runRunnerUntilHung({ hang, cacheHome }, "SIGTERM", 3_000);
+        expect(ended).toBe(143);
+        expect(calls).not.toContain("registration-token");
+        expect(stuck).toBe("");
+        if (hang === "build") expect(readdirSync(join(cacheHome, "ovis-ci-runner/owner/repo/bun")).filter((name) => name.startsWith(".failed-"))).toEqual([]);
+      } finally {
+        rmSync(cacheHome, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("keeps each repository's caches apart, and sets up again a mirror of anything else", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      const first = runRunner({ cacheHome });
+      const second = runRunner({ cacheHome, repo: "other/repo" });
+      expect(first.result.status).toBe(0);
+      expect(second.result.status).toBe(0);
+      const mount = (calls: string) => calls.split("\n").find((call) => runnerRun.test(call))!.match(/-v (\S+):\/cache:ro/)![1];
+      expect(mount(first.calls)).toBe(join(cacheHome, "ovis-ci-runner/owner/repo"));
+      expect(mount(second.calls)).toBe(join(cacheHome, "ovis-ci-runner/other/repo"));
+      expect(second.calls).toContain("config remote.origin.url https://github.com/other/repo.git");
+      // a mirror whose origin is another repository's is not reused
+      const mirror = join(cacheHome, "ovis-ci-runner/owner/repo/git/repo.git");
+      writeFileSync(join(mirror, "config.remote.origin.url"), "https://github.com/someone/else.git\n");
+      const again = runRunner({ cacheHome });
+      expect(again.result.stderr).toContain("does not mirror https://github.com/owner/repo.git");
+      expect(readFileSync(join(mirror, "config.remote.origin.url"), "utf8")).toBe("https://github.com/owner/repo.git\n");
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("starts the runners without caches when the cache directory or the repository name cannot hold them", () => {
+    const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
+    try {
+      writeFileSync(join(cacheHome, "ovis-ci-runner"), "not a directory");
+      for (const run of [runRunner({ cacheHome }), runRunner({ repo: "owner/../escape" })]) {
+        expect(run.result.status).toBe(0);
+        expect(run.result.stderr).toContain("[cache]");
+        expect(run.calls).not.toContain("/cache:ro");
+        expect(run.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      }
     } finally {
       rmSync(cacheHome, { recursive: true, force: true });
     }
@@ -427,7 +549,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   it.skipIf(process.platform !== "linux")("keeps a replaced Bun cache for an hour after it was replaced, then removes it", () => {
     const cacheHome = mkdtempSync(join(tmpdir(), "herdr-runner-cache-"));
     try {
-      const bun = join(cacheHome, "ovis-ci-runner/bun");
+      const bun = join(cacheHome, "ovis-ci-runner/owner/repo/bun");
       const hoursAgo = new Date(Date.now() - 2 * 3_600_000);
       for (const version of ["replaced-earlier", "replaced-now"]) {
         mkdirSync(join(bun, version), { recursive: true });

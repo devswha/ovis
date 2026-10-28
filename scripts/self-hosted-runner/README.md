@@ -59,9 +59,9 @@ from a different checkout depth (GitHub's workspace versus `/w`).
 Every job used to fetch the same bytes: about 45 MB of git objects for its shallow checkout,
 105 MB of packages for `bun install`, and another 45 MB for Fast checks' tag fetch. Twenty runners
 on one ~100 Mbit/s line saturated it, and a Fast checks job ran out of its 10 minutes in checkout
-and that fetch. So the launcher keeps two caches on the host, in `--cache-dir` (default
-`~/.cache/ovis-ci-runner`), and mounts that directory read-only at `/cache` in every runner
-container:
+and that fetch. So the launcher keeps two caches on the host, per repository in
+`<--cache-dir>/OWNER/NAME` (default `~/.cache/ovis-ci-runner/OWNER/NAME`), and mounts that
+directory read-only at `/cache` in every runner container:
 
 - `git/repo.git`, a bare mirror of the repository's branches and tags (no pull request refs),
   fetched from GitHub before the first runner starts and every minute after. Runners get
@@ -71,21 +71,25 @@ container:
   A job's checkout then holds only the objects the mirror lacks, so a step that clears the `GIT_*`
   variables cannot read that checkout's history. Git never collects the mirror's objects on its
   own (a job may still read one of a deleted or force-pushed branch); past 50 packs the launcher
-  joins them, keeping every object.
+  joins them, keeping every object. A mirror whose origin is not this repository is set up again.
 - `bun/<blob of bun.lock>`, Bun's install cache for the default branch's lockfile, with `current`
   pointing at it. It is built when that lockfile changes, in a throwaway container of the runner
   image with the runners' hardening, as the host user, from a checkout of the mirror:
   `bun install --frozen-lockfile --ignore-scripts`, which resolves nothing beyond the lockfile,
-  checks every download's integrity against it and runs no package script. A failed build is
-  retried after 30 minutes. Bun cannot install from a read-only cache, so setup-ci
+  checks every download's integrity against it and runs no package script. A failed build (a
+  crash or the OOM killer included) is retried after 30 minutes; one the launcher's own stop ended
+  is not counted. Bun cannot install from a read-only cache, so setup-ci
   (`scripts/ci-seed-bun-cache.sh`) copies `current` into the job's `.ci-cache/bun`, under that name
   only once complete; `bun install --frozen-lockfile` then downloads only what the job's own
   lockfile adds. Measured: 105 MB in 11s to nothing in about 3s. A replaced version stays an
   hour after it was replaced, for jobs copying it at that moment.
 
-A cache the launcher cannot refresh (GitHub or the registry unreachable) only means more downloads:
-runners still start, jobs fetch what the caches lack, and the journal says `[cache] could not ...`.
-`--no-cache` turns both off. Artifact uploads and the actions' own archives (about 8 MB a job)
+A cache the launcher cannot refresh (GitHub or the registry unreachable or stalled) only means more
+downloads: runners still start, jobs fetch what the caches lack, and the journal says
+`[cache] ...`. The first runners wait for the first refresh up to `--cache-wait` seconds (default
+120), then start without it. Git gives up on a transfer slower than 1 KB/s for a minute and on any
+fetch after 15 minutes, and the Bun cache build is stopped after 15 minutes. A cache directory the
+launcher cannot use runs the runners without caches. `--no-cache` turns both off. Artifact uploads and the actions' own archives (about 8 MB a job)
 still use the network.
 
 ## Routing jobs to it

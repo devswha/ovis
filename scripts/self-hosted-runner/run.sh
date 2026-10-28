@@ -3,7 +3,7 @@
 #
 # Usage: scripts/self-hosted-runner/run.sh [--repo OWNER/NAME] [--count N] [--labels self-hosted-ovis]
 #          [--reserved N] [--reserved-labels self-hosted-ovis-main] [--env-file FILE] [--build] [--once]
-#          [--cache-dir DIR | --no-cache]
+#          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,7 @@ BUILD=0
 ONCE=0
 CACHE=1
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ovis-ci-runner"
+CACHE_WAIT=120
 
 usage() {
   sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
     --build) BUILD=1; shift ;;
     --once) ONCE=1; shift ;;
     --cache-dir) CACHE_DIR="${2:?--cache-dir needs a value}"; shift 2 ;;
+    --cache-wait) CACHE_WAIT="${2:?--cache-wait needs a value}"; shift 2 ;;
     --no-cache) CACHE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -48,6 +50,7 @@ case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; e
 # at most four digits: a longer number could wrap around in shell arithmetic and pass as a small one
 case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number up to --count" >&2; exit 2 ;; esac
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
+case "$CACHE_WAIT" in ''|*[!0-9]*|?????*) echo "--cache-wait must be a whole number of seconds" >&2; exit 2 ;; esac
 # What this host can take (CHECK_HOST_* in scripts/check.ts), for every runner container: read now,
 # so a missing file stops the launcher instead of every container failing to start.
 ENV_ARGS=()
@@ -91,43 +94,74 @@ fi
 # gets them read-only at /cache, so no job can change what a later one checks out or installs.
 MIRROR=""
 BUN_CACHES=""
+REPO_CACHE=""
 CACHE_CONTAINER="${PREFIX}cache"
+# Each repository has its own caches: a launcher moved to another --repo never hands its runners the
+# old one's packages. GitHub's names never hold a slash or start with a dot.
+case "$REPO" in
+  .*|*/.*|*/*/*|*[!A-Za-z0-9._/-]*|*/|/*) [ "$CACHE" = 1 ] && echo "[cache] $REPO is not an OWNER/NAME this launcher can keep caches for: running without them" >&2; CACHE=0 ;;
+  */*) ;;
+  *) [ "$CACHE" = 1 ] && echo "[cache] $REPO is not an OWNER/NAME this launcher can keep caches for: running without them" >&2; CACHE=0 ;;
+esac
 if [ "$CACHE" = 1 ]; then
-  (umask 022 && mkdir -p "$CACHE_DIR")
-  CACHE_DIR="$(cd "$CACHE_DIR" && pwd -P)"
-  MIRROR="$CACHE_DIR/git/repo.git"
-  BUN_CACHES="$CACHE_DIR/bun"
+  # an unusable cache directory costs downloads, never the runners
+  if REPO_CACHE="$(umask 022 && mkdir -p "$CACHE_DIR/$REPO" && cd "$CACHE_DIR/$REPO" && pwd -P)"; then
+    MIRROR="$REPO_CACHE/git/repo.git"
+    BUN_CACHES="$REPO_CACHE/bun"
+  else
+    echo "[cache] cannot use $CACHE_DIR/$REPO: running without host caches" >&2
+    CACHE=0
+  fi
 fi
+# The cache loop runs in its own process: files here tell the launcher it warmed the caches, and it
+# that the launcher is stopping. Made with the EXIT trap that removes it.
+STATE_DIR=""
+# Git over a saturated or stalled link: give up on a transfer slower than 1 KB/s for a minute, and on
+# any command after its deadline, rather than hold every refresh (and, at start, every runner).
+git_net() {
+  local limit="$1"; shift
+  GIT_TERMINAL_PROMPT=0 timeout --foreground -k 10 "$limit" \
+    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"
+}
 
 refresh_mirror() {
-  local tmp head
+  local tmp head dir url="https://github.com/$REPO.git"
+  # a mirror of anything else (set up by hand, say) is not this repository's: start again
+  if [ -d "$MIRROR/objects" ] && [ "$(git -C "$MIRROR" config remote.origin.url)" != "$url" ]; then
+    echo "[cache] $MIRROR does not mirror $url: setting it up again" >&2
+    rm -rf "$MIRROR" || return 1
+  fi
+  for dir in "$REPO_CACHE"/git/.new-*; do
+    if [ -d "$dir" ] && [ -n "$(find "$dir" -maxdepth 0 -mmin +60)" ]; then rm -rf "$dir"; fi
+  done
   if [ ! -d "$MIRROR/objects" ]; then
     # set up under another name, so a half-configured mirror never takes the real one's
-    mkdir -p "$CACHE_DIR/git" && tmp="$(mktemp -d "$CACHE_DIR/git/.new-XXXXXX")" || return 1
+    mkdir -p "$REPO_CACHE/git" && tmp="$(mktemp -d "$REPO_CACHE/git/.new-XXXXXX")" || return 1
     # gc.pruneExpire never: a job reads objects from the mirror without copying them, so an object
     # of a deleted or force-pushed branch must stay while a job may still need it
     if ! { git -c init.defaultBranch=main init -q --bare "$tmp" &&
-      git -C "$tmp" config remote.origin.url "https://github.com/$REPO.git" &&
+      git -C "$tmp" config remote.origin.url "$url" &&
       git -C "$tmp" config remote.origin.fetch '+refs/heads/*:refs/heads/*' &&
       git -C "$tmp" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*' &&
       git -C "$tmp" config gc.pruneExpire never &&
       git -C "$tmp" config gc.auto 0 &&
       git -C "$tmp" config maintenance.auto false &&
+      git -C "$tmp" config fetch.unpackLimit 1 &&
       chmod 0755 "$tmp" && mv -T "$tmp" "$MIRROR"; }; then
       rm -rf "$tmp"
       [ -d "$MIRROR/objects" ] || return 1
     fi
   fi
   # no pull request refs: only this repository's own branches and tags
-  GIT_TERMINAL_PROMPT=0 git -C "$MIRROR" fetch --quiet --prune --no-write-fetch-head origin || return 1
+  git_net 900 -C "$MIRROR" fetch --quiet --prune --no-write-fetch-head origin || return 1
   # HEAD names the default branch, whose bun.lock the Bun cache follows
-  head="$(GIT_TERMINAL_PROMPT=0 git -C "$MIRROR" ls-remote --symref origin HEAD |
+  head="$(git_net 120 -C "$MIRROR" ls-remote --symref origin HEAD |
     sed -n 's|^ref: \(refs/heads/[^[:space:]]*\)[[:space:]]*HEAD$|\1|p')"
   if [ -n "$head" ] && [ "$(git -C "$MIRROR" symbolic-ref -q HEAD)" != "$head" ]; then
     git -C "$MIRROR" symbolic-ref HEAD "$head" || return 1
   fi
-  # With automatic maintenance off, fetches add up packs: join them now and then, keeping every
-  # object (--keep-unreachable), so none a job still reads goes away.
+  # With automatic maintenance off, every fetch adds a pack (fetch.unpackLimit 1): join them now and
+  # then, keeping every object (--keep-unreachable), so none a job still reads goes away.
   if [ "$(find "$MIRROR/objects/pack" -name '*.pack' | wc -l)" -gt 50 ]; then
     git -C "$MIRROR" repack -q -a -d --keep-unreachable || return 1
   fi
@@ -149,9 +183,11 @@ refresh_bun_cache() {
     # The runner's hardening, the host user's files, no package scripts, and only what the lockfile
     # pins: --frozen-lockfile refuses to resolve anything else and Bun checks every download's
     # integrity against it. Not in the runners' network namespace: their check.ts slots are theirs.
-    # --foreground keeps it in this process group, which the launcher's exit stops whole
+    # --foreground keeps it in this process group, which the launcher's exit stops whole; --init gives
+    # the container a PID 1 that passes the deadline's SIGTERM on (a bare PID 1 ignores it), and -k
+    # ends the client if it still waits. Whatever ended it, docker rm -f below ends the container.
     status=0
-    timeout --foreground 900 docker run --rm \
+    timeout --foreground -k 30 900 docker run --rm --init \
       --name "$CACHE_CONTAINER" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
@@ -171,8 +207,9 @@ refresh_bun_cache() {
     if [ "$status" != 0 ]; then
       docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
       rm -rf "$tmp"
-      # a build stopped by a signal (the launcher stopping) is no reason to wait before the next
-      if [ "$status" -lt 128 ]; then touch "$failed"; fi
+      # Every failure waits 30 minutes (a crash or the OOM killer as well): only the launcher's own
+      # stop is no reason to wait before the next start's build.
+      if [ ! -e "$STATE_DIR/stopping" ]; then touch "$failed"; fi
       return 1
     fi
     rm -f "$failed"
@@ -207,7 +244,11 @@ refresh_caches() (
   return 0
 )
 
+# The first refresh says when it is done, so runners can start with warm caches; then one a minute.
 cache_loop() {
+  refresh_caches
+  : > "$STATE_DIR/warm"
+  [ "$ONCE" = 1 ] && return 0
   while true; do
     # a schedule, not a wait: one small fetch a minute keeps the mirror near GitHub
     sleep 60
@@ -219,7 +260,7 @@ cache_loop() {
 cache_args() {
   CACHE_ARGS=()
   [ "$CACHE" = 1 ] || return 0
-  CACHE_ARGS=(-v "$CACHE_DIR:/cache:ro")
+  CACHE_ARGS=(-v "$REPO_CACHE:/cache:ro")
   # actions/checkout and every other git command of the job read objects from the mirror first and
   # fetch only what it lacks; an object is named by its hash, so the head checked out is the same
   if [ -d "$MIRROR/objects" ]; then
@@ -298,6 +339,7 @@ cleanup() {
   trap '' INT TERM
   echo "stopping runner slots..." >&2
   # the whole refresh, git and the Bun cache build included: none may outlive the launcher
+  if [ -n "$STATE_DIR" ]; then : > "$STATE_DIR/stopping"; fi
   if [ -n "$CACHE_PID" ]; then kill -TERM -- "-$CACHE_PID" 2>/dev/null || true; fi
   docker stop -t 5 "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   for pid in "${PIDS[@]:-}"; do
@@ -314,20 +356,27 @@ cleanup() {
   for id in $ids; do
     gh api -X DELETE "repos/$REPO/actions/runners/$id" >/dev/null 2>&1 || true
   done
+  if [ -n "$STATE_DIR" ]; then rm -rf "$STATE_DIR"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# before the first runner, so its job finds them
 if [ "$CACHE" = 1 ]; then
-  refresh_caches
-  if [ "$ONCE" != 1 ]; then
-    # in a process group of its own (job control on for this one start), so cleanup stops it whole
-    set -m
-    cache_loop &
-    CACHE_PID="$!"
-    set +m
+  STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovis-ci-runner.XXXXXX")"
+  # in a process group of its own (job control on for this one start), so cleanup stops it whole
+  set -m
+  cache_loop &
+  CACHE_PID="$!"
+  set +m
+  # The first runners wait for warm caches, up to --cache-wait: a refresh that hangs or fails costs
+  # downloads, never the runners. Short naps, so a stop signal is handled at once.
+  deadline=$((SECONDS + 10#$CACHE_WAIT))
+  while [ ! -e "$STATE_DIR/warm" ] && kill -0 "$CACHE_PID" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 0.1
+  done
+  if [ ! -e "$STATE_DIR/warm" ]; then
+    echo "[cache] the caches are not ready after ${CACHE_WAIT}s: starting the runners without waiting for them" >&2
   fi
 fi
 
