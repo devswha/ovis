@@ -9,5 +9,10 @@ import { homedir } from "node:os";
  * own home on Windows (HOMEDRIVE/HOMEPATH first).
  */
 export function userHome(env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? env["USERPROFILE"] || env["HOME"] || homedir() : env["HOME"] || "";
+  return environmentHome(env, platform) || (platform === "win32" ? homedir() : "");
+}
+
+/** userHome's answer from `env` alone, "" when it names none: the caller picks its own fallback. */
+export function environmentHome(env: Record<string, string | undefined>, platform: NodeJS.Platform = process.platform): string {
+  return (platform === "win32" ? env["USERPROFILE"] || env["HOME"] : env["HOME"]) || "";
 }

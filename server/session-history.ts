@@ -20,7 +20,7 @@
  */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
 import { closeSync, constants, fstatSync, lstatSync, opendirSync, openSync, readSync, realpathSync, statSync, type BigIntStats, type Dir, type Dirent, type Stats } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -32,7 +32,7 @@ import { grokSessionGroups } from "./grok-store.ts";
 import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefix } from "./codex.ts";
 import { hermesHome } from "./hermes-home.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
-import { userHome } from "./user-home.ts";
+import { environmentHome } from "./user-home.ts";
 
 /** At most this much of any one file is read. */
 export const HEAD_BYTES = 64 * 1024;
@@ -1016,7 +1016,8 @@ function agySessions(cwds: readonly string[], home: string, budget: Budget, read
  */
 export function listSessions(agent: SessionHistoryAgent, cwd: string, options: SessionHistoryOptions = {}): Row[] {
   const env = options.env ?? process.env;
-  const home = options.home ?? userHome(env, options.platform ?? process.platform);
+  // the OS's answer when the environment names no home, as before: never a relative store path
+  const home = options.home ?? (environmentHome(env, options.platform ?? process.platform) || homedir());
   const read = options.readHead;
   const budget = new Budget(options.stat ?? ((path, bigint) => bigint ? statSync(path, { bigint: true }) : statSync(path)), options.platform ?? process.platform, options.resolve, options.lstat, options.fstat, options.opendir, options.opened);
   budget.used = options.spent ?? 0;

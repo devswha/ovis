@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
-import { userHome } from "./user-home.ts";
+import { environmentHome } from "./user-home.ts";
 
 export interface OmoStateOptions {
   readonly env?: NodeJS.ProcessEnv;
@@ -48,6 +48,6 @@ export function omoStateDir(cwd: string, options: OmoStateOptions = {}): string 
     const value = env[name]?.trim();
     if (value) { agentDir = resolve(value); break; }
   }
-  agentDir ??= join(userHome(env) || options.home || homedir(), ".omo", "agent");
+  agentDir ??= join(environmentHome(env) || options.home || homedir(), ".omo", "agent");
   return join(agentDir, "projects", projectStateKey(cwd), "senpi-task");
 }

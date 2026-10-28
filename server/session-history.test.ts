@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bu
 import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readdirSync, type BigIntStats, type Dir, type Dirent, type Stats, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SessionHistoryAgent, SessionSnapshot } from "../shared/protocol.ts";
 import { HEAD_BYTES, HERMES_CANDIDATES, listSessions, MAX_ENTRIES, MAX_ROWS, MAX_STATS, MAX_WALK, SESSION_HISTORY_AGENTS } from "./session-history.ts";
@@ -480,6 +480,13 @@ describe("listSessions", () => {
     const legacy = newHome();
     install("hermes", legacy);
     expect(listSessions("hermes", CWD, { home: legacy, env: { LOCALAPPDATA: join(legacy, "Local") }, platform: "win32" }).map((row) => row.id)).toEqual(EXPECTED.hermes);
+  });
+
+  it("looks for stores under the OS's home, never a relative path, when the environment names none", () => {
+    const looked: string[] = [];
+    listSessions("claude", CWD, { env: {}, platform: "linux", stat: (path, bigint) => { looked.push(path); return statAs(path, bigint); } });
+    expect(looked.length).toBeGreaterThan(0);
+    expect(looked.filter((path) => !isAbsolute(path))).toEqual([]);
   });
 
   it("looks in USERPROFILE on Windows when no home is given, even with HOME set", () => {
