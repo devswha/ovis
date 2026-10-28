@@ -264,7 +264,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           body = new TextEncoder().encode(JSON.stringify(answer));
         }
         // a PC's session as the roster tells it, without the token values this server's rows hide (#2160)
-        if (path === "session" && response.ok && body) {
+        if (path === "session" && request.method === "GET" && response.ok && body) {
           const answer = parseJson<{ snapshot?: SessionSnapshot }>(body);
           const shown = answer.snapshot && snapshotWithoutHiddenTokens(herdrSidebar?.get() ?? null, answer.snapshot);
           if (shown && shown !== answer.snapshot) body = new TextEncoder().encode(JSON.stringify({ ...answer, snapshot: shown }));

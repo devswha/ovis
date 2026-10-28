@@ -36,7 +36,7 @@ type CoreOptions = Parameters<typeof createTerminalRegistry>[0]["options"] & Par
     attachHoldMs?: number;
   };
 
-export function createCore({ options, devices, preferences, usage, usageLogin, browserSnapshot = (snapshot) => snapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS }: {
+export function createCore({ options, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS }: {
   options: CoreOptions;
   devices: DeviceStore;
   /** the shared preferences (server/preferences.ts): the status hub's web push reads the muted panes from it */
@@ -44,7 +44,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   usage: UsageService;
   usageLogin: UsageLoginService;
   /** a snapshot as a browser's /ws is told it (server/herdr-sidebar.ts snapshotWithoutHiddenTokens); a bridge connection gets it whole */
-  browserSnapshot?: (snapshot: SessionSnapshot) => SessionSnapshot;
+  browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot;
   TYPED_SETTLE_MS: number;
   KEY_SETTLE_MS: number;
   SUBMIT_DEADLINE_MS: number;

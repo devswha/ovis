@@ -73,7 +73,7 @@ describe("MachineRelay receipt isolation", () => {
         endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "shared-bridge-token" }),
         trackTerminal: () => () => {},
       } as unknown as MachineManager;
-      const relay = new MachineRelay(manager, "pc", readOnly);
+      const relay = new MachineRelay(manager, "pc", readOnly, (snapshot) => snapshot);
       try {
         await relay.ready;
         const attach = { type: "attach", pane_id: "p", cols: 93, rows: 37, flow_control: "ack", keep_size: true };
@@ -109,7 +109,7 @@ describe("MachineRelay stall timer", () => {
       endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }),
       trackTerminal: () => () => {},
     } as unknown as MachineManager;
-    const relay = new MachineRelay(manager, "pc");
+    const relay = new MachineRelay(manager, "pc", false, (snapshot) => snapshot);
     await relay.ready;
     const closes: number[] = [];
     const client = {
@@ -144,7 +144,8 @@ describe("MachineRelay snapshot frames", () => {
     const upstream = Bun.serve({
       port: 0, hostname: "127.0.0.1",
       fetch(request, server) { return server.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
-      websocket: { open(socket) { socket.send(JSON.stringify({ type: "snapshot", snapshot, features: [] })); socket.send(output); }, message() {} },
+      // the second snapshot names its type last: it is read all the same
+      websocket: { open(socket) { socket.send(JSON.stringify({ type: "snapshot", snapshot, features: [] })); socket.send(output); socket.send(JSON.stringify({ snapshot, type: "snapshot" })); }, message() {} },
     });
     const manager = { endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }), trackTerminal: () => () => {} } as unknown as MachineManager;
     const rows = agentRowTokens(Bun.TOML.parse(`[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ starts_with = "off", hide = true }] }, "$eta"]]`));
@@ -154,13 +155,14 @@ describe("MachineRelay snapshot frames", () => {
     const deadline = setTimeout(() => both.reject(new Error("timed out waiting for the relayed frames")), 5_000);
     try {
       await relay.ready;
-      relay.bind({ getBufferedAmount: () => 0, send: (raw: string) => { sent.push(raw); if (sent.length === 2) both.resolve(); return raw.length; }, close: () => {} } as unknown as ServerWebSocket<unknown>);
-      if (sent.length >= 2) both.resolve();
+      relay.bind({ getBufferedAmount: () => 0, send: (raw: string) => { sent.push(raw); if (sent.length === 3) both.resolve(); return raw.length; }, close: () => {} } as unknown as ServerWebSocket<unknown>);
+      if (sent.length >= 3) both.resolve();
       await both.promise;
       const told = JSON.parse(sent[0]!) as { type: string; snapshot: { panes: { tokens: unknown }[] } };
       expect(told.type).toBe("snapshot");
       expect(told.snapshot.panes[0]!.tokens).toEqual({ eta: "soon" });
       expect(sent[1]).toBe(output);
+      expect((JSON.parse(sent[2]!) as { snapshot: { panes: { tokens: unknown }[] } }).snapshot.panes[0]!.tokens).toEqual({ eta: "soon" });
     } finally {
       clearTimeout(deadline);
       relay.close();

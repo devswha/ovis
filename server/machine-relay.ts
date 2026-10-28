@@ -44,7 +44,7 @@ export class MachineRelay {
    * `browserSnapshot`: the PC's snapshot frame as the browser is told it, without the token values this
    * server's sidebar rows hide (#2160). Other frames pass as they came.
    */
-  constructor(manager: MachineManager, id: string, private readonly readOnly = false, private readonly browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot = (snapshot) => snapshot) {
+  constructor(manager: MachineManager, id: string, private readonly readOnly: boolean, private readonly browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot) {
     const endpoint = manager.endpoint(id);
     if (!endpoint) throw new Error("This PC is disconnected");
     this.upstream = authenticatedWebSocket(endpoint.url.replace("http:", "ws:") + "/ws", endpoint.token);
@@ -71,9 +71,12 @@ export class MachineRelay {
     this.timer = setInterval(() => this.tick(), 100);
     this.timer.unref();
   }
-  /** A frame as the browser is told it: only a snapshot frame is read, and re-written where a value leaves. */
+  /**
+   * A frame as the browser is told it: a frame that names `tokens` anywhere is read, whatever its key
+   * order, and a snapshot among them re-written where a value leaves; the rest pass unread.
+   */
   private told(raw: string): string {
-    if (!raw.startsWith('{"type":"snapshot"')) return raw;
+    if (!raw.includes('"tokens"')) return raw;
     let message: ServerMessage;
     try { message = JSON.parse(raw) as ServerMessage; } catch { return raw; }
     if (message.type !== "snapshot") return raw;
