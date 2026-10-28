@@ -31,7 +31,7 @@ import { paneProcessInfo } from "./herdr/client.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { OmoAskReader, type OmoAskEntry, type OmoAsks } from "./omo-ask.ts";
 import { piBranchRecords, piBranchSegments } from "./pi-tree.ts";
-import { piTranscriptPath } from "./pi.ts";
+import { piPaneAgentDirs, piTranscriptPath } from "./pi.ts";
 
 const STATE_READ_MS = 1_000;
 /** The extension gives pi-ask 3 s to confirm; this covers that and the socket round trip. */
@@ -191,6 +191,28 @@ async function foregroundPids(paneId: string): Promise<number[]> {
 /** Whether the session has an ask_user call pi-ask still waits on (its own rule, as for the card). */
 export function piAskUserOpen(transcript: string): boolean {
   return (openAsks(transcript)?.length ?? 0) > 0;
+}
+
+/**
+ * Whether the pane's foreground pi has a pi-ask form open, as its extension says, with no session
+ * needed: pi writes no session file before its first answer, and a form from `/answer` needs no
+ * tool call. A socket of the pane's own foreground pi that does not answer counts as open too: not
+ * knowing never makes room for keys.
+ */
+export async function piAskActiveInPane(paneId: string, signal?: AbortSignal): Promise<boolean> {
+  if (process.platform === "win32") return false;
+  const { pids, agentDirs } = await piPaneAgentDirs(paneId);
+  for (const agentDir of agentDirs) {
+    const directory = join(agentDir, PI_ASK_BRIDGE_DIRECTORY);
+    if (!existsSync(directory)) continue;
+    for (const pid of pids) {
+      const socket = join(directory, `${pid}.sock`);
+      if (!ownSocket(socket)) continue;
+      const state = await bridgeState(socket, signal);
+      if (!state || state.pid !== pid || state.flows.length > 0) return true;
+    }
+  }
+  return false;
 }
 
 /**

@@ -99,6 +99,35 @@ function piSessionDirForProcess(
 }
 
 /**
+ * The pane's foreground pids and the agent directories its pi may use, whatever its session: the
+ * directory each identified pi process names, and the bridge's own for processes whose environment
+ * says nothing (or that are not identified as pi). Nothing here is a card's authority; it says only
+ * where the pane's pi would answer if it runs the web UI's extension.
+ */
+export async function piPaneAgentDirs(
+  paneId: string,
+  options: Omit<PiTranscriptOptions, "agent"> = {},
+): Promise<{ pids: number[]; agentDirs: string[] }> {
+  const info = options.processes === undefined
+    ? await paneProcessInfo(paneId).catch(() => undefined)
+    : { foreground_processes: [...options.processes] };
+  const home = options.home ?? process.env["HOME"] ?? process.env["USERPROFILE"] ?? "";
+  const environOf = options.environOf ?? processEnviron;
+  const argvOf = options.argvOf ?? processArgv;
+  const pids: number[] = [];
+  const agentDirs = new Set<string>([piAgentDir()]);
+  for (const entry of info?.foreground_processes ?? []) {
+    if (typeof entry.pid !== "number") continue;
+    pids.push(entry.pid);
+    const argv = entry.argv?.length ? entry.argv : argvOf(entry.pid);
+    if (!argv?.length || !isPiProcess(argv)) continue;
+    const resolved = piSessionDirForProcess(argv, environOf(entry.pid), home, entry.cwd ?? "");
+    if (resolved.kind === "store" && resolved.agentDir !== null) agentDirs.add(resolved.agentDir);
+  }
+  return { pids: [...new Set(pids)], agentDirs: [...agentDirs] };
+}
+
+/**
  * pi's transcript for a pane, or the session it has not written yet. The agent report names
  * the active session; Linux process metadata ties a custom store to the Pi process in this pane.
  * Where the OS cannot expose that process environment, only the bridge's default store is used.

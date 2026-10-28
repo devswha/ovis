@@ -17,6 +17,8 @@ interface Bridge {
   state: PiAskBridgeState;
   reply: PiAskSubmitReply;
   submits: PiAskSubmitRequest[];
+  /** the extension's socket is there but its state read fails */
+  broken?: boolean;
 }
 
 /**
@@ -29,19 +31,21 @@ async function withBridgedPane(run: (pane: {
   foreground: number;
   /** called on each read of the bridge's state, before it answers */
   onState?: () => void;
+  /** every key and text herdr was asked to send into the pane */
+  keys: string[];
   bridge: Bridge;
   session: string;
   root: string;
   read(): Promise<InteractivePrompt | null>;
   answer(id: string, choice: object): Promise<{ status: number; body: { error?: { code: string } } }>;
-}) => Promise<void>, options: { bridge?: boolean } = {}) {
+}) => Promise<void>, options: { bridge?: boolean; written?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "pau-"));
   const id = `pi-ask-user-${randomUUID()}`;
   const store = join(root, "sessions", "--proj--");
   mkdirSync(store, { recursive: true });
   const session = join(store, "2026-10-28T06-40-21-815Z_268a1f60-5ac8-45fa-8ecc-5a6b3a0ecdd7.jsonl");
   // the session up to the open call; the recorded dismissal is what pi-ask writes once answered
-  writeFileSync(session, fixture.transcript.slice(0, 4).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  if (options.written !== false) writeFileSync(session, fixture.transcript.slice(0, 4).map((entry) => JSON.stringify(entry)).join("\n") + "\n");
   const bridge: Bridge = { state: { ...structuredClone(fixture.state), pid: PID, sessionFile: session } as PiAskBridgeState, reply: fixture.accepted.reply as PiAskSubmitReply, submits: [] };
   const served = options.bridge === false ? null : (() => {
     mkdirSync(join(root, "herdr-web-ui-ask"), { mode: 0o700 });
@@ -51,6 +55,7 @@ async function withBridgedPane(run: (pane: {
         const url = new URL(request.url);
         if (url.pathname === "/v1/state") {
           pane.onState?.();
+          if (bridge.broken) return new Response("broken", { status: 500 });
           return Response.json(bridge.state);
         }
         bridge.submits.push(await request.json() as PiAskSubmitRequest);
@@ -60,7 +65,7 @@ async function withBridgedPane(run: (pane: {
   })();
 
   const pane = {
-    status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, bridge, session, root,
+    status: "blocked", foreground: PID, onState: undefined as (() => void) | undefined, keys: [] as string[], bridge, session, root,
     read: async (): Promise<InteractivePrompt | null> => {
       const url = new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${id}`);
       const response = (await handlePromptRequest(new Request(url), url))!;
@@ -82,12 +87,16 @@ async function withBridgedPane(run: (pane: {
     socket.on("data", (chunk) => {
       buffer += chunk.toString();
       if (!buffer.includes("\n")) return;
-      const request = JSON.parse(buffer.split("\n")[0]!) as { id: string; method: string };
+      const request = JSON.parse(buffer.split("\n")[0]!) as { id: string; method: string; params?: { keys?: string[]; text?: string } };
       const reply = (result: unknown) => socket.end(JSON.stringify({ id: request.id, result }) + "\n");
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
       if (request.method === "pane.read") return reply({ read: { text: fixture.screen } });
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
       if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: pane.foreground, argv: ["fictional-shell"] }] } });
+      if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
+        pane.keys.push(...(request.params?.keys ?? [`text:${request.params?.text}`]));
+        return reply({});
+      }
       if (request.method === "agent.get") return reply({ agent: { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: session } } });
       socket.end(JSON.stringify({ id: request.id, error: { code: "unexpected_fixture_rpc", message: `Unexpected test RPC ${request.method}` } }) + "\n");
     });
@@ -288,6 +297,29 @@ test("an open pi-ask form that is no card is never a card of guessed keys", asyn
     pane.bridge.state.sessionFile = join(pane.root, "other.jsonl");
     expect(await pane.read()).toBeNull();
   });
+});
+
+test("an open pi-ask form in a session pi has not written yet is never a card of guessed keys", async () => {
+  if (!posix) return;
+  // pi writes its session file only once an assistant message is in; a form from /answer needs no
+  // tool call. herdr reports the session's path, which does not exist yet.
+  await withBridgedPane(async (pane) => {
+    pane.bridge.state.flows = [{ ...pane.bridge.state.flows[0]!, flowId: "flow:answer", toolCallId: undefined, source: "answer" }];
+    pane.bridge.state.openCalls = [];
+    const card = await pane.read();
+    // a card here could only be the generic one: answering it would type into the open form
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
+  }, { written: false });
+  // and an extension socket of the pane's pi that does not answer: not knowing makes no room for keys
+  await withBridgedPane(async (pane) => {
+    pane.bridge.broken = true;
+    const card = await pane.read();
+    if (card) await pane.answer(card.id, { option_index: 0 });
+    expect(card).toBeNull();
+    expect(pane.keys).toEqual([]);
+  }, { written: false });
 });
 
 test("an answer never leaves for a pi the pane no longer has in front", async () => {
