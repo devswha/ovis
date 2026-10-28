@@ -855,6 +855,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  it("links a skill's question beside Claude's fullscreen diff panel to its send", async () => {
+    // every row of the 2.1.303 capture ends in the panel's edge in column 99 and the panel's text, the echo's row too
+    const lines = fixture("claude-diff-panel-2.1.303-english-180.txt").split("\n");
+    const screen = lines.slice(0, 33).join("\n");
+    lines[33] = `${"❯ /review".padEnd(99)}│`;
+    const pane = { agent: "claude", status: "blocked", screen: lines.join("\n") };
+    await withFakeHerdr(pane, async (paneId) => {
+      const current = { ...send("/review", "claude", [{ ...row("review"), source: "skill" }]),
+        at: Date.now() - 10, screen, identity: JSON.stringify([undefined, undefined]), store: null };
+      noteSubmitted(paneId, current.text, current);
+      const shown = await served(paneId);
+      expect(shown.prompt).toMatchObject({ kind: "question", question: "Which color?" });
+      expect(shown.outcomes?.at(-1)?.state).toBe("interaction-required");
+      expect(current.dialogId).toBe(shown.prompt!.id);
+    });
+  });
+
   it("completes a named Claude model card through the real answer handler", async () => {
     const pane = { agent: "claude", status: "idle", screen: `❯ /model
 
