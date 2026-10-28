@@ -218,6 +218,8 @@ describe("omp tool approval (#2059)", () => {
       for (const detail of [
         "Command: echo harmless \u2026", "Command: echo harmless \u2026 +1 line in the tool call", "Content: 40 lines in the tool call",
         "Command: echo [\u2026120ch elided\u2026]", `Command: ${"x".repeat(60)}\u2026`,
+        // ast_edit names its first rewrite only: 18.13's one row, and 18.10's row of its own
+        "Pattern: foo() \u00b7 Replacement: bar() \u00b7 +1 more op \u00b7 Paths: src/app.ts", "+2 more ops",
       ]) {
         expect(parseInteractivePrompt("omp", redraw(shown, "\u2502 Command: ls -la ", detail)), `${name} ${detail}`).toBeNull();
       }

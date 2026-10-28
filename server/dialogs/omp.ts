@@ -258,10 +258,14 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
  *
  * omp cuts a detail at the panel's edge or past its length (`[…120ch elided…]`) and summarizes a multi-line one
  * (`… +2 lines in the tool call`, or 18.13's one row ending ` …`): two calls could then draw the same panel, and
- * a card read for one would answer the other. Only a panel that shows the whole call is a card. Not the screen
- * above it: omp keeps redrawing the transcript there (a running tool's elapsed time) while it waits.
+ * a card read for one would answer the other. So is ast_edit's `+N more ops` (its first rewrite only): none of
+ * them is a card. Not the screen above it either: omp keeps redrawing the transcript there (a running tool's
+ * elapsed time) while it waits.
+ * Known limit: some tools never show their whole call (edit names only the files, lsp and debug the action and
+ * target), so two calls to them draw the same panel. A card read for the first answers the second only when
+ * the first was answered in the terminal and the second drawn before the card was read again.
  */
-const OMP_DETAIL_CUT_RE = /…|\bin the tool call$/;
+const OMP_DETAIL_CUT_RE = /…|\bin the tool call$|(?:^|· )\+\d+ more ops?(?: ·|$)/;
 /** a key may hold a space: the Nerd Font preset joins a modifier icon to its key with one (`\u{f0634} O`, Ctrl+O on macOS) */
 const OMP_APPROVAL_HINT_RE = /^(?:(\S+) choose · (\S.*?) select · )?(\S.*?) approve · (\S.*?) deny(?: · \S.*? (?:details|less))?( · \S.*? scroll)?( · type to deny and steer)?$/;
 const OMP_APPROVAL_CLIPPED_HINT_RE = /^(\S+) choose · (\S.*?) select · (\S.*?) approve · .*…$/;
