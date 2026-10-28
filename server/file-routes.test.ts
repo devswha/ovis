@@ -90,6 +90,17 @@ describe("file routes", () => {
     } finally {
       setFilePoolOptions();
     }
+    // found and described, then held while it is opened and read: the headers wait no longer than the deadline
+    const heldOpen = join(folder, "held-open");
+    writeFileSync(heldOpen, "small");
+    setFilePoolOptions({ worker: new URL("./file-worker.fake.ts", import.meta.url), workers: 2, waiting: 0, deadlineMs: 500 });
+    try {
+      const started = performance.now();
+      expect(await error(await fetch(url(`/api/fs/file?path=${q(heldOpen)}`)))).toEqual([503, "file_busy"]);
+      expect(performance.now() - started).toBeLessThan(5_000);
+    } finally {
+      setFilePoolOptions();
+    }
     expect((await fetch(url(`/api/fs/stat?path=${q(notes)}`))).status).toBe(200);
   });
 
@@ -100,6 +111,13 @@ describe("file routes", () => {
     const whole = await fetch(url(`/api/fs/file?path=${q(big)}`));
     expect(whole.status).toBe(200);
     expect(whole.headers.get("accept-ranges")).toBe("bytes");
+    // larger than one read, from a disk that answers at once: sent with its length, as a download shows it
+    expect(whole.headers.get("content-length")).toBe(String(bytes.length));
+    const large = await fetch(url(`/api/fs/file?path=${q(big)}`), { headers: { range: "bytes=1000-299999" } });
+    expect(large.status).toBe(206);
+    expect(large.headers.get("content-length")).toBe("299000");
+    expect(large.headers.get("content-range")).toBe(`bytes 1000-299999/${bytes.length}`);
+    expect(Buffer.from(await large.arrayBuffer()).equals(bytes.subarray(1000, 300000))).toBe(true);
     expect(Buffer.from(await whole.arrayBuffer()).equals(bytes)).toBe(true);
     const part = await fetch(url(`/api/fs/file?path=${q(big)}`), { headers: { range: "bytes=100-109" } });
     expect(part.status).toBe(206);

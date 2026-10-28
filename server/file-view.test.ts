@@ -88,6 +88,22 @@ describe("file view", () => {
     expect(await response.text()).toBe("<script>alert(1)</script>");
   });
 
+  it("streams a large file from a slow disk from its descriptor, and closes it once sent", async () => {
+    const root = temp();
+    const bytes = Buffer.from(Array.from({ length: 600 * 1024 }, (_, index) => index % 253));
+    writeFileSync(join(root, "clip.bin"), bytes);
+    // every disk counts as slow: the body is streamed, not sent as a file Bun reads on this thread
+    pageFileHooks.fastDiskMs = -1;
+    const whole = await fileResponse(fileInfo(join(root, "clip.bin"))!, false);
+    expect(whole.status).toBe(200);
+    expect(Buffer.from(await whole.arrayBuffer()).equals(bytes)).toBe(true);
+    const part = await fileResponse(fileInfo(join(root, "clip.bin"))!, false, false, null, new Request("http://x/", { headers: { range: "bytes=1000-400000" } }));
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-range")).toBe(`bytes 1000-400000/${bytes.length}`);
+    expect(Buffer.from(await part.arrayBuffer()).equals(bytes.subarray(1000, 400001))).toBe(true);
+    await closing([...live][0] ?? -1);
+  });
+
   it("draws an HTML page only when asked to render it, with no origin and no network", async () => {
     const root = temp();
     writeFileSync(join(root, "report.html"), "<p>chart</p>");

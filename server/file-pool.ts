@@ -52,7 +52,7 @@ const DEFAULTS: PoolOptions = {
 };
 let options = DEFAULTS;
 
-interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean }
+interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean; unlisten?: () => void }
 /** Bun's Worker, which the DOM's type does not describe: `unref` lets the process end with the thread idle. */
 type BunWorker = Worker & { ref(): void; unref(): void };
 interface Thread { worker: BunWorker; pending: Pending | null }
@@ -68,17 +68,43 @@ const queue: Pending[] = [];
  */
 export function setFilePoolOptions(next: Partial<PoolOptions> = {}): void {
   options = { ...DEFAULTS, ...next };
+  endThreads("the file threads were replaced");
+}
+
+/**
+ * Every thread ended, a busy one too, and every task under way or waiting failed. A thread inside
+ * a system call ends once that call returns: what it was asked is refused now, and what it opened
+ * is closed (`abandon`).
+ */
+function endThreads(reason: string): void {
   idle.length = 0;
   for (const thread of [...threads]) {
     threads.delete(thread);
     if (thread.pending !== null) {
-      settle(thread.pending, new Error("the file threads were replaced"));
+      settle(thread.pending, new Error(reason));
       abandon(thread.pending.task);
     }
     thread.pending = null;
     void thread.worker.terminate();
   }
-  for (const pending of queue.splice(0)) settle(pending, new Error("the file threads were replaced"));
+  for (const pending of queue.splice(0)) settle(pending, new Error(reason));
+}
+
+let holders = 0;
+
+/**
+ * The file threads held by one server (`createServer`): every server in the process shares them,
+ * and the last one to stop (the returned release) ends them. A later server starts new ones.
+ */
+export function holdFilePool(): () => void {
+  holders += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    holders -= 1;
+    if (holders === 0) endThreads("the server stopped");
+  };
 }
 
 /** Threads started and not yet ended, busy or idle, and tasks waiting for one (tests). */
@@ -86,16 +112,26 @@ export function filePoolSize(): { threads: number; idle: number; waiting: number
   return { threads: threads.size, idle: idle.length, waiting: queue.length };
 }
 
-/** `task` run on a file thread; rejects with `FileBusyError` when none is free in time. */
-export function fileTask<T extends FileTaskResult>(task: FileTask): Promise<T> {
+/**
+ * `task` run on a file thread; rejects with `FileBusyError` when none is free in time, or at once
+ * when `signal` aborts (the request went away). Either way a task already on a thread keeps it
+ * until its call returns, and what that late answer opened is closed then, never under it.
+ */
+export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal): Promise<T> {
   const inline = options.inline;
   if (inline !== null) return Promise.resolve().then(() => inline(task) as T);
+  if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
   // the thread names the descriptor it opens here at once, so one never answered (a thread that
   // failed or was ended mid-task) can still be closed (`abandon`)
   if (task.op === "open") task = { ...task, opened: openedCell() };
   return new Promise<T>((done, fail) => {
     const deadline = task.op === "render" || task.op === "walk" ? options.longDeadlineMs : options.deadlineMs;
-    const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending), deadline) };
+    const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending, "the file system did not answer in time"), deadline) };
+    if (signal !== undefined) {
+      const cancel = () => expire(pending, "the request was cancelled");
+      signal.addEventListener("abort", cancel, { once: true });
+      pending.unlisten = () => signal.removeEventListener("abort", cancel);
+    }
     const thread = idle.pop() ?? (threads.size < options.workers ? start() : null);
     if (thread !== null) run(thread, pending);
     else if (queue.length < options.waiting) queue.push(pending);
@@ -107,15 +143,16 @@ function settle(pending: Pending, outcome: FileTaskResult | Error): void {
   if (pending.settled) return;
   pending.settled = true;
   clearTimeout(pending.timer);
+  pending.unlisten?.();
   if (outcome instanceof Error) pending.fail(outcome);
   else pending.done(outcome);
 }
 
-/** Past its deadline: refused, whether it still waits for a thread or runs on one (which stays taken until it answers). */
-function expire(pending: Pending): void {
+/** Past its deadline or cancelled: refused, whether it still waits for a thread or runs on one (which stays taken until it answers). */
+function expire(pending: Pending, reason: string): void {
   const at = queue.indexOf(pending);
   if (at >= 0) queue.splice(at, 1);
-  settle(pending, new FileBusyError("the file system did not answer in time"));
+  settle(pending, new FileBusyError(reason));
 }
 
 function start(): Thread {
@@ -172,7 +209,7 @@ function next(thread: Thread): void {
 
 /** A late answer's descriptor is closed: the request that asked for it was already answered 503. */
 function discard(task: FileTask, result: FileTaskResult | undefined): void {
-  if (task.op === "open" && result != null && typeof result === "object" && "fd" in result) {
+  if (task.op === "open" && result != null && typeof result === "object" && "fd" in result && result.fd !== null) {
     try { closeSync(result.fd); } catch { /* already closed */ }
   }
 }

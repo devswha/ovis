@@ -13,9 +13,11 @@ import { jsonResponse } from "./http.ts";
  * Opening a file from the browser: the files agents write (a screenshot, a demo video, a
  * PDF, a log) seen on a phone that has no terminal to open them with.
  *
- * Nothing is read into memory to serve a file: it is streamed from a descriptor a chunk at a
- * time as the client takes it, with Range answered (`byteRange`), so a video plays and seeks
- * without the server holding more than its socket buffers. Only the first bytes of a file are
+ * A file is served with Range answered (`byteRange`) and its content-length: a body of at most
+ * one read (`STREAM_CHUNK_BYTES`) is read whole before its headers are sent; a larger one is sent
+ * as a file, which Bun reads from disk as the client takes it, so a video plays and seeks without
+ * the server holding more than its socket buffers. From a disk that answered slowly a larger body
+ * is streamed from its descriptor instead, without a content-length (`file-tasks.ts` `open`). Only the first bytes of a file are
  * read, to tell text from binary. A rendered page's own files and the videos it plays are read
  * only from a descriptor whose opened file was shown to lie where the page may reach
  * (`openAuthorized`). Finding, describing, rendering and opening a file for `/api/fs/stat`,
@@ -370,7 +372,7 @@ export function pageMediaResponse(token: string, client: string | null, request:
  * unit, several ranges, one it cannot read); "unsatisfiable" for a range that starts past the end.
  * An end past the last byte means the last byte.
  */
-function byteRange(header: string | null, ifRange: boolean, size: number): [number, number] | "unsatisfiable" | null {
+export function byteRange(header: string | null, ifRange: boolean, size: number): [number, number] | "unsatisfiable" | null {
   // an empty file has no byte to send a range of: the whole of it is the answer
   if (header === null || ifRange || size === 0) return null;
   const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
@@ -387,7 +389,7 @@ function byteRange(header: string | null, ifRange: boolean, size: number): [numb
   return [start, last === "" ? size - 1 : Math.min(Number(last), size - 1)];
 }
 
-const STREAM_CHUNK_BYTES = 256 * 1024;
+export const STREAM_CHUNK_BYTES = 256 * 1024;
 
 /**
  * `length` bytes of an open file from `start`, read from its descriptor a chunk at a time as the
@@ -510,6 +512,8 @@ export const pageFileHooks: {
   fstat?: (fd: number) => BigIntStats;
   readlink?: (path: string) => string;
   read?: (fd: number, buffer: Buffer, position: number) => Promise<number>;
+  /** how quickly a disk must answer for a large file to be sent whole (`FAST_DISK_MS`); -1 streams every one */
+  fastDiskMs?: number;
   opened?: (fd: number) => void;
   closed?: (fd: number) => void;
 } = {};
@@ -518,7 +522,7 @@ const fstatBig = (fd: number): BigIntStats => fstatSync(fd, { bigint: true });
 /** O_NONBLOCK, so a FIFO put where a file was is not waited on; O_NOFOLLOW, so a link put there since the check is not followed. */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
 
-function release(fd: number): void {
+export function release(fd: number): void {
   closeSync(fd);
   pageFileHooks.closed?.(fd);
 }
@@ -860,7 +864,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     const watch = media === null ? null : (watched ?? watchPageMedia());
     let rendered: RenderedPage;
     try {
-      rendered = await fileTask<RenderedPage>({ op: "render", path: info.path, media });
+      rendered = await fileTask<RenderedPage>({ op: "render", path: info.path, media }, request?.signal);
       // gone, grown past the page limit or written over since it was found
       if (rendered.html === null) return gone();
       if (watch !== null) keepPageMedia(rendered.grants, Date.now(), watch.since);
@@ -871,42 +875,30 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     headers.set("content-type", type);
     return new Response(rendered.html, { headers });
   }
-  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path });
+  // everything before the headers (opening, the range, a small body) is one task, bounded by its
+  // deadline and ended by the client going away; only a larger body is streamed after them
+  const head = request?.method === "HEAD";
+  // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
+  const get = head ? null : { range: request?.method === "GET" ? request.headers.get("range") : null, ifRange: request?.headers.has("if-range") ?? false };
+  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, fastDiskMs: pageFileHooks.fastDiskMs }, request?.signal);
   if (opened === null) return gone();
   headers.set("content-type", type);
   headers.set("accept-ranges", "bytes");
-  // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
-  const range = request?.method === "GET" ? byteRange(request.headers.get("range"), request.headers.has("if-range"), opened.size) : null;
-  if (range === "unsatisfiable") {
-    release(opened.fd);
+  if (opened.range === "unsatisfiable") {
     headers.set("content-range", `bytes */${opened.size}`);
     return new Response(null, { status: 416, headers });
   }
-  const [start, end] = range ?? [0, opened.size - 1];
+  const [start, end] = opened.range ?? [0, opened.size - 1];
   const length = end - start + 1;
   headers.set("content-length", String(length));
-  if (range !== null) headers.set("content-range", `bytes ${start}-${end}/${opened.size}`);
-  const status = range === null ? 200 : 206;
-  if (request?.method === "HEAD") {
-    release(opened.fd);
-    return new Response(null, { status, headers });
+  if (opened.range !== null) headers.set("content-range", `bytes ${start}-${end}/${opened.size}`);
+  const status = opened.range === null ? 200 : 206;
+  if (head) return new Response(null, { status, headers });
+  if (opened.bytes !== null) return new Response(opened.bytes, { status, headers });
+  if (opened.fast) {
+    // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once)
+    headers.delete("content-length");
+    return new Response(Bun.file(info.path, { type }).slice(start, end + 1, type), { status, headers });
   }
-  // Bun sends any stream body chunked, without its length: what fits in one read is read first
-  // (asynchronously, like the stream), so a small file or range keeps its content-length
-  if (length <= STREAM_CHUNK_BYTES) {
-    const bytes = Buffer.allocUnsafe(length);
-    let got = 0;
-    try {
-      while (got < length) {
-        const read = await (pageFileHooks.read ?? readAt)(opened.fd, bytes.subarray(got), start + got);
-        if (read === 0) break;
-        got += read;
-      }
-    } catch {
-      return gone();
-    } finally { release(opened.fd); }
-    // shorter than it was when opened: gone, as a file that vanished
-    return got < length ? gone() : new Response(bytes, { status, headers });
-  }
-  return new Response(descriptorBody(opened.fd, start, length, null), { status, headers });
+  return new Response(descriptorBody(opened.fd!, start, length, null), { status, headers });
 }
