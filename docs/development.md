@@ -12,6 +12,16 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+The plugin's `start` and `stop` (`scripts/plugin.ts`) take turns through `lifecycle.lock` in the
+plugin's state directory (the owner lock of `server/owner-guard.ts`, taken over once its owner is
+proved gone): a start holds it until its server answers or the start fails, a stop until the server
+is gone, and one that waits says so and gives up after 60 s. A start also keeps its server's birth
+in `server.owner` beside `server.pid`, and opens no second server while that very process still
+runs, even when it does not answer and its port looks free. A start keeps the run before it as
+`server.log.1` unless the recorded server still runs, and a failed start shows the last 15 lines of
+what its own server wrote, reading at most the log's last 64 KiB. That bounds what a failed start
+reads, not the size of a running server's log.
+
 ## Connection diagnostics
 
 Transport failures write one JSON line to the server's standard error, with an ISO timestamp,

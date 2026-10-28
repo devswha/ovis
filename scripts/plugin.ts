@@ -21,6 +21,8 @@
  */
 
 import { mergeEnvLayers } from "../server/legacy-env.ts";
+import { acquireOwnerDirectory, type OwnerLease } from "../server/owner-guard.ts";
+import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
 import { defaultStateDir } from "../server/update-state.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -64,6 +66,18 @@ const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ??
 adoptLegacyConfig(CONFIG_DIR);
 const PID_FILE = join(STATE_DIR, "server.pid");
 const LOG_FILE = join(STATE_DIR, "server.log");
+/** the recorded server's pid and birth, so a pid handed on to another process is not taken for it */
+const OWNER_FILE = join(STATE_DIR, "server.owner");
+/**
+ * Starts and stops take turns through this lock: a start holds it from deciding whether a server
+ * runs until its own answers (or fails), a stop until the server is gone. Without it a second start
+ * found the first one's server spawned but not on its port yet, spawned another and overwrote its
+ * record, and `stop` then missed the server that kept running (#1611).
+ */
+const LIFECYCLE_LOCK = join(STATE_DIR, "lifecycle.lock");
+const LIFECYCLE_BUSY = "another start or stop of Ovis is running";
+/** longer than a start holds the lock (its port wait and its readiness wait, 20 s each) or a stop does */
+const LIFECYCLE_WAIT_MS = 60_000;
 /** the server needs a moment to bind and open its first herdr connection */
 const READY_TIMEOUT_MS = 20_000;
 /** the supervisor gives its bridge 6 s to exit before it kills it */
@@ -221,6 +235,22 @@ function recordedPid(): number | null {
   return pidIn(PID_FILE);
 }
 
+/**
+ * The recorded server while that very process runs: its birth, kept when it was started, matches the
+ * one running under its pid now. null when it is gone, or cannot be told apart (a record from before
+ * the birth was kept, or a birth that cannot be read).
+ */
+function provedServer(): number | null {
+  const pid = recordedPid();
+  if (pid === null) return null;
+  let owner: { pid?: unknown; birth?: unknown } | null = null;
+  try { owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown }; } catch { /* none kept */ }
+  const birth = owner?.pid === pid ? parseBirth(owner.birth) : null;
+  if (birth === null || birth.platform !== process.platform) return null;
+  const now = readProcessBirth(pid);
+  return now.state === "identified" && now.birth.value === birth.value ? pid : null;
+}
+
 /** the live process a pid file names, or null */
 /**
  * herdr keeps a plugin's state dir by its id too. A server started under the old id keeps its pid
@@ -245,6 +275,28 @@ function pidIn(file: string): number | null {
   }
 }
 
+
+/**
+ * Waits for this process's turn to start or stop: the lease, or why there is none. A lock whose
+ * owner is proved gone (it crashed, or the PC restarted under it) is taken over at once.
+ */
+async function takeTurn(): Promise<OwnerLease | string> {
+  const deadline = Date.now() + LIFECYCLE_WAIT_MS;
+  let said = false;
+  for (;;) {
+    try {
+      return acquireOwnerDirectory(LIFECYCLE_LOCK, { running: LIFECYCLE_BUSY, starting: LIFECYCLE_BUSY });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // anything else (the state dir cannot be written) does not pass by waiting
+      if (!message.startsWith(LIFECYCLE_BUSY)) return message;
+      if (Date.now() >= deadline) return `${message} and did not finish within ${LIFECYCLE_WAIT_MS / 1000}s; if none is running, remove ${LIFECYCLE_LOCK}`;
+      if (!said) process.stdout.write(`${message}; waiting for it to finish\n`);
+      said = true;
+    }
+    await Bun.sleep(250);
+  }
+}
 
 /** names the keys only, never their values: a token must not reach herdr's log */
 function warnShadowed(): void {
@@ -356,12 +408,28 @@ async function start(): Promise<number> {
     return 0;
   }
   mkdirSync(STATE_DIR, { recursive: true });
+  const turn = await takeTurn();
+  if (typeof turn === "string") return failStart(`could not start Ovis: ${turn}`);
+  try {
+    return await startInTurn();
+  } finally {
+    turn.release();
+  }
+}
+
+/** The rest of `start`, while no other start or stop runs: a server another start recorded is seen here. */
+async function startInTurn(): Promise<number> {
   const settled = await settlePort();
   if (settled === "failed") return 1;
   if (settled === "running") {
     process.stdout.write(`Ovis already running at ${origin}\n`);
     return 0;
   }
+  // a server an earlier start left running (it did not answer in time: herdr was away, say) may
+  // have let go of its port for a moment; another server would stop at its supervisor's lock and
+  // take over its record, and `stop` would then miss the one that runs
+  const running = provedServer();
+  if (running !== null) return failStart(`Ovis (pid ${running}) is still running but does not answer ${origin}/api/health. Stop it before starting it again.`);
   if (!portSet) {
     // kept, so the address a phone or a bookmark holds survives a restart
     if (port === DEFAULT_PORT) rmSync(PORT_FILE, { force: true });
@@ -396,6 +464,8 @@ async function start(): Promise<number> {
     return 1;
   }
   writeFileSync(PID_FILE, `${child.pid}\n`, { mode: 0o600 });
+  const birth = readProcessBirth(child.pid);
+  writeFileSync(OWNER_FILE, `${JSON.stringify({ pid: child.pid, ...(birth.state === "identified" ? { birth: birth.birth } : {}) })}\n`, { mode: 0o600 });
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
   // a server that has exited will not answer: its last words are in the log now
@@ -473,6 +543,24 @@ const stopDependencies: StopDependencies = {
  * gives up, and leaves nothing running.
  */
 export async function stop(dependencies: StopDependencies = stopDependencies): Promise<number> {
+  // no start made the dir, so none recorded a server here
+  if (!existsSync(STATE_DIR)) {
+    process.stdout.write("Ovis is not running\n");
+    return 0;
+  }
+  const turn = await takeTurn();
+  if (typeof turn === "string") {
+    process.stderr.write(`could not stop Ovis: ${turn}\n`);
+    return 1;
+  }
+  try {
+    return await stopInTurn(dependencies);
+  } finally {
+    turn.release();
+  }
+}
+
+async function stopInTurn(dependencies: StopDependencies): Promise<number> {
   const pid = recordedPid();
   if (pid === null) {
     rmSync(PID_FILE, { force: true });

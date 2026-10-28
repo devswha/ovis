@@ -5,6 +5,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { herdrStateDir } from "./plugin-state.ts";
+import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
 
 /**
@@ -21,14 +22,18 @@ async function status(): Promise<{ out: string; err: string; exitCode: number }>
 }
 
 async function run(command: string, extra: Record<string, string | undefined> = {}): Promise<{ out: string; err: string; exitCode: number }> {
+  const child = launch(command, extra);
+  const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { out, err, exitCode };
+}
+
+function launch(command: string, extra: Record<string, string | undefined> = {}) {
   const bin = join(scratch, "bin");
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
   for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
-  const child = Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
-  const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  return { out, err, exitCode };
+  return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
 }
 
 beforeEach(() => {
@@ -189,6 +194,130 @@ describe("server.log", () => {
   it("shows the last 15 lines", async () => {
     const started = await failedStart(`console.log(Array.from({ length: 40 }, (_, i) => "line " + i).join("\\n"));`);
     expect(shown(started.err)).toEqual(Array.from({ length: 15 }, (_, i) => `line ${i + 25}`));
+  });
+});
+
+describe("starts at the same moment", () => {
+  it("open one server between them, whose record stop finds", async () => {
+    // each stand-in server reports its pid here, then binds only once the test says go: both starts
+    // decide while the first one's server has not taken the port yet
+    const control = join(scratch, "control.sock");
+    const servers: { pid: number; socket: { write(data: string): number } }[] = [];
+    const listeners: (() => void)[] = [];
+    let open = false;
+    const listener = Bun.listen<undefined>({
+      unix: control,
+      socket: {
+        data(socket, chunk) {
+          servers.push({ pid: Number(String(chunk).trim()), socket });
+          if (open) socket.write("go\n");
+          for (const notify of listeners) notify();
+        },
+      },
+    });
+    const serversUp = (count: number) => new Promise<void>((resolve) => {
+      const check = () => { if (servers.length >= count) resolve(); };
+      listeners.push(check);
+      check();
+    });
+    const root = join(scratch, "root");
+    mkdirSync(join(root, "server"), { recursive: true });
+    writeFileSync(join(root, "server", "managed.ts"), `
+      const go = Promise.withResolvers<void>();
+      const socket = await Bun.connect({ unix: ${JSON.stringify(control)}, socket: { data() { go.resolve(); } } });
+      socket.write(process.pid + "\\n");
+      await go.promise;
+      try {
+        Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.PORT), fetch: () => Response.json(${JSON.stringify({ ...APP_HEALTH, bridge_protocol: 1 })}) });
+      } catch {
+        console.log("the port is taken");
+        process.exit(1);
+      }
+    `);
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
+    const port = String(probe.port);
+    await probe.stop(true);
+    async function within<T>(promise: Promise<T>, what: string): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), 15_000); })]);
+      } finally { clearTimeout(timer); }
+    }
+    try {
+      const first = launch("start", { HERDR_PLUGIN_ROOT: root, PORT: port });
+      await within(serversUp(1), "the first start's server");
+      const second = launch("start", { HERDR_PLUGIN_ROOT: root, PORT: port });
+      const reader = second.stdout.getReader();
+      const decoder = new TextDecoder();
+      let secondOut = "";
+      /** reads the second start's output until it says `text`, or to its end */
+      const readSecond = async (text?: string) => {
+        while (text === undefined || !secondOut.includes(text)) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          secondOut += decoder.decode(value, { stream: true });
+        }
+      };
+      // the second start either waits for the first or (the bug) opens a server of its own
+      const waits = readSecond("another start or stop of Ovis is running");
+      await within(Promise.race([waits, serversUp(2)]), "the second start to wait or spawn");
+      open = true;
+      for (const server of servers) server.socket.write("go\n");
+      const [firstOut, firstCode] = await within(Promise.all([new Response(first.stdout).text(), first.exited]), "the first start");
+      const [secondCode] = await within(Promise.all([second.exited, waits.then(() => readSecond())]), "the second start");
+      expect(servers.map((server) => server.pid), "regression (fails on main): the second start opened a second server").toHaveLength(1);
+      const pid = servers[0]!.pid;
+      expect(firstCode, firstOut).toBe(0);
+      expect(secondCode, secondOut).toBe(0);
+      expect(secondOut).toContain(`Ovis already running at http://127.0.0.1:${port}`);
+      expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${pid}\n`);
+      const stopped = await run("stop", { HERDR_PLUGIN_ROOT: root, PORT: port });
+      expect(stopped.exitCode, stopped.err).toBe(0);
+      expect(stopped.out).toContain(`stopped Ovis (pid ${pid})`);
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      for (const { pid } of servers) try { process.kill(-pid, "SIGKILL"); } catch { /* stopped */ }
+      listener.stop(true);
+    }
+  }, 60_000);
+
+  /** a recorded server (a sleep) on a free port, and a root whose stand-in server marks that it was spawned */
+  const recordedSleeper = (birth: (pid: number) => unknown) => {
+    const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "server.pid"), `${server.pid}\n`);
+    writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify({ pid: server.pid, birth: birth(server.pid!) }));
+    const root = join(scratch, "root");
+    mkdirSync(join(root, "server"), { recursive: true });
+    writeFileSync(join(root, "server", "managed.ts"), `require("node:fs").writeFileSync(${JSON.stringify(join(scratch, "spawned"))}, ""); process.exit(1);\n`);
+    return { server, root };
+  };
+  const freePortNumber = async () => {
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
+    const port = String(probe.port);
+    await probe.stop(true);
+    return port;
+  };
+
+  it("leave a server an earlier start left running alone when it does not answer and its port is free", async () => {
+    const { server, root } = recordedSleeper((pid) => { const reading = readProcessBirth(pid); return reading.state === "identified" ? reading.birth : null; });
+    try {
+      const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(existsSync(join(scratch, "spawned")), "regression (fails on main): a second server was spawned over the running one's record").toBe(false);
+      expect(started.exitCode).toBe(1);
+      expect(started.err).toContain(`Ovis (pid ${server.pid}) is still running but does not answer`);
+      expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${server.pid}\n`);
+    } finally { process.kill(-server.pid!, "SIGKILL"); }
+  });
+
+  it("start a server when the recorded pid now runs another process", async () => {
+    // the birth kept for the record is not the one running under its pid: the pid was handed on
+    const { server, root } = recordedSleeper(() => ({ platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : "Thu Jan 1 00:00:00 1970" }));
+    try {
+      const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
+      expect(existsSync(join(scratch, "spawned"))).toBe(true);
+      expect(started.err).toContain("the server stopped (exit 1)");
+    } finally { process.kill(-server.pid!, "SIGKILL"); }
   });
 });
 
