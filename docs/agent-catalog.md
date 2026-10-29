@@ -9,6 +9,11 @@ with what is installed there (see `shared/protocol.ts`). A version flag gets 5 s
 whose flag is slower (Hermes loads the whole agent for it) sets `detect.version_timeout_ms`, at most
 30 s. The first catalog read waits for every agent's flag, so it can take that long.
 
+A version is read only from what the version flag prints on stdout when it succeeds. A flag that
+exits with an error or does not start is `version_error: "failed"`, and one that hangs is
+`"timeout"`: such an agent is there but does not run (`agentRuns()`), as a wrapper whose target was
+removed leaves it, and no screen offers it as ready. Its error text is never read for a version.
+
 ## What may go in
 
 - **Only the vendor's own command**, copied from the vendor's current docs. `sources` names each
