@@ -40,7 +40,7 @@ import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
-import { handleMachineRequest, nonCanonicalPath, slowMachinePath } from "./machine-api.ts";
+import { handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
 import type { HerdrSidebarConfig } from "./herdr-sidebar.ts";
@@ -98,6 +98,7 @@ export interface ServerContext {
   readonly port: number | undefined;
   readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string };
   readonly services: RequestServices;
+  readonly relayBodyBudget?: EventStreamBudget;
 }
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
@@ -275,7 +276,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // that closed the gate, so whoever holds it has no access left by the time there is news
       const openAccess = access.level === "full" && access.via === "open";
       const pairings = { subscribe: (listener: (event: DevicePairedEvent) => void) => devices.onPaired((event, origin) => { if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event); }) };
-      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings);
+      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;

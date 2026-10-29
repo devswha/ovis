@@ -44,6 +44,8 @@ export interface MuxOptions {
   readonly onClose?: (error: MuxProtocolError) => void;
   /** The HTTP adapter supplies its route policy, including slow machine operations and SSE. */
   readonly requestTimeoutMs?: (request: HttpRequest) => number;
+  /** Server adapters may drop untrusted identity headers, after syntax and size validation. */
+  readonly filterRequestHeaders?: boolean;
 }
 
 export class MuxStreamError extends Error {
@@ -914,7 +916,7 @@ export class MuxEngine {
         this.kick();
         return;
       }
-      const frame = decodeFrame(bytes);
+      const frame = decodeFrame(bytes, this.options.filterRequestHeaders);
       this.refreshIdle();
       this.dispatch(frame, bytes.length);
       if (frame.type !== FrameType.RECEIVED && this.active) {
