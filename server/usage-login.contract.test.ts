@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
@@ -9,6 +9,7 @@ import { paneClose, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import * as herdr from "./herdr/client.ts";
 import * as collector from "./collector.ts";
 import { isJsonObject } from "./http.ts";
+import { privateStateFs } from "./private-state.ts";
 import { UsageLoginService } from "./usage-login.ts";
 import { UsageService, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
@@ -478,8 +479,9 @@ it("starts one sign-in when two servers on one state dir are asked for one home 
   create.mockImplementationOnce(async (options) => { opening.resolve(); await gate.promise; return open(options); });
   const first = serveOn(stateDir);
   const second = serveOn(stateDir);
+  let answer: Promise<Response> | undefined;
   try {
-    const answer = startOn(first, { provider: "claude", account: key });
+    answer = startOn(first, { provider: "claude", account: key });
     await opening.promise;
     // When: the other server is asked for that home meanwhile
     const other = await startOn(second, { provider: "claude", account: key });
@@ -491,7 +493,40 @@ it("starts one sign-in when two servers on one state dir are asked for one home 
     openedPanes.push((await started.json() as UsageLoginStarted).pane_id);
     expect(create).toHaveBeenCalledTimes(1);
     await launched(0);
-  } finally { gate.resolve(); first.stop(); second.stop(); create.mockRestore(); }
+  } finally {
+    // a check that failed early leaves the held launch to finish here, its tab closed with the others
+    gate.resolve();
+    const late = await answer?.catch(() => undefined);
+    if (late?.ok && !late.bodyUsed) openedPanes.push((await late.json() as UsageLoginStarted).pane_id);
+    first.stop(); second.stop(); create.mockRestore();
+  }
+});
+
+it("takes a home a crashed launch left in the state file once, even when that file cannot be written", async () => {
+  // Given: a launch that never opened its tab, long ago, and a disk that refuses the file's next writes
+  const stateDir = mkdtempSync(join(root, "full-disk-state-"));
+  writeFileSync(join(stateDir, "usage-logins.json"), JSON.stringify({ logins: [
+    { home: `claude:${join(realpathSync(root), ".claude-full-disk")}`, launch: "crashed", pid: process.pid, at: 0 },
+  ] }));
+  const local = new UsageLoginService(root, { ...process.env, PATH: bin }, ctx);
+  local.persistTo(stateDir);
+  let writes = 0;
+  const realRename = privateStateFs.renameSync;
+  const rename = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+    // a server that tried again for each refused write would never get past them; give up after 20
+    if (++writes <= 20) throw Object.assign(new Error("fixture: no space left on device"), { code: "ENOSPC" });
+    realRename(from, to);
+  });
+  const { create, launched } = holdLogins();
+  try {
+    // When
+    const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: "full-disk" }) }));
+    // Then: the sign-in starts, after one look at that launch
+    expect(response.status).toBe(200);
+    openedPanes.push((await response.json() as UsageLoginStarted).pane_id);
+    expect(writes).toBeLessThanOrEqual(2);
+    await launched(0);
+  } finally { rename.mockRestore(); create.mockRestore(); }
 });
 
 it("frees a home after a restart when its sign-in ended while no server ran, even when its pane ID now names another tab", async () => {
