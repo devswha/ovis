@@ -2544,8 +2544,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   waiting for transcript** user bubble. Only a matching durable user record appended beyond the byte
   boundary captured on that exact Pi file/session and extending its captured leaf removes it, and
   only one Pi stamped no earlier than that capture: Pi stamps a message when it is submitted, so an
-  earlier stamp is the same text typed into Pi before Ovis's Enter. Pi exposes no submission id,
-  so the same text submitted elsewhere after that Enter still confirms the receipt.
+  earlier stamp is the same text typed into Pi before Ovis's Enter (a wall clock set back since the
+  capture lowers that bound by as much, measured on the monotonic clock). Pi exposes no submission
+  id, so the same text submitted elsewhere after that Enter still confirms the receipt, and so does
+  the same text typed while Pi compacts: Pi stamps what it stages then only when the stage drains.
   Bounded byte-exact tail checks assume Pi's append-only history contract, not arbitrary older
   history corruption detection; changed inode, header, anchor tail or branch fails closed. Pi may
   stage input while status says idle/done during automatic compaction, so status and screen text are
