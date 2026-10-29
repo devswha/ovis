@@ -218,6 +218,13 @@ export function entryHostToolResults(entry: { type?: unknown; promptSource?: unk
   return sdk && entry.type === "user" && Array.isArray(content) ? hostToolResults(content) : [];
 }
 
+/** The blocks host results take in a prompt, the breaks around them included: the rest is the prompt's own. */
+export function hostedBlocks(results: readonly HostToolResult[]): Set<number> {
+  const hosted = new Set<number>();
+  for (const host of results) for (let at = host.header - 1; at <= host.end; at++) hosted.add(at);
+  return hosted;
+}
+
 /** senpi's denial of a call it runs on its host: the result comes later, as a host tool result. */
 export function isHostHandoff(result: { content?: unknown; is_error?: unknown }): boolean {
   return result.is_error === true && HOST_HANDOFF.test(claudeResultText(result.content));
@@ -469,8 +476,8 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
 
     if (entry.type === "user" && Array.isArray(content)) {
       // the host's results of senpi's calls are the calls' output; what else the entry holds is still the prompt
-      const hosted = new Set<number>();
-      for (const host of entryHostToolResults(entry, content)) {
+      const hosts = entryHostToolResults(entry, content);
+      for (const host of hosts) {
         const call = calls.get(host.id);
         let tool: Extract<ConversationPart, { kind: "tool" }>;
         // the call id is Claude Code's own and unique; the header's name is senpi's mapping of it
@@ -493,9 +500,9 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           return mediaType === null || ref === null ? [] : [{ media_type: mediaType, ref }];
         });
         if (pictures.length > 0) tool.images = pictures; else delete tool.images;
-        // the breaks around it were senpi's, not the person's
-        for (let at = host.header - 1; at <= host.end; at++) hosted.add(at);
       }
+      // the results and the breaks around them were senpi's, not the person's
+      const hosted = hostedBlocks(hosts);
       const blocks = hosted.size === 0 ? content : content.map((block: unknown, at: number) => hosted.has(at) ? null : block);
       const invocations: ConversationPart[] = [];
       const prompt = blocks.flatMap((block: unknown) => {

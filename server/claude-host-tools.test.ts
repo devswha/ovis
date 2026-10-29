@@ -77,6 +77,37 @@ describe("senpi host tool results in a Claude Code transcript", () => {
     });
   });
 
+  describe("a message senpi sent along with host results, read in pages", () => {
+    const roots: string[] = [];
+    afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
+    const page = (records: unknown[]) => {
+      const root = mkdtempSync(join(tmpdir(), "ovis-host-tools-")); roots.push(root);
+      const path = join(root, "session.jsonl");
+      writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+      return said(transcriptPage("claude-transcript", path).turns);
+    };
+    const text = (value: string) => ({ type: "text", text: value });
+    const prompt = (uuid: string, parentUuid: string | null, content: unknown) => ({ type: "user", uuid, parentUuid, message: { role: "user", content } });
+    const sent = (uuid: string, parentUuid: string, content: unknown[]) => ({ ...prompt(uuid, parentUuid, content), promptSource: "sdk", entrypoint: "sdk-ts" });
+    const answer = (uuid: string, parentUuid: string, content: unknown[], stop = "end_turn") => ({ type: "assistant", uuid, parentUuid, message: { role: "assistant", content, stop_reason: stop } });
+    const call = { type: "tool_use", id: "toolu_x", name: "Read", input: { file_path: "a.ts" } };
+    const result = [text("Tool result (Read, id=toolu_x):\n"), text("output"), text("\n\n")];
+
+    it("forks the branch when it hangs from before the turns it leaves behind", () => {
+      expect(page([
+        prompt("u1", null, "old prompt"), answer("a1", "u1", [text("old answer")]),
+        { ...sent("u2", "", [...result, text("new prompt")]), parentUuid: null }, answer("a2", "u2", [text("new answer")]),
+      ])).toEqual(["new prompt"]);
+    });
+
+    it("gives way to its re-send when it was cancelled before any reply", () => {
+      expect(page([
+        prompt("u0", null, "initial"), answer("a0", "u0", [call], "tool_use"),
+        sent("u1", "a0", [...result, text("cancelled")]), sent("u2", "a0", [text("resent")]), answer("a1", "u2", [text("answer")]),
+      ])).toEqual(["initial", "resent"]);
+    });
+  });
+
   it("serves a host result's whole output by its call id, not senpi's denial", () => {
     expect(transcriptToolOutput("claude-transcript", FIXTURE, "toolu_012w5d2nn5pdAknCBscThLjd")).toStartWith("# herdr worktree remove --workspace w3C9");
     expect(transcriptToolOutput("claude-transcript", FIXTURE, "toolu_01KFTjjPGDR37MWB1CVj2AfU")).toBe("Memory create committed locally (eed429e).");
