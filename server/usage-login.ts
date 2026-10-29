@@ -144,7 +144,11 @@ export class UsageLoginService {
       const saved = this.read(file);
       const before = JSON.stringify([...saved]);
       const result = change(saved);
-      if (JSON.stringify([...saved]) !== before) writePrivateState(file, { logins: [...saved].map(([home, holder]) => ({ home, ...holder })) });
+      if (JSON.stringify([...saved]) !== before) {
+        const written = writePrivateState(file, { logins: [...saved].map(([home, holder]) => ({ home, ...holder })) });
+        // a rename the directory did not record may be gone after a crash (Windows does not sync a directory)
+        if (!written.directorySynced && process.platform !== "win32") throw new Error(`${file} was written, but its directory could not be synced`);
+      }
       return result;
     });
   }
@@ -185,12 +189,19 @@ export class UsageLoginService {
         continue;
       }
       const launch: Launch = { launch: randomUUID(), pid: process.pid, at: Date.now() };
-      const holder = this.edit((saved) => {
-        const found = saved.get(home);
-        if (found !== undefined && !(ended !== undefined && sameHolder(found, ended))) return found;
-        saved.set(home, launch);
-        return undefined;
-      });
+      let holder: Holder | undefined;
+      try {
+        holder = this.edit((saved) => {
+          const found = saved.get(home);
+          if (found !== undefined && !(ended !== undefined && sameHolder(found, ended))) return found;
+          saved.set(home, launch);
+          return undefined;
+        });
+      } catch (error) {
+        // a claim written but not made durable holds nothing: take it back where it landed
+        if (!(error instanceof LoginStateUnreadable)) this.release(home, launch);
+        throw error;
+      }
       if (holder === undefined) { this.logins.set(home, launch); return launch; }
       if (await this.holds(holder)) return null;
       ended = holder;
@@ -330,6 +341,8 @@ export class UsageLoginService {
           return true;
         });
       } catch (error) {
+        // a record written but not made durable holds nothing: take it back where it landed
+        this.release(home, opened);
         await paneClose(paneId).catch((closeError: unknown) => console.warn("Could not close a sign-in tab whose login was not sent", closeError));
         throw error;
       }

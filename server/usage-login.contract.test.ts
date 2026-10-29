@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
@@ -526,22 +526,32 @@ for (const damage of ["corrupt", "unreadable"] as const) {
   });
 }
 
-it("closes the tab and sends no login when that tab cannot be recorded as the home's holder", async () => {
-  // Given: the launch is recorded, but the disk refuses the next write, the one naming its tab
+for (const failure of ["refused", "not synced"] as const) {
+// Windows syncs no directory, so a rename there is not checked that way
+it.skipIf(failure === "not synced" && process.platform === "win32")(`closes the tab and sends no login when the record of that tab as the home's holder is ${failure}`, async () => {
+  // Given: the launch is recorded, but the next write, the one naming its tab, is refused (ENOSPC) or
+  // lands without its directory synced (EIO), so a crash could undo it
   const stateDir = mkdtempSync(join(root, "unrecorded-state-"));
   const local = new UsageLoginService(root, { ...process.env, PATH: bin }, ctx);
   local.persistTo(stateDir);
   let renames = 0;
+  let directorySyncs = 0;
   const realRename = privateStateFs.renameSync;
+  const realSync = privateStateFs.fsyncSync;
   const rename = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
-    if (++renames === 2) throw Object.assign(new Error("fixture: no space left on device"), { code: "ENOSPC" });
+    if (failure === "refused" && ++renames === 2) throw Object.assign(new Error("fixture: no space left on device"), { code: "ENOSPC" });
     realRename(from, to);
+  });
+  const sync = spyOn(privateStateFs, "fsyncSync").mockImplementation((fd) => {
+    if (failure === "not synced" && fstatSync(fd).isDirectory() && ++directorySyncs === 2) throw Object.assign(new Error("fixture: i/o error"), { code: "EIO" });
+    realSync(fd);
   });
   const sent = spyOn(herdr, "paneSendText");
   const { create } = holdLogins();
+  const name = failure === "refused" ? "unrecorded" : "unsynced";
   try {
     // When
-    const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: "unrecorded" }) }));
+    const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name }) }));
     const opened = (await (create.mock.results[0]!.value as ReturnType<typeof herdr.tabCreate>)).root_pane.pane_id;
     openedPanes.push(opened);
     // Then: no login runs in that tab, which is closed, and the home is free again for this or another server
@@ -549,9 +559,10 @@ it("closes the tab and sends no login when that tab cannot be recorded as the ho
     expect(sent.mock.calls.filter(([pane]) => pane === opened)).toEqual([]);
     expect(await herdr.paneGet(opened).then(() => "open", () => "closed")).toBe("closed");
     expect(JSON.parse(readFileSync(join(stateDir, "usage-logins.json"), "utf8"))).toEqual({ logins: [] });
-    expect(existsSync(join(root, ".claude-unrecorded"))).toBe(false);
-  } finally { rename.mockRestore(); sent.mockRestore(); create.mockRestore(); }
+    expect(existsSync(join(root, `.claude-${name}`))).toBe(false);
+  } finally { rename.mockRestore(); sync.mockRestore(); sent.mockRestore(); create.mockRestore(); }
 });
+}
 
 it("refuses once, without looking again and again, when a crashed launch's entry cannot be replaced, and signs in once it can", async () => {
   // Given: a launch that never opened its tab, long ago, and a disk that refuses the file's next writes
