@@ -229,7 +229,7 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
     const consumed: string[] = [], changed: string[] = [], ambiguous: string[] = [], matchedEntries: string[] = [];
     const updates = new Map<PiDeliveryAnchor, AppendState>();
     let afterMatched = -1;
-    for (const candidate of candidates) {
+    for (const [index, candidate] of candidates.entries()) {
       const { anchor } = candidate;
       if (anchor.path !== path || anchor.file !== null && anchor.file !== file || anchor.session !== session
         || size < anchor.size || tailAt(fd, anchor.size) !== anchor.prefix) {
@@ -257,8 +257,13 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       else break;
       const used = (match ?? earlier)!;
       // Earlier-stamped copies a match passes over are accounted for by it: they cannot make a
-      // later receipt ambiguous in a later reconciliation, whose scan starts over.
-      for (const entry of same) if (entry.start <= used.start) matchedEntries.push(key(entry));
+      // later receipt ambiguous in a later reconciliation, whose scan starts over. One stamped no
+      // earlier than a later receipt's capture (a clock set back between captures) may be that
+      // receipt's own record, so it stays.
+      const laterCapture = Math.min(...candidates.slice(index + 1).map((later) => later.anchor.at));
+      for (const entry of same) {
+        if (entry === used || entry.start < used.start && entry.at !== null && entry.at < laterCapture) matchedEntries.push(key(entry));
+      }
       afterMatched = used.start;
     }
     if (!stable(fd, path, file, size, tail)) return { consumed: [], changed: [], retry: true };

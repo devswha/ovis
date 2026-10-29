@@ -283,6 +283,21 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
   });
 
+  it("keeps a later receipt's own record when a clock set back between captures put it before a match", () => {
+    const path = join(dir(), "captures.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const first = capturePiDeliveryAnchor(path)!;
+    // the clock is set back a minute before Ovis's first record, then restored
+    appendFileSync(path, entry("own-1", "a0", "user", "same", first.at - 60_000));
+    const second = { ...capturePiDeliveryAnchor(path)!, at: first.at - 59_000 };
+    appendFileSync(path, entry("own-2", "own-1", "user", "same", first.at - 58_000)
+      + entry("external", "own-2", "user", "same", first.at + 1000));
+    const receipts = [candidate("r1", "same", first), candidate("r2", "same", second)];
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+  });
+
   it("settles, rather than strands, Ovis's own record stamped while the wall clock was set back", () => {
     const path = join(dir(), "clock.jsonl");
     writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
