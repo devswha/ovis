@@ -222,14 +222,14 @@ export class AgentDetector {
     }
   }
 
-  async #version(executable: string, fingerprint: string, args: readonly string[]): Promise<Kept> {
+  async #version(executable: string, fingerprint: string, args: readonly string[], timeoutMs: number): Promise<Kept> {
     const kept = this.#kept.get(executable);
     if (kept?.fingerprint === fingerprint && (kept.retryAt === null || this.#now() < kept.retryAt)) return kept;
     const running = this.#running.get(fingerprint);
     if (running) return running;
     const read = this.#slot(async (): Promise<Kept> => {
       try {
-        const run = await this.#run(executable, args, this.#timeoutMs);
+        const run = await this.#run(executable, args, timeoutMs);
         if (run.timedOut) return { fingerprint, version: null, error: "timeout", retryAt: this.#now() + TIMEOUT_KEPT_MS };
         const version = parseVersion(run.output);
         return { fingerprint, version, error: version === null ? "unreadable" : null, retryAt: null };
@@ -263,7 +263,7 @@ export class AgentDetector {
       if (executable === null) continue;
       const fingerprint = fingerprintOf(executable);
       if (fingerprint === null) continue;
-      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args);
+      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs);
       return {
         installed: true,
         binary,
