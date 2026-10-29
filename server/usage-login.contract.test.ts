@@ -49,6 +49,8 @@ await Bun.write(receipt + ".tmp", JSON.stringify({ argv: process.argv.slice(2), 
   ...(["gh", "opencode"].includes(provider) ? { configHome: process.env[provider === "gh" ? "XDG_CONFIG_HOME" : "XDG_DATA_HOME"] } : {}) }));
 renameSync(receipt + ".tmp", receipt);
 console.log("Signed in to the isolated fixture.");
+// a login still open in its tab: it ends when the tab closes
+if (process.env.TEST_LOGIN_HOLD) await new Promise((resolve) => process.stdin.once("data", resolve));
 `, { mode: 0o755 });
   }
   workspaceId = (await workspaceCreate({ cwd: root, label: "usage-login-test" })).workspace.workspace_id;
@@ -269,6 +271,102 @@ it("signs in again to a Codex home named by a relative CODEX_HOME where this ser
     expect(JSON.parse(readFileSync(join(root, "codex-receipt.json"), "utf8"))).toMatchObject({ home: relativeHome, configured: relativeHome });
     expect(readFileSync(join(dir, "auth.json"), "utf8")).not.toBe(expired);
   } finally { clearTimeout(timer); watcher.close(); }
+});
+
+for (const [provider, variable] of [["codex", "CODEX_HOME"], ["claude", "CLAUDE_CONFIG_DIR"]] as const) {
+  it(`signs in again in a ${variable} directory literally named default, not in the default home`, async () => {
+    // Given: this server runs where ./default is the configured home, holding an expired sign-in
+    const cwd = mkdtempSync(join(root, "named-default-"));
+    const email = `named-default-${provider}@example.test`;
+    expiredHome(provider, join(relative(root, cwd), "default"), email);
+    const credentials = join(cwd, "default", provider === "claude" ? ".credentials.json" : "auth.json");
+    const expired = readFileSync(credentials, "utf8");
+    const previous = process.cwd();
+    process.chdir(cwd);
+    const written = Promise.withResolvers<void>();
+    const watcher = watch(root, (_event, filename) => { if (filename === `${provider}-receipt.json`) written.resolve(); });
+    const timer = setTimeout(() => written.reject(new Error("sign-in again did not write its receipt")), 10_000);
+    try {
+      const homeCtx = { ...ctx, home: cwd, env: { [variable]: "default" } };
+      const shown = await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === provider)).report();
+      const key = shown.providers.find((usage) => usage.account === email)!.key;
+      const local = new UsageLoginService(cwd, { ...process.env, PATH: bin }, homeCtx);
+      // When
+      const response = await local.handle(new Request("http://localhost/api/usage/login", {
+        method: "POST", body: JSON.stringify({ provider, account: key }),
+      }));
+      // Then: the CLI was told that directory, and replaced the sign-in there; the default home was not made
+      expect(response.status).toBe(200);
+      openedPanes.push((await response.json() as UsageLoginStarted).pane_id);
+      await written.promise;
+      expect(JSON.parse(readFileSync(join(root, `${provider}-receipt.json`), "utf8"))).toMatchObject({ home: "default", configured: "default" });
+      expect(readFileSync(credentials, "utf8")).not.toBe(expired);
+      expect(existsSync(join(cwd, provider === "claude" ? ".claude" : ".codex"))).toBe(false);
+    } finally { process.chdir(previous); clearTimeout(timer); watcher.close(); }
+  });
+}
+
+/** Tabs whose fake CLI stays open, as a sign-in the user has not finished; restore when done. */
+function holdLogins() {
+  const realCreate = herdr.tabCreate;
+  return spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) =>
+    realCreate({ ...options, env: { ...options.env, TEST_LOGIN_HOLD: "1" } }));
+}
+
+const statusAndCode = async (response: Response) => [response.status, response.status === 200 ? null : (await response.json()).error.code];
+
+it("starts one sign-in again when two arrive at once for an account, and another once its tab is gone", async () => {
+  // Given: an expired account this PC lists, and logins that stay open
+  expiredHome("claude", ".claude-race", "race@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "race@example.test")!.key;
+  const create = holdLogins();
+  try {
+    // When: two requests for it race
+    const raced = await Promise.all([start({ provider: "claude", account: key }), start({ provider: "claude", account: key })]);
+    // Then: one tab signs in, the other is told it is already open
+    const results = await Promise.all(raced.map(statusAndCode));
+    expect(results.map(([status]) => status).sort()).toEqual([200, 409]);
+    expect(results.find(([status]) => status === 409)?.[1]).toBe("login_in_progress");
+    const winner = raced.find((response) => response.status === 200)!;
+    const pane = (await winner.json() as UsageLoginStarted).pane_id;
+    openedPanes.push(pane);
+    expect(await statusAndCode(await start({ provider: "claude", account: key }))).toEqual([409, "login_in_progress"]);
+    // When the tab is closed, the home is free again
+    await paneClose(pane);
+    const again = await start({ provider: "claude", account: key });
+    expect(again.status).toBe(200);
+    openedPanes.push((await again.json() as UsageLoginStarted).pane_id);
+    expect(create).toHaveBeenCalledTimes(2);
+  } finally { create.mockRestore(); }
+});
+
+it("refuses Sign in again while Add account's sign-in into that home is still open", async () => {
+  // Given: Add account's login has written its sign-in and is still open in its tab
+  const home = mkdtempSync(join(root, "one-login-"));
+  const homeCtx = { ...ctx, home };
+  const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
+  const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
+  const written = Promise.withResolvers<void>();
+  const watcher = watch(root, (_event, filename) => { if (filename === "codex-receipt.json") written.resolve(); });
+  const timer = setTimeout(() => written.reject(new Error("Add account did not write its receipt")), 10_000);
+  const create = holdLogins();
+  try {
+    const added = await post({ provider: "codex", name: "new" });
+    expect(added.status).toBe(200);
+    const pane = (await added.json() as UsageLoginStarted).pane_id;
+    openedPanes.push(pane);
+    await written.promise;
+    const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
+    // When
+    const again = await post({ provider: "codex", account: key });
+    // Then: no second CLI writes that home; once Add account's tab is gone, it may
+    expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
+    await paneClose(pane);
+    const later = await post({ provider: "codex", account: key });
+    expect(later.status).toBe(200);
+    openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
+    expect(create).toHaveBeenCalledTimes(2);
+  } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); }
 });
 
 it("refuses to sign in again to an account this PC does not list, without opening a tab", async () => {
