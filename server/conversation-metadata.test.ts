@@ -125,6 +125,7 @@ describe("recorded conversation model settings", () => {
       said("Model 'opus xhigh' not found"),
       said("Set effort level to ultracode (this session only): xhigh + dynamic workflow orchestration"),
       said("Set model to `Default (recommended)` and saved as your default for new sessions"),
+      said("Set model to `Default (recommended)` and saved as your default for new sessions with `max` effort"),
       said("Set model to `Sonnet 5.5 Turbo` for this session only"),
       said("Set model to `Sonnet 5.05` for this session only"),
       said("Set model to `claude-sonnet-5-5` for this session only"),
