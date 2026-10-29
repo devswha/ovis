@@ -291,25 +291,24 @@ const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
 const COPILOT_SETTING_TYPES = ['"session.model_change"', '"session.resume"'];
 type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | "copilot_effort";
 /**
- * Claude names its model and effort on every answer, and a /rewind can leave the latest one off the
- * branch, so each field keeps every value it took since the last clear: one run per value, from the
- * first record that set it to the end of the last one in a row, and a small line that sets it again.
+ * Claude names its model and effort on every answer, and a /rewind can leave any of them off the
+ * branch, so each field keeps every record that set it since the last clear (where it lies, as
+ * `branch.answers` does) and a small line that sets the same value again, shared while it repeats.
  */
-type ClaudeSettingRuns = Record<"model" | "effort", { line: string; first: number; end: number }[]>;
-const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettingRuns }>();
+type ClaudeSettings = Record<"model" | "effort", { line: string; start: number; end: number }[]>;
+const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettings }>();
 
-function keepClaudeSetting(runs: ClaudeSettingRuns, entry: unknown, start: number, end: number): void {
+function keepClaudeSetting(settings: ClaudeSettings, entry: unknown, start: number, end: number): void {
   const set = claudeSetting(entry);
-  const keep = (field: keyof ClaudeSettingRuns, line: string): void => {
-    const last = runs[field].at(-1);
-    if (last?.line === line) last.end = end;
-    else runs[field].push({ line, first: start, end });
+  const keep = (field: keyof ClaudeSettings, line: string): void => {
+    const last = settings[field].at(-1);
+    settings[field].push({ line: last?.line === line ? last.line : line, start, end });
   };
   if (set.model !== undefined) keep("model", JSON.stringify({ type: "assistant", message: { model: set.model } }));
   if (set.effort !== undefined) keep("effort", JSON.stringify({ type: "assistant", effort: set.effort }));
 }
 
-/** whether the ranges cover [from, to) whole */
+/** whether the ranges cover [from, to) whole (adjoining forks can share a record's bytes) */
 function covered(ranges: readonly [number, number][], from: number, to: number): boolean {
   let reached = from;
   for (const [low, high] of [...ranges].sort((a, b) => a[0] - b[0])) {
@@ -724,15 +723,13 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
     // One control may update both fields; replay the native line once.
     .filter((setting, index, settings) => index === 0 || setting.offset !== settings[index - 1]!.offset)
     .map((setting) => setting.line);
-  // Claude: each field's latest value before the page that is still on the branch, when the head ends
-  // before it (a value from before a clear ends inside the head, which starts at the clear)
-  for (const runs of Object.values(scan?.claude ?? {})) {
-    for (let index = runs.length - 1; index >= 0; index -= 1) {
-      const run = runs[index]!;
-      if (run.first >= start) continue;
-      const to = Math.min(run.end, start);
-      if (covered(stream.hidden ?? [], run.first, to)) continue;
-      if (to > end) later.push(run.line);
+  // Claude: each field's latest record before the page that is still on the branch, when the head does
+  // not hold it whole (a record from before a clear ends inside the head, which starts at the clear)
+  for (const records of Object.values(scan?.claude ?? {})) {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const setting = records[index]!;
+      if (setting.start >= start || covered(stream.hidden ?? [], setting.start, setting.end)) continue;
+      if (setting.end > end) later.push(setting.line);
       break;
     }
   }

@@ -60,7 +60,11 @@ const CLAUDE_CHAIN_LINE_BYTES = 1024 * 1024;
 export function followClaudeBranch(branch: ClaudeBranch, line: Buffer, start: number, end: number, floor: number): unknown {
   if (!line.includes('"uuid"')) return undefined;
   const text = line.length > CLAUDE_CHAIN_LINE_BYTES ? withoutPictureBytes(line.toString("utf8")) : line.toString("utf8");
-  if (text.length > CLAUDE_CHAIN_LINE_BYTES) { branch.last = null; return undefined; }
+  if (text.length > CLAUDE_CHAIN_LINE_BYTES) {
+    // too long to follow, but the model and effort it names still count
+    branch.last = null;
+    try { return JSON.parse(text) as unknown; } catch { return undefined; }
+  }
   let entry: TranscriptEntry & { isSidechain?: unknown; logicalParentUuid?: unknown };
   try { entry = JSON.parse(text) as typeof entry; } catch { branch.last = null; return undefined; }
   if (entry === null || typeof entry !== "object" || typeof entry.uuid !== "string" || entry.isSidechain === true) return entry;
