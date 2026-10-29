@@ -5,6 +5,7 @@
  * says it was closed, or that it was left open.
  */
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import type { SetupStep } from "./agentSetup.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 
 export interface GuideState {
@@ -45,34 +46,71 @@ export function foundAgents(catalog: readonly AgentCatalogRow[]): AgentCatalogRo
   return catalog.filter((row) => row.kind === "harness" && row.state.installed === true);
 }
 
-/**
- * What the setup screen shows: the check, Start with the agents found, or an install. `ready` is an
- * agent installed from this screen that said it is ready: Start, before the PC is read again.
- */
-export function setupView(check: PcCheck, ready: string | null): "checking" | "found" | "none" {
-  if (ready !== null) return "found";
-  if (check.failed) return "none";
+/** What the setup screen shows: the check while it runs, then the one list of agents; or that it failed. */
+export function setupView(check: PcCheck): "checking" | "agents" | "failed" {
+  if (check.failed) return "failed";
   if (check.checking || check.catalog === null) return "checking";
-  return foundAgents(check.catalog).length > 0 ? "found" : "none";
+  return "agents";
 }
 
-/** The agents Start offers: those the PC has, with `ready` first when the last answer does not list it yet. */
-export function startAgents(catalog: readonly AgentCatalogRow[] | null, ready: string | null): AgentCatalogRow[] {
-  const found = foundAgents(catalog ?? []);
-  const readyRow = ready === null || found.some((agent) => agent.id === ready) ? undefined : catalog?.find((agent) => agent.id === ready);
-  return readyRow === undefined ? found : [readyRow, ...found];
+/** Whether the PC has this agent: it said so, or it was installed from the setup screen since (`ready`). */
+export function installedHere(row: AgentCatalogRow, ready: readonly string[]): boolean {
+  return row.state.installed === true || ready.includes(row.id);
 }
 
-/** the agents Start picks first, in order, when none was just set up here */
-const PREFERRED = ["claude", "codex"];
+/** the agents listed first, and picked first: Claude Code, then Codex */
+const FIRST = ["claude", "codex"];
+
+/**
+ * The setup screen's tiles: every coding agent, Claude Code and Codex first, then the others the PC
+ * has (or that were installed from the tiles, `ready`), then the rest.
+ */
+export function agentRows(catalog: readonly AgentCatalogRow[] | null, ready: readonly string[]): AgentCatalogRow[] {
+  const harness = (catalog ?? []).filter((row) => row.kind === "harness");
+  const first = FIRST.flatMap((id) => harness.filter((row) => row.id === id));
+  const rest = harness.filter((row) => !FIRST.includes(row.id));
+  return [...first, ...rest.filter((row) => installedHere(row, ready)), ...rest.filter((row) => !installedHere(row, ready))];
+}
+
+/** How long a tile's install may run without the PC listing the agent before it stops spinning (a prompt, a closed tab). */
+export const INSTALL_GIVE_UP_MS = 10 * 60_000;
+
+export type TileState = "installed" | "installing" | "stuck" | "failed" | "missing";
+
+/**
+ * What an agent's tile shows: installed once the PC has it (`has`, whatever its own install says:
+ * the catalog read for another agent may find it first; or its own read found it); a ring from the Install tap (`pending`, the
+ * request unanswered) until then; stuck after INSTALL_GIVE_UP_MS of `runningMs`, to be tried again.
+ */
+export function tileState(has: boolean, step: SetupStep, pending: boolean, runningMs: number): TileState {
+  // its own read of the catalog may find it before the screen hears of it
+  if (has || step.kind === "installed" || step.kind === "ready" || step.kind === "signing-in") return "installed";
+  // a request out (a retry included) turns the ring, over a failure before it
+  if (pending || step.kind === "installing") return runningMs >= INSTALL_GIVE_UP_MS ? "stuck" : "installing";
+  if (step.kind === "failed") return "failed";
+  return "missing";
+}
 
 /** The agent Start picks: the one just set up here, else Claude Code, else Codex, else the first. */
 export function preferredAgent(agents: readonly AgentCatalogRow[], ready: string | null): AgentCatalogRow | null {
-  for (const id of [ready, ...PREFERRED]) {
+  for (const id of [ready, ...FIRST]) {
     const agent = agents.find((candidate) => candidate.id === id);
     if (agent !== undefined) return agent;
   }
   return agents[0] ?? null;
+}
+
+/**
+ * Opens the first workspace in the folder this browser used last; when that folder is gone since
+ * (`gone`), in the server's home instead, as the guide has no folder pick to recover with.
+ */
+export async function openInFolder<T>(open: (directory: string) => Promise<T>, folder: string, home: string, gone: (reason: unknown) => boolean): Promise<T> {
+  try {
+    return await open(folder);
+  } catch (reason: unknown) {
+    if (folder !== home && gone(reason)) return open(home);
+    throw reason;
+  }
 }
 
 /** how many times, and how far apart, a failed read of the signed-in accounts is tried */
@@ -83,12 +121,12 @@ const USAGE_RETRY_MS = 2000;
  * Reads how many plan accounts are signed in, trying a failed read again. The returned cancel (the
  * guide closing) stops it: no retry runs after it, and an answer already on its way is dropped.
  */
-export function readSignedIn(read: () => Promise<number>, found: (count: number) => void, schedule: (run: () => void, ms: number) => () => void): () => void {
+export function readSignedIn<T>(read: () => Promise<T>, found: (answer: T) => void, schedule: (run: () => void, ms: number) => () => void): () => void {
   let live = true;
   let cancelRetry = (): void => {};
   const attempt = (left: number): void => {
     if (!live) return;
-    read().then((count) => { if (live) found(count); }, () => {
+    read().then((answer) => { if (live) found(answer); }, () => {
       if (live && left > 1) cancelRetry = schedule(() => attempt(left - 1), USAGE_RETRY_MS);
     });
   };
@@ -96,9 +134,9 @@ export function readSignedIn(read: () => Promise<number>, found: (count: number)
   return () => { live = false; cancelRetry(); };
 }
 
-/** The plan accounts this PC is signed in to, which Start shows plan usage for without asking. */
-export function signedInAccounts(providers: readonly ProviderUsage[]): number {
-  return providers.filter((usage) => usage.problem !== "expired").length;
+/** The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted. */
+export function signedInAgents(providers: readonly ProviderUsage[]): string[] {
+  return [...new Set(providers.filter((usage) => usage.problem !== "expired").map((usage) => usage.id))];
 }
 
 export type CheckStatus = { kind: "looking" } | { kind: "installed"; version: string | null } | { kind: "missing" } | { kind: "unknown" };

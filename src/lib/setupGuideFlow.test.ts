@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, preferredAgent, readGuide, readSignedIn, REOPENED, saveGuide, settleDelay, setupView, signedInAccounts, startAgents, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, preferredAgent, readGuide, readSignedIn, REOPENED, saveGuide, settleDelay, setupView, signedInAgents, tileState, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -72,37 +72,34 @@ const check = (patch: Partial<PcCheck>): PcCheck => ({ checking: false, catalog:
 
 describe("the setup screen after the PC check", () => {
   it("shows the check while it runs, and before it has started", () => {
-    expect(setupView(check({ checking: true }), null)).toBe("checking");
-    expect(setupView(check({}), null)).toBe("checking");
+    expect(setupView(check({ checking: true }))).toBe("checking");
+    expect(setupView(check({}))).toBe("checking");
     // the answer is in but still settling on screen
-    expect(setupView(check({ checking: true, catalog: answer(installed("claude")) }), null)).toBe("checking");
+    expect(setupView(check({ checking: true, catalog: answer(installed("claude")) }))).toBe("checking");
   });
 
-  it("goes straight to Start when the PC has a coding agent", () => {
-    expect(setupView(check({ catalog: answer(installed("codex")) }), null)).toBe("found");
-    // in the catalog's order, coding agents only, and only those surely there
-    const catalog = answer(installed("codex"), installed("claude"), installed("hermes"), row("pi", { installed: null }));
-    expect(foundAgents(catalog).map((agent) => agent.id)).toEqual(["claude", "codex"]);
+  it("shows one list of agents whatever the PC has, and says when the check failed", () => {
+    expect(setupView(check({ catalog: answer(installed("codex")) }))).toBe("agents");
+    expect(setupView(check({ catalog: answer() }))).toBe("agents");
+    expect(setupView(check({ failed: true }))).toBe("failed");
   });
 
-  it("offers an install when the PC has no coding agent, or the check failed", () => {
-    expect(setupView(check({ catalog: answer() }), null)).toBe("none");
+  it("lists every coding agent: Claude Code and Codex first, then the others installed, then the rest", () => {
+    const catalog = [row("codex"), installed("pi"), row("claude"), installed("hermes"), row("opencode"), row("devin", { installed: null })];
     // an assistant is not a coding agent for a workspace
-    expect(setupView(check({ catalog: answer(installed("hermes")) }), null)).toBe("none");
-    expect(setupView(check({ failed: true }), null)).toBe("none");
+    expect(agentRows(catalog, []).map((agent) => agent.id)).toEqual(["claude", "codex", "pi", "opencode", "devin"]);
+    expect(agentRows(null, [])).toEqual([]);
   });
 
-  it("goes on to Start once an agent installed here is ready, before the PC is read again", () => {
-    expect(setupView(check({ catalog: answer() }), "claude")).toBe("found");
-    expect(setupView(check({ checking: true }), "claude")).toBe("found");
-    const agents = startAgents(answer(installed("codex")), "claude");
-    expect(agents.map((agent) => agent.id)).toEqual(["claude", "codex"]);
-    // once the PC answers again it is there with its version, and listed once
-    expect(startAgents(answer(installed("claude", "2.1.311")), "claude").map((agent) => `${agent.id}@${agent.state.version}`)).toEqual(["claude@2.1.311"]);
-    expect(startAgents(null, null)).toEqual([]);
+  it("keeps an agent installed here with the installed ones, before the PC is read again", () => {
+    const catalog = [row("claude"), row("opencode"), row("pi")];
+    expect(agentRows(catalog, ["pi"]).map((agent) => agent.id)).toEqual(["claude", "pi", "opencode"]);
+    expect(installedHere(catalog[2]!, ["pi"])).toBe(true);
+    expect(installedHere(catalog[0]!, ["pi"])).toBe(false);
+    expect(installedHere(installed("claude"), [])).toBe(true);
   });
 
-  it("picks Claude Code, else Codex, else the first found, and the agent just set up over all", () => {
+  it("picks Claude Code, else Codex, else the first installed, and the agent just set up over all", () => {
     expect(preferredAgent(foundAgents(answer(installed("codex"), installed("claude"), installed("pi"))), null)?.id).toBe("claude");
     expect(preferredAgent(foundAgents(answer(installed("pi"), installed("codex"))), null)?.id).toBe("codex");
     expect(preferredAgent(foundAgents(answer(installed("pi"), installed("omo"))), null)?.id).toBe("omo");
@@ -110,11 +107,10 @@ describe("the setup screen after the PC check", () => {
     expect(preferredAgent([], null)).toBeNull();
   });
 
-  it("turns plan usage on for accounts already signed in, and not for one to sign in again", () => {
-    const account = (key: string, problem: ProviderUsage["problem"]): ProviderUsage => ({ id: "claude", key, account: null, plan: null, windows: [], problem, checked_at: null });
-    expect(signedInAccounts([])).toBe(0);
-    expect(signedInAccounts([account("a", null), account("b", "rate_limited")])).toBe(2);
-    expect(signedInAccounts([account("a", "expired")])).toBe(0);
+  it("names the agents signed in on this PC from its plan usage, not one to sign in again", () => {
+    const account = (id: ProviderUsage["id"], key: string, problem: ProviderUsage["problem"]): ProviderUsage => ({ id, key, account: null, plan: null, windows: [], problem, checked_at: null });
+    expect(signedInAgents([])).toEqual([]);
+    expect(signedInAgents([account("claude", "a", null), account("claude", "b", "rate_limited"), account("codex", "c", "expired"), account("copilot", "d", null)])).toEqual(["claude", "copilot"]);
   });
 
   it("keeps an instant answer on screen briefly, and adds nothing to a slow check", () => {
@@ -204,5 +200,56 @@ describe("readSignedIn", () => {
     late.resolve(3);
     await settled();
     expect(found).toEqual([]);
+  });
+});
+
+describe("openInFolder", () => {
+  const gone = (reason: unknown): boolean => reason === "gone";
+  it("opens in the folder used last", async () => {
+    const asked: string[] = [];
+    expect(await openInFolder((dir) => { asked.push(dir); return Promise.resolve(dir); }, "/work/app", "~", gone)).toBe("/work/app");
+    expect(asked).toEqual(["/work/app"]);
+  });
+
+  it("opens in the home when the folder used last is gone", async () => {
+    const asked: string[] = [];
+    expect(await openInFolder((dir) => { asked.push(dir); return dir === "~" ? Promise.resolve(dir) : Promise.reject("gone"); }, "/work/old", "~", gone)).toBe("~");
+    expect(asked).toEqual(["/work/old", "~"]);
+  });
+
+  it("passes any other failure on, and a failure in the home itself", async () => {
+    await expect(openInFolder(() => Promise.reject("offline"), "/work/app", "~", gone)).rejects.toBe("offline");
+    const asked: string[] = [];
+    await expect(openInFolder((dir) => { asked.push(dir); return Promise.reject("gone"); }, "~", "~", gone)).rejects.toBe("gone");
+    expect(asked).toEqual(["~"]);
+  });
+});
+
+describe("tileState", () => {
+  const tab = { pane_id: "w1:p2", workspace_id: "w1", command: "curl -fsSL https://claude.ai/install.sh | bash", shell: "posix" as const };
+  it("a tile the PC has is installed, whatever its own install says", () => {
+    expect(tileState(true, { kind: "idle" }, false, 0)).toBe("installed");
+    // the catalog read for another agent found this one first: done, not still installing
+    expect(tileState(true, { kind: "installing", tab }, false, 1000)).toBe("installed");
+  });
+
+  it("a tile whose own read found the agent first is installed, before the screen hears of it", () => {
+    expect(tileState(false, { kind: "installed", version: "2.1.312", onPath: true }, false, 0)).toBe("installed");
+    expect(tileState(false, { kind: "ready", version: "1.0.0" }, false, 0)).toBe("installed");
+  });
+
+  it("spins from the tap until the PC has it: the request unanswered, then the install", () => {
+    expect(tileState(false, { kind: "idle" }, true, 0)).toBe("installing");
+    expect(tileState(false, { kind: "installing", tab }, false, 1000)).toBe("installing");
+  });
+
+  it("an install that never shows up stops spinning, to be tried again", () => {
+    expect(tileState(false, { kind: "installing", tab }, false, INSTALL_GIVE_UP_MS)).toBe("stuck");
+    expect(tileState(false, { kind: "failed", message: "offline", after: "install" }, false, 0)).toBe("failed");
+    expect(tileState(false, { kind: "idle" }, false, 0)).toBe("missing");
+    // Try again after a failure: the new request turns the ring at once, over the old failure
+    expect(tileState(false, { kind: "failed", message: "offline", after: "install" }, true, 0)).toBe("installing");
+    // the request itself never answered: stuck too, not back to Install
+    expect(tileState(false, { kind: "idle" }, true, INSTALL_GIVE_UP_MS)).toBe("stuck");
   });
 });

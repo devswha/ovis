@@ -54,11 +54,6 @@ export function setupStep(step: SetupStep, event: SetupEvent): SetupStep {
   }
 }
 
-/** The card goes on to the sign-in by itself (the setup guide's one tap): only as the install the user started finishes. */
-export function signInDue(previous: SetupStep, next: SetupStep): boolean {
-  return previous.kind === "installing" && next.kind === "installed";
-}
-
 /** Which of the card's two steps is current (0 install, 1 sign in, 2 both done), for its stepper and bar. */
 export function setupProgress(step: SetupStep): { index: number; fraction: number } {
   switch (step.kind) {

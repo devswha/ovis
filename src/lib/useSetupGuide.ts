@@ -32,6 +32,8 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
   const [record] = useState(() => { const store = storage(); return store === null ? null : readGuide(store); });
   const [guide, setGuide] = useState<GuideState | null>(() => record?.status === "open" ? record.state : null);
   const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   const [sharedRevision, setSharedRevision] = useState<number | null>(null);
   const decided = useRef(record !== null);
   // this tab opened the guide itself (the welcome, or Settings): its progress may replace a closed record once
@@ -91,41 +93,64 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
 
   const openRef = useRef(false);
   openRef.current = guide !== null && !watching;
-  const stepAside = useCallback(() => { if (openRef.current) setPaused(true); }, []);
+  // the tabs the guide asked to show: every one asked for before the guide went away is void
+  const tickets = useRef(0);
+  const wasOpen = useRef(false);
+  if (wasOpen.current && !openRef.current) tickets.current += 1;
+  wasOpen.current = openRef.current;
+  // the ref at once: a Start answer in the same update as the pick must see it (finish below)
+  const stepAside = useCallback(() => { if (openRef.current) { pausedRef.current = true; setPaused(true); } }, []);
 
   const dispatch = useCallback((event: GuideEvent) => setGuide((current) => current === null ? null : guideStep(current, event)), []);
   const close = useCallback(() => {
     // a pane picked right after closing (Done's first workspace) finds it closed, not open
     openRef.current = false;
+    tickets.current += 1;
     setGuide(null);
     setPaused(false);
     const store = storage();
     if (store !== null) saveGuide(store, null);
   }, []);
-  const resume = useCallback(() => setPaused(false), []);
+  const resume = useCallback(() => { pausedRef.current = false; setPaused(false); }, []);
   // turned into a watching device (its pairing changed): an open guide goes, without closing it for this browser
   useEffect(() => { if (watching) { setGuide(null); setPaused(false); } }, [watching]);
   // and the render that brings the role already shows none
-  return { guide: watching ? null : guide, paused, dispatch, close, resume, stepAside };
+  // the first workspace opened from the guide: the guide closes, and its pane is shown only when the
+  // user stayed on the guide, not over a pane they went to while it was being made
+  const finish = useCallback((select: () => void) => {
+    const aside = pausedRef.current;
+    close();
+    if (!aside) select();
+  }, [close]);
+  // a tab the guide opens (an install's) is selected once the roster has it, if it is still the latest
+  // asked for, Start was not pressed since, and the guide has stayed open since (tickets, above)
+  const ticket = useCallback(() => {
+    const mine = ++tickets.current;
+    return () => tickets.current === mine && openRef.current;
+  }, []);
+  const voidTickets = useCallback(() => { tickets.current += 1; }, []);
+  return { guide: watching ? null : guide, paused, dispatch, close, resume, stepAside, finish, ticket, voidTickets };
 }
 
 /**
- * How many plan accounts this PC is signed in to, read while the setup guide's Start screen shows; the
- * first one seen turns plan usage on (`turnOn`) when it is off. Closing the guide stops it: no retry
- * reads again, and no late answer turns usage on over a choice made since in Settings.
+ * The agents this PC is signed in to, read while the setup guide's agent list shows; the first one
+ * seen turns plan usage on (`turnOn`) when it is off. `ready` (the agents set up from the list) reads
+ * them afresh. Closing the guide stops it: no retry reads again, and no late answer turns usage on
+ * over a choice made since in Settings.
  */
-export function useSignedInUsage(ready: string | null, read: (refresh: boolean) => Promise<number>, showing: boolean, turnOn: () => void): number {
-  const [signedIn, setSignedIn] = useState(0);
+export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void): readonly string[] {
+  const [signedIn, setSignedIn] = useState<readonly string[]>([]);
   const shown = useRef(showing);
   shown.current = showing;
+  const readyKey = ready.join(",");
   useEffect(() => readSignedIn(
     // an agent signed in just now: read the accounts afresh, not what the server last saw
-    () => read(ready !== null),
-    (count) => {
-      setSignedIn(count);
-      if (count > 0 && !shown.current) { shown.current = true; turnOn(); }
+    () => read(readyKey !== ""),
+    (agents) => {
+      setSignedIn(agents);
+      if (agents.length > 0 && !shown.current) { shown.current = true; turnOn(); }
     },
     (run, ms) => { const timer = window.setTimeout(run, ms); return () => window.clearTimeout(timer); },
-  ), [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  ), [readyKey]); // eslint-disable-line react-hooks/exhaustive-deps
   return signedIn;
 }

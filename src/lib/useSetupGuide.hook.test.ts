@@ -52,6 +52,53 @@ describe("the setup guide closed in another tab", () => {
     await act(async () => { events.dispatchEvent(event); });
   }
 
+  it("opens the first workspace's pane only when the user stayed on the guide", async () => {
+    await resumeAt(REOPENED);
+    const opened: string[] = [];
+    await act(async () => { hook.finish(() => opened.push("w1:p1")); });
+    expect(opened).toEqual(["w1:p1"]);
+    expect(hook.guide).toBeNull();
+  });
+
+  it("a Start that ends after the user went to another pane closes the guide but keeps their pane", async () => {
+    await resumeAt(REOPENED);
+    await act(async () => { hook.stepAside(); });
+    const opened: string[] = [];
+    await act(async () => { hook.finish(() => opened.push("w1:p1")); });
+    expect(opened).toEqual([]);
+    expect(hook.guide).toBeNull();
+  });
+
+  it("keeps the user's pane when their pick and Start's answer land in the same update", async () => {
+    await resumeAt(REOPENED);
+    const opened: string[] = [];
+    await act(async () => { hook.stepAside(); hook.finish(() => opened.push("w1:p1")); });
+    expect(opened).toEqual([]);
+    expect(hook.guide).toBeNull();
+  });
+
+  it("lets only the latest tab the guide opens be selected, and none once Start was pressed or it closed", async () => {
+    await resumeAt(REOPENED);
+    const first = hook.ticket();
+    const second = hook.ticket();
+    expect([first(), second()]).toEqual([false, true]);
+    hook.voidTickets();
+    expect(second()).toBe(false);
+    const third = hook.ticket();
+    expect(third()).toBe(true);
+    await act(async () => { hook.close(); });
+    expect(third()).toBe(false);
+  });
+
+  it("a tab asked for before the guide closed is not shown after it opens again", async () => {
+    await resumeAt(REOPENED);
+    const before = hook.ticket();
+    await act(async () => { hook.close(); });
+    await act(async () => { window.dispatchEvent(new Event("ovis:open-setup-guide")); });
+    expect(hook.guide).not.toBeNull();
+    expect(before()).toBe(false);
+  });
+
   it("closes here when the other tab closes it", async () => {
     await resumeAt(REOPENED);
     expect(hook.guide?.step).toBe("setup");

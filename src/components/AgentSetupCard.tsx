@@ -1,15 +1,12 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useState } from "react";
 import { Check, ChevronDown, ChevronUp, KeyRound, LoaderCircle, Play, RotateCw, SquareTerminal, TriangleAlert } from "lucide-react";
 
-import type { AgentCatalogRow, AgentTabStarted } from "../../shared/agent-catalog.ts";
-import { fetchAgentCatalog, startAgentInstall, startAgentSignIn } from "../lib/api.ts";
-import { setupProgress, setupStep, signInDue, type SetupStep } from "../lib/agentSetup.ts";
+import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import { setupProgress, type SetupStep } from "../lib/agentSetup.ts";
 import { useT } from "../lib/i18n.ts";
+import { useAgentSetup } from "../lib/useAgentSetup.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import "./AgentSetupCard.css";
-
-/** How often the catalog is read again while an install runs in its tab. */
-const DETECT_EVERY_MS = 3000;
 
 export interface AgentSetupCardProps {
   /** the agent, as GET /api/agent-catalog answered it for `machineId` */
@@ -21,69 +18,21 @@ export interface AgentSetupCardProps {
   onOpenTerminal: (paneId: string) => void;
   /** the agent is ready: start it */
   onStart: () => void;
-  /** told each step the card moves to (the setup guide moves on once the agent is ready) */
+  /** told each step the card moves to */
   onStep?: (step: SetupStep) => void;
-  /** start the sign-in as soon as an install started here is done (the setup guide's one tap) */
-  autoSignIn?: boolean;
-  /** an install or sign-in asked of the PC and not answered yet */
-  onPending?: (pending: boolean) => void;
 }
-
-const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 /**
  * One agent's setup in two steps, Install then Sign in, on one card: each step runs the PC's own
  * official command in a terminal tab the user can open, and installed is decided by reading the
  * catalog again, never by how the tab ended.
  */
-export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep, autoSignIn = false, onPending }: AgentSetupCardProps) {
+export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep }: AgentSetupCardProps) {
   const t = useT();
-  const [step, dispatch] = useReducer(setupStep, initial);
-  const onStepRef = useRef(onStep);
-  onStepRef.current = onStep;
-  useEffect(() => { onStepRef.current?.(step); }, [step]);
+  const { step, dispatch, pending, install, signIn } = useAgentSetup({ agent, machineId, initial, onStep });
   const [details, setDetails] = useState(false);
   const { index, fraction } = setupProgress(step);
   const name = agent.name;
-
-  useEffect(() => {
-    if (step.kind !== "installing") return;
-    const abort = new AbortController();
-    const read = () => void fetchAgentCatalog(machineId, abort.signal)
-      .then((catalog) => { const row = catalog.agents.find((candidate) => candidate.id === agent.id); if (row) dispatch({ type: "detected", row }); })
-      .catch(() => { /* the next read tries again */ });
-    const timer = setInterval(read, DETECT_EVERY_MS);
-    read();
-    return () => { clearInterval(timer); abort.abort(); };
-  }, [step.kind, machineId, agent.id]);
-
-  // one request at a time: a second tap, or the automatic sign-in, while one is unanswered sends nothing
-  const [pending, setPending] = useState(false);
-  const inFlight = useRef(false);
-  const onPendingRef = useRef(onPending);
-  onPendingRef.current = onPending;
-  useEffect(() => { onPendingRef.current?.(pending); }, [pending]);
-  // a reply that comes after the card is gone (Skip setup, another pane) changes nothing and opens no tab
-  const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const ask = (send: () => Promise<AgentTabStarted>, started: (tab: AgentTabStarted) => void): void => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setPending(true);
-    void send().then((tab) => { if (alive.current) started(tab); }, (error) => { if (alive.current) dispatch({ type: "failed", message: message(error) }); }).finally(() => {
-      inFlight.current = false;
-      if (alive.current) setPending(false);
-    });
-  };
-  const install = () => ask(() => startAgentInstall(agent.id, machineId), (tab) => dispatch({ type: "install-started", tab }));
-  // `show`: a sign-in that starts by itself opens its tab, where the user signs in
-  const signIn = (show = false) => ask(() => startAgentSignIn(agent.id, machineId), (tab) => { dispatch({ type: "sign-in-started", tab }); if (show) onOpenTerminal(tab.pane_id); });
-  const before = useRef(step);
-  useEffect(() => {
-    const previous = before.current;
-    before.current = step;
-    if (autoSignIn && signInDue(previous, step)) signIn(true);
-  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
   const tab = step.kind === "installing" || step.kind === "signing-in" ? step.tab : null;
   const command = tab?.command ?? agent.install?.primary.command ?? null;
 

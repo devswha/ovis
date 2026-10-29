@@ -33,10 +33,10 @@ describe("plan usage turned on by the setup guide", () => {
     }
   });
 
-  const mount = async (answers: (() => Promise<number>)[]): Promise<void> => {
-    const read = (): Promise<number> => { reads += 1; return answers.shift()!(); };
+  const mount = async (answers: (() => Promise<readonly string[]>)[]): Promise<void> => {
+    const read = (): Promise<readonly string[]> => { reads += 1; return answers.shift()!(); };
     function Probe() {
-      useSignedInUsage(null, read, false, () => { turnedOn += 1; });
+      useSignedInUsage([], read, false, () => { turnedOn += 1; });
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
@@ -48,14 +48,14 @@ describe("plan usage turned on by the setup guide", () => {
   };
 
   it("turns usage on once a retried read finds a signed-in account", async () => {
-    await mount([() => Promise.reject(new Error("offline")), () => Promise.resolve(1)]);
+    await mount([() => Promise.reject(new Error("offline")), () => Promise.resolve(["claude"])]);
     expect(timers.size).toBe(1);
     await runTimers();
     expect([reads, turnedOn]).toEqual([2, 1]);
   });
 
   it("after the guide closes, a waiting retry neither reads again nor changes the setting", async () => {
-    await mount([() => Promise.reject(new Error("offline")), () => Promise.resolve(1)]);
+    await mount([() => Promise.reject(new Error("offline")), () => Promise.resolve(["claude"])]);
     expect(timers.size).toBe(1);
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
@@ -64,11 +64,11 @@ describe("plan usage turned on by the setup guide", () => {
   });
 
   it("after the guide closes, an answer still on its way changes nothing", async () => {
-    const late = Promise.withResolvers<number>();
+    const late = Promise.withResolvers<readonly string[]>();
     await mount([() => late.promise]);
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
-    await act(async () => { late.resolve(2); await late.promise; });
+    await act(async () => { late.resolve(["claude", "codex"]); await late.promise; });
     expect(turnedOn).toBe(0);
   });
 });

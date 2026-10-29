@@ -3354,16 +3354,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a two-column `--bg-panel`
   list, each line a spinner until the answer, then "Installed · v…" in `--status-done` or "Not
   installed" dim. The check is on screen at least 300ms, so an instant one is still seen.
-- Agents found: "You're set up" under a `--status-done` check circle, the agents as two-column pick
-  rows (`--bg-panel`, the picked one with an accent ring and a check; Claude Code, else Codex, else
-  the first), a note when plan usage turns on for accounts already signed in, then "Start with …"
-  with "in <folder> · Change folder" beside it, and two quiet links to Settings (Connect your phone,
-  Turn on alerts): those need the user's own steps.
-- None found: the agent setup card for Claude Code under "Recommended", with
-  quiet "Use Codex instead" and "Other agents" links. Its Install is the one tap: the install, then the
-  agent's sign-in start by themselves, and the screen turns into "You're set up" once it is ready.
-  A failed check says "Couldn't check this PC" with its error and Look again. On a phone the primary
-  button takes the full width.
+- Then every coding agent as a tile, the same whatever the check found, two to a line on `--bg-panel`
+  (two on a phone too): Claude Code and Codex first, then the others the PC has, then the rest. An
+  installed one is picked by a tap (an accent ring and a check; Claude Code, else Codex, else the
+  first); a missing one is dim, with a small Install (a download icon alone on a phone, its name kept
+  for screen readers). The heading is "You're set up" under a `--status-done` check circle when one is
+  installed, else "Pick an AI coding helper" with "Nothing is installed until you tap Install."
+- Install is the one tap: the official installer runs in a terminal tab while a spinner turns on the
+  tile (a tap on it opens that tab); once the catalog lists the agent the tile is an installed one,
+  picked. Several can install at once, and Start does not wait for them: an install runs on in its
+  tab. One that never shows up stops after ten minutes with Try again. The guide has no sign-in step:
+  the agent asks for its own when it first starts. Plan usage turns on by itself for accounts already
+  signed in.
+- "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them:
+  a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
+  code. The code is asked for when the box opens and never renewed behind the user's back (it would
+  replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again. Where the page has no address a phone can open (the PC's loopback), or this browser is in only
+  because nothing is paired yet (pairing a phone would shut it out), it opens Settings → Phone
+  instead. Start opens the folder this browser used last, else the server's home, without asking.
+  Alerts are not offered here: they hang on the browser's permission and, on an iPhone, on the app
+  being on the home screen first, so they stay in Settings → Alerts. A failed check says "Couldn't
+  check this PC" with its error and Look again. On a phone Start and Connect your phone take the full
+  width.
 
 ### Token gate
 - A centered password card replaces the entire shell while authentication is required. It has a real

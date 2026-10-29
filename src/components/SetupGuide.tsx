@@ -1,35 +1,36 @@
 /**
- * The first-run setup guide (lib/setupGuideFlow.ts): a welcome, then one screen. It checks the PC for
- * coding agents; with one there it offers Start, which opens the first workspace with it, and with
- * none it installs one (AgentSetupCard: the user's one tap runs the official installer, then the
- * agent's sign-in) and then offers Start. Plan usage is turned on for accounts already signed in;
- * the phone and alerts need the user's own steps, so they are links to Settings. It adds no server
- * route. Its layout follows the Claude and Codex apps' first runs: one screen in the main area, the
- * app's sidebar left in place.
+ * The first-run setup guide (lib/setupGuideFlow.ts): a welcome, then one screen. It checks the PC
+ * for coding agents, then shows every one as a tile whatever it found: an installed one is picked by
+ * a tap, a missing one has its Install (the user's tap is the consent: the official installer runs in
+ * a terminal tab while a ring turns on the tile), and Start opens the first workspace with the one
+ * picked; the agent asks for its own sign-in when it first starts. Plan usage is turned on for
+ * accounts already signed in; Connect your phone beside Start shows a QR code and the address right
+ * there (Settings → Phone where the page has no phone-reachable address or this browser is in only
+ * because nothing is paired yet). It adds no server route. Its layout follows the Claude and Codex apps' first runs: one screen in the main
+ * area, the app's sidebar left in place.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Bell, Check, ChevronDown, ChevronRight, FolderOpen, Gauge, Info, LoaderCircle, Play, RotateCw, Smartphone, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowRight, Check, ChevronRight, Download, Gauge, Info, LoaderCircle, Play, RotateCw, Smartphone, Sparkles } from "lucide-react";
 
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
-import { createWorkspace, fetchAgentCatalog, fetchUsage } from "../lib/api.ts";
+import type { HealthAuth, PairingCode, RemoteAccess } from "../../shared/protocol.ts";
+import { ApiError, createWorkspace, fetchAgentCatalog, fetchDevices, fetchRemoteAccess, fetchUsage, startPairing } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
 import { createRequest, newSessionLaunch } from "../lib/newSession.ts";
+import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 import { useSettings } from "../lib/settings.ts";
-import { checkList, foundAgents, preferredAgent, settleDelay, setupView, signedInAccounts, startAgents, type CheckStatus, type GuideEvent, type GuideState, type PcCheck } from "../lib/setupGuideFlow.ts";
+import { agentRows, checkList, foundAgents, INSTALL_GIVE_UP_MS, installedHere, openInFolder, preferredAgent, settleDelay, setupView, signedInAgents, tileState, type CheckStatus, type GuideEvent, type GuideState, type PcCheck } from "../lib/setupGuideFlow.ts";
 import { useSignedInUsage } from "../lib/useSetupGuide.ts";
+import { useAgentSetup } from "../lib/useAgentSetup.ts";
 import { userErrorMessage } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { AgentSetupCard } from "./AgentSetupCard.tsx";
-import { DirectoryBrowser, homeRelative } from "./DirectoryBrowser.tsx";
+import { QrCode } from "./QrCode.tsx";
 import "./SetupGuide.css";
 
 /** the catalog's agents, named in the check's lines before the PC answers */
 type KnownAgent = Pick<AgentCatalogEntry, "id" | "name" | "kind">;
-/** the agent the install screen offers first, and the one it offers instead */
-const RECOMMENDED = "claude";
-const ALTERNATIVE = "codex";
 /** where Start opens the first workspace when this browser has no recent folder: the server's home */
 const HOME = "~";
 
@@ -42,13 +43,15 @@ export interface SetupGuideProps {
   onClose: () => void;
   /** shows the tab an install or sign-in runs in */
   onOpenTerminal: (paneId: string) => void;
-  /** Connect your phone and Turn on alerts: the Settings page that does it */
-  onOpenSettings: (page: "devices" | "alerts") => void;
+  /** Connect your phone where the guide cannot show its QR code: the Settings page that pairs it */
+  onOpenSettings: (page: "devices") => void;
+  /** how this browser got in: one in only because nothing is paired yet pairs itself first, in Settings */
+  auth: HealthAuth | null;
+  /** Start pressed: a tab the guide asked to show before it is not shown over what Start opens */
+  onStarting?: () => void;
   /** the first workspace opened: its pane, and whether the agent started in it */
   onOpened: (paneId: string, agentStarted: boolean) => void;
 }
-
-const basename = (path: string): string => path.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop() || path;
 
 export function SetupGuide(props: SetupGuideProps) {
   const { state, onClose, hidden = false } = props;
@@ -59,8 +62,8 @@ export function SetupGuide(props: SetupGuideProps) {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [known, setKnown] = useState<readonly KnownAgent[]>([]);
-  // an agent the install screen set up that said it is ready: Start, before the PC is read again
-  const [ready, setReady] = useState<string | null>(null);
+  // the agents installed from the tiles: installed, before the PC is read again
+  const [ready, setReady] = useState<readonly string[]>([]);
   // said to a screen reader once the screen settles; its heading changes without focus
   const [announced, setAnnounced] = useState("");
   const asked = useRef(0);
@@ -71,6 +74,8 @@ export function SetupGuide(props: SetupGuideProps) {
     window.clearTimeout(settle.current);
     setCatalog(null);
     setCatalogError(null);
+    // a check asked for again is the truth: an agent installed here earlier counts only if it still answers
+    setReady([]);
     setAnnounced("");
     setChecking(true);
     // the catalog's names, kept out of the app's main bundle; without them the lines come with the answer
@@ -81,7 +86,7 @@ export function SetupGuide(props: SetupGuideProps) {
       settle.current = window.setTimeout(() => {
         if (ask !== asked.current) return;
         setChecking(false);
-        setAnnounced(foundAgents(answer.agents).length > 0 ? t("You're set up") : t("No AI coding helper on this PC yet"));
+        setAnnounced(foundAgents(answer.agents).length > 0 ? t("You're set up") : t("Pick an AI coding helper"));
       }, settleDelay(startedAt, Date.now()));
     }, (error: unknown) => {
       if (ask !== asked.current) return;
@@ -89,10 +94,11 @@ export function SetupGuide(props: SetupGuideProps) {
       setChecking(false);
     });
   };
-  const onReady = (agent: string): void => {
-    setReady(agent);
-    setAnnounced(t("You're set up"));
-    // read the PC again for the version it now has; Start is there meanwhile
+  // an agent installed from its tile: installed from now on, the PC read again for its version, and said
+  const agentInstalled = (agent: string): void => {
+    if (ready.includes(agent)) return;
+    setReady((list) => list.includes(agent) ? list : [...list, agent]);
+    setAnnounced(t("{agent} is ready", { agent: catalog?.find((row) => row.id === agent)?.name ?? agent }));
     const ask = ++asked.current;
     fetchAgentCatalog(machineId).then((answer) => { if (ask === asked.current) setCatalog(answer.agents); }, () => { /* Start works without the version */ });
   };
@@ -102,7 +108,7 @@ export function SetupGuide(props: SetupGuideProps) {
     return () => { asked.current += 1; window.clearTimeout(settle.current); };
   }, [begun, machineId]); // eslint-disable-line react-hooks/exhaustive-deps
   const check: PcCheck = { checking, catalog, failed: catalogError !== null };
-  const view = setupView(check, ready);
+  const view = setupView(check);
 
   useEffect(() => {
     if (begun && !hidden) document.getElementById("setup-step-title")?.focus({ preventScroll: true });
@@ -125,8 +131,8 @@ export function SetupGuide(props: SetupGuideProps) {
         </div>
         <p className="visually-hidden" role="status">{announced}</p>
         {view === "checking" && <Checking known={known} catalog={catalog} />}
-        {view === "found" && <StartScreen agents={startAgents(catalog, ready)} ready={ready} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} />}
-        {view === "none" && <InstallScreen catalog={catalog} catalogError={catalogError} machineId={machineId} onOpenTerminal={props.onOpenTerminal} onReady={onReady} onLookAgain={loadCatalog} />}
+        {view === "agents" && catalog !== null && <AgentsScreen catalog={catalog} ready={ready} machineId={machineId} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} onStarting={props.onStarting} />}
+        {view === "failed" && <CheckFailed error={catalogError} onLookAgain={loadCatalog} />}
       </div>
     </div>
   );
@@ -160,7 +166,7 @@ function Welcome({ dispatch, onClose, hidden }: Pick<SetupGuideProps, "dispatch"
 
 function checkLine(t: Translate, status: CheckStatus): ReactNode {
   switch (status.kind) {
-    case "looking": return <><LoaderCircle aria-hidden="true" className="agent-setup-spin" /><span className="visually-hidden">{t("Looking")}</span></>;
+    case "looking": return <><LoaderCircle aria-hidden="true" className="setup-spin" /><span className="visually-hidden">{t("Looking")}</span></>;
     case "installed": return <><Check aria-hidden="true" />{status.version === null ? t("Installed") : t("Installed · v{version}", { version: status.version })}</>;
     case "missing": return t("Not installed");
     case "unknown": return t("Can't tell");
@@ -189,35 +195,72 @@ function Checking({ known, catalog }: { known: readonly KnownAgent[]; catalog: r
   );
 }
 
-function StartScreen({ agents, ready, onOpened, onOpenSettings }: { agents: readonly AgentCatalogRow[]; ready: string | null } & Pick<SetupGuideProps, "onOpened" | "onOpenSettings">) {
+function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain: () => void }) {
+  const t = useT();
+  return (
+    <section className="setup-step" aria-labelledby="setup-step-title">
+      <h2 id="setup-step-title" tabIndex={-1}>{t("Couldn't check this PC")}</h2>
+      {error !== null && <p className="setup-error" role="alert">{error}</p>}
+      <div className="setup-actions">
+        <button type="button" className="btn btn-primary" onClick={onLookAgain}><RotateCw aria-hidden="true" />{t("Look again")}</button>
+      </div>
+    </section>
+  );
+}
+
+interface AgentsScreenProps extends Pick<SetupGuideProps, "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "onStarting"> {
+  catalog: readonly AgentCatalogRow[];
+  ready: readonly string[];
+  machineId: string;
+  /** an agent installed from its tile: installed from now on, before the PC is read again */
+  onInstalled: (agent: string) => void;
+  onLookAgain: () => void;
+}
+
+function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, onStarting }: AgentsScreenProps) {
   const t = useT();
   const { settings, update } = useSettings();
+  const agents = agentRows(catalog, ready);
+  const installed = agents.filter((agent) => installedHere(agent, ready));
   const [picked, setPicked] = useState<string | null>(null);
-  const chosen = agents.find((agent) => agent.id === picked) ?? preferredAgent(agents, ready)!;
-  // the plan accounts already signed in here: their usage is turned on as soon as they are seen, without a question
-  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAccounts(report.providers)), settings.showUsage, () => update({ showUsage: true }));
-  const [folder, setFolder] = useState<string>(() => recentDirectories.read("local")[0] ?? HOME);
-  const [browsing, setBrowsing] = useState(false);
-  // the folder the browser last said it shows, and how its Use this folder names it: the pick keeps the
-  // absolute path for it; any other pick (a home it fell back to, the folder asked for gone) is taken as given
-  const shownFolder = useRef<string | null>(null);
-  const shownPicked = useRef<string | null>(null);
+  const chosen = installed.find((agent) => agent.id === picked) ?? preferredAgent(installed, ready.at(-1) ?? null);
+  // the agents already signed in here: their plan usage is turned on as soon as they are seen, without a question
+  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage, () => update({ showUsage: true }));
+  // the tiles whose install runs: Look again waits for them (a fresh read would end their watch);
+  // Start does not: an install runs on in its tab whatever the guide does
+  const [installing, setInstalling] = useState<readonly string[]>([]);
+  const busy = installing.length > 0;
+  const onRunning = useCallback((id: string, running: boolean): void => setInstalling((list) => running ? (list.includes(id) ? list : [...list, id]) : list.filter((one) => one !== id)), []);
+  // why an install did not finish, per agent: one tile's news never clears another's
+  const [installErrors, setInstallErrors] = useState<Readonly<Record<string, string>>>({});
+  const onInstallError = useCallback((id: string, message: string | null): void => setInstallErrors((errors) => {
+    if ((errors[id] ?? null) === message) return errors;
+    const next = { ...errors };
+    if (message === null) delete next[id]; else next[id] = message;
+    return next;
+  }), []);
+  const installedFromTile = (id: string): void => { onInstalled(id); setPicked(id); };
+  // the first workspace opens in the folder this browser used last, else the server's home
+  const folder = recentDirectories.read("local")[0] ?? HOME;
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // the workspace made, when the agent did not start in it: opening it shows why, in its terminal
   const [madeWithout, setMadeWithout] = useState<string | null>(null);
-  const folderName = folder === HOME ? t("your home folder") : basename(folder);
 
+  // a reply after the screen is gone (Skip setup, the guide closed in another tab) opens nothing
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const start = async (): Promise<void> => {
     if (madeWithout !== null) { onOpened(madeWithout, false); return; }
-    if (opening) return;
+    if (opening || chosen === null) return;
+    onStarting?.();
     setOpening(true);
     setError(null);
     const launch = newSessionLaunch({ agent: chosen.id, model: "", effort: "", prompt: "" }, settings);
     if ("fault" in launch) { setOpening(false); setError(t("{agent} can't start from here. Open a workspace from the sidebar instead.", { agent: chosen.name })); return; }
     try {
-      const result = await createWorkspace(createRequest({ tab: null, directory: folder, name: "" }, launch, null));
-      if (folder !== HOME) recentDirectories.remember("local", [folder], true);
+      const result = await openInFolder((directory) => createWorkspace(createRequest({ tab: null, directory, name: "" }, launch, null)), folder, HOME, (reason) => alive.current && reason instanceof ApiError && reason.code === "invalid_cwd");
+      if (!alive.current) return;
       if (result.agent_started === false) {
         setOpening(false);
         setMadeWithout(result.pane_id);
@@ -226,118 +269,250 @@ function StartScreen({ agents, ready, onOpened, onOpenSettings }: { agents: read
       }
       onOpened(result.pane_id, true);
     } catch (reason: unknown) {
+      if (!alive.current) return;
       setOpening(false);
       setError(userErrorMessage(reason).message);
     }
   };
 
+  const locked = opening || madeWithout !== null;
+  // Connect your phone: the QR code and the address, right here
+  const [phone, setPhone] = useState(false);
   return (
     <section className="setup-step" aria-labelledby="setup-step-title">
-      <div className="setup-done-head">
-        <Check aria-hidden="true" />
-        <div>
-          <h2 id="setup-step-title" tabIndex={-1}>{t("You're set up")}</h2>
-          <p className="setup-lead">{agents.length > 1 ? t("Ovis found these on this PC. Start opens your first project with the one picked.") : t("Start opens your first project with it.")}</p>
+      {installed.length > 0 ? (
+        <div className="setup-done-head">
+          <Check aria-hidden="true" />
+          <div>
+            <h2 id="setup-step-title" tabIndex={-1}>{t("You're set up")}</h2>
+            <p className="setup-lead">{t("Ovis found these on this PC. Start opens your first project with the one picked.")}</p>
+          </div>
         </div>
-      </div>
-      <div className="setup-found" role="group" aria-label={t("Found on this PC")}>
+      ) : (
+        <>
+          <h2 id="setup-step-title" tabIndex={-1}>{t("Pick an AI coding helper")}</h2>
+          <p className="setup-lead">{t("Nothing is installed until you tap Install.")}</p>
+        </>
+      )}
+      <ul className="setup-found" aria-label={t("AI coding helpers")}>
         {agents.map((agent) => (
-          <button key={agent.id} type="button" className="setup-found-agent" aria-pressed={agent.id === chosen.id} disabled={opening || madeWithout !== null} onClick={() => setPicked(agent.id)}>
-            <AgentMark agent={agent.id} size={20} />
-            <span className="setup-found-name"><strong>{agent.name}</strong>{agent.state.version !== null && <span>{agent.state.version}</span>}</span>
-            {agent.id === chosen.id && <Check aria-hidden="true" />}
-          </button>
+          <AgentTile key={agent.id} agent={agent} has={installedHere(agent, ready)} picked={chosen?.id === agent.id} locked={locked} machineId={machineId}
+            onPick={setPicked} onOpenTerminal={onOpenTerminal} onRunning={onRunning} onInstalled={installedFromTile} onError={onInstallError} />
         ))}
-      </div>
-      {signedIn > 0 && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>}
+      </ul>
+      {Object.values(installErrors).map((message) => <p key={message} className="setup-error" role="alert">{message}</p>)}
+      {signedIn.length > 0 && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>}
       {error !== null && <p className="setup-error" role="alert">{error}</p>}
       <div className="setup-actions">
-        <button type="button" className="btn btn-primary" disabled={opening} onClick={() => void start()}>
-          <Play aria-hidden="true" />{madeWithout !== null ? t("Open the workspace") : t("Start with {agent}", { agent: chosen.name })}
+        <button type="button" className="btn btn-primary" disabled={opening || (chosen === null && madeWithout === null)} onClick={() => void start()}>
+          <Play aria-hidden="true" />{madeWithout !== null ? t("Open the workspace") : chosen !== null ? t("Start with {agent}", { agent: chosen.name }) : t("Start")}
         </button>
-        {madeWithout === null && (
-          <span className="setup-folder-line">
-            <FolderOpen aria-hidden="true" /><span title={folder === HOME ? undefined : folder}>{t("in {folder}", { folder: folderName })}</span>
-            <button type="button" className="setup-link" aria-expanded={browsing} disabled={opening} onClick={() => setBrowsing((open) => !open)}>{t("Change folder")}</button>
-          </span>
-        )}
+        <button type="button" className="btn" disabled={opening} aria-expanded={phone} onClick={() => setPhone((show) => !show)}><Smartphone aria-hidden="true" />{t("Connect your phone")}</button>
       </div>
-      {browsing && <div className="setup-browser"><DirectoryBrowser start={folder === HOME ? "" : folder} onPick={(choice) => { setFolder((shown) => shown !== HOME && shownFolder.current === shown && choice === shownPicked.current ? shown : choice); setBrowsing(false); }} onFolder={(path, home) => { shownFolder.current = path; shownPicked.current = homeRelative(path, home); setFolder(path); }} /></div>}
-      <div className="setup-more">
-        <button type="button" className="setup-link" onClick={() => onOpenSettings("devices")}><Smartphone aria-hidden="true" />{t("Connect your phone")}</button>
-        <button type="button" className="setup-link" onClick={() => onOpenSettings("alerts")}><Bell aria-hidden="true" />{t("Turn on alerts")}</button>
-      </div>
+      {phone && <PhoneQr auth={auth} onOpenSettings={() => { setPhone(false); onOpenSettings("devices"); }} />}
+      {!busy && !locked && (
+        <p className="setup-muted setup-again">{t("Already installed one?")} <button type="button" className="setup-link" onClick={onLookAgain}>{t("Look again")}</button></p>
+      )}
     </section>
   );
 }
 
-function InstallScreen({ catalog, catalogError, machineId, onOpenTerminal, onReady, onLookAgain }: { catalog: readonly AgentCatalogRow[] | null; catalogError: string | null; machineId: string; onOpenTerminal: (paneId: string) => void; onReady: (agent: string) => void; onLookAgain: () => void }) {
+interface AgentTileProps {
+  agent: AgentCatalogRow;
+  /** the PC has it (it said so, or it was installed from this screen) */
+  has: boolean;
+  picked: boolean;
+  /** the first workspace is opening, or opened without the agent */
+  locked: boolean;
+  machineId: string;
+  onPick: (agent: string) => void;
+  onOpenTerminal: (paneId: string) => void;
+  onRunning: (agent: string, running: boolean) => void;
+  /** an install started from this tile finished: the PC has it now */
+  onInstalled: (agent: string) => void;
+  /** why its install did not finish; null once it runs again or is done */
+  onError: (agent: string, message: string | null) => void;
+}
+
+/**
+ * One coding agent. Installed: picked by a tap. Missing: its Install is the one tap (the user's
+ * consent): the official installer runs in a terminal tab (a tap on the turning ring shows it) until
+ * the catalog lists the agent, then the tile is an installed one. The tile keeps its setup hook
+ * through that change, so an install the catalog found first still ends here. The sign-in is the
+ * agent's own, when it first starts.
+ */
+function AgentTile({ agent, has, picked, locked, machineId, onPick, onOpenTerminal, onRunning, onInstalled, onError }: AgentTileProps) {
   const t = useT();
-  const [choice, setChoice] = useState(RECOMMENDED);
-  const [others, setOthers] = useState(false);
-  // an install or sign-in under way, or asked for and not answered yet: the agent stays the one it runs for
-  const [running, setRunning] = useState(false);
-  const [pending, setPending] = useState(false);
-  const busy = running || pending;
-  const row = catalog?.find((agent) => agent.id === choice) ?? null;
-  const otherAgents = (catalog ?? []).filter((agent) => agent.kind === "harness" && agent.id !== RECOMMENDED && agent.id !== ALTERNATIVE && agent.install !== null);
-  // the link or row picked goes away with the list: the new card's Install takes the focus
-  const picked = useRef(false);
+  const started = useRef(false);
+  // the guide's rule for installed is the catalog's (installed: true), the card's is that the agent
+  // runs: a row the install's reads find installed ends the install here as any other read would
+  // its watch ends there too: the tile is an installed one from now on
+  const stop = useRef<() => void>(() => {});
+  const { step, pending, install, dispatch } = useAgentSetup({ agent, machineId, onRow: (row) => { if (row.state.installed === true && started.current) { onInstalled(agent.id); stop.current(); } } });
+  stop.current = () => dispatch({ type: "cancel" });
+  // a ring that has turned for INSTALL_GIVE_UP_MS without the PC listing the agent stops, to be tried
+  // again; it counts from the tap, the request still unanswered included
+  const [overdue, setOverdue] = useState(false);
+  // each tap is an attempt of its own: its deadline starts again
+  const [attempt, setAttempt] = useState(0);
+  const turning = pending || step.kind === "installing";
   useEffect(() => {
-    if (!picked.current) return;
-    picked.current = false;
-    document.querySelector<HTMLButtonElement>(".setup-guide .agent-setup .btn-primary")?.focus();
-  }, [choice]);
-  const pick = (id: string): void => { picked.current = true; setChoice(id); setOthers(false); };
-  const instead = (catalog ?? []).find((agent) => agent.id === (choice === RECOMMENDED ? ALTERNATIVE : RECOMMENDED) && agent.install !== null);
-  if (catalog === null) {
-    return (
-      <section className="setup-step" aria-labelledby="setup-step-title">
-        <h2 id="setup-step-title" tabIndex={-1}>{t("Couldn't check this PC")}</h2>
-        {catalogError !== null && <p className="setup-error" role="alert">{catalogError}</p>}
-        <div className="setup-actions">
-          <button type="button" className="btn btn-primary" onClick={onLookAgain}><RotateCw aria-hidden="true" />{t("Look again")}</button>
-        </div>
-      </section>
-    );
-  }
+    setOverdue(false);
+    if (!turning) return;
+    const timer = window.setTimeout(() => setOverdue(true), INSTALL_GIVE_UP_MS);
+    return () => window.clearTimeout(timer);
+  }, [turning, attempt]);
+  const state = tileState(has, step, pending, overdue ? INSTALL_GIVE_UP_MS : 0);
+  // an unanswered request counts as running even past the deadline: Look again would end its watch
+  const running = state === "installing" || pending;
+  useEffect(() => { onRunning(agent.id, running); }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onRunning(agent.id, false), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // its own news only: an error while it failed or stuck, nothing otherwise
+  const reason = state === "failed" && step.kind === "failed" ? step.message ?? t("It is on this PC, but it does not start. Install it again.") : state === "stuck" ? t("It took too long. Try again.") : null;
+  useEffect(() => { onError(agent.id, reason === null ? null : t("{agent} did not install. {reason}", { agent: agent.name, reason })); }, [reason]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onError(agent.id, null), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // the button that had the focus went with the install: the installed tile takes it
+  const tile = useRef<HTMLLIElement>(null);
+  const focused = useRef(false);
+  // however it learned so (its own read, another agent's), an installed tile watches no install, a
+  // late answer to its request included
+  useEffect(() => { if (state === "installed" && step.kind === "installing") stop.current(); }, [state, step.kind]);
+  useEffect(() => {
+    if (state !== "installed") return;
+    if (!started.current) return;
+    started.current = false;
+    onInstalled(agent.id);
+    if (focused.current && (document.activeElement === null || document.activeElement === document.body)) tile.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tap = (): void => {
+    // the first request still unanswered: it may have started the installer, so no second one yet
+    if (pending) return;
+    started.current = true;
+    setAttempt((count) => count + 1);
+    if (step.kind === "installing") dispatch({ type: "cancel" });
+    install();
+  };
+  const tab = step.kind === "installing" ? step.tab : null;
   return (
-    <section className="setup-step" aria-labelledby="setup-step-title">
-      <h2 id="setup-step-title" tabIndex={-1}>{t("No AI coding helper on this PC yet")}</h2>
-      <p className="setup-lead">{t("Install one to start: Ovis runs its official installer on this PC, then opens its sign-in. Nothing is installed until you tap Install.")}</p>
-      {row !== null && (
-        <>
-          {choice === RECOMMENDED && <p className="setup-label">{t("Recommended")}</p>}
-          <AgentSetupCard key={row.id} agent={row} machineId={machineId} autoSignIn onOpenTerminal={onOpenTerminal} onStart={() => onReady(row.id)}
-            onPending={setPending} onStep={(step) => { setRunning(step.kind !== "idle" && step.kind !== "failed"); if (step.kind === "ready") onReady(row.id); }} />
-        </>
-      )}
-      {!busy && (
-        <div className="setup-more">
-          {instead !== undefined && <button type="button" className="setup-link" onClick={() => pick(instead.id)}>{t("Use {agent} instead", { agent: instead.name })}</button>}
-          {otherAgents.length > 0 && (
-            <button type="button" className="setup-link" aria-expanded={others} onClick={() => setOthers((open) => !open)}>
-              {others ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}{t("Other agents ({count})", { count: otherAgents.length })}
+    <li ref={tile} onFocus={() => { focused.current = true; }} onBlur={(event) => { if (event.relatedTarget !== null) focused.current = false; }}>
+      {state === "installed" ? (
+        <button type="button" className="setup-tile" data-agent={agent.id} aria-pressed={picked} disabled={locked} onClick={() => onPick(agent.id)}>
+          <AgentMark agent={agent.id} size={20} />
+          <span className="setup-found-name"><strong>{agent.name}</strong>{agent.state.version !== null && <span>{agent.state.version}</span>}</span>
+          {picked && <Check aria-hidden="true" />}
+        </button>
+      ) : (
+        <div className="setup-tile" data-agent={agent.id} data-missing="" data-state={state} aria-busy={state === "installing" || undefined}>
+          <AgentMark agent={agent.id} size={20} />
+          <span className="setup-found-name"><strong>{agent.name}</strong></span>
+          {(state !== "missing" || (agent.state.installed !== null && agent.install !== null)) && (
+            // one button through every state, so the focus stays on it: Install, the turning ring (its tab
+            // once there is one), Try again
+            <button type="button" className="btn setup-tile-install"
+              aria-disabled={(state === "installing" && tab === null) || (state !== "installing" && pending) ? true : undefined}
+              disabled={state !== "installing" && locked}
+              aria-label={state === "installing" ? (tab === null ? t("Installing {agent}…", { agent: agent.name }) : t("Installing {agent}… Open terminal", { agent: agent.name })) : state === "missing" ? t("Install {agent}", { agent: agent.name }) : t("Try installing {agent} again", { agent: agent.name })}
+              onClick={() => { if (state === "installing") { if (tab !== null) onOpenTerminal(tab.pane_id); return; } tap(); }}>
+              {state === "installing" ? <LoaderCircle aria-hidden="true" className="setup-spin" /> : state === "missing" ? <Download aria-hidden="true" /> : <RotateCw aria-hidden="true" />}
+              {state !== "installing" && <span className="setup-tile-install-label">{state === "missing" ? t("Install") : t("Try again")}</span>}
             </button>
           )}
         </div>
       )}
-      {others && !busy && (
-        <ul className="setup-others-list">
-          {otherAgents.map((agent) => (
-            <li key={agent.id}>
-              <button type="button" className="setup-other" aria-pressed={agent.id === choice} onClick={() => pick(agent.id)}><AgentMark agent={agent.id} size={18} /><span>{agent.name}</span></button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {!busy && (
-        <div className="setup-actions">
-          <span className="setup-muted">{t("Already installed one?")}</span>
-          <button type="button" className="btn btn-ghost" onClick={onLookAgain}><RotateCw aria-hidden="true" />{t("Look again")}</button>
-        </div>
-      )}
-    </section>
+    </li>
+  );
+}
+
+/** how often the guide looks for a phone that paired with the code it shows */
+const PAIRING_POLL_MS = 3000;
+// the guide's code request, while it is out: a box closed and opened again joins it instead of
+// sending a second one (each new code replaces the server's pending one)
+let pairingOut: Promise<PairingCode> | null = null;
+const guidePairingCode = (): Promise<PairingCode> => pairingOut ??= startPairing().finally(() => { pairingOut = null; });
+
+/**
+ * Connect your phone, right in the guide: a QR code that opens this app on the phone with a fresh
+ * pairing code filled in, and the address beside it. Settings → Phone takes over where the guide
+ * cannot do it safely: this page has no address a phone can open (the PC's own loopback), or this
+ * browser is in only because nothing is paired yet (a paired phone would turn sign-in on and shut
+ * it out: Settings pairs this browser first).
+ */
+function PhoneQr({ auth, onOpenSettings }: { auth: HealthAuth | null; onOpenSettings: () => void }) {
+  const t = useT();
+  const [access, setAccess] = useState<RemoteAccess | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    fetchRemoteAccess().then((answer) => { if (live) setAccess(answer); }, () => { if (live) setAccess(null); });
+    return () => { live = false; };
+  }, []);
+  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext }, access ?? null);
+  // where a phone can open this app now, as Settings → Phone works it out
+  const address = access === undefined ? undefined : plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
+  // an access the server does not name is treated as open: Settings pairs this browser first
+  const inSettings = address === null || (auth !== null && (auth.via === undefined || auth.via === "open"));
+  useEffect(() => { if (inSettings) onOpenSettings(); }, [inSettings]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a pairing code for the QR once there is an address for it, asked for by the user each time
+  // (opening the box, New code): never renewed behind their back, where it would replace a code
+  // Settings → Phone shows. Used by a phone (a device paired since) or run out, it is gone.
+  const [code, setCode] = useState<PairingCode | null>(null);
+  const [paired, setPaired] = useState<string | null>(null);
+  const [asking, setAsking] = useState(0);
+  // a code request out: New code waits for it (a second one could replace the code the first shows)
+  const [requesting, setRequesting] = useState(false);
+  // no code before it is known how this browser got in (open access goes to Settings instead)
+  const ready = typeof address === "string" && auth !== null && !inSettings;
+  // the devices paired before this code: a new id among them later is the phone that used it
+  const before = useRef<ReadonlySet<string> | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    let live = true;
+    // read before the code and right after it: a device that paired in between used an older code
+    // (one Settings showed); one missed this way only goes unconfirmed, never claimed wrongly
+    setRequesting(true);
+    void (async () => {
+      const first = await fetchDevices();
+      // closed or asked again meanwhile: no code requested for a box nobody sees
+      if (!live) return;
+      const fresh = await guidePairingCode();
+      const after = await fetchDevices();
+      if (!live) return;
+      before.current = new Set([...first, ...after].map((device) => device.id));
+      setCode(fresh);
+    })().catch(() => { if (live) setCode(null); }).finally(() => { if (live) setRequesting(false); });
+    return () => { live = false; };
+  }, [ready, asking]);
+  useEffect(() => {
+    if (code === null) return;
+    let live = true;
+    let asked = false;
+    const expiry = window.setTimeout(() => { if (live) setCode(null); }, Math.max(0, Date.parse(code.expires_at) - Date.now()));
+    // a phone that paired with it: said, and the code is spent (one read at a time)
+    const look = (): void => {
+      if (asked) return;
+      asked = true;
+      void fetchDevices().then((devices) => {
+        if (!live) return;
+        const fresh = devices.find((device) => !(before.current?.has(device.id) ?? true));
+        if (fresh !== undefined) { setPaired(fresh.label); setCode(null); }
+      }, () => { /* asked again on the next turn */ }).finally(() => { asked = false; });
+    };
+    look();
+    const poll = window.setInterval(look, PAIRING_POLL_MS);
+    return () => { live = false; window.clearTimeout(expiry); window.clearInterval(poll); };
+  }, [code]);
+  if (!ready || typeof address !== "string") return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
+  const value = code === null ? address : `${address.replace(/\/$/, "")}/?pair=${code.code}`;
+  return (
+    <div className="setup-phone-qr">
+      <QrCode value={value} label={code === null ? t("Open this address on your phone") : t("QR code that pairs a phone with code {code}", { code: code.code })} size={136} />
+      <div className="setup-phone-qr-text">
+        {paired !== null && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("Paired: {name}.", { name: paired })}</span>}
+        <span>{t("Open this address on your phone")}</span>
+        <code>{address}</code>
+        {code !== null ? <span>{t("Pairing code")} <strong>{code.code}</strong></span>
+          : <button type="button" className="setup-link" aria-disabled={requesting || undefined} onClick={() => { if (requesting) return; setPaired(null); setAsking((count) => count + 1); }}>{t("New code")}</button>}
+      </div>
+    </div>
   );
 }
 
