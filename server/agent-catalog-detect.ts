@@ -80,8 +80,9 @@ export function defaultLoginProbe(platform: string = process.platform): LoginPat
 }
 
 export interface VersionRun {
-  /** what the process printed, stdout then stderr, at most VERSION_OUTPUT_BYTES of each */
-  output: string;
+  /** what the process printed on each stream, at most VERSION_OUTPUT_BYTES of each */
+  stdout: string;
+  stderr: string;
   exitCode: number | null;
   timedOut: boolean;
 }
@@ -144,7 +145,7 @@ export const runVersion: RunVersion = async (executable, args, timeoutMs) => {
   const exited = child.exited.then((code) => { grace = setTimeout(stopReading, EXIT_GRACE_MS); return code; });
   try {
     const [stdout, stderr, exitCode] = await Promise.all([readBounded(child.stdout, stop), readBounded(child.stderr, stop), Promise.race([exited, stop.then(() => null)])]);
-    return { output: `${stdout}\n${stderr}`, exitCode, timedOut };
+    return { stdout, stderr, exitCode, timedOut };
   } finally {
     clearTimeout(timer);
     clearTimeout(grace);
@@ -231,10 +232,15 @@ export class AgentDetector {
       try {
         const run = await this.#run(executable, args, this.#timeoutMs);
         if (run.timedOut) return { fingerprint, version: null, error: "timeout", retryAt: this.#now() + TIMEOUT_KEPT_MS };
-        const version = parseVersion(run.output);
+        // a flag that failed proves the agent does not run: its error (a wrapper's missing target,
+        // with Node's version in the path) is never read for a version. A failure is asked again
+        // after a while: a wrapper's target can be repaired while the wrapper stays the same file.
+        if (run.exitCode !== 0) return { fingerprint, version: null, error: "failed", retryAt: this.#now() + TIMEOUT_KEPT_MS };
+        // the version is read from what the flag printed as its answer only, never from stderr
+        const version = parseVersion(run.stdout);
         return { fingerprint, version, error: version === null ? "unreadable" : null, retryAt: null };
       } catch {
-        return { fingerprint, version: null, error: "failed", retryAt: null };
+        return { fingerprint, version: null, error: "failed", retryAt: this.#now() + TIMEOUT_KEPT_MS };
       }
     }).then((result) => {
       this.#kept.set(executable, result);

@@ -80,6 +80,31 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     expect(await detector.state(entry("omp"), "linux")).toEqual({ installed: true, binary: "omp", on_path: true, version: null, version_error: "unreadable", meets_min_version: null });
   });
 
+  it("never reads a version out of a flag that fails, or out of what it prints as an error", async () => {
+    // a wrapper whose target is gone, as a removed nvm Node leaves one: the shell's error names the
+    // missing path, Node's version and all, and exits 127
+    stub("opencode", `exec '${join(bin, "missing", "node", "v22.17.1", "bin", "opencode")}' "$@"`);
+    // a flag that prints its version only on stderr, and succeeds
+    stub("pi", "echo 'pi 1.2.3' >&2");
+    const detector = new AgentDetector({ home: emptyHome, locate });
+    expect(await detector.state(entry("opencode"), "linux")).toEqual({ installed: true, binary: "opencode", on_path: true, version: null, version_error: "failed", meets_min_version: null });
+    expect(await detector.state(entry("pi"), "linux")).toEqual({ installed: true, binary: "pi", on_path: true, version: null, version_error: "unreadable", meets_min_version: null });
+  });
+
+  it("asks a failed version flag again after a while, so an install repaired behind an unchanged wrapper shows", async () => {
+    let now = 1_000;
+    const target = join(bin, "letta.target");
+    stub("letta", `[ -f '${target}' ] && exec cat '${target}'\necho "${target}: No such file or directory" >&2\nexit 127`);
+    const detector = new AgentDetector({ home: emptyHome, locate, now: () => now });
+    expect(await detector.state(entry("letta"), "linux")).toMatchObject({ version: null, version_error: "failed" });
+    await detector.state(entry("letta"), "linux");
+    expect(runsOf("letta")).toBe(1);
+    writeFileSync(target, "letta 0.5.0\n");
+    now += TIMEOUT_KEPT_MS;
+    expect(await detector.state(entry("letta"), "linux")).toMatchObject({ version: "0.5.0", version_error: null });
+    expect(runsOf("letta")).toBe(2);
+  });
+
   it("kills a version flag that hangs, and asks again only after a while", async () => {
     let now = 1_000;
     const detector = new AgentDetector({ home: emptyHome, locate, timeoutMs: 300, now: () => now });
@@ -185,7 +210,7 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     const started = performance.now();
     const run = await runVersion(join(bin, "leaver"), ["--version"], 5_000);
     expect(run.timedOut).toBe(false);
-    expect(run.output).toContain("leaver 1.2.3");
+    expect(run.stdout).toContain("leaver 1.2.3");
     expect(performance.now() - started).toBeLessThan(2_000);
     expect(await ends(Number(readFileSync(pidFile, "utf8").trim()))).toBe(true);
   });
@@ -194,8 +219,8 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("chatty", "yes 1.2.3 | head -c 1000000");
     const run = await runVersion(join(bin, "chatty"), ["--version"], 5_000);
     expect(run.timedOut).toBe(false);
-    expect(run.output.length).toBeLessThan(10_000);
-    expect(run.output.startsWith("1.2.3")).toBe(true);
+    expect(run.stdout.length).toBeLessThan(10_000);
+    expect(run.stdout.startsWith("1.2.3")).toBe(true);
   });
 });
 
@@ -223,7 +248,7 @@ describe.skipIf(process.platform !== "win32")("runVersion on Windows", () => {
       // %~1: the first argument as the shim got it, cmd's quotes taken off (an npm shim hands %* to node, which does the same)
       writeFileSync(shim, "@echo off\r\necho agent 4.5.6 %~1\r\n");
       const run = await runVersion(shim, ["--version"], 10_000);
-      expect([run.timedOut, run.exitCode, run.output.trim()]).toEqual([false, 0, "agent 4.5.6 --version"]);
+      expect([run.timedOut, run.exitCode, run.stdout.trim()]).toEqual([false, 0, "agent 4.5.6 --version"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
