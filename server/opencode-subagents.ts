@@ -161,7 +161,15 @@ type ShellRow = {
  * its service started is lost the same way, that service having taken its process along.
  */
 function shellStep(db: Database, scan: Scan): void {
-  scan.shells = [];
+  const from = `
+    FROM session_message AS m
+    WHERE m.session_id = ? AND m.type = 'shell' AND json_valid(m.data)
+      AND json_type(m.data, '$.metadata.background') = 'true'`;
+  const running = `CASE WHEN json_extract(m.data, '$.status') = 'running' AND ?
+    AND (? IS NULL OR m.time_updated >= ?) THEN 1 ELSE 0 END`;
+  const bindings: [string, number, number | null, number] = [
+    scan.sessionId, scan.live ? 1 : 0, scan.serviceStart, (scan.serviceStart ?? 0) - START_SLACK_MS,
+  ];
   const select = `
     SELECT m.id,
       CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.shellID') END AS shell,
@@ -170,25 +178,28 @@ function shellStep(db: Database, scan: Scan): void {
       CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.exit') END AS exit,
       CASE WHEN json_valid(m.data) AND json_type(m.data, '$.time.created') IN ('integer', 'real') AND json_extract(m.data, '$.time.created') > 0
         THEN json_extract(m.data, '$.time.created') END AS started,
-      m.time_created AS created, m.time_updated AS updated
-    FROM session_message AS m
-    WHERE m.session_id = ? AND m.type = 'shell' AND json_valid(m.data)
-      AND json_type(m.data, '$.metadata.background') = 'true'`;
-  // Count every running command, even behind a long ended history; only the ended selection is bounded.
-  const rows = [
-    ...db.query<ShellRow, [string]>(`${select}
-      AND json_extract(m.data, '$.status') = 'running'`).all(scan.sessionId),
-    ...db.query<ShellRow, [string, number]>(`${select}
-      AND json_extract(m.data, '$.status') IS NOT 'running' AND m.time_updated >= ?
-      ORDER BY m.time_updated DESC LIMIT ${RECENT_LIMIT}`).all(scan.sessionId, scan.now - RECENT_MS),
-  ];
+      m.time_created AS created, m.time_updated AS updated ${from}`;
+  // Count and list from the same snapshot, retaining only the newest commands that can be displayed.
+  const { runningCount, rows } = db.transaction(() => {
+    const runningCount = db.query<{ running: number }, typeof bindings>(`
+      SELECT count(*) AS running ${from} AND (${running})`).get(...bindings)?.running ?? 0;
+    const rows = [
+      ...db.query<ShellRow, typeof bindings>(`${select}
+        AND (${running}) ORDER BY coalesce(started, created) DESC LIMIT ${RUNNING_LIMIT}`).all(...bindings),
+      ...db.query<ShellRow, [...typeof bindings, number]>(`${select}
+        AND NOT (${running}) AND m.time_updated >= ?
+        ORDER BY m.time_updated DESC LIMIT ${RECENT_LIMIT}`).all(...bindings, scan.now - RECENT_MS),
+    ];
+    return { runningCount, rows };
+  })();
+  scan.shells = [];
+  scan.shellRunning = runningCount;
   for (const row of rows) {
     const id = label(row.shell) ?? row.id;
     const ended = row.status === "running" ? null
       : { status: row.exit === 0 ? "completed" as const : "failed" as const, at: row.updated };
     const orphan = scan.serviceStart !== null && row.updated < scan.serviceStart - START_SLACK_MS;
     if (ended === null && scan.live && !orphan) {
-      scan.shellRunning++;
       scan.shells.push({
         id, title: label(row.command) ?? id, category: "shell", model: null, status: "running",
         started_at: iso(row.started ?? row.created), ended_at: null, turns: null, tool_calls: null, tokens: null, detail_kind: null,
@@ -319,13 +330,11 @@ function scanResult(scan: Scan): OpencodeSubagentState {
   // commands join the subagents' list: running first, oldest first; ended newest first, the ten that ended last
   const started = (task: OmoTask): number => task.started_at === null ? 0 : Date.parse(task.started_at) || 0;
   const ended = (task: OmoTask): number => task.ended_at === null ? 0 : Date.parse(task.ended_at) || 0;
-  let unlisted = state.unlisted;
-  let running = [...tasks.filter((task) => task.status === "running"), ...scan.shells.filter((task) => task.status === "running")]
-    .sort((a, b) => started(a) - started(b));
-  if (running.length > RUNNING_LIMIT) { unlisted += running.length - RUNNING_LIMIT; running = running.slice(-RUNNING_LIMIT); }
+  const running = [...tasks.filter((task) => task.status === "running"), ...scan.shells.filter((task) => task.status === "running")]
+    .sort((a, b) => started(a) - started(b)).slice(-RUNNING_LIMIT);
   const settled = [...tasks.filter((task) => task.status !== "running"), ...scan.shells.filter((task) => task.status !== "running")]
     .sort((a, b) => ended(b) - ended(a)).slice(0, RECENT_LIMIT);
-  return { ...state, running: state.running + scan.shellRunning, unlisted, tasks: [...running, ...settled] };
+  return { ...state, running: state.running + scan.shellRunning, unlisted: state.running + scan.shellRunning - running.length, tasks: [...running, ...settled] };
 }
 
 /** The event loop let go between two steps of a read. */

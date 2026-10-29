@@ -1,12 +1,12 @@
-import { afterAll, describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
-import { opencodeSubagentState, OpencodeSubagentStatus, pagedState, RUNNING_LIMIT, SUBAGENT_PAGE } from "./opencode-subagents.ts";
+import { opencodeSubagentState, OpencodeSubagentStatus, pagedState, readSubagents, RUNNING_LIMIT, SUBAGENT_PAGE } from "./opencode-subagents.ts";
 import { withStore } from "./opencode.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-opencode-subagents-"));
@@ -180,6 +180,49 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     expect(state?.turnRunning).toBe(0);
     expect(state?.tasks).toHaveLength(1000);
     expect(state?.tasks.map((task) => task.id)).toEqual(Array.from({ length: 1000 }, (_, n) => `sh_run${n + 15}`));
+  });
+
+  it.each([true, false])("bounds materialized running shell rows with detail %s while counting every command", (detail) => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - MIN + n, { metadata: { background: true }, shellID: `sh_run${n}`, status: "running" });
+    }
+    let runningRows = 0;
+    const reads: { mockRestore(): void }[] = [];
+    const query = s.db.query.bind(s.db);
+    reads.push(spyOn(s.db, "query").mockImplementation(function <Result, Bindings extends SQLQueryBindings | SQLQueryBindings[]>(sql: string) {
+      const statement = query<Result, Bindings>(sql);
+      const all = statement.all.bind(statement);
+      reads.push(spyOn(statement, "all").mockImplementation((...bindings) => {
+        const result = all(...bindings);
+        runningRows += result.filter((row) => row !== null && typeof row === "object" && "status" in row && row.status === "running").length;
+        return result;
+      }));
+      return statement;
+    }));
+    try {
+      const state = readSubagents(s.db, s.parent, true, NOW, null, detail);
+
+      expect(state.running).toBe(1015);
+      expect(state.unlisted).toBe(15);
+      expect(state.tasks).toHaveLength(RUNNING_LIMIT);
+      expect(runningRows).toBe(RUNNING_LIMIT);
+    } finally {
+      for (const read of reads) read.mockRestore();
+    }
+  });
+
+  it.each([null, NOW])("keeps an overflow of stale running commands bounded with service start %s", (serviceStart) => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - MIN + n, { metadata: { background: true }, shellID: `sh_lost${n}`, status: "running" });
+    }
+
+    const state = readSubagents(s.db, s.parent, serviceStart !== null, NOW, serviceStart, false);
+
+    expect(state.running).toBe(0);
+    expect(state.unlisted).toBe(0);
+    expect(state.tasks.map((task) => [task.id, task.status])).toEqual(Array.from({ length: 10 }, (_, n) => [`sh_lost${1014 - n}`, "lost"]));
   });
 
   it.each([null, undefined])("marks an exited background command with exit %s as failed", (exit) => {
@@ -476,6 +519,7 @@ describe("the OpenCode subagent tracker", () => {
     let held = true;
     const flaky: typeof withStore = (path, read, busyMs) => withStore(path, (db) => read(new Proxy(db, {
       get(target, key) {
+        if (key === "transaction") return target.transaction.bind(target);
         if (key !== "query") return Reflect.get(target, key, target);
         return (sql: string) => {
           const statement = target.query(sql);
