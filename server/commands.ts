@@ -1,4 +1,6 @@
 import type { CommandForm, HerdrPane, SlashCommand } from "../shared/protocol.ts";
+import { FileBusyError, fileTask } from "./file-pool.ts";
+import type { FileTask } from "./file-tasks.ts";
 import { AGENT_SOURCES } from "./skills/index.ts";
 import type { AgentCommandSource, ProcessRoots } from "./skills/index.ts";
 import { ancestorsToRepoRoot } from "./skills/walk.ts";
@@ -55,13 +57,72 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
   return cached?.identity === catalogIdentity(pane) ? cached : undefined;
 }
 
-export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = userHome(), process: ProcessRoots = {}, version?: string | null): SlashCommand[] {
+/**
+ * How long one request waits for a scan before it is answered 503: under the minute a signed-in API
+ * request may go without a byte before Bun closes it (`index.ts`).
+ */
+export const COMMANDS_WAIT_MS = 45_000;
+let waitMs = COMMANDS_WAIT_MS;
+
+/** For tests: how long a request waits for a scan; no argument restores the default. */
+export function setCommandsWait(ms = COMMANDS_WAIT_MS): void {
+  waitMs = ms;
+}
+
+/** Scans under way, by what they were asked: a request for the same scan waits for that one. */
+const scans = new Map<string, Promise<SlashCommand[]>>();
+
+/**
+ * `paneCommands` run on a file thread (`file-pool.ts`), never on the server's: the scan reads every
+ * skill and command folder the agent would, synchronously, and a folder on a slow mount (9p, a
+ * network share) took 10-27 s there, stalling every terminal and request with it (#2254).
+ *
+ * A request waits for its scan at most `COMMANDS_WAIT_MS`, or until `signal` aborts, and is then
+ * refused with `FileBusyError` (503); the scan itself goes on, and a request for the same scan made
+ * meanwhile (the menu asks again after a failed read) waits for it rather than starting another, so
+ * a scan slower than one request's wait still answers the next. A finished scan is not kept: the
+ * next request scans again, and sees a skill added since. An agent with no scan answers at once,
+ * without a thread.
+ */
+export function scanPaneCommands(agent: string | null | undefined, cwd: string | null | undefined, process: ProcessRoots = {}, version?: string | null, signal?: AbortSignal): Promise<SlashCommand[]> {
+  if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return Promise.resolve([]);
+  if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
+  // plain data only: a thread is handed a copy
+  const roots: ProcessRoots = { agentDir: process.agentDir ?? null, pluginDir: process.pluginDir ?? null, environ: process.environ ?? null };
+  const task: FileTask = { op: "commands", agent, cwd: cwd ?? null, home: userHome(), roots, version: version ?? null, serverEnv: { ...globalThis.process.env } };
+  const key = JSON.stringify(task);
+  let scan = scans.get(key);
+  if (scan === undefined) {
+    const started = fileTask<SlashCommand[]>(task);
+    scan = started;
+    const forget = () => { if (scans.get(key) === started) scans.delete(key); };
+    started.then(forget, forget);
+    scans.set(key, started);
+  }
+  const running = scan;
+  return new Promise<SlashCommand[]>((done, fail) => {
+    let waiting = true;
+    const leave = (): boolean => {
+      if (!waiting) return false;
+      waiting = false;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+      return true;
+    };
+    const timer = setTimeout(() => { if (leave()) fail(new FileBusyError("the skill folders did not answer in time")); }, waitMs);
+    const cancel = () => { if (leave()) fail(new FileBusyError("the request was cancelled")); };
+    signal?.addEventListener("abort", cancel, { once: true });
+    running.then((commands) => { if (leave()) done(commands); }, (error: unknown) => { if (leave()) fail(error); });
+  });
+}
+
+export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = userHome(), process: ProcessRoots = {}, version?: string | null, serverEnv?: Readonly<Record<string, string | undefined>>): SlashCommand[] {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return [];
   const source = AGENT_SOURCES[agent];
   if (!source) return [];
   const builtins = new Map(builtinCommands(agent, version).map((command) => [command.name, command]));
   const ancestors = cwd ? ancestorsToRepoRoot(cwd, home) : [];
-  const discovered = source.discover({ home, cwd, repoRoot: ancestors.at(-1) ?? null, env: process.environ ?? null, roots: process, version });
+  const discovered = source.discover({ home, cwd, repoRoot: ancestors.at(-1) ?? null, env: process.environ ?? null, roots: process, version, ...(serverEnv ? { serverEnv } : {}) });
   const commands: SlashCommand[] = [];
   // one row per file: the same (trigger, name, id) reached twice, e.g. through a link; a row without an id is its own
   const seen = new Set<string>();

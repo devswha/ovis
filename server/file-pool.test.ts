@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeSync, constants as fsConstants, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { FileInfo } from "../shared/protocol.ts";
+import type { FileInfo, SlashCommand } from "../shared/protocol.ts";
+import { scanPaneCommands } from "./commands.ts";
 import { FileBusyError, filePoolSize, fileTask, fileThreadsClosed, holdFilePool, setFilePoolOptions } from "./file-pool.ts";
 import type { FileTask, OpenedFile } from "./file-tasks.ts";
 
@@ -145,6 +146,51 @@ describe("file threads", () => {
     await expect(fileTask(held({ op: "info", path: file }, hold.buffer))).rejects.toBeInstanceOf(FileBusyError);
     hold.release();
     expect([...await walk].sort()).toEqual(["big.bin", "notes.txt"]);
+  });
+
+  /** Claude's commands in `root`, with `root` as its home */
+  const scan = (): FileTask => ({ op: "commands", agent: "claude", cwd: root, home: root, roots: {}, version: null, serverEnv: {} });
+  const names = (commands: SlashCommand[]): string[] => commands.map((command) => command.name);
+
+  it("runs at most `scans` commands scans at once, and file tasks take the threads left (#2254)", async () => {
+    setUp({ workers: 3, waiting: 4, deadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2 });
+    mkdirSync(join(root, ".claude", "skills", "listed"), { recursive: true });
+    writeFileSync(join(root, ".claude", "skills", "listed", "SKILL.md"), "---\nname: listed\ndescription: A skill in the scanned home.\n---\n");
+    const hold = gate();
+    const scans = [fileTask<SlashCommand[]>(held(scan(), hold.buffer)), fileTask<SlashCommand[]>(held(scan(), hold.buffer))];
+    const third = fileTask<SlashCommand[]>(scan());
+    // two scans hold two threads: the third waits for one of theirs rather than taking the last
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 1 });
+    // a file task behind it still takes a free thread at once
+    expect(await fileTask<FileInfo | null>({ op: "info", path: file })).toMatchObject({ size: 5 });
+    expect(filePoolSize()).toEqual({ threads: 3, idle: 1, waiting: 1 });
+    hold.release();
+    for (const commands of await Promise.all([...scans, third])) expect(names(commands)).toContain("listed");
+  });
+
+  it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {
+    setUp({ workers: 2, waiting: 0, deadlineMs: 150, longDeadlineMs: 150, scanDeadlineMs: 30_000 });
+    const hold = gate();
+    const scanning = fileTask<SlashCommand[]>(held(scan(), hold.buffer));
+    // a walk held as long is refused at its deadline; the scan is still waited for
+    await expect(fileTask(held({ op: "walk", cwd: root }, hold.buffer))).rejects.toBeInstanceOf(FileBusyError);
+    hold.release();
+    expect(names(await scanning)).toContain("clear");
+  });
+
+  it("hands a scan the server's environment, which its thread does not see", async () => {
+    setUp({ workers: 1, waiting: 0, deadlineMs: 30_000 });
+    const agentDir = join(root, "pi-agent");
+    mkdirSync(join(agentDir, "prompts"), { recursive: true });
+    writeFileSync(join(agentDir, "prompts", "from-server-env.md"), "A prompt pi finds through the server's PI_CODING_AGENT_DIR.\n");
+    const before = process.env["PI_CODING_AGENT_DIR"];
+    process.env["PI_CODING_AGENT_DIR"] = agentDir;
+    try {
+      expect(names(await scanPaneCommands("pi", root))).toContain("from-server-env");
+    } finally {
+      if (before === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+      else process.env["PI_CODING_AGENT_DIR"] = before;
+    }
   });
 
   it("closes a descriptor whose thread is ended before it answers", async () => {
