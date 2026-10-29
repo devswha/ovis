@@ -1128,8 +1128,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--ring-offset` so it still shows inside the ring. The 3:1 holds for rows of a connected PC; an
   offline PC's agent rows are disabled and dimmed to 0.5 on purpose, an inactive control the
   contrast rule exempts, so the check skips them. In forced colors (Windows high contrast) the
-  shadow is dropped, so the selected row keeps a `Highlight` leading border instead, pulled into
-  the gutter so its content does not move. No rule
+  shadow is dropped, so the selected row keeps a `Highlight` leading bar instead: a workspace row's
+  is a border pulled into the gutter so its content does not move; an agent row's is drawn inside
+  the row, since the Agents list scrolls and would clip it. No rule
   separates sections: `--space-4` and a dim `--fs-sm` head do.
 - The PC/workspace list and the lower Agents list scroll independently above the fixed footer.
   Agents takes the height of its rows, at most half the sidebar, docked above the footer; the

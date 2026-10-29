@@ -105,6 +105,23 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
   }
   const border = parseFloat(style.borderLeftWidth);
   if (border > 0 && style.borderLeftStyle !== "none") strokes.push({ color: seen(over(parse(style.borderLeftColor), rawFill), painted), from: box.left, to: box.left + border });
+  // a pseudo-element's leading border (laid out inside the row, from its left offset)
+  for (const pseudo of ["::before", "::after"]) {
+    const drawn = getComputedStyle(painted, pseudo);
+    const width = parseFloat(drawn.borderLeftWidth);
+    if (drawn.content === "none" || drawn.display === "none" || !(width > 0) || drawn.borderLeftStyle === "none") continue;
+    const left = box.left + border + (parseFloat(drawn.left) || 0);
+    strokes.push({ color: seen(over(parse(drawn.borderLeftColor), rawFill), painted), from: left, to: left + width });
+  }
+  // a scrolling or clipping ancestor cuts off whatever lies outside its padding box
+  let clipFrom = -Infinity, clipTo = Infinity;
+  for (let node = painted.parentElement; node; node = node.parentElement) {
+    const css = getComputedStyle(node);
+    if (css.overflowX === "visible") continue;
+    const rect = node.getBoundingClientRect();
+    clipFrom = Math.max(clipFrom, rect.left + parseFloat(css.borderLeftWidth));
+    clipTo = Math.min(clipTo, rect.right - parseFloat(css.borderRightWidth));
+  }
   // the focus ring (an outline, inside when its offset is negative) covers this band of the leading edge
   const covered: [number, number][] = [];
   for (const element of [painted, document.querySelector(targetSelector)]) {
@@ -115,9 +132,11 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
     const inner = element.getBoundingClientRect().left - parseFloat(css.outlineOffset);
     covered.push([inner - width, inner]);
   }
-  const exposed = (from: number, to: number): number => {
+  const exposed = (start: number, end: number): number => {
+    const from = Math.max(start, clipFrom), to = Math.min(end, clipTo);
+    if (to <= from) return 0;
     let shown = to - from;
-    for (const [start, end] of covered) shown -= Math.max(0, Math.min(to, end) - Math.max(from, start));
+    for (const [ringFrom, ringTo] of covered) shown -= Math.max(0, Math.min(to, ringTo) - Math.max(from, ringFrom));
     return Math.round(shown * 100) / 100;
   };
   const strongest = strokes.map(({ color, from, to }) => ({ color: `rgb(${color.slice(0, 3).map(Math.round).join(", ")})`, widthPx: Math.round((to - from) * 100) / 100, exposedPx: exposed(from, to), againstFill: ratio(color, fill), againstPanel: ratio(color, panel) }))
