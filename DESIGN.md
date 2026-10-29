@@ -1125,7 +1125,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the fill alone is 1.09-1.56:1 (#1618; `scripts/sidebar-selection-contrast-demo-regression.ts`).
   It follows VS Code's leading bar on the active activity-bar item, kept neutral, not amber.
   Keyboard focus draws the ring inside the row and no fill; on a selected row the stroke widens by
-  `--ring-offset` so it still shows inside the ring. No rule
+  `--ring-offset` so it still shows inside the ring. The 3:1 holds for rows of a connected PC; an
+  offline PC's agent rows are disabled and dimmed to 0.5 on purpose, an inactive control the
+  contrast rule exempts, so the check skips them. In forced colors (Windows high contrast) the
+  shadow is dropped, so the selected row keeps a `Highlight` leading border instead, pulled into
+  the gutter so its content does not move. No rule
   separates sections: `--space-4` and a dim `--fs-sm` head do.
 - The PC/workspace list and the lower Agents list scroll independently above the fixed footer.
   Agents takes the height of its rows, at most half the sidebar, docked above the footer; the

@@ -6,7 +6,10 @@
  * in it at least 4.5:1 on what is behind it (issue #1618). Prints one CONTRAST line per entry, row and state, and with
  * UI_EVIDENCE_DIR writes them to measurements.json beside the Codex theme's screenshots at 1280 and 390, dark and light.
  * Tags: sidebar, theme, contrast, accessibility, browser, regression.
- * Usage: bun scripts/sidebar-selection-contrast-demo-regression.ts   (UI_EVIDENCE_DIR=<dir> for the table and shots)
+ * The same rows are measured with forced colors (Windows high contrast) active, where the browser drops box
+ * shadows and theme colours: the selection must still leave a cue there.
+ * Usage: bun scripts/sidebar-selection-contrast-demo-regression.ts   (UI_EVIDENCE_DIR=<dir> for the table and shots;
+ *   SIDEBAR_SELECTION_CASE=themes|forced runs one half)
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +26,7 @@ type State = "selected" | "selected+hover" | "selected+focus";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-selection-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
+const only = process.env["SIDEBAR_SELECTION_CASE"];
 const CUE_MIN = 3;
 const TEXT_MIN = 4.5;
 // the row as a pointer and the keyboard reach it, and the box its selection paints
@@ -229,6 +233,32 @@ async function measureMode(browser: Browser, url: string, mode: Mode): Promise<v
   }
 }
 
+/** Forced colors replace every theme colour with the system's and drop box shadows: one pass per mode is the whole case. */
+async function measureForced(browser: Browser, url: string, mode: Mode): Promise<void> {
+  const { page, errors, close } = await open(browser, url, mode, false);
+  try {
+    await page.emulateMedia({ forcedColors: "active", colorScheme: mode });
+    assert.ok(await page.evaluate(() => matchMedia("(forced-colors: active)").matches), `forced colors are active in ${mode}`);
+    await selectRows(page);
+    for (const kind of ["workspace", "agent"] as const) {
+      for (const state of ["selected", "selected+hover", "selected+focus"] as const) {
+        const painted = await enter(page, kind, state);
+        const measured = await painted.evaluate(measure, { target: ROW[kind].target, strokeMinPx: STROKE_MIN_PX });
+        const entry = `forced-colors/${mode}`;
+        rows.push({ entry, row: kind, state, ...measured });
+        const weakest = measured.text.reduce((low, item) => (item.contrast < low.contrast ? item : low));
+        const stroke = measured.stroke ? `stroke ${measured.stroke.exposedPx}/${measured.stroke.widthPx}px shown, ${measured.stroke.againstFill}:1 on the fill, ${measured.stroke.againstPanel}:1 on the panel` : `no stroke of ${STROKE_MIN_PX}px shown`;
+        console.log(`CONTRAST ${entry} ${kind} ${state}: cue ${measured.cue}:1 (fill ${measured.fill}:1 on the panel, ${stroke}), text ${weakest.contrast}:1 ("${weakest.text}")`);
+        if (measured.cue < CUE_MIN) failures.push(`${entry} ${kind} ${state}: selection cue ${measured.cue}:1 < ${CUE_MIN}:1`);
+        for (const item of measured.text) if (item.contrast < TEXT_MIN) failures.push(`${entry} ${kind} ${state}: "${item.text}" ${item.contrast}:1 < ${TEXT_MIN}:1`);
+      }
+    }
+    assert.deepEqual(errors, [], `forced colors ${mode}: no uncaught browser errors`);
+  } finally {
+    await close();
+  }
+}
+
 /** The Codex theme (the default) as a person sees it: the sidebar at 1280 and in a phone's drawer at 390. */
 async function screenshots(browser: Browser, url: string, dir: string): Promise<void> {
   for (const phone of [false, true]) for (const mode of ["dark", "light"] as const) {
@@ -243,6 +273,13 @@ async function screenshots(browser: Browser, url: string, dir: string): Promise<
         await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
         await page.locator(".sidebar.is-open").waitFor();
       }
+      // a phone's drawer folds the Agents list by default: open it so the shot shows a selected agent row too
+      const agentsToggle = page.locator(".agent-section-toggle");
+      if (await agentsToggle.getAttribute("aria-expanded") === "false") {
+        await agentsToggle.click();
+        await page.locator(ROW.agent.painted).waitFor({ state: "visible" });
+      }
+      await page.locator(ROW.agent.painted).scrollIntoViewIfNeeded();
       await away(page);
       if (phone) await page.mouse.move(-50, -50);
       await settle(page);
@@ -269,17 +306,20 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const url = `http://127.0.0.1:${server.port}/`;
-      for (const mode of ["dark", "light"] as const) await measureMode(browser, url, mode);
-      if (evidence) {
+      if (!only || only === "themes") for (const mode of ["dark", "light"] as const) await measureMode(browser, url, mode);
+      if (!only || only === "forced") for (const mode of ["dark", "light"] as const) await measureForced(browser, url, mode);
+      if (evidence && !only) {
         mkdirSync(evidence, { recursive: true });
         writeFileSync(join(evidence, "measurements.json"), JSON.stringify(rows, null, 2));
         await screenshots(browser, url, evidence);
       }
     } finally { await browser.close(); }
   } finally { server.stop(true); }
-  assert.equal(new Set(rows.map((row) => row.entry)).size, SUPPORTED_ENTRIES.length, "every theme entry was measured");
+  const themed = new Set(rows.map((row) => row.entry).filter((entry) => !entry.startsWith("forced-colors/")));
+  if (!only || only === "themes") assert.equal(themed.size, SUPPORTED_ENTRIES.length, "every theme entry was measured");
+  if (!only || only === "forced") assert.equal(rows.filter((row) => row.entry.startsWith("forced-colors/")).length, 12, "both forced-color modes were measured");
   assert.deepEqual(failures, [], `selected sidebar rows below WCAG AA:\n${failures.join("\n")}`);
-  console.log(`PASS sidebar selection contrast: ${SUPPORTED_ENTRIES.length} theme entries, workspace and agent rows, ${rows.length} measurements`);
+  console.log(`PASS sidebar selection contrast: ${themed.size} theme entries and ${rows.length - themed.size * 6} forced-color measurements, workspace and agent rows, ${rows.length} measurements`);
 } finally {
   rmSync(app, { recursive: true, force: true });
 }

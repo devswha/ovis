@@ -875,10 +875,18 @@ describe("palette", () => {
     // scripts/sidebar-selection-contrast-demo-regression.ts measures the same rows as the browser paints them
     const components = join(import.meta.dir, "..", "components");
     const sidebar = readFileSync(join(components, "Sidebar.css"), "utf8");
-    // the one rule for the selector: a second one later in the file could override the stroke
+    // the one rule for the selector outside forced colors (the browser check measures those): a second one later in
+    // the file could override the stroke, and a commented-out declaration draws nothing
     const rule = (file: string, selector: string): string => {
-      // a commented-out declaration draws nothing
-      const source = file.replace(/\/\*[\s\S]*?\*\//g, "");
+      let source = file.replace(/\/\*[\s\S]*?\*\//g, "");
+      for (let at = source.indexOf("@media (forced-colors: active)"); at >= 0; at = source.indexOf("@media (forced-colors: active)")) {
+        let depth = 0, end = source.indexOf("{", at);
+        for (; end < source.length; end++) {
+          if (source[end] === "{") depth++;
+          else if (source[end] === "}" && --depth === 0) break;
+        }
+        source = source.slice(0, at) + source.slice(end + 1);
+      }
       const start = source.indexOf(`${selector} {`);
       if (start < 0 || source.indexOf(`${selector} {`, start + 1) >= 0) return "";
       return source.slice(start, source.indexOf("}", start));
@@ -887,16 +895,60 @@ describe("palette", () => {
     const hovered = /--side-hover: color-mix\(in srgb, var\(--([\w-]+)\) 50%, var\(--([\w-]+)\)\);/.exec(sidebar);
     expect({ selected, hovered: hovered?.slice(1) }).toEqual({ selected: "bg-hover", hovered: ["bg-hover", "bg-panel"] });
     const agents = readFileSync(join(components, "AgentSidebar.css"), "utf8");
-    // a leading stroke at least a hairline wide, with no spread to take it back; a focused row's continues past the
-    // focus ring drawn over its leading edge
-    const plain = /box-shadow: inset calc\(([1-9]\d*) \* var\(--hairline\)\) 0 0 var\(--([\w-]+)\);/;
-    const pastRing = /box-shadow: inset calc\(var\(--ring-offset\) \+ ([1-9]\d*) \* var\(--hairline\)\) 0 0 var\(--([\w-]+)\);/;
+    // the stroke as drawn, whatever its spelling: the box-shadow with the length tokens put in and calc() worked out,
+    // its leading band the x offset plus the spread (a negative spread takes it back; a blurred one is no stroke)
+    const px = (token: string): number => Number(new RegExp(`--${token}: ([\\d.]+)px;`).exec(css)?.[1] ?? Number.NaN);
+    const lengths: Record<string, number> = { hairline: px("hairline"), "ring-offset": px("ring-offset") };
+    // calc()'s arithmetic on plain numbers: + - * / and parentheses, nothing else
+    const arithmetic = (expression: string): number => {
+      const tokens = expression.match(/\d+(?:\.\d+)?|[-+*/()]/g) ?? [];
+      let at = 0;
+      const primary = (): number => {
+        const token = tokens[at++];
+        if (token === "(") { const value = sum(); at++; return value; }
+        if (token === "-") return -primary();
+        return Number(token);
+      };
+      const product = (): number => {
+        let value = primary();
+        while (tokens[at] === "*" || tokens[at] === "/") value = tokens[at++] === "*" ? value * primary() : value / primary();
+        return value;
+      };
+      const sum = (): number => {
+        let value = product();
+        while (tokens[at] === "+" || tokens[at] === "-") value = tokens[at++] === "+" ? value + product() : value - product();
+        return value;
+      };
+      return sum();
+    };
+    const drawn = (body: string): { band: number; token: string } | null => {
+      let value = /box-shadow:\s*([^;]+);/.exec(body)?.[1] ?? "";
+      value = value.replace(/var\(--(hairline|ring-offset)\)/g, (_, name: string) => `${lengths[name]}px`);
+      for (let inner = /calc\(([^()]*(?:\([^()]*\)[^()]*)*)\)/.exec(value); inner; inner = /calc\(([^()]*(?:\([^()]*\)[^()]*)*)\)/.exec(value)) {
+        const expression = inner[1]!.replace(/px/g, "");
+        if (!/^[\d.+\-*/() ]+$/.test(expression)) return null;
+        value = value.replace(inner[0], `${arithmetic(expression)}px`);
+      }
+      let best: { band: number; token: string } | null = null;
+      for (const layer of value.split(/,(?![^(]*\))/)) {
+        const token = /var\(--([\w-]+)\)/.exec(layer)?.[1];
+        if (!/\binset\b/.test(layer) || !token) continue;
+        const [x = 0, , blur = 0, spread = 0] = layer.replace(/var\([^)]*\)|inset/g, "").trim().split(/\s+/).map((length) => parseFloat(length));
+        const band = blur === 0 ? Math.max(0, x + spread) : 0;
+        if (!best || band > best.band) best = { band, token };
+      }
+      return best;
+    };
+    // a focused row's focus ring covers --ring-offset of its leading edge, so its stroke must reach that far plus 2px
     const strokes: [string, string | null][] = ([
-      ["workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header"), plain],
-      ["agent", rule(agents, ".agent-item.is-selected"), plain],
-      ["focused workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header:has(> .workspace-select:focus-visible)"), pastRing],
-      ["focused agent", rule(agents, ".agent-item.is-selected:has(> .agent-row:focus-visible)"), pastRing],
-    ] as const).map(([row, body, shape]): [string, string | null] => [row, shape.exec(body)?.[2] ?? null]);
+      ["workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header"), 0],
+      ["agent", rule(agents, ".agent-item.is-selected"), 0],
+      ["focused workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header:has(> .workspace-select:focus-visible)"), lengths["ring-offset"]!],
+      ["focused agent", rule(agents, ".agent-item.is-selected:has(> .agent-row:focus-visible)"), lengths["ring-offset"]!],
+    ] as const).map(([row, body, covered]): [string, string | null] => {
+      const stroke = drawn(body);
+      return [row, stroke && stroke.band - covered >= 2 * lengths["hairline"]! ? stroke.token : null];
+    });
     const failures: string[] = [];
     for (const { id, mode, key } of entries) {
       checked(failures, () => {

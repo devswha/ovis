@@ -127,6 +127,15 @@
   box-shadow: inset calc(var(--ring-offset) + 2 * var(--hairline)) 0 0 var(--text-dim);
 }
 
+/* as a workspace row's in forced colors (Sidebar.css): a Highlight leading border instead of the dropped stroke;
+   the focus ring is drawn on the row's button, inside this border, so it needs no widening */
+@media (forced-colors: active) {
+  .agent-item.is-selected {
+    margin-inline-start: calc(-2 * var(--hairline));
+    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+  }
+}
+
 /* As a workspace row's: the ⋯ takes no room until the row is hovered, focused, selected or its
    menu is open, and stays in the focus order, since the menu hands the focus back to it. */
 .agent-actions {
