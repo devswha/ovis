@@ -277,6 +277,8 @@ describe("Pi delivery transcript matching", () => {
     const receipts = [candidate("r1", "same", anchor), candidate("r2", "same", anchor)];
     // the earlier record lies before the first receipt's match, so it cannot settle the second
     expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    // nor in a later reconciliation, which scans the branch from the anchor again
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: [], changed: [], retry: false });
     appendFileSync(path, entry("ours-2", "ours", "user", "same"));
     expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
   });

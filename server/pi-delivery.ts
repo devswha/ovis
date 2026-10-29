@@ -256,7 +256,10 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       else if (earlier) ambiguous.push(candidate.id);
       else break;
       const used = (match ?? earlier)!;
-      matchedEntries.push(key(used)); afterMatched = used.start;
+      // Earlier-stamped copies a match passes over are accounted for by it: they cannot make a
+      // later receipt ambiguous in a later reconciliation, whose scan starts over.
+      for (const entry of same) if (entry.start <= used.start) matchedEntries.push(key(entry));
+      afterMatched = used.start;
     }
     if (!stable(fd, path, file, size, tail)) return { consumed: [], changed: [], retry: true };
     for (const [anchor, state] of updates) {
