@@ -6,7 +6,7 @@ import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOu
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -183,6 +183,21 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(target, [target], { ...own, env: { LETTA_TRANSCRIPT_ROOT: "relative" } })).toBeNull();
     expect(lettaTranscriptFor(target, [target], { ...own, env: {} })).toBeNull();
     expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-1", own.cwd)], own)).toBeNull();
+  });
+
+  test("the record speaks for nobody in the home folder, or while another pane runs Letta in the same folder", () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const target = pane("w1:p1", "local-conv-1", owner.cwd);
+    expect(lettaRecordOwned(target, [target], owner)).toBe(true);
+    // Letta with LETTA_CONFIG_DIR never rewrites ~/.letta/settings.local.json: an old one there is no record of this process
+    expect(lettaRecordOwned(target, [target], { ...owner, cwd: root, env: { HOME: root, LETTA_CONFIG_DIR: join(root, "cfg") } })).toBe(false);
+    expect(lettaRecordOwned(target, [target], { ...owner, cwd: root })).toBe(false);
+    // pane B reported default:agent-b, then /new wrote its own local-conv-1 into the shared record
+    const peer = { ...pane("w2:p1", "default:agent-local-b", join(owner.cwd, ".")), foreground_cwd: join(owner.cwd, ".letta", "..") } as HerdrPane;
+    expect(lettaRecordOwned(target, [target, peer], owner)).toBe(false);
+    expect(lettaRecordOwned(target, [target, { ...peer, agent: "letta", agent_session: undefined } as HerdrPane], owner)).toBe(false);
+    expect(lettaRecordOwned(target, [target, { ...peer, agent: "claude", agent_session: undefined } as HerdrPane], owner)).toBe(true);
+    expect(lettaRecordOwned(target, [target, pane("w3:p1", "conv-x", root)], owner)).toBe(true);
   });
 
   test("only a regular file at the path Letta derives is read, never one reached through a link", () => {

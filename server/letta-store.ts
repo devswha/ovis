@@ -30,7 +30,7 @@ const ENVIRON_BYTES = 1024 * 1024;
  * opened: it writes it once its agent is loaded, 3 s after the start on a local run. A write later
  * than this is a switch or another letta, and binds nothing.
  */
-export const START_WINDOW_MS = 30_000;
+export const START_WINDOW_MS = 15_000;
 
 export interface LettaSession {
   reported: string;
@@ -200,10 +200,24 @@ export function lettaTranscriptHeld(path: string, root: string): boolean {
   } catch { return false; }
 }
 
+const canonical = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
+
+/**
+ * Whether Letta's project record can speak for the pane's process at all: not in its home folder,
+ * where Letta with LETTA_CONFIG_DIR writes no project record (so an old one stays), and not while
+ * another pane runs Letta in the same folder, which writes the same record.
+ */
+export function lettaRecordOwned(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): boolean {
+  const folder = canonical(owner.cwd);
+  if (folder === null || (owner.env["HOME"] !== undefined && canonical(owner.env["HOME"]) === folder)) return false;
+  return !panes.some((other) => other.pane_id !== pane.pane_id && (other.agent === "letta" || other.agent_session?.agent === "letta")
+    && [other.foreground_cwd, other.cwd].some((cwd) => typeof cwd === "string" && cwd !== "" && canonical(cwd) === folder));
+}
+
 /** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, or null. */
 export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<LettaTranscript | null> {
   const owner = await paneLettaProcess(pane.pane_id, known);
-  if (owner === null) return null;
+  if (owner === null || !lettaRecordOwned(pane, panes, owner)) return null;
   const found = lettaTranscriptFor(pane, panes, owner);
   const root = lettaTranscriptRoot(owner.env);
   return found !== null && root !== null && lettaTranscriptHeld(found.path, root) ? found : null;
