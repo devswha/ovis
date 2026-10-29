@@ -427,6 +427,27 @@ for (const alias of [false, true]) {
   });
 }
 
+it("refuses to sign in again to one account signed in in two credential homes, rather than guess which", async () => {
+  // Given: the same account (one id, the list's one row) in two homes, each with its own expired sign-in
+  expiredHome("claude", ".claude-dup-a", "dup@example.test");
+  expiredHome("claude", ".claude-dup-b", "dup@example.test");
+  const rows = (await listed(true)).filter((usage) => usage.account === "dup@example.test");
+  expect(rows.length).toBe(1);
+  const realCreate = herdr.tabCreate;
+  const create = spyOn(herdr, "tabCreate").mockImplementation(async (options: Parameters<typeof realCreate>[0]) => {
+    const created = await realCreate(options);
+    openedPanes.push(created.root_pane.pane_id);
+    return created;
+  });
+  try {
+    // When
+    const response = await start({ provider: "claude", account: rows[0]!.key });
+    // Then: no tab, and the user is told why
+    expect(await statusAndCode(response)).toEqual([409, "account_ambiguous"]);
+    expect(create).not.toHaveBeenCalled();
+  } finally { create.mockRestore(); }
+});
+
 it("refuses a sign-in when it cannot tell which credential home it would write", async () => {
   // Given: Add account's login is open in ~/.codex-new, and Sign in again names that home through a
   // symlinked CODEX_HOME whose real path cannot be read

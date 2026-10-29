@@ -131,10 +131,14 @@ export class UsageLoginService {
     let reserved: string | null = null;
     try {
       // read from the sign-ins on disk now, not a cached report: a home may hold another account since
-      const place = again && typeof body["account"] === "string" ? await localSignInPlace(this.context, body["account"]) : null;
-      if (again && place?.provider !== id) {
+      const found = again && typeof body["account"] === "string" ? await localSignInPlace(this.context, body["account"]) : null;
+      if (again && found?.provider !== id) {
         return jsonResponse({ error: { code: "account_not_found", message: "This PC no longer lists that account. Refresh and try again." } }, 404);
       }
+      if (found && "ambiguous" in found) {
+        return conflictResponse("account_ambiguous", "This account is signed in in more than one credential folder on this PC, so Ovis cannot tell which one to renew. Sign in again from a terminal in the folder you want.");
+      }
+      const place = found;
       if (!separate && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }

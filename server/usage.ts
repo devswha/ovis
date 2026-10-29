@@ -1071,19 +1071,20 @@ function accountKey(id: UsageProviderId, account: Account | null | undefined, so
  * read from its files without asking any provider: a key is all the browser names,
  * never a place. Their reading names no account, so the key the list showed is the one its files
  * give. Null when no sign-in here has that key now: a hub's, another provider's, or one whose home
- * holds another account since. One account in several places gives the first, the one the list
- * shows (UsageService.collect keeps the first reading unless a later one has no problem).
+ * holds another account since. One account signed in in several homes (each its own token) is
+ * `ambiguous`: the list shows it once, so which home the user meant cannot be told.
  */
-export async function localSignInPlace(ctx: UsageContext, key: string): Promise<{ provider: "claude" | "codex"; home: CredentialHome } | null> {
+export async function localSignInPlace(ctx: UsageContext, key: string): Promise<{ provider: "claude" | "codex"; home: CredentialHome } | { provider: "claude" | "codex"; ambiguous: true } | null> {
   for (const provider of [claude, codex]) {
     const id = provider.id === "claude" ? "claude" : "codex";
     if (!key.startsWith(`${id}:`) && !key.startsWith(`${id}@`)) continue;
     // the same token in two places is one sign-in, as the list counts it
     const tokens = new Set<string>();
-    const place = (await provider.signIns(ctx))
+    const places = (await provider.signIns(ctx))
       .filter((found) => "locked" in found || (!tokens.has(found.token) && Boolean(tokens.add(found.token))))
-      .find((found) => accountKey(id, found.account, found.source) === key);
-    if (place?.home) return { provider: id, home: place.home };
+      .filter((found) => accountKey(id, found.account, found.source) === key);
+    if (places.length > 1) return { provider: id, ambiguous: true };
+    if (places[0]?.home) return { provider: id, home: places[0].home };
   }
   return null;
 }
