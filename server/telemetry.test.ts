@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
@@ -200,7 +200,8 @@ describe("telemetry events", () => {
     const { telemetry, sent } = setup({ stateDir: join(parent, "file", "state") });
     await telemetry.report();
     expect(sent).toEqual([]);
-    expect(telemetry.status().enabled).toBe(true);
+    // no state directory to tell whether the counts were turned off reads as off (offMarked fails closed)
+    expect(telemetry.status().enabled).toBe(false);
   });
 
   test("full safe settings persist across restarts and are included in install and update events", async () => {
@@ -910,6 +911,64 @@ describe("another server on the same state directory", () => {
     seen(telemetry);
     await settled();
     expect(days).toEqual(["2026-10-08"]);
+  });
+
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a state directory that cannot be read sends nothing, even with the counts on in memory", async () => {
+    const { telemetry, sent, actives, clock, stateDir, fireTimer } = setup({ grace: 60_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    clock.now += 60_000;
+    chmodSync(stateDir, 0o000);
+    try {
+      // the install event and the held visit, both owed, find no answer to whether the counts were turned off
+      await telemetry.report();
+      fireTimer();
+      await settled();
+      expect(sent).toEqual([]);
+      expect(actives).toEqual([]);
+      expect(telemetry.status().enabled).toBe(false);
+    } finally {
+      chmodSync(stateDir, 0o700);
+      telemetry.stop();
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("an off mark that is a dangling link still reads off", async () => {
+    const { telemetry, sent, actives, stateDir } = setup();
+    symlinkSync(join(stateDir, "gone"), join(stateDir, "telemetry-off"));
+    expect(telemetry.status().enabled).toBe(false);
+    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
+    await telemetry.report();
+    await telemetry.active(["claude"]);
+    await settled();
+    expect(sent).toEqual([]);
+    expect(actives).toEqual([]);
+  });
+
+  test("an install event held back by an off marked just before it goes is sent once the counts are on again", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: null, settings: null, active: [] }));
+    const sent: TelemetryEvent[] = [];
+    let markAtClock = false;
+    const telemetry = new Telemetry({
+      stateDir, version: "0.4.1", env: {}, url: "https://telemetry.test/v1/events", activeUrl: TEST_ACTIVE_URL, platform: "linux", arch: "x64", noticeGraceMs: 0,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        sent.push(JSON.parse(String(init?.body)) as TelemetryEvent);
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+      // another server turns the counts off between this one's read of the state and its send (the clock is read between)
+      now: () => {
+        if (markAtClock) { markAtClock = false; writeFileSync(join(stateDir, "telemetry-off"), ""); }
+        return Date.parse("2026-10-08T12:00:00Z");
+      },
+    });
+    markAtClock = true;
+    await telemetry.report();
+    expect(sent).toEqual([]);
+    telemetry.change({ enabled: true });
+    await telemetry.report();
+    expect(sent.map((event) => event.event)).toEqual(["install"]);
   });
 
   test("turning the counts on again from either server turns them on", async () => {
