@@ -73,6 +73,9 @@ try {
     host: getComputedStyle(document.querySelector(".terminal-host")!).backgroundColor,
   }));
   assert.equal(backgrounds.viewport, backgrounds.host, "the terminal gutter follows the light theme instead of showing a black frame");
+  // equal backgrounds prove nothing if both stayed dark: the light theme must actually be on
+  const [r, g, b] = (backgrounds.host.match(/\d+(\.\d+)?/g) ?? []).map(Number);
+  assert.ok((0.2126 * r! + 0.7152 * g! + 0.0722 * b!) / 255 > 0.5, `the light theme paints a light terminal background (got ${backgrounds.host})`);
   assert.ok((await paneScrollInfo(paneId))!.max_offset_from_bottom > 100, "herdr holds the full history");
   const widths = await page.evaluate(() => ({ grid: document.querySelector(".pane-terminal")!.getBoundingClientRect().width, surface: document.querySelector(".terminal-surface")!.getBoundingClientRect().width }));
   assert.equal(widths.grid, widths.surface, "the grid takes the full width, with no column reserved beside it");
