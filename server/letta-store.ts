@@ -163,7 +163,7 @@ export async function paneLettaProcess(paneId: string, known?: ProcessInfo | nul
   return startedAt === null || env === null ? null : { pid, cwd, startedAt, env };
 }
 
-export type LettaTranscript = { path: string; session: string };
+export type LettaTranscript = { path: string; session: string; agent: string; conversation: string };
 
 /**
  * The transcript a Letta pane shows (see the top of this file), or null when it is not proven, or
@@ -186,7 +186,7 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
   const bound = opened === null ? null : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
   if (bound === null || root === null) return null;
-  return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: session.reported };
+  return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: session.reported, ...bound };
 }
 
 /**
@@ -215,11 +215,38 @@ export function lettaRecordOwned(pane: HerdrPane, panes: readonly HerdrPane[], o
     && [other.foreground_cwd, other.cwd].some((cwd) => typeof cwd === "string" && cwd !== "" && canonical(cwd) === folder));
 }
 
+/** Letta's local backend store for an environment: `$LETTA_LOCAL_BACKEND_DIR`, else `lc-local-backend` in its config folder. */
+export function lettaLocalStore(env: Env): string | null {
+  const dir = env["LETTA_LOCAL_BACKEND_DIR"];
+  if (dir !== undefined) return isAbsolute(dir) ? normalize(dir) : null;
+  const config = lettaConfigDir(env);
+  return config === null ? null : join(config, "lc-local-backend");
+}
+
+/**
+ * Whether a local conversation (`local-conv-<n>`) is the agent's own in the process's store, where
+ * Letta keys it by its id alone (`conversation:<id>`, one folder each, never reused across agents) and
+ * names its agent. A cloud id (`conv-<uuid>`) or `default` (keyed with its agent) needs no such check.
+ */
+export function lettaLocalOwner(store: string, agent: string, conversation: string): boolean {
+  if (!conversation.startsWith("local-conv-")) return true;
+  const record = join(store, "conversations", Buffer.from(`conversation:${conversation}`).toString("base64url"), "conversation.json");
+  const text = readBounded(record, SETTINGS_BYTES);
+  if (text === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && (parsed as Record<string, unknown>)["id"] === conversation
+      && (parsed as Record<string, unknown>)["agent_id"] === agent;
+  } catch { return false; }
+}
+
 /** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, or null. */
 export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<LettaTranscript | null> {
   const owner = await paneLettaProcess(pane.pane_id, known);
   if (owner === null || !lettaRecordOwned(pane, panes, owner)) return null;
   const found = lettaTranscriptFor(pane, panes, owner);
+  const store = lettaLocalStore(owner.env);
   const root = lettaTranscriptRoot(owner.env);
-  return found !== null && root !== null && lettaTranscriptHeld(found.path, root) ? found : null;
+  if (found === null || store === null || root === null || !lettaLocalOwner(store, found.agent, found.conversation)) return null;
+  return lettaTranscriptHeld(found.path, root) ? found : null;
 }

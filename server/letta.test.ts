@@ -6,7 +6,7 @@ import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOu
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -15,6 +15,7 @@ const fixture = (name: string): string => readFileSync(join(import.meta.dir, "fi
 const defaultLog = fixture("transcript-default-0.34.27.jsonl");
 const newLog = fixture("transcript-conversation-0.34.27.jsonl");
 const settingsAfterNew = fixture("settings.local-0.34.27.json");
+const localConversation = fixture("local-conversation-0.34.27.json");
 const AGENT = "agent-local-97f4bceb-2f0d-4a16-8b9f-abb2f3d4a72c";
 
 const pane = (id: string, value: string | null, cwd: string): HerdrPane => ({
@@ -154,7 +155,7 @@ describe("Letta conversation binding", () => {
     const path = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1");
     // the record the process resumed from, written before it started, or by it as it started
     let owner = setup(settingsAfterNew, now - 60_000, now);
-    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1" });
+    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1" });
     owner = setup(settingsAfterNew, now + 2_000, now);
     expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)?.path).toBe(path);
     // pane A shows another conversation now; a later write (A's own /new, or another letta in the folder) names local-conv-1
@@ -202,6 +203,21 @@ describe("Letta conversation binding", () => {
     expect(lettaRecordOwned(target, [target, pane("w3:p1", "conv-x", root)], owner)).toBe(true);
   });
 
+  test("a local conversation binds only to the agent the process's own store names for it", () => {
+    const store = join(root, "store");
+    const folder = join(store, "conversations", Buffer.from("conversation:local-conv-1").toString("base64url"));
+    expect(lettaLocalOwner(store, AGENT, "local-conv-1")).toBe(false);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "conversation.json"), localConversation);
+    expect(lettaLocalOwner(store, AGENT, "local-conv-1")).toBe(true);
+    // pane B's agent ran /new and left its own record naming local-conv-1: the store says whose it is
+    expect(lettaLocalOwner(store, "agent-local-b", "local-conv-1")).toBe(false);
+    writeFileSync(join(folder, "conversation.json"), "{");
+    expect(lettaLocalOwner(store, AGENT, "local-conv-1")).toBe(false);
+    expect(lettaLocalOwner(store, AGENT, "conv-0d9d5c5e-3c3a-4a51-9d0c-1f5f2c1b7a11")).toBe(true);
+    expect(lettaLocalOwner(store, AGENT, "default")).toBe(true);
+  });
+
   test("only a regular file at the path Letta derives is read, never one reached through a link", () => {
     const transcripts = join(root, "transcripts");
     const path = lettaTranscriptPath(transcripts, AGENT, "local-conv-1");
@@ -243,6 +259,11 @@ describe("Letta conversation binding", () => {
       await expect(resolve(bound)).rejects.toThrow("no_session_path");
       mkdirSync(join(path, ".."), { recursive: true });
       writeFileSync(path, newLog);
+      // the store has no record that local-conv-1 is this agent's
+      await expect(resolve(bound)).rejects.toThrow("no_session_path");
+      const record = join(config, "lc-local-backend", "conversations", Buffer.from("conversation:local-conv-1").toString("base64url"));
+      mkdirSync(record, { recursive: true });
+      writeFileSync(join(record, "conversation.json"), localConversation);
       expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
       await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
