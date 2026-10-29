@@ -84,6 +84,43 @@ export function refusalLineStart(text: string): number {
   }
   return at;
 }
+/**
+ * How long an attach resized since it started is held at most, waiting for herdr's screen at the pty's
+ * current grid. herdr draws its first screen at the grid the attach started at and redraws for a new grid
+ * about 50 ms after the resize (herdr 0.9.5): a hold that ran out before that redraw sent the old-size
+ * screen as the first frame (#2289). Past this the bytes go out anyway, so no attach stays held.
+ */
+export const ATTACH_RESIZE_REDRAW_MS = 1_000;
+const SYNC_START = "\x1b[?2026h";
+const SYNC_END = "\x1b[?2026l";
+const ROW_START_RE = /\x1b\[(\d+);1H/g;
+
+/**
+ * A whole herdr screen at cols x rows in `output`. herdr (0.9.5) draws a whole screen, its first and the
+ * redraw for each new grid, as one synchronized update that moves to the start of each row, 1 to the
+ * last, and fills it to the width. Measured from that update, so it never depends on how long ago the
+ * resize was. A herdr that draws otherwise matches nothing, and the hold waits out ATTACH_RESIZE_REDRAW_MS.
+ */
+export function attachScreenAt(output: string, cols: number, rows: number): boolean {
+  for (let start = output.indexOf(SYNC_START); start !== -1; start = output.indexOf(SYNC_START, start + 1)) {
+    const end = output.indexOf(SYNC_END, start);
+    if (end === -1) return false;
+    const update = output.slice(start, end);
+    // where each row's move is, the first one for a row
+    const moves = new Map<number, { at: number; length: number }>();
+    for (const move of update.matchAll(ROW_START_RE)) {
+      const row = Number(move[1]);
+      if (!moves.has(row)) moves.set(row, { at: move.index, length: move[0].length });
+    }
+    if (moves.size !== rows || !Array.from({ length: rows }, (_, row) => row + 1).every((row) => moves.has(row))) continue;
+    const first = moves.get(1);
+    if (!first) continue;
+    // the first row's text, the escapes in it zero-width
+    const text = update.slice(first.at + first.length, moves.get(2)?.at ?? update.length);
+    if (Bun.stringWidth(text) === cols) return true;
+  }
+  return false;
+}
 /** how often a terminal another web bridge holds is tried again, while clients here still want it */
 export const ATTACH_HELD_RETRY_MS = 3_000;
 /**
@@ -152,6 +189,8 @@ export interface PtyAttachment extends AttachmentState {
   process: PtySession;
   /** a held terminal's next try takes the slot from the other bridge for this client (`take-over`) */
   takeOver?: (client: Client) => void;
+  /** how many times the pty took a new grid: an attach tells from it that it was resized since it started */
+  resizes?: number;
 }
 
 /**
@@ -548,9 +587,41 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       if (!Bun.which(command, { PATH: process.env["PATH"] ?? "", cwd: process.env["HOME"] ?? "/" })) {
         throw new HerdrError("attach_failed", `herdr could not be started: ${command} is not an executable on the server's PATH (set OVIS_HERDR_BIN to herdr's full path)`);
       }
-      // the grid this attach starts at: a resize before its screen is applied by herdr after that screen
-      const startCols = attachment.cols;
-      const startRows = attachment.rows;
+      // A resize since this attach started, even one back to its first grid, makes herdr's screens
+      // until its redraw for the pty's current grid the wrong size (#2289). Only an update that began
+      // after the latest resize can be that redraw: `sinceResize` is what came after it.
+      let resizes = attachment.resizes ?? 0;
+      let resized = false;
+      // An update that ended without being that screen never is (only a resize changes the grid, and
+      // it starts this over), so only an update not ended yet is kept: each read is looked at once,
+      // never everything held, which grows with a busy pane for up to ATTACH_RESIZE_REDRAW_MS.
+      let sinceResize = "";
+      const noteResize = (): void => {
+        if ((attachment.resizes ?? 0) === resizes) return;
+        resizes = attachment.resizes ?? 0;
+        resized = true;
+        sinceResize = "";
+      };
+      /** not resized since it started, or herdr has drawn the pty's current grid since the latest resize */
+      const atGrid = (): boolean => {
+        noteResize();
+        if (!resized) return true;
+        if (attachScreenAt(sinceResize, attachment.cols, attachment.rows)) return true;
+        // keep an update not ended yet, else what may be the start of one that a read cut
+        const open = sinceResize.lastIndexOf(SYNC_START);
+        sinceResize = sinceResize.slice(open > sinceResize.lastIndexOf(SYNC_END) ? open : Math.max(0, sinceResize.length - (SYNC_START.length - 1)));
+        return false;
+      };
+      /** the hold's own time is over: a resized attach waits on for that redraw, no longer than ATTACH_RESIZE_REDRAW_MS */
+      let redrawWait = false;
+      const holdEnded = (): void => {
+        if (!atGrid()) {
+          redrawWait = true;
+          holdTimer = setTimeout(took, Math.max(0, ATTACH_RESIZE_REDRAW_MS - holdFor));
+          return;
+        }
+        took();
+      };
       const session = new PtySession({
         command,
         // --takeover goes after the id: before it, herdr reads the id as an unknown option
@@ -573,19 +644,22 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           if (!data) return;
           output = (output + data).slice(-1024);
           if (held === null) return guard(data);
+          noteResize();
           held += data;
+          if (resized) sinceResize += data;
           if (!holding && !ATTACH_PREAMBLE_RE.test(held)) {
             holding = true;
             heldSince = Date.now();
-            holdTimer = setTimeout(took, holdFor);
+            holdTimer = setTimeout(holdEnded, holdFor);
           }
           // a screen, not a refusal: the attach took, and a tab switch waits on it. A pane another
-          // bridge held keeps the whole hold: a displacement right after its screen spends no click
-          // a pane resized since the attach started keeps the whole hold: herdr's first screen is
-          // still the old grid, and input sent at once would reach the program before the new one
-          if (holding && !attachment.held && attachment.cols === startCols && attachment.rows === startRows && attachScreenStarted(held)) {
+          // bridge held keeps the whole hold: a displacement right after its screen spends no click.
+          // A pane resized since the attach started waits for herdr's screen at its current grid:
+          // input sent before it would reach the program before that grid
+          // (the grid first: it looks at each read once, where the screen's start looks at all that was held)
+          if (holding && (redrawWait || !attachment.held) && atGrid() && attachScreenStarted(held)) {
             clearTimeout(holdTimer);
-            guardUntil = heldSince + holdFor;
+            if (!redrawWait) guardUntil = heldSince + holdFor;
             took();
           }
         },

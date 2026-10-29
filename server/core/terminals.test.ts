@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, expect, it, jest, mock, spyOn } from "bun:test";
 import { ReplayBuffer } from "../output-window.ts";
 import { connectionData, type Client } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
@@ -187,6 +187,143 @@ for (const resized of [false, true]) {
     }
   });
 }
+
+/** herdr 0.9.5's whole screen, shaped as captured through the PTY host: one synchronized update that starts every row and fills it to the width */
+function herdrScreen(cols: number, rows: number, text: string, first = false): string {
+  let rest = "";
+  for (let row = 2; row <= rows; row++) rest += `\x1b[${row};1H${" ".repeat(cols)}`;
+  return `\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\${first ? "\x1b[2J" : ""}\x1b[1;1H\x1b[0;39;49m${text.padEnd(cols)}${rest}\x1b[0m\x1b[1;${text.length + 1}H\x1b[?25h\x1b[?2026l\x1b[1;${text.length + 1}H\x1b[?25h`;
+}
+
+// #2289: a resized attach goes out on herdr's screen at the pty's grid, not on an older one
+for (const ordering of ["a resize back to the start size", "a redraw later than the hold"] as const) {
+  it(`keeps a resized attach held until herdr draws the current grid: ${ordering}`, async () => {
+    mock.restore();
+    spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [{ pane_id: "p", terminal_id: "term_0", workspace_id: "w", tab_id: "t", cwd: "/fixture", focused: false, revision: 0, agent_status: "idle" as const }],
+      layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture",
+    } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>);
+    spyOn(Bun, "which").mockReturnValue("/fixture/herdr");
+    const attempts: pty.PtySessionOptions[] = [];
+    const RealPtySession = pty.PtySession;
+    mock.module("../pty/session.ts", () => ({
+      PtySession: class {
+        readonly exited = Promise.withResolvers<void>().promise;
+        constructor(options: pty.PtySessionOptions) { attempts.push(options); }
+        kill() {}
+        pause() {}
+        resume() {}
+        resize() {}
+        winch() {}
+        write() { return true; }
+      },
+    }));
+    const frames: ServerMessage[] = [];
+    const client = {
+      data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+      getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
+    } as unknown as Client;
+    jest.useFakeTimers();
+    const registry = createTerminalRegistry({
+      options: {}, clients: new Set([client]), stopped: () => false,
+      terminalAttach: async () => true, holdFor: terminalProcess.ATTACH_HOLD_MS, heldRetry: 60_000, retryFor: 0, relookupFor: 5_000,
+      holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+    });
+    const ready = (): boolean => frames.some((frame) => frame.type === "input-ready" && frame.ready !== false);
+    const painted = (): string => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []).join("");
+    const resize = (cols: number, rows: number) => registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols, rows });
+    try {
+      await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24 });
+      const attach = attempts[0];
+      if (!attach) throw new Error("no attach was started");
+      await resize(91, 27);
+      // herdr's first screen is still the grid the attach started at
+      attach.onData(herdrScreen(80, 24, "old", true));
+      expect(ready()).toBe(false);
+      const current = ordering === "a resize back to the start size" ? herdrScreen(80, 24, "current") : herdrScreen(91, 27, "current");
+      if (ordering === "a resize back to the start size") {
+        await resize(80, 24);
+        // the redraw for the 91x27 grid comes before the one for 80x24
+        attach.onData(herdrScreen(91, 27, "between"));
+        expect(ready()).toBe(false);
+      } else {
+        // the hold's own time runs out before the redraw
+        jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+        expect(ready()).toBe(false);
+        expect(painted()).toBe("");
+      }
+      // in reads cut anywhere, its sequences too: only the update's end makes it a whole screen
+      const end = current.indexOf("\x1b[?2026l") + "\x1b[?2026l".length;
+      for (let at = 0; at < current.length; at += 5) {
+        expect([at, ready()]).toEqual([at, false]);
+        attach.onData(current.slice(at, at + 5));
+        if (at + 5 >= end) break;
+      }
+      expect(ready()).toBe(true);
+      attach.onData(current.slice(Math.ceil(end / 5) * 5));
+      // past the window where a line that may be herdr's refusal waits (here the final "h" of ESC [?25h)
+      jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+      expect(painted().endsWith(current)).toBe(true);
+    } finally {
+      jest.useRealTimers();
+      registry.closeAttachment("p");
+      registry.conversations.stop();
+      mock.module("../pty/session.ts", () => ({ PtySession: RealPtySession }));
+    }
+  });
+}
+
+it("lets a resized attach go when herdr never draws its current grid", async () => {
+  mock.restore();
+  spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+    panes: [{ pane_id: "p", terminal_id: "term_0", workspace_id: "w", tab_id: "t", cwd: "/fixture", focused: false, revision: 0, agent_status: "idle" as const }],
+    layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture",
+  } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>);
+  spyOn(Bun, "which").mockReturnValue("/fixture/herdr");
+  const attempts: pty.PtySessionOptions[] = [];
+  const RealPtySession = pty.PtySession;
+  mock.module("../pty/session.ts", () => ({
+    PtySession: class {
+      readonly exited = Promise.withResolvers<void>().promise;
+      constructor(options: pty.PtySessionOptions) { attempts.push(options); }
+      kill() {}
+      pause() {}
+      resume() {}
+      resize() {}
+      winch() {}
+      write() { return true; }
+    },
+  }));
+  const frames: ServerMessage[] = [];
+  const client = {
+    data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+    getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
+  } as unknown as Client;
+  jest.useFakeTimers();
+  const registry = createTerminalRegistry({
+    options: {}, clients: new Set([client]), stopped: () => false,
+    terminalAttach: async () => true, holdFor: terminalProcess.ATTACH_HOLD_MS, heldRetry: 60_000, retryFor: 0, relookupFor: 5_000,
+    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+  });
+  const ready = (): boolean => frames.some((frame) => frame.type === "input-ready" && frame.ready !== false);
+  try {
+    await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24 });
+    const attach = attempts[0];
+    if (!attach) throw new Error("no attach was started");
+    await registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols: 91, rows: 27 });
+    attach.onData(herdrScreen(80, 24, "old", true));
+    jest.advanceTimersByTime(terminalProcess.ATTACH_RESIZE_REDRAW_MS - 1);
+    expect(ready()).toBe(false);
+    // no attach stays held: past the wait, the screen herdr drew goes out as it did before
+    jest.advanceTimersByTime(1);
+    expect(ready()).toBe(true);
+  } finally {
+    jest.useRealTimers();
+    registry.closeAttachment("p");
+    registry.conversations.stop();
+    mock.module("../pty/session.ts", () => ({ PtySession: RealPtySession }));
+  }
+});
 
 it("marks a newcomer recovering after a ready stream ends and clears it when the next attach takes", async () => {
   // Given the real process lifecycle, with only its PTY and herdr lookup controlled.
