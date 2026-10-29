@@ -258,7 +258,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   private finish(code: number, reason: string, clean: boolean): void {
     if (this.readyState === this.CLOSED) return;
     this.readyState = this.CLOSED;
-    this.pendingBytes = 0;
+    // Discarded sends still count after close, even though their payloads are never queued.
     if (code === 1006) this.emit(new Event("error"));
     this.emit(new CloseEvent("close", { code, reason, wasClean: clean }));
   }
@@ -275,8 +275,10 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
     this.pendingBytes += size;
     this.outgoing = this.outgoing.then(async () => {
       const bytes = message instanceof Blob ? new Uint8Array(await message.arrayBuffer()) : message;
-      this.pendingBytes = Math.max(0, this.pendingBytes - size);
-      if (stream.live && this.readyState !== this.CLOSED) stream.send(bytes);
+      if (stream.live && this.readyState !== this.CLOSED) {
+        this.pendingBytes -= size;
+        stream.send(bytes);
+      }
     }).catch(() => this.finish(1006, "", false));
   }
 

@@ -193,6 +193,32 @@ it("preserves server initiated 4008 and listener removal without reopening the v
   expect(f.connections).toHaveLength(1);
 });
 
+for (const initial of ["connecting", "open"]) {
+  it(`keeps discarded send bytes through closing and closed after closing from ${initial}`, async () => {
+    // Given a socket with no application data queued.
+    const received: string[] = [];
+    const f = await fixture({ onWs: (stream) => {
+      stream.accept();
+      stream.onMessage = (data) => { received.push(String(data)); };
+    } });
+    const socket = f.transport.openSocket("/ws");
+    if (initial === "open") await opened(socket);
+    const atClose = deferred<number>();
+    socket.addEventListener("close", () => atClose.resolve(socket.bufferedAmount), { once: true });
+    // When close is followed immediately by a discarded send, as in Chromium.
+    socket.close(1000);
+    socket.send("abc");
+    expect(socket.readyState).toBe(socket.CLOSING);
+    expect(socket.bufferedAmount).toBe(3);
+    // Then the close event preserves the count, and a CLOSED-state send adds bytes only.
+    expect(await bounded(atClose.promise)).toBe(3);
+    expect(socket.readyState).toBe(socket.CLOSED);
+    socket.send(new Blob(["def"]));
+    expect(socket.bufferedAmount).toBe(6);
+    expect(received).toEqual([]);
+  });
+}
+
 it("dispatches property handlers at their native listener position and copies binary sends", async () => {
   // Given listeners registered before and after a reassigned property handler.
   const f = await fixture({ onWs: (stream) => {
@@ -250,12 +276,14 @@ it("never replays an asynchronously queued send after reconnect and ignores old 
   const oldClosed = closed(socket);
   await f.drop();
   await oldClosed;
+  expect(socket.bufferedAmount).toBe(5);
   // When a fresh carrier opens before the queued conversion finishes.
   await f.transport.connect();
   f.callbacks[0]?.(new TypeError("Late old close"));
   release.resolve(new TextEncoder().encode("stale").buffer);
   // Observe the actual queued send's completion before opening the comparison stream.
   await socket["outgoing"];
+  expect(socket.bufferedAmount).toBe(5);
   const replacement = f.transport.openSocket("/ws");
   await opened(replacement);
   const echoed = message(replacement);
