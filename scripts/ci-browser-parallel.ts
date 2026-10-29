@@ -68,7 +68,8 @@ export function selectBrowserScripts(all: string[], include?: string, exclude?: 
  */
 export function longestFirst(scripts: string[], timings: Record<string, number>): string[] {
   const known = Object.values(timings).filter((seconds) => Number.isFinite(seconds)).sort((a, b) => a - b);
-  const typical = known.length > 0 ? known[Math.floor(known.length / 2)]! : 0;
+  const middle = Math.floor(known.length / 2);
+  const typical = known.length === 0 ? 0 : known.length % 2 === 1 ? known[middle]! : (known[middle - 1]! + known[middle]!) / 2;
   const estimate = (script: string): number => Number.isFinite(timings[script]) ? timings[script]! : typical;
   return scripts.map((script, index) => ({ script, index, seconds: estimate(script) }))
     .sort((a, b) => b.seconds - a.seconds || a.index - b.index)

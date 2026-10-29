@@ -94,6 +94,8 @@ describe("parallel browser script order", () => {
     const timings = { "a.ts": 10, "b.ts": 300, "c.ts": 50, "d.ts": 50 };
     expect(longestFirst(["a.ts", "new.ts", "c.ts", "b.ts", "d.ts"], timings)).toEqual(["b.ts", "new.ts", "c.ts", "d.ts", "a.ts"]);
     expect(longestFirst(["a.ts", "b.ts"], {})).toEqual(["a.ts", "b.ts"]);
+    // an even-sized table's median is the mean of its two middle values: 155 s here, below b.ts
+    expect(longestFirst(["new.ts", "b.ts", "a.ts"], { "a.ts": 10, "b.ts": 300 })).toEqual(["b.ts", "new.ts", "a.ts"]);
   });
 
   it("times only scripts the serial lane runs", () => {
