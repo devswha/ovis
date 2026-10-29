@@ -62,9 +62,10 @@ The newest control socket wins rather than the first, because an older one may b
 the PC's network moved; the PC reconnects within its backoff either way. The rate limits are
 Cloudflare's Rate Limiting bindings (`wrangler.toml`), counted per Cloudflare location and
 approximate; the per-address limit is asked first, so one address over its limit never uses up
-the backstop every PC shares. On Cloudflare the 120 s idle check runs from a Durable Object alarm
-and reads a last-seen time that each socket saves at most every 30 s, so an idle socket closes
-between 120 and 150 s.
+the backstop every PC shares. On Cloudflare the idle check runs from a Durable Object alarm. A
+socket is never closed sooner than 120 s after its last frame or keepalive. After the Durable
+Object was evicted, the relay knows only a last-seen time each socket saves at most every 30 s,
+and counts from 30 s after it, so such a socket closes at most 150 s after its last frame.
 
 ## What it sees and keeps
 

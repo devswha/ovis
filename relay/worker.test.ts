@@ -167,6 +167,36 @@ describe("relay Durable Object", () => {
     expect(control.closedWith).toBeNull();
     expect(fake.state.alarm).toBe(start.getTime() + 2 * IDLE_MS - 1000);
   });
+
+  test("after an eviction, closes an idle pair no sooner than 120 s after its last frame and by 150 s after the saved time", async () => {
+    const at = (ms: number) => setSystemTime(new Date(ms));
+    at(1_000_000);
+    const fake = fakeState();
+    let room = new RelayRoom(fake.state);
+    await connect(room, fake, "role=server");
+    const client = await connect(room, fake, "role=client");
+    const { connection_id } = client.json(0) as { connection_id: string };
+    const data = await connect(room, fake, `role=server&connection_id=${connection_id}`);
+    // traffic both ways 29 s in: under the 30 s write interval, so the saved last-seen stays at 1000000
+    at(1_029_000);
+    room.webSocketMessage(client, new Uint8Array([1, 2, 3]).buffer);
+    room.webSocketMessage(data, new Uint8Array([4, 5, 6]).buffer);
+    expect(data.sent).toHaveLength(1);
+
+    room = new RelayRoom(fake.state);
+    at(1_120_000);
+    await room.alarm();
+    expect([client.closedWith, data.closedWith]).toEqual([null, null]);
+    expect(fake.state.alarm).toBe(1_150_000);
+    // 1 ms short of 120 s since the last frame
+    at(1_148_999);
+    await room.alarm();
+    expect([client.closedWith, data.closedWith]).toEqual([null, null]);
+    at(1_150_000);
+    await room.alarm();
+    expect(client.closedWith?.code).toBe(CLOSE.GOING_AWAY);
+    expect(data.closedWith?.code).toBe(CLOSE.GOING_AWAY);
+  });
 });
 
 describe("relay Worker", () => {

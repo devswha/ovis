@@ -293,7 +293,11 @@ export class Room<S extends object> {
     let next: number | null = null;
     for (const peer of this.peers()) {
       if (this.ended.has(peer.socket)) continue;
-      const last = Math.max(this.lastSeen.get(peer.socket) ?? 0, peer.info.seen, this.host.keepaliveAt?.(peer.socket) ?? 0);
+      // without this instance's exact time (a Durable Object evicted since), the saved one may lag
+      // the last frame by up to SEEN_WRITE_MS: count from its latest possible time, so a socket is
+      // never closed sooner than IDLE_MS after its last frame (and at most SEEN_WRITE_MS later)
+      const sent = this.lastSeen.get(peer.socket) ?? peer.info.seen + SEEN_WRITE_MS;
+      const last = Math.max(sent, this.host.keepaliveAt?.(peer.socket) ?? 0);
       if (now - last >= IDLE_MS) this.end(peer.socket, CLOSE.GOING_AWAY, "idle");
       else next = Math.min(next ?? Infinity, last + IDLE_MS);
     }
