@@ -14,7 +14,7 @@ index 819654e4537eeb7b64364249e52274b7197b9c8a..6df7cfb20f4b5f16cb770377d029ba70
  
  .xterm .xterm-viewport {
 diff --git a/src/browser/CoreBrowserTerminal.ts b/src/browser/CoreBrowserTerminal.ts
-index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93c12b35a4 100644
+index 38ad467a519939798c005e4cbf78c7660ed359a3..c44ab3049142d76363644a3dfec9661384696143 100644
 --- a/src/browser/CoreBrowserTerminal.ts
 +++ b/src/browser/CoreBrowserTerminal.ts
 @@ -111,6 +111,13 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
@@ -179,15 +179,17 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
        this.textarea!.value = '';
      }
  
-@@ -1118,6 +1182,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1117,7 +1181,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+   }
  
    protected _keyUp(ev: KeyboardEvent): void {
++    this._sendTextKey();
      this._keyDownSeen = false;
 +    this._digitAwaitsKeyPress = false;
  
      if (this._customKeyEventHandler && this._customKeyEventHandler(ev) === false) {
        return;
-@@ -1140,6 +1205,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1140,6 +1206,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
    protected _keyPress(ev: KeyboardEvent): boolean {
      let key;
  
@@ -196,7 +198,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
      this._keyPressHandled = false;
  
      if (this._keyDownHandled) {
-@@ -1168,7 +1235,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1168,7 +1236,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
        return false;
      }
  
@@ -211,7 +213,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
 +    // code point, which may lie outside the BMP (an emoji, or a CJK extension character).
 +    if (this._keyDownSeen && ev.key && ev.key.length > 1 && ev.key.codePointAt(0) === charCode && !this.optionsService.rawOptions.screenReaderMode
 +      && !this._compositionHelper?.isComposing) {
-+      this._textKey = { text: ev.key, key, event: ev };
++      this._textKey = { text: ev.key, key: String.fromCodePoint(charCode), event: ev };
 +      this._keyPressHandled = true;
 +      this._unprocessedDeadKey = false;
 +      return true;
@@ -219,7 +221,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
  
      this._onKey.fire({ key, domEvent: ev });
      this._showCursor();
-@@ -1190,10 +1271,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1190,10 +1272,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * @param ev The input event to be handled.
     */
    protected _inputEvent(ev: InputEvent): boolean {
@@ -242,7 +244,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
        if (this._keyPressHandled) {
          return false;
        }
-@@ -1212,6 +1304,16 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1212,6 +1305,16 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      return false;
    }
  
@@ -259,7 +261,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93
    /**
     * Resizes the terminal.
     *
-@@ -1266,6 +1368,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1266,6 +1369,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * using DECSTR (soft reset, CSI ! p) or RIS instead (hard reset, ESC c).
     */
    public reset(): void {
