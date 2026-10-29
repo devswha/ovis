@@ -6,7 +6,7 @@
 import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { rosterPanes } from "./dagPane.ts";
 import type { ViewedScope } from "./lastViewedPane.ts";
-import { splitPinnedGroups } from "./sidebarPins.ts";
+import { splitPinnedGroups, type WorkspaceGroup } from "./sidebarPins.ts";
 import { worktreeGroups } from "./workspaceOrder.ts";
 
 type Roster = Pick<SessionSnapshot, "workspaces" | "tabs" | "panes" | "layouts">;
@@ -44,16 +44,36 @@ export function adjacentTabPane(roster: Roster, selectedPaneId: string | null, d
 }
 
 /**
- * The sidebar's workspace rows top to bottom, from the order it draws (`ordered`, herdr's or a
- * drag's): pinned rows first in pin order, then each row with the worktrees under it. A folded
- * group's worktrees are left out, as the sidebar leaves them out, unless the selection is in one.
+ * The workspace rows of the sidebar's groups top to bottom, each row with the worktrees under it. A
+ * folded group's worktrees are left out, as the sidebar leaves them out, unless the selection is in one.
+ */
+export function workspaceRows(groups: readonly WorkspaceGroup<WorkspaceInfo>[], folded: (group: WorkspaceGroup<WorkspaceInfo>) => boolean, selectedWorkspaceId: string | null): string[] {
+  return groups.flatMap((group) => {
+    const hidden = folded(group);
+    return [group.workspace, ...group.children.filter((child) => !hidden || child.workspace_id === selectedWorkspaceId)].map((row) => row.workspace_id);
+  });
+}
+
+/**
+ * The rows a PC's sidebar would draw with no filter, from the order it draws (`ordered`, herdr's or a
+ * drag's): pinned rows first in pin order, then the rest. For a PC whose roster is not drawn (folded).
  */
 export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedIds: readonly string[], folded: (repoKey: string) => boolean, selectedWorkspaceId: string | null): string[] {
   const { pinned, rest } = splitPinnedGroups(worktreeGroups(ordered), pinnedIds, (workspace) => workspace.workspace_id);
-  return [...pinned, ...rest].flatMap(({ workspace, children }) => {
-    const hidden = folded(workspace.worktree?.repo_key ?? "");
-    return [workspace, ...children.filter((child) => !hidden || child.workspace_id === selectedWorkspaceId)].map((row) => row.workspace_id);
-  });
+  return workspaceRows([...pinned, ...rest], (group) => folded(group.workspace.worktree?.repo_key ?? ""), selectedWorkspaceId);
+}
+
+/** each drawn sidebar's rows as it last drew them, by PC: its filter and its folds as shown */
+const drawnRows = new Map<string, readonly string[]>();
+
+/** a sidebar's rows, for the workspace steps; the returned function takes them back when it goes */
+export function publishWorkspaceRows(machineId: string, rows: readonly string[]): () => void {
+  drawnRows.set(machineId, rows);
+  return () => { if (drawnRows.get(machineId) === rows) drawnRows.delete(machineId); };
+}
+
+export function drawnWorkspaceRows(machineId: string): readonly string[] | null {
+  return drawnRows.get(machineId) ?? null;
 }
 
 /**

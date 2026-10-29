@@ -40,7 +40,7 @@ import { paneStorageId } from "../shared/machines.ts";
 import { usePairedNotices } from "./lib/usePairedNotices.ts";
 import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
-import { adjacentTabPane, adjacentWorkspacePane, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
+import { adjacentTabPane, adjacentWorkspacePane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
@@ -386,12 +386,16 @@ export function App() {
       selectAdjacentWorkspace: (direction) => {
         const roster = snapshotRef.current;
         if (!roster) return;
-        // the rows the sidebar draws, in its order: a drag's until herdr has it, pins first, folds left out
-        const byId = new Map(roster.workspaces.map((workspace) => [workspace.workspace_id, workspace]));
-        const ordered = reorderCoordinator.order(selectedMachineId, roster.workspaces.map((workspace) => workspace.workspace_id)).flatMap((id) => byId.get(id) ?? []);
-        const selectedWorkspaceId = roster.panes.find((pane) => pane.pane_id === selectedPaneId)?.workspace_id ?? null;
-        const folded = (repoKey: string) => repoKey !== "" && storedWorktreeCollapsed(selectedMachineId, [repoKey]).has(repoKey);
-        const order = sidebarWorkspaceSteps(ordered, pinnedWorkspaceIds(currentSidebarPins(), selectedMachineId), folded, selectedWorkspaceId);
+        // the rows the sidebar draws, as it draws them; a PC folded in it has none drawn, so its rows are
+        // worked out as they would be: a drag's order until herdr has it, pins first, saved folds left out
+        const unfolded = (): string[] => {
+          const byId = new Map(roster.workspaces.map((workspace) => [workspace.workspace_id, workspace]));
+          const ordered = reorderCoordinator.order(selectedMachineId, roster.workspaces.map((workspace) => workspace.workspace_id)).flatMap((id) => byId.get(id) ?? []);
+          const selectedWorkspaceId = roster.panes.find((pane) => pane.pane_id === selectedPaneId)?.workspace_id ?? null;
+          const folded = (repoKey: string) => repoKey !== "" && storedWorktreeCollapsed(selectedMachineId, [repoKey]).has(repoKey);
+          return sidebarWorkspaceSteps(ordered, pinnedWorkspaceIds(currentSidebarPins(), selectedMachineId), folded, selectedWorkspaceId);
+        };
+        const order = drawnWorkspaceRows(selectedMachineId) ?? unfolded();
         const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
         const next = adjacentWorkspacePane(roster, order, selectedPaneId, direction, viewed);
         if (next) selectPane(next);
