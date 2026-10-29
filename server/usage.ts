@@ -940,6 +940,20 @@ interface Search {
 export class UsageService {
   /** A local CLI login ended: rediscover sign-ins, preserving account rate-limit backoffs. */
   invalidate(): void { this.searches.clear(); this.entries.clear(); }
+
+  /**
+   * Where an account this PC lists keeps its sign-in (a directory, `default`, `keychain`), so it can
+   * be signed in to again: found by the key the browser was shown, never by a place it names. Null
+   * for a key not listed now, a hub's account included. One account found in two places gives the
+   * place whose sign-in has a problem.
+   */
+  async signInPlace(key: string): Promise<{ provider: UsageProviderId; source: string } | null> {
+    await this.report();
+    const places = [...this.entries].filter(([, entry]) => entry.usage?.key === key);
+    const [place, entry] = places.find(([, entry]) => entry.usage?.problem !== null) ?? places[0] ?? [];
+    if (place === undefined || !entry?.usage) return null;
+    return { provider: entry.usage.id, source: place.slice(place.indexOf("|") + 1) };
+  }
   private readonly searches = new Map<UsageProviderId, Search>();
   /** by provider and source */
   private readonly entries = new Map<string, Entry>();

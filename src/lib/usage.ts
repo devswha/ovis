@@ -69,6 +69,19 @@ export function usageName(usage: ProviderUsage): string {
   return usage.account ? `${PROVIDER_NAME[usage.id]} · ${usage.account}` : PROVIDER_NAME[usage.id];
 }
 
+/** An account read through the hub: its sign-in lives in the hub, not on this PC. */
+export function isHubAccount(usage: ProviderUsage): boolean {
+  return usage.key.startsWith(`${usage.id}:cliproxy:`);
+}
+
+/**
+ * An expired sign-in this PC's own CLI can renew in a terminal tab, in the account's own home.
+ * Antigravity signs in only in its app, and a hub's account in the hub.
+ */
+export function canSignInAgain(usage: ProviderUsage): boolean {
+  return usage.problem === "expired" && usage.id !== "antigravity" && !isHubAccount(usage);
+}
+
 /** What a meter shows of a limit: the share used, or what is left. */
 export function meterPercent(window: UsageWindow, count: UsageCount): number {
   return count === "left" ? Math.round((100 - window.used_percent) * 10) / 10 : window.used_percent;

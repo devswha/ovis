@@ -18,6 +18,9 @@ const LOGIN = {
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
 } as const;
 
+/** Where a listed account keeps its sign-in (UsageService.signInPlace); null for a key not listed. */
+export type SignInPlace = (key: string) => Promise<{ readonly provider: UsageProviderId; readonly source: string } | null>;
+
 /** Only panes this service launched invalidate usage when their login process exits. */
 export class UsageLoginService {
   private readonly panes = new Set<string>();
@@ -27,7 +30,7 @@ export class UsageLoginService {
 
   ended(paneId: string): boolean { return this.panes.delete(paneId); }
 
-  async handle(request: Request, trackPane?: (paneId: string) => void): Promise<Response> {
+  async handle(request: Request, trackPane?: (paneId: string) => void, signInPlace?: SignInPlace): Promise<Response> {
     const executableFor = (id: UsageProviderId) => LOGIN[id].binaries.map((cli) => Bun.which(cli, { PATH: this.env["PATH"] ?? "" })).find(Boolean);
     if (request.method === "GET") {
       const id = new URL(request.url).searchParams.get("provider");
@@ -51,7 +54,13 @@ export class UsageLoginService {
     if (!provider || !isJsonObject(body)) return badRequest("invalid_provider", "Unknown usage provider");
     const id = provider.id;
     const separate = id === "claude" || id === "codex";
-    if (separate ? typeof body["name"] !== "string" || !/^[a-z0-9-]{1,32}$/.test(body["name"])
+    // Signing in again names a listed account by its key; its credential home is the server's to find.
+    const again = body["account"] !== undefined;
+    if (again) {
+      if (typeof body["account"] !== "string" || body["account"].length > 256 || body["name"] !== undefined || body["replace"] !== undefined) {
+        return badRequest("invalid_account", "Name one account this PC lists to sign in to it again");
+      }
+    } else if (separate ? typeof body["name"] !== "string" || !/^[a-z0-9-]{1,32}$/.test(body["name"])
       : body["name"] !== undefined || (body["replace"] !== undefined && body["replace"] !== true)) {
       return badRequest("invalid_account_name", "Use 1–32 lowercase letters, numbers or hyphens for the account name");
     }
@@ -62,7 +71,11 @@ export class UsageLoginService {
     if (!executable) return conflictResponse("cli_unavailable", "Install the official CLI on this PC before signing in");
     let unusedCredentialHome: string | null = null;
     try {
-      if (!separate && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
+      const place = again && typeof body["account"] === "string" ? await signInPlace?.(body["account"]) ?? null : null;
+      if (again && place?.provider !== id) {
+        return jsonResponse({ error: { code: "account_not_found", message: "This PC no longer lists that account. Refresh and try again." } }, 404);
+      }
+      if (!separate && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
       const help = Bun.spawn([executable, ...(id === "claude" ? ["auth"] : login.args), "--help"], {
@@ -75,7 +88,12 @@ export class UsageLoginService {
       const args = manual ? [] : [...login.args, ...(device ? ["--device-auth"] : [])];
       const env: Record<string, string> = { HOME: this.home };
       if (process.platform === "win32") env["USERPROFILE"] = this.home;
-      if (separate) {
+      if (place) {
+        // the account's own home, where its expired sign-in is replaced; the default home is left unset
+        const home = id === "claude" ? place.source === "default" ? null : place.source
+          : id === "codex" ? place.source === "keychain" ? null : place.source : null;
+        if (home !== null) env[id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = home;
+      } else if (separate) {
         const credentialHome = join(this.home, `.${id}-${body["name"]}`);
         try { mkdirSync(credentialHome, { mode: 0o700 }); }
         catch (error) {
@@ -92,7 +110,7 @@ export class UsageLoginService {
       const snapshot = await sessionSnapshot();
       const workspace = snapshot.workspaces[0];
       const options = {
-        cwd: this.home, label: `${id} sign-in${separate ? ` · ${body["name"]}` : ""}`, env,
+        cwd: this.home, label: again ? `${id} sign-in again` : `${id} sign-in${separate ? ` · ${body["name"]}` : ""}`, env,
       };
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;

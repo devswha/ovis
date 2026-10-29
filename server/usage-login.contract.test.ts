@@ -15,6 +15,7 @@ const root = mkdtempSync(join(tmpdir(), "usage-login-'quoted-"));
 const bin = join(root, "bin");
 let workspaceId: string;
 let server: ReturnType<typeof createServer>;
+let usage: UsageService;
 const openedPanes: string[] = [];
 const missedExit = Promise.withResolvers<string>();
 const ctx: UsageContext = {
@@ -30,10 +31,12 @@ import { renameSync } from "node:fs";
 import { join } from "node:path";
 const provider = ${JSON.stringify(provider)};
 if (process.argv.includes("--help")) { console.log(provider === "claude" || process.env.TEST_LOGIN_NO_DEVICE ? "login" : "--device-auth"); process.exit(0); }
-const home = process.env[provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"];
+// Claude Code's default home is ~/.claude when no CLAUDE_CONFIG_DIR names another
+const home = process.env[provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"] ?? join(process.env.HOME, ".claude");
 if (provider === "claude") {
-  await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token" } }));
-  await Bun.write(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "local-work", emailAddress: "work@example.test" } }));
+  await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token:" + home } }));
+  // signing in again keeps the account the home already names
+  if (!await Bun.file(join(home, ".claude.json")).exists()) await Bun.write(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "local-work", emailAddress: "work@example.test" } }));
 } else if (provider === "codex") {
   const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "codex@example.test" } })).toString("base64url");
   await Bun.write(join(home, "auth.json"), JSON.stringify({ tokens: { access_token: "header." + claims + ".signature" } }));
@@ -80,7 +83,7 @@ console.log("Signed in to the isolated fixture.");
       sidecar: false, terminalAttach: false, usageLogin: new UsageLoginService(root, {
         ...process.env, PATH: bin, XDG_CONFIG_HOME: join(root, "xdg-config"), XDG_DATA_HOME: join(root, "xdg-data"),
       }, ctx),
-      usage: new UsageService(ctx, USAGE_PROVIDERS.filter((provider) => provider.id === "claude" || provider.id === "codex")),
+      usage: usage = new UsageService(ctx, USAGE_PROVIDERS.filter((provider) => provider.id === "claude" || provider.id === "codex")),
     });
   } finally { delayed.mockRestore(); }
   await probeReady.promise;
@@ -158,6 +161,114 @@ it("rejects shell syntax and traversal when an account name is not a short slug"
   // Then
   expect(responses.map((response) => response.status)).toEqual(Array(7).fill(400));
   expect(readdirSync(root)).toEqual(before);
+});
+
+/** An account Claude or Codex signed in to whose sign-in has expired, in `dir` (relative to the fixture home). */
+function expiredHome(provider: "claude" | "codex", dir: string, email: string): void {
+  const past = Math.floor(Date.now() / 1000) - 3600;
+  mkdirSync(join(root, dir), { recursive: true });
+  if (provider === "claude") {
+    writeFileSync(join(root, dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: `fixture-expired:${dir}`, expiresAt: past * 1000 } }));
+    writeFileSync(join(root, dir === ".claude" ? ".claude.json" : join(dir, ".claude.json")), JSON.stringify({ oauthAccount: { accountUuid: `uuid-${email}`, emailAddress: email } }));
+  } else {
+    const claims = Buffer.from(JSON.stringify({ exp: past, "https://api.openai.com/profile": { email } })).toString("base64url");
+    writeFileSync(join(root, dir, "auth.json"), JSON.stringify({ tokens: { access_token: `header.${claims}.signature` } }));
+  }
+}
+
+/** `fixture`: a home was just written here, which a refresh within a minute would not look for */
+const listed = async (fixture = false): Promise<{ key: string; account: string | null; problem: string | null }[]> => {
+  if (fixture) usage.invalidate();
+  return (await (await fetch(`http://127.0.0.1:${server.port}/api/usage`)).json()).providers;
+};
+
+for (const [provider, dir] of [["claude", ".claude-team"], ["claude", ".claude"], ["codex", ".codex-team"]] as const) {
+  it(`signs in to an expired ${provider} account again in its own credential home ${dir}`, async () => {
+    // Given: an expired sign-in this PC lists, found by the key the browser was shown
+    const email = `again${dir}@example.test`;
+    expiredHome(provider, dir, email);
+    const expired = (await listed(true)).find((usage) => usage.account === email);
+    expect(expired?.problem).toBe("expired");
+    const before = readdirSync(root).filter((name) => name.startsWith(`.${provider}`)).sort();
+    const receipt = `${provider}-receipt.json`;
+    const written = Promise.withResolvers<void>();
+    const connected = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    let opened: UsageLoginStarted | null = null;
+    const exits = new Set<string>();
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    socket.onopen = () => connected.resolve();
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      const frame: unknown = JSON.parse(event.data);
+      if (isJsonObject(frame) && frame["type"] === "pane-exited" && typeof frame["pane_id"] === "string") {
+        exits.add(frame["pane_id"]);
+        if (frame["pane_id"] === opened?.pane_id) ended.resolve();
+      }
+    };
+    const watcher = watch(root, (_event, filename) => { if (filename === receipt) written.resolve(); });
+    const timer = setTimeout(() => {
+      const error = new Error(`sign-in again did not finish: receipt ${existsSync(join(root, receipt)) ? "written" : "missing"}`);
+      written.reject(error); ended.reject(error); connected.reject(error);
+    }, 10_000);
+    try {
+      await connected.promise;
+      // When
+      const response = await start({ provider, account: expired!.key });
+      expect(response.status).toBe(200);
+      opened = await response.json();
+      if (!opened) throw new Error("login response missing");
+      openedPanes.push(opened.pane_id);
+      await written.promise;
+      if (!exits.has(opened.pane_id)) await ended.promise;
+      // Then: the official login ran against that account's home, and no new home was made
+      expect(JSON.parse(readFileSync(join(root, receipt), "utf8"))).toEqual({
+        argv: provider === "claude" ? ["auth", "login"] : ["login", "--device-auth"], home: join(root, dir),
+      });
+      expect(readdirSync(root).filter((name) => name.startsWith(`.${provider}`)).sort()).toEqual(before);
+      const after = await listed();
+      if (provider === "claude") expect(after.find((usage) => usage.key === expired!.key)?.problem).toBeNull();
+      else expect(after.some((usage) => usage.problem === "expired")).toBe(false);
+    } finally { clearTimeout(timer); watcher.close(); socket.close(); }
+  });
+}
+
+it("refuses to sign in again to an account this PC does not list, without opening a tab", async () => {
+  // Given: one listed expired account, and keys that are not one of this PC's accounts
+  expiredHome("claude", ".claude-refuse", "refuse@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "refuse@example.test")!.key;
+  const before = readdirSync(root).sort();
+  const create = spyOn(herdr, "tabCreate");
+  const workspace = spyOn(herdr, "workspaceCreate");
+  try {
+    // When
+    const unknown = await Promise.all([
+      { provider: "claude", account: "claude:nobody" },
+      { provider: "codex", account: "codex:cliproxy:hub-account" },
+      { provider: "claude", account: ".claude-refuse" },
+      { provider: "claude", account: join(root, ".claude-refuse") },
+      { provider: "claude", account: "../../etc" },
+      { provider: "claude", account: "claude@../../etc" },
+      { provider: "codex", account: key },
+      { provider: "opencode", account: key },
+    ].map(start));
+    const malformed = await Promise.all([
+      { provider: "claude", account: 5 },
+      { provider: "claude", account: null },
+      { provider: "claude", account: "x".repeat(257) },
+      { provider: "claude", account: key, name: "refuse" },
+      { provider: "opencode", account: key, replace: true },
+    ].map(start));
+    const antigravity = await start({ provider: "antigravity", account: "antigravity@keychain" });
+    // Then
+    expect(unknown.map((response) => response.status)).toEqual(unknown.map(() => 404));
+    expect(await Promise.all(unknown.map(async (response) => (await response.json()).error.code))).toEqual(unknown.map(() => "account_not_found"));
+    expect(malformed.map((response) => response.status)).toEqual(malformed.map(() => 400));
+    expect(antigravity.status).toBe(409);
+    expect(create).not.toHaveBeenCalled();
+    expect(workspace).not.toHaveBeenCalled();
+    expect(readdirSync(root).sort()).toEqual(before);
+  } finally { create.mockRestore(); workspace.mockRestore(); }
 });
 
 it("rejects an existing credential home when its name is reused", async () => {

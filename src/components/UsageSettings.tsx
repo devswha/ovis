@@ -3,15 +3,16 @@ import { ChevronDown, ChevronUp, Eye, EyeOff, Network, Plus } from "lucide-react
 import type { CLIProxyStatus, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
-import { moveInOrder, orderProviders, PROVIDER_MARK, PROVIDER_NAME, usageName, useUsage } from "../lib/usage.ts";
+import { canSignInAgain, isHubAccount, moveInOrder, orderProviders, PROVIDER_MARK, PROVIDER_NAME, usageName, useUsage } from "../lib/usage.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { cliProxyRequest } from "../lib/api.ts";
 import { UsageAccountDialog } from "./UsageAccountDialog.tsx";
+import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { Segmented, SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 import "./UsageSettings.css";
 
-function ProviderAccounts({ id, providers }: { readonly id: UsageProviderId; readonly providers: readonly ProviderUsage[] }) {
+function ProviderAccounts({ id, providers, onLocalLogin }: { readonly id: UsageProviderId; readonly providers: readonly ProviderUsage[]; readonly onLocalLogin: (paneId: string) => void }) {
   const { settings, update } = useSettings();
   const t = useT();
   const all = orderProviders(providers, settings.usageOrder);
@@ -33,9 +34,10 @@ function ProviderAccounts({ id, providers }: { readonly id: UsageProviderId; rea
         <div className="usage-account-identity">
           <span className="usage-accounts-account" title={usage.account ?? undefined}>{usage.account ?? PROVIDER_NAME[id]}</span>
           <span className="usage-account-meta">
-            <span>{usage.key.startsWith(`${id}:cliproxy:`) ? t("Hub") : t("This PC")}{usage.plan ? ` · ${usage.plan}` : ""}</span>
+            <span>{isHubAccount(usage) ? t("Hub") : t("This PC")}{usage.plan ? ` · ${usage.plan}` : ""}</span>
             <span className={`usage-account-status${usage.problem ? " has-problem" : ""}`}>{status}</span>
           </span>
+          {canSignInAgain(usage) && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} />}
         </div>
         <span className="usage-accounts-actions">
           <button type="button" className="icon-button" aria-label={t("Move {name} up", { name })} disabled={index === 0} onClick={() => move(usage.key, -1)}><ChevronUp aria-hidden="true" /></button>
@@ -96,7 +98,7 @@ export function UsageSettings({ onLocalLogin }: { readonly onLocalLogin: (paneId
         <AgentMark agent={PROVIDER_MARK[id]} size={20} /><span>{PROVIDER_NAME[id]}</span>
         <span className="usage-account-count">{providers.filter((usage) => usage.id === id).length}</span>
       </div>
-      <ProviderAccounts id={id} providers={providers} />
+      <ProviderAccounts id={id} providers={providers} onLocalLogin={onLocalLogin} />
     </SettingsGroup>)}
     {settings.showUsage && providers.length === 0 && <p className="settings-note settings-hint">{usage.loading ? t("Loading…") : t("No accounts yet.")}</p>}
     {hubError && <p className="settings-hint account-error" role="alert">{hubError}</p>}
