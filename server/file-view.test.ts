@@ -1534,7 +1534,7 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     await bodiesCollected();
   });
 
-  it("keeps a large file's exact length while as many sent bodies as it holds wait to be collected (#2286)", async () => {
+  it("keeps a large file's exact length while as many answers let go of as it holds wait to be collected (#2286)", async () => {
     // only Linux names an open file by its descriptor (`/proc/self/fd`); elsewhere it is streamed without one
     if (process.platform !== "linux") return;
     const size = STREAM_CHUNK_BYTES + 4096;

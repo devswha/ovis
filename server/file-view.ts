@@ -936,15 +936,16 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
  */
 let bodiesHeld = 0;
 export const BODY_DESCRIPTORS = 256;
-/** Bodies held since the last forced collection: a full one is first forced. */
+/** Bodies held, or streamed at the cap, since the last forced collection: a full one is first forced. */
 let heldSinceCollection = BODY_DESCRIPTORS;
 let collecting: Promise<void> | null = null;
 /**
  * At the cap, most held bodies were sent long ago and only wait for a collection (many parallel
  * downloads reach it within a second): one forced collection lets their descriptors go by the next
  * turn of the event loop, where the registry's callbacks run. Answers reaching the cap meanwhile
- * share it, and it runs again only after a quarter of the cap of new bodies, so a player that
- * really holds them all does not pay for one on every answer.
+ * share it, and it runs again only after a quarter of the cap of new answers (held, or streamed at
+ * the cap), so a player that really holds them all does not pay for one on every answer, and one
+ * that lets them go is not left streaming until a collection happens to run.
  */
 const collectBodies = (): Promise<void> => {
   if (collecting !== null) return collecting;
@@ -1016,6 +1017,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) await collectBodies();
     if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) {
       // too many such bodies wait to be collected: this one is streamed from its descriptor, without a length
+      heldSinceCollection += 1;
       headers.set("content-length", String(length));
       return new Response(descriptorBody(opened.fd, start, length, null), { status, headers });
     }
