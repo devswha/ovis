@@ -6,9 +6,11 @@
  *   conversation the pane left.
  * - Letta's own record of the conversation it opened, which every letta process writes into its
  *   project's `.letta/settings.local.json` (`sessionsByServer`) on start and on every switch, and
- *   reads back to resume. The record is shared by every letta in that folder, so it speaks for the
- *   pane's process only while nothing has written it since that process started up: a file
- *   changed later than START_WINDOW_MS after the start was written by a switch or by another letta.
+ *   reads back to resume. It is shared by every letta in that folder, and nothing in it says which
+ *   process wrote it, so it speaks for the pane's process only when it is older than that process:
+ *   a letta that opens the conversation the record names writes nothing (`setLocalLastSession`
+ *   skips an equal session), and any later write (a `/new` or `/resume`, its own start on another
+ *   conversation, or another letta, even one gone since) leaves Chat on Terminal until letta starts again.
  * - The pane's one letta process: its folder, and its own environment for where Letta keeps its
  *   files (`LETTA_CONFIG_DIR`, `LETTA_TRANSCRIPT_ROOT`, `HOME`), read from the process on Linux and
  *   macOS. Windows has no such read, and uses Terminal.
@@ -19,18 +21,12 @@ import { basename, isAbsolute, join, normalize } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
-import { processStartUpperBoundAsync } from "./process-start.ts";
+import { processStartLowerBound } from "./process-start.ts";
 
 /** Letta's ids: `conv-<uuid>`, `local-conv-<n>`, `agent-<uuid>`, `agent-local-<uuid>`, and `default`. */
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
 const SETTINGS_BYTES = 256 * 1024;
 const ENVIRON_BYTES = 1024 * 1024;
-/**
- * How long after its start a letta process may still write the record of the conversation it
- * opened: it writes it once its agent is loaded, 3 s after the start on a local run. A write later
- * than this is a switch or another letta, and binds nothing.
- */
-export const START_WINDOW_MS = 15_000;
 
 export interface LettaSession {
   reported: string;
@@ -148,6 +144,7 @@ export function isLettaProcess(argv: readonly string[]): boolean {
   return ["node", "bun"].includes(name(argv[0])) && ["letta", "letta.js"].includes(name(argv[1]));
 }
 
+/** `startedAt`: no later than the process started (processStartLowerBound) */
 export interface LettaProcess { pid: number; cwd: string; startedAt: number; env: Env }
 
 /** The pane's one letta process, or null for none, several, or one whose start or environment cannot be read. */
@@ -158,7 +155,7 @@ export async function paneLettaProcess(paneId: string, known?: ProcessInfo | nul
   if (found.length !== 1) return null;
   const { pid, cwd } = found[0]!;
   if (typeof cwd !== "string" || !isAbsolute(cwd)) return null;
-  const startedAt = await processStartUpperBoundAsync(pid);
+  const startedAt = processStartLowerBound(pid);
   const env = processEnvironment(pid);
   return startedAt === null || env === null ? null : { pid, cwd, startedAt, env };
 }
@@ -180,7 +177,7 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
     if (!stat.isFile()) return null;
     written = stat.mtimeMs;
   } catch { return null; }
-  if (written > owner.startedAt + START_WINDOW_MS) return null;
+  if (written >= owner.startedAt) return null;
   const text = readBounded(record, SETTINGS_BYTES);
   const opened = text === null ? null : lettaOpenedSessions(text);
   const bound = opened === null ? null : lettaBinding(session, opened);

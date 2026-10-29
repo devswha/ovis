@@ -6,7 +6,7 @@ import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOu
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -150,20 +150,31 @@ describe("Letta conversation binding", () => {
     expect(lettaSessionOf(pane("w1:p1", null, root))).toBeNull();
   });
 
-  test("Letta's record speaks for the pane's process only while nothing wrote it after that process started up", () => {
+  test("Letta's record speaks for the pane's process only when it is older than that process", () => {
     const reported = (cwd: string) => pane("w1:p1", "local-conv-1", cwd);
     const path = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1");
-    // the record the process resumed from, written before it started, or by it as it started
+    // the process resumed the conversation the record names, so it wrote nothing
     let owner = setup(settingsAfterNew, now - 60_000, now);
     expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1" });
-    owner = setup(settingsAfterNew, now + 2_000, now);
-    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)?.path).toBe(path);
-    // pane A shows another conversation now; a later write (A's own /new, or another letta in the folder) names local-conv-1
-    owner = setup(settingsAfterNew, now + START_WINDOW_MS + 1_000, now);
-    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
-    // another agent's letta in the folder ran /new later: its local-conv-1 is not this pane's
-    owner = setup(JSON.stringify({ sessionsByServer: { local: { agentId: "agent-local-b", conversationId: "local-conv-1" } } }), now + 120_000, now);
-    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
+    // any write since: its own start on another conversation, its /new, or another letta
+    for (const at of [now, now + 1, now + 2_000, now + 600_000]) {
+      owner = setup(settingsAfterNew, at, now);
+      expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
+    }
+  });
+
+  test("a closed peer of the same agent that reopened the pane's old conversation binds nothing", () => {
+    // A started on local-conv-1 (herdr keeps that report), switched to local-conv-2; B opened local-conv-1 and closed.
+    // Every write was A's own or B's after A started, and the record names local-conv-1 again.
+    const owner = setup(JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-1" } } }), now + 4_000, now);
+    const store = join(root, ".letta", "lc-local-backend");
+    const folder = join(store, "conversations", Buffer.from("conversation:local-conv-1").toString("base64url"));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "conversation.json"), localConversation);
+    expect(lettaLocalOwner(store, AGENT, "local-conv-1")).toBe(true);
+    const a = pane("w1:p1", "local-conv-1", owner.cwd);
+    expect(lettaRecordOwned(a, [a], owner)).toBe(true);
+    expect(lettaTranscriptFor(a, [a], owner)).toBeNull();
   });
 
   test("a missing, malformed or partly unreadable project record binds nothing, whatever the global settings say", () => {
@@ -244,6 +255,8 @@ describe("Letta conversation binding", () => {
     const project = join(root, "proj");
     mkdirSync(join(project, ".letta"), { recursive: true });
     writeFileSync(join(project, ".letta", "settings.local.json"), settingsAfterNew);
+    // written before the pane's letta started, as Letta leaves it when it resumes that conversation
+    utimesSync(join(project, ".letta", "settings.local.json"), (Date.now() - 60_000) / 1000, (Date.now() - 60_000) / 1000);
     const config = join(root, "config");
     // a real process whose own environment names the store, as the pane's letta would
     const child = Bun.spawn(["sleep", "300"], { env: { HOME: root, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
