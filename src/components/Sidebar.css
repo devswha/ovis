@@ -773,13 +773,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .sidebar-footer-settings svg { margin-inline: auto; }
 
-.sidebar-install-help {
-  margin: 0;
-  padding: 0 var(--space-2) var(--space-1) var(--side-box);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-}
-
 @media (pointer: coarse) {
   .sidebar-shell {
     --side-row: var(--touch-target);
