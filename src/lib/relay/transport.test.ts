@@ -1,0 +1,534 @@
+import { afterEach, expect, it } from "bun:test";
+import { createElement, StrictMode } from "react";
+import { act, create } from "react-test-renderer";
+import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "../../../server/relay/test-helpers.ts";
+import type { RelaySessionOptions } from "../../../server/relay/session.ts";
+import type { WsStream } from "../../../shared/relay-mux-engine.ts";
+import { nativeTransport, setTransport } from "../transport.ts";
+import type { WebSocketLike } from "../transport.ts";
+import { useResourceUrlState } from "../useResourceUrl.ts";
+import type { ResourceUrlState } from "../useResourceUrl.ts";
+import type { RelayChannelOptions } from "./channel.ts";
+import { openRelayTransport, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const close of cleanups.splice(0).reverse()) close();
+  setTransport(nativeTransport);
+});
+
+async function fixture(options: Partial<RelaySessionOptions> = {}) {
+  const app = relayFixture();
+  cleanups.push(() => app.close());
+  const device = await relayDevice(app);
+  const clock = new TestClock();
+  const connections: Awaited<ReturnType<typeof relayConnection>>[] = [];
+  const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
+  const attempts = { count: 0, failures: 0 };
+  const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
+    server_public_key: "", relay: "wss://relay.example" };
+  const transport = await openRelayTransport(offer, {
+    clock,
+    openChannel: async (_offer, config = {}) => {
+      attempts.count++;
+      if (attempts.failures > 0) { attempts.failures--; throw new TypeError("Network offline"); }
+      const connection = await relayConnection(app, options);
+      connections.push(connection);
+      await connection.auth(device);
+      const notify = config.onClose ?? (() => {});
+      callbacks.push(notify);
+      void connection.closed.then(() => notify(new TypeError("Carrier dropped")));
+      return {
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16),
+        device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
+          public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
+        close: () => connection.stop(),
+      };
+    },
+  });
+  cleanups.push(() => transport.close());
+  return {
+    transport, app, clock, connections, callbacks, attempts,
+    async drop() {
+      const current = connections.at(-1);
+      if (!current) throw new Error("No connection");
+      current.stop();
+      await bounded(current.closed);
+    },
+  };
+}
+
+function event<T extends Event>(source: EventTarget, type: string, select: (event: Event) => T): Promise<T> {
+  return bounded(new Promise<T>((resolve) => source.addEventListener(type, (value) => resolve(select(value)), { once: true })));
+}
+function opened(source: EventTarget): Promise<Event> { return event(source, "open", (value) => value); }
+function closed(source: EventTarget): Promise<CloseEvent> {
+  return event(source, "close", (value) => { if (!(value instanceof CloseEvent)) throw new Error("Expected close"); return value; });
+}
+function message(source: EventTarget): Promise<MessageEvent> {
+  return event(source, "message", (value) => { if (!(value instanceof MessageEvent)) throw new Error("Expected message"); return value; });
+}
+
+it("fetches JSON and preserves Range, ETag and conditional responses through real Noise and RelaySession", async () => {
+  // Given an admitted encrypted carrier and a real dispatcher.
+  const f = await fixture({ dispatch: async (request) => {
+    if (request.headers.get("if-none-match") === '"v1"') return new Response(null, { status: 304, headers: { etag: '"v1"' } });
+    if (request.headers.get("range") === "bytes=2-4") return new Response("234", {
+      status: 206, headers: { "content-range": "bytes 2-4/10", etag: '"v1"' },
+    });
+    return Response.json({ ok: true });
+  } });
+  // When requests cross the transport seam, with browser-only policies ignored.
+  const json = await f.transport.fetch("/api/json", { credentials: "include", mode: "no-cors" });
+  const range = await f.transport.fetch("/api/file", { headers: { range: "bytes=2-4" } });
+  const unchanged = await f.transport.fetch("/api/file", { headers: { "if-none-match": '"v1"' } });
+  // Then callers receive real Response objects with the original metadata and body.
+  expect(json).toBeInstanceOf(Response);
+  expect(await json.json()).toEqual({ ok: true });
+  expect(range.status).toBe(206);
+  expect(range.headers.get("content-range")).toBe("bytes 2-4/10");
+  expect(range.headers.get("etag")).toBe('"v1"');
+  expect(await range.text()).toBe("234");
+  expect(unchanged.status).toBe(304);
+  expect(unchanged.body).toBeNull();
+});
+
+it("resets the server request when an AbortSignal interrupts a streaming response", async () => {
+  // Given a response that remains open until its request is aborted.
+  const aborted = deferred<void>();
+  const f = await fixture({ dispatch: async (request) => {
+    request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("first")); } }));
+  } });
+  const abort = new AbortController();
+  const response = await f.transport.fetch("/api/stream", { signal: abort.signal });
+  const reader = response.body?.getReader();
+  expect(new TextDecoder().decode((await reader?.read())?.value)).toBe("first");
+  // When the caller aborts after the first body chunk.
+  abort.abort();
+  // Then RESET aborts the handler and the remaining body fails rather than hanging.
+  await bounded(aborted.promise);
+  await expect(reader?.read()).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it("rejects an upload on carrier loss with TypeError and aborts the server handler", async () => {
+  // Given an upload whose handler has read a chunk but has not returned headers.
+  const reading = deferred<void>();
+  const aborted = deferred<void>();
+  const f = await fixture({ dispatch: async (request) => {
+    request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    const reader = request.body?.getReader();
+    await reader?.read();
+    reading.resolve();
+    await aborted.promise;
+    return new Response(null);
+  } });
+  const request = f.transport.fetch("/api/upload", { method: "POST", body: new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
+  }) });
+  const rejection = request.then(() => null, (error: unknown) => error);
+  await bounded(reading.promise);
+  // When the carrier disappears during upload.
+  await f.drop();
+  // Then neither a success response nor an upload retry can mask the aborted handler.
+  expect(await rejection).toBeInstanceOf(TypeError);
+  await bounded(aborted.promise);
+  console.log("DROP: upload fetch rejected TypeError; server handler signal aborted; no retry");
+});
+
+async function trace(socket: WebSocketLike, code: number, drop: () => void): Promise<string[]> {
+  const events: string[] = [];
+  const done = deferred<string[]>();
+  socket.addEventListener("open", () => { events.push(`open:${socket.readyState}`); socket.send("hello"); });
+  socket.addEventListener("message", (event) => {
+    events.push(`message:${event.data}`);
+    if (code === 1006) drop();
+    else socket.close(code, "done");
+  });
+  socket.addEventListener("error", () => events.push("error"));
+  socket.addEventListener("close", (event) => { events.push(`close:${event.code}:${socket.readyState}`); done.resolve(events); });
+  return bounded(done.promise);
+}
+
+for (const code of [1000, 4008, 1006]) {
+  it(`matches native WebSocket open/message/error/close ordering for ${code}`, async () => {
+    // Given a native server and an encrypted stream with the same echo behavior.
+    let nativeDrop = () => {};
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request, server) { return server.upgrade(request) ? undefined : new Response(null, { status: 400 }); },
+      websocket: {
+        open(socket) { nativeDrop = () => socket.terminate(); },
+        message(socket, data) { socket.send(data); },
+      },
+    });
+    cleanups.push(() => server.stop(true));
+    const f = await fixture({ onWs: (stream) => { stream.accept(); stream.onMessage = (data) => { stream.send(data); }; } });
+    // When both sockets echo then close normally, with 4008, or lose their carriers.
+    const native = await trace(new WebSocket(`ws://127.0.0.1:${server.port}`), code, () => nativeDrop());
+    const relay = await trace(f.transport.openSocket("/ws"), code, () => f.connections.at(-1)?.stop());
+    // Then browser state transitions and event ordering agree.
+    // Bun's native TCP termination has no error event; browsers report one for abnormal loss.
+    expect(relay.filter((entry) => entry !== "error")).toEqual(native.filter((entry) => entry !== "error"));
+    if (code === 1006) expect(relay.slice(-2)).toEqual(["error", "close:1006:3"]);
+    console.log(`WS ${code}: native=${native.join(",")} relay=${relay.join(",")}`);
+  });
+}
+
+it("preserves server initiated 4008 and listener removal without reopening the virtual socket", async () => {
+  // Given an accepted server stream.
+  const server = deferred<WsStream>();
+  const f = await fixture({ onWs: (stream) => { stream.accept(); server.resolve(stream); } });
+  const socket = f.transport.openSocket("/ws");
+  const removed = () => { throw new Error("Removed listener ran"); };
+  socket.addEventListener("open", removed);
+  socket.removeEventListener("open", removed);
+  await opened(socket);
+  const close = closed(socket);
+  // When the server reports output stalled.
+  (await bounded(server.promise)).close(4008, "output stalled", true);
+  // Then its reason and code survive, with no replacement socket hidden underneath.
+  expect(await close).toMatchObject({ code: 4008, reason: "output stalled", wasClean: false });
+  expect(socket.readyState).toBe(socket.CLOSED);
+  expect(f.connections).toHaveLength(1);
+});
+
+it("dispatches property handlers at their native listener position and copies binary sends", async () => {
+  // Given listeners registered before and after a reassigned property handler.
+  const f = await fixture({ onWs: (stream) => {
+    stream.accept();
+    stream.onMessage = (data) => { stream.send(data); };
+  } });
+  const socket = f.transport.openSocket("/ws");
+  const order: string[] = [];
+  socket.addEventListener("open", () => order.push("before"));
+  socket.onopen = () => order.push("old");
+  socket.addEventListener("open", () => order.push("after"));
+  socket.onopen = () => order.push("property");
+  await opened(socket);
+  expect(order).toEqual(["before", "property", "after"]);
+  // When a binary view is sent, then changed before the asynchronous send drains.
+  const data = new Uint8Array([8, 9, 10]);
+  const echoed = message(socket);
+  socket.binaryType = "arraybuffer";
+  socket.send(data.subarray(1));
+  data.fill(0);
+  // Then the echoed payload is the send-time snapshot, with the selected browser binary type.
+  const received = (await echoed).data;
+  expect(received).toBeInstanceOf(ArrayBuffer);
+  expect([...new Uint8Array(received)]).toEqual([9, 10]);
+});
+
+it("fails a refused websocket handshake with error before abnormal close", async () => {
+  // Given todo 10's websocket adapter is absent.
+  const f = await fixture();
+  const socket = f.transport.openSocket("/ws");
+  const events: string[] = [];
+  socket.onerror = () => events.push("error");
+  socket.onopen = () => events.push("open");
+  const end = closed(socket);
+  // When RelaySession refuses WS_OPEN.
+  const result = await end;
+  // Then the browser-facing socket never opens and reports abnormal failure.
+  expect(events).toEqual(["error"]);
+  expect(result).toMatchObject({ code: 1006, wasClean: false });
+});
+
+it("never replays an asynchronously queued send after reconnect and ignores old generation callbacks", async () => {
+  // Given a send waiting for Blob conversion when its carrier drops.
+  const received: string[] = [];
+  const f = await fixture({ onWs: (stream) => {
+    stream.accept();
+    stream.onMessage = (data) => { received.push(String(data)); stream.send(data); };
+  } });
+  const socket = f.transport.openSocket("/ws");
+  await opened(socket);
+  const release = deferred<ArrayBuffer>();
+  class HeldBlob extends Blob { override arrayBuffer() { return release.promise; } }
+  socket.send(new HeldBlob(["stale"]));
+  expect(socket.bufferedAmount).toBe(5);
+  const oldClosed = closed(socket);
+  await f.drop();
+  await oldClosed;
+  // When a fresh carrier opens before the queued conversion finishes.
+  await f.transport.connect();
+  f.callbacks[0]?.(new TypeError("Late old close"));
+  release.resolve(new TextEncoder().encode("stale").buffer);
+  // Observe the actual queued send's completion before opening the comparison stream.
+  await socket["outgoing"];
+  const replacement = f.transport.openSocket("/ws");
+  await opened(replacement);
+  const echoed = message(replacement);
+  replacement.send("fresh");
+  await echoed;
+  // Then only new explicit input reaches the new server, never the old queued input.
+  expect(received).toEqual(["fresh"]);
+  expect(socket.readyState).toBe(socket.CLOSED);
+  expect(f.connections).toHaveLength(2);
+});
+
+it("fails every stream across repeated drops without HTTP retries or websocket replay", async () => {
+  // Given a transport repeatedly restored with a fresh mux.
+  let requests = 0;
+  const f = await fixture({ dispatch: async () => { requests++; return Response.json({ requests }); },
+    onWs: (stream) => stream.accept() });
+  for (let index = 0; index < 3; index++) {
+    const socket = f.transport.openSocket("/ws");
+    await opened(socket);
+    const close = closed(socket);
+    const response = await f.transport.fetch("/api/count");
+    await response.json();
+    // When each admitted carrier drops.
+    await f.drop();
+    expect((await close).code).toBe(1006);
+    await expect(f.transport.fetch("/api/offline")).rejects.toBeInstanceOf(TypeError);
+    await f.transport.connect();
+  }
+  // Then only the three explicitly requested HTTP operations ran.
+  expect(requests).toBe(3);
+});
+
+it("reconnects only the carrier with backoff from one second capped at thirty seconds", async () => {
+  // Given an established carrier followed by seven failed connection attempts.
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  f.attempts.failures = 7;
+  await f.drop();
+  // When every retry deadline fires on an injected clock, not wall-clock sleeps.
+  for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+    expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([delay]);
+    f.clock.advance(delay);
+    await expect(f.transport.connect()).rejects.toBeInstanceOf(TypeError);
+  }
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([30000]);
+  f.clock.advance(30000);
+  await f.transport.connect();
+  // Then a fresh authenticated mux works, without retrying old application requests.
+  expect(f.attempts.count).toBe(9);
+  expect(await (await f.transport.fetch("/api/new")).json()).toEqual({ ok: true });
+  expect(f.clock.tasks.size).toBe(0);
+  await f.drop();
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+});
+
+it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
+  // Given browser lifecycle event targets and a disconnected carrier.
+  const browser = new EventTarget();
+  const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({
+    addEventListener: browser.addEventListener.bind(browser),
+    removeEventListener: browser.removeEventListener.bind(browser),
+    document: page,
+  })) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  cleanups.push(() => {
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+  const f = await fixture();
+  await f.drop();
+  // When connectivity or page visibility returns, bypass the pending backoff.
+  browser.dispatchEvent(new Event("online"));
+  await f.transport.connect();
+  expect(f.connections).toHaveLength(2);
+  await f.drop();
+  page.visibilityState = "hidden";
+  page.dispatchEvent(new Event("visibilitychange"));
+  expect(f.attempts.count).toBe(2);
+  page.visibilityState = "visible";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await f.transport.connect();
+  // Then no duplicate attempts or timers remain, including after disposal.
+  expect(f.connections).toHaveLength(3);
+  expect(f.clock.tasks.size).toBe(0);
+  f.transport.close();
+  browser.dispatchEvent(new Event("online"));
+  page.dispatchEvent(new Event("visibilitychange"));
+  expect(f.attempts.count).toBe(3);
+});
+
+/** Independent whole-input SSE reference, deliberately not the incremental adapter algorithm. */
+function referenceSse(text: string) {
+  const events: { type: string; data: string; id: string }[] = [];
+  let id = "";
+  for (const block of text.replace(/^\uFEFF/, "").replace(/\r\n|\r/g, "\n").split("\n\n").slice(0, -1)) {
+    let type = "message";
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      const match = /^([^:]*)(?:: ?(.*))?$/.exec(line);
+      if (match?.[1] === "data") data.push(match[2] ?? "");
+      if (match?.[1] === "event") type = match[2] || "message";
+      if (match?.[1] === "id" && !match[2]?.includes("\0")) id = match[2] ?? "";
+    }
+    if (data.length) events.push({ type, data: data.join("\n"), id });
+  }
+  return events;
+}
+
+for (const width of [1, 2, 7, 31]) {
+  it(`parses SSE like a reference parser across ${width}-byte arbitrary boundaries`, async () => {
+    // Given comments, malformed fields, UTF-8, CRLF, bare CR, ids and custom events.
+    const text = "\uFEFF:comment\r\ngarbage\r\nid: first\r\ndata: 한글\r\ndata: next\r\n\r\nevent: custom\rdata: second\r\rid: bad\0id\ndata:\n\ndata: unfinished";
+    const bytes = new TextEncoder().encode(text);
+    const expected = referenceSse(text);
+    const f = await fixture({ dispatch: async () => new Response(new ReadableStream({
+      start(controller) {
+        for (let offset = 0; offset < bytes.length; offset += width) controller.enqueue(bytes.slice(offset, offset + width));
+        controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } }) });
+    const source = f.transport.openEventSource("/api/machines/events");
+    const received: typeof expected = [];
+    const receive = (value: Event) => {
+      if (value instanceof MessageEvent) received.push({ type: value.type, data: value.data, id: value.lastEventId });
+    };
+    source.addEventListener("message", receive);
+    source.addEventListener("custom", receive);
+    const ended = event(source, "error", (value) => value);
+    // When the encrypted HTTP body arrives in arbitrary chunks.
+    await ended;
+    // Then only terminated events dispatch, and reconnect is left to keepEventStream.
+    expect(received).toEqual(expected);
+    expect(source.readyState).toBe(2);
+    expect(f.connections).toHaveLength(1);
+  });
+}
+
+it("closes and resets SSE when an unfinished event exceeds its buffer bound", async () => {
+  // Given an unbounded unfinished event from the server.
+  const aborted = deferred<void>();
+  const f = await fixture({ dispatch: async (request) => {
+    request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("data:" + "x".repeat(SSE_BUFFER_LIMIT + 1))); },
+    }), { headers: { "content-type": "text/event-stream" } });
+  } });
+  const source = f.transport.openEventSource("/api/machines/events");
+  const error = event(source, "error", (value) => value);
+  // When the unfinished line crosses the bound.
+  await error;
+  // Then it closes and cancels the server body rather than accumulating memory or reconnecting itself.
+  expect(source.readyState).toBe(2);
+  await bounded(aborted.promise);
+});
+
+it("fails streaming HTTP bodies and SSE together on carrier loss without reopening either", async () => {
+  // Given two open streams on one admitted carrier.
+  let requests = 0;
+  const f = await fixture({ dispatch: async (request) => {
+    requests++;
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(request.url.endsWith("/events") ? "data: ready\n\n" : "chunk"));
+    } }), { headers: { "content-type": request.url.endsWith("/events") ? "text/event-stream" : "text/plain" } });
+  } });
+  const response = await f.transport.fetch("/api/body");
+  const reader = response.body?.getReader();
+  await reader?.read();
+  const source = f.transport.openEventSource("/api/events");
+  await message(source);
+  const error = event(source, "error", (value) => value);
+  // When the carrier disappears after both streams started.
+  await f.drop();
+  // Then the already-returned body fails with a network error and EventSource is CLOSED.
+  await expect(reader?.read()).rejects.toBeInstanceOf(TypeError);
+  await error;
+  expect(source.readyState).toBe(2);
+  expect(requests).toBe(2);
+});
+
+it("returns a blob resource fetched over the relay and stops a closed SSE without an error event", async () => {
+  // Given a resource route and an SSE route with no end.
+  const aborted = deferred<void>();
+  const f = await fixture({ dispatch: async (request) => {
+    if (request.url.endsWith("/resource")) return new Response("resource", { headers: { "content-type": "text/plain" } });
+    request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } });
+  } });
+  // When a browser resource is fetched and a caller closes its own event subscription.
+  const url = await f.transport.resourceUrl("/api/resource");
+  cleanups.push(() => URL.revokeObjectURL(url));
+  expect(url.startsWith("blob:")).toBe(true);
+  expect(await (await fetch(url)).text()).toBe("resource");
+  const source = f.transport.openEventSource("/api/events");
+  let errors = 0;
+  source.onerror = () => { errors++; };
+  await opened(source);
+  source.close();
+  await bounded(aborted.promise);
+  // Then close cancels its server request without a spurious reconnect-triggering error.
+  expect(source.readyState).toBe(2);
+  expect(errors).toBe(0);
+});
+
+it("exposes resource failures as hook state without an unhandled promise rejection", async () => {
+  // Given a relay resource fetch that is refused.
+  const f = await fixture({ dispatch: async () => new Response(null, { status: 404 }) });
+  setTransport(f.transport);
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  cleanups.push(() => {
+    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
+    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  });
+  const result = deferred<ResourceUrlState>();
+  function Probe() {
+    const state = useResourceUrlState("/api/missing");
+    if (state.error) result.resolve(state);
+    return null;
+  }
+  // When the resource promise rejects after the hook mounts.
+  let renderer: ReturnType<typeof create> | undefined;
+  await act(async () => { renderer = create(createElement(Probe)); });
+  await act(async () => { await bounded(result.promise); });
+  // Then the caller can render the failure; Bun's test runner also fails unhandled rejections.
+  expect(await result.promise).toMatchObject({ url: null, error: expect.any(TypeError) });
+  await act(async () => renderer?.unmount());
+});
+
+it("throws on send while connecting and validates close arguments synchronously", () => {
+  // Given a virtual socket not yet opened.
+  const socket = new RelayWebSocket(() => { throw new TypeError("Offline"); });
+  // When callers violate the browser socket contract.
+  // Then errors are synchronous, not swallowed by an asynchronous send queue.
+  expect(() => socket.send("early")).toThrow(DOMException);
+  expect(() => socket.close(1006)).toThrow(DOMException);
+  expect(() => socket.close(1000, "x".repeat(124))).toThrow(DOMException);
+  socket.close();
+});
+
+it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", async () => {
+  // Given a resource hook whose effects will be replayed by React StrictMode.
+  const f = await fixture({ dispatch: async () => new Response("image") });
+  setTransport(f.transport);
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  const revoke = URL.revokeObjectURL;
+  const revoked: string[] = [];
+  URL.revokeObjectURL = (url) => { revoked.push(url); revoke(url); };
+  cleanups.push(() => {
+    URL.revokeObjectURL = revoke;
+    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
+    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  });
+  const loaded = deferred<string>();
+  function Probe() {
+    const state = useResourceUrlState("/api/image");
+    if (state.url) loaded.resolve(state.url);
+    return null;
+  }
+  let renderer: ReturnType<typeof create> | undefined;
+  // When effect cleanup runs once for StrictMode, then again for unmount.
+  await act(async () => { renderer = create(createElement(StrictMode, null, createElement(Probe))); });
+  await act(async () => { await bounded(loaded.promise); });
+  const url = await loaded.promise;
+  expect(await (await fetch(url)).text()).toBe("image");
+  expect(revoked).not.toContain(url);
+  await act(async () => renderer?.unmount());
+  // Then the live URL was not revoked by the stale effect, and is revoked by its owner's cleanup.
+  expect(revoked).toContain(url);
+  await expect(fetch(url)).rejects.toBeInstanceOf(TypeError);
+});
