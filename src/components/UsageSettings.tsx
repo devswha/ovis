@@ -12,7 +12,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { Segmented, SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 import "./UsageSettings.css";
 
-function ProviderAccounts({ id, providers, onLocalLogin }: { readonly id: UsageProviderId; readonly providers: readonly ProviderUsage[]; readonly onLocalLogin: (paneId: string) => void }) {
+function ProviderAccounts({ id, providers, onLocalLogin }: { readonly id: UsageProviderId; readonly providers: readonly ProviderUsage[]; readonly onLocalLogin: ((paneId: string) => void) | undefined }) {
   const { settings, update } = useSettings();
   const t = useT();
   const all = orderProviders(providers, settings.usageOrder);
@@ -37,7 +37,7 @@ function ProviderAccounts({ id, providers, onLocalLogin }: { readonly id: UsageP
             <span>{isHubAccount(usage) ? t("Hub") : t("This PC")}{usage.plan ? ` · ${usage.plan}` : ""}</span>
             <span className={`usage-account-status${usage.problem ? " has-problem" : ""}`}>{status}</span>
           </span>
-          {canSignInAgain(usage) && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} />}
+          {onLocalLogin && canSignInAgain(usage) && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} />}
         </div>
         <span className="usage-accounts-actions">
           <button type="button" className="icon-button" aria-label={t("Move {name} up", { name })} disabled={index === 0} onClick={() => move(usage.key, -1)}><ChevronUp aria-hidden="true" /></button>
@@ -52,7 +52,7 @@ function ProviderAccounts({ id, providers, onLocalLogin }: { readonly id: UsageP
   </ol>;
 }
 
-export function UsageSettings({ onLocalLogin }: { readonly onLocalLogin: (paneId: string) => void }) {
+export function UsageSettings({ onLocalLogin, watching = false }: { readonly onLocalLogin: (paneId: string) => void; /** a watching device signs in to nothing */ readonly watching?: boolean }) {
   const { settings, update } = useSettings();
   const t = useT();
   // The existing switch still controls whether sign-ins are sent to usage endpoints.
@@ -98,7 +98,7 @@ export function UsageSettings({ onLocalLogin }: { readonly onLocalLogin: (paneId
         <AgentMark agent={PROVIDER_MARK[id]} size={20} /><span>{PROVIDER_NAME[id]}</span>
         <span className="usage-account-count">{providers.filter((usage) => usage.id === id).length}</span>
       </div>
-      <ProviderAccounts id={id} providers={providers} onLocalLogin={onLocalLogin} />
+      <ProviderAccounts id={id} providers={providers} onLocalLogin={watching ? undefined : onLocalLogin} />
     </SettingsGroup>)}
     {settings.showUsage && providers.length === 0 && <p className="settings-note settings-hint">{usage.loading ? t("Loading…") : t("No accounts yet.")}</p>}
     {hubError && <p className="settings-hint account-error" role="alert">{hubError}</p>}

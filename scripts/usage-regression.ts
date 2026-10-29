@@ -259,7 +259,32 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await context.close();
     }
   }
-  console.log("PASS Sign in again: offered only for an expired account on this PC, in the popover and its Settings row, refusal shown, tab handed over, phone fit");
+  // a watching device signs in to nothing: no button in either place, and the popover says how instead
+  const watching = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await watching.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
+    await watching.route("**/api/health*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json() as { auth: Record<string, unknown> };
+      await route.fulfill({ response, json: { ...body, auth: { ...body.auth, role: "watch" } } });
+    });
+    await watching.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
+    const page = await watching.newPage();
+    await page.goto(origin);
+    await page.locator(".usage-strip").click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    assert.equal(await popover.getByRole("button", { name: /^Sign in again/ }).count(), 0, "no Sign in again in a watching device's popover");
+    assert.equal(await popover.locator(".usage-note.is-problem").first().textContent(), "Sign-in expired. Open Claude to renew it.");
+    await page.keyboard.press("Escape");
+    await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
+    await openSettingsPage(page, "Subscription usage");
+    assert.equal(await page.locator(".usage-accounts-row").count(), 4);
+    assert.equal(await page.locator(".settings-dialog").getByRole("button", { name: /^Sign in again/ }).count(), 0, "no Sign in again in a watching device's Settings");
+  } finally {
+    await watching.close();
+  }
+  console.log("PASS Sign in again: offered only for an expired account on this PC, in the popover and its Settings row, refusal shown, tab handed over, phone fit, none on a watching device");
 }
 
 if (import.meta.main) {

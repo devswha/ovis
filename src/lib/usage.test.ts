@@ -63,6 +63,8 @@ describe("usage meters", () => {
     expect(canSignInAgain(expired("codex", "codex@0123456789ab"))).toBe(true);
     expect(canSignInAgain(expired("codex", "codex:cliproxy:hub-1"))).toBe(false);
     expect(canSignInAgain(expired("antigravity", "antigravity@keychain"))).toBe(false);
+    expect(canSignInAgain(expired("cursor", "cursor:c1"))).toBe(false);
+    expect(canSignInAgain(expired("opencode", "opencode@0123456789ab"))).toBe(false);
     expect(canSignInAgain(expired("claude", "claude:team", null))).toBe(false);
     expect(canSignInAgain(expired("claude", "claude:team", "failed"))).toBe(false);
   });

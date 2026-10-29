@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { createServer } from "./index.ts";
 import { paneClose, workspaceClose, workspaceCreate } from "./herdr/client.ts";
@@ -31,8 +31,9 @@ import { renameSync } from "node:fs";
 import { join } from "node:path";
 const provider = ${JSON.stringify(provider)};
 if (process.argv.includes("--help")) { console.log(provider === "claude" || process.env.TEST_LOGIN_NO_DEVICE ? "login" : "--device-auth"); process.exit(0); }
-// Claude Code's default home is ~/.claude when no CLAUDE_CONFIG_DIR names another
-const home = process.env[provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"] ?? join(process.env.HOME, ".claude");
+const variable = provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME";
+// the CLIs' default homes when no variable names another; a relative one is read from where the CLI runs
+const home = process.env[variable] ?? join(process.env.HOME, provider === "codex" ? ".codex" : ".claude");
 if (provider === "claude") {
   await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token:" + home } }));
   // signing in again keeps the account the home already names
@@ -43,6 +44,7 @@ if (provider === "claude") {
 }
 const receipt = join(${JSON.stringify(root)}, provider + "-receipt.json");
 await Bun.write(receipt + ".tmp", JSON.stringify({ argv: process.argv.slice(2), home,
+  ...(["claude", "codex"].includes(provider) ? { configured: process.env[variable] ?? null } : {}),
   ...(provider === "agent" ? { noOpenBrowser: process.env.NO_OPEN_BROWSER } : {}),
   ...(["gh", "opencode"].includes(provider) ? { configHome: process.env[provider === "gh" ? "XDG_CONFIG_HOME" : "XDG_DATA_HOME"] } : {}) }));
 renameSync(receipt + ".tmp", receipt);
@@ -145,7 +147,7 @@ for (const provider of ["claude", "codex"] as const) {
       expect(opened.pane_id).toBeString();
       expect(JSON.parse(readFileSync(join(root, receipt), "utf8"))).toEqual({
         argv: provider === "claude" ? ["auth", "login"] : ["login", "--device-auth"],
-        home: join(root, `.${provider}-work`),
+        home: join(root, `.${provider}-work`), configured: join(root, `.${provider}-work`),
       });
       const usage: { providers: { account: string }[] } = await (await fetch(`http://127.0.0.1:${server.port}/api/usage`)).json();
       expect(usage.providers.map((entry) => entry.account)).toContain(provider === "claude" ? "work@example.test" : "codex@example.test");
@@ -211,6 +213,11 @@ for (const [provider, dir] of [["claude", ".claude-team"], ["claude", ".claude"]
       const error = new Error(`sign-in again did not finish: receipt ${existsSync(join(root, receipt)) ? "written" : "missing"}`);
       written.reject(error); ended.reject(error); connected.reject(error);
     }, 10_000);
+    // the tab's shell inherits another account's home, as one started from a profile that exports it
+    const inherited = join(root, `.${provider}-inherited`);
+    const realCreate = herdr.tabCreate;
+    const create = spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) =>
+      realCreate({ ...options, env: { [provider === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"]: inherited, ...options.env } }));
     try {
       await connected.promise;
       // When
@@ -221,22 +228,58 @@ for (const [provider, dir] of [["claude", ".claude-team"], ["claude", ".claude"]
       openedPanes.push(opened.pane_id);
       await written.promise;
       if (!exits.has(opened.pane_id)) await ended.promise;
-      // Then: the official login ran against that account's home, and no new home was made
+      // Then: the official login ran against that account's home (the default one with no variable
+      // at all), the inherited home was left alone, and no new home was made
       expect(JSON.parse(readFileSync(join(root, receipt), "utf8"))).toEqual({
         argv: provider === "claude" ? ["auth", "login"] : ["login", "--device-auth"], home: join(root, dir),
+        configured: dir === ".claude" ? null : join(root, dir),
       });
+      expect(existsSync(inherited)).toBe(false);
       expect(readdirSync(root).filter((name) => name.startsWith(`.${provider}`)).sort()).toEqual(before);
       const after = await listed();
       if (provider === "claude") expect(after.find((usage) => usage.key === expired!.key)?.problem).toBeNull();
       else expect(after.some((usage) => usage.problem === "expired")).toBe(false);
-    } finally { clearTimeout(timer); watcher.close(); socket.close(); }
+    } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); socket.close(); }
   });
 }
+
+it("signs in again to a Codex home named by a relative CODEX_HOME where this server found it", async () => {
+  // Given: CODEX_HOME relative to this server's directory, holding an expired sign-in
+  const dir = join(root, ".relative-codex");
+  expiredHome("codex", ".relative-codex", "relative@example.test");
+  const expired = readFileSync(join(dir, "auth.json"), "utf8");
+  const relativeHome = relative(process.cwd(), dir);
+  const relativeCtx = { ...ctx, env: { CODEX_HOME: relativeHome } };
+  const listedHere = await new UsageService(relativeCtx, USAGE_PROVIDERS.filter((provider) => provider.id === "codex")).report();
+  const key = listedHere.providers.find((usage) => usage.account === "relative@example.test")!.key;
+  const local = new UsageLoginService(root, { ...process.env, PATH: bin }, relativeCtx);
+  const written = Promise.withResolvers<void>();
+  const watcher = watch(root, (_event, filename) => { if (filename === "codex-receipt.json") written.resolve(); });
+  const timer = setTimeout(() => written.reject(new Error("sign-in again did not write its receipt")), 10_000);
+  try {
+    // When
+    const response = await local.handle(new Request("http://localhost/api/usage/login", {
+      method: "POST", body: JSON.stringify({ provider: "codex", account: key }),
+    }));
+    // Then: the CLI ran where the path means that same home, and replaced its sign-in
+    expect(response.status).toBe(200);
+    const opened: UsageLoginStarted = await response.json();
+    openedPanes.push(opened.pane_id);
+    await written.promise;
+    expect(JSON.parse(readFileSync(join(root, "codex-receipt.json"), "utf8"))).toMatchObject({ home: relativeHome, configured: relativeHome });
+    expect(readFileSync(join(dir, "auth.json"), "utf8")).not.toBe(expired);
+  } finally { clearTimeout(timer); watcher.close(); }
+});
 
 it("refuses to sign in again to an account this PC does not list, without opening a tab", async () => {
   // Given: one listed expired account, and keys that are not one of this PC's accounts
   expiredHome("claude", ".claude-refuse", "refuse@example.test");
-  const key = (await listed(true)).find((usage) => usage.account === "refuse@example.test")!.key;
+  expiredHome("claude", ".claude-swap", "before@example.test");
+  const shown = await listed(true);
+  const key = shown.find((usage) => usage.account === "refuse@example.test")!.key;
+  const stale = shown.find((usage) => usage.account === "before@example.test")!.key;
+  // that home holds another account since the list was read; the server's list is not read again
+  expiredHome("claude", ".claude-swap", "after@example.test");
   const before = readdirSync(root).sort();
   const create = spyOn(herdr, "tabCreate");
   const workspace = spyOn(herdr, "workspaceCreate");
@@ -250,7 +293,7 @@ it("refuses to sign in again to an account this PC does not list, without openin
       { provider: "claude", account: "../../etc" },
       { provider: "claude", account: "claude@../../etc" },
       { provider: "codex", account: key },
-      { provider: "opencode", account: key },
+      { provider: "claude", account: stale },
     ].map(start));
     const malformed = await Promise.all([
       { provider: "claude", account: 5 },
@@ -258,13 +301,14 @@ it("refuses to sign in again to an account this PC does not list, without openin
       { provider: "claude", account: "x".repeat(257) },
       { provider: "claude", account: key, name: "refuse" },
       { provider: "opencode", account: key, replace: true },
+      { provider: "opencode", account: "opencode@0123456789ab" },
+      { provider: "cursor", account: "cursor:c1" },
+      { provider: "antigravity", account: "antigravity@keychain" },
     ].map(start));
-    const antigravity = await start({ provider: "antigravity", account: "antigravity@keychain" });
     // Then
     expect(unknown.map((response) => response.status)).toEqual(unknown.map(() => 404));
     expect(await Promise.all(unknown.map(async (response) => (await response.json()).error.code))).toEqual(unknown.map(() => "account_not_found"));
     expect(malformed.map((response) => response.status)).toEqual(malformed.map(() => 400));
-    expect(antigravity.status).toBe(409);
     expect(create).not.toHaveBeenCalled();
     expect(workspace).not.toHaveBeenCalled();
     expect(readdirSync(root).sort()).toEqual(before);

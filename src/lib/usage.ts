@@ -75,11 +75,13 @@ export function isHubAccount(usage: ProviderUsage): boolean {
 }
 
 /**
- * An expired sign-in this PC's own CLI can renew in a terminal tab, in the account's own home.
- * Antigravity signs in only in its app, and a hub's account in the hub.
+ * An expired sign-in this PC's own CLI can renew in a terminal tab, in the account's own home:
+ * Claude's and Codex's, whose CLIs sign in to the home they are given. The other CLIs may keep a
+ * sign-in apart from the one read here (Cursor's app, Copilot's editor), and a hub's account signs
+ * in in the hub.
  */
 export function canSignInAgain(usage: ProviderUsage): boolean {
-  return usage.problem === "expired" && usage.id !== "antigravity" && !isHubAccount(usage);
+  return usage.problem === "expired" && (usage.id === "claude" || usage.id === "codex") && !isHubAccount(usage);
 }
 
 /** What a meter shows of a limit: the share used, or what is left. */

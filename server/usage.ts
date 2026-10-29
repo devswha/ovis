@@ -940,20 +940,6 @@ interface Search {
 export class UsageService {
   /** A local CLI login ended: rediscover sign-ins, preserving account rate-limit backoffs. */
   invalidate(): void { this.searches.clear(); this.entries.clear(); }
-
-  /**
-   * Where an account this PC lists keeps its sign-in (a directory, `default`, `keychain`), so it can
-   * be signed in to again: found by the key the browser was shown, never by a place it names. Null
-   * for a key not listed now, a hub's account included. One account found in two places gives the
-   * place whose sign-in has a problem.
-   */
-  async signInPlace(key: string): Promise<{ provider: UsageProviderId; source: string } | null> {
-    await this.report();
-    const places = [...this.entries].filter(([, entry]) => entry.usage?.key === key);
-    const [place, entry] = places.find(([, entry]) => entry.usage?.problem !== null) ?? places[0] ?? [];
-    if (place === undefined || !entry?.usage) return null;
-    return { provider: entry.usage.id, source: place.slice(place.indexOf("|") + 1) };
-  }
   private readonly searches = new Map<UsageProviderId, Search>();
   /** by provider and source */
   private readonly entries = new Map<string, Entry>();
@@ -1029,8 +1015,7 @@ export class UsageService {
     // the key reaches the browser, the credential's path must not)
     const identity = (account: Account | null | undefined) => {
       const known = account ?? found.account ?? null;
-      const place = createHash("sha256").update(found.source).digest("hex").slice(0, 12);
-      return { key: known ? `${provider.id}:${known.id}` : `${provider.id}@${place}`, account: known?.label ?? null };
+      return { key: accountKey(provider.id, known, found.source), account: known?.label ?? null };
     };
     // the last numbers stay, named by what went wrong since - unless the place now holds another
     // account's sign-in: those numbers and that name were someone else's
@@ -1064,6 +1049,33 @@ export class UsageService {
       return keep("failed", signIn.plan ?? null, RETRY_MS);
     }
   }
+}
+
+/** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
+function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
+  return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Where the Claude or Codex account listed as `key` keeps its sign-in now (a directory, `default`,
+ * `keychain`), read from its files without asking any provider: a key is all the browser names,
+ * never a place. Their reading names no account, so the key the list showed is the one its files
+ * give. Null when no sign-in here has that key now: a hub's, another provider's, or one whose home
+ * holds another account since. One account in several places gives the first, the one the list
+ * shows (UsageService.collect keeps the first reading unless a later one has no problem).
+ */
+export async function localSignInPlace(ctx: UsageContext, key: string): Promise<{ provider: "claude" | "codex"; source: string } | null> {
+  for (const provider of [claude, codex]) {
+    const id = provider.id === "claude" ? "claude" : "codex";
+    if (!key.startsWith(`${id}:`) && !key.startsWith(`${id}@`)) continue;
+    // the same token in two places is one sign-in, as the list counts it
+    const tokens = new Set<string>();
+    const place = (await provider.signIns(ctx))
+      .filter((found) => "locked" in found || (!tokens.has(found.token) && Boolean(tokens.add(found.token))))
+      .find((found) => accountKey(id, found.account, found.source) === key);
+    if (place) return { provider: id, source: place.source };
+  }
+  return null;
 }
 
 export async function handleUsageRequest(request: Request, url: URL, service: UsageService): Promise<Response> {

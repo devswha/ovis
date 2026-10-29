@@ -1,12 +1,13 @@
 import { mkdirSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
-import { paneShell, shellCommandLine } from "./shell-agent.ts";
-import { systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
+import { psQuote } from "./powershell.ts";
+import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
+import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
 const LOGIN = {
   claude: { cli: "claude", binaries: ["claude"], args: ["auth", "login"] },
@@ -18,8 +19,17 @@ const LOGIN = {
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
 } as const;
 
-/** Where a listed account keeps its sign-in (UsageService.signInPlace); null for a key not listed. */
-export type SignInPlace = (key: string) => Promise<{ readonly provider: UsageProviderId; readonly source: string } | null>;
+/**
+ * What the sign-in line sets first in `shell`: the credential home `name` names (`home`), or none
+ * (null: the default home). The pane's shell may have inherited another account's home, so the
+ * default one is reached by removing the variable, not by leaving it out of the tab's environment.
+ */
+function credentialHomePrefix(shell: PaneShell, name: string, home: string | null): string {
+  if (shell === "posix") return shellCommandLine("posix", "env", home === null ? ["-u", name] : [`${name}=${home}`]);
+  if (shell === "powershell") return home === null ? `Remove-Item Env:${name} -ErrorAction SilentlyContinue; ` : `$env:${name} = ${psQuote(home)}; `;
+  if (/["%\r\n]/.test(home ?? "")) throw new Error("this credential home cannot be typed into cmd.exe");
+  return `set "${name}=${home ?? ""}" & `;
+}
 
 /** Only panes this service launched invalidate usage when their login process exits. */
 export class UsageLoginService {
@@ -30,7 +40,7 @@ export class UsageLoginService {
 
   ended(paneId: string): boolean { return this.panes.delete(paneId); }
 
-  async handle(request: Request, trackPane?: (paneId: string) => void, signInPlace?: SignInPlace): Promise<Response> {
+  async handle(request: Request, trackPane?: (paneId: string) => void): Promise<Response> {
     const executableFor = (id: UsageProviderId) => LOGIN[id].binaries.map((cli) => Bun.which(cli, { PATH: this.env["PATH"] ?? "" })).find(Boolean);
     if (request.method === "GET") {
       const id = new URL(request.url).searchParams.get("provider");
@@ -57,7 +67,8 @@ export class UsageLoginService {
     // Signing in again names a listed account by its key; its credential home is the server's to find.
     const again = body["account"] !== undefined;
     if (again) {
-      if (typeof body["account"] !== "string" || body["account"].length > 256 || body["name"] !== undefined || body["replace"] !== undefined) {
+      // only Claude's and Codex's CLIs sign in to a credential home the server can name
+      if (!separate || typeof body["account"] !== "string" || body["account"].length > 256 || body["name"] !== undefined || body["replace"] !== undefined) {
         return badRequest("invalid_account", "Name one account this PC lists to sign in to it again");
       }
     } else if (separate ? typeof body["name"] !== "string" || !/^[a-z0-9-]{1,32}$/.test(body["name"])
@@ -71,7 +82,8 @@ export class UsageLoginService {
     if (!executable) return conflictResponse("cli_unavailable", "Install the official CLI on this PC before signing in");
     let unusedCredentialHome: string | null = null;
     try {
-      const place = again && typeof body["account"] === "string" ? await signInPlace?.(body["account"]) ?? null : null;
+      // read from the sign-ins on disk now, not a cached report: a home may hold another account since
+      const place = again && typeof body["account"] === "string" ? await localSignInPlace(this.context, body["account"]) : null;
       if (again && place?.provider !== id) {
         return jsonResponse({ error: { code: "account_not_found", message: "This PC no longer lists that account. Refresh and try again." } }, 404);
       }
@@ -86,13 +98,15 @@ export class UsageLoginService {
       const manual = id === "claude" && !(success && /\blogin\b/.test(text));
       const device = (id === "codex" || id === "grok") && success && text.includes("--device-auth");
       const args = manual ? [] : [...login.args, ...(device ? ["--device-auth"] : [])];
+      // the browser that asked has gone (it gives up after 30 s): open no tab it would not see
+      if (request.signal.aborted) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
       const env: Record<string, string> = { HOME: this.home };
       if (process.platform === "win32") env["USERPROFILE"] = this.home;
+      const homeVariable = id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
+      // the account's own home, where its expired sign-in is replaced; null is the default home
+      const againHome = place === null ? null : place.source === "default" || place.source === "keychain" ? null : place.source;
       if (place) {
-        // the account's own home, where its expired sign-in is replaced; the default home is left unset
-        const home = id === "claude" ? place.source === "default" ? null : place.source
-          : id === "codex" ? place.source === "keychain" ? null : place.source : null;
-        if (home !== null) env[id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = home;
+        if (againHome !== null) env[homeVariable] = againHome;
       } else if (separate) {
         const credentialHome = join(this.home, `.${id}-${body["name"]}`);
         try { mkdirSync(credentialHome, { mode: 0o700 }); }
@@ -110,7 +124,8 @@ export class UsageLoginService {
       const snapshot = await sessionSnapshot();
       const workspace = snapshot.workspaces[0];
       const options = {
-        cwd: this.home, label: again ? `${id} sign-in again` : `${id} sign-in${separate ? ` · ${body["name"]}` : ""}`, env,
+        // a home given as a relative path was found from this server's directory, and means it there
+        cwd: againHome !== null && !isAbsolute(againHome) ? process.cwd() : this.home, label: again ? `${id} sign-in again` : `${id} sign-in${separate ? ` · ${body["name"]}` : ""}`, env,
       };
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;
@@ -120,12 +135,12 @@ export class UsageLoginService {
       if (process.platform === "win32") {
         const info = await paneProcessInfo(paneId);
         const shell = paneShell(info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-        const command = shellCommandLine(shell, executable, args);
+        const command = `${place ? credentialHomePrefix(shell, homeVariable, againHome) : ""}${shellCommandLine(shell, executable, args)}`;
         await paneSendText(paneId, `${command}${shell === "cmd" ? " & exit" : "; exit $LASTEXITCODE"}`);
         unusedCredentialHome = null;
         await paneSendKeys(paneId, ["Enter"]);
       } else {
-        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${shellCommandLine("posix", executable, args)}\n`);
+        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place ? `${credentialHomePrefix("posix", homeVariable, againHome)} ` : ""}${shellCommandLine("posix", executable, args)}\n`);
         unusedCredentialHome = null;
       }
       return jsonResponse({

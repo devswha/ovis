@@ -7,7 +7,7 @@ export type UsageLoginRequest =
   | { readonly provider: "claude" | "codex"; readonly name: string }
   | { readonly provider: Exclude<LocalUsageProvider, "claude" | "codex">; readonly replace?: true }
   /** Signs in again to an account GET /api/usage lists, by its key: the server finds its credential home. */
-  | { readonly provider: LocalUsageProvider; readonly account: string };
+  | { readonly provider: "claude" | "codex"; readonly account: string };
 
 /** Local PATH and credential discovery only, never a provider usage request or a credential. */
 export interface UsageLoginProvider {

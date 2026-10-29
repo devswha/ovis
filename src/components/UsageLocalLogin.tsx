@@ -14,7 +14,7 @@ export function UsageSignInAgain({ usage, onStarted }: { readonly usage: Provide
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const provider = usage.id;
-  if (provider === "antigravity") return null;
+  if (provider !== "claude" && provider !== "codex") return null;
   return <span className="usage-sign-in-again">
     {/* busy, not disabled: a disabled button drops focus, and the popover's Escape with it */}
     <button type="button" className="btn" aria-busy={busy} aria-label={t("Sign in again to {name}", { name: usageName(usage) })} onClick={() => {
