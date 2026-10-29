@@ -399,7 +399,7 @@ Only devices in your tailnet can open that address. Your own devices get in with
 **Settings → Phone & devices** in the app does this step for you as far as it can: it shows the address Tailscale already serves for this PC as a QR code, or the exact command still to run, and the address it will give.
 
 1. Open the address.
-2. Install the app: in Safari, choose **Share → Add to Home Screen**; in Chrome, open **Settings → Phone & devices** and choose **Install app** (or use the install icon in the address bar). Each PC installs as an app of its own: set `OVIS_APP_NAME` on each to tell them apart (see [Configuration](#configuration)).
+2. Install the app: in Safari, choose **Share → Add to Home Screen**; in Chrome, open **Settings → Phone & devices** and choose **Install app**; when it shows steps instead of the button, follow them (Chrome's menu has **Install app** or **Add to Home screen**). Each PC installs as an app of its own: set `OVIS_APP_NAME` on each to tell them apart (see [Configuration](#configuration)).
 3. Open the **⋯** menu at the top right and tap **Alerts** to turn on alerts for that device. iPhone needs iOS 16.4+ and the home-screen app.
 
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
