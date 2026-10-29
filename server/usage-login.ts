@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
-import { paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
+import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
 import { withOwnerGuard } from "./owner-guard.ts";
@@ -67,6 +67,14 @@ const LAUNCH_MS = 60_000;
 const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
 const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch : !isLaunch(b) && a.terminal === b.terminal;
 
+/** The file of running sign-ins exists but cannot be read or understood: it may name one still running. */
+class LoginStateUnreadable extends Error {
+  constructor(file: string, cause: unknown) {
+    super(`${file} cannot be read: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "LoginStateUnreadable";
+  }
+}
+
 /** Whether a process still runs (one of another user is still running too). */
 function processAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
@@ -99,20 +107,27 @@ export class UsageLoginService {
 
   persistTo(stateDir: string): void { this.file = join(stateDir, "usage-logins.json"); }
 
-  /** The homes the file names as taken. One that will not read names none: refusing every sign-in for good is no answer. */
+  /**
+   * The homes the file names as taken; none when there is no file yet. A file that will not read or parse
+   * throws LoginStateUnreadable: it may name a sign-in still running, so it authorizes no other.
+   */
   private read(file: string): Map<string, Holder> {
     const found = new Map<string, Holder>();
-    let saved: unknown;
-    try { saved = JSON.parse(readFileSync(file, "utf8")); }
+    let text: string;
+    try { text = readFileSync(file, "utf8"); }
     catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) console.warn("Could not read the sign-ins running in herdr tabs", error);
-      return found;
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return found;
+      throw new LoginStateUnreadable(file, error);
     }
-    for (const entry of isJsonObject(saved) && Array.isArray(saved["logins"]) ? saved["logins"] : []) {
-      if (!isJsonObject(entry) || typeof entry["home"] !== "string") continue;
+    let saved: unknown;
+    try { saved = JSON.parse(text); } catch (error) { throw new LoginStateUnreadable(file, error); }
+    if (!isJsonObject(saved) || !Array.isArray(saved["logins"])) throw new LoginStateUnreadable(file, "no list of sign-ins");
+    for (const entry of saved["logins"]) {
+      if (!isJsonObject(entry) || typeof entry["home"] !== "string") throw new LoginStateUnreadable(file, "a sign-in without its home");
       const { home, pane, terminal, launch, pid, at } = entry;
       if (typeof pane === "string" && typeof terminal === "string") found.set(home, { pane, terminal });
       else if (typeof launch === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && typeof at === "number" && Number.isFinite(at)) found.set(home, { launch, pid, at });
+      else throw new LoginStateUnreadable(file, "a sign-in it cannot tell");
     }
     return found;
   }
@@ -248,7 +263,12 @@ export class UsageLoginService {
         console.warn("Could not tell which credential home a sign-in would write", error);
         return conflictResponse("credential_home_unreadable", "Ovis cannot read this account's credential folder, so it cannot tell whether a sign-in is already running there. Check the folder's permissions on the server PC.");
       }
-      holding = await this.reserve(loginHome);
+      try { holding = await this.reserve(loginHome); }
+      catch (error) {
+        if (!(error instanceof LoginStateUnreadable)) throw error;
+        console.warn("Could not read the sign-ins running in herdr tabs", error);
+        return conflictResponse("login_state_unreadable", "Ovis cannot read its record of the sign-ins running on this PC (usage-logins.json in its state folder), so it cannot tell whether one is already open for this account. Close any sign-in tab still open, then repair or remove that file on the server PC.");
+      }
       if (holding === null) {
         return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
       }
@@ -295,16 +315,30 @@ export class UsageLoginService {
       const paneId = created.root_pane.pane_id;
       this.panes.add(paneId);
       trackPane?.(paneId);
-      // the tab is open: from here on its terminal holds the home, also for a server started again
+      // the tab is open: from here on its terminal holds the home, also for a server started again. The
+      // login is sent only once the file says so: run under a launch entry that expires, or one another
+      // server took over, it could run beside another sign-in after a restart.
       const launch = holding;
       const opened: LoginHolder = { pane: paneId, terminal: created.root_pane.terminal_id };
-      holding = opened;
-      if (this.logins.get(reserved) === launch) this.logins.set(reserved, opened);
-      // the launch's entry held the home for other servers until now; when this write fails, it still does,
-      // but only for the rest of its minute
       const home = reserved;
-      try { this.edit((saved) => { const now = saved.get(home); if (now === undefined || sameHolder(now, launch)) saved.set(home, opened); }); }
-      catch (error) { console.warn("Could not record a sign-in's credential home for other servers", error); }
+      let recorded = false;
+      try {
+        recorded = this.edit((saved) => {
+          const now = saved.get(home);
+          if (now !== undefined && !sameHolder(now, launch)) return false;
+          saved.set(home, opened);
+          return true;
+        });
+      } catch (error) {
+        await paneClose(paneId).catch((closeError: unknown) => console.warn("Could not close a sign-in tab whose login was not sent", closeError));
+        throw error;
+      }
+      if (!recorded) {
+        await paneClose(paneId).catch((closeError: unknown) => console.warn("Could not close a sign-in tab whose login was not sent", closeError));
+        return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
+      }
+      holding = opened;
+      if (this.logins.get(home) === launch) this.logins.set(home, opened);
       // All variable argv are quoted by the bridge's existing POSIX shell encoder.
       if (process.platform === "win32") {
         const info = await paneProcessInfo(paneId);
@@ -323,6 +357,9 @@ export class UsageLoginService {
         pane_id: paneId, workspace_id: created.tab.workspace_id, manual, device_auth: device,
       } satisfies UsageLoginStarted);
     } catch (error) {
+      return errorResponse(error);
+    } finally {
+      // made for a login that was never sent (failed, refused or cancelled): an Add account retry may name it again
       if (unusedCredentialHome) {
         try { rmdirSync(unusedCredentialHome); }
         catch (cleanupError) {
@@ -333,8 +370,6 @@ export class UsageLoginService {
           }
         }
       }
-      return errorResponse(error);
-    } finally {
       // refused, or failed before its login ran: the home is free again, unless its tab ended and another took it since
       if (reserved !== null && holding !== null) this.release(reserved, holding);
     }

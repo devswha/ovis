@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
@@ -500,6 +500,57 @@ it("starts one sign-in when two servers on one state dir are asked for one home 
     if (late?.ok && !late.bodyUsed) openedPanes.push((await late.json() as UsageLoginStarted).pane_id);
     first.stop(); second.stop(); create.mockRestore();
   }
+});
+
+for (const damage of ["corrupt", "unreadable"] as const) {
+  // root reads any file, and Windows has no mode that refuses its owner
+  it.skipIf(damage === "unreadable" && (process.platform === "win32" || process.getuid?.() === 0))(`refuses a sign-in while the state file of running sign-ins is ${damage}, rather than reading it as empty`, async () => {
+    // Given: a state file that may name a sign-in still running, which does not parse or may not be read
+    const stateDir = mkdtempSync(join(root, `${damage}-state-`));
+    const saved = join(stateDir, "usage-logins.json");
+    writeFileSync(saved, damage === "corrupt" ? "{broken" : JSON.stringify({ logins: [] }));
+    if (damage === "unreadable") chmodSync(saved, 0);
+    const local = new UsageLoginService(root, { ...process.env, PATH: bin }, ctx);
+    local.persistTo(stateDir);
+    const { create } = holdLogins();
+    try {
+      // When
+      const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: `${damage}-state` }) }));
+      const body = await response.json();
+      if (response.status === 200) openedPanes.push((body as UsageLoginStarted).pane_id);
+      // Then: no login starts, and no credential home is left for a retry to trip on
+      expect([response.status, body.error?.code ?? null]).toEqual([409, "login_state_unreadable"]);
+      expect(create).not.toHaveBeenCalled();
+      expect(existsSync(join(root, `.claude-${damage}-state`))).toBe(false);
+    } finally { create.mockRestore(); chmodSync(saved, 0o600); }
+  });
+}
+
+it("closes the tab and sends no login when that tab cannot be recorded as the home's holder", async () => {
+  // Given: the launch is recorded, but the disk refuses the next write, the one naming its tab
+  const stateDir = mkdtempSync(join(root, "unrecorded-state-"));
+  const local = new UsageLoginService(root, { ...process.env, PATH: bin }, ctx);
+  local.persistTo(stateDir);
+  let renames = 0;
+  const realRename = privateStateFs.renameSync;
+  const rename = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+    if (++renames === 2) throw Object.assign(new Error("fixture: no space left on device"), { code: "ENOSPC" });
+    realRename(from, to);
+  });
+  const sent = spyOn(herdr, "paneSendText");
+  const { create } = holdLogins();
+  try {
+    // When
+    const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: "unrecorded" }) }));
+    const opened = (await (create.mock.results[0]!.value as ReturnType<typeof herdr.tabCreate>)).root_pane.pane_id;
+    openedPanes.push(opened);
+    // Then: no login runs in that tab, which is closed, and the home is free again for this or another server
+    expect(response.status).toBe(500);
+    expect(sent.mock.calls.filter(([pane]) => pane === opened)).toEqual([]);
+    expect(await herdr.paneGet(opened).then(() => "open", () => "closed")).toBe("closed");
+    expect(JSON.parse(readFileSync(join(stateDir, "usage-logins.json"), "utf8"))).toEqual({ logins: [] });
+    expect(existsSync(join(root, ".claude-unrecorded"))).toBe(false);
+  } finally { rename.mockRestore(); sent.mockRestore(); create.mockRestore(); }
 });
 
 it("refuses once, without looking again and again, when a crashed launch's entry cannot be replaced, and signs in once it can", async () => {
