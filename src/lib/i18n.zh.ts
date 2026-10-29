@@ -47,7 +47,6 @@ const BASE: Record<string, string> = {
   "Agent default": "代理默认",
   "Phone & devices": "手机和设备",
   "Access token": "访问 Token",
-  "Install app": "安装应用",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "命令面板",

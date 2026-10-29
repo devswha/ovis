@@ -101,6 +101,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Shortcuts": "快捷键",
   "Phone": "手机",
   "Devices": "设备",
+  "Install app": "安装应用",
   "About": "关于",
   "Star on GitHub": "在 GitHub 上点 Star",
   "Remote PCs": "远程 PC",
