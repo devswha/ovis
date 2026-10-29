@@ -249,24 +249,45 @@ const SENPI_WRAPPERS = new Set([
 ]);
 const isSenpiWrapper = (tag: string): boolean => SENPI_WRAPPERS.has(tag) || /^omo-[a-z0-9-]+$/.test(tag);
 const WRAPPED = /^\s*<([A-Za-z_][\w-]*)(\s[^>]*)?>([\s\S]*?)<\/\1>\s*/;
-/** a notification senpi cut short: the rest of it follows the reminder, in the same block */
-const TAIL_CAPPED = "[…notification tail capped…]";
+/** a notification senpi cut short: the reminder, then where the rest of it went, in the same block */
+const TAIL_CAPPED = /^\[…notification tail capped…\]\nBuffered output overflowed; full output: \S+\s*$/;
 /** the goal extension's continuation prompt (goal/prompt.js), after a stall check when there is one */
 const GOAL_CONTINUATION = "Continue working toward the active thread goal.\n";
+const isGoalContinuation = (text: string): boolean =>
+  text.startsWith(GOAL_CONTINUATION) && text.includes("\n<untrusted_objective>\n") && text.includes("\n</untrusted_objective>\n");
 /** a fresh session's replay of the history before it (prompt-bridge.js buildPromptBlocks) */
 const HISTORY_OPENER = "<conversation_history>\n";
 const HISTORY_CLOSER = "\n</conversation_history>";
 const RECOVERED_OPENER = "<recovered_tool_results>\n";
 const RECOVERED_CLOSER = "\n</recovered_tool_results>";
-const HISTORY_INSTRUCTION = "The above is the conversation history so far, provided as context.";
-/** OmO's report of a background task that ended: `task completion name:… id:st_… <fields>`, then `result:"…"` */
-const TASK_COMPLETION = /^task completion (?:\(resumed turn\) )?name:(\S+) id:(st_[A-Za-z0-9_-]+) ([^\n]*)/;
+/** the instruction after the replay, in each wording senpi ships: to answer the message below, or to go on with a turn */
+const HISTORY_INSTRUCTIONS = new Set([
+  "The above is the conversation history so far, provided as context. Respond as the assistant to the user message below only. Never emit \"USER:\" or \"ASSISTANT:\" labels or continue the transcript.",
+  "The above is the conversation history so far, provided as context. There is no new user message: the last entries are results of tool calls you made in your current turn, not anything the user sent. Continue that turn as the assistant. Never emit \"USER:\" or \"ASSISTANT:\" labels or continue the transcript.",
+]);
+/**
+ * OmO's report of a background task that ended: `task completion name:… id:st_… <fields> status:… duration:…`,
+ * then `result:"…"`, then `next:` naming how to reach the task
+ */
+const TASK_COMPLETION = /^task completion (?:\(resumed turn\) )?name:(\S+) id:(st_[A-Za-z0-9_-]+) ((?:[^\n]* )?status:\S+ duration:[^\n]*)\nresult:"/;
 
-/** The card of OmO's report of a task that ended, as OmO's own transcript shows it; null when it is no such report. */
-function senpiTaskResult(text: string): OmoTaskResult | null {
+/**
+ * OmO's report of a task that ended at the start of a block, as the card OmO's own transcript shows,
+ * and how much of the block it takes; null when the block does not start with a whole report.
+ */
+function senpiTaskReport(text: string): { task: OmoTaskResult; length: number } | null {
   const head = TASK_COMPLETION.exec(text);
   if (head === null) return null;
   const [line, name, id, fields] = head as unknown as [string, string, string, string];
+  // the report ends with its closing quote, a `result_file:` line when OmO kept the whole result,
+  // and the `next:` line naming this task; then the block ends or senpi's next message follows
+  const trailer = new RegExp(`"\\n(?:result_file:\\S+\\n)?next:Use task_send\\(\\{ to: "${id}", message: "\\.\\.\\." \\}\\) to continue\\.(?=$|\\n\\n)`, "g");
+  trailer.lastIndex = line.length;
+  const closing = trailer.exec(text);
+  // a report with no `next:` line is the rest of the block, up to its closing quote
+  const end = closing !== null ? closing.index : text.length > line.length && text.endsWith("\"") ? text.length - 1 : -1;
+  if (end === -1) return null;
+  const result = text.slice(line.length, end);
   const field = (key: string): string | null => new RegExp(`(?:^| )${key}:(\\S+)`).exec(fields)?.[1] ?? null;
   const count = (key: string): number | null => { const value = field(key); return value !== null && /^\d+$/.test(value) ? Number(value) : null; };
   // `agent:explore(<model>)` or `category:deep-low(<model>)`; a fallback names the model that ran last: `fallback:<id>-><name>`
@@ -278,13 +299,8 @@ function senpiTaskResult(text: string): OmoTaskResult | null {
   const units: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1_000, ms: 1 };
   const parts = spent === undefined ? [] : [...spent.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)\b/g)];
   const duration = parts.length === 0 ? null : Math.round(parts.reduce((sum, [, amount, unit]) => sum + Number(amount) * units[unit!]!, 0));
-  let result = text.slice(line.length).replace(/^\n/, "");
-  if (result.startsWith("result:\"")) {
-    const next = result.lastIndexOf("\"\nnext:");
-    result = next !== -1 ? result.slice(8, next) : result.endsWith("\"") ? result.slice(8, -1) : result.slice(8);
-  }
   const agent = ran?.[1] ?? null;
-  return {
+  const task: OmoTaskResult = {
     id,
     title: name !== id ? name : agent ?? id,
     agent,
@@ -297,27 +313,37 @@ function senpiTaskResult(text: string): OmoTaskResult | null {
     result: result.slice(0, OMO_TASK_RESULT_MAX),
     ...(result.length > OMO_TASK_RESULT_MAX ? { result_cut: true } : {}),
   };
+  return { task, length: closing !== null ? closing.index + closing[0].length : text.length };
 }
 
 type Notice = Extract<ConversationPart, { kind: "notice" }>;
+type TaskResults = Extract<ConversationPart, { kind: "task_result" }>;
 
 /**
- * A block of senpi's own wrappers: the team members' messages it carries (shown as theirs), or null
- * when the block holds anything else.
+ * A block made only of senpi's own messages (it can join several with a blank line): the reports and
+ * team members' messages among them, in order, or null when the block holds anything else.
  */
-function senpiWrappers(text: string): Notice[] | null {
-  const peers: Notice[] = [];
+function senpiMessages(text: string): (OmoTaskResult | Notice)[] | null {
+  const found: (OmoTaskResult | Notice)[] = [];
   let rest = text;
-  for (let match = WRAPPED.exec(rest); match !== null && match[0].length > 0 && isSenpiWrapper(match[1]!); match = WRAPPED.exec(rest)) {
+  while (rest.length > 0) {
+    const report = senpiTaskReport(rest);
+    if (report !== null) {
+      found.push(report.task);
+      rest = rest.slice(report.length).replace(/^\n\n/, "");
+      continue;
+    }
+    const match = WRAPPED.exec(rest);
+    if (match === null || match[0].length === 0 || !isSenpiWrapper(match[1]!)) break;
     if (match[1] === "peer_message") {
       const body = match[3]!.trim();
       const from = /\bfrom="([^"]*)"/.exec(match[2] ?? "")?.[1]?.trim() ?? "";
-      if (body.length > 0) peers.push({ kind: "notice", text: body, source: `peer:${from}` });
+      if (body.length > 0) found.push({ kind: "notice", text: body, source: `peer:${from}` });
     }
     rest = rest.slice(match[0].length);
   }
   if (rest === text) return null;
-  return rest.trim() === "" || rest.startsWith(TAIL_CAPPED) || rest.startsWith(GOAL_CONTINUATION) ? peers : null;
+  return rest.trim() === "" || TAIL_CAPPED.test(rest) || isGoalContinuation(rest) ? found : null;
 }
 
 /** What senpi itself put in an SDK prompt, beside what a person or a lead sent. */
@@ -327,45 +353,56 @@ export interface SenpiPrompt {
   hosts: HostToolResult[];
   /** the prompt's blocks with senpi's own as null, and each break between its messages as an empty text */
   own: unknown[];
-  /** OmO's reports of tasks that ended, drawn as the card OmO's own transcript draws */
-  tasks: OmoTaskResult[];
-  /** a team member's message, drawn as another session's */
-  peers: Notice[];
+  /**
+   * In the order senpi sent them: OmO's reports of tasks that ended, drawn as the card OmO's own
+   * transcript draws, and team members' messages, drawn as another session's
+   */
+  notices: (TaskResults | Notice)[];
+}
+
+/** Where a fresh session's replay ends: the instruction after it (and after any recovered results), or -1. */
+function replayEnd(content: readonly unknown[]): number {
+  const instruction = (at: number): boolean => isTextBlock(content[at]) && HISTORY_INSTRUCTIONS.has(content[at].text);
+  // no history to replay: the instruction alone
+  if (instruction(0)) return 0;
+  if (!isTextBlock(content[0], HISTORY_OPENER)) return -1;
+  // the first closer the instruction follows (a replayed message can hold a closer of its own)
+  for (let at = 2; at < content.length; at++) {
+    if (!instruction(at)) continue;
+    if (isTextBlock(content[at - 1], HISTORY_CLOSER)) return at;
+    if (!isTextBlock(content[at - 1], RECOVERED_CLOSER)) continue;
+    let opener = at - 2;
+    while (opener > 0 && !isTextBlock(content[opener], RECOVERED_OPENER)) opener--;
+    if (opener > 0 && isTextBlock(content[opener - 1], HISTORY_CLOSER)) return at;
+  }
+  return -1;
 }
 
 /** Only a program's prompt (the SDK's) carries senpi's messages: a person at Claude Code's own prompt only quotes one. */
 export function senpiPrompt(entry: { type?: unknown; promptSource?: unknown; entrypoint?: unknown }, content: unknown): SenpiPrompt {
   const hosts = entryHostToolResults(entry, content);
   if (!Array.isArray(content) || !(entry.promptSource === "sdk" || (typeof entry.entrypoint === "string" && entry.entrypoint.startsWith("sdk")))) {
-    return { sdk: false, hosts, own: Array.isArray(content) ? content : [], tasks: [], peers: [] };
+    return { sdk: false, hosts, own: Array.isArray(content) ? content : [], notices: [] };
   }
   const senpi = hostedBlocks(hosts);
-  const span = (from: number, opener: string, closer: string): number => {
-    if (!isTextBlock(content[from], opener)) return from;
-    const end = content.findIndex((block, at) => at > from && isTextBlock(block, closer));
-    if (end === -1) return from;
-    for (let at = from; at <= end; at++) senpi.add(at);
-    return end + 1;
-  };
-  // a replay of the history before a fresh session (none when there was none), then the instruction to
-  // answer what follows it
-  const after = span(span(0, HISTORY_OPENER, HISTORY_CLOSER), RECOVERED_OPENER, RECOVERED_CLOSER);
-  if (isTextBlock(content[after]) && content[after].text.startsWith(HISTORY_INSTRUCTION)) senpi.add(after);
-  const tasks: OmoTaskResult[] = [];
-  const peers: Notice[] = [];
+  for (let at = replayEnd(content); at >= 0; at--) senpi.add(at);
+  const notices: (TaskResults | Notice)[] = [];
   const own = content.map((block, at) => {
     if (senpi.has(at)) return null;
     if (!isTextBlock(block)) return block;
     if (block.text === HOST_MESSAGE_BREAK) return { type: "text", text: "" };
-    const task = senpiTaskResult(block.text);
-    if (task !== null) { tasks.push(task); return null; }
-    if (block.text.startsWith(GOAL_CONTINUATION)) return null;
-    const carried = senpiWrappers(block.text);
-    if (carried === null) return block;
-    peers.push(...carried);
+    if (isGoalContinuation(block.text)) return null;
+    const messages = senpiMessages(block.text);
+    if (messages === null) return block;
+    for (const message of messages) {
+      if ("kind" in message) { notices.push(message); continue; }
+      // reports sent one after another share one card, as OmO's own wake does
+      const last = notices.at(-1);
+      if (last?.kind === "task_result") last.tasks.push(message); else notices.push({ kind: "task_result", tasks: [message] });
+    }
     return null;
   });
-  return { sdk: true, hosts, own, tasks, peers };
+  return { sdk: true, hosts, own, notices };
 }
 
 /** A parsed JSONL line's message shape (only the fields we read). */
@@ -642,8 +679,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       // senpi's notices are no one's typing: a task that ended is its card, a team member's message is
       // theirs, and the rest is what senpi told the model, hidden as Claude Code's own reminders are
       const ts = entry.timestamp ?? null;
-      if (sent.tasks.length > 0) turns.splice(noticeAt(), 0, { role: "user", ts, parts: [{ kind: "task_result", tasks: sent.tasks }] });
-      for (const peer of sent.peers) turns.splice(noticeAt(), 0, { role: "user", ts, parts: [peer] });
+      for (const notice of sent.notices) turns.splice(noticeAt(), 0, { role: "user", ts, parts: [notice] });
       // the results, the breaks around them and senpi's notices were senpi's, not the person's
       const blocks = sent.own;
       const invocations: ConversationPart[] = [];

@@ -90,6 +90,52 @@ describe("senpi's own notices in a Claude Code SDK prompt", () => {
     ].join("\n")))).toEqual([reminder, `${reminder}\nwhy is this here?`, "<details>mine</details>"]);
   });
 
+  describe("a program's prompt that only starts like one of senpi's", () => {
+    const sdk = (...texts: string[]) => JSON.stringify({ type: "user", promptSource: "sdk", entrypoint: "sdk-ts", message: { role: "user", content: texts.map((text) => ({ type: "text", text })) } });
+    const instruction = "The above is the conversation history so far, provided as context. Respond as the assistant to the user message below only. Never emit \"USER:\" or \"ASSISTANT:\" labels or continue the transcript.";
+
+    it("keeps the person's words", () => {
+      for (const text of [
+        "The above is the conversation history so far, provided as context. Please audit it for mistakes.",
+        "Continue working toward the active thread goal.\nBefore starting, tell me what that goal is.",
+        "<system-reminder>quoted reminder</system-reminder>\n[…notification tail capped…]\nWhy did this appear?",
+        "task completion name:review id:st_demo Please explain this log entry instead of running anything.",
+        "task completion name:r id:st_a status:completed duration:1s\nresult:\"done\" and also this question",
+      ]) {
+        expect(said(parseClaudeTranscript(sdk(text)))).toEqual([text]);
+        expect(turnStarts(Buffer.from(sdk(text)), "claude-transcript")).toEqual([0]);
+      }
+    });
+
+    it("hides a replay up to its instruction, not to a closer a replayed message holds", () => {
+      expect(said(parseClaudeTranscript(sdk("<conversation_history>\n", "USER:\n", "\n</conversation_history>", "ASSISTANT:\n", "Old answer", "\n</conversation_history>", instruction, "Actual question")))).toEqual(["Actual question"]);
+    });
+
+    it("keeps a result that holds what looks like the report's next line", () => {
+      const turns = parseClaudeTranscript(sdk("task completion name:r id:st_a agent:explore(m) status:error duration:850ms\nresult:\"one\"\nnext:two\""));
+      expect(cards(turns).map(({ id, status, duration_ms, result }) => ({ id, status, duration_ms, result }))).toEqual([{ id: "st_a", status: "failed", duration_ms: 850, result: "one\"\nnext:two" }]);
+    });
+
+    it("reads a block holding several of senpi's messages, a report that kept its whole result in a file among them", () => {
+      const block = "task completion name:a id:st_a agent:explore(m) status:completed duration:1s\nresult:\"cut\"\nresult_file:local:///tmp/st_a.txt\nnext:Use task_send({ to: \"st_a\", message: \"...\" }) to continue.\n\n"
+        + "task completion name:b id:st_b agent:explore(m) status:error duration:959ms\nresult:\"Task runner failed to start.\"\nnext:Use task_send({ to: \"st_b\", message: \"...\" }) to continue.\n\n"
+        + "<recalled-memory source=\"[[n.md]]\">\nnote\n</recalled-memory>";
+      const turns = parseClaudeTranscript(sdk(block));
+      expect(said(turns)).toEqual([]);
+      expect(cards(turns).map(({ id, status, result }) => ({ id, status, result }))).toEqual([{ id: "st_a", status: "completed", result: "cut" }, { id: "st_b", status: "failed", result: "Task runner failed to start." }]);
+      // a person's words after the reports keep the whole block theirs
+      expect(said(parseClaudeTranscript(sdk(`${block}\n\nand my question`)))).toEqual([`${block}\n\nand my question`]);
+    });
+
+    it("keeps the order senpi sent its notices in", () => {
+      const peer = (id: string) => `<peer_message from="${id}">ready</peer_message>`;
+      const task = (id: string) => `task completion name:${id} id:st_${id} agent:explore(m) status:completed duration:1s\nresult:"done"\nnext:Use task_send({ to: "st_${id}", message: "..." }) to continue.`;
+      const turns = parseClaudeTranscript(sdk(peer("a"), "\n\n", task("b"), "\n\n", peer("c"), "\n\n", task("d")));
+      expect(turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "task_result" ? part.tasks.map((t) => t.id) : part.kind === "notice" ? [part.source] : []))).toEqual(["peer:a", "st_b", "peer:c", "st_d"]);
+      expect(cards(turns).map((card) => card.result)).toEqual(["done", "done"]);
+    });
+  });
+
   describe("read in pages, as the chat reads a file", () => {
     const roots: string[] = [];
     afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
