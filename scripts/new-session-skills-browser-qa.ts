@@ -255,7 +255,6 @@ try {
         console.log("PASS phone: Codex's $ skills before any process, the chip in the message, one tab/create with the prompt behind -- on a double tap, nothing queued twice");
       } finally { await dark.close(); }
 
-
       // Claude Code, whose command line never takes the message: it starts with its model, effort and Ultracode
       // alone, the message rides on the request, the chat shows it pending, the bridge sends it once the agent
       // rests, and this page sends nothing over the socket at any point
@@ -493,6 +492,13 @@ try {
           assert.ok(field.x >= frame.x && field.x + field.width <= frame.x + frame.width, `Ultracode inside the dialog (${name})`);
           await assertUltracodeLine(claude, make === phone ? 390 : 1280);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll with Claude Code (${name})`);
+          if (make === phone) {
+            // the narrowest phone too: two shrunk columns rather than a stack, and the note gives way, never the line
+            await page.setViewportSize({ width: 320, height: 844 });
+            await assertUltracodeLine(claude, 320);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at 320 (${name})`);
+            await page.setViewportSize({ width: 390, height: 844 });
+          }
           await settled(page);
           await page.screenshot({ path: join(evidence, `${name}-claude-ultracode.png`) });
         } finally { await context.close(); }

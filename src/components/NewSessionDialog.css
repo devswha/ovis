@@ -130,10 +130,11 @@
   white-space: nowrap;
 }
 
-/* the launch's own choices, model and effort, side by side where they fit a field's width, else wrapped */
+/* the launch's own choices, model and effort, side by side at every width: a column is 9rem at least, or half
+   the row on a phone narrower than two of those */
 .new-session-launch {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, calc((100% - var(--space-3)) / 2)), 1fr));
   column-gap: var(--space-3);
 }
 
@@ -169,6 +170,12 @@
   color: var(--text);
   font-size: var(--fs-sm);
   cursor: pointer;
+}
+
+/* while the dialog starts the agent, the name reads as disabled as its switch */
+.new-session-ultracode .settings-toggle:disabled + .new-session-ultracode-label {
+  color: var(--text-dim);
+  cursor: default;
 }
 
 .new-session-ultracode-note {

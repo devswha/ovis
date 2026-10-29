@@ -1483,8 +1483,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   took too much of the dialog (the owner's review of #2266; @fivetaku's #2282 suggested the
   compact line). The name sits beside the switch, as in a Settings row, rather than above it as a
   field label; it is Claude Code's own term and stays English in every language. Model and Effort
-  sit side by side (`.new-session-launch`) and wrap where a column would fall under 9rem: two
-  columns at desktop and phone widths. Ultracode is off at every opening, and off adds
+  sit side by side (`.new-session-launch`) at every width: a column is 9rem at least, or half the
+  row on a phone narrower than two of those (320px). Ultracode is off at every opening, and off adds
   nothing to the launch, so Claude Code's own settings decide, as Agent default does; on adds
   `--settings '{"ultracode":true}'` after `--effort`, which keeps the level picked. A model that is
   not one word, or a model or effort the picked agent's launch does not take, disables Start and
