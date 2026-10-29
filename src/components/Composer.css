@@ -996,14 +996,17 @@
   color: var(--status-blocked);
 }
 
+/* pre-line: the draft a Send it did not send goes on its own line under the reason (draftSendNote) */
 .composer-note-text {
   flex: 1 1 12rem;
   min-width: 0;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 /* what the line leaves out (the advice, the PC's own words) folds under it: a dim Details toggle */
 .composer-note-details {
+  white-space: normal;
   margin-top: var(--space-1);
   color: var(--text-dim);
   font-size: var(--fs-xs);

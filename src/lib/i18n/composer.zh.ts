@@ -79,6 +79,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Not sent: Claude Code's input box in the terminal already holds “{draft}”.": "未发送：终端中 Claude Code 的输入框里已有“{draft}”。",
   "Clear it and send": "清除并发送",
   "Send it": "原样发送",
+  "Draft: “{draft}”": "草稿：“{draft}”",
   "Send anyway": "仍然发送",
   "Not sent: Claude Code's input box in the terminal may not be empty. It shows “{box}”.": "未发送：终端中 Claude Code 的输入框可能不是空的。输入框中显示“{box}”。",
   "Not sent: it waited too long behind an earlier message, and nothing was typed. Send it again.": "未发送：在前一条消息之后等待过久，且未输入任何内容。请重新发送。",
