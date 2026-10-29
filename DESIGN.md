@@ -2542,7 +2542,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   other than Pi, actual Enter delivery removes the pending row and refreshes the transcript. For
   a message submitted from Ovis Chat to Pi, Enter changes it to a read-only **Sent to Pi ·
   waiting for transcript** user bubble. Only a matching durable user record appended beyond the byte
-  boundary captured on that exact Pi file/session and extending its captured leaf removes it.
+  boundary captured on that exact Pi file/session and extending its captured leaf removes it, and
+  only one Pi stamped no earlier than that capture: Pi stamps a message when it is submitted, so an
+  earlier stamp is the same text typed into Pi before Ovis's Enter. Pi exposes no submission id,
+  so the same text submitted elsewhere after that Enter still confirms the receipt.
   Bounded byte-exact tail checks assume Pi's append-only history contract, not arbitrary older
   history corruption detection; changed inode, header, anchor tail or branch fails closed. Pi may
   stage input while status says idle/done during automatic compaction, so status and screen text are

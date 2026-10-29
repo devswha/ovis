@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { openSync, closeSync, readSync, statSync, fstatSync } from "node:fs";
 
 import { MAX_PI_ENTRY_BYTES, MAX_PI_INDEX_ENTRIES } from "./pi-tree.ts";
@@ -13,9 +14,12 @@ export interface PiDeliveryAnchor {
   session: string | null;
   /** Active leaf immediately before Ovis pressed Enter. */
   leaf: string | null;
-  /** Exact complete-line append boundary and its bounded, byte-exact tail identity. */
+  /** Exact complete-line append boundary and a digest of its bounded, byte-exact tail. */
   size: number;
   prefix: string;
+  /** Wall-clock time of this capture, taken before Ovis pressed Enter. Pi stamps a user message
+   * when it is submitted, so a record stamped earlier was submitted by someone else. */
+  at: number;
 }
 
 export interface PiDeliveryCandidate {
@@ -59,7 +63,8 @@ export class PiReceiptCapacity<Owner extends object> {
   }
 }
 
-type BranchEntry = { id: string; parent: string | null; role: string; text: string; start: number; end: number };
+/** `at`: Pi's own submission time of a user message, or null where the record carries none. */
+type BranchEntry = { id: string; parent: string | null; role: string; text: string; at: number | null; start: number; end: number };
 const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
 /** Permanent for this anchor: retrying cannot shrink its append or retained history. */
@@ -85,9 +90,12 @@ function bytesAt(fd: number, start: number, length: number): Buffer {
   }
   return bytes;
 }
+/** A short digest of the bounded tail, so a waiting receipt does not hold the tail's bytes. */
+const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+const EMPTY_TAIL = digest(Buffer.alloc(0));
 function tailAt(fd: number, end: number): string {
   const start = Math.max(0, end - TAIL_BYTES);
-  return bytesAt(fd, start, end - start).toString("latin1");
+  return digest(bytesAt(fd, start, end - start));
 }
 /** Both the opened descriptor and the path must still name the captured append-only prefix.
  * Growth after the snapshot is harmless; replacement/truncation or a changed boundary is not. */
@@ -109,9 +117,10 @@ function parseEntry(bytes: Buffer, start: number, end: number): BranchEntry {
     || (entry.parentId !== undefined && entry.parentId !== null && (typeof entry.parentId !== "string" || entry.parentId.length > 256))) throw new Error("Invalid Pi entry");
   const message = piMessage(entry), user = message?.role === "user";
   const skill = user ? skillPromptMessage(entry) : null;
+  const at = user && typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : null;
   return { id: entry.id, parent: typeof entry.parentId === "string" ? entry.parentId : null,
     role: typeof message?.role === "string" ? message.role : "",
-    text: user ? skill?.request ?? resultText(message.content) : "", start, end };
+    text: user ? skill?.request ?? resultText(message.content) : "", at, start, end };
 }
 
 /** Read just the final complete record, not the old branch or the shared tree index. */
@@ -159,6 +168,7 @@ export type PiDeliveryCapture = { anchor: PiDeliveryAnchor | null; retry: boolea
 
 /** Try once to capture Pi's active transcript position, distinguishing a concurrent write from an unreadable transcript. */
 export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = false, expectedSession?: string): PiDeliveryCapture {
+  const at = Date.now();
   let fd: number | undefined;
   let before: ReturnType<typeof statSync> | undefined;
   try {
@@ -169,12 +179,12 @@ export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = fals
     if (session === null || expectedSession !== undefined && session !== expectedSession) return { anchor: null, retry: false };
     const prefix = tailAt(fd, before.size), file = identity(before);
     if (!stable(fd, path, file, before.size, prefix)) return { anchor: null, retry: true };
-    return { anchor: { path, file, session, leaf: leaf.start === 0 ? null : leaf.id, size: before.size, prefix }, retry: false };
+    return { anchor: { path, file, session, leaf: leaf.start === 0 ? null : leaf.id, size: before.size, prefix, at }, retry: false };
   } catch (error) {
     const current = (() => { try { return statSync(path); } catch { return null; } })();
     const retry = error instanceof PiDeliveryIncomplete || before !== undefined && current !== null && (identity(current) !== identity(before) || current.size !== before.size || current.mtimeMs !== before.mtimeMs || current.ctimeMs !== before.ctimeMs);
     return { anchor: allowMissing && expectedSession && before === undefined && fileId(path) === null
-      ? { path, file: null, session: expectedSession, leaf: null, size: 0, prefix: "" } : null, retry };
+      ? { path, file: null, session: expectedSession, leaf: null, size: 0, prefix: EMPTY_TAIL, at } : null, retry };
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
@@ -200,7 +210,9 @@ export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing
  * Match Ovis-origin typed receipts to durable user records on the active Pi branch.
  * Candidates and matching entries are both FIFO. Unrelated user records are skipped, while a
  * later Ovis receipt may not cross an earlier unmatched one. Content is only a bounded scoped
- * correlator: Pi does not expose a submission id in its TUI or transcript.
+ * correlator: Pi does not expose a submission id in its TUI or transcript. A record Pi stamped
+ * before the receipt's capture was submitted before Ovis's Enter, so it never matches; the same
+ * text submitted elsewhere after that Enter remains indistinguishable.
  */
 export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; unavailable?: string[]; retry: boolean } {
   if (candidates.length === 0) return { consumed: [], changed: [], retry: false };
@@ -233,7 +245,7 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
       const match = chain.reverse().find((entry) => entry.start > afterMatched && entry.role === "user"
-        && entry.text === candidate.text && !consumedEntries.has(key(entry)));
+        && entry.text === candidate.text && (entry.at === null || entry.at >= anchor.at) && !consumedEntries.has(key(entry)));
       if (!match) break;
       consumed.push(candidate.id); matchedEntries.push(key(match)); afterMatched = match.start;
     }

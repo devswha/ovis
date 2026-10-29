@@ -9,9 +9,10 @@ import { capturePiDeliveryAnchor, capturePiDeliveryAnchorAttempt, capturePiDeliv
 const roots: string[] = [];
 const dir = () => { const root = mkdtempSync(join(tmpdir(), "ovis-pi-delivery-")); roots.push(root); return root; };
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
-const entry = (id: string, parentId: string | null, role: string, text: string) => JSON.stringify({
+/** `stamp` is the time Pi gave the message when it was submitted, before it was written. */
+const entry = (id: string, parentId: string | null, role: string, text: string, stamp = Date.now()) => JSON.stringify({
   type: "message", id, parentId, timestamp: "2026-10-24T00:00:00.000Z",
-  message: { role, content: [{ type: "text", text }], timestamp: Date.now() },
+  message: { role, content: [{ type: "text", text }], timestamp: stamp },
 }) + "\n";
 const header = (id = crypto.randomUUID()) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-10-24T00:00:00.000Z", cwd: "/tmp" }) + "\n";
 const candidate = (id: string, text: string, anchor: NonNullable<ReturnType<typeof capturePiDeliveryAnchor>>): PiDeliveryCandidate => ({ id, text, anchor });
@@ -81,9 +82,10 @@ describe("Pi delivery transcript matching", () => {
   it("reads bounded tails on a 200 MiB history and parses only appended records", () => {
     const path = join(dir(), "large.jsonl");
     writeFileSync(path, header());
-    const payload = "x".repeat(8 * 1024 * 1024);
-    for (let index = 0; index < 25; index++) appendFileSync(path, entry(`old-${index}`, index ? `old-${index - 1}` : null, "assistant", payload));
-    appendFileSync(path, entry("baseline", "old-24", "assistant", "done"));
+    // A sparse hole stands in for 200 MiB of older history: a reader that scanned it would count
+    // every byte, while the disk stores none of them.
+    fs.truncateSync(path, 200 * 1024 * 1024);
+    appendFileSync(path, "\n" + entry("baseline", "old-24", "assistant", "done"));
     const original = fs.readSync;
     let read = 0;
     const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
@@ -173,7 +175,7 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "first", anchor)]).consumed).toEqual(["one"]);
   });
   it("retries a capture invalidated by a concurrent append, then uses the stable anchor", async () => {
-    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc" };
+    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc", at: 1 };
     let captures = 0, waits = 0;
     const result = await capturePiDeliveryAnchorRetrying(anchor.path, false, undefined,
       () => ++captures < 3 ? { anchor: null, retry: true } : { anchor, retry: false },
@@ -253,6 +255,19 @@ describe("Pi delivery transcript matching", () => {
     const anchor = capturePiDeliveryAnchor(path)!;
     appendFileSync(path, entry("external", "a0", "user", "from the terminal") + entry("ours", "external", "user", "from Ovis"));
     expect(matchPiDeliveries(path, [candidate("r1", "from Ovis", anchor)])).toEqual({ consumed: ["r1"], changed: [], retry: false });
+  });
+
+  it("does not let a same-text record Pi stamped before the capture confirm the receipt", () => {
+    const path = join(dir(), "stamped.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    // Typed into Pi's own terminal and queued while it worked, before Ovis pressed Enter.
+    const typedEarlier = Date.now() - 1000;
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const consumed = new Set<string>();
+    appendFileSync(path, entry("external", "a0", "user", "same", typedEarlier));
+    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)], consumed)).toEqual({ consumed: [], changed: [], retry: false });
+    appendFileSync(path, entry("ours", "external", "user", "same"));
+    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)], consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
   });
 
   it("does not reuse a consumed transcript entry across reconciliation calls", () => {
