@@ -19,6 +19,7 @@ function errorNote(t: Translate, error: VoiceError | VoiceUnavailable): string |
     case "insecure": return t("Voice input needs HTTPS");
     case "permission": return t("Microphone permission was denied");
     case "no_mic": return t("No microphone found");
+    case "speech_unavailable": return t("Speech recognition is off or unavailable on this device");
     case "not_configured": return t("Add an OpenAI API key in Settings > Voice input");
     case "provider_auth": return t("The OpenAI key was refused");
     case "provider":
@@ -240,6 +241,9 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
   // a pointer already acted on pointerdown, so the click that follows its release is skipped;
   // a touch tap's click has detail 0 like a keyboard's, so detail cannot tell them apart
   const pointerUpAt = useRef(-Infinity);
+  // iOS lets browser speech start only from a user activation, which a touch's pointerdown is not
+  // (#2343): there a tap starts and finishes the take from its click, and a touch hold is not push-to-talk
+  const startOnClick = useRef(false);
   return (
     <span className={`voice-mic-wrap ${className}`} data-state={voice.state}>
       <span className="voice-mic-ring" ref={voice.bindRing} aria-hidden="true" />
@@ -254,12 +258,17 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
           if (event.button !== 0) return;
           // focus and the soft keyboard stay where they are
           event.preventDefault();
+          startOnClick.current = event.pointerType !== "mouse" && voice.engine === "browser";
+          if (startOnClick.current) return;
           event.currentTarget.setPointerCapture(event.pointerId);
           press();
         }}
-        onPointerUp={() => { pointerUpAt.current = performance.now(); voice.release(); }}
-        onPointerCancel={() => voice.release()}
-        onClick={() => { if (performance.now() - pointerUpAt.current > 500) press(); }}
+        onPointerUp={() => { if (startOnClick.current) return; pointerUpAt.current = performance.now(); voice.release(); }}
+        onPointerCancel={() => { if (startOnClick.current) startOnClick.current = false; else voice.release(); }}
+        onClick={() => {
+          if (startOnClick.current) { startOnClick.current = false; press(); }
+          else if (performance.now() - pointerUpAt.current > 500) press();
+        }}
       >
         {recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}
       </button>

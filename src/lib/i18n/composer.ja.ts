@@ -107,6 +107,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Cancel dictation": "音声入力をキャンセル",
   "Insert dictation": "音声入力を挿入",
   "No microphone found": "マイクが見つかりません",
+  "Speech recognition is off or unavailable on this device": "この端末の音声認識がオフか、使用できません",
   "No microphone input": "マイク入力がありません",
   "Ready…": "準備完了…",
   "Recording": "録音中",

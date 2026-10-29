@@ -107,6 +107,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Cancel dictation": "取消听写",
   "Insert dictation": "插入听写内容",
   "No microphone found": "未找到麦克风",
+  "Speech recognition is off or unavailable on this device": "此设备的语音识别已关闭或不可用",
   "No microphone input": "没有麦克风输入",
   "Ready…": "就绪…",
   "Recording": "录音中",

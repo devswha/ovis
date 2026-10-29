@@ -107,6 +107,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Cancel dictation": "받아쓰기 취소",
   "Insert dictation": "받아쓰기 내용 삽입",
   "No microphone found": "마이크를 찾을 수 없습니다",
+  "Speech recognition is off or unavailable on this device": "이 기기의 음성 인식이 꺼져 있거나 사용할 수 없습니다",
   "No microphone input": "마이크 입력 없음",
   "Ready…": "준비…",
   "Recording": "녹음 중",
