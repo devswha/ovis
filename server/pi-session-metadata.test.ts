@@ -211,6 +211,34 @@ describe("Pi native label semantics", () => {
 });
 
 describe("Pi stat-keyed streaming reader", () => {
+  it("preserves long header checkpoints when empty files are interleaved between them", async () => {
+    jest.useFakeTimers();
+    spyOn(performance, "now").mockReturnValue(0);
+    const f = fixture();
+    for (let n = 0; n < 50; n++) {
+      const time = 1_790_000_000 + (50 - n) * 7;
+      const path = join(f.folder, `long-${n}.jsonl`);
+      writeFileSync(path, line({
+        type: "session", version: 3, id: `long-${n}`, cwd: process.cwd(),
+        ignored: "x".repeat(70 * 1024),
+      }) + name(`Session ${n}`));
+      utimesSync(path, time, time);
+      if (n < 49) for (let gap = 1; gap <= 6; gap++) {
+        const empty = join(f.folder, `empty-${n}-${gap}.jsonl`);
+        writeFileSync(empty, "");
+        utimesSync(empty, time - gap, time - gap);
+      }
+    }
+    // 344 candidates: cached nulls count too, or they evict each long-header checkpoint.
+    await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
+    const rows = await f.list();
+    // The first 200 candidates contain 29 long headers. The next open must finish them.
+    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 29 }, (_, n) => `long-${n}`));
+    expect(rows.map((row) => row.title)).toEqual(Array.from({ length: 29 }, (_, n) => `Session ${n}`));
+    expect(f.reader.cacheSize()).toBeLessThanOrEqual(200);
+    expect(f.io.calls).toBe(58);
+  });
+
   it("keeps newest header checkpoints when more long headers exist than cache entries", async () => {
     jest.useFakeTimers();
     spyOn(performance, "now").mockReturnValue(0);

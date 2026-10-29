@@ -512,16 +512,22 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
   const selected: Array<{ file: Found; header: NonNullable<PiLabel["header"]> }> = [];
   let incomplete = false;
   let unfinishedHeaders = 0;
+  let cacheTouches = 0;
   // Establish rows before a large transcript can consume the label budget. Header work has
   // both byte and elapsed-time bounds; an unknown header must never imply an empty store.
   for (const file of files) {
-    // Reserve progress for the newest unknown headers instead of churning the 256-entry cache.
-    if (rows.length >= MAX_ROWS || unfinishedHeaders >= MAX_ROWS) break;
+    // Every potentially cached kind, including null, counts: 200 < the reader's 256 slots.
+    // Label scans revisit this same set, so one traversal cannot evict its own checkpoints.
+    if (rows.length >= MAX_ROWS || unfinishedHeaders >= MAX_ROWS || cacheTouches >= 200) break;
+    let rejected = false;
     try {
       const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), headerDeadline, {
         path: file.real, scope,
         // Reject ineligible headers before caching them, and spend folder-identity checks once.
-        acceptHeader: (header) => PI_VERSIONS.has(header.version) && header.id !== "" && header.cwd !== "" && cwdMatches(budget, header.cwd, cwds),
+        acceptHeader: (header) => {
+          rejected = !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds);
+          return !rejected;
+        },
       }, "header");
       const header = label?.header;
       if (label && header) {
@@ -531,6 +537,9 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
     } catch (error) {
       if (!(error instanceof PiMetadataBusy) || error.reason === "stopped" || error.reason === "queue") throw error;
       incomplete = true;
+    } finally {
+      // Explicitly rejected headers never enter the cache; discovery still bounds their I/O.
+      if (!rejected) cacheTouches++;
     }
   }
   if (rows.length === 0 && incomplete) throw new PiMetadataBusy();
