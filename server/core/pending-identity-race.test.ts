@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
+import * as claudeStore from "../claude-store.ts";
 import * as client from "../herdr/client.ts";
 import * as opencode from "../opencode-native.ts";
 import * as pi from "../pi.ts";
@@ -85,6 +86,81 @@ it.each([
   expect(writes).toEqual(expected);
   expect(frame.removed ?? []).toEqual([]);
   expect(frame.messages.map((message) => message.state)).toEqual([state]);
+});
+
+// Claude moves to another session in the same process (/clear, /resume, a `claude attach` job's state rewritten): its
+// PID stays in front, so only the session it names tells the message's target went (#2279). `misses` reads after the
+// switch find no session, as a record caught while being rewritten does, before `to` is read.
+it.each([
+  { when: "box", to: "B", misses: 0, label: "the input-box read before the paste, to a readable session", writes: [] as string[], state: "held" },
+  { when: "box", to: null, misses: 0, label: "the input-box read before the paste, to an unreadable session", writes: [] as string[], state: "held" },
+  { when: "box", to: "A", misses: 1, label: "the input-box read before the paste, unreadable for one read (control)", writes: ["paste", "Enter"], state: "removed" },
+  { when: "paste", to: "B", misses: 0, label: "the paste, to a readable session", writes: ["paste"], state: "uncertain" },
+  { when: "paste", to: null, misses: 0, label: "the paste, to an unreadable session", writes: ["paste"], state: "uncertain" },
+  { when: "paste", to: "A", misses: 1, label: "the paste, unreadable for one read (control)", writes: ["paste", "Enter"], state: "removed" },
+])("keeps a queued Claude message from another session the same process switched to during $label (#2279)", async ({ when, to, misses: miss, writes: expected, state }) => {
+  const settled = Promise.withResolvers<PendingFrame>();
+  let session: string | null = "A";
+  let misses = 0;
+  const sessionReads = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () => {
+    if (misses > 0) { misses--; return null; }
+    return session;
+  });
+  const switchSession = (): void => { session = to; misses = miss; };
+  spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
+  spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] }));
+  let pasted = false;
+  let boxReads = 0;
+  spyOn(client, "paneRead").mockImplementation(async () => {
+    // read 1 is the queueing's, read 2 the check's screen, read 3 Claude's input box (freeClaudeBox) after the check
+    if (when === "box" && !pasted && ++boxReads === 3) switchSession();
+    return { text: "" } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
+  const writes: string[] = [];
+  spyOn(client, "paneSendText").mockImplementation(async () => {
+    writes.push("paste");
+    pasted = true;
+    if (when === "paste") switchSession();
+  });
+  spyOn(client, "paneSendKeys").mockImplementation(async (_pane: string, keys: string[]) => { writes.push(...keys); });
+
+  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "claude", agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
+  const owner = {
+    data: connectionData({ deviceId: undefined, readOnly: false }),
+    getBufferedAmount: () => 0,
+    send: (value: string) => {
+      const frame = JSON.parse(value) as ServerMessage;
+      if (frame.type === "pending-messages" && (frame.removed?.length || frame.messages.some((message) => message.state === "held" || message.state === "uncertain"))) settled.resolve(frame);
+      return 1;
+    },
+  } as Client;
+  owner.data.attached.set("p", { keepSize: false });
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = tail.catch(() => {}).then(task); tail = run; return run; };
+  const facts = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 120 };
+  const delivery = createPendingDelivery({
+    options: { submitDelayMs: 0 }, clients: new Set([owner]), attachments: new Map(),
+    sight: (() => ({ facts: () => facts, write: () => {} })) as unknown as Parameters<typeof createPendingDelivery>[0]["sight"],
+    serialize, lastTyped: new Map(), submitText: async () => {}, authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ ...pane }] }) as unknown as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+
+  await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
+  // queued for session A, as the pane's Claude named it then
+  expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "queued" }]);
+  expect(sessionReads).toHaveBeenCalled();
+  pane.agent_status = "idle";
+  delivery.pending.status("p", "idle");
+  delivery.drainPending("p");
+  const frame = await settled.promise;
+
+  expect(writes).toEqual(expected);
+  if (state === "removed") expect(frame.removed ?? []).toHaveLength(1);
+  else {
+    expect(frame.removed ?? []).toEqual([]);
+    expect(frame.messages.map((message) => message.state)).toEqual([state]);
+  }
 });
 
 it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged"] as const)(
