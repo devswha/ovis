@@ -96,7 +96,7 @@ export interface ServerContext {
   timeout(request: Request, seconds: number): void;
   upgrade(request: Request, options: { headers?: HeadersInit; data: SocketData }): boolean;
   readonly port: number | undefined;
-  readonly peer: { kind: "socket" };
+  readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string };
   readonly services: RequestServices;
 }
 
@@ -113,7 +113,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   return compressResponse(request, await (async (): Promise<Response | undefined> => {
   const url = new URL(request.url);
   let { pathname } = url;
-  const bridgeAuthorized = isAuthenticated(request, bridgeToken);
+  const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
+  const bridgeAuthorized = relayPeer === undefined && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
@@ -121,16 +122,16 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
   const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
   const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
-  const ip = ctx.requestIP(request);
+  const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
   const loopback = ip !== null && isLoopbackAddress(ip.address);
-  const forwarded = cameThroughProxy(request.headers);
-  const funnel = request.headers.has("tailscale-funnel-request");
-  const tailscaleLogin = request.headers.get("tailscale-user-login");
-  const forwardedFor = request.headers.get("x-forwarded-for");
+  const forwarded = relayPeer === undefined && cameThroughProxy(request.headers);
+  const funnel = relayPeer === undefined && request.headers.has("tailscale-funnel-request");
+  const tailscaleLogin = relayPeer === undefined ? request.headers.get("tailscale-user-login") : null;
+  const forwardedFor = relayPeer === undefined ? request.headers.get("x-forwarded-for") : null;
   const requestHost = request.headers.get("host");
   // the guessing budget of the address that asks (auth.ts): a token presented while it waits is not compared
-  const client = authClient(ip?.address ?? null, request.headers);
-  const presented = presentedToken(request, token, client);
+  const client = relayPeer === undefined ? authClient(ip?.address ?? null, request.headers) : `relay:${relayPeer.id}`;
+  const presented = relayPeer === undefined ? presentedToken(request, token, client) : null;
   // counted at once, before any await below lets a concurrent guess pass the same check. Every
   // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
   // the connection server's own bridge token does not
@@ -138,15 +139,18 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const tokenMatched = presented === "match";
   let pairedDevice: DeviceMatch | null;
   try {
-    pairedDevice = devices.match(deviceCookieValue(parseCookies(request.headers.get("cookie"))));
+    pairedDevice = relayPeer ?? devices.match(deviceCookieValue(parseCookies(request.headers.get("cookie"))));
   } catch (error) {
     // First-cookie confirmation is an authorization write, not best-effort telemetry.
     return errorResponse(error);
   }
   const requestShape = { loopback, forwarded, funnel, tailscaleLogin, forwardedFor, serveOnly };
-  const identity = await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && (pathname === "/ws" || pathname.startsWith("/api/")), requestHost);
-  const portalProven = options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false;
+  const identity = relayPeer === undefined
+    ? await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && (pathname === "/ws" || pathname.startsWith("/api/")), requestHost)
+    : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
+  const portalProven = relayPeer === undefined && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
   const access = decideAccess({
+    relayPeer,
     ...requestShape,
     host: requestHost,
     tokenMatched,
@@ -308,6 +312,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   if (pathname === "/api/auth") {
     setRequestRoute(pathname);
+    if (relayPeer !== undefined) return jsonResponse({ error: { code: "device_key_required", message: "Relay access uses a paired device key" } }, 403);
     // signing out also ends the page media this browser was given (by its device, else by its address)
     // a browser can hold the token and a device cookie at once, and its renders are then the
     // client's: signing out ends both kinds
@@ -392,7 +397,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       ? { host: hostname } : undefined;
     // what protects this server, for a client that got in (a watching one too) and nobody else;
     // per request, so never stored. The ingress is this request's, proven or `unknown`.
-    const ingress = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+    const ingress = relayPeer === undefined ? observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) }) : "relay";
     const security: SecuritySummary | undefined = access.level === "full" ? {
       token_configured: token !== "",
       pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
 import { DeviceStore } from "./devices.ts";
+import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { privateStateFs } from "./private-state.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { MachineManager } from "./machines.ts";
@@ -14,6 +15,84 @@ import { workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import type { DevicePairedEvent, DevicesRevokedAll, MachineEvent, ServerMessage } from "../shared/protocol.ts";
 
 const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
+
+it("pairs a relay device, authenticates its key, and dispatches with the stored role", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-contract-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "configured", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    const store = app.context.services.devices;
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    const paired = store.pairRelay(store.startPairing().code, "Relay phone", publicKey);
+    if (!paired) throw new Error("Expected relay enrollment");
+    const nonce = crypto.getRandomValues(new Uint8Array(32));
+    const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey,
+      Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from("server-contract")]))).toString("base64url");
+    for (const role of ["drive", "watch"] as const) {
+      store.update(paired.device.id, { role });
+      const device = await store.matchRelay(paired.device.id, nonce, signature, "server-contract");
+      expect(device?.role).toBe(role);
+      if (!device) throw new Error("Expected authenticated relay device");
+      const ctx: ServerContext = { ...app.context, peer: { kind: "relay", device, sessionId: `session-${role}` }, requestIP: () => null, timeout: () => {} };
+      const health = await handleRequest(new Request("https://relay.ovis.invalid/api/health"), ctx);
+      expect(health?.status).toBe(200);
+      expect(await health?.json()).toMatchObject({ auth: { via: "relay", role }, security: { observed_ingress: "relay", pairing_gate: "closed" } });
+      const listing = await handleRequest(new Request("https://relay.ovis.invalid/api/devices"), ctx);
+      expect(await listing?.json()).toEqual({ devices: [expect.objectContaining({ id: device.id, role, current: true, via_relay: true })] });
+      if (role === "watch") {
+        const mutation = await handleRequest(new Request("https://relay.ovis.invalid/api/preferences", { method: "PUT", headers: guard, body: "{}" }), ctx);
+        expect(mutation?.status).toBe(403);
+        expect(await mutation?.json()).toMatchObject({ error: { code: "read_only" } });
+      } else {
+        const cookiePair = await handleRequest(new Request("https://relay.ovis.invalid/api/devices/pair", { method: "POST", headers: guard, body: "{}" }), ctx);
+        expect(cookiePair?.status).toBe(403);
+        expect(await cookiePair?.json()).toMatchObject({ error: { code: "device_key_required" } });
+        expect(cookiePair?.headers.has("set-cookie")).toBe(false);
+      }
+    }
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("never promotes forged relay headers or cookies on a real HTTP socket", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-forged-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "configured", tailscaleOwner: "owner@example.com", machines: false, sidecar: false });
+  try {
+    for (const headers of [
+      new Headers({ "x-ovis-relay-peer": "1" }),
+      new Headers({ "x-ovis-relay-peer": "1", "x-forwarded-for": "100.64.0.9", "tailscale-user-login": "another@example.com", cookie: "ovis_device=relay:0123456789abcdef" }),
+    ]) {
+      const health = await fetch(`http://127.0.0.1:${app.port}/api/health`, { headers });
+      expect(await health.json()).toMatchObject({ auth: { authenticated: false, reason: "token_required" } });
+      const access = await fetch(`http://127.0.0.1:${app.port}/api/access`, { headers });
+      expect(access.status).toBe(401);
+    }
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("returns pairing_rate_limited on the eleventh HTTP code issue", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-issue-limit-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    for (let i = 0; i < 10; i++) {
+      const response = await fetch(`http://127.0.0.1:${app.port}/api/devices/pair/start`, { method: "POST", headers: guard });
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+    }
+    const limited = await fetch(`http://127.0.0.1:${app.port}/api/devices/pair/start`, { method: "POST", headers: guard });
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ error: { code: "pairing_rate_limited" } });
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
 
 /** Fails every flush of a private state file, before its rename, until restored. */
 function failFileSync() {
