@@ -25,7 +25,7 @@ const LOGIN = {
  * default one is reached by removing the variable, not by leaving it out of the tab's environment.
  */
 function credentialHomePrefix(shell: PaneShell, name: string, home: string | null): string {
-  if (shell === "posix") return shellCommandLine("posix", "env", home === null ? ["-u", name] : [`${name}=${home}`]);
+  if (shell === "posix") return `${shellCommandLine("posix", "env", home === null ? ["-u", name] : [`${name}=${home}`])} `;
   if (shell === "powershell") return home === null ? `Remove-Item Env:${name} -ErrorAction SilentlyContinue; ` : `$env:${name} = ${psQuote(home)}; `;
   if (/["%\r\n]/.test(home ?? "")) throw new Error("this credential home cannot be typed into cmd.exe");
   return `set "${name}=${home ?? ""}" & `;
@@ -122,6 +122,7 @@ export class UsageLoginService {
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
       if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
       const snapshot = await sessionSnapshot();
+      if (request.signal.aborted) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
       const workspace = snapshot.workspaces[0];
       const options = {
         // a home given as a relative path was found from this server's directory, and means it there
@@ -140,7 +141,7 @@ export class UsageLoginService {
         unusedCredentialHome = null;
         await paneSendKeys(paneId, ["Enter"]);
       } else {
-        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place ? `${credentialHomePrefix("posix", homeVariable, againHome)} ` : ""}${shellCommandLine("posix", executable, args)}\n`);
+        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place ? credentialHomePrefix("posix", homeVariable, againHome) : ""}${shellCommandLine("posix", executable, args)}\n`);
         unusedCredentialHome = null;
       }
       return jsonResponse({
