@@ -936,9 +936,10 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
  * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
  * drops it): the cap is set above what is held at once in use, sent bodies waiting for a
  * collection included. Sent bodies that lived through a collection while they were sent wait for
- * one of Bun's own full collections, so that count rises and falls with them: at the most, with
- * no cap and a heap of a million objects, 1,942 over 60,000 downloads 16 at a time and 6,657 over
- * 30,000 downloads 64 at a time. The cap stays well above that (`most`), but never past a quarter
+ * one of Bun's own full collections, and until one runs their count grows with the downloads: with
+ * no cap and a heap of a million objects, 1,942 at the most over 60,000 downloads 16 at a time,
+ * 6,657 over 30,000 downloads 64 at a time, and about 270 more a second over a longer run 64 at a
+ * time with no full collection. The cap stays well above that (`most`), but never past a quarter
  * of this process's open files, which the server's own sockets, terminals and file threads need
  * too. Bun raises that limit to the hard one at start: hundreds of thousands on most Linux
  * systems, the only one that sends such a body, and 1,024 on some, where the cap stays 256.
@@ -968,9 +969,10 @@ const COLLECTION_MS = 250;
 let collectionAsked = -Infinity;
 /**
  * Past `collectPast` bodies held, most were sent long ago and only wait for a collection: one is
- * asked for on the collector's own threads (`Bun.gc(false)`). That collects only what was made
- * since the last collection, so it lets go of bodies sent since then (about half the peak in a
- * burst of downloads), not ones that lived through a collection while they were sent. Never a
+ * asked for on the collector's own threads (`Bun.gc(false)`). The collector may then collect only
+ * what was made since the last collection, letting go of bodies sent since then (about half the
+ * peak in a burst of downloads) and leaving ones that lived through a collection while they were
+ * sent until a full one. Never a
  * forced one (`Bun.gc(true)`), which would let all of them go but stops every terminal and request
  * on this thread for as long as it takes on the whole heap; and at most once per `COLLECTION_MS`,
  * so a player that really holds many does not ask on every answer.
