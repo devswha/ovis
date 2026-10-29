@@ -251,6 +251,15 @@ self.addEventListener("notificationclick", (event) => {
   // Remember the intent before any lookup: an older focus can finish while this one
   // is still finding its window.
   latestNotificationSelection = selection;
+  // a tapped pane alert, for the daily anonymous usage counts (server/telemetry.ts): the server
+  // counts it only where counts are on, and a refusal (signed out, an older server) changes nothing
+  if (paneId && typeof self.fetch === "function") {
+    event.waitUntil(self.fetch("/api/telemetry", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-update": "1" },
+      body: JSON.stringify({ alert_opened: true }),
+    }).catch(() => {}));
+  }
   event.waitUntil(
     (async () => {
       // only an app window handles the selection: focusing a reader tab would swallow the tap

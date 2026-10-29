@@ -1,8 +1,10 @@
 /**
  * Anonymous install and update counts (shared/telemetry.ts). One event when an install first
  * runs, one when it runs a new version; nothing in between. Plus one active message per UTC day
- * a browser visits, naming the kinds of coding agents running then; a later visit that day
- * resends it only when a new kind appeared. No event or message goes out before the app has
+ * a browser visits, naming the kinds of coding agents running then and the day's usage (the
+ * kinds of screen and ways in of its visits, and its prompt answers and pane alerts counted by
+ * `tally`); a later visit that day resends it when a new kind appeared, or the counts changed
+ * and USAGE_RESEND_MS passed. No event or message goes out before the app has
  * shown its notice once, while the switch is off, or where the environment says not to.
  * Events include the latest browser's schema-validated settings snapshot; free-form strings and
  * account identifiers are summarized or omitted by the browser's projection.
@@ -12,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTIVE_LATE_DAYS, harnessOf, NOTICE_VERSION, telemetryHarnesses, telemetrySettings, type InstallMethod, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetryHarness, type TelemetrySettings, type TelemetryStatus } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, emptyUsage, harnessOf, NOTICE_VERSION, sameUsage, TELEMETRY_COUNT_MAX, telemetryHarnesses, telemetrySettings, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetrySettings, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount } from "../shared/telemetry.ts";
 import { badRequest, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
 
@@ -24,8 +26,10 @@ const SEND_TIMEOUT_MS = 10_000;
 const START_DELAY_MS = 15_000;
 /** after the notice was shown, time to read it and press Turn off before the first event goes */
 export const NOTICE_GRACE_MS = 10 * 60_000;
-const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings"]);
+const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** a change in today's counts alone goes out at most this often; a new kind (agent, screen, way in) and earlier days go at once */
+export const USAGE_RESEND_MS = 60 * 60_000;
 
 interface ActiveDay {
   /** the UTC date of the browser visit */
@@ -34,6 +38,25 @@ interface ActiveDay {
   harnesses: TelemetryHarness[];
   /** the set last delivered for that day; null before one was */
   sent: TelemetryHarness[] | null;
+  /** a browser opened the app that day. A count made on a day without one (an alert at night) waits
+   * for a visit that day and is never sent alone: the active row is a day the app was used */
+  visited: boolean;
+  /** the day's use so far */
+  usage: TelemetryUsage;
+  /** the usage last delivered for that day; null before one was */
+  sent_usage: TelemetryUsage | null;
+  /** when that delivery was, in ms; null before one was */
+  sent_at: number | null;
+}
+
+/** the same kinds of screen and ways in, whatever the counts */
+function sameKinds(a: TelemetryUsage, b: TelemetryUsage): boolean {
+  return a.surfaces.join() === b.surfaces.join() && a.ingress.join() === b.ingress.join();
+}
+
+/** `list` with `item` added, sorted, without repeats */
+function withKind<T extends string>(list: readonly T[], item: T | null | undefined): T[] {
+  return item ? [...new Set([...list, item])].sort() : [...list];
 }
 
 interface Timer { clear(): void }
@@ -55,7 +78,11 @@ function readActive(value: unknown): ActiveDay[] {
     const sent = item["sent"] === null ? null : telemetryHarnesses(item["sent"]);
     if (!harnesses || (item["sent"] !== null && !sent)) continue;
     if (days.some((known) => known.day === item["day"])) continue;
-    days.push({ day: item["day"], harnesses, sent });
+    // a file from before usage was counted: its days were visits, and what was sent for them is settled
+    const usage = telemetryUsage(item["usage"]) ?? emptyUsage();
+    const sentUsage = item["sent_usage"] === undefined ? (sent === null ? null : usage) : telemetryUsage(item["sent_usage"]);
+    const sentAt = typeof item["sent_at"] === "number" && Number.isFinite(item["sent_at"]) ? item["sent_at"] : null;
+    days.push({ day: item["day"], harnesses, sent, visited: item["visited"] !== false, usage, sent_usage: sentUsage, sent_at: sentAt });
   }
   return days.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
@@ -121,6 +148,10 @@ function telemetryChange(value: unknown): TelemetryChange | null {
           clean.settings = settings;
           break;
         }
+        case "alert_opened":
+          if (descriptor.value !== true) return null;
+          clean.alert_opened = true;
+          break;
       }
     }
     if (clean.notice_seen === true && clean.notice_version !== NOTICE_VERSION) return null;
@@ -223,7 +254,7 @@ export class Telemetry {
     return true;
   }
 
-  private activeMessage(entry?: { day: string; harnesses: TelemetryHarness[] }): TelemetryActive {
+  private activeMessage(entry?: { day: string; harnesses: TelemetryHarness[]; usage: TelemetryUsage }): TelemetryActive {
     return {
       event: "active",
       day: entry?.day ?? utcDay(this.now()),
@@ -233,6 +264,7 @@ export class Telemetry {
       arch: this.options.arch ?? process.arch,
       install_method: installMethod(this.options.env),
       harnesses: [...(entry?.harnesses ?? [])],
+      usage: entry ? { ...entry.usage, surfaces: [...entry.usage.surfaces], ingress: [...entry.usage.ingress] } : emptyUsage(),
     };
   }
 
@@ -275,6 +307,7 @@ export class Telemetry {
     if (clean.settings !== undefined) this.saved.settings = clean.settings;
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
     this.persist();
+    if (clean.alert_opened) this.tally("alerts_opened");
     // turned off while an event is on its way: stop it rather than let it land
     if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); }
     void this.report();
@@ -290,15 +323,35 @@ export class Telemetry {
     return this.saved.enabled && !this.blocked();
   }
 
+  /**
+   * Counts one prompt answer, alert delivered or alert tapped in today's usage; never while visits
+   * are not counted. It sends nothing by itself: the day's next visit (or a later day's) carries it.
+   */
+  tally(kind: TelemetryUsageCount): void {
+    if (!this.counting()) return;
+    const day = utcDay(this.now());
+    this.prune();
+    if (!this.saved.active.some((entry) => entry.day === day)) {
+      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: false, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+    }
+    const entry = this.saved.active.find((known) => known.day === day);
+    if (!entry || entry.usage[kind] >= TELEMETRY_COUNT_MAX) return;
+    entry.usage = { ...entry.usage, [kind]: entry.usage[kind] + 1 };
+    try { this.persist(); } catch (error) {
+      console.error(`telemetry: the ${kind} count could not be recorded (${message(error)})`);
+    }
+  }
+
   start(): void { this.schedule(START_DELAY_MS); }
   stop(): void { clearTimeout(this.timer); this.abort?.abort(); this.activeTimer?.clear(); this.activeAbort?.abort(); }
 
   /**
    * A browser visit: records today (the day of this call, even when the agents arrive after
-   * midnight) with the harness kinds of the given pane agents, then delivers what is owed. A
-   * pane read that fails still counts the visit with the kinds known so far.
+   * midnight) with the harness kinds of the given pane agents, and the kind of screen and the way
+   * in the visit came by, then delivers what is owed. A pane read that fails still counts the
+   * visit with the kinds known so far.
    */
-  active(agents: readonly (string | null | undefined)[] | Promise<readonly (string | null | undefined)[]>): Promise<void> {
+  active(agents: readonly (string | null | undefined)[] | Promise<readonly (string | null | undefined)[]>, visit: { surface?: TelemetrySurface | null; ingress?: TelemetryIngress | null } = {}): Promise<void> {
     // a visit made while off is not kept for when the switch is turned on again
     if (!this.counting()) {
       Promise.resolve(agents).catch(() => {});
@@ -306,12 +359,22 @@ export class Telemetry {
     }
     const day = utcDay(this.now());
     const pruned = this.prune();
-    let appended = false;
+    let changed = false;
     if (!this.saved.active.some((entry) => entry.day === day)) {
-      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null }]);
-      appended = true;
+      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+      changed = true;
     }
-    if (appended || pruned) {
+    const today = this.saved.active.find((entry) => entry.day === day);
+    if (today) {
+      const surfaces = withKind(today.usage.surfaces, visit.surface);
+      const ingress = withKind(today.usage.ingress, visit.ingress);
+      if (!today.visited || surfaces.join() !== today.usage.surfaces.join() || ingress.join() !== today.usage.ingress.join()) {
+        today.visited = true;
+        today.usage = { ...today.usage, surfaces, ingress };
+        changed = true;
+      }
+    }
+    if (changed || pruned) {
       try { this.persist(); } catch (error) {
         console.error(`telemetry: the visit could not be recorded (${message(error)})`);
         return Promise.resolve();
@@ -356,7 +419,12 @@ export class Telemetry {
     }
     const seen = this.saved.notice_seen_at === null ? NaN : Date.parse(this.saved.notice_seen_at);
     if (!this.saved.enabled || Number.isNaN(seen) || this.blocked()) return Promise.resolve();
-    const owed = (entry: ActiveDay) => entry.sent === null || !sameHarnesses(entry.sent, entry.harnesses);
+    const today = utcDay(this.now());
+    const owed = (entry: ActiveDay) => entry.visited && (entry.sent === null || entry.sent_usage === null
+      // a new kind of agent, screen or way in goes at once, as does a day already over
+      || !sameHarnesses(entry.sent, entry.harnesses) || !sameKinds(entry.sent_usage, entry.usage)
+      // today's counts alone wait USAGE_RESEND_MS since the day's last delivery
+      || (!sameUsage(entry.sent_usage, entry.usage) && (entry.day < today || entry.sent_at === null || this.now() - entry.sent_at >= USAGE_RESEND_MS)));
     if (!this.activeSending && !this.saved.active.some(owed)) return Promise.resolve();
     const wait = seen + (this.options.noticeGraceMs ?? NOTICE_GRACE_MS) - this.now();
     if (wait > 0) {
@@ -393,6 +461,8 @@ export class Telemetry {
           const entry = this.saved.active.find((known) => known.day === active.day);
           if (entry) {
             entry.sent = active.harnesses;
+            entry.sent_usage = active.usage;
+            entry.sent_at = this.now();
             this.persist();
           }
         }

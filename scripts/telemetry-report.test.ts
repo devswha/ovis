@@ -45,6 +45,9 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "SELECT COUNT(DISTINCT install_id) FROM active WHERE day >= date('now', '-6 days');",
       "SELECT COUNT(DISTINCT install_id) FROM active WHERE day >= date('now', '-29 days');",
       "SELECT harness.value AS harness, COUNT(DISTINCT active.install_id) AS installs FROM active CROSS JOIN json_each(active.harnesses) AS harness WHERE active.day >= date('now', '-29 days') GROUP BY harness.value ORDER BY installs DESC, harness;",
+      "SELECT surface.value AS surface, COUNT(DISTINCT active.install_id) AS installs FROM active CROSS JOIN json_each(active.usage, '$.surfaces') AS surface WHERE active.day >= date('now', '-29 days') AND active.usage IS NOT NULL GROUP BY surface.value ORDER BY installs DESC, surface;",
+      "SELECT way.value AS ingress, COUNT(DISTINCT active.install_id) AS installs FROM active CROSS JOIN json_each(active.usage, '$.ingress') AS way WHERE active.day >= date('now', '-29 days') AND active.usage IS NOT NULL GROUP BY way.value ORDER BY installs DESC, ingress;",
+      "SELECT day, COUNT(*) AS installs, SUM(json_extract(usage, '$.prompt_answers')) AS prompt_answers, SUM(json_extract(usage, '$.alerts_delivered')) AS alerts_delivered, SUM(json_extract(usage, '$.alerts_opened')) AS alerts_opened FROM active WHERE usage IS NOT NULL GROUP BY day ORDER BY day;",
       "SELECT country, COUNT(*) FROM (SELECT (SELECT country FROM events WHERE install_id = e.install_id AND country IS NOT NULL ORDER BY rowid DESC LIMIT 1) AS country FROM events e GROUP BY install_id) GROUP BY country ORDER BY 2 DESC;",
       "SELECT day, country, COUNT(*) FROM active WHERE day >= date('now', '-27 days') GROUP BY day, country ORDER BY day, country;",
     ]);
@@ -61,6 +64,9 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "Weekly active installs (WAU), the last 7 days",
       "Monthly active installs (MAU), the last 30 days",
       "Installs running each kind of agent, the last 30 days",
+      "Installs per kind of screen, the last 30 days",
+      "Installs per way in, the last 30 days",
+      "Prompt answers and pane alerts per day",
       "Installs per country (last country seen)",
       "Daily active installs per country, the last 28 days",
     ]);

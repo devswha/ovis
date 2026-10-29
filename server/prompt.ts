@@ -1079,6 +1079,8 @@ export interface PromptRequestOptions {
   openCodeStateDir?: string;
   /** Each server owns its drafts and clears them when stopped. */
   openCodeState?: OpenCodePromptState;
+  /** an answer reached the agent (a 2xx), for the daily active message's usage */
+  onAnswered?: () => void;
 }
 
 /**
@@ -1626,6 +1628,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
     // queued for it meanwhile is not held up behind the polls
     if (form.answered !== undefined) await formMovedOn(body.pane_id, form.answered, options.codexHome, options.openCodeStateDir);
+    if (response.ok) options.onAnswered?.();
     await logAnswer(log, response);
     return response;
   } catch (error) {

@@ -51,6 +51,10 @@ function notifications(
   return { click, push, shown, opened, closed: () => closed };
 }
 
+function post0Headers(posts: Array<{ init: RequestInit }>): Record<string, string> {
+  return posts[0]!.init.headers as Record<string, string>;
+}
+
 function client(focus = async () => {}, focused = false, url = APP) {
   const selected: SelectedPane[] = [];
   const views: Array<Selection["view"]> = [];
@@ -69,6 +73,25 @@ function client(focus = async () => {}, focused = false, url = APP) {
 }
 
 describe("notification clicks", () => {
+  it("counts a tapped pane alert once with the server, and a generic notification not at all", async () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const posts: Array<{ url: string; init: RequestInit }> = [];
+    loadWorker({
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+      clients: { matchAll: async () => [], openWindow: async () => null },
+      fetch: async (url: string, init: RequestInit) => { posts.push({ url, init }); throw new Error("signed out"); },
+    });
+    const tap = async (paneId: string | null) => {
+      const waits: Promise<unknown>[] = [];
+      listeners.get("notificationclick")!({ notification: { data: { pane_id: paneId, machine_id: "local" }, close: () => {} }, waitUntil: (promise: Promise<unknown>) => waits.push(promise) });
+      await Promise.all(waits);
+    };
+    await tap("w1:p1");
+    await tap(null);
+    expect(posts.map((post) => [post.url, post.init.method, post.init.body])).toEqual([["/api/telemetry", "POST", JSON.stringify({ alert_opened: true })]]);
+    expect((post0Headers(posts))["x-herdr-update"]).toBe("1");
+  });
+
   it("tells app windows from the reader, raw file and static tabs the app also opens", () => {
     const { isAppWindow } = loadWorker({ addEventListener: () => {} });
     expect(isAppWindow(APP)).toBe(true);

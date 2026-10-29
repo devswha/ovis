@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
-import { ACTIVE_LATE_DAYS, harnessOf, NOTICE_VERSION, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, emptyUsage, harnessOf, NOTICE_VERSION, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings } from "../shared/telemetry.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
-import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked } from "./telemetry.ts";
+import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS } from "./telemetry.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -311,7 +311,7 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(["claude", null, "claude", "weird"]);
     expect(urls.filter((url) => url === TEST_ACTIVE_URL)).toHaveLength(1);
-    expect(actives).toEqual([{ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: ["claude", "other"] }]);
+    expect(actives).toEqual([{ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: ["claude", "other"], usage: emptyUsage() }]);
     await telemetry.active(["claude", null, "claude", "weird"]);
     expect(actives).toHaveLength(1);
   });
@@ -379,11 +379,11 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(["claude"]);
     expect(actives).toHaveLength(1);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
     answer.status = 204;
     await telemetry.active([]);
     expect(actives.map((active) => active.harnesses)).toEqual([["claude"], ["claude"]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"] }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), sent_at: expect.any(Number) }]);
   });
 
   test("(f) the delivered day survives a restart and is not resent", async () => {
@@ -402,7 +402,7 @@ describe("daily active message", () => {
   test("(g) status().active previews today's message as it would be sent", async () => {
     const { telemetry } = setup();
     const before = telemetry.status().active;
-    expect(before).toEqual({ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: [] });
+    expect(before).toEqual({ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: emptyUsage() });
     await telemetry.active(["codex", "claude", undefined]);
     expect(telemetry.status().active).toEqual({ ...before, harnesses: ["claude", "codex"] });
   });
@@ -487,7 +487,7 @@ describe("daily active message", () => {
     telemetry.change({ enabled: false });
     agents.resolve(["codex"]);
     await visit;
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
     telemetry.change({ enabled: true });
     await settled();
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
@@ -498,7 +498,7 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(Promise.reject(new Error("herdr down")));
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [] }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), sent_at: expect.any(Number) }]);
   });
 
   test("an unreadable active list in the state file is read as no visits", async () => {
@@ -512,6 +512,120 @@ describe("daily active message", () => {
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-08", harnesses: ["claude"] });
     await telemetry.active([]);
     expect(actives).toEqual([]);
+  });
+});
+
+describe("daily usage", () => {
+  test("a visit names its kind of screen and way in, and the day's message carries them sorted, once each", async () => {
+    const { telemetry, actives } = setup();
+    seen(telemetry);
+    await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
+    await telemetry.active(["claude"], { surface: "browser", ingress: "local" });
+    await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
+    expect(actives.map((active) => active.usage)).toEqual([
+      { ...emptyUsage(), surfaces: ["mobile-pwa"], ingress: ["tailscale"] },
+      { ...emptyUsage(), surfaces: ["browser", "mobile-pwa"], ingress: ["local", "tailscale"] },
+    ]);
+  });
+
+  test("counts made today wait for the hour since the day's last delivery, then go with the next visit; a new kind goes at once", async () => {
+    const { telemetry, actives, clock } = setup();
+    seen(telemetry);
+    await telemetry.active(["claude"], { surface: "browser" });
+    telemetry.tally("prompt_answers");
+    telemetry.tally("prompt_answers");
+    telemetry.tally("alerts_delivered");
+    await telemetry.active(["claude"]);
+    expect(actives).toHaveLength(1);
+    expect(telemetry.status().active.usage).toMatchObject({ prompt_answers: 2, alerts_delivered: 1, alerts_opened: 0 });
+    clock.now += USAGE_RESEND_MS;
+    await telemetry.active(["claude"]);
+    expect(actives.map((active) => active.usage)).toEqual([
+      { ...emptyUsage(), surfaces: ["browser"] },
+      { ...emptyUsage(), surfaces: ["browser"], prompt_answers: 2, alerts_delivered: 1 },
+    ]);
+    // a new kind of agent or screen still goes at once, with the counts as they stand
+    telemetry.tally("prompt_answers");
+    await telemetry.active(["codex"]);
+    expect(actives.at(-1)).toMatchObject({ harnesses: ["claude", "codex"], usage: { prompt_answers: 3 } });
+    telemetry.tally("prompt_answers");
+    await telemetry.active(["codex"], { surface: "mac-app" });
+    expect(actives.at(-1)).toMatchObject({ usage: { surfaces: ["browser", "mac-app"], prompt_answers: 4 } });
+    expect(actives).toHaveLength(4);
+  });
+
+  test("a day's last counts go out with the next day's visit, under their own day", async () => {
+    const { telemetry, actives, clock } = setup();
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    telemetry.tally("alerts_delivered");
+    telemetry.tally("alerts_opened");
+    clock.now += 86_400_000;
+    await telemetry.active([]);
+    expect(actives.map((active) => [active.day, active.usage.alerts_delivered, active.usage.alerts_opened])).toEqual([
+      ["2026-10-08", 0, 0], ["2026-10-08", 1, 1], ["2026-10-09", 0, 0],
+    ]);
+  });
+
+  test("a count on a day the app is not opened is kept for that day's visit and never sent alone", async () => {
+    const { telemetry, actives, clock, stateDir } = setup();
+    seen(telemetry);
+    telemetry.tally("alerts_delivered");
+    await settled();
+    expect(actives).toEqual([]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, sent_at: null }]);
+    // the next day is never opened: the night's count is not a day of use
+    clock.now += 86_400_000;
+    telemetry.tally("alerts_delivered");
+    clock.now += 86_400_000;
+    await telemetry.active([]);
+    expect(actives.map((active) => active.day)).toEqual(["2026-10-10"]);
+    // a count before the day's first visit goes with that visit
+    const later = setup();
+    seen(later.telemetry);
+    later.telemetry.tally("alerts_opened");
+    await later.telemetry.active(["claude"], { surface: "ios-app" });
+    expect(later.actives.map((active) => active.usage)).toEqual([{ ...emptyUsage(), surfaces: ["ios-app"], alerts_opened: 1 }]);
+  });
+
+  test("nothing is counted while off or blocked, and a count stops at its most", () => {
+    const off = setup();
+    off.telemetry.change({ enabled: false, notice_seen: true, notice_version: NOTICE_VERSION });
+    off.telemetry.tally("prompt_answers");
+    expect(savedFile(off.stateDir).active ?? []).toEqual([]);
+    const blocked = setup({ env: { DO_NOT_TRACK: "1" } });
+    blocked.telemetry.tally("prompt_answers");
+    expect(savedFile(blocked.stateDir).active ?? []).toEqual([]);
+
+    const { telemetry, stateDir } = setup();
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ ...savedFile(stateDir), active: [{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: { ...emptyUsage(), prompt_answers: TELEMETRY_COUNT_MAX }, sent_usage: null, sent_at: null }] }));
+    telemetry.tally("prompt_answers");
+    expect(telemetry.status().active.usage.prompt_answers).toBe(TELEMETRY_COUNT_MAX);
+  });
+
+  test("a state file from before usage keeps its delivered days delivered", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({
+      install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: null,
+      active: [{ day: "2026-10-07", harnesses: ["claude"], sent: ["claude"] }, { day: "2026-10-08", harnesses: ["claude"], sent: ["claude"] }],
+    }));
+    const { telemetry, actives } = setup({ stateDir });
+    await telemetry.active(["claude"]);
+    expect(actives).toEqual([]);
+    expect(telemetry.status().active).toMatchObject({ day: "2026-10-08", usage: emptyUsage() });
+  });
+
+  test("POST alert_opened counts a tap and nothing else, and takes only true", async () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    const post = (body: unknown) => new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
+    expect((await handleTelemetryRequest(post({ alert_opened: false }), telemetry)).status).toBe(400);
+    expect((await handleTelemetryRequest(post({ alert_opened: 1 }), telemetry)).status).toBe(400);
+    const response = await handleTelemetryRequest(post({ alert_opened: true }), telemetry);
+    expect(response.status).toBe(200);
+    expect((await response.json()).active.usage).toEqual({ ...emptyUsage(), alerts_opened: 1 });
+    expect(telemetry.status()).toMatchObject({ enabled: true, notice_seen: true });
   });
 });
 

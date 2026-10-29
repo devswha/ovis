@@ -46,6 +46,7 @@ import { connectUpdater, handleUpdateRequest, type UpdateService } from "./updat
 import { handleHerdrUpdateRequest, HerdrUpdater } from "./herdr-update.ts";
 import { handlePortalRequest, PortalService } from "./portal.ts";
 import { handleTelemetryRequest, Telemetry } from "./telemetry.ts";
+import { telemetrySurface, type TelemetryIngress } from "../shared/telemetry.ts";
 import { handleUsageRequest, UsageService } from "./usage.ts";
 import { CLIProxyService } from "./cliproxy.ts";
 import { CLIProxyRoutes } from "./cliproxy-routes.ts";
@@ -458,7 +459,11 @@ export function createServer(
           } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
           return new Response("websocket upgrade required", { status: 426 });
         }
-        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized }) });
+        // what the daily active message counts of this visit: the page's kind of screen and the way it came in
+        const observed = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+        const surface = bridgeAuthorized ? null : telemetrySurface(url.searchParams.get("surface"));
+        const ingress: TelemetryIngress = observed === "direct" ? (loopback ? "local" : "lan") : observed;
+        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(bridgeAuthorized ? {} : { ingress }) }) });
         if (upgraded) return undefined;
         return new Response("websocket upgrade required", { status: 426 });
       }
@@ -641,7 +646,7 @@ export function createServer(
 
       if (pathname.startsWith("/api/pane/prompt")) {
         try {
-          const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState });
+          const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, onAnswered: () => options.telemetry?.tally("prompt_answers") });
           if (response) return response;
         } catch (error) {
           return errorResponse(error);
