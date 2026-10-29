@@ -1395,13 +1395,14 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
   };
   /** A body sent from its descriptor's own path keeps that descriptor until the body and its answer are collected: once both are gone, each is closed. */
   const bodiesCollected = async () => {
-    // within the test's own timeout, so a slow collection fails here, with the descriptors named
-    const deadline = Date.now() + 3_000;
-    while (live.size > 0) {
-      if (Date.now() > deadline) throw new Error(`descriptors still open after collection: ${[...live].join(", ")}`);
+    // bounded by collections, not by time: a body still held fails here, with its descriptors named,
+    // however slow the machine
+    for (let collections = 0; live.size > 0; collections += 1) {
+      if (collections === 50) throw new Error(`descriptors still open after ${collections} collections: ${[...live].join(", ")}`);
       Bun.gc(true);
-      // a turn of the event loop, for the collected bodies' finalizers to run
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // the collected bodies' finalizers run on a later turn of the event loop: the next close they
+      // bring, or that turn when this collection let none go
+      await Promise.race([closing([...live][0]!), new Promise((resolve) => setImmediate(resolve))]);
     }
   };
   /** A server that sends `answer` once, holding it no longer than that: a handler that kept it would keep its descriptor past the collection. */
