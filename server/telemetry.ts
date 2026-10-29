@@ -194,6 +194,11 @@ function readSaved(file: string, offFile: string): Saved | null {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!isJsonObject(value) || typeof value["install_id"] !== "string" || value["install_id"] === "") return null;
+    // a switch an older build turned off is copied into OFF_FILE whenever it is read, so no late write of FILE can turn it
+    // on; a read that cannot write it now still reads off, and the next read tries again
+    if (value["enabled"] === false && !existsSync(offFile)) {
+      try { writeFileSync(offFile, "", { mode: 0o600 }); } catch { /* read-only for now: still off, marked at a later read */ }
+    }
     // a notice from before it said what is sent now does not count: it is shown again first
     const noticeSeenAt = value["notice_version"] === NOTICE_VERSION && typeof value["notice_seen_at"] === "string" ? value["notice_seen_at"] : null;
     const active = readActive(value["active"]);
@@ -247,12 +252,6 @@ export class Telemetry {
     this.offFile = join(options.stateDir, OFF_FILE);
     const saved = readSaved(this.file, this.offFile);
     this.saved = saved ?? { install_id: randomUUID(), enabled: !existsSync(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, settings: null, active: [], usage_after_notice: true };
-    // a switch turned off before OFF_FILE existed is kept in it too, so no late write of FILE can turn it on
-    if (saved && !saved.enabled) {
-      try { this.markOff(); } catch (error) {
-        console.error(`telemetry: ${this.offFile} could not be written (${message(error)})`);
-      }
-    }
     if (!saved) {
       try { this.persist(); } catch (error) {
         // the app still starts; telemetry just stays silent
@@ -349,22 +348,26 @@ export class Telemetry {
   change(patch: TelemetryChange): TelemetryStatus {
     const clean = telemetryChange(patch);
     if (!clean) throw new TypeError("Invalid telemetry change");
+    // turned off while an event is on its way: stop it before anything is read or written (a read may write the mark), and
+    // even if OFF_FILE cannot be written
+    if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); }
     this.refresh();
-    // off is written to OFF_FILE before FILE, and on removes it: whatever another server writes to FILE meanwhile
+    // off is marked before FILE is written, whatever another server writes to FILE meanwhile
     if (clean.enabled === false) this.markOff();
-    if (clean.enabled === true) rmSync(this.offFile, { force: true });
     if (clean.enabled !== undefined) this.saved.enabled = clean.enabled;
     // kept for the next install/update event; telling it sends nothing by itself
     if (clean.settings !== undefined) this.saved.settings = clean.settings;
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
     this.persist();
+    // and again after: an on from another server between the two writes cannot leave this off without its mark
+    if (clean.enabled === false) this.markOff();
+    // on removes the mark only once FILE says on, so no read in between finds FILE off and no mark (readSaved would mark it)
+    if (clean.enabled === true) rmSync(this.offFile, { force: true });
     if (clean.alert_opened) {
       this.tally("alerts_opened");
       // a tap alone sends nothing: the day's next visit carries it, so no message tells when it was
       if (Object.keys(clean).length === 1) return this.status();
     }
-    // turned off while an event is on its way: stop it rather than let it land
-    if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); }
     void this.report();
     // visits already recorded but held back by the notice, the switch or a failure
     void this.flushActive();
