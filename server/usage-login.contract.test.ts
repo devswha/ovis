@@ -324,17 +324,19 @@ async function fileWritten(path: string, what: string): Promise<void> {
 let heldLaunches = 0;
 /**
  * Tabs whose fake CLI stays open, as a sign-in the user has not finished, each with a receipt of its
- * own: `launched(n)` waits for the n-th tab's CLI to have written its sign-in. Restore `create` when done.
+ * own: `launched(n)` waits for the n-th tab's CLI to have written its sign-in; `open` opens one such tab,
+ * for a test that makes one call of `create` wait. Restore `create` when done.
  */
 function holdLogins() {
   const realCreate = herdr.tabCreate;
   const receipts: string[] = [];
-  const create = spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) => {
+  const open = (options: Parameters<typeof realCreate>[0]) => {
     const receipt = join(root, `held-${++heldLaunches}.json`);
     receipts.push(receipt);
     return realCreate({ ...options, env: { ...options.env, TEST_LOGIN_HOLD: "1", TEST_LOGIN_RECEIPT: receipt } });
-  });
-  return { create, launched: (n: number) => fileWritten(receipts[n]!, `held sign-in ${n}`) };
+  };
+  const create = spyOn(herdr, "tabCreate").mockImplementation(open);
+  return { create, open, launched: (n: number) => fileWritten(receipts[n]!, `held sign-in ${n}`) };
 }
 
 const statusAndCode = async (response: Response) => [response.status, response.status === 200 ? null : (await response.json()).error.code];
@@ -438,6 +440,8 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
   const stateDir = mkdtempSync(join(root, "restart-state-"));
   const { create, launched } = holdLogins();
   const before = serveOn(stateDir);
+  // a server beside it on the same state, started before that sign-in was, so it learns of it from the file only then
+  const beside = serveOn(stateDir);
   let after: ReturnType<typeof createServer> | undefined;
   try {
     const first = await startOn(before, { provider: "claude", account: key });
@@ -445,10 +449,8 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
     const pane = (await first.json() as UsageLoginStarted).pane_id;
     openedPanes.push(pane);
     await launched(0);
-    // a server beside it on the same state refuses that home too
-    const beside = serveOn(stateDir);
-    try { expect(await statusAndCode(await startOn(beside, { provider: "claude", account: key }))).toEqual([409, "login_in_progress"]); }
-    finally { beside.stop(); }
+    expect(await statusAndCode(await startOn(beside, { provider: "claude", account: key }))).toEqual([409, "login_in_progress"]);
+    beside.stop();
     before.stop();
     // When: the server starts again on its state, and the same account is asked for
     after = serveOn(stateDir);
@@ -462,7 +464,34 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
     expect(later.status).toBe(200);
     openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
     await launched(1);
-  } finally { before.stop(); after?.stop(); create.mockRestore(); }
+  } finally { before.stop(); beside.stop(); after?.stop(); create.mockRestore(); }
+});
+
+it("starts one sign-in when two servers on one state dir are asked for one home at once", async () => {
+  // Given: two servers on one state dir, and the first one's sign-in still opening its tab
+  expiredHome("claude", ".claude-two-servers", "two-servers@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "two-servers@example.test")!.key;
+  const stateDir = mkdtempSync(join(root, "two-servers-state-"));
+  const { create, open, launched } = holdLogins();
+  const opening = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  create.mockImplementationOnce(async (options) => { opening.resolve(); await gate.promise; return open(options); });
+  const first = serveOn(stateDir);
+  const second = serveOn(stateDir);
+  try {
+    const answer = startOn(first, { provider: "claude", account: key });
+    await opening.promise;
+    // When: the other server is asked for that home meanwhile
+    const other = await startOn(second, { provider: "claude", account: key });
+    // Then: it refuses, and the first one's sign-in opens
+    expect(await statusAndCode(other)).toEqual([409, "login_in_progress"]);
+    gate.resolve();
+    const started = await answer;
+    expect(started.status).toBe(200);
+    openedPanes.push((await started.json() as UsageLoginStarted).pane_id);
+    expect(create).toHaveBeenCalledTimes(1);
+    await launched(0);
+  } finally { gate.resolve(); first.stop(); second.stop(); create.mockRestore(); }
 });
 
 it("frees a home after a restart when its sign-in ended while no server ran, even when its pane ID now names another tab", async () => {
@@ -603,9 +632,14 @@ it("frees the home when the login command could not be sent to its new tab", asy
   } finally { send.mockRestore(); create.mockRestore(); }
   // Then: that request fails, and the next is not told a sign-in is open
   expect(failed.status).toBe(500);
-  const retried = await start({ provider: "codex", account: key });
-  expect(retried.status).toBe(200);
-  openedPanes.push((await retried.json() as UsageLoginStarted).pane_id);
+  const { create: held, launched } = holdLogins();
+  try {
+    const retried = await start({ provider: "codex", account: key });
+    expect(retried.status).toBe(200);
+    openedPanes.push((await retried.json() as UsageLoginStarted).pane_id);
+    // its CLI has run before the next test reads the root
+    await launched(0);
+  } finally { held.mockRestore(); }
 });
 
 it("refuses to sign in again to an account this PC does not list, without opening a tab", async () => {

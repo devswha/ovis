@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -6,6 +7,7 @@ import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
+import { withOwnerGuard } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
 import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
@@ -55,88 +57,112 @@ function canonicalPath(path: string): string {
  * or the shell exits after it. A pane ID alone is no proof: a restarted herdr hands the same IDs out again.
  */
 interface LoginHolder { readonly pane: string; readonly terminal: string }
+/** A home taken for a launch whose tab has not opened yet: by which server process, since when, and the launch's own id. */
+interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
+type Holder = LoginHolder | Launch;
+
+/** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
+const LAUNCH_MS = 60_000;
+
+const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
+const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch : !isLaunch(b) && a.terminal === b.terminal;
+
+/** Whether a process still runs (one of another user is still running too). */
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
+}
 
 /** Only panes this service launched invalidate usage when their login process exits. */
 export class UsageLoginService {
   private readonly panes = new Set<string>();
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
-   * one home race each other's tokens. By home, the login holding it; null while launching, until its
-   * tab opens.
+   * one home race each other's tokens. By home, the login or launch of this server holding it.
    */
-  private readonly logins = new Map<string, LoginHolder | null>();
+  private readonly logins = new Map<string, Holder>();
   /**
-   * where the holders are kept for the next server, or one beside this one on the same state: a login runs
-   * in a herdr tab, which outlives this server (#2313)
+   * Where every server on this state dir keeps the homes taken, for the others and for the next one: a
+   * login runs in a herdr tab, which outlives the server that opened it (#2313). Each server adds and
+   * removes only its own entries, under the file's guard; whether an entry still holds, herdr says.
    */
   private file: string | null = null;
-  /** the terminals of the logins this server saw end: the file may still name them until this server writes it */
-  private readonly released = new Set<string>();
 
   constructor(private readonly home = homedir(), private readonly env = process.env,
     private readonly context: UsageContext = { ...systemUsageContext(), home, env }) {}
 
   ended(paneId: string): boolean {
-    let released = false;
-    for (const [home, holder] of this.logins) {
-      if (holder?.pane === paneId) { this.logins.delete(home); this.released.add(holder.terminal); released = true; }
-    }
-    if (released) this.save();
+    for (const [home, holder] of this.logins) if (!isLaunch(holder) && holder.pane === paneId) this.release(home, holder);
     return this.panes.delete(paneId);
   }
 
-  /** Keeps the homes' holders in `stateDir`, where a server before this one, or beside it, kept its own. */
   persistTo(stateDir: string): void { this.file = join(stateDir, "usage-logins.json"); }
 
-  /**
-   * The holders the file names, by home, but those this server saw end. Each holds only as long as
-   * `reserve()` finds its login still running in herdr. A file that will not read names none: atomic
-   * writes leave none half written, and refusing every sign-in for good is no answer.
-   */
-  private saved(): Map<string, LoginHolder> {
-    const found = new Map<string, LoginHolder>();
-    if (this.file === null) return found;
+  /** The homes the file names as taken. One that will not read names none: refusing every sign-in for good is no answer. */
+  private read(file: string): Map<string, Holder> {
+    const found = new Map<string, Holder>();
     let saved: unknown;
-    try { saved = JSON.parse(readFileSync(this.file, "utf8")); }
+    try { saved = JSON.parse(readFileSync(file, "utf8")); }
     catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) console.warn("Could not read the sign-ins other servers left running", error);
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) console.warn("Could not read the sign-ins running in herdr tabs", error);
       return found;
     }
-    for (const login of isJsonObject(saved) && Array.isArray(saved["logins"]) ? saved["logins"] : []) {
-      if (!isJsonObject(login) || typeof login["home"] !== "string" || typeof login["pane"] !== "string" || typeof login["terminal"] !== "string") continue;
-      if (!this.released.has(login["terminal"])) found.set(login["home"], { pane: login["pane"], terminal: login["terminal"] });
+    for (const entry of isJsonObject(saved) && Array.isArray(saved["logins"]) ? saved["logins"] : []) {
+      if (!isJsonObject(entry) || typeof entry["home"] !== "string") continue;
+      const { home, pane, terminal, launch, pid, at } = entry;
+      if (typeof pane === "string" && typeof terminal === "string") found.set(home, { pane, terminal });
+      else if (typeof launch === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && typeof at === "number" && Number.isFinite(at)) found.set(home, { launch, pid, at });
     }
     return found;
   }
 
-  /** Writes the holders of this server's logins whose tab is open, and keeps those of other servers' homes. */
-  private save(): void {
-    if (this.file === null) return;
-    const logins = [...this.saved()].filter(([home]) => !this.logins.has(home))
-      .concat([...this.logins].flatMap(([home, holder]) => holder === null ? [] : [[home, holder] as const]))
-      .map(([home, holder]) => ({ home, pane: holder.pane, terminal: holder.terminal }));
-    try { writePrivateState(this.file, { logins }); }
-    catch (error) { console.warn("Could not keep the running sign-ins for the next server", error); }
+  /** Reads, changes and writes the file as one step no other server's edit comes between; without a file, `change` sees none. */
+  private edit<T>(change: (saved: Map<string, Holder>) => T): T {
+    const file = this.file;
+    if (file === null) return change(new Map());
+    return withOwnerGuard(file, () => {
+      const saved = this.read(file);
+      const before = JSON.stringify([...saved]);
+      const result = change(saved);
+      if (JSON.stringify([...saved]) !== before) writePrivateState(file, { logins: [...saved].map(([home, holder]) => ({ home, ...holder })) });
+      return result;
+    });
   }
 
-  /** Whether `holder`'s login still runs: its terminal is in herdr, in any tab. When herdr cannot say, it does: a guess would let a second login in. */
-  private async holds(holder: LoginHolder): Promise<boolean> {
+  /** Frees `home` from `holder`, here and in the file, wherever another has not taken it since. */
+  private release(home: string, holder: Holder): void {
+    if (this.logins.get(home) === holder) this.logins.delete(home);
+    try { this.edit((saved) => { const now = saved.get(home); if (now !== undefined && sameHolder(now, holder)) saved.delete(home); }); }
+    catch (error) { console.warn("Could not free a sign-in's credential home for other servers", error); }
+  }
+
+  /**
+   * Whether `holder` still holds: a launch while its server runs and it is young enough to open its tab,
+   * a login while its terminal is in herdr, in any tab. When herdr cannot say, it holds: a guess would let
+   * a second login in.
+   */
+  private async holds(holder: Holder): Promise<boolean> {
+    if (isLaunch(holder)) return Date.now() - holder.at <= LAUNCH_MS && processAlive(holder.pid);
     try { return (await sessionSnapshot()).panes.some((pane) => pane.terminal_id === holder.terminal); }
     catch { return true; }
   }
 
   /**
-   * Takes `home` for one launch; false while another login holds it. A holder lets go once its login no
-   * longer runs in herdr (`holds()`): its exit went unseen, or it ended while no server ran. A home this
-   * server holds nothing for may be held by a login the state file names, from a server before this one.
+   * Takes `home` for one launch, in the file too before anything is awaited, so neither this server nor
+   * another starts a second; null while a login or launch holds it. A holder lets go once `holds()` finds
+   * it ended: its exit went unseen, it ended while no server ran, or its server stopped mid-launch.
    */
-  private async reserve(home: string): Promise<boolean> {
+  private async reserve(home: string): Promise<Launch | null> {
     for (;;) {
-      const holder = this.logins.has(home) ? this.logins.get(home) ?? null : this.saved().get(home);
-      if (holder === undefined) { this.logins.set(home, null); return true; }
-      if (!this.logins.has(home)) this.logins.set(home, holder);
-      if (holder === null || await this.holds(holder)) return false;
-      if (this.logins.get(home) === holder) { this.logins.delete(home); this.released.add(holder.terminal); this.save(); }
+      const launch: Launch = { launch: randomUUID(), pid: process.pid, at: Date.now() };
+      const holder = this.logins.get(home) ?? this.edit((saved) => {
+        const found = saved.get(home);
+        if (found === undefined) saved.set(home, launch);
+        return found;
+      });
+      if (holder === undefined) { this.logins.set(home, launch); return launch; }
+      if (await this.holds(holder)) return null;
+      this.release(home, holder);
     }
   }
 
@@ -182,8 +208,8 @@ export class UsageLoginService {
     if (!executable) return conflictResponse("cli_unavailable", "Install the official CLI on this PC before signing in");
     let unusedCredentialHome: string | null = null;
     let reserved: string | null = null;
-    // the holder this request set once its tab opened, which only this request may replace or free
-    let launching: LoginHolder | null = null;
+    // what holds the home for this request, its launch and then its login, which only this request may replace or free
+    let holding: Holder | null = null;
     try {
       // read from the sign-ins on disk now, not a cached report: a home may hold another account since
       const found = again && typeof body["account"] === "string" ? await localSignInPlace(this.context, body["account"]) : null;
@@ -206,7 +232,8 @@ export class UsageLoginService {
         console.warn("Could not tell which credential home a sign-in would write", error);
         return conflictResponse("credential_home_unreadable", "Ovis cannot read this account's credential folder, so it cannot tell whether a sign-in is already running there. Check the folder's permissions on the server PC.");
       }
-      if (!await this.reserve(loginHome)) {
+      holding = await this.reserve(loginHome);
+      if (holding === null) {
         return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
       }
       reserved = loginHome;
@@ -252,10 +279,13 @@ export class UsageLoginService {
       const paneId = created.root_pane.pane_id;
       this.panes.add(paneId);
       trackPane?.(paneId);
-      // the tab is open: a server started again from here on finds the home taken by it
-      launching = { pane: paneId, terminal: created.root_pane.terminal_id };
-      this.logins.set(reserved, launching);
-      this.save();
+      // the tab is open: from here on its terminal holds the home, also for a server started again
+      const launch = holding;
+      const opened: LoginHolder = { pane: paneId, terminal: created.root_pane.terminal_id };
+      holding = opened;
+      if (this.logins.get(reserved) === launch) this.logins.set(reserved, opened);
+      try { const home = reserved; this.edit((saved) => { const now = saved.get(home); if (now === undefined || sameHolder(now, launch)) saved.set(home, opened); }); }
+      catch (error) { console.warn("Could not record a sign-in's credential home for other servers", error); }
       // All variable argv are quoted by the bridge's existing POSIX shell encoder.
       if (process.platform === "win32") {
         const info = await paneProcessInfo(paneId);
@@ -287,13 +317,7 @@ export class UsageLoginService {
       return errorResponse(error);
     } finally {
       // refused, or failed before its login ran: the home is free again, unless its tab ended and another took it since
-      if (reserved !== null) {
-        const holder = this.logins.get(reserved);
-        if (launching === null ? holder === null : holder === launching) {
-          this.logins.delete(reserved);
-          if (launching !== null) { this.released.add(launching.terminal); this.save(); }
-        }
-      }
+      if (reserved !== null && holding !== null) this.release(reserved, holding);
     }
   }
 }
