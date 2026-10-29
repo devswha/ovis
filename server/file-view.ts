@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { type BigIntStats, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, read, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { type BigIntStats, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, read, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, relative as relativePath, resolve, sep } from "node:path";
 
@@ -574,6 +574,8 @@ export const pageFileHooks: {
   readSync?: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number) => number;
   /** how quickly a disk must answer for a large file to be sent whole (`FAST_DISK_MS`); -1 streams every one */
   fastDiskMs?: number;
+  /** this process's open-file limit, which bounds the file bodies held for collection (`bodyLimits`) */
+  openFiles?: number | null;
   opened?: (fd: number) => void;
   closed?: (fd: number) => void;
 } = {};
@@ -929,22 +931,41 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
   try { release(held.fd); } catch { /* already closed */ }
 });
 /**
- * Such bodies waiting to be collected; past `BODY_DESCRIPTORS` (a player seeking through a long
+ * Such bodies waiting to be collected; past `bodyLimits().most` (a player seeking through a long
  * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
  * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
- * drops it): the cap is set well above what is held at once in use, sent bodies waiting for a
+ * drops it): the cap is set above what is held at once in use, sent bodies waiting for a
  * collection included (about 800 at the most over 10,000 downloads, 16 at a time, measured with
- * `askCollection`; about 1,700 without it). Bun raises its open-file limit to the hard limit at
- * start, hundreds of thousands on Linux, the only system that sends such a body.
+ * `askCollection`; about 1,700 without it), but never past a quarter of this process's open files,
+ * which the server's own sockets, terminals and file threads need too. Bun raises that limit to
+ * the hard one at start: hundreds of thousands on most Linux systems, the only one that sends
+ * such a body, and 1,024 on some, where the cap stays 256.
  */
 let bodiesHeld = 0;
-const BODY_DESCRIPTORS = 4096;
-/** Bodies held past which a collection is asked for (`askCollection`), and how often. */
-const COLLECT_PAST = 256;
+let bodyCap: { most: number; collectPast: number } | null = null;
+/** How many such bodies may be held, and past how many a collection is asked for (`askCollection`). */
+const bodyLimits = (): { most: number; collectPast: number } => {
+  if (bodyCap !== null && pageFileHooks.openFiles === undefined) return bodyCap;
+  const open = pageFileHooks.openFiles ?? openFileLimit();
+  const most = open === null ? 256 : Math.min(4096, Math.floor(open / 4));
+  const cap = { most, collectPast: Math.min(256, Math.floor(most / 4)) };
+  if (pageFileHooks.openFiles === undefined) bodyCap = cap;
+  return cap;
+};
+/** This process's open-file limit (`/proc/self/limits`, Linux), or null when it cannot be read. */
+const openFileLimit = (): number | null => {
+  try {
+    const line = readFileSync("/proc/self/limits", "utf8").split("\n").find((entry) => entry.startsWith("Max open files"));
+    const soft = line?.trim().split(/\s+/)[3];
+    if (soft === "unlimited") return Infinity;
+    const limit = Number(soft);
+    return Number.isFinite(limit) && limit > 0 ? limit : null;
+  } catch { return null; }
+};
 const COLLECTION_MS = 250;
 let collectionAsked = -Infinity;
 /**
- * Past `COLLECT_PAST` bodies held, most were sent long ago and only wait for a collection: one is
+ * Past `collectPast` bodies held, most were sent long ago and only wait for a collection: one is
  * asked for on the collector's own threads (`Bun.gc(false)`), so they are let go well before the
  * cap. Never a forced one (`Bun.gc(true)`), which stops every terminal and request on this thread
  * for as long as it takes on the whole heap; and at most once per `COLLECTION_MS`, so a player
@@ -1011,8 +1032,9 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once);
     // a scratch file (`within`) by its descriptor's own path, the file that descriptor holds
     headers.delete("content-length");
-    if (opened.fd !== null && bodiesHeld >= COLLECT_PAST) askCollection();
-    if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) {
+    const limits = bodyLimits();
+    if (opened.fd !== null && bodiesHeld >= limits.collectPast) askCollection();
+    if (opened.fd !== null && bodiesHeld >= limits.most) {
       // too many such bodies wait to be collected: this one is streamed from its descriptor, without a length
       headers.set("content-length", String(length));
       return new Response(descriptorBody(opened.fd, start, length, null), { status, headers });
