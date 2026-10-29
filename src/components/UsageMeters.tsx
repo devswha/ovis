@@ -49,8 +49,7 @@ function Chip({ usage, count, glance }: { usage: ProviderUsage; count: UsageCoun
   );
 }
 
-/** One account's limits, as the popover lists them; the setup guide previews it too. */
-export function UsageProvider({ usage, now, count, onLocalLogin }: { usage: ProviderUsage; now: number; count: UsageCount; onLocalLogin: ((paneId: string) => void) | undefined }) {
+function Provider({ usage, now, count, onLocalLogin }: { usage: ProviderUsage; now: number; count: UsageCount; onLocalLogin: ((paneId: string) => void) | undefined }) {
   const t = useT();
   const name = PROVIDER_NAME[usage.id];
   const offered = onLocalLogin !== undefined && canSignInAgain(usage);
@@ -191,7 +190,7 @@ export function UsageMeters({ onLocalLogin }: { /** opens a sign-in tab; a watch
               <RefreshCw aria-hidden="true" className={loading ? "is-spinning" : undefined} />
             </button>
           </header>
-          {shown.map((usage) => <UsageProvider key={usage.key} usage={usage} now={now} count={count} onLocalLogin={onLocalLogin && ((paneId) => { setOpen(false); onLocalLogin(paneId); })} />)}
+          {shown.map((usage) => <Provider key={usage.key} usage={usage} now={now} count={count} onLocalLogin={onLocalLogin && ((paneId) => { setOpen(false); onLocalLogin(paneId); })} />)}
         </div>
       )}
     </div>

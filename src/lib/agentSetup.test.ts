@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, catalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
-import { setupProgress, setupStep, type SetupStep } from "./agentSetup.ts";
+import { setupProgress, setupStep, signInDue, type SetupStep } from "./agentSetup.ts";
 
 const tab = { pane_id: "w1:p2", workspace_id: "w1", command: "curl -fsSL https://claude.ai/install.sh | bash", shell: "posix" as const };
 const row = (id: string, state: Partial<AgentInstallState>) => catalogRow(AGENT_CATALOG.find((entry) => entry.id === id)!, "linux", { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null, ...state });
@@ -33,5 +33,18 @@ describe("agent setup", () => {
     expect(setupStep({ kind: "installing", tab }, { type: "cancel" })).toEqual({ kind: "idle" });
     expect(setupProgress({ kind: "failed", message: "x", after: "sign-in" })).toEqual({ index: 1, fraction: 0.6 });
     expect(setupProgress({ kind: "ready", version: null }).fraction).toBe(1);
+  });
+});
+
+describe("signInDue", () => {
+  it("starts the sign-in by itself only right after an install the user started", () => {
+    const installing: SetupStep = { kind: "installing", tab };
+    const installed: SetupStep = { kind: "installed", version: "2.1.311", onPath: true };
+    expect(signInDue(installing, installed)).toBe(true);
+    // the card opened on an agent already there, or the user came back to it: no sign-in unasked
+    expect(signInDue({ kind: "idle" }, installed)).toBe(false);
+    expect(signInDue(installed, installed)).toBe(false);
+    // an agent that needs no sign-in is ready straight away
+    expect(signInDue(installing, { kind: "ready", version: null })).toBe(false);
   });
 });

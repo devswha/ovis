@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { GUIDE_STORAGE_KEY, WELCOME, type GuideState } from "./setupGuideFlow.ts";
+import { GUIDE_STORAGE_KEY, REOPENED, WELCOME, type GuideState } from "./setupGuideFlow.ts";
 import { useSetupGuide } from "./useSetupGuide.ts";
 
 // The real hook over a fake browser: one tab's storage, and the storage events another tab's writes send.
@@ -53,24 +53,24 @@ describe("the setup guide closed in another tab", () => {
   }
 
   it("closes here when the other tab closes it", async () => {
-    await resumeAt({ ...WELCOME, step: "agent" });
-    expect(hook.guide?.step).toBe("agent");
+    await resumeAt(REOPENED);
+    expect(hook.guide?.step).toBe("setup");
     await otherTabWrites(JSON.stringify({ status: "closed" }));
     expect(hook.guide).toBeNull();
     expect(JSON.parse(records.get(GUIDE_STORAGE_KEY)!)).toEqual({ status: "closed" });
   });
 
   it("does not reopen it with a step taken here before the close event arrived", async () => {
-    await resumeAt({ ...WELCOME, step: "agent" });
+    await resumeAt(WELCOME);
     // the other tab's close lands in storage, its event not yet delivered here
     records.set(GUIDE_STORAGE_KEY, JSON.stringify({ status: "closed" }));
-    await act(async () => { hook.dispatch({ type: "skip" }); });
+    await act(async () => { hook.dispatch({ type: "begin" }); });
     expect(hook.guide).toBeNull();
     expect(JSON.parse(records.get(GUIDE_STORAGE_KEY)!)).toEqual({ status: "closed" });
   });
 
   it("keeps a reopen made here when an older close event arrives after it", async () => {
-    await resumeAt({ ...WELCOME, step: "alerts" });
+    await resumeAt(WELCOME);
     const close = JSON.stringify({ status: "closed" });
     // the other tab's close is in storage, then Settings reopens it here before that close's event comes
     records.set(GUIDE_STORAGE_KEY, close);
@@ -79,16 +79,16 @@ describe("the setup guide closed in another tab", () => {
     const event = new Event("storage");
     Object.defineProperties(event, { key: { value: GUIDE_STORAGE_KEY }, newValue: { value: close } });
     await act(async () => { events.dispatchEvent(event); });
-    expect(hook.guide?.step).toBe("agent");
+    expect(hook.guide?.step).toBe("setup");
   });
 
   it("closes here when the other tab closes right after this tab's own write", async () => {
-    await resumeAt({ ...WELCOME, step: "agent" });
+    await resumeAt(WELCOME);
     const close = JSON.stringify({ status: "closed" });
     // the other tab's close lands in storage straight after this tab writes its next step
     const write = window.localStorage.setItem.bind(window.localStorage);
     window.localStorage.setItem = (key: string, value: string) => { write(key, value); records.set(key, close); };
-    await act(async () => { hook.dispatch({ type: "skip" }); });
+    await act(async () => { hook.dispatch({ type: "begin" }); });
     window.localStorage.setItem = write;
     const event = new Event("storage");
     Object.defineProperties(event, { key: { value: GUIDE_STORAGE_KEY }, newValue: { value: close } });
@@ -97,10 +97,10 @@ describe("the setup guide closed in another tab", () => {
   });
 
   it("opens again here when Settings asks, over a close made elsewhere", async () => {
-    await resumeAt({ ...WELCOME, step: "agent" });
+    await resumeAt(REOPENED);
     await otherTabWrites(JSON.stringify({ status: "closed" }));
     await act(async () => { window.dispatchEvent(new Event("ovis:open-setup-guide")); });
-    expect(hook.guide?.step).toBe("agent");
+    expect(hook.guide?.step).toBe("setup");
     expect(JSON.parse(records.get(GUIDE_STORAGE_KEY)!).status).toBe("open");
   });
 });
@@ -146,7 +146,7 @@ describe("the setup guide on a watching device", () => {
   }
 
   it("does not resume a saved guide", async () => {
-    await mount(true, { ...WELCOME, step: "agent", plan: "chatgpt", agent: "codex" });
+    await mount(true, REOPENED);
     expect(hook.guide).toBeNull();
   });
 
@@ -157,8 +157,8 @@ describe("the setup guide on a watching device", () => {
   });
 
   it("drops an open guide when the device turns into a watching one", async () => {
-    await mount(false, { ...WELCOME, step: "agent" });
-    expect(hook.guide?.step).toBe("agent");
+    await mount(false, REOPENED);
+    expect(hook.guide?.step).toBe("setup");
     await act(async () => { renderer!.update(createElement(Probe, { watching: true })); });
     expect(hook.guide).toBeNull();
   });

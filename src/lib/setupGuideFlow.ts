@@ -1,81 +1,28 @@
 /**
- * Where the first-run setup guide stands (components/SetupGuide.tsx): the welcome, then Agent,
- * Plan usage, Phone and Alerts, each done or skipped, then Done. It opens by itself only on a fresh
- * install, and once: the record in this browser says it was closed, or where it was left.
+ * Where the first-run setup guide stands (components/SetupGuide.tsx): the welcome, then one setup
+ * screen that checks the PC for coding agents and either starts the first workspace with one it found
+ * or installs one. It opens by itself only on a fresh install, and once: the record in this browser
+ * says it was closed, or that it was left open.
  */
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
-
-export type GuideStepId = "agent" | "usage" | "phone" | "alerts" | "done";
-export const GUIDE_STEPS: readonly GuideStepId[] = ["agent", "usage", "phone", "alerts", "done"];
-type CountedStep = Exclude<GuideStepId, "done">;
-
-/** the subscription the user said they have; `free` is neither */
-export type GuidePlan = "claude" | "chatgpt" | "free";
-/** the agent the guide recommends for each plan, by catalog id (shared/agent-catalog.ts) */
-export const PLAN_AGENT: Readonly<Record<GuidePlan, string>> = { claude: "claude", chatgpt: "codex", free: "opencode" };
-
-export type StepOutcome = "done" | "skipped";
+import type { ProviderUsage } from "../../shared/usage.ts";
 
 export interface GuideState {
-  step: "welcome" | GuideStepId;
-  outcomes: Partial<Record<CountedStep, StepOutcome>>;
-  plan: GuidePlan | null;
-  /** the catalog id of the agent being set up, or set up */
-  agent: string | null;
-  /** the agent's setup went through its sign-in */
-  signedIn: boolean;
+  step: "welcome" | "setup";
 }
 
-export type GuideEvent =
-  /** I'm new to Ovis */
-  | { type: "begin" }
-  /** a plan's recommended agent, or one from Other agents (plan null) */
-  | { type: "choose"; plan: GuidePlan | null; agent: string }
-  | { type: "back" }
-  | { type: "agent-ready"; signedIn: boolean }
-  | { type: "complete" }
-  | { type: "skip" };
+/** I'm new to Ovis */
+export type GuideEvent = { type: "begin" };
 
-export const WELCOME: GuideState = { step: "welcome", outcomes: {}, plan: null, agent: null, signedIn: false };
-/** Settings → Setup guide opens it at its first step; what was set up before stays as it is */
-export const REOPENED: GuideState = { ...WELCOME, step: "agent" };
-
-function next(state: GuideState, outcome: StepOutcome, patch: Partial<GuideState> = {}): GuideState {
-  const step = state.step;
-  if (step === "welcome" || step === "done") return state;
-  return { ...state, ...patch, outcomes: { ...state.outcomes, [step]: outcome }, step: GUIDE_STEPS[GUIDE_STEPS.indexOf(step) + 1]! };
-}
+export const WELCOME: GuideState = { step: "welcome" };
+/** Settings → Setup guide opens the setup screen itself */
+export const REOPENED: GuideState = { step: "setup" };
 
 export function guideStep(state: GuideState, event: GuideEvent): GuideState {
-  switch (event.type) {
-    case "begin":
-      return state.step === "welcome" ? { ...state, step: "agent" } : state;
-    case "choose":
-      return state.step === "agent" ? { ...state, plan: event.plan, agent: event.agent, signedIn: false } : state;
-    case "back":
-      return state.step === "agent" ? { ...state, plan: null, agent: null, signedIn: false } : state;
-    case "agent-ready":
-      return state.step === "agent" && state.agent !== null ? next(state, "done", { signedIn: event.signedIn }) : state;
-    case "complete":
-      return next(state, "done");
-    case "skip":
-      return next(state, "skipped", state.step === "agent" ? { plan: null, agent: null, signedIn: false } : {});
-  }
+  return event.type === "begin" && state.step === "welcome" ? REOPENED : state;
 }
 
-export interface ProgressSegment { id: GuideStepId; state: "done" | "skipped" | "now" | "next" }
-
-/** The bar's five segments, and which of the four counted steps is shown (Done counts as the fourth). */
-export function guideProgress(state: GuideState): { number: number | null; segments: ProgressSegment[] } {
-  const at = state.step === "welcome" ? -1 : GUIDE_STEPS.indexOf(state.step);
-  const segments = GUIDE_STEPS.map((id, index): ProgressSegment => {
-    const outcome = id === "done" ? undefined : state.outcomes[id];
-    return { id, state: index === at ? "now" : outcome ?? "next" };
-  });
-  return { number: at < 0 ? null : Math.min(at + 1, 4), segments };
-}
-
-/** The Agent step's look at the PC before its question: GET /api/agent-catalog, as far as it got. */
+/** The setup screen's look at the PC: GET /api/agent-catalog, as far as it got. */
 export interface PcCheck {
   /** a check in flight, or its answer still settling on screen */
   checking: boolean;
@@ -98,11 +45,39 @@ export function foundAgents(catalog: readonly AgentCatalogRow[]): AgentCatalogRo
   return catalog.filter((row) => row.kind === "harness" && row.state.installed === true);
 }
 
-/** What the Agent step shows before an agent is chosen: the check, the agents found, or the question. */
-export function agentView(check: PcCheck, installAnother: boolean): "checking" | "found" | "question" {
-  if (check.failed) return "question";
+/**
+ * What the setup screen shows: the check, Start with the agents found, or an install. `ready` is an
+ * agent installed from this screen that said it is ready: Start, before the PC is read again.
+ */
+export function setupView(check: PcCheck, ready: string | null): "checking" | "found" | "none" {
+  if (ready !== null) return "found";
+  if (check.failed) return "none";
   if (check.checking || check.catalog === null) return "checking";
-  return !installAnother && foundAgents(check.catalog).length > 0 ? "found" : "question";
+  return foundAgents(check.catalog).length > 0 ? "found" : "none";
+}
+
+/** The agents Start offers: those the PC has, with `ready` first when the last answer does not list it yet. */
+export function startAgents(catalog: readonly AgentCatalogRow[] | null, ready: string | null): AgentCatalogRow[] {
+  const found = foundAgents(catalog ?? []);
+  const readyRow = ready === null || found.some((agent) => agent.id === ready) ? undefined : catalog?.find((agent) => agent.id === ready);
+  return readyRow === undefined ? found : [readyRow, ...found];
+}
+
+/** the agents Start picks first, in order, when none was just set up here */
+const PREFERRED = ["claude", "codex"];
+
+/** The agent Start picks: the one just set up here, else Claude Code, else Codex, else the first. */
+export function preferredAgent(agents: readonly AgentCatalogRow[], ready: string | null): AgentCatalogRow | null {
+  for (const id of [ready, ...PREFERRED]) {
+    const agent = agents.find((candidate) => candidate.id === id);
+    if (agent !== undefined) return agent;
+  }
+  return agents[0] ?? null;
+}
+
+/** The plan accounts this PC is signed in to, which Start shows plan usage for without asking. */
+export function signedInAccounts(providers: readonly ProviderUsage[]): number {
+  return providers.filter((usage) => usage.problem !== "expired").length;
 }
 
 export type CheckStatus = { kind: "looking" } | { kind: "installed"; version: string | null } | { kind: "missing" } | { kind: "unknown" };
@@ -118,11 +93,6 @@ export function checkStatus(row: AgentCatalogRow | undefined): CheckStatus {
 export function checkList(known: readonly Pick<AgentCatalogEntry, "id" | "name" | "kind">[], answer: readonly AgentCatalogRow[] | null): { id: string; name: string; status: CheckStatus }[] {
   if (answer === null) return known.filter((entry) => entry.kind === "harness").map(({ id, name }) => ({ id, name, status: checkStatus(undefined) }));
   return answer.filter((row) => row.kind === "harness").map((row) => ({ id: row.id, name: row.name, status: checkStatus(row) }));
-}
-
-/** Plan usage starts switched on only right after a sign-in to the agent's account. */
-export function usageOnByDefault(state: GuideState): boolean {
-  return state.outcomes.agent === "done" && state.signedIn;
 }
 
 /** What says whether Ovis was used here before; null while it is not known yet. */
@@ -149,17 +119,11 @@ export const GUIDE_STORAGE_KEY = "ovis:setup-guide";
 export type GuideRecord = { status: "open"; state: GuideState } | { status: "closed" };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const OUTCOMES: ReadonlySet<unknown> = new Set(["done", "skipped"]);
-
 function readState(value: unknown): GuideState | null {
   if (!isObject(value)) return null;
-  const { step, outcomes, plan, agent, signedIn } = value;
-  if (step !== "welcome" && !GUIDE_STEPS.includes(step as GuideStepId)) return null;
-  if (!isObject(outcomes) || !Object.entries(outcomes).every(([key, outcome]) => GUIDE_STEPS.includes(key as GuideStepId) && key !== "done" && OUTCOMES.has(outcome))) return null;
-  if (plan !== null && !(typeof plan === "string" && plan in PLAN_AGENT)) return null;
-  if (agent !== null && typeof agent !== "string") return null;
-  if (typeof signedIn !== "boolean") return null;
-  return { step: step as GuideState["step"], outcomes: outcomes as GuideState["outcomes"], plan: plan as GuidePlan | null, agent, signedIn };
+  // the old multi-step guide's record (its outcomes, plan and agent) is no guide to show, even at its welcome
+  if (Object.keys(value).length !== 1) return null;
+  return value["step"] === "welcome" || value["step"] === "setup" ? { step: value["step"] } : null;
 }
 
 /** This browser's record of the guide; a damaged one reads as closed, so it never opens by itself on it. */

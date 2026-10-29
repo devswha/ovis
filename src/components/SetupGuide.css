@@ -68,7 +68,7 @@
   font-size: var(--fs-sm);
 }
 
-/* a quiet text button: Skip setup, Skip, Other agents */
+/* a quiet text button: Skip setup, Change folder, the Settings links, Other agents */
 .setup-link {
   display: inline-flex;
   align-items: center;
@@ -109,34 +109,7 @@
   text-align: left;
 }
 
-.setup-topics {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.setup-topics li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px var(--space-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  color: var(--text);
-  font-size: var(--fs-sm);
-}
-
-.setup-topics svg {
-  width: 14px;
-  height: 14px;
-  color: var(--accent);
-}
-
-/* the big choices: I'm new, a subscription */
+/* the big choices: I'm new, I've used Ovis before */
 .setup-choices {
   display: flex;
   flex-direction: column;
@@ -212,14 +185,8 @@
   font-size: var(--fs-sm);
 }
 
-/* the progress bar: Agent, Plan usage, Phone, Alerts, Done */
-.setup-progress {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.setup-progress-head {
+/* Set up Ovis, and Skip setup */
+.setup-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -228,70 +195,11 @@
   font-size: var(--fs-sm);
 }
 
-.setup-progress-steps {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.setup-progress-steps li {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-.setup-progress-bar {
-  height: 4px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-hover);
-}
-
-.setup-progress-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setup-progress-steps li[data-state="now"] {
-  color: var(--text-strong);
-  font-weight: var(--fw-semibold);
-}
-
-.setup-progress-steps li[data-state="now"] .setup-progress-bar {
-  background: var(--accent);
-}
-
-.setup-progress-steps li[data-state="done"] {
-  color: var(--text);
-}
-
-.setup-progress-steps li[data-state="done"] .setup-progress-bar {
-  background: var(--status-done);
-}
-
-.setup-progress-steps li[data-state="skipped"] .setup-progress-label {
-  text-decoration: line-through;
-}
-
-/* one step */
+/* one screen */
 .setup-step {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-}
-
-.setup-card {
-  padding: var(--space-6);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-xl);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-card);
 }
 
 .setup-actions {
@@ -312,11 +220,7 @@
   height: 15px;
 }
 
-.setup-skip {
-  margin-left: auto;
-}
-
-/* the PC check before the Agent question, and the agents it found */
+/* the PC check, and the agents Start can open */
 .setup-check {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -364,15 +268,41 @@
 }
 
 .setup-found {
-  min-height: 64px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2);
 }
 
-.setup-found[aria-pressed="true"] {
+.setup-found-agent {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setup-found-agent:hover:not(:disabled),
+.setup-found-agent:focus-visible {
+  border-color: var(--accent);
+}
+
+.setup-found-agent[aria-pressed="true"] {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 var(--hairline) var(--accent);
 }
 
-.setup-found > svg {
+.setup-found-agent > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
   color: var(--accent);
 }
 
@@ -386,33 +316,43 @@
 }
 
 .setup-found-name strong {
+  overflow: hidden;
   color: var(--text-strong);
-  font-size: var(--fs-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: var(--fw-semibold);
 }
 
 .setup-found-name span {
   color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* in <folder> · Change folder, beside Start */
+.setup-folder-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-dim);
   font-size: var(--fs-sm);
 }
 
-.setup-install-another {
-  text-decoration: none;
+.setup-folder-line svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* Connect your phone, Turn on alerts; Use Codex instead, Other agents */
+.setup-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
 }
 
 /* Other agents */
-.setup-others {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-  border-top: var(--hairline) solid var(--border);
-}
-
-.setup-others-toggle {
-  align-self: flex-start;
-  text-decoration: none;
-}
 
 .setup-others-list {
   display: grid;
@@ -443,141 +383,7 @@
   border-color: var(--accent);
 }
 
-.setup-badge {
-  margin-left: auto;
-  color: var(--status-done);
-  font-size: var(--fs-xs);
-}
-
-/* Plan usage */
-.setup-preview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--hairline) dashed var(--border-strong);
-  border-radius: var(--radius-lg);
-}
-
-.setup-preview-title {
-  margin: 0;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.setup-preview-where {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding-top: var(--space-3);
-  border-top: var(--hairline) solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-.setup-preview-where svg {
-  flex: none;
-  width: 16px;
-  height: 16px;
-}
-
-/* a labelled switch row: Show plan usage, the two alerts */
-.setup-switch {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding-top: var(--space-4);
-  border-top: var(--hairline) solid var(--border);
-}
-
-.setup-switch > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.setup-switch strong {
-  color: var(--text-strong);
-  font-weight: var(--fw-semibold);
-}
-
-.setup-switch span {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-/* Phone */
-.setup-qr {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-6);
-}
-
-.setup-qr ol {
-  display: flex;
-  flex: 1 1 220px;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-  padding-left: var(--space-5);
-  overflow-wrap: anywhere;
-}
-
-.setup-phone-here {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-.setup-phone-here p {
-  margin: 0;
-}
-
-/* Alerts: what one looks like */
-.setup-sample {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--droplet-bg);
-  box-shadow: var(--droplet-shadow);
-  color: var(--droplet-text);
-}
-
-.setup-sample .agent-mark {
-  display: inline-flex;
-  flex: none;
-}
-
-.setup-sample-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  font-size: var(--fs-sm);
-}
-
-.setup-sample-text span {
-  color: var(--droplet-text-dim);
-}
-
-.setup-sample-badge {
-  flex: none;
-  color: var(--droplet-blocked);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-}
-
-/* Done */
+/* You're set up */
 .setup-done-head {
   display: flex;
   align-items: flex-start;
@@ -600,79 +406,11 @@
   gap: 2px;
 }
 
-.setup-summary {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.setup-summary li {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--text);
-}
-
-.setup-summary li > svg {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  color: var(--text-dim);
-}
-
-.setup-summary li[data-done="true"] > svg {
-  color: var(--status-done);
-}
-
-.setup-later {
-  margin-left: auto;
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  text-align: right;
-}
-
 .setup-label {
   margin: 0;
   color: var(--text-strong);
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
-}
-
-.setup-folders {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.setup-folder {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  min-height: var(--chip-h);
-  padding: 4px var(--space-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-hover);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  cursor: pointer;
-}
-
-.setup-folder[aria-pressed="true"] {
-  border-color: var(--accent);
-  color: var(--text-strong);
-}
-
-.setup-folder svg {
-  flex: none;
-  width: 14px;
-  height: 14px;
 }
 
 .setup-browser {
@@ -704,26 +442,9 @@
     padding-top: var(--space-4);
   }
 
-  .setup-card {
-    padding: var(--space-4);
-    border-radius: var(--radius-lg);
-  }
-
-  .setup-progress-label {
-    font-size: var(--fs-xs);
-  }
-
   .setup-actions .btn-primary {
     flex: 1 1 100%;
     justify-content: center;
     min-height: var(--touch-target);
-  }
-
-  .setup-skip {
-    margin: 0 auto;
-  }
-
-  .setup-summary li {
-    flex-wrap: wrap;
   }
 }

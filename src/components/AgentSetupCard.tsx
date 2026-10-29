@@ -1,9 +1,9 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronUp, KeyRound, LoaderCircle, Play, RotateCw, SquareTerminal, TriangleAlert } from "lucide-react";
 
-import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import type { AgentCatalogRow, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import { fetchAgentCatalog, startAgentInstall, startAgentSignIn } from "../lib/api.ts";
-import { setupProgress, setupStep, type SetupStep } from "../lib/agentSetup.ts";
+import { setupProgress, setupStep, signInDue, type SetupStep } from "../lib/agentSetup.ts";
 import { useT } from "../lib/i18n.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import "./AgentSetupCard.css";
@@ -23,6 +23,10 @@ export interface AgentSetupCardProps {
   onStart: () => void;
   /** told each step the card moves to (the setup guide moves on once the agent is ready) */
   onStep?: (step: SetupStep) => void;
+  /** start the sign-in as soon as an install started here is done (the setup guide's one tap) */
+  autoSignIn?: boolean;
+  /** an install or sign-in asked of the PC and not answered yet */
+  onPending?: (pending: boolean) => void;
 }
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -32,7 +36,7 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
  * official command in a terminal tab the user can open, and installed is decided by reading the
  * catalog again, never by how the tab ended.
  */
-export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep }: AgentSetupCardProps) {
+export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep, autoSignIn = false, onPending }: AgentSetupCardProps) {
   const t = useT();
   const [step, dispatch] = useReducer(setupStep, initial);
   const onStepRef = useRef(onStep);
@@ -53,8 +57,33 @@ export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "
     return () => { clearInterval(timer); abort.abort(); };
   }, [step.kind, machineId, agent.id]);
 
-  const install = () => void startAgentInstall(agent.id, machineId).then((tab) => dispatch({ type: "install-started", tab }), (error) => dispatch({ type: "failed", message: message(error) }));
-  const signIn = () => void startAgentSignIn(agent.id, machineId).then((tab) => dispatch({ type: "sign-in-started", tab }), (error) => dispatch({ type: "failed", message: message(error) }));
+  // one request at a time: a second tap, or the automatic sign-in, while one is unanswered sends nothing
+  const [pending, setPending] = useState(false);
+  const inFlight = useRef(false);
+  const onPendingRef = useRef(onPending);
+  onPendingRef.current = onPending;
+  useEffect(() => { onPendingRef.current?.(pending); }, [pending]);
+  // a reply that comes after the card is gone (Skip setup, another pane) changes nothing and opens no tab
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const ask = (send: () => Promise<AgentTabStarted>, started: (tab: AgentTabStarted) => void): void => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setPending(true);
+    void send().then((tab) => { if (alive.current) started(tab); }, (error) => { if (alive.current) dispatch({ type: "failed", message: message(error) }); }).finally(() => {
+      inFlight.current = false;
+      if (alive.current) setPending(false);
+    });
+  };
+  const install = () => ask(() => startAgentInstall(agent.id, machineId), (tab) => dispatch({ type: "install-started", tab }));
+  // `show`: a sign-in that starts by itself opens its tab, where the user signs in
+  const signIn = (show = false) => ask(() => startAgentSignIn(agent.id, machineId), (tab) => { dispatch({ type: "sign-in-started", tab }); if (show) onOpenTerminal(tab.pane_id); });
+  const before = useRef(step);
+  useEffect(() => {
+    const previous = before.current;
+    before.current = step;
+    if (autoSignIn && signInDue(previous, step)) signIn(true);
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
   const tab = step.kind === "installing" || step.kind === "signing-in" ? step.tab : null;
   const command = tab?.command ?? agent.install?.primary.command ?? null;
 
@@ -86,14 +115,14 @@ export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "
       {details && command !== null && <pre className="agent-setup-command"><code>{command}</code></pre>}
       {details && step.kind === "installed" && !step.onPath && <p className="agent-setup-note">{t("Its folder is on PATH only for terminals opened after the install.")}</p>}
       <div className="agent-setup-actions">
-        {step.kind === "idle" && <button type="button" className="btn btn-primary" disabled={agent.install === null} onClick={install}>{t("Install")}</button>}
-        {step.kind === "installed" && <><button type="button" className="btn btn-primary" onClick={signIn}>{t("Sign in")}</button><button type="button" className="btn btn-ghost" onClick={() => dispatch({ type: "skip-sign-in" })}>{t("Skip")}</button></>}
+        {step.kind === "idle" && <button type="button" className="btn btn-primary" disabled={agent.install === null || pending} onClick={install}>{t("Install")}</button>}
+        {step.kind === "installed" && <><button type="button" className="btn btn-primary" disabled={pending} onClick={() => signIn()}>{t("Sign in")}</button><button type="button" className="btn btn-ghost" disabled={pending} onClick={() => dispatch({ type: "skip-sign-in" })}>{t("Skip")}</button></>}
         {step.kind === "signing-in" && <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: "sign-in-done" })}>{t("I've signed in")}</button>}
         {step.kind === "ready" && <button type="button" className="btn btn-primary" onClick={onStart}><Play aria-hidden="true" />{t("Start {agent}", { agent: name })}</button>}
-        {step.kind === "failed" && <button type="button" className="btn btn-primary" onClick={step.after === "install" ? install : signIn}><RotateCw aria-hidden="true" />{t("Try again")}</button>}
+        {step.kind === "failed" && <button type="button" className="btn btn-primary" disabled={pending} onClick={step.after === "install" ? install : () => signIn()}><RotateCw aria-hidden="true" />{t("Try again")}</button>}
         {(command !== null || step.kind === "installed") && step.kind !== "ready" && <button type="button" className="btn btn-ghost" aria-expanded={details} onClick={() => setDetails((open) => !open)}>{details ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}{details ? t("Hide details") : t("Show details")}</button>}
         {tab !== null && <button type="button" className="btn btn-ghost" onClick={() => onOpenTerminal(tab.pane_id)}><SquareTerminal aria-hidden="true" />{t("Open terminal")}</button>}
-        {(step.kind === "installing" || step.kind === "signing-in" || step.kind === "failed") && <button type="button" className="btn agent-setup-cancel" onClick={() => dispatch({ type: "cancel" })}>{t("Cancel")}</button>}
+        {(step.kind === "installing" || step.kind === "signing-in" || step.kind === "failed") && <button type="button" className="btn agent-setup-cancel" disabled={pending} onClick={() => dispatch({ type: "cancel" })}>{t("Cancel")}</button>}
       </div>
     </section>
   );

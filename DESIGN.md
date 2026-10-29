@@ -3298,25 +3298,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   notice's button and the PC-action notice's per-fault lifetime (`lib/machineNotice.ts`).
 
 ### Setup guide (`.setup-*`)
-- Follows the Claude and Codex apps' first runs: one question per screen in the pane area, the
-  sidebar left in place, nothing modal. It opens by itself once, on a fresh install only (no herdr
-  workspace, no saved settings, no shared settings, no paired device); Settings opens it again.
-- The welcome is centered: the app mark, "Is this your first time using Ovis?", two big choice rows
-  (`--radius-xl` cards on `--bg-panel`, an accent border on hover), and four topic pills.
-- Each step sits in a 552px column under a five-part progress bar (4px segments: `--accent` now,
-  `--status-done` done, `--bg-hover` ahead; a skipped step's label is struck through), with "Skip
-  setup" at its top right and a quiet underlined "Skip" at the bottom right of every step. On a
-  phone the primary button takes the full width and Skip centers under it.
-- Steps reuse what the app already draws: the agent setup card, the plan meter's account block
-  as the usage preview (dashed `--border-strong` frame), Settings' switch, the phone QR code, and
-  the in-app alert's colors for the sample alert. Done lists each step with a check or an empty
-  circle and, for a skipped one, where Settings has it.
-- The Agent step first shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a
-  two-column `--bg-panel` list, each line a spinner until the answer, then "Installed · v…" in
-  `--status-done` or "Not installed" dim. The check is on screen at least 300ms, so an instant one
-  is still seen, then the step shows "Found on this PC" (the choice rows, the picked one with an accent
-  ring and a check, "Continue with …" and a quiet "Install another agent") or, with none found or
-  a failed check, the plan question.
+- Follows the Claude and Codex apps' first runs: one screen in the pane area, the sidebar left in
+  place, nothing modal. It opens by itself once, on a fresh install only (no herdr workspace, no
+  saved settings, no shared settings, no paired device); Settings opens it again. A watching device
+  never sees it.
+- The welcome is centered: the app mark, "Is this your first time using Ovis?" and two big choice rows
+  (`--radius-xl` cards on `--bg-panel`, an accent border on hover).
+- Then one screen in a 552px column, "Set up Ovis" and "Skip setup" over it, no progress bar. It first
+  shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a two-column `--bg-panel`
+  list, each line a spinner until the answer, then "Installed · v…" in `--status-done` or "Not
+  installed" dim. The check is on screen at least 300ms, so an instant one is still seen.
+- Agents found: "You're set up" under a `--status-done` check circle, the agents as two-column pick
+  rows (`--bg-panel`, the picked one with an accent ring and a check; Claude Code, else Codex, else
+  the first), a note when plan usage turns on for accounts already signed in, then "Start with …"
+  with "in <folder> · Change folder" beside it, and two quiet links to Settings (Connect your phone,
+  Turn on alerts): those need the user's own steps.
+- None found: the agent setup card for Claude Code under "Recommended", with
+  quiet "Use Codex instead" and "Other agents" links. Its Install is the one tap: the install, then the
+  agent's sign-in start by themselves, and the screen turns into "You're set up" once it is ready.
+  A failed check says "Couldn't check this PC" with its error and Look again. On a phone the primary
+  button takes the full width.
 
 ### Token gate
 - A centered password card replaces the entire shell while authentication is required. It has a real
