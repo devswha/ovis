@@ -136,7 +136,11 @@ processes. The queue is ordered largest file first, so long files start early. W
 (native Windows) the files run serially in one process.
 Explicit `CHECK_DIR` and `CHECK_REPORT` paths are claimed exclusively by canonical path, even for
 `fast`, before writing reports, logs or isolated state. Pid markers are released at exit after the
-final report and session cleanup; a dead owner's marker is reclaimed under its own `.reclaim` file.
+final report and session cleanup. A marker names its run's pid and, on Linux and macOS, when that
+process started, so a pid given to another process after a crash or a reboot does not keep the claim.
+A dead owner's marker is taken over under a lock: on Linux an abstract socket, which the kernel lets
+go of however its holder ends; elsewhere a `.reclaim` file, which the next run clears when a run
+killed during a takeover leaves it. No marker needs deleting by hand.
 Lock refusal exits with the holder's identity before writing a report, so it cannot overwrite
 an active run's output or stop its sessions.
 
