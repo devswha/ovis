@@ -91,35 +91,36 @@ export function refusalLineStart(text: string): number {
  * screen as the first frame (#2289). Past this the bytes go out anyway, so no attach stays held.
  */
 export const ATTACH_RESIZE_REDRAW_MS = 1_000;
-const SYNC_START = "\x1b[?2026h";
-const SYNC_END = "\x1b[?2026l";
+/**
+ * Nor past this much held output: it goes out as one frame, and a frame over a client's output window
+ * (OUTPUT_HARD_BYTES, 1 MiB) ends that client as stalled. A busy pane fills it well within the wait.
+ */
+export const ATTACH_RESIZE_REDRAW_CHARS = 256 * 1024;
+export const SYNC_START = "\x1b[?2026h";
+export const SYNC_END = "\x1b[?2026l";
 const ROW_START_RE = /\x1b\[(\d+);1H/g;
+const PLAIN_ROW_RE = /^[\x20-\x7e]*$/;
 
 /**
- * A whole herdr screen at cols x rows in `output`. herdr (0.9.5) draws a whole screen, its first and the
- * redraw for each new grid, as one synchronized update that moves to the start of each row, 1 to the
- * last, and fills it to the width. Measured from that update, so it never depends on how long ago the
- * resize was. A herdr that draws otherwise matches nothing, and the hold waits out ATTACH_RESIZE_REDRAW_MS.
+ * The grid of a whole herdr screen, from the body of one synchronized update; null when it is not one.
+ * herdr (0.9.5) draws a whole screen, its first and the redraw for each new grid, as one update that
+ * moves to the start of each row, 1 to the last, and fills each row to the width. The width is read
+ * from the rows of plain ASCII only, whose width no table disagrees on (herdr and Bun count spacing
+ * marks differently): an update with none, or whose plain rows differ, is not taken for a screen.
  */
-export function attachScreenAt(output: string, cols: number, rows: number): boolean {
-  for (let start = output.indexOf(SYNC_START); start !== -1; start = output.indexOf(SYNC_START, start + 1)) {
-    const end = output.indexOf(SYNC_END, start);
-    if (end === -1) return false;
-    const update = output.slice(start, end);
-    // where each row's move is, the first one for a row
-    const moves = new Map<number, { at: number; length: number }>();
-    for (const move of update.matchAll(ROW_START_RE)) {
-      const row = Number(move[1]);
-      if (!moves.has(row)) moves.set(row, { at: move.index, length: move[0].length });
-    }
-    if (moves.size !== rows || !Array.from({ length: rows }, (_, row) => row + 1).every((row) => moves.has(row))) continue;
-    const first = moves.get(1);
-    if (!first) continue;
-    // the first row's text, the escapes in it zero-width
-    const text = update.slice(first.at + first.length, moves.get(2)?.at ?? update.length);
-    if (Bun.stringWidth(text) === cols) return true;
+export function screenGrid(update: string): { cols: number; rows: number } | null {
+  const moves = Array.from(update.matchAll(ROW_START_RE));
+  const rows = new Set(moves.map((move) => Number(move[1])));
+  if (rows.size === 0) return null;
+  for (let row = 1; row <= rows.size; row++) if (!rows.has(row)) return null;
+  let cols: number | null = null;
+  for (const [index, move] of moves.entries()) {
+    const text = Bun.stripANSI(update.slice(move.index + move[0].length, moves[index + 1]?.index ?? update.length));
+    if (!PLAIN_ROW_RE.test(text)) continue;
+    if (cols !== null && cols !== text.length) return null;
+    cols = text.length;
   }
-  return false;
+  return cols === null ? null : { cols, rows: rows.size };
 }
 /** how often a terminal another web bridge holds is tried again, while clients here still want it */
 export const ATTACH_HELD_RETRY_MS = 3_000;
@@ -589,28 +590,49 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       }
       // A resize since this attach started, even one back to its first grid, makes herdr's screens
       // until its redraw for the pty's current grid the wrong size (#2289). Only an update that began
-      // after the latest resize can be that redraw: `sinceResize` is what came after it.
+      // after the latest resize can be that redraw, and only the latest whole screen counts: a read can
+      // bring the old grid's screen queued from before a resize and a redraw for a grid in between.
       let resizes = attachment.resizes ?? 0;
       let resized = false;
-      // An update that ended without being that screen never is (only a resize changes the grid, and
-      // it starts this over), so only an update not ended yet is kept: each read is looked at once,
-      // never everything held, which grows with a busy pane for up to ATTACH_RESIZE_REDRAW_MS.
-      let sinceResize = "";
+      /** the latest whole screen since the latest resize is at the pty's current grid */
+      let screenAtGrid = false;
+      // Each read is looked at once, never everything held (which grows with a busy pane for the whole
+      // wait): an update not ended yet is kept as its reads, joined only when its end comes.
+      let update: string[] | null = null;
+      /** the stream's last bytes: a marker a read cut is found with the next one */
+      let edge = "";
       const noteResize = (): void => {
         if ((attachment.resizes ?? 0) === resizes) return;
         resizes = attachment.resizes ?? 0;
         resized = true;
-        sinceResize = "";
+        screenAtGrid = false;
+        update = null;
+        edge = "";
       };
-      /** not resized since it started, or herdr has drawn the pty's current grid since the latest resize */
+      const look = (data: string): void => {
+        const near = edge + data;
+        edge = near.slice(-(SYNC_START.length - 1));
+        if (update) {
+          update.push(data);
+          if (!near.includes(SYNC_END)) return;
+        } else {
+          const start = near.indexOf(SYNC_START);
+          if (start === -1) return;
+          update = [near.slice(start)];
+        }
+        const text = update.join("");
+        let start = text.indexOf(SYNC_START);
+        for (let end = text.indexOf(SYNC_END, start); start !== -1 && end !== -1; end = text.indexOf(SYNC_END, start)) {
+          const grid = screenGrid(text.slice(start + SYNC_START.length, end));
+          if (grid) screenAtGrid = grid.cols === attachment.cols && grid.rows === attachment.rows;
+          start = text.indexOf(SYNC_START, end);
+        }
+        update = start === -1 ? null : [text.slice(start)];
+      };
+      /** not resized since it started, or herdr's latest whole screen since the latest resize is at the pty's current grid */
       const atGrid = (): boolean => {
         noteResize();
-        if (!resized) return true;
-        if (attachScreenAt(sinceResize, attachment.cols, attachment.rows)) return true;
-        // keep an update not ended yet, else what may be the start of one that a read cut
-        const open = sinceResize.lastIndexOf(SYNC_START);
-        sinceResize = sinceResize.slice(open > sinceResize.lastIndexOf(SYNC_END) ? open : Math.max(0, sinceResize.length - (SYNC_START.length - 1)));
-        return false;
+        return !resized || screenAtGrid;
       };
       /** the hold's own time is over: a resized attach waits on for that redraw, no longer than ATTACH_RESIZE_REDRAW_MS */
       let redrawWait = false;
@@ -646,7 +668,13 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           if (held === null) return guard(data);
           noteResize();
           held += data;
-          if (resized) sinceResize += data;
+          if (resized) look(data);
+          // a busy pane's output while the redraw is waited for: it goes out before it is too much for one frame
+          if (redrawWait && held.length > ATTACH_RESIZE_REDRAW_CHARS) {
+            clearTimeout(holdTimer);
+            took();
+            return;
+          }
           if (!holding && !ATTACH_PREAMBLE_RE.test(held)) {
             holding = true;
             heldSince = Date.now();
