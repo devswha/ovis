@@ -935,11 +935,13 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
  * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
  * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
  * drops it): the cap is set above what is held at once in use, sent bodies waiting for a
- * collection included (about 800 at the most over 10,000 downloads, 16 at a time, measured with
- * `askCollection`; about 1,700 without it), but never past a quarter of this process's open files,
- * which the server's own sockets, terminals and file threads need too. Bun raises that limit to
- * the hard one at start: hundreds of thousands on most Linux systems, the only one that sends
- * such a body, and 1,024 on some, where the cap stays 256.
+ * collection included. Sent bodies that lived through a collection while they were sent wait for
+ * one of Bun's own full collections, so that count rises and falls with them: at the most, with
+ * no cap and a heap of a million objects, 1,942 over 60,000 downloads 16 at a time and 6,657 over
+ * 30,000 downloads 64 at a time. The cap stays well above that (`most`), but never past a quarter
+ * of this process's open files, which the server's own sockets, terminals and file threads need
+ * too. Bun raises that limit to the hard one at start: hundreds of thousands on most Linux
+ * systems, the only one that sends such a body, and 1,024 on some, where the cap stays 256.
  */
 let bodiesHeld = 0;
 let bodyCap: { most: number; collectPast: number } | null = null;
@@ -947,7 +949,7 @@ let bodyCap: { most: number; collectPast: number } | null = null;
 const bodyLimits = (): { most: number; collectPast: number } => {
   if (bodyCap !== null && pageFileHooks.openFiles === undefined) return bodyCap;
   const open = pageFileHooks.openFiles ?? openFileLimit();
-  const most = open === null ? 256 : Math.min(4096, Math.floor(open / 4));
+  const most = open === null ? 256 : Math.min(32_768, Math.floor(open / 4));
   const cap = { most, collectPast: Math.min(256, Math.floor(most / 4)) };
   if (pageFileHooks.openFiles === undefined) bodyCap = cap;
   return cap;
@@ -966,10 +968,12 @@ const COLLECTION_MS = 250;
 let collectionAsked = -Infinity;
 /**
  * Past `collectPast` bodies held, most were sent long ago and only wait for a collection: one is
- * asked for on the collector's own threads (`Bun.gc(false)`), so they are let go well before the
- * cap. Never a forced one (`Bun.gc(true)`), which stops every terminal and request on this thread
- * for as long as it takes on the whole heap; and at most once per `COLLECTION_MS`, so a player
- * that really holds many does not ask on every answer.
+ * asked for on the collector's own threads (`Bun.gc(false)`). That collects only what was made
+ * since the last collection, so it lets go of bodies sent since then (about half the peak in a
+ * burst of downloads), not ones that lived through a collection while they were sent. Never a
+ * forced one (`Bun.gc(true)`), which would let all of them go but stops every terminal and request
+ * on this thread for as long as it takes on the whole heap; and at most once per `COLLECTION_MS`,
+ * so a player that really holds many does not ask on every answer.
  */
 const askCollection = () => {
   const now = performance.now();
