@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
-import { ConversationNotStarted, ConversationUnavailable } from "./conversation-shared.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { lettaBinding, lettaOpenedSessions, lettaSessionOf, lettaTranscriptPath, resolveLettaTranscript } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, START_WINDOW_MS } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -85,15 +85,38 @@ describe("Letta transcript", () => {
     expect(transcriptToolOutput("letta-transcript", path, "Bash-1-1")?.startsWith("yyy")).toBe(true);
     expect(lettaToolOutput(path, "Bash-9-9")).toBeNull();
   });
+
+  test("a field the reader does not know falls back, and a ref the output route refuses is not offered", () => {
+    const entry = (fields: object): string => `${JSON.stringify({ kind: "tool_call", name: "Bash", argsText: "{}", captured_at: "2026-10-29T01:00:00.000Z", ...fields })}\n`;
+    expect(() => parseLettaTranscript(entry({ result: { text: "must not drop" } }))).toThrow(LettaUnavailable);
+    const [part] = parseLettaTranscript(entry({ resultText: "z".repeat(10_000), source_line_id: "x".repeat(154) }))[0]!.parts;
+    expect(part).toMatchObject({ kind: "tool" });
+    expect(part).not.toHaveProperty("output_ref");
+  });
 });
 
 describe("Letta conversation binding", () => {
-  const opened = lettaOpenedSessions(settingsAfterNew);
+  const opened = lettaOpenedSessions(settingsAfterNew)!;
+  /** A project whose Letta record is `settings`, written `at`, and the pane's letta process started `started`. */
+  const setup = (settings: string | null, at: number, started: number, env: Record<string, string> = {}): LettaProcess => {
+    const cwd = join(root, "proj");
+    mkdirSync(join(cwd, ".letta"), { recursive: true });
+    if (settings !== null) {
+      writeFileSync(join(cwd, ".letta", "settings.local.json"), settings);
+      utimesSync(join(cwd, ".letta", "settings.local.json"), at / 1000, at / 1000);
+    }
+    return { pid: 4242, cwd, startedAt: started, env: { HOME: root, ...env } };
+  };
+  const now = Date.now();
 
-  test("reads herdr's report and Letta's record as they were recorded", () => {
+  test("reads herdr's report, Letta's record and a letta process as they were recorded", () => {
     expect(lettaSessionOf(pane("w1:p1", `default:${AGENT}`, root))).toEqual({ reported: `default:${AGENT}`, agent: AGENT, conversation: "default" });
     expect(lettaSessionOf(pane("w1:p1", "local-conv-1", root))).toEqual({ reported: "local-conv-1", agent: null, conversation: "local-conv-1" });
     expect(opened).toEqual([{ agent: AGENT, conversation: "local-conv-1" }]);
+    expect(isLettaProcess(["node", "/home/user/.npm-global/bin/letta", "-m", "openai-compatible/gemini-3.1-flash-lite"])).toBe(true);
+    expect(isLettaProcess(["letta"])).toBe(true);
+    expect(isLettaProcess(["node", "/srv/app.js"])).toBe(false);
+    expect(parseEnviron("HOME=/h\0LETTA_CONFIG_DIR=/c=d\0")).toEqual({ HOME: "/h", LETTA_CONFIG_DIR: "/c=d" });
   });
 
   test("binds the conversation both name, taking its agent from Letta's record", () => {
@@ -118,52 +141,99 @@ describe("Letta conversation binding", () => {
       { agent: "claude", kind: "id", source: "herdr:letta", value: "local-conv-1" },
       { agent: "letta", kind: "path", source: "herdr:letta", value: "local-conv-1" },
       { agent: "letta", kind: "id", source: "herdr:letta", value: "../../etc" },
+      { agent: "letta", kind: "id", source: "herdr:letta", value: ".." },
+      { agent: "letta", kind: "id", source: "herdr:letta", value: "default:.." },
       { agent: "letta", kind: "id", source: "herdr:letta", value: "default:" },
+      { agent: "letta", kind: "id", source: "herdr:letta", value: "default" },
     ]) expect(lettaSessionOf({ ...base, agent_session } as HerdrPane)).toBeNull();
     expect(lettaSessionOf(pane("w1:p1", null, root))).toBeNull();
   });
 
-  test("resolves the project's record, the home folder's global one, and never a conversation two panes report", () => {
-    const project = join(root, "proj");
-    const config = join(root, "config");
-    mkdirSync(join(project, ".letta"), { recursive: true });
-    mkdirSync(config, { recursive: true });
-    writeFileSync(join(project, ".letta", "settings.local.json"), settingsAfterNew);
-    const env = { HOME: root, LETTA_CONFIG_DIR: config };
-    const reported = pane("w1:p1", "local-conv-1", project);
-    expect(resolveLettaTranscript(reported, [reported], env)).toEqual({ path: lettaTranscriptPath(join(config, "transcripts"), AGENT, "local-conv-1"), session: "local-conv-1" });
-    expect(resolveLettaTranscript(reported, [reported, pane("w2:p1", "local-conv-1", project)], env)).toBeNull();
-    // in a folder with no project record, the global settings stand in
-    const home = pane("w1:p1", "local-conv-1", root);
-    expect(resolveLettaTranscript(home, [home], env)).toBeNull();
-    writeFileSync(join(config, "settings.json"), settingsAfterNew);
-    expect(resolveLettaTranscript(home, [home], env)?.path).toBe(lettaTranscriptPath(join(config, "transcripts"), AGENT, "local-conv-1"));
-    expect(resolveLettaTranscript(home, [home], { ...env, LETTA_TRANSCRIPT_ROOT: join(root, "elsewhere") })?.path).toBe(lettaTranscriptPath(join(root, "elsewhere"), AGENT, "local-conv-1"));
+  test("Letta's record speaks for the pane's process only while nothing wrote it after that process started up", () => {
+    const reported = (cwd: string) => pane("w1:p1", "local-conv-1", cwd);
+    const path = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1");
+    // the record the process resumed from, written before it started, or by it as it started
+    let owner = setup(settingsAfterNew, now - 60_000, now);
+    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1" });
+    owner = setup(settingsAfterNew, now + 2_000, now);
+    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)?.path).toBe(path);
+    // pane A shows another conversation now; a later write (A's own /new, or another letta in the folder) names local-conv-1
+    owner = setup(settingsAfterNew, now + START_WINDOW_MS + 1_000, now);
+    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
+    // another agent's letta in the folder ran /new later: its local-conv-1 is not this pane's
+    owner = setup(JSON.stringify({ sessionsByServer: { local: { agentId: "agent-local-b", conversationId: "local-conv-1" } } }), now + 120_000, now);
+    expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
   });
 
-  test("a bound pane reads its transcript; one not written yet is a conversation not begun; an unbound one uses Terminal", async () => {
+  test("a missing, malformed or partly unreadable project record binds nothing, whatever the global settings say", () => {
+    mkdirSync(join(root, ".letta"), { recursive: true });
+    writeFileSync(join(root, ".letta", "settings.json"), settingsAfterNew);
+    for (const settings of [null, "{", "[]", JSON.stringify({ sessionsByServer: { a: { agentId: AGENT, conversationId: "local-conv-1" }, b: { agentId: 3 } } })]) {
+      rmSync(join(root, "proj"), { recursive: true, force: true });
+      const owner = setup(settings, now - 60_000, now);
+      expect(lettaTranscriptFor(pane("w1:p1", "local-conv-1", owner.cwd), [], owner)).toBeNull();
+    }
+  });
+
+  test("the transcript is where the pane's process keeps it, never where this server would", () => {
+    const own = setup(settingsAfterNew, now - 60_000, now, { LETTA_TRANSCRIPT_ROOT: join(root, "elsewhere") });
+    const target = pane("w1:p1", "local-conv-1", own.cwd);
+    expect(lettaTranscriptFor(target, [target], own)?.path).toBe(lettaTranscriptPath(join(root, "elsewhere"), AGENT, "local-conv-1"));
+    expect(lettaTranscriptFor(target, [target], { ...own, env: { HOME: root, LETTA_CONFIG_DIR: join(root, "cfg") } })?.path).toBe(lettaTranscriptPath(join(root, "cfg", "transcripts"), AGENT, "local-conv-1"));
+    expect(lettaTranscriptFor(target, [target], { ...own, env: { LETTA_TRANSCRIPT_ROOT: "relative" } })).toBeNull();
+    expect(lettaTranscriptFor(target, [target], { ...own, env: {} })).toBeNull();
+    expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-1", own.cwd)], own)).toBeNull();
+  });
+
+  test("only a regular file at the path Letta derives is read, never one reached through a link", () => {
+    const transcripts = join(root, "transcripts");
+    const path = lettaTranscriptPath(transcripts, AGENT, "local-conv-1");
+    expect(lettaTranscriptHeld(path, transcripts)).toBe(false);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(join(root, "other.jsonl"), defaultLog);
+    symlinkSync(join(root, "other.jsonl"), path);
+    expect(lettaTranscriptHeld(path, transcripts)).toBe(false);
+    rmSync(path);
+    symlinkSync(join(root, "loop"), join(root, "loop"));
+    symlinkSync(join(root, "loop"), path);
+    expect(lettaTranscriptHeld(path, transcripts)).toBe(false);
+    rmSync(path);
+    writeFileSync(path, newLog);
+    expect(lettaTranscriptHeld(path, transcripts)).toBe(true);
+    rmSync(join(transcripts, AGENT), { recursive: true });
+    mkdirSync(join(root, "real", "local-conv-1"), { recursive: true });
+    writeFileSync(join(root, "real", "local-conv-1", "transcript.jsonl"), newLog);
+    symlinkSync(join(root, "real"), join(transcripts, AGENT));
+    expect(lettaTranscriptHeld(path, transcripts)).toBe(false);
+  });
+
+  test("a bound pane reads the transcript its letta process keeps; without one, or unbound, it uses Terminal", async () => {
     const project = join(root, "proj");
     mkdirSync(join(project, ".letta"), { recursive: true });
     writeFileSync(join(project, ".letta", "settings.local.json"), settingsAfterNew);
-    const saved = { config: process.env["LETTA_CONFIG_DIR"], transcripts: process.env["LETTA_TRANSCRIPT_ROOT"] };
-    process.env["LETTA_CONFIG_DIR"] = join(root, "config");
-    delete process.env["LETTA_TRANSCRIPT_ROOT"];
+    const config = join(root, "config");
+    // a real process whose own environment names the store, as the pane's letta would
+    const child = Bun.spawn(["sleep", "300"], { env: { HOME: root, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({
+      pane_id: "w1:p1", foreground_processes: [{ pid: child.pid, argv: ["node", "/opt/letta/bin/letta"], cwd: project }],
+    }) as never);
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never);
     const resolve = (target: HerdrPane) => paneTranscript(target.pane_id, undefined, { panes: [target] } as SessionSnapshot);
     try {
       const bound = pane("w1:p1", "local-conv-1", project);
-      const path = lettaTranscriptPath(join(root, "config", "transcripts"), AGENT, "local-conv-1");
-      await expect(resolve(bound)).rejects.toBeInstanceOf(ConversationNotStarted);
+      const path = lettaTranscriptPath(join(config, "transcripts"), AGENT, "local-conv-1");
+      // a conversation with no file here may have turns elsewhere: the terminal shows them
+      await expect(resolve(bound)).rejects.toThrow("no_session_path");
       mkdirSync(join(path, ".."), { recursive: true });
       writeFileSync(path, newLog);
       expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
       await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
     } finally {
+      info.mockRestore();
       rpc.mockRestore();
-      for (const [key, value] of [["LETTA_CONFIG_DIR", saved.config], ["LETTA_TRANSCRIPT_ROOT", saved.transcripts]] as const) {
-        if (value === undefined) delete process.env[key]; else process.env[key] = value;
-      }
+      child.kill();
+      await child.exited;
     }
   });
 });

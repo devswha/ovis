@@ -1282,8 +1282,8 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     );
     if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
   }
-  // a Muse pane's processes are asked for once, for omo and for its session lock
-  if (agent === "muse" && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
+  // a Muse or Letta pane's processes are asked for once, for omo and for its own binding
+  if ((agent === "muse" || agent === "letta") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
     return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
@@ -1304,10 +1304,9 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     }
     // herdr's label, not a report an earlier Letta left behind: the binding needs a running one
     if (agent === "letta" && pane.agent === "letta") {
-      const found = resolveLettaTranscript(pane, panes ?? [pane]);
+      // no file yet is no proof the conversation has no turns (one begun elsewhere): Terminal stands in
+      const found = await resolveLettaTranscript(pane, panes ?? [pane], known);
       if (found === null) throw new ConversationUnavailable("no_session_path");
-      // Letta writes the file when the conversation's first turn ends
-      if (!statSync(found.path, { throwIfNoEntry: false })) throw new ConversationNotStarted(found.session, "letta-transcript", found.path);
       return { source: "letta-transcript", path: found.path };
     }
     if (agent === "agy") {

@@ -24,8 +24,15 @@ export class LettaUnavailable extends Error {
   constructor() { super("Letta transcript is in a shape the reader does not know"); this.name = "LettaUnavailable"; }
 }
 
+/** The fields letta-code 0.34.27 writes, by kind: an entry with any other could carry words the reader would drop. */
+const FIELDS = new Set(["kind", "text", "captured_at", "source_line_id", "source_message_id"]);
+const TOOL_FIELDS = new Set(["kind", "name", "argsText", "resultText", "resultOk", "captured_at", "source_line_id", "source_message_id"]);
+/** The refs GET /api/pane/conversation/tool-output takes (TOOL_REF in conversation.ts). */
+const TOOL_REF = /^[A-Za-z0-9_:.-]{1,128}$/;
+
 /** Whether a line is an entry letta-code 0.34.27 writes, in the shape the reader takes. */
 function known(entry: Row): boolean {
+  if (!Object.keys(entry).every((key) => (entry.kind === "tool_call" ? TOOL_FIELDS : FIELDS).has(key))) return false;
   if (typeof entry.captured_at !== "string" || !optional(entry.source_line_id, "string") || !optional(entry.source_message_id, "string")) return false;
   if (entry.kind === "tool_call") {
     return optional(entry.name, "string") && optional(entry.argsText, "string") && optional(entry.resultText, "string") && optional(entry.resultOk, "boolean");
@@ -71,9 +78,9 @@ export function parseLettaTranscript(text: string): ConversationTurn[] {
       let args: Row = {};
       try { const parsed: unknown = JSON.parse(input); if (isRow(parsed)) args = parsed; } catch { /* summarized by name */ }
       const part: Tool = { kind: "tool", name, summary: toolSummary(name, args), input, output: "" };
-      const ref = typeof entry.source_line_id === "string" ? entry.source_line_id : "";
+      const ref = typeof entry.source_line_id === "string" && TOOL_REF.test(entry.source_line_id) ? entry.source_line_id : "";
       trimOutput(part, typeof entry.resultText === "string" ? entry.resultText : "", ref);
-      // an entry without an id has no ref to fetch the rest by
+      // an entry without an id the output route takes has no ref to fetch the rest by
       if (ref === "") { delete part.output_ref; delete part.output_size; }
       if (entry.resultOk === false) part.error = true;
       answer(ts, part);
