@@ -160,6 +160,8 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
   return hasMod && event.shiftKey && !event.altKey && (event.code === "Space" || event.key === " ");
 }
 
+const STEP_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace"]);
+
 /**
  * Mod+Shift+ArrowUp/ArrowDown move the selection in a text field (on a Mac Cmd+Shift+↑ selects to
  * the start of the text): in the message box or any other field with text they stay the field's, and
@@ -167,8 +169,6 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
  * own input element is xterm's, not a field to edit). keepsKeyForText also lets them go where the
  * field has no text left that way.
  */
-const STEP_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace"]);
-
 export interface KeyTargetLike {
   tagName?: string;
   type?: string;
