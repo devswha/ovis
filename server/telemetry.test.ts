@@ -599,6 +599,31 @@ describe("daily usage", () => {
     expect(actives.map((active) => active.harnesses)).toEqual([["claude", "codex"]]);
   });
 
+  test("a day's last usage keeps the hour across midnight, also when an answer was lost: the next day's first visit sends only that day", async () => {
+    for (const lose of [false, true]) {
+      const bodies: TelemetryActive[] = [];
+      const receiver = (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (String(url) === TEST_ACTIVE_URL) bodies.push(JSON.parse(String(init?.body)) as TelemetryActive);
+        if (lose) throw new Error("connection reset");
+        return new Response(null, { status: 204 });
+      }) as typeof fetch;
+      const { telemetry, clock } = setup({ fetch: receiver, now: "2026-10-08T23:59:59Z" });
+      seen(telemetry);
+      await telemetry.active(["claude"]);
+      telemetry.tally("prompt_answers");
+      clock.now += 1_000;
+      await telemetry.active(["claude"]);
+      const late = bodies.filter((body) => body.day === "2026-10-08").map((body) => body.usage.prompt_answers);
+      expect(late.every((answers) => answers === 0)).toBe(true);
+      // answered, the new day goes too; unanswered, the retry of the day before goes first and the rest waits, as before usage
+      expect(bodies.map((body) => body.day)).toEqual(lose ? ["2026-10-08", "2026-10-08"] : ["2026-10-08", "2026-10-09"]);
+      // an hour after the day's last message its final usage goes, under its own day
+      clock.now += USAGE_RESEND_MS;
+      await telemetry.active(["claude"]);
+      expect(bodies.filter((body) => body.day === "2026-10-08").at(-1)!.usage.prompt_answers).toBe(1);
+    }
+  });
+
   test("fresh usage goes only with a visit: a settings change or a late notice timer past the hour sends none", async () => {
     const { telemetry, actives, clock, fireTimer } = setup({ grace: 60_000 });
     seen(telemetry);

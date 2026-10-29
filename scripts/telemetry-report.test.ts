@@ -40,7 +40,9 @@ describe("telemetry report queries", () => {
   it("count each screen and way in once per install over 30 days, and add up each day's answers and alerts", () => {
     const db = new Database(":memory:");
     db.exec(readFileSync(join(import.meta.dir, "..", "telemetry", "schema.sql"), "utf8"));
-    const day = (back: number) => db.query<{ day: string }, [string]>("SELECT date('now', ?) AS day").get(`-${back} days`)!.day;
+    // one today for every seeded row, so a run across UTC midnight seeds no row a day off
+    const today = db.query<{ day: string }, []>("SELECT date('now') AS day").get()!.day;
+    const day = (back: number) => db.query<{ day: string }, [string, string]>("SELECT date(?, ?) AS day").get(today, `-${back} days`)!.day;
     const insert = db.prepare("INSERT INTO active (day, install_id, version, os, arch, install_method, country, harnesses, usage) VALUES (?, ?, '0.4.20', 'linux', 'x64', 'source', 'KR', '[]', ?)");
     const usage = (surfaces: string[], ingress: string[], answers: number, delivered: number, opened: number) =>
       JSON.stringify({ surfaces, ingress, prompt_answers: answers, alerts_delivered: delivered, alerts_opened: opened });

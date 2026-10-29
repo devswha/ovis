@@ -460,8 +460,11 @@ export class Telemetry {
     const seen = this.saved.notice_seen_at === null ? NaN : Date.parse(this.saved.notice_seen_at);
     if (!this.saved.enabled || Number.isNaN(seen) || this.blocked()) return Promise.resolve();
     const today = utcDay(this.now());
-    // the day's usage as it stands may go: before it ever went, a day already over, or a visit USAGE_RESEND_MS after it last went
-    const usageDue = (entry: ActiveDay) => entry.sent_at === null || entry.day < today || (visit && this.now() - entry.sent_at >= USAGE_RESEND_MS);
+    // the day's usage as it stands may go before it ever went, else only USAGE_RESEND_MS after it last went: with a visit
+    // for today, with any flush for a day already over. Midnight is no exception: a message at 23:59:59 and another for the
+    // same day at 00:00:00 would tell what happened in that second
+    const usageDue = (entry: ActiveDay) => entry.sent_at === null
+      || ((visit || entry.day < today) && this.now() - entry.sent_at >= USAGE_RESEND_MS);
     // what a message for the day carries: the usage as it stands when due, else what last went on the wire
     const carried = (entry: ActiveDay) => usageDue(entry) ? entry.usage : entry.wire_usage ?? entry.sent_usage ?? entry.usage;
     const owed = (entry: ActiveDay) => entry.visited && (entry.sent === null || entry.sent_usage === null
