@@ -298,6 +298,26 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
   });
 
+  it("does not keep a skipped record for a later receipt with other text", () => {
+    const path = join(dir(), "other-text.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const first = capturePiDeliveryAnchor(path)!;
+    // the clock is set back a minute after the first capture
+    appendFileSync(path, entry("own-1", "a0", "user", "same", first.at - 60_000));
+    const second = { ...capturePiDeliveryAnchor(path)!, at: first.at - 59_000 };
+    appendFileSync(path, entry("own-2", "own-1", "user", "other", first.at - 58_500));
+    const third = { ...capturePiDeliveryAnchor(path)!, at: first.at - 57_000 };
+    appendFileSync(path, entry("external-early", "own-2", "user", "same", first.at - 58_000)
+      + entry("external-late", "external-early", "user", "same", first.at + 1000));
+    const receipts = [candidate("r1", "same", first), candidate("r2", "other", second), candidate("r3", "same", third)];
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    // the earlier external copy predates r3's capture and was passed over: it must not settle r3
+    expect(matchPiDeliveries(path, receipts.slice(1), consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+    appendFileSync(path, entry("own-3", "external-late", "user", "same", first.at - 56_000 + 60_000));
+    expect(matchPiDeliveries(path, [receipts[2]!], consumed)).toEqual({ consumed: ["r3"], changed: [], retry: false });
+  });
+
   it("settles, rather than strands, Ovis's own record stamped while the wall clock was set back", () => {
     const path = join(dir(), "clock.jsonl");
     writeFileSync(path, header() + entry("a0", null, "assistant", "working"));

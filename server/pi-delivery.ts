@@ -258,9 +258,10 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const used = (match ?? earlier)!;
       // Earlier-stamped copies a match passes over are accounted for by it: they cannot make a
       // later receipt ambiguous in a later reconciliation, whose scan starts over. One stamped no
-      // earlier than a later receipt's capture (a clock set back between captures) may be that
-      // receipt's own record, so it stays.
-      const laterCapture = Math.min(...candidates.slice(index + 1).map((later) => later.anchor.at));
+      // earlier than a later same-text receipt's capture (a clock set back between captures) may be
+      // that receipt's own record, so it stays.
+      const laterCapture = Math.min(...candidates.slice(index + 1)
+        .filter((later) => later.text === candidate.text).map((later) => later.anchor.at));
       for (const entry of same) {
         if (entry === used || entry.start < used.start && entry.at !== null && entry.at < laterCapture) matchedEntries.push(key(entry));
       }
