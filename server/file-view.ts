@@ -932,32 +932,29 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
  * Such bodies waiting to be collected; past `BODY_DESCRIPTORS` (a player seeking through a long
  * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
  * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
- * drops it), so the cap first forces a collection (`collectBodies`).
+ * drops it): the cap is set well above what is held at once in use, sent bodies waiting for a
+ * collection included (about 800 at the most over 10,000 downloads, 16 at a time, measured with
+ * `askCollection`; about 1,700 without it). Bun raises its open-file limit to the hard limit at
+ * start, hundreds of thousands on Linux, the only system that sends such a body.
  */
 let bodiesHeld = 0;
-export const BODY_DESCRIPTORS = 256;
-/** Bodies held, or streamed at the cap, since the last forced collection: a full one is first forced. */
-let heldSinceCollection = BODY_DESCRIPTORS;
-let collecting: Promise<void> | null = null;
+const BODY_DESCRIPTORS = 4096;
+/** Bodies held past which a collection is asked for (`askCollection`), and how often. */
+const COLLECT_PAST = 256;
+const COLLECTION_MS = 250;
+let collectionAsked = -Infinity;
 /**
- * At the cap, most held bodies were sent long ago and only wait for a collection (many parallel
- * downloads reach it within a second): one forced collection lets their descriptors go by the next
- * turn of the event loop, where the registry's callbacks run. Answers reaching the cap meanwhile
- * share it, and it runs again only after a quarter of the cap of new answers (held, or streamed at
- * the cap), so a player that really holds them all does not pay for one on every answer, and one
- * that lets them go is not left streaming until a collection happens to run.
+ * Past `COLLECT_PAST` bodies held, most were sent long ago and only wait for a collection: one is
+ * asked for on the collector's own threads (`Bun.gc(false)`), so they are let go well before the
+ * cap. Never a forced one (`Bun.gc(true)`), which stops every terminal and request on this thread
+ * for as long as it takes on the whole heap; and at most once per `COLLECTION_MS`, so a player
+ * that really holds many does not ask on every answer.
  */
-const collectBodies = (): Promise<void> => {
-  if (collecting !== null) return collecting;
-  if (heldSinceCollection < BODY_DESCRIPTORS / 4) return Promise.resolve();
-  heldSinceCollection = 0;
-  return collecting = new Promise<void>((done) => {
-    Bun.gc(true);
-    setImmediate(() => {
-      collecting = null;
-      done();
-    });
-  });
+const askCollection = () => {
+  const now = performance.now();
+  if (now - collectionAsked < COLLECTION_MS) return;
+  collectionAsked = now;
+  Bun.gc(false);
 };
 
 export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
@@ -1014,10 +1011,9 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once);
     // a scratch file (`within`) by its descriptor's own path, the file that descriptor holds
     headers.delete("content-length");
-    if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) await collectBodies();
+    if (opened.fd !== null && bodiesHeld >= COLLECT_PAST) askCollection();
     if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) {
       // too many such bodies wait to be collected: this one is streamed from its descriptor, without a length
-      heldSinceCollection += 1;
       headers.set("content-length", String(length));
       return new Response(descriptorBody(opened.fd, start, length, null), { status, headers });
     }
@@ -1026,7 +1022,6 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     if (opened.fd !== null) {
       const held = { fd: opened.fd, left: 2 };
       bodiesHeld += 1;
-      heldSinceCollection += 1;
       bodyDescriptors.register(body, held);
       bodyDescriptors.register(response, held);
     }

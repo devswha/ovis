@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 import * as fileView from "./file-view.ts";
-import { BODY_DESCRIPTORS, crossSiteFileRead, fileInfo, fileResponse, forgetPageMedia, locateFile, locateFileInFolder, PAGE_MEDIA_LIFETIME_MS, PAGE_MEDIA_PER_RENDER, pageFileHooks, pageMediaResponse, pageMediaSource, resolveFilePath, STREAM_CHUNK_BYTES, watchPageMedia } from "./file-view.ts";
+import { crossSiteFileRead, fileInfo, fileResponse, forgetPageMedia, locateFile, locateFileInFolder, PAGE_MEDIA_LIFETIME_MS, PAGE_MEDIA_PER_RENDER, pageFileHooks, pageMediaResponse, pageMediaSource, resolveFilePath, STREAM_CHUNK_BYTES, watchPageMedia } from "./file-view.ts";
 import { setFilePoolOptions } from "./file-pool.ts";
 import { runFileTask } from "./file-tasks.ts";
 import { clearFileCache, filesNamed } from "./files.ts";
@@ -1534,7 +1534,7 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     await bodiesCollected();
   });
 
-  it("keeps a large file's exact length while as many answers let go of as it holds wait to be collected (#2286)", async () => {
+  it("keeps a large file's exact length while many answers let go of wait to be collected (#2286)", async () => {
     // only Linux names an open file by its descriptor (`/proc/self/fd`); elsewhere it is streamed without one
     if (process.platform !== "linux") return;
     const size = STREAM_CHUNK_BYTES + 4096;
@@ -1544,8 +1544,9 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     pageFileHooks.fastDiskMs = 60_000;
     await (async () => {
       const found = await fromScratch("big.bin", cwd, scratch);
-      // answers already let go of, as a busy server's are before a collection: each still holds its descriptor
-      for (let at = 0; at < BODY_DESCRIPTORS; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
+      // answers already let go of, as a busy server's are before a collection (16 downloads at a time
+      // left about 800 so): each still holds its descriptor; four times the cap there once was
+      for (let at = 0; at < 1024; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
       // the next answer made at once, before the event loop turns and a collection that happens to run lets any go
       const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
       const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
@@ -1555,6 +1556,37 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
         expect(Buffer.from(await next.arrayBuffer()).equals(bytes)).toBe(true);
       } finally { await server.stop(true); }
     })();
+    await bodiesCollected();
+  });
+
+  it("answers a burst of ranges while many bodies are held without stopping the event loop for a collection (#2286)", async () => {
+    if (process.platform !== "linux") return;
+    const size = 4 * STREAM_CHUNK_BYTES;
+    const { cwd, scratch } = fixture("video.mp4", "", "OUTSIDE-SECRET");
+    writeFileSync(join(scratch, "video.mp4"), Buffer.alloc(size, 7));
+    pageFileHooks.fastDiskMs = 60_000;
+    // a forced collection (`Bun.gc(true)`) holds every terminal and request on this thread for as long
+    // as it takes on the whole heap: hundreds of milliseconds each on a large one
+    const collect = Bun.gc;
+    const forced: boolean[] = [];
+    Bun.gc = (force?: boolean) => { forced.push(force === true); return collect(force); };
+    try {
+      await (async () => {
+        const found = await fromScratch("video.mp4", cwd, scratch);
+        // a player seeking through a long video: downloads still under way, then many more ranges
+        const held: Response[] = [];
+        for (let at = 0; at < 1024; at += 1) {
+          const first = (at * STREAM_CHUNK_BYTES) % (size - STREAM_CHUNK_BYTES - 1);
+          const request = new Request("http://localhost/", { headers: { range: `bytes=${first}-${first + STREAM_CHUNK_BYTES}` } });
+          const answer = await fileResponse(found.info, false, false, null, request, undefined, found.within);
+          expect(answer.status).toBe(206);
+          held.push(answer);
+        }
+        expect(forced.filter(Boolean)).toEqual([]);
+        // the downloads end: a body streamed from its descriptor lets it go then
+        for (const answer of held) await answer.body?.cancel();
+      })();
+    } finally { Bun.gc = collect; }
     await bodiesCollected();
   });
 
