@@ -64,7 +64,7 @@ import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
 import { copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
-import { parseConversationMetadata } from "./conversation-metadata.ts";
+import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
 import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -290,7 +290,34 @@ function readStream(stream: TranscriptStream, from: number, to: number): Buffer 
 const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
 const COPILOT_SETTING_TYPES = ['"session.model_change"', '"session.resume"'];
 type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | "copilot_effort";
-const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
+/**
+ * Claude names its model and effort on every answer, and a /rewind can leave the latest one off the
+ * branch, so each field keeps every value it took since the last clear: one run per value, from the
+ * first record that set it to the end of the last one in a row, and a small line that sets it again.
+ */
+type ClaudeSettingRuns = Record<"model" | "effort", { line: string; first: number; end: number }[]>;
+const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettingRuns }>();
+
+function keepClaudeSetting(runs: ClaudeSettingRuns, entry: unknown, start: number, end: number): void {
+  const set = claudeSetting(entry);
+  const keep = (field: keyof ClaudeSettingRuns, line: string): void => {
+    const last = runs[field].at(-1);
+    if (last?.line === line) last.end = end;
+    else runs[field].push({ line, first: start, end });
+  };
+  if (set.model !== undefined) keep("model", JSON.stringify({ type: "assistant", message: { model: set.model } }));
+  if (set.effort !== undefined) keep("effort", JSON.stringify({ type: "assistant", effort: set.effort }));
+}
+
+/** whether the ranges cover [from, to) whole */
+function covered(ranges: readonly [number, number][], from: number, to: number): boolean {
+  let reached = from;
+  for (const [low, high] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    if (low > reached) break;
+    reached = Math.max(reached, high);
+  }
+  return reached >= to;
+}
 /** a Claude record that holds a picture, up to the largest one the chat shows, is followed whole when it crosses a window */
 const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
@@ -305,7 +332,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript" || source === "muse-transcript") return;
   let scan = clearScans.get(path);
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
-    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] } } : {}) };
+    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] } } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
@@ -322,7 +349,10 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     let offset = 0;
     for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, offset)) {
       const line = bytes.subarray(offset, newline);
-      if (!skipping && isClear(line)) scan.floor = base + offset;
+      if (!skipping && isClear(line)) {
+        scan.floor = base + offset;
+        if (scan.claude) scan.claude = { model: [], effort: [] };
+      }
       else if (!skipping && source !== "claude-transcript" && (source === "copilot-transcript" ? COPILOT_SETTING_TYPES : SETTING_TYPES).some((type) => line.includes(type))) {
         try {
           const entry: unknown = JSON.parse(line.toString("utf8"));
@@ -345,7 +375,10 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
       }
       if (branch) {
         if (skipping) branch.last = null;
-        else followClaudeBranch(branch, line, base + offset, base + newline + 1, scan.floor);
+        else {
+          const entry = followClaudeBranch(branch, line, base + offset, base + newline + 1, scan.floor);
+          if (entry !== undefined && scan.claude) keepClaudeSetting(scan.claude, entry, base + offset, base + newline);
+        }
       }
       skipping = false;
       offset = newline + 1;
@@ -683,13 +716,26 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
 function metadataHead(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number): string {
   if (source === "codex-transcript") return readRange(path, 0, METADATA_HEAD_BYTES);
   const end = Math.min(start, stream.floor + METADATA_HEAD_BYTES);
-  const later = Object.values(clearScans.get(path)?.settings ?? {})
+  const scan = clearScans.get(path);
+  const later = Object.values(scan?.settings ?? {})
     // a record the head cuts in two is read whole here
     .filter((setting) => setting.end > end && setting.offset < start)
     .sort((a, b) => a.offset - b.offset)
     // One control may update both fields; replay the native line once.
     .filter((setting, index, settings) => index === 0 || setting.offset !== settings[index - 1]!.offset)
     .map((setting) => setting.line);
+  // Claude: each field's latest value before the page that is still on the branch, when the head ends
+  // before it (a value from before a clear ends inside the head, which starts at the clear)
+  for (const runs of Object.values(scan?.claude ?? {})) {
+    for (let index = runs.length - 1; index >= 0; index -= 1) {
+      const run = runs[index]!;
+      if (run.first >= start) continue;
+      const to = Math.min(run.end, start);
+      if (covered(stream.hidden ?? [], run.first, to)) continue;
+      if (to > end) later.push(run.line);
+      break;
+    }
+  }
   return [readStream(stream, stream.floor, end).toString("utf8"), ...later].join("\n");
 }
 
