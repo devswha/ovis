@@ -869,6 +869,62 @@ describe("palette", () => {
     expect(failures).toEqual([]);
   });
 
+  it("marks every entry's selected sidebar row with a cue of 3:1 on its fill and the panel, and keeps its text at 4.5:1", () => {
+    // #1618: the selected workspace and agent rows sit on --side-selected (hovered, an agent row drops to --side-hover)
+    // in the panel; that fill alone is 1.09-1.56:1 on the panel, so the rule's inset stroke is the cue that must read.
+    // scripts/sidebar-selection-contrast-demo-regression.ts measures the same rows as the browser paints them
+    const components = join(import.meta.dir, "..", "components");
+    const sidebar = readFileSync(join(components, "Sidebar.css"), "utf8");
+    // the one rule for the selector: a second one later in the file could override the stroke
+    const rule = (file: string, selector: string): string => {
+      // a commented-out declaration draws nothing
+      const source = file.replace(/\/\*[\s\S]*?\*\//g, "");
+      const start = source.indexOf(`${selector} {`);
+      if (start < 0 || source.indexOf(`${selector} {`, start + 1) >= 0) return "";
+      return source.slice(start, source.indexOf("}", start));
+    };
+    const selected = /--side-selected: var\(--([\w-]+)\);/.exec(sidebar)?.[1];
+    const hovered = /--side-hover: color-mix\(in srgb, var\(--([\w-]+)\) 50%, var\(--([\w-]+)\)\);/.exec(sidebar);
+    expect({ selected, hovered: hovered?.slice(1) }).toEqual({ selected: "bg-hover", hovered: ["bg-hover", "bg-panel"] });
+    const agents = readFileSync(join(components, "AgentSidebar.css"), "utf8");
+    // a leading stroke at least a hairline wide, with no spread to take it back; a focused row's continues past the
+    // focus ring drawn over its leading edge
+    const plain = /box-shadow: inset calc\(([1-9]\d*) \* var\(--hairline\)\) 0 0 var\(--([\w-]+)\);/;
+    const pastRing = /box-shadow: inset calc\(var\(--ring-offset\) \+ ([1-9]\d*) \* var\(--hairline\)\) 0 0 var\(--([\w-]+)\);/;
+    const strokes: [string, string | null][] = ([
+      ["workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header"), plain],
+      ["agent", rule(agents, ".agent-item.is-selected"), plain],
+      ["focused workspace", rule(sidebar, ".workspace-group.is-selected > .workspace-header:has(> .workspace-select:focus-visible)"), pastRing],
+      ["focused agent", rule(agents, ".agent-item.is-selected:has(> .agent-row:focus-visible)"), pastRing],
+    ] as const).map(([row, body, shape]): [string, string | null] => [row, shape.exec(body)?.[2] ?? null]);
+    const failures: string[] = [];
+    for (const { id, mode, key } of entries) {
+      checked(failures, () => {
+        const { resolved } = resolveEntry(css, id, mode);
+        const hex = (role: string): Rgb => {
+          const raw = resolved[`--${role}`] ?? "(missing)";
+          const parsed = parseThemeValue(key, role, raw);
+          const match = parsed.kind === "color" ? /^#([0-9a-f]{6})$/.exec(parsed.value) : null;
+          if (!match?.[1]) throw new ThemeValueError(key, role, raw, "not an opaque color");
+          return [0, 2, 4].map((i) => parseInt(match[1]!.slice(i, i + 2), 16)) as Rgb;
+        };
+        const panel = hex("bg-panel"), fill = hex("bg-hover");
+        const fills: [string, Rgb][] = [["side-selected", fill], ["side-hover", fill.map((c, i) => (c + panel[i]!) / 2) as Rgb]];
+        for (const [row, stroke] of strokes) {
+          const surfaces: [string, Rgb][] = [["bg-panel", panel], ...fills];
+          const cue = stroke === null ? ratio(fill, panel) : Math.min(...surfaces.map(([, surface]) => ratio(hex(stroke), surface)));
+          if (cue < 3) failures.push(`${key} ${row}: selection cue ${stroke === null ? "(the fill alone)" : stroke} ${cue.toFixed(2)}:1`);
+        }
+        for (const [name, surface] of fills) {
+          for (const text of ["text-strong", "text", "text-dim"]) {
+            if (ratio(hex(text), surface) < 4.5) failures.push(`${key} ${text} on ${name}: ${ratio(hex(text), surface).toFixed(2)}:1`);
+          }
+        }
+      });
+    }
+    expect(failures).toEqual([]);
+  });
+
   it("mirrors every entry's --term-* tokens of styles.css for xterm and its --bg-panel for the title bar", () => {
     const failures: string[] = [];
     for (const { id, mode, key } of entries) {
