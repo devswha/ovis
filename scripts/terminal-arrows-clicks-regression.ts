@@ -383,19 +383,23 @@ try {
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-plain-drag.png") });
 
     // the selection modifier held by the user: the drag selects here and the program reads no button
+    assert.equal((await mark(s, "the plain drag")).read, "", "nothing more after the plain drag");
     const selecting = await s.page.evaluate(() => /Mac/.test(navigator.platform)) ? "Alt" : "Shift";
+    got = "";
     await s.page.keyboard.down(selecting);
     await dragged();
     await s.page.keyboard.up(selecting);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, `${selecting}+drag selects`);
-    assert.doesNotMatch((await mark(s, `${selecting}+drag`)).read, /\x1b\[<\d+;\d+;\d+[Mm]/, `${selecting}+drag sends the program no button`);
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-modifier-drag.png") });
 
-    // a plain drag over that selection is the program's again, and the highlight goes
-    got = "";
+    // a plain drag over that selection, nothing typed in between (a key would clear it), is the
+    // program's again and the highlight goes; the mark after it shows the modifier drag sent nothing
     await dragged();
     await until(() => drag.test(got += s.received()), () => `a plain drag after a selection received (read ${JSON.stringify(got)})`);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) === 0, "the earlier selection is cleared");
+    got += (await mark(s, `${selecting}+drag, then a plain drag`)).read;
+    assert.equal((got.match(/\x1b\[<\d+;\d+;\d+M/g) ?? []).filter((report) => !report.startsWith("\x1b[<32;")).length, 1, `one press: the plain drag's, none from the ${selecting}+drag`);
+    assert.equal((got.match(/\x1b\[<\d+;\d+;\d+m/g) ?? []).length, 1, `one release: the plain drag's, none from the ${selecting}+drag`);
     await s.close();
   }
 
