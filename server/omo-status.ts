@@ -375,6 +375,14 @@ export class OmoStatus {
     return true;
   }
 
+  /** Pane end cancels its replay and any discovery begun before the lifecycle event. */
+  ended(paneId: string): void {
+    this.panes.delete(paneId);
+    this.last.delete(paneId);
+    this.generation += 1;
+    this.refreshedFor = "";
+  }
+
   /**
    * Reads what the session files gained; a turn that started or ended is told. A pane found at
    * rest tells nobody; one found in a turn tells it, so that its end is a finish.
