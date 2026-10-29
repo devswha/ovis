@@ -123,6 +123,13 @@ describe("senpi's own notices in a Claude Code SDK prompt", () => {
       const turns = parseClaudeTranscript(sdk(block));
       expect(said(turns)).toEqual([]);
       expect(cards(turns).map(({ id, status, result }) => ({ id, status, result }))).toEqual([{ id: "st_a", status: "completed", result: "cut" }, { id: "st_b", status: "failed", result: "Task runner failed to start." }]);
+      // a notification senpi cut short, between two reports
+      const capped = "<system-reminder>long notification excerpt</system-reminder>\n[…notification tail capped…]\nBuffered output overflowed; full output: /tmp/notice.txt";
+      const [first, second] = block.split("\n\n");
+      const joined = parseClaudeTranscript(sdk([first, capped, second].join("\n\n")));
+      expect(said(joined)).toEqual([]);
+      expect(cards(joined).map((card) => card.id)).toEqual(["st_a", "st_b"]);
+      expect(said(parseClaudeTranscript(sdk(`${capped}\n\nwhy did this appear?`)))).toEqual([`${capped}\n\nwhy did this appear?`]);
       // a person's words after the reports keep the whole block theirs
       expect(said(parseClaudeTranscript(sdk(`${block}\n\nand my question`)))).toEqual([`${block}\n\nand my question`]);
     });

@@ -250,7 +250,7 @@ const SENPI_WRAPPERS = new Set([
 const isSenpiWrapper = (tag: string): boolean => SENPI_WRAPPERS.has(tag) || /^omo-[a-z0-9-]+$/.test(tag);
 const WRAPPED = /^\s*<([A-Za-z_][\w-]*)(\s[^>]*)?>([\s\S]*?)<\/\1>\s*/;
 /** a notification senpi cut short: the reminder, then where the rest of it went, in the same block */
-const TAIL_CAPPED = /^\[…notification tail capped…\]\nBuffered output overflowed; full output: \S+\s*$/;
+const TAIL_CAPPED = /^\[…notification tail capped…\]\nBuffered output overflowed; full output: \S+(?:\s*$|\n\n)/;
 /** the goal extension's continuation prompt (goal/prompt.js), after a stall check when there is one */
 const GOAL_CONTINUATION = "Continue working toward the active thread goal.\n";
 const isGoalContinuation = (text: string): boolean =>
@@ -333,6 +333,12 @@ function senpiMessages(text: string): (OmoTaskResult | Notice)[] | null {
       rest = rest.slice(report.length).replace(/^\n\n/, "");
       continue;
     }
+    // the end of a notification senpi cut short, after its reminder
+    const capped = rest !== text ? TAIL_CAPPED.exec(rest) : null;
+    if (capped !== null) {
+      rest = rest.slice(capped[0].length);
+      continue;
+    }
     const match = WRAPPED.exec(rest);
     if (match === null || match[0].length === 0 || !isSenpiWrapper(match[1]!)) break;
     if (match[1] === "peer_message") {
@@ -343,7 +349,7 @@ function senpiMessages(text: string): (OmoTaskResult | Notice)[] | null {
     rest = rest.slice(match[0].length);
   }
   if (rest === text) return null;
-  return rest.trim() === "" || TAIL_CAPPED.test(rest) || isGoalContinuation(rest) ? found : null;
+  return rest.trim() === "" || isGoalContinuation(rest) ? found : null;
 }
 
 /** What senpi itself put in an SDK prompt, beside what a person or a lead sent. */
