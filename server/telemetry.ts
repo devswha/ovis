@@ -13,7 +13,7 @@
  * send nothing.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTIVE_LATE_DAYS, emptyUsage, harnessOf, NOTICE_VERSION, sameUsage, TELEMETRY_COUNT_MAX, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetrySettings, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount } from "../shared/telemetry.ts";
 import { badRequest, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
@@ -22,6 +22,12 @@ import { updateRequestAllowed } from "./update-api.ts";
 export const TELEMETRY_URL = "https://herdr-web-ui-telemetry.devswha.workers.dev/v1/events";
 export const ACTIVE_URL = "https://herdr-web-ui-telemetry.devswha.workers.dev/v1/active";
 const FILE = "telemetry.json";
+/**
+ * The switch turned off, as a file of its own beside FILE that only the switch writes or removes. Every other
+ * write saves the whole of FILE as it was read, so a server on the same state directory that read the switch on
+ * a moment before it was turned off would write it back on; none of them touches this file, so off holds.
+ */
+const OFF_FILE = "telemetry-off";
 const SEND_TIMEOUT_MS = 10_000;
 /** after a start, long enough for the supervisor to have told what the update replaced */
 const START_DELAY_MS = 15_000;
@@ -184,7 +190,7 @@ function telemetryChange(value: unknown): TelemetryChange | null {
   }
 }
 
-function readSaved(file: string): Saved | null {
+function readSaved(file: string, offFile: string): Saved | null {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!isJsonObject(value) || typeof value["install_id"] !== "string" || value["install_id"] === "") return null;
@@ -193,7 +199,7 @@ function readSaved(file: string): Saved | null {
     const active = readActive(value["active"]);
     return {
       install_id: value["install_id"],
-      enabled: value["enabled"] !== false,
+      enabled: value["enabled"] !== false && !existsSync(offFile),
       notice_seen_at: noticeSeenAt,
       notice_version: NOTICE_VERSION,
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
@@ -216,6 +222,7 @@ export class Telemetry {
   private activeAbort?: AbortController;
   private activeTimer?: Timer;
   private readonly file: string;
+  private readonly offFile: string;
   /** false when the state file could not be written: then nothing is sent (it could not be remembered) */
   private writable = true;
 
@@ -237,8 +244,15 @@ export class Telemetry {
     setTimer?: (fn: () => void, ms: number) => Timer;
   }) {
     this.file = join(options.stateDir, FILE);
-    const saved = readSaved(this.file);
-    this.saved = saved ?? { install_id: randomUUID(), enabled: true, notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, settings: null, active: [], usage_after_notice: true };
+    this.offFile = join(options.stateDir, OFF_FILE);
+    const saved = readSaved(this.file, this.offFile);
+    this.saved = saved ?? { install_id: randomUUID(), enabled: !existsSync(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, settings: null, active: [], usage_after_notice: true };
+    // a switch turned off before OFF_FILE existed is kept in it too, so no late write of FILE can turn it on
+    if (saved && !saved.enabled) {
+      try { this.markOff(); } catch (error) {
+        console.error(`telemetry: ${this.offFile} could not be written (${message(error)})`);
+      }
+    }
     if (!saved) {
       try { this.persist(); } catch (error) {
         // the app still starts; telemetry just stays silent
@@ -252,8 +266,14 @@ export class Telemetry {
 
   /** another server on the same state directory may have changed the switch: its file wins */
   private refresh(): void {
-    const latest = readSaved(this.file);
+    const latest = readSaved(this.file, this.offFile);
     if (latest) this.saved = latest;
+    else if (existsSync(this.offFile)) this.saved.enabled = false;
+  }
+
+  private markOff(): void {
+    mkdirSync(this.options.stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(this.offFile, "", { mode: 0o600 });
   }
 
   private persist(): void {
@@ -330,6 +350,9 @@ export class Telemetry {
     const clean = telemetryChange(patch);
     if (!clean) throw new TypeError("Invalid telemetry change");
     this.refresh();
+    // off is written to OFF_FILE before FILE, and on removes it: whatever another server writes to FILE meanwhile
+    if (clean.enabled === false) this.markOff();
+    if (clean.enabled === true) rmSync(this.offFile, { force: true });
     if (clean.enabled !== undefined) this.saved.enabled = clean.enabled;
     // kept for the next install/update event; telling it sends nothing by itself
     if (clean.settings !== undefined) this.saved.settings = clean.settings;
@@ -491,7 +514,8 @@ export class Telemetry {
     this.activeSending = (async () => {
       try {
         for (const { active, fresh } of due) {
-          if (abort.signal.aborted) return;
+          // turned off here or by another server on the same state directory while the messages before this one went
+          if (abort.signal.aborted || existsSync(this.offFile)) return;
           // kept before it goes: a receiver may read it even when its answer never comes back, so the hour counts from here
           const going = this.saved.active.find((known) => known.day === active.day);
           if (going) {

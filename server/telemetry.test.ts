@@ -776,6 +776,123 @@ describe("daily usage", () => {
   });
 });
 
+describe("another server on the same state directory", () => {
+  /**
+   * A second server process that has read the state and is about to write it back: its clock (`now`, read between the
+   * two) stops it there until this test writes a line to its stdin. It then counts a prompt answer or records a visit.
+   */
+  async function pausedWriter(stateDir: string, call: "tally" | "active") {
+    const script = `
+      const { readSync } = require("node:fs");
+      const { Telemetry } = await import(${JSON.stringify(join(import.meta.dir, "telemetry.ts"))});
+      let armed = false;
+      const telemetry = new Telemetry({
+        stateDir: ${JSON.stringify(stateDir)}, version: "0.4.1", env: {}, activeUrl: "https://telemetry.test/v1/active",
+        fetch: async () => { process.stdout.write("SENT\\n"); return new Response(null, { status: 204 }); },
+        now: () => {
+          if (armed) { armed = false; process.stdout.write("PAUSED\\n"); readSync(0, Buffer.alloc(1)); }
+          return Date.parse("2026-10-08T12:00:00Z");
+        },
+      });
+      armed = true;
+      ${call === "tally" ? "telemetry.tally(\"prompt_answers\");" : "await telemetry.active([\"claude\"]);"}
+      process.stdout.write("DONE\\n");
+    `;
+    const child = Bun.spawn([process.execPath, "-e", script], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: { ...process.env, HERDR_TEST_MODE: "unit" } });
+    const lines: string[] = [];
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    /** the child's next output line, bounded so a child that never gets there fails rather than hangs */
+    const next = () => Promise.race([
+      (async () => {
+        while (!buffered.includes("\n")) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error(`the writer ended early: ${lines.join(" ")}`);
+          buffered += decoder.decode(value);
+        }
+        const line = buffered.slice(0, buffered.indexOf("\n"));
+        buffered = buffered.slice(line.length + 1);
+        lines.push(line);
+        return line;
+      })(),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("the writer did not answer")), 10_000).unref?.()),
+    ]);
+    return { child, next, resume: () => { child.stdin.write("\n"); child.stdin.flush(); } };
+  }
+
+  for (const call of ["tally", "active"] as const) {
+    test(`turning the counts off while another server is midway through a ${call === "tally" ? "count" : "visit"} keeps them off, and nothing is sent`, async () => {
+      const { telemetry, actives, stateDir } = setup();
+      seen(telemetry);
+      const writer = await pausedWriter(stateDir, call);
+      try {
+        expect(await writer.next()).toBe("PAUSED");
+        expect(telemetry.change({ enabled: false }).enabled).toBe(false);
+        writer.resume();
+        const after: string[] = [];
+        for (let line = await writer.next(); line !== "DONE"; line = await writer.next()) after.push(line);
+        expect(await writer.child.exited).toBe(0);
+        // the other server's write lands after the opt-out: it must not turn the counts back on
+        expect(after).toEqual([]);
+        expect(telemetry.status().enabled).toBe(false);
+        expect(setup({ stateDir }).telemetry.status().enabled).toBe(false);
+        await telemetry.active(["claude"]);
+        await settled();
+        expect(actives).toEqual([]);
+      } finally { writer.child.kill(); }
+    });
+  }
+
+  test("a switch an older build turned off stays off when a late write of the state file says on", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const file = join(stateDir, "telemetry.json");
+    const older = { install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: false, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: null, active: [] };
+    writeFileSync(file, JSON.stringify(older));
+    const { telemetry } = setup({ stateDir });
+    expect(telemetry.status().enabled).toBe(false);
+    writeFileSync(file, JSON.stringify({ ...older, enabled: true }));
+    expect(telemetry.status().enabled).toBe(false);
+  });
+
+  test("days still to send stop going once another server turns the counts off", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const days: string[] = [];
+    const { telemetry, clock } = setup({
+      stateDir,
+      fetch: (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (String(url) === TEST_ACTIVE_URL) {
+          days.push((JSON.parse(String(init?.body)) as TelemetryActive).day);
+          // the other server turns the counts off while this message is on its way
+          setup({ stateDir }).telemetry.change({ enabled: false });
+        }
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    // two days owed: visited before the notice, sent together once it was seen
+    await telemetry.active(["claude"]);
+    clock.now += 86_400_000;
+    await telemetry.active(["claude"]);
+    seen(telemetry);
+    await settled();
+    expect(days).toEqual(["2026-10-08"]);
+  });
+
+  test("turning the counts on again from either server turns them on", async () => {
+    const first = setup();
+    seen(first.telemetry);
+    first.telemetry.change({ enabled: false });
+    const second = setup({ stateDir: first.stateDir });
+    expect(second.telemetry.status().enabled).toBe(false);
+    second.telemetry.change({ enabled: true });
+    expect(first.telemetry.status().enabled).toBe(true);
+    await first.telemetry.active(["claude"]);
+    expect(first.actives).toHaveLength(1);
+  });
+});
+
 describe("/api/telemetry", () => {
   const post = (body: unknown, headers: Record<string, string> = { "x-herdr-update": "1" }) =>
     new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
