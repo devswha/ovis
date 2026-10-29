@@ -45,6 +45,7 @@ import { askedQuestions } from "../../shared/askQuestions.ts";
 import { ConversationRefresh } from "../lib/conversationRefresh.ts";
 import { teammateMessageParts, type TeammateMessage } from "../lib/teammateMessage.ts";
 import { usePageVisible } from "../lib/visibility.ts";
+import { lettaScreenWork } from "../lib/lettaScreen.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
@@ -1245,7 +1246,8 @@ export function TerminalFallback({ paneId, visible, live = false }: { paneId: st
       try {
         const result = await fetchPaneTranscript(paneId, live ? LIVE_TURN_LINES : TRANSCRIPT_LINES);
         if (cancelled) return;
-        setText(toTranscriptMessages(result.text).filter((message) => message.role !== "status").map((message) => message.text).join("\n\n"));
+        // a live box is Letta's (TURN_END_SOURCES): its input box and status line are not the work
+        setText(toTranscriptMessages(live ? lettaScreenWork(result.text) : result.text).filter((message) => message.role !== "status").map((message) => message.text).join("\n\n"));
         setError(null);
       } catch (cause) {
         if (!cancelled) setError(userFailure(cause));

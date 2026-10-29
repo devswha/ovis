@@ -2108,6 +2108,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`.chat-terminal-fallback.is-live`): the pane's own terminal tail, open, read every second,
   12 rows high (8 on a phone) and following its newest line inside, so the chat around it never
   moves. It goes in the render that adds the written turn, not when the pane's status follows.
+  Letta's own input box, the status row under it and the tip under its spinner are cut from the
+  tail by the layout Letta draws (`src/lib/lettaScreen.ts`); a screen in another shape is shown
+  as it is.
   The Codex and Claude apps stream the running turn into the conversation; nothing written exists
   to stream here, so this follows Zed's agent panel, which shows a running command's terminal
   inline in the thread rather than guessing at its words.
