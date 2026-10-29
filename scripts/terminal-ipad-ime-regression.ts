@@ -88,6 +88,22 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       }
       return box.value.slice(from);
     }, hypotheses);
+    // A keyboard that commits a whole string as one key (FluidVoice's dictation, any keyboard
+    // extension calling insertText): WebKit names the string as the keydown's key, sends a keypress
+    // with its first character's charCode, then inserts the whole string (iOS 27 simulator, #1488).
+    const insertWhole = (text: string, keyCode: number) => input.evaluate(async (element, { text, keyCode }) => {
+      const box = element as HTMLTextAreaElement;
+      const down = box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, composed: true, key: text, code: "Unidentified", keyCode }));
+      const charCode = text.codePointAt(0)!;
+      const press = down && box.dispatchEvent(new KeyboardEvent("keypress", { bubbles: true, cancelable: true, composed: true, key: text, code: "Unidentified", keyCode: charCode, charCode }));
+      if (down && press) {
+        box.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, composed: true, inputType: "insertText", data: text, isComposing: false }));
+        box.setRangeText(text, box.selectionStart, box.selectionEnd, "end");
+        box.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text, isComposing: false }));
+      }
+      box.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, composed: true, key: text, code: "Unidentified", keyCode }));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }, { text, keyCode });
     // SwiftKey (#3746 in Agent of Empires): letters as plain edits, then a composition that wraps the
     // word before the caret again and commits it, or a longer one.
     const typeText = (text: string) => input.evaluate(async (element, text) => {
@@ -271,6 +287,25 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       assert.equal(await dictate(hypotheses), "This is a test.", "the field ends on the corrected phrase");
       await check("This is a test.", "dictation replacement commits one corrected phrase");
       report("dictation replacement commits one corrected phrase");
+
+      for (const [label, text, keyCode] of [
+        ["a sentence", "hello world this is a test", 72],
+        ["a capitalised word", "Yes", 89],
+        ["Hangul", "안녕하세요", 0],
+      ] as const) {
+        await reset();
+        await insertWhole(text, keyCode);
+        await check(text, `a whole string committed as one key is sent whole, once: ${label}`);
+        report(`a whole string committed as one key is sent whole, once: ${label}`);
+      }
+      // typing goes on as before after it: a letter, then a Hangul syllable composed in the editor
+      await reset();
+      await insertWhole("hello world", 72);
+      await input.press("x");
+      await fresh("ㅎ"); await replace("ㅏ", "하");
+      await input.press("Space");
+      await check("hello worldx하 ", "typing after a whole-string key");
+      report("typing after a whole-string key");
 
       for (const [label, run, expected] of [
         ["test, test again, space", async () => { await typeText("test"); await composeWord("test"); await typeText(" "); }, "test "],
