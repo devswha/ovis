@@ -1546,9 +1546,9 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     pageFileHooks.openFiles = 524_288;
     await (async () => {
       const found = await fromScratch("big.bin", cwd, scratch);
-      // answers already let go of, as a busy server's are before a collection (16 downloads at a time
-      // left about 800 so): each still holds its descriptor; four times the cap there once was
-      for (let at = 0; at < 1024; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
+      // answers already let go of, as a busy server's are before a collection: each still holds its
+      // descriptor; more than the cap there once was (256), and well within any open-file limit
+      for (let at = 0; at < 384; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
       // the next answer made at once, before the event loop turns and a collection that happens to run lets any go
       const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
       const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
@@ -1572,11 +1572,14 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
     pageFileHooks.openFiles = 1024;
     await (async () => {
       const found = await fromScratch("big.bin", cwd, scratch);
-      for (let at = 0; at < 256; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
+      // downloads still under way, kept until the next answer is sent, so no collection lets one go
+      const held: Response[] = [];
+      for (let at = 0; at < 256; at += 1) held.push(await fileResponse(found.info, true, false, null, null, undefined, found.within));
       const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
       const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
       try {
         const next = await fetch(server.url);
+        expect(held).toHaveLength(256);
         // past the cap: streamed from its descriptor, whole, rather than holding one more descriptor
         expect(next.headers.get("content-length")).toBeNull();
         expect(Buffer.from(await next.arrayBuffer()).equals(bytes)).toBe(true);
@@ -1602,7 +1605,8 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
         const found = await fromScratch("video.mp4", cwd, scratch);
         // a player seeking through a long video: downloads still under way, then many more ranges
         const held: Response[] = [];
-        for (let at = 0; at < 1024; at += 1) {
+        // past where a collection is asked for (256), and well within any open-file limit
+        for (let at = 0; at < 384; at += 1) {
           const first = (at * STREAM_CHUNK_BYTES) % (size - STREAM_CHUNK_BYTES - 1);
           const request = new Request("http://localhost/", { headers: { range: `bytes=${first}-${first + STREAM_CHUNK_BYTES}` } });
           const answer = await fileResponse(found.info, false, false, null, request, undefined, found.within);
