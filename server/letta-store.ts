@@ -16,7 +16,7 @@
  *   macOS. Windows has no such read, and uses Terminal.
  * The transcript must then be a regular file at exactly the path Letta derives from the two ids.
  */
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, normalize } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
@@ -170,20 +170,42 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
   const session = lettaSessionOf(pane);
   if (session === null) return null;
   if (panes.some((other) => other.pane_id !== pane.pane_id && lettaSessionOf(other)?.reported === session.reported)) return null;
-  const record = join(owner.cwd, ".letta", "settings.local.json");
-  let written: number;
-  try {
-    const stat = lstatSync(record);
-    if (!stat.isFile()) return null;
-    written = stat.mtimeMs;
-  } catch { return null; }
-  if (written >= owner.startedAt) return null;
-  const text = readBounded(record, SETTINGS_BYTES);
+  const text = recordOlderThan(join(owner.cwd, ".letta", "settings.local.json"), owner.startedAt);
   const opened = text === null ? null : lettaOpenedSessions(text);
   const bound = opened === null ? null : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
   if (bound === null || root === null) return null;
   return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: session.reported, ...bound };
+}
+
+/**
+ * A whole second: a file system that keeps whole seconds (HFS+) rounds a write after the start down
+ * to before it by less than this.
+ */
+const MTIME_SLACK_MS = 1000;
+
+/**
+ * The text of Letta's record when it is a regular file Letta can still rewrite (it writes in place and
+ * goes on after a failed write, which would leave an old record standing for a new conversation), last
+ * written at least MTIME_SLACK_MS before `startedAt`, and unchanged while it was read: its time and its
+ * words come from one descriptor, checked again after the read. Null otherwise.
+ */
+function recordOlderThan(path: string, startedAt: number): string | null {
+  let fd: number;
+  try {
+    if (!lstatSync(path).isFile()) return null;
+    accessSync(path, constants.W_OK);
+    fd = openSync(path, "r");
+  } catch { return null; }
+  try {
+    const before = fstatSync(fd);
+    if (before.mtimeMs >= startedAt - MTIME_SLACK_MS || before.size > SETTINGS_BYTES) return null;
+    const buffer = Buffer.alloc(before.size);
+    const got = readSync(fd, buffer, 0, before.size, 0);
+    const after = fstatSync(fd);
+    if (got !== before.size || after.mtimeMs !== before.mtimeMs || after.size !== before.size) return null;
+    return buffer.toString("utf8");
+  } catch { return null; } finally { closeSync(fd); }
 }
 
 /**

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
@@ -157,10 +157,19 @@ describe("Letta conversation binding", () => {
     let owner = setup(settingsAfterNew, now - 60_000, now);
     expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1" });
     // any write since: its own start on another conversation, its /new, or another letta
-    for (const at of [now, now + 1, now + 2_000, now + 600_000]) {
+    // a file system that keeps whole seconds puts a write just after the start up to a second before it
+    for (const at of [now - 999, now, now + 1, now + 2_000, now + 600_000]) {
       owner = setup(settingsAfterNew, at, now);
       expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
     }
+  });
+
+  test("a record Letta cannot rewrite binds nothing: its switch would fail and leave the old one standing", () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const target = pane("w1:p1", "local-conv-1", owner.cwd);
+    expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
+    chmodSync(join(owner.cwd, ".letta", "settings.local.json"), 0o444);
+    expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
   });
 
   test("a closed peer of the same agent that reopened the pane's old conversation binds nothing", () => {
