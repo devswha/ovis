@@ -60,6 +60,10 @@ function createIdentity(path: string): RelayIdentity {
   return identity;
 }
 
+function isCanonical(text: string, encode: (key: Uint8Array) => string, decode: (text: string) => Uint8Array): boolean {
+  return /^[A-Za-z0-9+/]{43}=$/.test(text) && encode(decode(text)) === text;
+}
+
 function parseIdentity(text: string): RelayIdentity {
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw new RelayIdentityError("the file is not valid JSON"); }
@@ -70,6 +74,10 @@ function parseIdentity(text: string): RelayIdentity {
     throw new RelayIdentityError("the file has missing or invalid fields");
   }
   try {
+    // The vendored decoder ignores bytes after the padding, so insist on the canonical encoding itself.
+    if (!isCanonical(o.public_key, exportPublicKey, importPublicKey) || !isCanonical(o.secret_key, exportSecretKey, importSecretKey)) {
+      throw new Error("not canonical");
+    }
     const publicKey = importPublicKey(o.public_key);
     const secretKey = importSecretKey(o.secret_key);
     const derived = nacl.box.keyPair.fromSecretKey(secretKey).publicKey;

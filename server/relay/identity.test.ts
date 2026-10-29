@@ -38,6 +38,26 @@ describe("relay identity", () => {
     expect(() => loadRelayIdentity(dir)).toThrow(/identity_unreadable/);
   });
 
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const flipLastBit = (key: string): string => `${key.slice(0, 42)}${ALPHABET[ALPHABET.indexOf(key[42]!) ^ 1]}=`;
+  const corruptions: [string, (key: string) => string][] = [
+    ["trailing garbage", (key) => `${key}!!!!`],
+    ["wrong length", (key) => key.slice(0, 40) + "A="],
+    ["invalid characters", (key) => `*${key.slice(1)}`],
+    ["non-canonical encoding", flipLastBit],
+  ];
+  for (const field of ["secret_key", "public_key"] as const) {
+    it.each(corruptions)(`refuses a ${field} with %s and leaves the file unchanged`, (_name, corrupt) => {
+      const dir = stateDir();
+      const saved = loadRelayIdentity(dir);
+      const path = relayIdentityPath(dir);
+      const text = JSON.stringify({ ...saved, [field]: corrupt(saved[field]) });
+      writeFileSync(path, text);
+      expect(() => loadRelayIdentity(dir)).toThrow(/identity_unreadable/);
+      expect(readFileSync(path, "utf8")).toBe(text);
+    });
+  }
+
   it("rotates to a new server_id and key, keeping the file private", () => {
     const dir = stateDir();
     const before = loadRelayIdentity(dir);
