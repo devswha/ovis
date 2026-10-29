@@ -407,6 +407,8 @@ describe("OpenCode answer ordering", () => {
       expect((await f.answer(await f.read(), { custom_text: "revised first" })).status).toBe(200);
       expect((await f.read()).default_custom_text).toBe("not submitted yet");
       expect(f.replies).toEqual([]);
+      // a saved step and a step back reach nothing upstream: no answer is counted
+      expect(f.counted.answers).toBe(0);
     });
   });
 
