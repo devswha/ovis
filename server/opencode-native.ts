@@ -59,7 +59,8 @@ export function openCodeVerificationCheckpoint(): number { return verificationGe
  * set holds only verifications in flight, and a pane's entry goes when its last one finishes, so
  * nothing is evicted and no cancellation can be undone.
  */
-type Verification = { cancelled: boolean };
+/** `started`: the verification counter when it began, so a snapshot read before it cannot cancel it */
+type Verification = { cancelled: boolean; started: number };
 const inFlight = new Set<Verification>();
 const inFlightByPane = new Map<string, Set<Verification>>();
 /** the status collectors that end a pane: a verified pane is tracked so its close reaches releaseOpenCodePane */
@@ -210,6 +211,8 @@ export function closeOpenCodeNative(): void {
  */
 export function releaseOpenCodePane(paneId: string, checkpoint = Infinity): void {
   if ((verifiedPanes.get(paneId)?.generation ?? 0) > checkpoint) return;
+  // a verification begun since the snapshot's read is newer evidence too: it settles the pane itself
+  for (const verification of inFlightByPane.get(paneId) ?? []) if (verification.started > checkpoint) return;
   for (const verification of inFlightByPane.get(paneId) ?? []) { verification.cancelled = true; inFlight.delete(verification); }
   inFlightByPane.delete(paneId);
   for (const handed of paneTrackers.values()) handed.delete(paneId);
@@ -232,7 +235,7 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   if (label !== "opencode") return null;
   const paneId = pane.pane_id;
   // registered before the first wait (the process roots too), so a release or reset meanwhile cancels it
-  const verification: Verification = { cancelled: false };
+  const verification: Verification = { cancelled: false, started: ++verificationGeneration };
   inFlight.add(verification);
   if (paneId !== undefined) {
     const own = inFlightByPane.get(paneId) ?? new Set<Verification>();
