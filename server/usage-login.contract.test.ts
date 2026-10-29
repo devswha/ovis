@@ -502,7 +502,7 @@ it("starts one sign-in when two servers on one state dir are asked for one home 
   }
 });
 
-it("takes a home a crashed launch left in the state file once, even when that file cannot be written", async () => {
+it("refuses once, without looking again and again, when a crashed launch's entry cannot be replaced, and signs in once it can", async () => {
   // Given: a launch that never opened its tab, long ago, and a disk that refuses the file's next writes
   const stateDir = mkdtempSync(join(root, "full-disk-state-"));
   writeFileSync(join(stateDir, "usage-logins.json"), JSON.stringify({ logins: [
@@ -518,13 +518,19 @@ it("takes a home a crashed launch left in the state file once, even when that fi
     realRename(from, to);
   });
   const { create, launched } = holdLogins();
+  const post = () => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: "full-disk" }) }));
   try {
     // When
-    const response = await local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name: "full-disk" }) }));
-    // Then: the sign-in starts, after one look at that launch
-    expect(response.status).toBe(200);
-    openedPanes.push((await response.json() as UsageLoginStarted).pane_id);
-    expect(writes).toBeLessThanOrEqual(2);
+    const refused = await post();
+    // Then: a sign-in no other server could see is not started, after one try to take that launch's place
+    expect(refused.status).toBe(500);
+    expect(writes).toBe(1);
+    expect(create).not.toHaveBeenCalled();
+    // once the file can be written, the crashed launch holds nothing
+    rename.mockRestore();
+    const started = await post();
+    expect(started.status).toBe(200);
+    openedPanes.push((await started.json() as UsageLoginStarted).pane_id);
     await launched(0);
   } finally { rename.mockRestore(); create.mockRestore(); }
 });

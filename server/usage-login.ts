@@ -118,33 +118,28 @@ export class UsageLoginService {
   }
 
   /**
-   * Reads, changes and writes the file as one step no other server's edit comes between. Without a file, or
-   * when its guard cannot be taken (a PC whose libc the guard cannot load), `change` sees none and this
-   * server keeps its sign-ins to itself, as before the file: refusing every sign-in would be no answer.
+   * Reads, changes and writes the file as one step no other server's edit comes between; without a file,
+   * `change` sees none. Throws when the guard cannot be taken or released or the file cannot be written:
+   * a sign-in no other server can see could run beside another.
    */
   private edit<T>(change: (saved: Map<string, Holder>) => T): T {
     const file = this.file;
-    if (file !== null) {
-      try {
-        return withOwnerGuard(file, () => {
-          const saved = this.read(file);
-          const before = JSON.stringify([...saved]);
-          const result = change(saved);
-          if (JSON.stringify([...saved]) !== before) {
-            try { writePrivateState(file, { logins: [...saved].map(([home, holder]) => ({ home, ...holder })) }); }
-            catch (error) { console.warn("Could not keep the running sign-ins for other servers", error); }
-          }
-          return result;
-        });
-      } catch (error) { console.warn("Could not take the guard of the running sign-ins; this server keeps its own", error); }
-    }
-    return change(new Map());
+    if (file === null) return change(new Map());
+    return withOwnerGuard(file, () => {
+      const saved = this.read(file);
+      const before = JSON.stringify([...saved]);
+      const result = change(saved);
+      if (JSON.stringify([...saved]) !== before) writePrivateState(file, { logins: [...saved].map(([home, holder]) => ({ home, ...holder })) });
+      return result;
+    });
   }
 
   /** Frees `home` from `holder`, here and in the file, wherever another has not taken it since. */
   private release(home: string, holder: Holder): void {
     if (this.logins.get(home) === holder) this.logins.delete(home);
-    this.edit((saved) => { const now = saved.get(home); if (now !== undefined && sameHolder(now, holder)) saved.delete(home); });
+    // left in the file, it holds only until another server finds it ended
+    try { this.edit((saved) => { const now = saved.get(home); if (now !== undefined && sameHolder(now, holder)) saved.delete(home); }); }
+    catch (error) { console.warn("Could not free a sign-in's credential home for other servers", error); }
   }
 
   /**
@@ -305,8 +300,10 @@ export class UsageLoginService {
       const opened: LoginHolder = { pane: paneId, terminal: created.root_pane.terminal_id };
       holding = opened;
       if (this.logins.get(reserved) === launch) this.logins.set(reserved, opened);
+      // the launch's entry holds the home for other servers until then (the tab opens well within its minute)
       const home = reserved;
-      this.edit((saved) => { const now = saved.get(home); if (now === undefined || sameHolder(now, launch)) saved.set(home, opened); });
+      try { this.edit((saved) => { const now = saved.get(home); if (now === undefined || sameHolder(now, launch)) saved.set(home, opened); }); }
+      catch (error) { console.warn("Could not record a sign-in's credential home for other servers", error); }
       // All variable argv are quoted by the bridge's existing POSIX shell encoder.
       if (process.platform === "win32") {
         const info = await paneProcessInfo(paneId);
