@@ -75,7 +75,7 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "SELECT COUNT(DISTINCT install_id) FROM active WHERE day >= date('now', '-29 days');",
       "SELECT harness.value AS harness, COUNT(DISTINCT active.install_id) AS installs FROM active CROSS JOIN json_each(active.harnesses) AS harness WHERE active.day >= date('now', '-29 days') GROUP BY harness.value ORDER BY installs DESC, harness;",
       // the usage tables' results are checked against stored rows above (telemetry report queries)
-      ...QUERIES.slice(5, 8).map((query) => query.sql),
+      ...["Installs per kind of screen, the last 30 days", "Installs per way in, the last 30 days", "Prompt answers and pane alerts per day"].map((title) => QUERIES.find((query) => query.title === title)!.sql),
       "SELECT country, COUNT(*) FROM (SELECT (SELECT country FROM events WHERE install_id = e.install_id AND country IS NOT NULL ORDER BY rowid DESC LIMIT 1) AS country FROM events e GROUP BY install_id) GROUP BY country ORDER BY 2 DESC;",
       "SELECT day, country, COUNT(*) FROM active WHERE day >= date('now', '-27 days') GROUP BY day, country ORDER BY day, country;",
     ]);

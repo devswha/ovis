@@ -379,11 +379,12 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(["claude"]);
     expect(actives).toHaveLength(1);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+    // refused, the message still went on the wire: the hour counts from it
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
     answer.status = 204;
     await telemetry.active([]);
     expect(actives.map((active) => active.harnesses)).toEqual([["claude"], ["claude"]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), sent_at: expect.any(Number) }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
   });
 
   test("(f) the delivered day survives a restart and is not resent", async () => {
@@ -487,7 +488,7 @@ describe("daily active message", () => {
     telemetry.change({ enabled: false });
     agents.resolve(["codex"]);
     await visit;
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
     telemetry.change({ enabled: true });
     await settled();
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
@@ -498,7 +499,7 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(Promise.reject(new Error("herdr down")));
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), sent_at: expect.any(Number) }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
   });
 
   test("an unreadable active list in the state file is read as no visits", async () => {
@@ -556,6 +557,47 @@ describe("daily usage", () => {
     await telemetry.active(["codex"]);
     expect(actives.map((active) => active.usage).at(-1)).toEqual({ surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 1 });
     expect(actives).toHaveLength(3);
+  });
+
+  test("usage that went out without its answer still holds the hour, across a restart: a retry carries what went", async () => {
+    for (const restart of [false, true]) {
+      const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+      dirs.push(stateDir);
+      const bodies: TelemetryActive[] = [];
+      // the receiver takes every message but its answer is lost on the way back
+      const lost = (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (String(url) === TEST_ACTIVE_URL) bodies.push(JSON.parse(String(init?.body)) as TelemetryActive);
+        throw new Error("connection reset");
+      }) as typeof fetch;
+      const first = setup({ stateDir, fetch: lost });
+      seen(first.telemetry);
+      await first.telemetry.active(["claude"], { surface: "browser", ingress: "local" });
+      const later = restart ? setup({ stateDir, fetch: lost, now: "2026-10-08T12:00:01Z" }) : first;
+      if (!restart) later.clock.now += 1_000;
+      later.telemetry.tally("prompt_answers");
+      await later.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      expect(bodies.map((body) => body.usage)).toEqual([
+        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] },
+        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] },
+      ]);
+    }
+  });
+
+  test("fresh usage goes only with a visit: a settings change or a late notice timer past the hour sends none", async () => {
+    const { telemetry, actives, clock, fireTimer } = setup({ grace: 60_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    clock.now += 60_000;
+    fireTimer();
+    await settled();
+    expect(actives).toHaveLength(1);
+    clock.now += USAGE_RESEND_MS;
+    telemetry.tally("alerts_delivered");
+    telemetry.change({ settings: settingsSnapshot() });
+    await settled();
+    expect(actives).toHaveLength(1);
+    await telemetry.active(["claude"]);
+    expect(actives.map((active) => active.usage.alerts_delivered)).toEqual([0, 1]);
   });
 
   test("nothing of the day's usage is kept before the current notice, on a new install or after an older notice", async () => {
@@ -619,7 +661,7 @@ describe("daily usage", () => {
     telemetry.tally("alerts_delivered");
     await settled();
     expect(actives).toEqual([]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, sent_at: null }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, wire_usage: null, sent_at: null }]);
     // the next day is never opened: the night's count is not a day of use
     clock.now += 86_400_000;
     telemetry.tally("alerts_delivered");

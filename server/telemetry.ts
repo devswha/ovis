@@ -47,9 +47,12 @@ interface ActiveDay {
   visited: boolean;
   /** the day's use so far */
   usage: TelemetryUsage;
-  /** the usage last delivered for that day; null before one was */
+  /** the usage last delivered for that day (the receiver answered); null before one was */
   sent_usage: TelemetryUsage | null;
-  /** when that delivery was, in ms; null before one was */
+  /** the usage last put on the wire for that day, answered or not: a retry within the hour carries it again, since
+   * a receiver may have read a message whose answer was lost; null before one went */
+  wire_usage: TelemetryUsage | null;
+  /** when the day's usage as it stood last went on the wire, in ms, answered or not; null before it did */
   sent_at: number | null;
 }
 
@@ -80,8 +83,9 @@ function readActive(value: unknown): ActiveDay[] {
     // a file from before usage was counted: its days were visits, and what was sent for them is settled
     const usage = telemetryUsage(item["usage"]) ?? emptyUsage();
     const sentUsage = item["sent_usage"] === undefined ? (sent === null ? null : usage) : telemetryUsage(item["sent_usage"]);
+    const wireUsage = item["wire_usage"] === undefined ? sentUsage : telemetryUsage(item["wire_usage"]);
     const sentAt = typeof item["sent_at"] === "number" && Number.isFinite(item["sent_at"]) ? item["sent_at"] : null;
-    days.push({ day: item["day"], harnesses, sent, visited: item["visited"] !== false, usage, sent_usage: sentUsage, sent_at: sentAt });
+    days.push({ day: item["day"], harnesses, sent, visited: item["visited"] !== false, usage, sent_usage: sentUsage, wire_usage: wireUsage, sent_at: sentAt });
   }
   return days.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
@@ -91,7 +95,7 @@ function readActive(value: unknown): ActiveDay[] {
  * its delivery without the usage, so dropping it sends nothing.
  */
 function withoutUsage(days: ActiveDay[]): ActiveDay[] {
-  return days.filter((entry) => entry.visited).map((entry) => ({ ...entry, usage: emptyUsage(), sent_usage: entry.sent_usage === null ? null : emptyUsage() }));
+  return days.filter((entry) => entry.visited).map((entry) => ({ ...entry, usage: emptyUsage(), sent_usage: entry.sent_usage === null ? null : emptyUsage(), wire_usage: entry.wire_usage === null ? null : emptyUsage() }));
 }
 
 interface Saved {
@@ -207,6 +211,8 @@ export class Telemetry {
   private timer?: ReturnType<typeof setTimeout>;
   private activeSending: Promise<void> | null = null;
   private activeAgain = false;
+  /** the flush asked for while one ran came from a visit */
+  private activeAgainVisit = false;
   private activeAbort?: AbortController;
   private activeTimer?: Timer;
   private readonly file: string;
@@ -363,7 +369,7 @@ export class Telemetry {
     const day = utcDay(this.now());
     this.prune();
     if (!this.saved.active.some((entry) => entry.day === day)) {
-      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: false, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: false, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
     }
     const entry = this.saved.active.find((known) => known.day === day);
     if (!entry || entry.usage[kind] >= TELEMETRY_COUNT_MAX) return;
@@ -392,7 +398,7 @@ export class Telemetry {
     const pruned = this.prune();
     let changed = false;
     if (!this.saved.active.some((entry) => entry.day === day)) {
-      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, sent_at: null }]);
+      this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
       changed = true;
     }
     const today = this.saved.active.find((entry) => entry.day === day);
@@ -432,16 +438,17 @@ export class Telemetry {
           }
         }
       }
-      return this.flushActive();
+      return this.flushActive(true);
     })();
   }
 
   /**
    * Delivers every recorded day whose harnesses were not delivered yet, oldest first, no sooner
    * than NOTICE_GRACE_MS after the notice; never records a day. A failure is logged and tried
-   * again at the next visit or change.
+   * again at the next visit or change. Today's usage as it stands goes only with its first message or
+   * from a `visit`, USAGE_RESEND_MS after it last went on the wire; any other message carries what went.
    */
-  private flushActive(): Promise<void> {
+  private flushActive(visit = false): Promise<void> {
     if (!this.writable) return Promise.resolve();
     this.refresh();
     if (this.prune()) {
@@ -453,13 +460,15 @@ export class Telemetry {
     const seen = this.saved.notice_seen_at === null ? NaN : Date.parse(this.saved.notice_seen_at);
     if (!this.saved.enabled || Number.isNaN(seen) || this.blocked()) return Promise.resolve();
     const today = utcDay(this.now());
-    // the day's usage as it stands may go: its first message, a day already over, or USAGE_RESEND_MS since it last went
-    const usageDue = (entry: ActiveDay) => entry.sent_usage === null || entry.day < today || entry.sent_at === null || this.now() - entry.sent_at >= USAGE_RESEND_MS;
+    // the day's usage as it stands may go: before it ever went, a day already over, or a visit USAGE_RESEND_MS after it last went
+    const usageDue = (entry: ActiveDay) => entry.sent_at === null || entry.day < today || (visit && this.now() - entry.sent_at >= USAGE_RESEND_MS);
+    // what a message for the day carries: the usage as it stands when due, else what last went on the wire
+    const carried = (entry: ActiveDay) => usageDue(entry) ? entry.usage : entry.wire_usage ?? entry.sent_usage ?? entry.usage;
     const owed = (entry: ActiveDay) => entry.visited && (entry.sent === null || entry.sent_usage === null
       // a new kind of agent goes at once, as it did before usage
       || !sameHarnesses(entry.sent, entry.harnesses)
-      // a change in the usage (a new kind of screen or way in, or a count) only once it is due
-      || (!sameUsage(entry.sent_usage, entry.usage) && usageDue(entry)));
+      // usage not yet answered for: changed and due, or the same again after a lost answer
+      || !sameUsage(entry.sent_usage, carried(entry)));
     if (!this.activeSending && !this.saved.active.some(owed)) return Promise.resolve();
     const wait = seen + (this.options.noticeGraceMs ?? NOTICE_GRACE_MS) - this.now();
     if (wait > 0) {
@@ -472,18 +481,21 @@ export class Telemetry {
       this.activeTimer = setTimer(() => void this.flushActive(), wait);
       return Promise.resolve();
     }
-    if (this.activeSending) { this.activeAgain = true; return this.activeSending; }
-    // a resend before the usage is due carries the usage already sent
-    const due = this.saved.active.filter(owed).map((entry) => {
-      const fresh = usageDue(entry);
-      return { active: this.activeMessage(fresh || entry.sent_usage === null ? entry : { ...entry, usage: entry.sent_usage }), fresh };
-    });
+    if (this.activeSending) { this.activeAgain = true; this.activeAgainVisit ||= visit; return this.activeSending; }
+    const due = this.saved.active.filter(owed).map((entry) => ({ active: this.activeMessage({ ...entry, usage: carried(entry) }), fresh: usageDue(entry) }));
     const abort = new AbortController();
     this.activeAbort = abort;
     this.activeSending = (async () => {
       try {
         for (const { active, fresh } of due) {
           if (abort.signal.aborted) return;
+          // kept before it goes: a receiver may read it even when its answer never comes back, so the hour counts from here
+          const going = this.saved.active.find((known) => known.day === active.day);
+          if (going) {
+            going.wire_usage = active.usage;
+            if (fresh) going.sent_at = this.now();
+            this.persist();
+          }
           try {
             const response = await this.options.fetch(this.options.activeUrl ?? ACTIVE_URL, {
               method: "POST",
@@ -501,8 +513,6 @@ export class Telemetry {
           if (entry) {
             entry.sent = active.harnesses;
             entry.sent_usage = active.usage;
-            // the hour counts from the last message that carried fresh usage
-            if (fresh) entry.sent_at = this.now();
             this.persist();
           }
         }
@@ -511,7 +521,12 @@ export class Telemetry {
       } finally {
         this.activeSending = null;
         this.activeAbort = undefined;
-        if (this.activeAgain) { this.activeAgain = false; void this.flushActive(); }
+        if (this.activeAgain) {
+          const again = this.activeAgainVisit;
+          this.activeAgain = false;
+          this.activeAgainVisit = false;
+          void this.flushActive(again);
+        }
       }
     })();
     return this.activeSending;
