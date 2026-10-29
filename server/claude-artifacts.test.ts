@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
 import { HerdrError } from "./herdr/client.ts";
+import type { HerdrPane } from "../shared/protocol.ts";
 import { claudeArtifacts, forgetArtifacts, handleArtifactsRequest } from "./claude-artifacts.ts";
+import { ClaudeSubagentStatus } from "./claude-subagents.ts";
 import { createServer } from "./index.ts";
 
 // the records Claude Code 2.1.312 writes for an Artifact call and its answer (synthetic content)
@@ -26,9 +28,9 @@ describe("claudeArtifacts", () => {
     writeFileSync(path, [
       call("toolu_a", { file_path: "/tmp/scratchpad/report.html", description: "A report", icon: "chart" }),
       answer("toolu_a", `Published /tmp/scratchpad/report.html at ${page("aaa")}`, { url: page("aaa"), path: "/tmp/scratchpad/report.html", title: "Weekly report", artifact_id: "aaa", updated: false }, "2026-10-29T10:00:05.000Z"),
-      // an answer written without its record: the URL from its text, the title from the file
-      call("toolu_b", { file_path: "/tmp/scratchpad/notes.html" }),
-      answer("toolu_b", [{ type: "text", text: `Updated the Artifact at https://claude.ai/artifact/bbb_1\n\nTo update: …` }] as unknown as string, undefined, "2026-10-29T10:01:00.000Z"),
+      // an answer written without its record: the URL from its text, after a long path, the title from the file
+      call("toolu_b", { file_path: `/tmp/${"deep/".repeat(80)}notes.html` }),
+      answer("toolu_b", [{ type: "text", text: `Published /tmp/${"deep/".repeat(80)}notes.html at https://claude.ai/artifact/bbb_1\n\nTo update: …` }] as unknown as string, undefined, "2026-10-29T10:01:00.000Z"),
       // calls that publish nothing, a failed publish, and a record whose url is no page
       call("toolu_read", { action: "read", url: page("ccc") }),
       answer("toolu_read", "<html>…</html>", { url: page("ccc"), title: "Read only" }),
@@ -89,15 +91,30 @@ describe("GET /api/pane/artifacts", () => {
     }
   });
 
-  it("answers the pages of the session the pane's Claude Code writes", async () => {
-    const path = join(stateDir, "claude.jsonl");
-    writeFileSync(path, `${call("toolu_a", { file_path: "/tmp/a.html" })}\n${answer("toolu_a", "Published", { url: page("aaa"), title: "A page" })}\n`);
-    const claudeAgents = { sessionOf: (paneId: string) => paneId === "w1:p1" ? { path, live: true, startedAt: null } : null, ensure: async () => undefined };
-    const ask = (pane: string) => handleArtifactsRequest(new Request(`http://localhost/api/pane/artifacts?pane_id=${pane}`), new URL(`http://localhost/api/pane/artifacts?pane_id=${pane}`), "/api/pane/artifacts", { claudeAgents });
-    expect(await (await ask("w1:p1"))!.json()).toEqual({ artifacts: [{ url: page("aaa"), title: "A page", at: "2026-10-29T10:00:05.000Z" }] });
-    const get = spyOn(herdr, "paneGet").mockImplementation(async (paneId) => { throw new HerdrError("pane_not_found", `pane ${paneId} not found`); });
+  it("answers the pages of the session the pane runs now, looked up at each ask", async () => {
+    // one transcript per session, each with one page named after it
+    const transcript = (session: string): string => {
+      const path = join(stateDir, `${session}.jsonl`);
+      writeFileSync(path, `${call(`toolu_${session}`, { file_path: "/tmp/a.html" })}\n${answer(`toolu_${session}`, "Published", { url: page(session), title: `Page of ${session}` })}\n`);
+      return path;
+    };
+    const claudeAgents = new ClaudeSubagentStatus({ resolve: async (seen) => ({ path: transcript(seen.agent_session?.value ?? ""), startedAt: null, pid: null }), onChange: () => {} });
+    // herdr answers the pane as it is at each ask
+    let now = { agent: "claude", session: "first" };
+    const get = spyOn(herdr, "paneGet").mockImplementation(async (paneId) => {
+      if (paneId !== "w1:p1") throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
+      return { pane_id: paneId, workspace_id: "w1", agent: now.agent, agent_status: "idle", agent_session: { kind: "id", value: now.session } } as unknown as HerdrPane;
+    });
+    const ask = async (pane: string) => (await (await handleArtifactsRequest(new Request(`http://localhost/api/pane/artifacts?pane_id=${pane}`), new URL(`http://localhost/api/pane/artifacts?pane_id=${pane}`), "/api/pane/artifacts", { claudeAgents }))!.json() as { artifacts: { title: string }[] }).artifacts.map((artifact) => artifact.title);
     try {
-      expect(await (await ask("w2:p2"))!.json()).toEqual({ artifacts: [] });
+      expect(await ask("w1:p1")).toEqual(["Page of first"]);
+      // a new Claude session in the same pane: its own pages, never the first session's
+      now = { agent: "claude", session: "second" };
+      expect(await ask("w1:p1")).toEqual(["Page of second"]);
+      // another agent in the pane, and a pane herdr does not have: none
+      now = { agent: "codex", session: "second" };
+      expect(await ask("w1:p1")).toEqual([]);
+      expect(await ask("w2:p2")).toEqual([]);
     } finally {
       get.mockRestore();
     }

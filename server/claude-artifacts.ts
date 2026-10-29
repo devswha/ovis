@@ -24,8 +24,8 @@ const PAGE = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Row : null;
 const words = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim().slice(0, 300) : null;
-/** a tool answer's text: a string, or its text blocks */
-const said = (value: unknown): string => typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => words(row(part)?.["text"]) ?? "").join("\n") : "";
+/** a tool answer's whole text, where its link can come after a long path: a string, or its text blocks */
+const said = (value: unknown): string => typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => { const text = row(part)?.["text"]; return typeof text === "string" ? text : ""; }).join("\n") : "";
 
 interface Read {
   id: string;
@@ -73,8 +73,9 @@ function artifactLine(read: Read, line: string): void {
     if (block === null) continue;
     if (block["type"] === "tool_use" && block["name"] === "Artifact" && typeof block["id"] === "string") {
       const input = row(block["input"]) ?? {};
-      const file = words(input["file_path"]);
-      if ((input["action"] ?? "publish") === "publish" && input["asset"] !== true) read.calls.set(block["id"], file === null ? null : basename(file));
+      // the name is taken from the whole path, never one cut to a title's length
+      const file = typeof input["file_path"] === "string" ? words(basename(input["file_path"])) : null;
+      if ((input["action"] ?? "publish") === "publish" && input["asset"] !== true) read.calls.set(block["id"], file);
       continue;
     }
     if (block["type"] !== "tool_result" || typeof block["tool_use_id"] !== "string" || !read.calls.has(block["tool_use_id"])) continue;
@@ -100,8 +101,14 @@ export async function handleArtifactsRequest(request: Request, url: URL, pathnam
   if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
   const paneId = url.searchParams.get("pane_id");
   if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
-  // its transcript is found here if the background lookup has not got to it yet, for a second at most
-  if (claudeAgents.sessionOf(paneId) === null) await within(1000, (async () => claudeAgents.ensure(await paneGet(paneId)))());
-  const claude = claudeAgents.sessionOf(paneId);
+  // the pane as herdr has it now, for a second at most: a session the background lookup has not got to yet, or
+  // another one the pane runs since, is looked up here, as for a subagent's detail (background-agent.ts).
+  // A pane herdr did not answer for in time, or that runs another agent, is told none
+  const seen: { pane?: Awaited<ReturnType<typeof paneGet>> } = {};
+  await within(1000, (async () => {
+    const pane = seen.pane = await paneGet(paneId);
+    if (pane.agent === "claude") await claudeAgents.ensure(pane);
+  })());
+  const claude = seen.pane?.agent === "claude" ? claudeAgents.sessionOf(paneId) : null;
   return jsonResponse({ artifacts: claude === null ? [] : claudeArtifacts(claude.path) });
 }
