@@ -368,12 +368,16 @@ try {
     await mouseReporting(s);
     const from = await s.point(20, 6);
     const to = await s.point(300, 60);
+    /** a press where the pointer already is, dragged to `end` */
+    const dragFromHere = async (start: { x: number; y: number }, end: { x: number; y: number }): Promise<void> => {
+      await s.page.mouse.down();
+      await s.page.mouse.move((start.x + end.x) / 2, (start.y + end.y) / 2, { steps: 4 });
+      await s.page.mouse.move(end.x, end.y, { steps: 4 });
+      await s.page.mouse.up();
+    };
     const dragged = async (): Promise<void> => {
       await s.page.mouse.move(from.x, from.y);
-      await s.page.mouse.down();
-      await s.page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 4 });
-      await s.page.mouse.move(to.x, to.y, { steps: 4 });
-      await s.page.mouse.up();
+      await dragFromHere(from, to);
     };
     const drag = /\x1b\[<0;\d+;\d+M(?:[\s\S]*?\x1b\[<32;\d+;\d+M)+[\s\S]*?\x1b\[<0;(\d+);(\d+)m/;
     let got = "";
@@ -392,9 +396,11 @@ try {
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, `${selecting}+drag selects`);
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-modifier-drag.png") });
 
-    // a plain drag over that selection, nothing typed in between (a key would clear it), is the
-    // program's again and the highlight goes; the mark after it shows the modifier drag sent nothing
-    await dragged();
+    // a plain drag over that selection is the program's again and the highlight goes. Nothing reaches
+    // xterm in between: a key, or a buttonless move (a hover report), would clear the selection first,
+    // so the press is where the modifier drag let go. The mark after it shows the modifier drag sent nothing.
+    assert.ok((await s.page.locator(".xterm-selection div").count()) > 0, "the selection is still up when the plain drag starts");
+    await dragFromHere(to, from);
     await until(() => drag.test(got += s.received()), () => `a plain drag after a selection received (read ${JSON.stringify(got)})`);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) === 0, "the earlier selection is cleared");
     got += (await mark(s, `${selecting}+drag, then a plain drag`)).read;
