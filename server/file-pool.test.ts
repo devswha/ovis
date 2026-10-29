@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { FileInfo, SlashCommand } from "../shared/protocol.ts";
-import { scanPaneCommands } from "./commands.ts";
+import { scanPaneCommands, setCommandsWait } from "./commands.ts";
 import { FileBusyError, filePoolSize, fileTask, fileThreadsClosed, holdFilePool, setFilePoolOptions } from "./file-pool.ts";
 import type { FileTask, OpenedFile } from "./file-tasks.ts";
 
@@ -191,6 +191,24 @@ describe("file threads", () => {
       if (before === undefined) delete process.env["PI_CODING_AGENT_DIR"];
       else process.env["PI_CODING_AGENT_DIR"] = before;
     }
+  });
+
+  it("counts a request's wait from when it began, and drops a scan still waiting for a thread once nobody waits for it (#2254)", async () => {
+    setUp({ workers: 1, waiting: 1, deadlineMs: 30_000 });
+    setCommandsWait(30_000);
+    try {
+      const hold = gate();
+      const busy = fileTask<FileInfo | null>(held({ op: "info", path: file }, hold.buffer));
+      // the only thread is taken, so the scan waits for it; its request began 30 s ago (its herdr
+      // lookups took them all), so it is refused at once rather than 30 s from now
+      await expect(scanPaneCommands("claude", root, {}, null, undefined, performance.now() - 30_000)).rejects.toBeInstanceOf(FileBusyError);
+      // and the scan nobody waits for gives up its waiting place, free for the next task
+      expect(filePoolSize().waiting).toBe(0);
+      const next = fileTask<FileInfo | null>({ op: "info", path: file });
+      hold.release();
+      expect(await busy).toMatchObject({ size: 5 });
+      expect(await next).toMatchObject({ size: 5 });
+    } finally { setCommandsWait(); }
   });
 
   it("closes a descriptor whose thread is ended before it answers", async () => {

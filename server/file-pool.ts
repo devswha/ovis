@@ -68,7 +68,7 @@ const DEFAULTS: PoolOptions = {
 };
 let options = DEFAULTS;
 
-interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean; unlisten?: () => void }
+interface Pending { task: FileTask; done: (result: FileTaskResult) => void; fail: (error: Error) => void; timer: ReturnType<typeof setTimeout>; settled: boolean; unlisten?: () => void; onRun?: () => void }
 /** Bun's Worker, which the DOM's type does not describe: `unref` lets the process end with the thread idle. */
 type BunWorker = Worker & { ref(): void; unref(): void };
 /** `orphaned`: the task of a thread ended while it ran, whose descriptor is closed once it is gone; `closed`: once it is gone. */
@@ -147,8 +147,9 @@ export function filePoolSize(): { threads: number; idle: number; waiting: number
  * `task` run on a file thread; rejects with `FileBusyError` when none is free in time, or at once
  * when `signal` aborts (the request went away). Either way a task already on a thread keeps it
  * until its call returns, and what that late answer opened is closed then, never under it.
+ * `onRun`: called once the task is handed to a thread (it no longer waits for one).
  */
-export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal): Promise<T> {
+export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal, onRun?: () => void): Promise<T> {
   const inline = options.inline;
   if (inline !== null) return Promise.resolve().then(() => inline(task) as T);
   if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
@@ -157,7 +158,7 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   if (task.op === "open" || task.op === "describe") task = { ...task, opened: openedCell() };
   return new Promise<T>((done, fail) => {
     const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" ? options.longDeadlineMs : options.deadlineMs;
-    const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending, "the file system did not answer in time"), deadline) };
+    const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending, "the file system did not answer in time"), deadline), ...(onRun ? { onRun } : {}) };
     if (signal !== undefined) {
       const cancel = () => expire(pending, "the request was cancelled");
       signal.addEventListener("abort", cancel, { once: true });
@@ -240,6 +241,7 @@ function run(thread: Thread, pending: Pending): void {
   thread.pending = pending;
   thread.worker.ref();
   thread.worker.postMessage(pending.task);
+  pending.onRun?.();
 }
 
 /** A thread that answered takes the next waiting task, or rests. */

@@ -58,10 +58,16 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
 }
 
 /**
- * How long one request waits for a scan before it is answered 503: under the minute a signed-in API
- * request may go without a byte before Bun closes it (`index.ts`).
+ * How long one request waits for its scan, counted from when the request arrived (its herdr lookups
+ * included), before it is answered 503: under the minute a signed-in API request may go without a
+ * byte before Bun closes it (`index.ts`), with room for what the route does after the scan.
  */
 export const COMMANDS_WAIT_MS = 45_000;
+/**
+ * A scan that finished after every request waiting for it gave up is kept this long for the next
+ * request for it: longer than the menu's longest pause before it asks again (`usePaneCommands`).
+ */
+export const UNCLAIMED_SCAN_MS = 35_000;
 let waitMs = COMMANDS_WAIT_MS;
 
 /** For tests: how long a request waits for a scan; no argument restores the default. */
@@ -69,37 +75,71 @@ export function setCommandsWait(ms = COMMANDS_WAIT_MS): void {
   waitMs = ms;
 }
 
+/**
+ * A scan under way: the requests waiting for it, whether a thread runs it yet, and how to drop it
+ * while it still waits for one.
+ */
+interface Scan { result: Promise<SlashCommand[]>; waiters: number; running: boolean; abort: AbortController }
 /** Scans under way, by what they were asked: a request for the same scan waits for that one. */
-const scans = new Map<string, Promise<SlashCommand[]>>();
+const scans = new Map<string, Scan>();
+/** Scans that finished with nobody waiting for them, by what they were asked, each taken once. */
+const unclaimed = new Map<string, { commands: SlashCommand[]; timer: ReturnType<typeof setTimeout> }>();
+
+function keepUnclaimed(key: string, commands: SlashCommand[]): void {
+  const previous = unclaimed.get(key);
+  if (previous) clearTimeout(previous.timer);
+  const timer = setTimeout(() => { if (unclaimed.get(key)?.timer === timer) unclaimed.delete(key); }, UNCLAIMED_SCAN_MS);
+  timer.unref?.();
+  unclaimed.set(key, { commands, timer });
+}
+
+/** Once every scan under way has finished (tests). */
+export async function commandScansSettled(): Promise<void> {
+  await Promise.allSettled([...scans.values()].map((scan) => scan.result));
+}
 
 /**
  * `paneCommands` run on a file thread (`file-pool.ts`), never on the server's: the scan reads every
  * skill and command folder the agent would, synchronously, and a folder on a slow mount (9p, a
  * network share) took 10-27 s there, stalling every terminal and request with it (#2254).
  *
- * A request waits for its scan at most `COMMANDS_WAIT_MS`, or until `signal` aborts, and is then
- * refused with `FileBusyError` (503); the scan itself goes on, and a request for the same scan made
- * meanwhile (the menu asks again after a failed read) waits for it rather than starting another, so
- * a scan slower than one request's wait still answers the next. A finished scan is not kept: the
- * next request scans again, and sees a skill added since. An agent with no scan answers at once,
- * without a thread.
+ * A request waits for its scan until `COMMANDS_WAIT_MS` after it `began`, or until `signal` aborts,
+ * and is then refused with `FileBusyError` (503). A scan a thread runs goes on: a request for the
+ * same scan made meanwhile (the menu asks again after a failed read) waits for it rather than
+ * starting another, and if it finishes after everyone waiting gave up, the next request for it
+ * takes that answer (within `UNCLAIMED_SCAN_MS`), so a scan slower than one request's wait still
+ * answers. A scan still waiting for a thread when its last request leaves is dropped, so it holds
+ * no waiting place. An answer a request received is not kept: the next request scans again, and
+ * sees a skill added since. An agent with no scan answers at once, without a thread.
  */
-export function scanPaneCommands(agent: string | null | undefined, cwd: string | null | undefined, process: ProcessRoots = {}, version?: string | null, signal?: AbortSignal): Promise<SlashCommand[]> {
+export function scanPaneCommands(agent: string | null | undefined, cwd: string | null | undefined, process: ProcessRoots = {}, version?: string | null, signal?: AbortSignal, began = performance.now()): Promise<SlashCommand[]> {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return Promise.resolve([]);
   if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
   // plain data only: a thread is handed a copy
   const roots: ProcessRoots = { agentDir: process.agentDir ?? null, pluginDir: process.pluginDir ?? null, environ: process.environ ?? null };
   const task: FileTask = { op: "commands", agent, cwd: cwd ?? null, home: userHome(), roots, version: version ?? null, serverEnv: { ...globalThis.process.env } };
   const key = JSON.stringify(task);
+  const kept = unclaimed.get(key);
+  if (kept !== undefined) {
+    unclaimed.delete(key);
+    clearTimeout(kept.timer);
+    return Promise.resolve(kept.commands);
+  }
   let scan = scans.get(key);
   if (scan === undefined) {
-    const started = fileTask<SlashCommand[]>(task);
-    scan = started;
-    const forget = () => { if (scans.get(key) === started) scans.delete(key); };
-    started.then(forget, forget);
+    const abort = new AbortController();
+    const started: Scan = { result: Promise.resolve([]), waiters: 0, running: false, abort };
+    started.result = fileTask<SlashCommand[]>(task, abort.signal, () => { started.running = true; });
+    // settled before any waiter hears it: a scan nobody waits for any more is kept for the next request
+    started.result.then((commands) => {
+      if (scans.get(key) === started) scans.delete(key);
+      if (started.waiters === 0) keepUnclaimed(key, commands);
+    }, () => { if (scans.get(key) === started) scans.delete(key); });
     scans.set(key, started);
+    scan = started;
   }
-  const running = scan;
+  const joined = scan;
+  joined.waiters += 1;
   return new Promise<SlashCommand[]>((done, fail) => {
     let waiting = true;
     const leave = (): boolean => {
@@ -107,12 +147,18 @@ export function scanPaneCommands(agent: string | null | undefined, cwd: string |
       waiting = false;
       clearTimeout(timer);
       signal?.removeEventListener("abort", cancel);
+      joined.waiters -= 1;
+      // nobody waits for a scan no thread took yet: it gives up its waiting place
+      if (joined.waiters === 0 && !joined.running) {
+        if (scans.get(key) === joined) scans.delete(key);
+        joined.abort.abort();
+      }
       return true;
     };
-    const timer = setTimeout(() => { if (leave()) fail(new FileBusyError("the skill folders did not answer in time")); }, waitMs);
+    const timer = setTimeout(() => { if (leave()) fail(new FileBusyError("the skill folders did not answer in time")); }, Math.max(0, began + waitMs - performance.now()));
     const cancel = () => { if (leave()) fail(new FileBusyError("the request was cancelled")); };
     signal?.addEventListener("abort", cancel, { once: true });
-    running.then((commands) => { if (leave()) done(commands); }, (error: unknown) => { if (leave()) fail(error); });
+    joined.result.then((commands) => { if (leave()) done(commands); }, (error: unknown) => { if (leave()) fail(error); });
   });
 }
 

@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { closeSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { paneCommands, scanPaneCommands, setCommandsWait } from "./commands.ts";
+import { commandScansSettled, paneCommands, scanPaneCommands, setCommandsWait } from "./commands.ts";
 import { filePoolSize, setFilePoolOptions } from "./file-pool.ts";
 import { HERMES_ECHO_RE } from "./dialogs/hermes.ts";
 import { registry } from "./dialogs/registry.ts";
@@ -283,6 +283,36 @@ it("answers 503 past a request's wait, and lets the request asked again wait for
       expect((await again).map((command) => command.name)).toContain("fifo-guard");
       // one scan, on one thread: a second would have taken another, the first still being busy
       expect(filePoolSize().threads).toBe(1);
+    });
+  } finally {
+    setCommandsWait();
+    setFilePoolOptions();
+  }
+}, 30_000);
+
+it("hands a scan that finished after its request gave up to the next request once, then scans again (#2254)", async () => {
+  setFilePoolOptions();
+  setCommandsWait(200);
+  try {
+    await stalledClaudePane("w:late", 10_000, async ({ saying, release, ask }) => {
+      const first = ask();
+      expect(await saying(1, 10_000)).toBe("opened");
+      expect((await first).status).toBe(503);
+      // the scan finishes with nobody waiting for it
+      release();
+      await commandScansSettled();
+      // a skill added since: the kept answer, taken by the next request, does not have it
+      const project = join(root, "project");
+      rmSync(join(project, ".claude", "settings.json"));
+      writeFileSync(join(project, ".claude", "settings.json"), "{}");
+      mkdirSync(join(project, ".claude", "skills", "added-later"), { recursive: true });
+      writeFileSync(join(project, ".claude", "skills", "added-later", "SKILL.md"), "---\nname: added-later\ndescription: Added after the slow scan.\n---\n");
+      setCommandsWait(10_000);
+      const kept = (await scanPaneCommands("claude", project, { environ: null }, null)).map((command) => command.name);
+      expect(kept).toContain("fifo-guard");
+      expect(kept).not.toContain("added-later");
+      // taken once: the request after it scans again
+      expect((await scanPaneCommands("claude", project, { environ: null }, null)).map((command) => command.name)).toContain("added-later");
     });
   } finally {
     setCommandsWait();

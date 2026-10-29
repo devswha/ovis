@@ -90,6 +90,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
   }
 
   if (pathname === "/api/pane/commands" || pathname === "/api/pane/files") {
+    // the commands scan's wait counts from here, its herdr lookups included (`scanPaneCommands`)
+    const began = performance.now();
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
     const paneId = url.searchParams.get("pane_id");
@@ -109,7 +111,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         // A pane with a session whose transcript is unreadable gets none: that session may be an OpenCode 1 one
         const version = stored ?? (agent === "opencode" && !context.pane.agent_session ? openCodeInstalledVersion(options.openCodeStateDir) : null);
         // on a file thread: a skill folder on a slow mount stalls only this request (#2254)
-        const scanned = await scanPaneCommands(agent, context.cwd, { ...roots.omo, environ: roots.environ }, version, request.signal);
+        const scanned = await scanPaneCommands(agent, context.cwd, { ...roots.omo, environ: roots.environ }, version, request.signal, began);
         const commands = await mergeCatalogSources(agent, context.pane, context.cwd, scanned, undefined, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir });
         rememberPaneCommands(context.pane, agent, commands);
         return jsonResponse({ commands });
