@@ -64,7 +64,7 @@ function validateOffer(value: unknown): RelayOffer {
   return offer;
 }
 
-function isWssOrigin(text: string): boolean {
+export function isWssOrigin(text: string): boolean {
   if (text.length > MAX_RELAY_CHARS) return false;
   try {
     const url = new URL(text);

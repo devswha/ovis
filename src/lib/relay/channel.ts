@@ -3,9 +3,18 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { SessionFrame } from "../../../shared/relay-mux-engine.ts";
+import { isWssOrigin, SERVER_ID_PATTERN } from "../../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { getDevice, indexedDeviceStore, sign } from "./device.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+
+export class UnsafeRelayDestinationError extends Error {
+  readonly code = "unsafe_relay_destination";
+  constructor(readonly field: "relay" | "server_id") {
+    super(`Invalid relay destination: ${field}`);
+    this.name = "UnsafeRelayDestinationError";
+  }
+}
 
 export interface RelaySocket {
   binaryType: BinaryType;
@@ -33,13 +42,17 @@ export interface RelayChannel {
 
 /** Resolves only after protected Noise, WELCOME and device admission all succeeded. Never retries. */
 export async function openRelayChannel(offer: RelayOffer, options: RelayChannelOptions = {}): Promise<RelayChannel> {
+  if (typeof offer.relay !== "string" || !isWssOrigin(offer.relay)) throw new UnsafeRelayDestinationError("relay");
+  if (typeof offer.server_id !== "string" || !SERVER_ID_PATTERN.test(offer.server_id)) throw new UnsafeRelayDestinationError("server_id");
+  const url = new URL("/v1/ws", offer.relay);
+  url.searchParams.set("server_id", offer.server_id);
+  url.searchParams.set("role", "client");
+  url.searchParams.set("v", "1");
   options.signal?.throwIfAborted();
   const store = options.store ?? indexedDeviceStore;
   const device = await getDevice(offer, store, options.label);
   options.signal?.throwIfAborted();
-  const socket = (options.socket ?? ((url) => new WebSocket(url)))(
-    `${offer.relay}/v1/ws?server_id=${offer.server_id}&role=client&v=1`,
-  );
+  const socket = (options.socket ?? ((address) => new WebSocket(address)))(url.href);
   socket.binaryType = "arraybuffer";
   return new Promise<RelayChannel>((resolve, reject) => {
     let phase: "assigned" | "handshake" | "welcome" | "auth" | "ready" | "closed" = "assigned";
