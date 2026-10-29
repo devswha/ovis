@@ -395,6 +395,79 @@ it("starts one sign-in again when two arrive at once for an account, also once i
   } finally { create.mockRestore(); await workspaceClose(elsewhere).catch(() => undefined); }
 });
 
+/** A server on `stateDir` signing in from the fixture home, as one started again after a restart would be. */
+function serveOn(stateDir: string) {
+  return createServer({
+    port: 0, stateDir, machines: false, registerBridge: false, sidecar: false, terminalAttach: false,
+    usageLogin: new UsageLoginService(root, { ...process.env, PATH: bin }, ctx),
+    usage: new UsageService(ctx, USAGE_PROVIDERS.filter((provider) => provider.id === "claude" || provider.id === "codex")),
+  });
+}
+const startOn = (instance: { readonly port: number }, body: unknown) => fetch(`http://127.0.0.1:${instance.port}/api/usage/login`, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+});
+
+it("keeps a home taken across a server restart while its sign-in still runs in its tab, and frees it once that ended", async () => {
+  // Given: a sign-in again still open in its tab, started by a server that has stopped since
+  expiredHome("claude", ".claude-restart", "restart@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "restart@example.test")!.key;
+  const stateDir = mkdtempSync(join(root, "restart-state-"));
+  const { create, launched } = holdLogins();
+  const before = serveOn(stateDir);
+  let after: ReturnType<typeof createServer> | undefined;
+  try {
+    const first = await startOn(before, { provider: "claude", account: key });
+    expect(first.status).toBe(200);
+    const pane = (await first.json() as UsageLoginStarted).pane_id;
+    openedPanes.push(pane);
+    await launched(0);
+    before.stop();
+    // When: the server starts again on its state, and the same account is asked for
+    after = serveOn(stateDir);
+    const again = await startOn(after, { provider: "claude", account: key });
+    // Then: no second CLI signs in to that home while the first runs
+    expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
+    expect(create).toHaveBeenCalledTimes(1);
+    // once that sign-in ends, the home is free again: told by herdr's state, not by an exit this server
+    // may have subscribed too late to hear (the long-running server hears it)
+    await finishLogin(pane);
+    const later = await startOn(after, { provider: "claude", account: key });
+    expect(later.status).toBe(200);
+    openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
+    await launched(1);
+  } finally { before.stop(); after?.stop(); create.mockRestore(); }
+});
+
+it("frees a home after a restart when its sign-in ended while no server ran, even when its pid now names another process", async () => {
+  // Given: a sign-in started by a server that stopped, whose tab then closed while none ran
+  // Claude's stand-in keeps the account its home names, so the key still lists it once it has run
+  expiredHome("claude", ".claude-restart-gone", "restart-gone@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "restart-gone@example.test")!.key;
+  const stateDir = mkdtempSync(join(root, "restart-gone-state-"));
+  const { create, launched } = holdLogins();
+  const before = serveOn(stateDir);
+  let after: ReturnType<typeof createServer> | undefined;
+  try {
+    const first = await startOn(before, { provider: "claude", account: key });
+    expect(first.status).toBe(200);
+    await launched(0);
+    before.stop();
+    await paneClose((await first.json() as UsageLoginStarted).pane_id);
+    // a later boot can hand the CLI's pid to anything: here, this test's own process, which no tab runs
+    const saved = join(stateDir, "usage-logins.json");
+    const state: { logins: { pid: number | null }[] } = JSON.parse(readFileSync(saved, "utf8"));
+    expect(state.logins).toHaveLength(1);
+    writeFileSync(saved, JSON.stringify({ ...state, logins: state.logins.map((login) => ({ ...login, pid: process.pid })) }));
+    // When: the server starts again and the account is asked for
+    after = serveOn(stateDir);
+    const again = await startOn(after, { provider: "claude", account: key });
+    // Then: nothing holds the home any more
+    expect(again.status).toBe(200);
+    openedPanes.push((await again.json() as UsageLoginStarted).pane_id);
+    await launched(1);
+  } finally { before.stop(); after?.stop(); create.mockRestore(); }
+});
+
 for (const alias of [false, true]) {
   it(`refuses Sign in again while Add account's sign-in into that home is still open${alias ? ", reached through a symlinked CODEX_HOME" : ""}`, async () => {
     // Given: Add account's login has written its sign-in and is still open in its tab
