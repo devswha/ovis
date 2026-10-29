@@ -98,9 +98,13 @@ it.each([
   { when: "paste", to: "B", misses: 0, label: "the paste, to a readable session", writes: ["paste"] as string[], state: "uncertain" },
   { when: "paste", to: null, misses: 0, label: "the paste, to an unreadable session", writes: ["paste"] as string[], state: "uncertain" },
   { when: "paste", to: "A", misses: 1, label: "the paste, unreadable for one read (control)", writes: ["paste", "Enter"] as string[], state: "removed" },
-  // the last check before the paste reads the session after herdr's answer, and herdr is read no more before the
-  // paste: a switch during any herdr read after that session read would reach the paste (none here: it goes to A)
-  { when: "after check", to: "B", misses: 0, label: "a herdr read after the last session check before the paste (control: none is made)", writes: ["paste", "Enter"] as string[], state: "removed" },
+  // the window left (herdr cannot compare and write in one step): a switch during the process read that closes the
+  // last check before the paste reaches the paste, and the check before Enter withholds the Enter
+  { when: "after check", to: "B", misses: 0, label: "the process read that closes the last check before the paste", writes: ["paste"] as string[], state: "uncertain" },
+  // another Claude process comes to the front while the last session check reads the one before it, which, still
+  // alive, still names session A: herdr is asked once more what is in front after the session is read
+  { when: "replaced before paste", to: "A", misses: 0, label: "the last session read before the paste, to another process", writes: [] as string[], state: "held" },
+  { when: "replaced before Enter", to: "A", misses: 0, label: "the last session read before Enter, to another process", writes: ["paste"] as string[], state: "uncertain" },
   // the check before Enter read the session first; its screen and card reads awaited after it
   { when: "enter", to: "B", misses: 0, label: "the screen read before Enter, to a readable session", writes: ["paste"] as string[], state: "uncertain" },
   { when: "enter", to: null, misses: 0, label: "the screen read before Enter, to an unreadable session", writes: ["paste"] as string[], state: "uncertain" },
@@ -111,6 +115,11 @@ it.each([
   let misses = 0;
   const sessionReads = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () => {
     if (boxReads >= 3 && !pasted) checked = true;
+    // the session read that closes the check: before the paste, the first after Claude's input box; before Enter,
+    // the one after the check's own identity read
+    const closing = when === "replaced before paste" ? boxReads >= 3 && !pasted && ++lookups === 1
+      : when === "replaced before Enter" && pasted && ++lookups === 2;
+    if (closing) foreground = [{ pid: 41002, name: "claude", argv: ["claude"] }];
     if (misses > 0) { misses--; return null; }
     return session;
   });
@@ -118,12 +127,14 @@ it.each([
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
   let pasted = false;
   let boxReads = 0;
+  let lookups = 0;
+  let foreground = [{ pid: 41001, name: "claude", argv: ["claude"] }];
   /** a session read after Claude's input box, before the paste */
   let checked = false;
   const afterCheck = (): void => { if (when === "after check" && checked && !pasted && session === "A") switchSession(); };
   spyOn(client, "paneProcessInfo").mockImplementation(async () => {
     afterCheck();
-    return { pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] };
+    return { pane_id: "p", shell_pid: 41000, foreground_processes: foreground };
   });
   let afterPaste = 0;
   spyOn(client, "paneRead").mockImplementation(async () => {

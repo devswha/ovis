@@ -406,16 +406,21 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * before a write: herdr cannot compare and send in one step, so this keeps the window to the write's own call.
    */
   async function stillInFront(paneId: string, pid: number | null | undefined, pinned: PendingIdentity | null = null): Promise<void> {
+    const inFront = async (): Promise<NonNullable<ProcessInfo["foreground_processes"]>> => {
+      const foreground = (await paneProcessInfo(paneId))?.foreground_processes ?? [];
+      if (pid != null && !foreground.some((entry) => entry.pid === pid)) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+      return foreground;
+    };
     // /clear and /resume switch Claude's session in the same process, so its PID in front says nothing of the
-    // session: the one the message is pinned to is read last, from Claude's own records once herdr answered, and
-    // herdr is asked nothing more before the write (#2279). A record caught being rewritten is read once more
+    // session the message is pinned to: that is read from Claude's own records (once more for a record caught being
+    // rewritten), and the process is then asked for again, as one that left the front still alive keeps its record
+    // (#2279). Neither can be compared in the write's own call: a switch during that last herdr read is not seen
     const session = pinned?.agent === "claude" ? pinned.claudeSession ?? null : null;
     if (pid == null && session === null) return;
-    const foreground = (await paneProcessInfo(paneId))?.foreground_processes ?? [];
-    if ((pid != null && !foreground.some((entry) => entry.pid === pid))
-      || (session !== null && (await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session)) {
-      throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
-    }
+    const foreground = await inFront();
+    if (session === null) return;
+    if ((await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+    await inFront();
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null }> {
     authorizePending(owner, paneId, lease);
