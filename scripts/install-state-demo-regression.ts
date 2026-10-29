@@ -31,8 +31,15 @@ const newRealDesktopEntries = (): string[] => existsSync(realApplications)
 const ready = async (page: Page): Promise<void> => {
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await page.locator(".sidebar-footer").waitFor();
-  assert.equal(await page.locator(".sidebar-shell").getByText("Install app").count(), 0, "the sidebar offers no Install app");
+  await assertNoSidebarInstall(page);
 };
+// by its words or by a name alone (an icon-only button labelled Install app counts too)
+const assertNoSidebarInstall = async (page: Page): Promise<void> => {
+  const sidebar = page.locator(".sidebar-shell");
+  assert.equal(await sidebar.getByText(/install app/i).count() + await sidebar.getByRole("button", { name: /install/i }).count(), 0, "the sidebar offers no Install app");
+};
+// installHelp() for desktop Chromium over loopback (src/lib/install.ts)
+const CHROMIUM_HELP = "Use the install icon in the address bar, or the browser menu's Install option.";
 /** Settings → Phone & devices → Install, opened in this page. */
 const installRow = async (page: Page): Promise<Locator> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
@@ -109,8 +116,7 @@ try {
       await ready(tab);
       assert.equal(await relatedApps(tab), 0, "nothing is installed yet");
       const tabRow = await installRow(tab);
-      const help = (await tabRow.locator(".settings-description").textContent())?.trim() ?? "";
-      assert.ok(help !== "" && help !== "Installed", `Settings > Install says how to install: ${JSON.stringify(help)}`);
+      assert.equal((await tabRow.locator(".settings-description").textContent())?.trim(), CHROMIUM_HELP, "Settings > Install says how to install");
       assert.equal(await installButton(tabRow).count(), 0, "no Install app button without a prompt");
       await shot(tab, "settings-help");
       console.log("PASS (a) before install, without a prompt: no sidebar Install app, Settings > Install shows the steps");
@@ -126,7 +132,7 @@ try {
         });
         window.dispatchEvent(event);
       });
-      assert.equal(await prompted.locator(".sidebar-shell").getByText("Install app").count(), 0, "a held prompt adds no sidebar Install app");
+      await assertNoSidebarInstall(prompted);
       const promptedRow = await installRow(prompted);
       assert.equal(await promptedRow.locator(".settings-description").count(), 0, "a prompt shows no help text");
       await installButton(promptedRow).click();
@@ -168,7 +174,8 @@ try {
       await ready(after);
       assert.equal(await relatedApps(after), 0, "nothing is installed after the uninstall");
       const afterRow = await installRow(after);
-      assert.equal((await afterRow.locator(".settings-description").textContent())?.trim(), help, "Settings > Install shows the steps again");
+      assert.equal((await afterRow.locator(".settings-description").textContent())?.trim(), CHROMIUM_HELP, "Settings > Install shows the steps again");
+      assert.equal(await installButton(afterRow).count(), 0, "no Install app button without a prompt after the uninstall");
       console.log("PASS (d) after uninstall, a new tab: no sidebar Install app, Settings > Install shows the steps, getInstalledRelatedApps() is empty");
       assert.deepEqual(errors, [], "no page error");
     } finally {

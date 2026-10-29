@@ -1416,9 +1416,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Rows use only shared theme tokens in dark and light. Touch keeps row menus and folds visible,
   with `--touch-target` controls, and draws no hover fill; reduced motion removes row transitions
   and keeps the working dot's breath (opacity only).
-- Footer holds Settings, its gear alone (named
-  **Settings** to screen readers and in its tooltip), with the plan meters filling the rest of its row,
-  as a row on the same grid with no rule above.
+- Footer holds Settings, its gear alone (named **Settings** to screen readers and in its tooltip),
+  with the plan meters filling the rest of its row, as a row on the same grid with no rule above.
   It carries no product name or version: the running versions are read in Settings. Nor does it
   offer **Install app**: the page can only tell it is installed from inside the app's own window,
   so a footer row kept showing in every browser tab and in browsers that never prompt. Settings →
