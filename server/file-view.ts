@@ -931,10 +931,33 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
 /**
  * Such bodies waiting to be collected; past `BODY_DESCRIPTORS` (a player seeking through a long
  * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
- * so descriptors held for collection stay bounded.
+ * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
+ * drops it), so the cap first forces a collection (`collectBodies`).
  */
 let bodiesHeld = 0;
-const BODY_DESCRIPTORS = 256;
+export const BODY_DESCRIPTORS = 256;
+/** Bodies held since the last forced collection: a full one is first forced. */
+let heldSinceCollection = BODY_DESCRIPTORS;
+let collecting: Promise<void> | null = null;
+/**
+ * At the cap, most held bodies were sent long ago and only wait for a collection (many parallel
+ * downloads reach it within a second): one forced collection lets their descriptors go by the next
+ * turn of the event loop, where the registry's callbacks run. Answers reaching the cap meanwhile
+ * share it, and it runs again only after a quarter of the cap of new bodies, so a player that
+ * really holds them all does not pay for one on every answer.
+ */
+const collectBodies = (): Promise<void> => {
+  if (collecting !== null) return collecting;
+  if (heldSinceCollection < BODY_DESCRIPTORS / 4) return Promise.resolve();
+  heldSinceCollection = 0;
+  return collecting = new Promise<void>((done) => {
+    Bun.gc(true);
+    setImmediate(() => {
+      collecting = null;
+      done();
+    });
+  });
+};
 
 export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
   const name = encodeURIComponent(info.name);
@@ -990,6 +1013,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     // a file body, which Bun sizes itself (and reads on this thread: its disk just answered at once);
     // a scratch file (`within`) by its descriptor's own path, the file that descriptor holds
     headers.delete("content-length");
+    if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) await collectBodies();
     if (opened.fd !== null && bodiesHeld >= BODY_DESCRIPTORS) {
       // too many such bodies wait to be collected: this one is streamed from its descriptor, without a length
       headers.set("content-length", String(length));
@@ -1000,6 +1024,7 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
     if (opened.fd !== null) {
       const held = { fd: opened.fd, left: 2 };
       bodiesHeld += 1;
+      heldSinceCollection += 1;
       bodyDescriptors.register(body, held);
       bodyDescriptors.register(response, held);
     }

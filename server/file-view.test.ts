@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 import * as fileView from "./file-view.ts";
-import { crossSiteFileRead, fileInfo, fileResponse, forgetPageMedia, locateFile, locateFileInFolder, PAGE_MEDIA_LIFETIME_MS, PAGE_MEDIA_PER_RENDER, pageFileHooks, pageMediaResponse, pageMediaSource, resolveFilePath, STREAM_CHUNK_BYTES, watchPageMedia } from "./file-view.ts";
+import { BODY_DESCRIPTORS, crossSiteFileRead, fileInfo, fileResponse, forgetPageMedia, locateFile, locateFileInFolder, PAGE_MEDIA_LIFETIME_MS, PAGE_MEDIA_PER_RENDER, pageFileHooks, pageMediaResponse, pageMediaSource, resolveFilePath, STREAM_CHUNK_BYTES, watchPageMedia } from "./file-view.ts";
 import { setFilePoolOptions } from "./file-pool.ts";
 import { runFileTask } from "./file-tasks.ts";
 import { clearFileCache, filesNamed } from "./files.ts";
@@ -1529,6 +1529,30 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
         expect(part.headers.get("content-range")).toBe(`bytes ${first}-${last}/${size}`);
         expect(part.headers.get("content-length")).toBe(String(last - first + 1));
         expect(Buffer.from(await part.arrayBuffer()).equals(bytes.subarray(first, last + 1))).toBe(true);
+      } finally { await server.stop(true); }
+    })();
+    await bodiesCollected();
+  });
+
+  it("keeps a large file's exact length while as many sent bodies as it holds wait to be collected (#2286)", async () => {
+    // only Linux names an open file by its descriptor (`/proc/self/fd`); elsewhere it is streamed without one
+    if (process.platform !== "linux") return;
+    const size = STREAM_CHUNK_BYTES + 4096;
+    const bytes = Buffer.from(Array.from({ length: size }, (_, at) => at % 251));
+    const { cwd, scratch } = fixture("big.bin", "", "OUTSIDE-SECRET");
+    writeFileSync(join(scratch, "big.bin"), bytes);
+    pageFileHooks.fastDiskMs = 60_000;
+    await (async () => {
+      const found = await fromScratch("big.bin", cwd, scratch);
+      // answers already let go of, as a busy server's are before a collection: each still holds its descriptor
+      for (let at = 0; at < BODY_DESCRIPTORS; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
+      // the next answer made at once, before the event loop turns and a collection that happens to run lets any go
+      const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
+      try {
+        const next = await fetch(server.url);
+        expect(next.headers.get("content-length")).toBe(String(size));
+        expect(Buffer.from(await next.arrayBuffer()).equals(bytes)).toBe(true);
       } finally { await server.stop(true); }
     })();
     await bodiesCollected();
