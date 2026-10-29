@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { VoiceEngine, VoiceInput, VoiceState } from "../lib/voice.ts";
@@ -83,6 +83,17 @@ describe("MicButton", () => {
     await button.up("touch");
     await button.click();
     expect(calls).toEqual(["finish"]);
+  });
+
+  it("drops a touch hold's gesture that got no click, so a later Enter or Space still starts", async () => {
+    const button = await mic("browser", "recording");
+    await button.down("touch");
+    await button.up("touch");
+    await button.becomes("idle");
+    const now = performance.now();
+    const clock = spyOn(performance, "now").mockReturnValue(now + 2000);
+    try { await button.click(); } finally { clock.mockRestore(); }
+    expect(calls).toEqual(["press"]);
   });
 
   it("lets only the pointer that pressed release a hold, not a later right-click", async () => {

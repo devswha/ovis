@@ -248,6 +248,8 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
   // (#2343): there the tap's click starts or finishes the take, as the take stood at its pointerdown,
   // so a take that ended on its own meanwhile is not started again; a touch hold is not push-to-talk
   const tap = useRef<"start" | "finish" | null>(null);
+  // a touch hold ends with no click: its gesture is stale by the next click (Enter or Space)
+  const tapUpAt = useRef(-Infinity);
   return (
     <span className={`voice-mic-wrap ${className}`} data-state={voice.state}>
       <span className="voice-mic-ring" ref={voice.bindRing} aria-hidden="true" />
@@ -272,6 +274,7 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
           press();
         }}
         onPointerUp={(event) => {
+          if (tap.current !== null) tapUpAt.current = performance.now();
           if (event.pointerId !== holding.current) return;
           holding.current = null;
           pointerUpAt.current = performance.now();
@@ -284,7 +287,7 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
           voice.release();
         }}
         onClick={() => {
-          const gesture = tap.current;
+          const gesture = performance.now() - tapUpAt.current < 500 ? tap.current : null;
           tap.current = null;
           if (gesture === "finish") voice.finish();
           else if (gesture === "start") press();
