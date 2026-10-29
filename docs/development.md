@@ -296,9 +296,12 @@ of its 50-row limit, and touches at most three quarters of the exported `PI_CACH
 capacity (currently 192 of 256 slots). Every retained entry touch counts, including hits;
 counting only insertions would let later hits promote older entries past this traversal's
 new checkpoints. Label scans revisit only that same set, so one traversal cannot evict its
-own checkpoints. Completed headerless files are not cached at all, just as explicitly rejected
-headers are not cached, so neither consumes this limit. They are checked again on later opens,
-with their I/O still bounded by discovery and the header deadline. A cutoff before discovery is
+own checkpoints. Completed single-chunk headerless files are not cached, just as explicitly
+rejected headers are not cached, so neither consumes this limit. Headerless files larger than
+one chunk retain their completed empty result under the same checked stat key and count toward
+the touch limit, including on a cache hit. This prevents unchanged multi-chunk files from starting
+over and consuming unfinished-header slots on every open. Single-chunk files are checked again
+on later opens, with their I/O still bounded by discovery and the header deadline. A cutoff before discovery is
 exhausted with no established row returns retryable busy, never an empty success. Files beyond these
 bounds may be omitted. In particular, actively growing oversized headers can keep resetting
 their progress and hide older sessions; ordinary Pi headers are only a few hundred bytes.

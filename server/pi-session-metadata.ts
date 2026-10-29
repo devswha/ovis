@@ -51,7 +51,13 @@ interface Task {
   mode: "labels" | "header";
   expired: boolean;
   partial: PiLabel | null;
-  cache: { path: string; scope: string; acceptHeader?: (header: NonNullable<PiLabel["header"]>) => boolean } | null;
+  cache: {
+    path: string;
+    scope: string;
+    acceptHeader?: (header: NonNullable<PiLabel["header"]>) => boolean;
+    /** A retained completed headerless result still occupies a cache slot. */
+    headerless?: () => void;
+  } | null;
 }
 
 interface ReaderOptions {
@@ -147,6 +153,7 @@ export class PiSessionReader {
         if (!accepted(cached.progress?.parser.partial() ?? cached.label)) return null;
         if (cached.progress === undefined) {
           this.labels.set(task.cache.path, { ...cached, scope: task.cache.scope });
+          if (cached.label === null) task.cache.headerless?.();
           return cached.label;
         }
         ({ parser, position } = cached.progress);
@@ -188,7 +195,11 @@ export class PiSessionReader {
       const finished = parser.finish();
       const label = finished.header === null ? null : finished;
       if (!accepted(label)) return null;
+      // One-chunk headerless files are cheap and stay free; longer files must not restart
+      // their completed scan on every open and consume unfinished-header slots forever.
+      if (label === null && end <= PI_CHUNK_BYTES) return null;
       this.remember(task, { key, scope: task.cache?.scope ?? "", label });
+      if (label === null) task.cache?.headerless?.();
       return label;
     } catch (error) {
       if (error instanceof PiMetadataDeadline) {
@@ -210,8 +221,6 @@ export class PiSessionReader {
 
   private remember(task: Task, entry: Cached): void {
     if (task.cache === null || this.stopped) return;
-    // Completed headerless files must not consume slots or the listing's cache-touch budget.
-    if (entry.label === null && entry.progress === undefined) return;
     const existing = this.labels.get(task.cache.path);
     // An independent concurrent scan may already have completed or advanced farther.
     if (existing?.key === entry.key && (existing.progress === undefined

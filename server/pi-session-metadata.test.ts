@@ -211,6 +211,34 @@ describe("Pi native label semantics", () => {
 });
 
 describe("Pi stat-keyed streaming reader", () => {
+  it("finishes multichunk headerless files once and reaches the older session by the fourth open", async () => {
+    jest.useFakeTimers();
+    spyOn(performance, "now").mockReturnValue(0);
+    const f = fixture();
+    writeFileSync(f.file, header("older-real-session") + name("Still available"));
+    utimesSync(f.file, 1, 1);
+    const whitespace = " ".repeat(PI_CHUNK_BYTES + 1);
+    for (let n = 0; n < 150; n++) {
+      const path = join(f.folder, `headerless-${n}.jsonl`);
+      writeFileSync(path, whitespace);
+      utimesSync(path, 2 + n, 2 + n);
+    }
+    for (let open = 0; open < 3; open++) await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
+    const rows = await f.list();
+    expect(rows).toMatchObject([{ id: "older-real-session", title: "Still available" }]);
+    expect(f.io.calls).toBe(301);
+    const bytes = f.io.bytes;
+    for (let open = 0; open < 2; open++) expect(await f.list()).toEqual(rows);
+    expect(f.io.calls).toBe(301);
+    expect(f.io.bytes).toBe(bytes);
+    expect(f.reader.cacheSize()).toBe(151);
+    // A completed empty result is stat-keyed too: a later valid header must become visible.
+    appendFileSync(join(f.folder, "headerless-149.jsonl"), header("newly-readable") + name("Appended session"));
+    expect(await f.list()).toEqual(rows);
+    expect(await f.list()).toMatchObject([{ id: "newly-readable", title: "Appended session" }, { id: "older-real-session" }]);
+    expect(f.io.calls).toBe(303);
+  });
+
   for (const count of [200, 201]) {
     it(`lists the older session behind ${count} unchanged empty files without a false empty response`, async () => {
       jest.useFakeTimers();

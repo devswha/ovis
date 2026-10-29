@@ -522,9 +522,11 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
     if (rows.length >= MAX_ROWS) break;
     if (unfinishedHeaders >= MAX_ROWS || cacheTouches >= headerCacheLimit) { incomplete = true; break; }
     let rejected = false;
+    let retainedHeaderless = false;
     try {
       const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), headerDeadline, {
         path: file.real, scope,
+        headerless: () => { retainedHeaderless = true; },
         // Reject ineligible headers before caching them, and spend folder-identity checks once.
         acceptHeader: (header) => {
           rejected = !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds);
@@ -536,12 +538,12 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
         rows.push(row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));
         selected.push({ file, header });
       } else if (label) { incomplete = true; unfinishedHeaders++; }
-      else rejected = true;
+      else rejected = !retainedHeaderless;
     } catch (error) {
       if (!(error instanceof PiMetadataBusy) || error.reason === "stopped" || error.reason === "queue") throw error;
       incomplete = true;
     } finally {
-      // Rejected and completed-headerless files are uncached; discovery still bounds their I/O.
+      // Only rejected and single-chunk headerless files are uncached and free.
       if (!rejected) cacheTouches++;
     }
   }
