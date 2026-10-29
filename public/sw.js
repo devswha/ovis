@@ -251,14 +251,21 @@ self.addEventListener("notificationclick", (event) => {
   // Remember the intent before any lookup: an older focus can finish while this one
   // is still finding its window.
   latestNotificationSelection = selection;
-  // a tapped pane alert, for the daily anonymous usage counts (server/telemetry.ts): the server
-  // counts it only where counts are on, and a refusal (signed out, an older server) changes nothing
+  // a tapped pane alert, for the daily anonymous usage counts (server/telemetry.ts): posted only when
+  // the server says the counts are on and their notice was shown, so nothing tells it of a tap while
+  // they are off; a refusal (signed out, an older server) changes nothing
   if (paneId && typeof self.fetch === "function") {
-    event.waitUntil(self.fetch("/api/telemetry", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-herdr-update": "1" },
-      body: JSON.stringify({ alert_opened: true }),
-    }).catch(() => {}));
+    event.waitUntil((async () => {
+      const status = await self.fetch("/api/telemetry", { cache: "no-store" });
+      if (!status.ok) return;
+      const counts = await status.json();
+      if (counts?.enabled !== true || counts.blocked_by_env !== false || counts.notice_seen !== true) return;
+      await self.fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-herdr-update": "1" },
+        body: JSON.stringify({ alert_opened: true }),
+      });
+    })().catch(() => {}));
   }
   event.waitUntil(
     (async () => {

@@ -45,8 +45,8 @@ import { attachableIdentity } from "./pty/sidecar.ts";
 import { connectUpdater, handleUpdateRequest, type UpdateService } from "./update-api.ts";
 import { handleHerdrUpdateRequest, HerdrUpdater } from "./herdr-update.ts";
 import { handlePortalRequest, PortalService } from "./portal.ts";
-import { handleTelemetryRequest, Telemetry } from "./telemetry.ts";
-import { telemetrySurface, type TelemetryIngress } from "../shared/telemetry.ts";
+import { handleTelemetryRequest, Telemetry, visitSurface } from "./telemetry.ts";
+import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleUsageRequest, UsageService } from "./usage.ts";
 import { CLIProxyService } from "./cliproxy.ts";
 import { CLIProxyRoutes } from "./cliproxy-routes.ts";
@@ -459,11 +459,12 @@ export function createServer(
           } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
           return new Response("websocket upgrade required", { status: 426 });
         }
-        // what the daily active message counts of this visit: the page's kind of screen and the way it came in
+        // what the daily active message counts of this visit: the page's kind of screen and the way it came in;
+        // nothing for another server's bridge, or for a surface no page names (visitSurface)
         const observed = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
-        const surface = bridgeAuthorized ? null : telemetrySurface(url.searchParams.get("surface"));
+        const surface = bridgeAuthorized ? false : visitSurface(url.searchParams.get("surface"));
         const ingress: TelemetryIngress = observed === "direct" ? (loopback ? "local" : "lan") : observed;
-        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(bridgeAuthorized ? {} : { ingress }) }) });
+        const upgraded = bunServer.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }) }) });
         if (upgraded) return undefined;
         return new Response("websocket upgrade required", { status: 426 });
       }

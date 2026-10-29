@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
-import { ACTIVE_LATE_DAYS, emptyUsage, harnessOf, NOTICE_VERSION, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, emptyUsage, harnessOf, NOTICE_VERSION, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
-import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS } from "./telemetry.ts";
+import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface } from "./telemetry.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -516,42 +516,88 @@ describe("daily active message", () => {
 });
 
 describe("daily usage", () => {
+  /** what public/sw.js posts for a tapped pane alert */
+  const tap = () => new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ alert_opened: true }) });
   test("a visit names its kind of screen and way in, and the day's message carries them sorted, once each", async () => {
-    const { telemetry, actives } = setup();
+    const { telemetry, actives, clock } = setup();
     seen(telemetry);
     await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
     await telemetry.active(["claude"], { surface: "browser", ingress: "local" });
     await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
+    clock.now += USAGE_RESEND_MS;
+    await telemetry.active(["claude"]);
     expect(actives.map((active) => active.usage)).toEqual([
       { ...emptyUsage(), surfaces: ["mobile-pwa"], ingress: ["tailscale"] },
       { ...emptyUsage(), surfaces: ["browser", "mobile-pwa"], ingress: ["local", "tailscale"] },
     ]);
   });
 
-  test("counts made today wait for the hour since the day's last delivery, then go with the next visit; a new kind goes at once", async () => {
+  test("today's usage goes at most once an hour, with the next visit after it: a new screen, way in, agent or tap sends no fresher usage", async () => {
     const { telemetry, actives, clock } = setup();
     seen(telemetry);
-    await telemetry.active(["claude"], { surface: "browser" });
+    await telemetry.active(["claude"], { surface: "browser", ingress: "local" });
+    clock.now += 1_000;
     telemetry.tally("prompt_answers");
     telemetry.tally("prompt_answers");
     telemetry.tally("alerts_delivered");
-    await telemetry.active(["claude"]);
+    // a second later a new kind of screen and way in send nothing: they wait with the counts
+    await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
     expect(actives).toHaveLength(1);
-    expect(telemetry.status().active.usage).toMatchObject({ prompt_answers: 2, alerts_delivered: 1, alerts_opened: 0 });
-    clock.now += USAGE_RESEND_MS;
-    await telemetry.active(["claude"]);
-    expect(actives.map((active) => active.usage)).toEqual([
-      { ...emptyUsage(), surfaces: ["browser"] },
-      { ...emptyUsage(), surfaces: ["browser"], prompt_answers: 2, alerts_delivered: 1 },
-    ]);
-    // a new kind of agent or screen still goes at once, with the counts as they stand
-    telemetry.tally("prompt_answers");
+    expect(telemetry.status().active.usage).toEqual({ surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 0 });
+    // a new kind of agent still goes at once, as it did before usage, but with the usage already sent
     await telemetry.active(["codex"]);
-    expect(actives.at(-1)).toMatchObject({ harnesses: ["claude", "codex"], usage: { prompt_answers: 3 } });
-    telemetry.tally("prompt_answers");
-    await telemetry.active(["codex"], { surface: "mac-app" });
-    expect(actives.at(-1)).toMatchObject({ usage: { surfaces: ["browser", "mac-app"], prompt_answers: 4 } });
-    expect(actives).toHaveLength(4);
+    const first: TelemetryUsage = { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] };
+    expect(actives.map((active) => [active.harnesses, active.usage])).toEqual([[["claude"], first], [["claude", "codex"], first]]);
+    // past the hour a tapped alert is counted but sends nothing by itself; the next visit takes it all
+    clock.now += USAGE_RESEND_MS;
+    expect((await handleTelemetryRequest(tap(), telemetry)).status).toBe(200);
+    await settled();
+    expect(actives).toHaveLength(2);
+    await telemetry.active(["codex"]);
+    expect(actives.map((active) => active.usage).at(-1)).toEqual({ surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 1 });
+    expect(actives).toHaveLength(3);
+  });
+
+  test("nothing of the day's usage is kept before the current notice, on a new install or after an older notice", async () => {
+    for (const older of [null, NOTICE_VERSION - 1]) {
+      const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+      dirs.push(stateDir);
+      if (older !== null) {
+        writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: older, reported_version: "0.4.1", settings: null, active: [] }));
+      }
+      const before = setup({ stateDir });
+      await before.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      before.telemetry.tally("prompt_answers");
+      before.telemetry.tally("alerts_delivered");
+      expect((await handleTelemetryRequest(tap(), before.telemetry)).status).toBe(200);
+      expect(savedFile(stateDir).active.map((entry: { usage: unknown }) => entry.usage)).toEqual([emptyUsage()]);
+      // after a restart and the notice, the day goes out without anything counted before it
+      const after = setup({ stateDir });
+      seen(after.telemetry);
+      await after.telemetry.active(["claude"]);
+      expect(after.actives.map((active) => [active.harnesses, active.usage])).toEqual([[["claude"], emptyUsage()]]);
+      expect(before.actives).toEqual([]);
+    }
+  });
+
+  test("usage a build before the notice rule kept is dropped once, and sends nothing for it", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const kept = { surfaces: ["ios-app"], ingress: ["tailscale"], prompt_answers: 3, alerts_delivered: 2, alerts_opened: 1 };
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({
+      install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: null,
+      active: [
+        // a night's alert on a day the app was not opened
+        { day: "2026-10-06", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, sent_at: null },
+        { day: "2026-10-07", harnesses: ["claude"], sent: ["claude"], visited: true, usage: { ...kept, prompt_answers: 5 }, sent_usage: kept, sent_at: Date.parse("2026-10-07T09:00:00Z") },
+        { day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: kept, sent_usage: null, sent_at: null },
+      ],
+    }));
+    const { telemetry, actives } = setup({ stateDir });
+    expect(telemetry.status().active.usage).toEqual(emptyUsage());
+    await telemetry.active(["claude"]);
+    expect(actives.map((active) => [active.day, active.usage])).toEqual([["2026-10-08", emptyUsage()]]);
+    expect(savedFile(stateDir).active.map((entry: { day: string; usage: unknown }) => [entry.day, entry.usage])).toEqual([["2026-10-07", emptyUsage()], ["2026-10-08", emptyUsage()]]);
   });
 
   test("a day's last counts go out with the next day's visit, under their own day", async () => {
@@ -598,6 +644,7 @@ describe("daily usage", () => {
     expect(savedFile(blocked.stateDir).active ?? []).toEqual([]);
 
     const { telemetry, stateDir } = setup();
+    seen(telemetry);
     writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ ...savedFile(stateDir), active: [{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: { ...emptyUsage(), prompt_answers: TELEMETRY_COUNT_MAX }, sent_usage: null, sent_at: null }] }));
     telemetry.tally("prompt_answers");
     expect(telemetry.status().active.usage.prompt_answers).toBe(TELEMETRY_COUNT_MAX);
@@ -614,6 +661,23 @@ describe("daily usage", () => {
     await telemetry.active(["claude"]);
     expect(actives).toEqual([]);
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-08", usage: emptyUsage() });
+  });
+
+  test("a /ws surface no page names counts nothing of its visit's usage; a page that names none still counts its way in", () => {
+    expect(visitSurface("ios-app")).toBe("ios-app");
+    expect(visitSurface(null)).toBeNull();
+    for (const bad of ["", "IOS-APP", "private@example.com", "-1", "x".repeat(9000)]) expect(visitSurface(bad)).toBe(false);
+  });
+
+  test("an oversized change is refused, announced or measured, and counts nothing", async () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    const change = (body: string, headers: Record<string, string> = {}) => new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1", ...headers }, body });
+    expect((await handleTelemetryRequest(change(JSON.stringify({ alert_opened: true }), { "content-length": "100000" }), telemetry)).status).toBe(413);
+    expect((await handleTelemetryRequest(change(`${" ".repeat(20_000)}${JSON.stringify({ alert_opened: true })}`), telemetry)).status).toBe(413);
+    expect(telemetry.status().active.usage).toEqual(emptyUsage());
+    expect((await handleTelemetryRequest(change(JSON.stringify({ alert_opened: true })), telemetry)).status).toBe(200);
+    expect(telemetry.status().active.usage.alerts_opened).toBe(1);
   });
 
   test("POST alert_opened counts a tap and nothing else, and takes only true", async () => {

@@ -20,9 +20,11 @@ export interface SocketData {
   relay?: MachineRelay;
   /** another Ovis server reading this PC with its bridge token: it gets snapshots whole and applies its own sidebar rows (#2160) */
   bridge?: boolean;
-  /** the kind of screen the page said it runs on (`?surface=`), for the daily active message; absent when it named none or another server reads */
+  /** the kind of screen the page said it runs on (`?surface=`), for the daily active message; absent when it named none, named
+   * no known kind (server/telemetry.ts visitSurface) or another server reads */
   surface?: TelemetrySurface;
-  /** how the upgrade request reached this server (shared/telemetry.ts TELEMETRY_INGRESS), for the daily active message */
+  /** how the upgrade request reached this server (shared/telemetry.ts TELEMETRY_INGRESS), for the daily active message; absent
+   * where `surface` named no known kind, or another server reads */
   ingress?: TelemetryIngress;
   /** this connection's id, told to its page in the first snapshot: a create request names it as its first message's typist */
   connectionId: string;
