@@ -40,6 +40,44 @@ test("the deploy is skipped without the secrets and the health check follows it"
   expect(steps[health]!.if).toContain(`steps.${guardId}.outputs.ready == 'true'`);
 });
 
+/** Runs the health step's script through `bash -e` against a local server that answers each request with the next status. */
+async function runHealthStep(statuses: number[]): Promise<{ code: number; output: string; requests: number }> {
+  const step = loadWorkflow().jobs.deploy.steps.find((candidate) => candidate.run?.includes("curl"))!;
+  let requests = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => {
+      const status = statuses[Math.min(requests++, statuses.length - 1)]!;
+      return status === 302 ? new Response(null, { status, headers: { location: "/moved" } }) : new Response("ok", { status });
+    },
+  });
+  try {
+    const script = step.run!.replace("https://relay.ovis.sh/health", `http://127.0.0.1:${server.port}/health`).replace("sleep 5", "sleep 0");
+    const child = Bun.spawn(["bash", "-e", "-c", script], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { code, output: stdout + stderr, requests };
+  } finally {
+    await server.stop(true);
+  }
+}
+
+test("the health step passes on a 200", async () => {
+  expect((await runHealthStep([200])).code).toBe(0);
+}, 30_000);
+
+test("the health step passes once a retry gets a 2xx", async () => {
+  const result = await runHealthStep([503, 302, 204]);
+  expect(result.code).toBe(0);
+  expect(result.requests).toBe(3);
+}, 30_000);
+
+test("the health step fails on a 302 and says the code", async () => {
+  const result = await runHealthStep([302]);
+  expect(result.code).not.toBe(0);
+  expect(result.requests).toBe(5);
+  expect(result.output).toContain("HTTP 302");
+}, 30_000);
+
 test("the relay's own tests run before the deploy", () => {
   const { steps } = loadWorkflow().jobs.deploy;
   const tests = steps.findIndex((step) => step.run === "bun test ./relay");
