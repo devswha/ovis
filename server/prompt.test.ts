@@ -2457,6 +2457,8 @@ describe("Claude's suggested next prompt", () => {
     const typed = screen("❯ run the tests");
     expect(historyEndShowsLive(colors, typed, [live, live])).toBe(false);
     expect(historyEndShowsLive(typed, colors, [live, live])).toBe(false);
+    // a read with no color at all (NO_COLOR): its tip and the same words typed read the same
+    expect(historyEndShowsLive(live, live, [live, live])).toBe(false);
   });
 
   test("bash mode, a box clipped by the pane, or a viewport that is not the live box hold a pending message", () => {

@@ -323,7 +323,9 @@ const screenLines = (text: string): string => text.replace(ANSI_RE, "").replace(
  * and changes only its colors.
  */
 export function historyEndShowsLive(colors: string, colorsAfter: string, lives: readonly string[]): boolean {
-  return colors === colorsAfter && lives.length > 0 && lives.every((live) => live === lives[0])
+  // a read without any color (NO_COLOR, a monochrome terminal) cannot tell Claude's tip from the same
+  // words typed: a scrolled box keeps refusing as a draft, as it did before it was read from the history
+  return colors === colorsAfter && !colorless(colors) && lives.length > 0 && lives.every((live) => live === lives[0])
     && screenLines(colors) === screenLines(lives[0]!);
 }
 

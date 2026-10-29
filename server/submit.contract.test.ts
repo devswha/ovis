@@ -921,7 +921,8 @@ describe("WebSocket submit", () => {
 
   it("clears the named draft and sends while the terminal is scrolled, through the box's redraw", async () => {
     const socket = await Socket.connect();
-    const draft = claudeInputScreen("\u276f named draft");
+    // Claude draws in color (not NO_COLOR): its prompt marker is grey
+    const draft = claudeInputScreen("\u001b[38;2;153;153;153m\u276f\u001b[0m named draft");
     let shown = draft;
     // reads that still show the draft after the clearing keys: Claude redraws the box partway through a check
     let lagging = 0;
@@ -929,7 +930,7 @@ describe("WebSocket submit", () => {
     screen.scroll.mockResolvedValue({ offset_from_bottom: 5, max_offset_from_bottom: 30, viewport_rows: 3 });
     const prompt = spyOn(herdr, "agentPrompt").mockResolvedValue(undefined);
     const sendKeys = spyOn(herdr, "paneSendKeys").mockImplementation(async () => {
-      shown = claudeInputScreen("\u276f\u00a0");
+      shown = claudeInputScreen("\u001b[38;2;153;153;153m\u276f\u001b[0m\u00a0");
       // the first poll after the keys reads the draft live and colored, then the empty box
       lagging = 2;
     });
@@ -946,6 +947,21 @@ describe("WebSocket submit", () => {
       screen.scroll.mockRestore();
       screen.read.mockRestore();
       socket.close();
+    }
+  }, 30_000);
+
+  it("refuses a scrolled send over a colorless box, as under NO_COLOR, even when it reads like Claude's tip", async () => {
+    const socket = await Socket.connect();
+    const from = chunks(agent).length;
+    // typed by the user, in the very form of Claude's new-session tip, on a screen with no color at all
+    const screen = mockClaudeInput(agent.pane, claudeInputScreen("\u276f Try \"x\""));
+    screen.scroll.mockResolvedValue({ offset_from_bottom: 5, max_offset_from_bottom: 30, viewport_rows: 3 });
+    try {
+      socket.send({ type: "submit", id: 77, pane_id: agent.pane, text: "chat over a typed tip", payload: "chat over a typed tip" });
+      expect(await socket.result(77)).toMatchObject({ ok: false, code: "input_draft", box: "\u276f Try \"x\"" });
+      expect(typed(agent, from)).not.toContain("chat over a typed tip");
+    } finally {
+      screen.scroll.mockRestore(); screen.read.mockRestore(); socket.close();
     }
   }, 30_000);
 
