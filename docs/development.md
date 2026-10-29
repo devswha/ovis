@@ -292,11 +292,14 @@ header (the existing 400-check discovery bound also limits invalid candidates). 
 use the same reader/queue limits and share a ten-second deadline including queue time. Long headers
 and malformed preambles retain their bounded parser and offset for the next open rather than
 restarting at a fixed cutoff. A traversal also stops after 50 unfinished headers, independently
-of its 50-row limit, and touches at most 200 potentially cached files. Every cached kind counts,
-including completed headerless files cached as null. The invariant is 200 distinct cache-bearing
-files per traversal < 256 cache slots; label scans revisit only that same set, so one traversal
-cannot evict its own checkpoints. Explicitly rejected headers never enter the cache and do not
-consume this limit; the existing discovery bounds still limit their I/O. Files beyond these
+of its 50-row limit, and touches at most three quarters of the exported `PI_CACHE_ENTRIES`
+capacity (currently 192 of 256 slots). Every retained entry touch counts, including hits;
+counting only insertions would let later hits promote older entries past this traversal's
+new checkpoints. Label scans revisit only that same set, so one traversal cannot evict its
+own checkpoints. Completed headerless files are not cached at all, just as explicitly rejected
+headers are not cached, so neither consumes this limit. They are checked again on later opens,
+with their I/O still bounded by discovery and the header deadline. A cutoff before discovery is
+exhausted with no established row returns retryable busy, never an empty success. Files beyond these
 bounds may be omitted. In particular, actively growing oversized headers can keep resetting
 their progress and hide older sessions; ordinary Pi headers are only a few hundred bytes.
 A file whose header is not yet complete has no row yet, never a

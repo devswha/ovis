@@ -23,7 +23,7 @@ export const PI_READ_DEADLINE_MS = 2000;
 export const PI_HEADER_DEADLINE_MS = 10_000;
 export const PI_READERS = 2;
 const WAITING = 32;
-const CACHE_ENTRIES = 256;
+export const PI_CACHE_ENTRIES = 256;
 
 export class PiMetadataBusy extends Error {
   constructor(readonly reason: "read" | "queue" | "stopped" = "read") { super("Pi sessions could not be read right now. Try again."); }
@@ -210,13 +210,15 @@ export class PiSessionReader {
 
   private remember(task: Task, entry: Cached): void {
     if (task.cache === null || this.stopped) return;
+    // Completed headerless files must not consume slots or the listing's cache-touch budget.
+    if (entry.label === null && entry.progress === undefined) return;
     const existing = this.labels.get(task.cache.path);
     // An independent concurrent scan may already have completed or advanced farther.
     if (existing?.key === entry.key && (existing.progress === undefined
       || (entry.progress !== undefined && existing.progress.position > entry.progress.position))) return;
     this.labels.delete(task.cache.path);
     this.labels.set(task.cache.path, entry);
-    if (this.labels.size > CACHE_ENTRIES) {
+    if (this.labels.size > PI_CACHE_ENTRIES) {
       const oldest = this.labels.keys().next().value;
       if (oldest !== undefined) this.labels.delete(oldest);
     }

@@ -211,6 +211,26 @@ describe("Pi native label semantics", () => {
 });
 
 describe("Pi stat-keyed streaming reader", () => {
+  for (const count of [200, 201]) {
+    it(`lists the older session behind ${count} unchanged empty files without a false empty response`, async () => {
+      jest.useFakeTimers();
+      spyOn(performance, "now").mockReturnValue(0);
+      const f = fixture();
+      writeFileSync(f.file, header("older-real-session") + name("Still available"));
+      utimesSync(f.file, 1, 1);
+      for (let n = 0; n < count; n++) {
+        const path = join(f.folder, `empty-${n}.jsonl`);
+        writeFileSync(path, "");
+        utimesSync(path, 2 + n, 2 + n);
+      }
+      for (let open = 0; open < 2; open++) {
+        expect(await f.list()).toMatchObject([{ id: "older-real-session", title: "Still available" }]);
+      }
+      expect(f.reader.cacheSize()).toBe(1);
+      expect(f.io.calls).toBe(1);
+    });
+  }
+
   it("preserves long header checkpoints when empty files are interleaved between them", async () => {
     jest.useFakeTimers();
     spyOn(performance, "now").mockReturnValue(0);
@@ -229,14 +249,13 @@ describe("Pi stat-keyed streaming reader", () => {
         utimesSync(empty, time - gap, time - gap);
       }
     }
-    // 344 candidates: cached nulls count too, or they evict each long-header checkpoint.
+    // 344 candidates: headerless files must neither evict checkpoints nor hide real sessions.
     await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
     const rows = await f.list();
-    // The first 200 candidates contain 29 long headers. The next open must finish them.
-    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 29 }, (_, n) => `long-${n}`));
-    expect(rows.map((row) => row.title)).toEqual(Array.from({ length: 29 }, (_, n) => `Session ${n}`));
-    expect(f.reader.cacheSize()).toBeLessThanOrEqual(200);
-    expect(f.io.calls).toBe(58);
+    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `long-${n}`));
+    expect(rows.map((row) => row.title)).toEqual(Array.from({ length: 50 }, (_, n) => `Session ${n}`));
+    expect(f.reader.cacheSize()).toBe(50);
+    expect(f.io.calls).toBe(100);
   });
 
   it("keeps newest header checkpoints when more long headers exist than cache entries", async () => {

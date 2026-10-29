@@ -35,7 +35,7 @@ import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefi
 import { hermesHome } from "./hermes-home.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { environmentHome } from "./user-home.ts";
-import { defaultPiSessionReader, PI_HEADER_DEADLINE_MS, PiMetadataBusy, PiMetadataDeadline, type PiSessionReader } from "./pi-session-metadata.ts";
+import { defaultPiSessionReader, PI_CACHE_ENTRIES, PI_HEADER_DEADLINE_MS, PiMetadataBusy, PiMetadataDeadline, type PiSessionReader } from "./pi-session-metadata.ts";
 import type { PiLabel } from "./pi-session-label.ts";
 
 /** At most this much of any one non-Pi file is read. */
@@ -513,12 +513,14 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
   let incomplete = false;
   let unfinishedHeaders = 0;
   let cacheTouches = 0;
+  const headerCacheLimit = Math.floor(PI_CACHE_ENTRIES * 3 / 4);
   // Establish rows before a large transcript can consume the label budget. Header work has
   // both byte and elapsed-time bounds; an unknown header must never imply an empty store.
   for (const file of files) {
-    // Every potentially cached kind, including null, counts: 200 < the reader's 256 slots.
+    // Every retained entry touch counts, with a quarter of the cache capacity left in reserve.
     // Label scans revisit this same set, so one traversal cannot evict its own checkpoints.
-    if (rows.length >= MAX_ROWS || unfinishedHeaders >= MAX_ROWS || cacheTouches >= 200) break;
+    if (rows.length >= MAX_ROWS) break;
+    if (unfinishedHeaders >= MAX_ROWS || cacheTouches >= headerCacheLimit) { incomplete = true; break; }
     let rejected = false;
     try {
       const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), headerDeadline, {
@@ -534,11 +536,12 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
         rows.push(row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));
         selected.push({ file, header });
       } else if (label) { incomplete = true; unfinishedHeaders++; }
+      else rejected = true;
     } catch (error) {
       if (!(error instanceof PiMetadataBusy) || error.reason === "stopped" || error.reason === "queue") throw error;
       incomplete = true;
     } finally {
-      // Explicitly rejected headers never enter the cache; discovery still bounds their I/O.
+      // Rejected and completed-headerless files are uncached; discovery still bounds their I/O.
       if (!rejected) cacheTouches++;
     }
   }
