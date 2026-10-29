@@ -369,7 +369,19 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
       appendFileSync(log, `${new Date().toISOString()} [INFO] ${action} foreground session: ${id}\n`);
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
     reads = spyOn(fs, "readSync").mockImplementation(failedRead);
-    const initial = await (await fetch(url)).json() as { history_id: string; cursor: string };
+    // CI once read no cursor here for a reason its log did not keep: each answer waited past is
+    // printed, so a run that waits says what it saw
+    const readCursor = async () => {
+      for (const deadline = Date.now() + 5000;;) {
+        const response = await fetch(url);
+        const body = await response.json() as { cursor?: string; history_id?: string };
+        if (response.status === 200 && typeof body.cursor === "string") return body as { cursor: string; history_id: string };
+        console.warn(`Copilot cursor not ready yet: ${response.status} ${JSON.stringify(body).slice(0, 300)}`);
+        if (Date.now() > deadline) throw new Error(`Copilot cursor was not ready: ${response.status} ${JSON.stringify(body)}`);
+        await Bun.sleep(50);
+      }
+    };
+    const initial = await readCursor();
     expect(initial.cursor).toBeString();
     append(); fail = true;
     const legacyFailure = await fetch(url);
@@ -405,7 +417,7 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
       + Array.from({ length: 55 }, (_, i) => event("user.message", { content: `recovered prompt ${i}` })).join(""));
     for (const selector of ["", "from", "before"]) {
       lifecycle(session);
-      const before = await (await fetch(url)).json() as { cursor: string };
+      const before = await readCursor();
       expect(before.cursor).toBeString();
       append(); fail = true; onFailure = () => lifecycle(session, "Unregistering");
       const revoked = await fetch(url + (selector ? `&${selector}=${encodeURIComponent(before.cursor)}` : ""));
@@ -415,7 +427,7 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
     }
     for (const paged of [false, true]) {
       lifecycle(session);
-      const before = await (await fetch(url)).json() as { cursor: string };
+      const before = await readCursor();
       expect(before.cursor).toBeString();
       append(); fail = true; onFailure = () => lifecycle(switched);
       const changed = await fetch(url + (paged ? `&from=${encodeURIComponent(before.cursor)}` : ""));
@@ -447,7 +459,7 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
       writeFileSync(file(session), fixture(session, "file removed during the read")
         + Array.from({ length: 55 }, (_, i) => event("user.message", { content: `prompt ${i}` })).join(""));
       lifecycle(session);
-      const before = await (await fetch(url)).json() as { cursor: string };
+      const before = await readCursor();
       expect(before.cursor).toBeString();
       append(); fail = true; onFailure = () => rmSync(file(session));
       const missing = await fetch(`${url}&${selector}=${encodeURIComponent(before.cursor)}`);
@@ -472,10 +484,28 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
   try {
     await startFixture(current, resumed, `--resume=${resumed} --lifecycle`);
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
-    const read = async () => (await fetch(url)).json() as Promise<{
-      source: string; turns: { parts: { text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string;
-    }>;
-    const initial = await read();
+    let lastResponse = "";
+    const read = async () => {
+      const response = await fetch(url);
+      const body = await response.json();
+      lastResponse = `${response.status} ${JSON.stringify(body)}`;
+      if (response.status !== 200) return null;
+      return body as {
+        source: string; turns: { parts: { text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string;
+      };
+    };
+    // A switch may answer scrollback, or 409 if ownership changes during the read.
+    // Neither is the transcript this waits for; keep the response for timeout diagnostics.
+    const waitForTranscript = async (text: string, previousHistory?: string) => {
+      for (const deadline = Date.now() + 5000;;) {
+        const body = await read();
+        if (body?.source === "copilot-transcript" && body.turns[0]?.parts[0]?.text === text
+          && (previousHistory === undefined || body.history_id !== previousHistory)) return body;
+        if (Date.now() > deadline) throw new Error(`Copilot transcript ${text} was not selected: ${lastResponse}`);
+        await Bun.sleep(50);
+      }
+    };
+    const initial = await waitForTranscript(resumed);
     expect(initial.source).toBe("copilot-transcript");
     expect(initial.turns[0]?.parts[0]?.text).toBe(resumed);
     expect(initial.history_id).not.toStartWith("unwritten:");
@@ -491,29 +521,28 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     try {
       const peer = duplicate.root_pane.pane_id;
       await startFixture(peer, resumed, `--resume=${resumed} --lifecycle`);
-      expect((await read()).source).toBe("scrollback");
+      // herdr names the peer before it logs its Registering line: until then the first pane still owns the log
       const peerUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(peer)}`;
-      expect((await (await fetch(peerUrl)).json()).source).toBe("scrollback");
+      for (const [who, target] of [["the first pane", url], ["the peer", peerUrl]] as const) {
+        for (const deadline = Date.now() + 5000;;) {
+          const response = await fetch(target);
+          const body = await response.json() as { source?: string };
+          if (response.status === 200 && body.source === "scrollback") break;
+          if (Date.now() > deadline) throw new Error(`${who} did not fail closed for a shared log: ${response.status} ${JSON.stringify(body)}`);
+          await Bun.sleep(50);
+        }
+      }
     } finally { await workspaceClose(duplicate.workspace.workspace_id); }
-    expect((await read()).source).toBe("copilot-transcript");
+    await waitForTranscript(resumed);
     await herdrRpc("pane.report_agent_session", { pane_id: current, agent: "copilot", source: "herdr:copilot",
       seq: Date.now() * 1000, agent_session_id: resumed });
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${resumed}\n:hold ${forked}\n:switch ${forked}\n` });
-    for (const deadline = Date.now() + 5000;;) {
-      if ((await read()).turns[0]?.parts[0]?.text === forked) break;
-      if (Date.now() > deadline) throw new Error("logged fork was not selected");
-      await Bun.sleep(50);
-    }
+    await waitForTranscript(forked);
     expect((await fetch(`${url}&from=${encodeURIComponent(initial.cursor ?? initial.history_id!)}`)).status).toBe(409);
     const staleTool = new URLSearchParams({ pane_id: current, ref: `call-${resumed}` });
     expect((await fetch(`http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${staleTool}`)).status).toBe(404);
     await herdrRpc("pane.send_text", { pane_id: current, text: `:switch ${resumed}\n` });
-    for (const deadline = Date.now() + 5000;;) {
-      if ((await read()).turns[0]?.parts[0]?.text === resumed) break;
-      if (Date.now() > deadline) throw new Error("switch-back was not selected");
-      await Bun.sleep(50);
-    }
-    const returned = await read();
+    const returned = await waitForTranscript(resumed);
     expect(returned.history_id).not.toBe(initial.history_id);
     expect((await fetch(`${url}&from=${encodeURIComponent(oldCursor)}`)).status).toBe(409);
     expect((await fetch(`${url}&before=${encodeURIComponent(oldCursor)}`)).status).toBe(409);
@@ -524,21 +553,13 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     expect((await fetch(outputUrl(newRef!))).status).toBe(200);
     expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(200);
     await herdrRpc("pane.send_text", { pane_id: current, text: `:switch ${forked}\n:switch ${resumed}\n` });
-    // each switch logs the old session's unregistering before the new one's registering: a read between the two
-    // fails closed (scrollback, no history), which is not the switch-back this waits for
-    let unobserved = await read();
-    for (const deadline = Date.now() + 5000;;) {
-      if (unobserved.source === "copilot-transcript" && unobserved.history_id !== returned.history_id && unobserved.turns[0]?.parts[0]?.text === resumed) break;
-      if (Date.now() > deadline) throw new Error(`unobserved switch-back did not advance binding: ${unobserved.source} ${unobserved.turns[0]?.parts[0]?.text}`);
-      await Bun.sleep(50);
-      unobserved = await read();
-    }
+    const unobserved = await waitForTranscript(resumed, returned.history_id);
     expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(409);
     expect((await fetch(outputUrl(newRef!))).status).toBe(404);
     await herdrRpc("pane.send_text", { pane_id: current, text: ":unregister\n" });
     for (const deadline = Date.now() + 5000;;) {
-      if ((await read()).source === "scrollback") break;
-      if (Date.now() > deadline) throw new Error("unregistered foreground did not fail closed");
+      if ((await read())?.source === "scrollback") break;
+      if (Date.now() > deadline) throw new Error(`unregistered foreground did not fail closed: ${lastResponse}`);
       await Bun.sleep(50);
     }
     expect((await fetch(`${url}&from=${encodeURIComponent(unobserved.cursor!)}`)).status).toBe(409);
@@ -546,11 +567,7 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     expect(latestRef).toBeDefined();
     expect((await fetch(outputUrl(latestRef!))).status).toBe(404);
     await herdrRpc("pane.send_text", { pane_id: current, text: `:register ${forked}\n` });
-    for (const deadline = Date.now() + 5000;;) {
-      if ((await read()).turns[0]?.parts[0]?.text === forked) break;
-      if (Date.now() > deadline) throw new Error("new registration was not selected after unregistration");
-      await Bun.sleep(50);
-    }
+    await waitForTranscript(forked);
   } finally {
     await workspaceClose(created.workspace.workspace_id);
   }
