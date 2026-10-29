@@ -106,6 +106,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Add an OpenAI API key in Settings > Voice input": "設定 > 音声入力で OpenAI API キーを追加してください",
   "Cancel dictation": "音声入力をキャンセル",
   "Insert dictation": "音声入力を挿入",
+  "Dictate": "音声入力",
   "No microphone found": "マイクが見つかりません",
   "Speech recognition is off or unavailable on this device": "この端末の音声認識がオフか、使用できません",
   "No microphone input": "マイク入力がありません",

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { SettingsProvider } from "../lib/settings.ts";
-import type { VoiceEngine, VoiceInput } from "../lib/voice.ts";
+import type { VoiceEngine, VoiceInput, VoiceState } from "../lib/voice.ts";
 import { MicButton, type Dictation } from "./VoiceInput.tsx";
 
 describe("MicButton", () => {
@@ -30,20 +30,23 @@ describe("MicButton", () => {
     descriptors.clear();
   });
 
-  async function mic(engine: VoiceEngine) {
+  async function mic(engine: VoiceEngine, state: VoiceState = "idle") {
     const voice = {
-      available: true, unavailableReason: null, engine, state: "idle", elapsedMs: 0, silent: false, error: null,
-      press: () => {}, release: () => calls.push("release"), finish: () => {}, cancel: () => {},
+      available: true, unavailableReason: null, engine, state, elapsedMs: 0, silent: false, error: null,
+      press: () => {}, release: () => calls.push("release"), finish: () => calls.push("finish"), cancel: () => {},
       bindBars: () => {}, bindRing: () => {}, bindMeter: () => {},
     } satisfies VoiceInput;
     const dictation: Dictation = { shown: true, connected: true, voice, forget: () => {}, partial: "", press: () => calls.push("press") };
-    await act(async () => { renderer = create(<SettingsProvider><MicButton dictation={dictation} /></SettingsProvider>); });
-    const button = renderer!.root.findByType("button");
-    const pointer = (pointerType: string) => ({ button: 0, pointerType, pointerId: 1, preventDefault: () => {}, currentTarget: { setPointerCapture: () => {} } });
+    const view = () => <SettingsProvider><MicButton dictation={{ ...dictation, voice: { ...voice } }} /></SettingsProvider>;
+    await act(async () => { renderer = create(view()); });
+    const button = () => renderer!.root.findByType("button");
+    const pointer = (pointerType: string, pointerId = 1, mouseButton = 0) => ({ button: mouseButton, pointerType, pointerId, preventDefault: () => {}, currentTarget: { setPointerCapture: () => {} } });
     return {
-      down: (pointerType: string) => act(() => { button.props.onPointerDown(pointer(pointerType)); }),
-      up: (pointerType: string) => act(() => { button.props.onPointerUp(pointer(pointerType)); }),
-      click: () => act(() => { button.props.onClick({ detail: 1 }); }),
+      down: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerDown(pointer(pointerType, pointerId, mouseButton)); }),
+      up: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerUp(pointer(pointerType, pointerId, mouseButton)); }),
+      click: () => act(() => { button().props.onClick({ detail: 1 }); }),
+      /** the take moved on by itself (recognition ended) between the tap's pointerdown and its click */
+      becomes: (next: VoiceState) => act(() => { voice.state = next; renderer!.update(view()); }),
     };
   }
 
@@ -71,5 +74,21 @@ describe("MicButton", () => {
     await server.up("touch");
     await server.click();
     expect(calls).toEqual(["press", "release"]);
+  });
+
+  it("finishes from a stop tap even when the take ended before its click, never starting another", async () => {
+    const button = await mic("browser", "recording");
+    await button.down("touch");
+    await button.becomes("idle");
+    await button.up("touch");
+    await button.click();
+    expect(calls).toEqual(["finish"]);
+  });
+
+  it("lets only the pointer that pressed release a hold, not a later right-click", async () => {
+    const button = await mic("browser", "recording");
+    await button.down("mouse", 2, 2);
+    await button.up("mouse", 2, 2);
+    expect(calls).toEqual([]);
   });
 });
