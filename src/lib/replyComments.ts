@@ -146,6 +146,14 @@ export function quoteBlock(quote: string): string {
 }
 
 /**
+ * Whether text holds a `>` quote line, as a message that carries comments does (#511): put back in a box
+ * from anywhere, it goes only to an agent, as a shell would read the line as a redirect.
+ */
+export function holdsQuoteLine(text: string): boolean {
+  return /^>/m.test(text);
+}
+
+/**
  * The message that carries the comments: each comment's quote and then the comment, in the order
  * they were written, a blank line between them, and the typed text after them. A message may be
  * comments alone.

@@ -20,7 +20,7 @@ import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashC
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDrafts } from "../lib/composerDraft.ts";
-import { commentsWait, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
+import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
 import { paneStorageId } from "../../shared/machines.ts";
 import {
@@ -362,6 +362,7 @@ export function Composer({
   useEffect(() => {
     if (restored !== null) {
       if (restored === filledFrom.current || textRef.current.trim() !== "" || sending) return;
+      if (holdsQuoteLine(restored)) composerDrafts.markAgentOnly(draftKey);
       setText(restored);
       textRef.current = restored;
       caretRef.current = restored.length;

@@ -210,7 +210,7 @@ export class PendingMessageStore {
       const pane = paneStateKey(PREFIX + owner);
       if (pane?.machineId !== machineId) continue;
       const kept = rows.filter((message) => message.serverOwned);
-      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text);
+      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text, false, message.agent_only === true);
       // a row storage took on the same herdr (lib/paneLifetime.ts storeMemory) is offered again after a
       // reload, so its recovery copy goes; a row left to recovery has only its record now
       let durable = new Set<string>();

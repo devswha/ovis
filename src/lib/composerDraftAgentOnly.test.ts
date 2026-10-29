@@ -31,11 +31,32 @@ it("keeps the draft agent-only in this page when storage refuses the mark", () =
   };
   const store = new ComposerDraftStore(() => storage);
   const key = "ovis:composer-draft:p1";
+  data.set(key, "existing draft");
   store.restorePending(key, "> quote\ncomment", true);
-  expect(store.read(key).text).toBe("> quote\ncomment");
+  expect(store.read(key).text).toBe("existing draft\n\n> quote\ncomment");
   expect(store.isAgentOnly(key)).toBe(true);
+  // its text is never stored without the mark, so another tab or a reload never reads it unmarked
+  const other = new ComposerDraftStore(() => storage);
+  expect(other.read(key).text).toBe("existing draft");
+  expect(store.isUnsaved(key)).toBe(true);
+  store.set(key, "> quote\ncomment, edited");
+  expect(data.get(key)).toBe("existing draft");
   store.set(key, "");
   expect(store.isAgentOnly(key)).toBe(false);
+});
+
+it("keeps the mark of a marked draft another tab shows, if this one cleared it meanwhile", () => {
+  const data = new Map<string, string>();
+  const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+  const a = new ComposerDraftStore(() => storage), b = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p1";
+  a.restorePending(key, "> backup.txt\ncomment", true);
+  expect(b.read(key).text).toBe("> backup.txt\ncomment");
+  a.set(key, "");
+  // b edits the draft it still shows before the clear reaches it: its text is stored with the mark
+  b.set(key, "> backup.txt\ncomment, edited");
+  expect(b.isAgentOnly(key)).toBe(true);
+  expect(new ComposerDraftStore(() => storage).isAgentOnly(key)).toBe(true);
 });
 
 it("moves the agent-only mark with its draft when herdr gives the pane a new ID", () => {
