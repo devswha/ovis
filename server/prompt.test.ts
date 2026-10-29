@@ -2442,14 +2442,21 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
   });
 
-  test("the history's last rows lend their colors only when their text is the unchanged live screen", () => {
+  test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
     const live = screen("❯ \u001b[2mrun the tests\u001b[0m").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
     const colors = screen("❯ \u001b[2mrun the tests\u001b[0m");
-    expect(historyEndShowsLive(colors, live, live)).toBe(true);
+    expect(historyEndShowsLive(colors, colors, [live, live])).toBe(true);
     // other rows than the live screen's (a resize between the reads, an older box)
-    expect(historyEndShowsLive("● older output\r\n" + colors, live, live)).toBe(false);
-    // the live screen changed across the colored read
-    expect(historyEndShowsLive(colors, live.replace("run the tests", "run the test"), live)).toBe(false);
+    expect(historyEndShowsLive("● older output\r\n" + colors, "● older output\r\n" + colors, [live, live])).toBe(false);
+    // the live screen changed across the colored reads, before or after them
+    const changed = live.replace("run the tests", "run the test");
+    expect(historyEndShowsLive(colors, colors, [changed, live])).toBe(false);
+    expect(historyEndShowsLive(colors, colors, [live, changed])).toBe(false);
+    expect(historyEndShowsLive(colors, colors, [])).toBe(false);
+    // the suggestion accepted with Tab between the colored reads: the same words, typed now
+    const typed = screen("❯ run the tests");
+    expect(historyEndShowsLive(colors, typed, [live, live])).toBe(false);
+    expect(historyEndShowsLive(typed, colors, [live, live])).toBe(false);
   });
 
   test("bash mode, a box clipped by the pane, or a viewport that is not the live box hold a pending message", () => {

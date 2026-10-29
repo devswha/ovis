@@ -317,11 +317,14 @@ const screenLines = (text: string): string => text.replace(ANSI_RE, "").replace(
  * Whether a colored read of the history's last rows (`recent`, as many as the viewport has) shows
  * the live screen, so claudeInputDraft may take its colors while the viewport is scrolled into the
  * history: herdr's history ends with the live screen whatever the viewport shows, so only a redraw
- * between the reads can tell them apart; its text equal to the live screen, and that screen the same
- * before and after it, rule one out.
+ * between the reads can tell them apart. Its text equal to the live screen, every live read taken
+ * before and between the colored ones (`lives`) the same, and a second colored read, the last of all,
+ * identical to the first, colors included, rule one out: a suggestion accepted with Tab keeps its words
+ * and changes only its colors.
  */
-export function historyEndShowsLive(colors: string, before: string, live: string): boolean {
-  return screenLines(colors) === screenLines(live) && live === before;
+export function historyEndShowsLive(colors: string, colorsAfter: string, lives: readonly string[]): boolean {
+  return colors === colorsAfter && lives.length > 0 && lives.every((live) => live === lives[0])
+    && screenLines(colors) === screenLines(lives[0]!);
 }
 
 /** Whether a card is the one for a message Claude Code holds back (parseClaudeHeld). */
