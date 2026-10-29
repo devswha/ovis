@@ -41,7 +41,7 @@ import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { followGlides } from "../lib/followScroll.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { statusEdgeRead } from "../lib/status.ts";
-import { askedQuestions } from "../lib/askQuestions.ts";
+import { askedQuestions } from "../../shared/askQuestions.ts";
 import { ConversationRefresh } from "../lib/conversationRefresh.ts";
 import { teammateMessageParts, type TeammateMessage } from "../lib/teammateMessage.ts";
 import { usePageVisible } from "../lib/visibility.ts";
@@ -92,7 +92,7 @@ const ImageViewerContext = createContext<(images: GalleryImage[], index: number)
 /** The pane's folder a tool card's file labels read from (toolPathRoot), or null: labels as written. */
 const ToolPathRootContext = createContext<string | null>(null);
 import type { TypedAnswer } from "../lib/promptAnswer.ts";
-import { screenWordsToShow } from "../lib/promptText.ts";
+import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
 import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, SlashCommand } from "../../shared/protocol.ts";
 import { chatIsBlank, type ChatRead } from "../lib/greeting.ts";
 import { TurnTime } from "./TurnTime.tsx";
@@ -1034,13 +1034,16 @@ function noticeLabel(t: ReturnType<typeof useT>, notice: Extract<ConversationPar
 export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThinking, skills = null, userSkills = null, outcome = null, outcomeActions = null, onRewindInTerminal = null }: TurnProps) {
   const t = useT();
   const memory = useContext(ChatRowMemoryContext);
-  // what the drawn runs were named, by part index; the row's memory takes it once the turn is drawn
-  const named = useRef<Map<number, string> | null>(null);
+  // what the drawn runs, and the runs that drew no block, were named, by part index; the row's
+  // memory takes it once the turn is drawn
+  const named = useRef<{ runs: Map<number, string>; dormant: Map<number, string> } | null>(null);
   named.current = null;
   useLayoutEffect(() => {
     if (memory === null || named.current === null) return;
-    memory.runs.clear();
-    for (const [index, name] of named.current) memory.runs.set(index, name);
+    for (const key of ["runs", "dormant"] as const) {
+      memory[key].clear();
+      for (const [index, name] of named.current[key]) memory[key].set(index, name);
+    }
   });
   // under the turn, not in its meta row: that row fades out once the pointer and focus leave
   const [copyFailed, setCopyFailed] = useChatRowToggle("copy-failed", false);
@@ -1124,8 +1127,12 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
   const work = turnWork(turn.parts, rowKey);
   // a run keeps its block and fold while its parts change (runNames); the stand-in is named by the
   // part that will start the turn's first run, and is drawn only while the turn has none
-  const names = runNames(runs, work.at, memory?.runs ?? new Map());
-  named.current = new Map(runs.flatMap((run, index) => run.parts.map((part) => [work.at.get(part)!, names[index]!] as const)));
+  const drawn = (run: WorkSegment): boolean => visibleWorkParts(run.parts, showThinking).length > 0;
+  const names = runNames(runs, work.at, memory?.runs ?? new Map(), drawn, memory?.dormant ?? new Map());
+  // a run of hidden reasoning alone leaves its name apart: it has no fold, and a drawn block's name
+  // comes first once the two merge (#2111)
+  const partNames = (shown: boolean) => new Map(runs.flatMap((run, index) => drawn(run) === shown ? run.parts.map((part) => [work.at.get(part)!, names[index]!] as const) : []));
+  named.current = { runs: partNames(true), dormant: partNames(false) };
   // `null`: the head standing in while the running turn has no work yet
   const block = (run: WorkSegment | null) => {
     const isHead = run === null || run === head;
@@ -1682,12 +1689,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
-          setPrompt((current) => {
-            if (current === null || next.prompt === null || current.id !== next.prompt.id) return next.prompt;
-            if (JSON.stringify([current.steps, current.can_step_back, current.own_text, current.screen_words]) === JSON.stringify([next.prompt.steps, next.prompt.can_step_back, next.prompt.own_text, next.prompt.screen_words])) return current;
-            // own_text names steps by index: it goes with the steps it was read with
-            return { ...current, steps: next.prompt.steps, can_step_back: next.prompt.can_step_back, own_text: next.prompt.own_text, screen_words: next.prompt.screen_words };
-          });
+          setPrompt((current) => polledPrompt(current, next.prompt));
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
           onOutcomesRef.current?.(paneId, next.outcomes.map((outcome) => outcome.id));

@@ -4,13 +4,14 @@
  * its own configuration; an older agent that lacks a mode refuses to start and says why.
  *
  * Besides its mode, a launch from the new workspace and tab dialogs may name a model and an
- * effort level and start on a first prompt (#774, #1311), each only where the agent's own CLI
- * reference documents the flag or argument (launchCapabilities); nothing is guessed for the rest.
- * The bridge checks them again by the same rules (shared/launch-rules.ts).
+ * effort level, turn on Claude Code's Ultracode, and start on a first prompt (#774, #1311, #2232),
+ * each only where the agent's own CLI reference documents the flag or argument (launchCapabilities);
+ * nothing is guessed for the rest. The bridge checks them again by the same rules
+ * (shared/launch-rules.ts).
  */
-import { argumentText, CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORTS, CLAUDE_ULTRACODE_SETTINGS, CODEX_EFFORTS, MODEL_NAME } from "../../shared/launch-rules.ts";
+import { argumentText, CLAUDE_EFFORTS, CODEX_EFFORTS, MODEL_NAME } from "../../shared/launch-rules.ts";
 
-export { CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORTS, CODEX_EFFORTS };
+export { CLAUDE_EFFORTS, CODEX_EFFORTS };
 
 /** Claude Code's `--permission-mode` choices; "default" leaves the flag out */
 export const CLAUDE_LAUNCH_MODES = ["default", "acceptEdits", "auto", "plan", "dontAsk", "bypassPermissions"] as const;
@@ -32,7 +33,7 @@ export interface LaunchCapabilities {
   model: boolean;
   /** the effort levels the agent names; empty: its launch takes none */
   efforts: readonly string[];
-  /** Ultracode is a switch of its own beside the level (`--settings`, CLAUDE_ULTRACODE_SETTINGS) */
+  /** Claude Code's Ultracode switch goes on the command line as one inline `--settings` object */
   ultracode: boolean;
   /**
    * the first prompt goes on the command line after an end-of-options separator, which the agent's
@@ -52,7 +53,16 @@ const CAPABILITIES: Readonly<Record<string, LaunchCapabilities>> = {
   // `--` to the operands, and _parseCommand dispatches operands[0]); verified on claude 2.1.304 in an
   // isolated HOME on 2026-10-20: `claude -- update` ran the updater, while `claude -- --help` and
   // `claude -- '-p x'` were prompts. So a first message for Claude Code is the bridge's pending message.
-  claude: { model: true, efforts: CLAUDE_EFFORT_LEVELS, ultracode: true, positionalPrompt: false },
+  // Ultracode is a setting, not a level, since 2.1.284 (shared/launch-rules.ts CLAUDE_EFFORTS). Its key in
+  // 2.1.311's settings schema: "Enable ultracode for the session: standing dynamic-workflow orchestration
+  // at any effort level. Session-scoped — typically provided via --settings or the apply_flag_settings
+  // control request; interactive toggles never persist it." `--settings <file-or-json>` reads a value that
+  // starts with `{` and ends with `}` as JSON, adds it over the settings files for this session only, and
+  // keeps only the last of two; nothing in Ovis or herdr passes another. Verified on 2.1.311 on 2026-10-28:
+  // `claude --effort medium --settings '{"ultracode":true}'` started at medium with Ultracode on, and a
+  // model or a configuration without Ultracode ignores the key without an error. On a Windows PC the bridge
+  // passes the same object as a settings file's path (server/claude-settings-file.ts).
+  claude: { model: true, efforts: CLAUDE_EFFORTS, ultracode: true, positionalPrompt: false },
   // `codex [OPTIONS] [PROMPT]`: "Optional user prompt to start the session" (codex-rs/tui/src/cli.rs);
   // `--model`/`-m` (codex-rs/utils/cli/src/shared_options.rs); `-c model_reasoning_effort=<level>` is
   // a config.toml override on the command line (codex-rs/utils/cli/src/config_override.rs), 2026-10-20.
@@ -82,24 +92,30 @@ export function launchCapabilities(kind: string): LaunchCapabilities {
   return Object.hasOwn(CAPABILITIES, kind) ? CAPABILITIES[kind]! : NO_CAPABILITIES;
 }
 
-/** The dialog's choices for a launch; an empty model or effort leaves it to the agent's own configuration. */
+/**
+ * The dialog's choices for a launch; an empty model or effort, and Ultracode off, leave it to the agent's
+ * own configuration.
+ */
 export interface LaunchChoices {
   model?: string;
   effort?: string;
-  /** Ultracode on, at the chosen effort or the agent's own; ignored where the launch takes no Ultracode */
   ultracode?: boolean;
   prompt?: string;
 }
+
+/** Ultracode's one `--settings` value: the switch on for this session, every other setting left as the agent has it */
+const ULTRACODE_SETTINGS = JSON.stringify({ ultracode: true });
 
 /**
  * Why `choices` cannot start `kind`: the first choice the launch does not take, or null when it takes them
  * all. The dialog disables what this would refuse; the launch itself refuses it again.
  */
-export function launchChoiceFault(kind: string, choices: LaunchChoices): "model" | "effort" | "prompt" | null {
+export function launchChoiceFault(kind: string, choices: LaunchChoices): "model" | "effort" | "ultracode" | "prompt" | null {
   const can = launchCapabilities(kind);
   const model = choices.model?.trim() ?? "";
   if (model !== "" && (!can.model || !MODEL_NAME.test(model))) return "model";
   if (choices.effort && !can.efforts.includes(choices.effort)) return "effort";
+  if (choices.ultracode && !can.ultracode) return "ultracode";
   // a shell runs no agent to send a prompt to
   if ((choices.prompt?.trim() ?? "") !== "" && kind === "") return "prompt";
   return null;
@@ -128,7 +144,8 @@ export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunch
   if (choices.effort && can.efforts.includes(choices.effort)) {
     args.push(...(kind === "codex" ? ["-c", `model_reasoning_effort=${choices.effort}`] : ["--effort", choices.effort]));
   }
-  if (choices.ultracode && can.ultracode) args.push("--settings", CLAUDE_ULTRACODE_SETTINGS);
+  // after the effort, which it keeps: off adds nothing, so the agent's own settings decide, as "Agent default" does
+  if (choices.ultracode && can.ultracode) args.push("--settings", ULTRACODE_SETTINGS);
   // the prompt last, after the end-of-options separator: nothing it says can be a flag or a subcommand there
   if (firstPromptDelivery(kind, choices.prompt) === "positional") args.push("--", choices.prompt!.trim());
   return args.length === 0 ? undefined : args;

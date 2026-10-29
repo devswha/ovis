@@ -163,7 +163,7 @@ theme can be picked on either side. Picking one half of a herdr pair also sets t
 its sibling, but only while that side still holds `codex` (the default, even if picked by hand),
 `amber` (the default before it) or the sibling of the previous pick; any other value is kept. A
 dark theme picked for light mode still draws dark.
-The themes are amber, charcoal, codex and catppuccin plus herdr's built-ins; herdr's `terminal` theme is
+The themes are amber, charcoal, codex, catppuccin and black plus herdr's built-ins; herdr's `terminal` theme is
 not offered. The tables above are amber, the base blocks; every other theme overrides them in a
 `[data-theme][data-palette]` block of `src/styles.css`.
 
@@ -202,6 +202,10 @@ all palettes) and dark Catppuccin, whose elevated surface is darker than its can
   surfaces and text, with Crust as the hover, the darkest surface Subtext1 stays AA on. Latte's
   accents are under 4.5:1 on these surfaces, so each keeps its hue and is darkened until it passes
   AA. It keeps amber's rounded corners.
+
+- **Black** uses Tokyo Night colors on a pure-black canvas, panel, inputs and terminal.
+  Raised surfaces are near-black.
+  It has no light sibling.
 
 ### Herdr theme pair notes
 
@@ -541,10 +545,19 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   Latin and Korean only. Kanji and Chinese text fall through `--font-ui` to the device's sans-serif,
   so a Japanese line is kana in Pretendard beside kanji in the device's face, and Chinese is
   the device's face almost throughout. The app ships no Japanese or Chinese face.
-- JetBrains Mono regular is the code face of the chat and the chrome, loaded under the family
-  name `"JetBrains Mono Web"`. The name is the app's own so that the terminal never takes it:
-  xterm's stack (`src/lib/fontFamily.ts`) names `"JetBrains Mono"`, sizes every cell from the
-  first font that matches, and keeps meaning the copy installed on the device.
+- JetBrains Mono (regular and bold) is the code face of the terminal, the chat and the chrome,
+  loaded under the family name `"JetBrains Mono Web"` from the bundled files only. It is the
+  terminal's first text font on every device (`src/lib/fontFamily.ts`). Measured at 13px, Chrome,
+  Safari and Ovis for Mac on a Mac and Chrome on Linux draw the same 7.8px cell and 17px row:
+  before, each device's own font sized it (Menlo, Noto Sans Mono CJK KR), and an installed
+  JetBrains Mono drew in Chrome while Safari and Ovis for Mac's canvas could not see it, so the
+  same Mac showed 17px rows in Chrome and 16.5px in the app. It is never a `local()` copy,
+  which the app's canvas cannot measure either. A font typed in Settings still goes ahead of it. The
+  terminal opens without it until it has loaded and the font effect then sets it, as for a typed
+  font: xterm measures a cell once, when the family is set. A new terminal's pane is attached only
+  once that first font is set (within the font effect's 3 s wait), so its pty is sized for the
+  face's grid, not for a fallback's and then again. Zed likewise draws its terminal in a
+  face it ships (`.ZedMono`) rather than the system's.
 - Ovis Hangul Mono is the terminal's Hangul: the syllables and compatibility jamo of D2Coding
   1.3.2, renamed because its license reserves the name, 265 KB regular and 277 KB bold, each
   fetched only once a pane prints Korean that reaches it (`unicode-range`, `PaneTerminal.css`): a
@@ -558,6 +571,25 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   that arrive before the next frame (both weights from the cache, or an icon with Korean) are
   measured for once, and one face that fails holds back none of the others. It is
   `font-display: block`, since WebKit reports a swap face failed while it still loads.
+- A wide glyph that fills less than 90% of its two cells (a 1em syllable beside Menlo's 0.6em
+  cell) is widened to fill them, not enlarged (`glyphFit`, `lib/terminalGlyphs.ts`): a horizontal
+  stretch of up to 1.1x, as Korean typesetting's horizontal scaling (jangpyeong) does, and a larger
+  font size only past that. The row is as tall as the Latin font's line, and a syllable enlarged
+  1.084x to fill two Menlo cells grew to 13.5px of a 15px row, so Korean lines nearly touched. Widened,
+  it keeps the height D2Coding draws it at, the same gap between lines as a terminal set in D2Coding,
+  with no row given up. Terminal.app and iTerm2 draw a fallback syllable at its own size and leave
+  the gap beside it; this keeps its height and closes the gap.
+- A row is as tall as Hangul's ink and a gap of 0.35em below it, and never shorter than the
+  Latin font's line (xterm's `lineHeight`, from `terminalLineHeight` in
+  `lib/terminalLineHeight.ts`, set again after every change of the font's family or size).
+  Hangul fills the height of its line where Latin's lowercase does not, and even at D2Coding's own
+  height Korean lines read crowded in Menlo's 15px row (2.5px between them at 13px). The row is
+  computed rather than a fixed factor because Latin lines differ: Menlo and Consolas give 15px at
+  13px and get 16.5px rows on a 2x screen (16px on 1x), about a tenth of the rows; Noto Sans Mono
+  CJK KR's 19px line (Linux) and JetBrains Mono's 17px already leave Hangul 5-6px and keep every
+  row, where a fixed 1.1 took a tenth of them for nothing. The row is counted in whole device pixels as xterm counts
+  it. Zed's terminal also draws taller rows than its font's line ("comfortable", 1.618, by
+  default), and Warp defaults to 1.2.
 - Except in Ovis for Mac's window: WebKit there draws a font the user installed, but its canvas,
   which xterm and the glyph fit measure with, sees only the system's fonts. The terminal leaves
   such a font out of its stack (`measurableFontStack`) and draws what Safari draws, Menlo with
@@ -1280,8 +1312,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   capped at 2,000 keys, oldest first, never pruned by a tab's pane or PC roster. A record this
   browser writes is also sent to its server (`POST /api/seen`, shared/seen.ts), which keeps the
   greatest finish per `(PC, epoch, pane)` in `seen.json` (500 records, oldest first out; a PC's
-  records of an epoch other than the one the PC told this server since it started, never a snapshot
-  restored from `machines.json`, are neither handed out nor taken, and the next write drops them) and hands
+  records of a herdr run known to have ended are neither handed out nor taken, and the next write
+  drops them: this server's own PC is only in the run its finish epoch names now, an earlier
+  process's included; another PC's run ended once a read that started after every report this server
+  held of it named another run. A snapshot restored from `machines.json` or a report that may be late
+  proves no run ended; a late snapshot or status of a run its own server was read moving on from is
+  neither kept nor told, as `server/finish-epoch-ledger.ts` says) and hands
   them to every browser as `seen` events on `/api/machines/events`: all of them when the stream
   opens, then each change. A received record is laid over this browser's own with the same
   max-finish rule, so it can mark a finish read, never bring a dot back. Each finish is sent once
@@ -1436,12 +1472,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Under Name, the launch's own choices, each only where the agent's CLI documents it
   (`lib/agentLaunchMode.ts` launchCapabilities; today Claude Code and Codex): **Model**, a `.input`
   whose empty value is the agent's own and whose datalist offers the aliases the agent documents
-  (`sonnet`, `opus`, `haiku`), and **Effort**, a `.select` of the agent's documented levels after
-  **Agent default**, the two side by side (`.new-session-launch`, stacked where a column would fall
-  under 9rem). A model that is not one word, or a choice the picked agent's launch does not take,
-  disables Start and says so under its field in the blocked colour (`aria-invalid`, `role="alert"`);
-  picking another agent drops the choices its launch does not take. The agent picker's rows carry a
-  `.menu-item-hint` (**model, effort**) beside the agents whose launch takes them.
+  (`sonnet`, `opus`, `haiku`), **Effort**, a `.select` of the agent's documented levels after
+  **Agent default** (Claude Code's: low, medium, high, xhigh, max), and, for Claude Code alone,
+  **Ultracode** after Effort: Settings' own `Toggle` (`role="switch"`, `.settings-toggle`) under an
+  uppercase field `<label>` tied to it as Model's and Effort's are, its track pulled to the fields'
+  left edge (`.new-session-ultracode`), with the hint "Dynamic workflows at any effort level. Needs
+  Claude Code 2.1.284 or later." (`aria-describedby`). The label is Claude Code's own term and
+  stays English in every language. The fields sit side by side (`.new-session-launch`) and wrap
+  where a column would fall under 9rem: one row at desktop width, while on a phone Ultracode wraps
+  to a row of its own under Model and Effort. Ultracode is off at every opening, and off adds
+  nothing to the launch, so Claude Code's own settings decide, as Agent default does; on adds
+  `--settings '{"ultracode":true}'` after `--effort`, which keeps the level picked. A model that is
+  not one word, or a model or effort the picked agent's launch does not take, disables Start and
+  says so under its field in the blocked colour (`aria-invalid`, `role="alert"`); picking another
+  agent drops the choices its launch does not take (Ultracode goes off for any agent but Claude
+  Code). A switch left on where it is not shown, as when the agent list turns a remembered Claude
+  Code into a shell without a pick, neither disables Start nor goes with the launch
+  (`lib/newSession.ts` dialogLaunch). The agent picker's rows carry a `.menu-item-hint` (**model,
+  effort**) beside the agents whose launch takes them.
 - **First message** is a `.input` textarea (three rows, grown by hand) whose hint says where it goes.
   Codex takes it as its own positional argument behind `--` (`codex [OPTIONS] [PROMPT]`; clap matches
   a subcommand only before the separator, verified on codex 0.163.0: `codex -- logout` starts the TUI),
@@ -1462,6 +1510,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the dialog stays open saying so, with **Open**. A Codex message with a tab or a line break is no
   one-line argument: it goes as `first_message` instead. The bridge checks the model, the effort and
   Codex's argument by the dialog's own rules (`shared/launch-rules.ts`); switching agents clears the model.
+  It still takes Claude Code's `--effort ultracode` (xhigh with Ultracode on) from an older page or
+  another client, and passes `--settings` on as the agent's own flag; on a Windows PC its inline
+  JSON goes as the path of a file holding the same text (`server/claude-settings-file.ts`).
   Under the message, **Skills**: the agent's skills in the folder before any process exists
   (`GET /api/agent/commands?agent=&cwd=`, the pane commands route without a pane: the bridge's
   tables and a disk scan, no agent started; a device that may only watch is refused it as it is a
@@ -1489,7 +1540,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`--model`, `--effort`, the positional prompt): here they are fields of the existing dialog, not a
   second launcher, because the dialog already owns the agent, the folder and the launch; the skills
   row is the composer's `/` and `$` menu brought forward to before the agent runs, as chips because
-  a dialog has no caret to complete at until the message is typed.
+  a dialog has no caret to complete at until the message is typed. Ultracode follows Claude Code's
+  own `/effort` slider, where since 2.1.284 it is a switch beside the levels rather than one of
+  them.
 - The browser demo answers `GET /api/agent/commands` with a few fictional skills per agent (`$` ones
   for Codex) and records nothing: a tab started from it is the demo's own new pane.
 
@@ -2305,6 +2358,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and focus fill a row `--bg-hover`; a checked or typed pick gets `--accent-tint` + an `--accent`
   border and keycap. A `(Recommended)` suffix, the agent's own mark, renders as a tag. On a
   coarse pointer a row is `--touch-target` tall.
+- An omp Ask card whose text is the agent's own Markdown (`text_format: "markdown"`, #1644) draws
+  its question as the chat draws an agent's message (`.markdown`, kept at the question's
+  `--fs-md`), and its labels and descriptions as inline Markdown: emphasis and code (the chat's
+  code chip), never a link or a picture, since a row answers when pressed. Links open from the
+  question only. As in the Claude and Codex apps, which render a question's Markdown in their
+  own question cards, the words are the agent's and the card only styles them.
 - While a card that takes typed answers is open the message box's placeholder says how:
   `Type 1–3 to choose…`, or `Type 1–3 or your own reply…` when the card has a custom answer.
   Enter in an empty box answers nothing. A typed pick of an approval, plan or menu waits for

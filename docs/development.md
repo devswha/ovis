@@ -115,6 +115,9 @@ Theme colors are edited only in the theme blocks of `src/styles.css`. Never edit
 copies (`src/lib/themes.generated.ts`, the DESIGN.md region between the `GENERATED THEMES`
 markers, the `theme-color` tag in `index.html`, the colors in `public/manifest.webmanifest`); run
 `bun run generate:themes` after a color change.
+The case folding a typed answer compares option names with (`src/lib/caseFolding.generated.ts`) is
+generated from Unicode's CaseFolding.txt for the version pinned in `scripts/generate-case-folding.ts`;
+never edit it, run `bun run generate:case-folding` after raising that version.
 Admission is serialized briefly on port 41745. After taking a candidate slot, the run checks all
 eight slots again for its checkout and counts every active holder against its requested limit,
 including holders above its candidate range. A busy admission port refuses rather than waits.
@@ -549,7 +552,8 @@ after changing the staged session. Files, images, push and remote PCs are not pa
    `bun scripts/release-guards.ts --worker-deployed`.
 2. Merge it after CI passes.
 3. If it raised `REMOTE_BUNDLE_VERSION` to N, push the tag `remote-vN` on the merged commit and wait
-   for the **Remote PC bundles** workflow to publish it ([remote PCs](remote-pcs.md)). Merge nothing
+   for the **Remote PC bundles** workflow to publish it ([remote PCs](remote-pcs.md)); the Release
+   run refuses until its manifest and archives can be downloaded, not only tagged. Merge nothing
    that touches `server/`, `shared/`, `bun.lock` or `patches/` until the Release run is done: the
    Release run would then ask for a follow-up PR that raises the number again and a new tag.
 4. Run **Actions → Release → Run workflow**, select `main`, and enter `X.Y.Z` without `v`.
@@ -757,6 +761,13 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   list names a script that does not exist; it pins no count, so PRs that add scripts do not
   conflict on it.
 
+  `scripts/windows-terminal-browser-qa.ts` needs native Windows, so the browser lane leaves it out
+  (it is on that list) and `windows-terminal-qa.yml` runs it on a GitHub-hosted Windows runner: on pull requests
+  that touch the mirror, the terminal's viewport code or the xterm patch, weekly on main, and on
+  a manual dispatch (**Actions → Windows terminal QA**). It is not a required check. To run it on
+  a Windows PC: `bun install --frozen-lockfile`, `bun run build`, then
+  `bun scripts/windows-terminal-browser-qa.ts` with herdr on PATH and Chromium installed.
+
 `bun run check browser` and `bun run check full` still run the serial lane, `scripts/ci-browser.sh`
 (`BROWSER_PARALLEL=1` hands it to the parallel runner).
 The serial lane prints each script's wall seconds and exit code, including the shared demo
@@ -772,6 +783,13 @@ does not fail the job, and is not counted as a plain pass either: its first log 
 `flaky`, and on GitHub it gets a warning annotation and a line in the job summary. A flaky script
 is a bug to fix in the script or the app, not noise: the second run only keeps one PR's merge
 from waiting on another change's race. A script that fails twice fails the job.
+One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
+stopped with every process it started, prints `TIMEOUT <script>` and its last 40 log lines at
+once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
+hang names itself instead of running into the job's `timeout-minutes`. A script that exits while
+a process it started still holds its output open is stopped the same way, as `STOPPED`; on
+Linux such a process is found through `/proc` even after its parent has exited. A job cancelled at its `timeout-minutes` with scripts still logging
+was usually short of time, not hung: check how long `check: took a slot after` says it waited.
 The console, GitHub annotations, job summary and `summary.json` name the failing assertion and
 its first script file and line when the log contains them.
 `bun scripts/ci-flakes.ts` ranks, across the last 24 hours of `ci.yml` runs and every attempt of
@@ -819,7 +837,8 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 or main's jobs wait for one.
 
 Detect changes, the Integration and browser summary, the Windows and macOS jobs,
-`remote-bundles.yml`, `windows-install.yml` and `pr-title.yml` always stay GitHub-hosted.
+`remote-bundles.yml`, `windows-install.yml`, `windows-terminal-qa.yml` and `pr-title.yml` always
+stay GitHub-hosted.
 
 In `ci.yml`, Detect changes picks the runner with `scripts/ci-runner-route.sh`. A fork pull request
 always gets `ubuntu-24.04`, whatever the variable says. Since that script runs from the pull

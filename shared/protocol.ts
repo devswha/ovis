@@ -122,7 +122,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
- *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store
+ *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
+ *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
  *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
@@ -680,6 +681,9 @@ export interface InteractivePrompt {
   body: string | null;
   options: InteractivePromptOption[];
   multi_select: boolean;
+  /** `markdown`: the question and the options' labels and descriptions are the agent's own Markdown
+   * (omp's open ask call, once the screen's menu proves it is that call). Absent: plain text, as drawn */
+  text_format?: "markdown";
   /** Native OpenCode question explicitly marked required: false; an empty answer skips it. */
   optional?: true;
   /** A multi-select whose typed answer goes with its checks in one answer (pi-ask's ask_user; OpenCode's native form says so by its agent). */
@@ -942,10 +946,15 @@ export interface ClientConnectionTrace {
   events: ClientConnectionEvent[];
 }
 
-/** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
+/** What a server supports beyond the base protocol, listed in its `features` frame and its first snapshot; older bridges list nothing. */
 export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert";
 
 export type ServerMessage =
+  /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
+   * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
+   * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */

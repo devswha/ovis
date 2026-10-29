@@ -57,6 +57,7 @@ import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from
 import { readHerdrUi } from "./herdr-ui.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
+import { holdFilePool } from "./file-pool.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { handlePluginRequest } from "./plugin-routes.ts";
@@ -254,8 +255,8 @@ export function createServer(
   const browserSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
-  // read finishes are kept for the herdr run each PC told this server it is in
-  const seen = new SeenStore(stateDir, () => machines?.finishEpochs() ?? new Map());
+  // read finishes are kept until this server knows their herdr run ended
+  const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
@@ -368,9 +369,17 @@ export function createServer(
       const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/diff\//.test(pathname);
       // earlier sessions carry their first prompts
       const sessionHistory = /^\/api\/(?:machines\/[^/]+\/)?sessions\/history$/.test(pathname);
-      // an agent's commands in a folder are read from that folder's command files, as a directory listing and a file read are
-      const agentCommands = /^\/api\/(?:machines\/[^/]+\/)?agent\/commands$/.test(pathname);
-      if (readOnly && (fileRead || directoryListing || repositoryDiff || sessionHistory || agentCommands || mutating && !ownPreferences)) {
+      // an agent's commands in a folder, and a pane's, are read from that folder's command files (each row
+      // carries a file's first line and its path), as a directory listing and a file read are; the
+      // composer's menu that lists them is a drive feature (#2132)
+      const commandRows = /^\/api\/(?:machines\/[^/]+\/)?(?:agent|pane)\/commands$/.test(pathname);
+      // the paths under a pane's folder that match a query are a directory listing too; they feed the
+      // composer's @-mention picker, a drive feature (#2244)
+      const paneFiles = /^\/api\/(?:machines\/[^/]+\/)?pane\/files$/.test(pathname);
+      // where a plugin action's run stands carries what its command printed when it failed, asked for by a
+      // log id: only the device that started the run (a POST, which a watching device cannot send) asks it
+      const pluginRun = /^\/api\/(?:machines\/[^/]+\/)?plugin\/action$/.test(pathname);
+      if (readOnly && (fileRead || directoryListing || repositoryDiff || sessionHistory || commandRows || paneFiles || pluginRun || mutating && !ownPreferences)) {
         setRequestRoute("watch-refusal");
         return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
       }
@@ -468,7 +477,14 @@ export function createServer(
       }
 
       if (pathname === "/api/updates" || pathname.startsWith("/api/updates/")) {
-        return handleUpdateRequest(request, pathname, options.updates);
+        // the bridge token cannot read /api/access: where this server answers comes with its update status (#2191)
+        // the port is this server's own; a tailscale that cannot be read only leaves the https address out
+        const where = bridgeAuthorized ? async () => {
+          const port = bunServer.port ?? DEFAULT_PORT;
+          const serving = await remoteAccess(port).then((access) => access.tailscale.serving_url, () => null);
+          return { port, serving_url: serving };
+        } : undefined;
+        return handleUpdateRequest(request, pathname, options.updates, where);
       }
       if (pathname === "/api/herdr/update") { setRequestRoute(pathname); return handleHerdrUpdateRequest(request, options.herdrUpdate); }
       if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
@@ -655,6 +671,8 @@ export function createServer(
 
   // OpenCode's stream and watches are shared by every server in this process: the last one to stop resets them
   const releaseOpenCodeNative = holdOpenCodeNative();
+  // the file threads are shared by every server in this process too: the last one to stop ends them
+  const releaseFilePool = holdFilePool();
   core.start();
 
   return {
@@ -679,6 +697,7 @@ export function createServer(
       });
       void shellAgents.stop();
       server.stop(true);
+      releaseFilePool();
       requestLog.close();
     },
   };

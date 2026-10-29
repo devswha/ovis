@@ -130,7 +130,7 @@
   white-space: nowrap;
 }
 
-/* the launch's own choices, model and effort, side by side where both fit a field's width, else stacked */
+/* the launch's own choices, model, effort and Ultracode, side by side where they fit a field's width, else wrapped */
 .new-session-launch {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
@@ -141,20 +141,15 @@
   min-width: 0;
 }
 
-/* Ultracode under the effort select: a switch beside the level, as in Claude Code's /effort */
-.new-session-check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
 .new-session-launch .input,
 .new-session-launch .select {
   width: 100%;
   min-width: 0;
+}
+
+/* Ultracode's switch keeps Settings' finger-sized box; its track starts at the fields' left edge */
+.new-session-ultracode .settings-toggle {
+  margin-inline-start: calc(var(--space-1) * -1);
 }
 
 /* the first message: a few lines of the message box's own face and measure, grown by hand */
