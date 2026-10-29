@@ -145,6 +145,62 @@ it("serves the first agent catalog GET from the startup warm cache without anoth
   }
 }, 5_000);
 
+it("a GET during the warm-up joins its version reads: no agent's --version runs twice, queued ones included", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ovis-catalog-warm-join-"));
+  // more agents than run at once, so some of the warm-up's reads still wait in its queue when the GET comes
+  const ids = ["claude", "codex", "copilot", "opencode", "grok", "pi"];
+  const executables = new Map(ids.map((id) => [id, join(root, id)]));
+  for (const path of executables.values()) writeFileSync(path, "fixture executable");
+  const runs = new Map<string, number>();
+  const release = Promise.withResolvers<void>();
+  const first = Promise.withResolvers<void>();
+  // every agent asked twice (the warm-up, then the GET) while no read has finished
+  const asked = new Map<string, number>();
+  const bothAsked = Promise.withResolvers<void>();
+  class Detector extends AgentDetector {
+    override async state(...args: Parameters<AgentDetector["state"]>) {
+      const pending = super.state(...args);
+      if (ids.includes(args[0].id)) {
+        asked.set(args[0].id, (asked.get(args[0].id) ?? 0) + 1);
+        if (ids.every((id) => (asked.get(id) ?? 0) >= 2)) bothAsked.resolve();
+      }
+      return pending;
+    }
+  }
+  const agentDetector = new Detector({
+    locate: async (binary) => executables.get(binary) ?? null,
+    home: root,
+    env: {},
+    run: async (executable) => {
+      runs.set(executable, (runs.get(executable) ?? 0) + 1);
+      first.resolve();
+      await release.promise;
+      return { stdout: "1.0.0", stderr: "", exitCode: 0, timedOut: false };
+    },
+  });
+  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: root, token: "", machines: false, sidecar: false, tailscaleOwner: null, agentDetector });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("the catalog did not answer")), 3_000); });
+  try {
+    server.warmAgentCatalog();
+    await Promise.race([first.promise, deadline]);
+    const during = fetch(`http://127.0.0.1:${server.port}/api/agent-catalog`);
+    // the GET has asked for every agent before any read of the warm-up finished
+    await Promise.race([bothAsked.promise, deadline]);
+    release.resolve();
+    const response = await Promise.race([during, deadline]);
+    const body: AgentCatalogResponse = await response.json();
+    expect(body.agents.filter((agent) => ids.includes(agent.id)).map((agent) => agent.state.version)).toEqual(ids.map(() => "1.0.0"));
+    expect([...runs.values()].every((count) => count === 1)).toBe(true);
+    expect(runs.size).toBe(ids.length);
+  } finally {
+    clearTimeout(timer);
+    release.resolve();
+    server.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 5_000);
+
 it("does not warm the agent catalog until explicitly requested", () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-catalog-no-warm-"));
   const agentDetector = new AgentDetector({ locate: async () => null, home: root, env: {} });
