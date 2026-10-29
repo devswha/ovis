@@ -688,6 +688,8 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
       data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
       const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
       box.dispatchEvent(event);
+      // Chrome on Android reports a selectionchange just after the paste, the caret where it was
+      document.dispatchEvent(new Event("selectionchange"));
       return event.defaultPrevented;
     }, PNG);
     assert.equal(filePaste, true, "a file-only paste is the line's to handle");
@@ -702,7 +704,8 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await page.evaluate((png) => {
       const blob = new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" });
       Object.assign(navigator.clipboard, {
-        read: () => Promise.resolve([new ClipboardItem({ "image/png": blob })]),
+        // an empty text beside the image, as some apps copy one: the image is what is there
+        read: () => Promise.resolve([new ClipboardItem({ "text/plain": new Blob([""], { type: "text/plain" }), "image/png": blob })]),
         readText: () => Promise.resolve(""),
       });
     }, PNG);
@@ -721,8 +724,25 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await note.waitFor();
     assert.equal(await note.textContent(), "No text on the clipboard. To paste an image, press and hold the input line, then choose Paste.");
     assert.equal(uploads.length, 2, "nothing uploaded");
-    assert.deepEqual(errors, []);
     console.log("PASS key bar Paste without clipboard.read(): an empty text read says how to paste an image");
+
+    // a path that would be cut at the line's limit names no file: the line stays as it was
+    const full = "x".repeat(await line.evaluate((element) => (element as HTMLTextAreaElement).maxLength) - 4);
+    await line.fill(full);
+    const third = uploaded();
+    await line.evaluate((element, png) => {
+      const box = element as HTMLTextAreaElement;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    }, PNG);
+    await third;
+    await page.waitForFunction(() => document.querySelector(".terminal-input-note[role=alert]")?.textContent?.startsWith("Not pasted: the line has no room") === true);
+    assert.equal(await line.inputValue(), full, "no half path in the line");
+    assert.deepEqual(errors, []);
+    console.log("PASS input line: a path that would not fit whole is not cut into the line");
   } finally { await context.close(); }
 }
 

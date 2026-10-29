@@ -250,8 +250,15 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     const end = element.selectionEnd;
     const composed = compositions.current;
     const selected = selections.current;
-    // a caret moved in the focused line, by touch or by script, while the paste waits
-    const moved = (): void => { if (document.activeElement === element) selections.current += 1; };
+    // a caret moved in the focused line, by touch or by script, while the paste waits; each move
+    // counts, so a move and back still drops the paste. Chrome on Android reports a selectionchange
+    // just after the keyboard's own Paste with the caret where it was: that is no move
+    let seen = [start, end];
+    const moved = (): void => {
+      if (document.activeElement !== element || (element.selectionStart === seen[0] && element.selectionEnd === seen[1])) return;
+      seen = [element.selectionStart, element.selectionEnd];
+      selections.current += 1;
+    };
     document.addEventListener("selectionchange", moved);
     pasting.current = true;
     onPasting?.(true);
@@ -259,23 +266,31 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     setPending(waiting);
     /** the line is still there to answer in */
     const shown = (): boolean => mounted.current && box.current === element;
+    /** the line, its caret, a composition or the pane changed since the paste began, even and back again */
+    const stale = (): boolean => composing.current || compositions.current !== composed || selections.current !== selected
+      || element.selectionStart !== start || element.selectionEnd !== end
+      || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
+    const changed = t("Not pasted: the line or the terminal changed meanwhile. Paste again.");
     return {
       shown,
+      /** true, with the note said, when the paste no longer has its line as it found it */
+      dropped(): boolean {
+        if (!shown()) return true;
+        if (!stale()) return false;
+        setNote(changed);
+        return true;
+      },
       /** says why the paste did not land, while the line is there to say it */
       fail(note: string): void { if (shown()) setNote(note); },
-      /** the text at the selection the paste found, or a note why it was dropped */
-      place(clip: string): void {
+      /** the text at the selection the paste found, or a note why it was dropped; `whole` (file
+       * paths) goes in entire or not at all: a path cut at the line's limit names no file */
+      place(clip: string, whole = false): void {
         if (!shown()) return;
-        const stale = composing.current || compositions.current !== composed || selections.current !== selected
-          || element.selectionStart !== start || element.selectionEnd !== end
-          || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
-        if (stale) {
-          setNote(t("Not pasted: the line or the terminal changed meanwhile. Paste again."));
-          return;
-        }
+        if (stale()) { setNote(changed); return; }
         const text = clip.replace(/\r\n?/g, "\n");
         const current = readTerminalDraft(owner);
         const next = current.slice(0, start) + text + current.slice(end);
+        if (whole && next.length > TERMINAL_LINE_LIMIT) { setNote(t("Not pasted: the line has no room for the file's path. Shorten it, then paste again.")); return; }
         writeTerminalDraft(owner, next);
         const written = readTerminalDraft(owner);
         const cut = next.length - written.length;
@@ -292,8 +307,10 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       finish(): void {
         document.removeEventListener("selectionchange", moved);
         pasting.current = false;
+        // an unmounted line already gave the bar's Paste back (below): a later line may be pasting now
+        if (!mounted.current) return;
         onPasting?.(false);
-        if (mounted.current) setPending(null);
+        setPending(null);
       },
     };
   }, [onPasting, owner, pasteTarget, t]);
@@ -327,7 +344,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     }
     const waiting = beginPaste(event.currentTarget, t("Uploading file…"));
     if (waiting === null) return;
-    uploadPaths(files).then((paths) => waiting.place(paths), (error: unknown) => waiting.fail(uploadFailed(error))).finally(waiting.finish);
+    uploadPaths(files).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error))).finally(waiting.finish);
   };
 
   /**
@@ -348,21 +365,25 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     if (!readsFiles && typeof clipboard?.readText !== "function") { setNote(t("Paste is not available here. Use the keyboard's own paste in the input line.")); return; }
     const waiting = beginPaste(element, t("Reading the clipboard…"));
     if (waiting === null) return;
-    const read: Promise<{ text: string } | { image: Blob } | null> = readsFiles
+    const read: Promise<{ text: string } | { image: Blob }> = readsFiles
       ? clipboard!.read().then(async (items) => {
-        // text first, as a paste into the grid: an image copied from a page often carries its address too
+        // text first, as a paste into the grid: an image copied from a page often carries its address
+        // too. An empty text beside an image is no text
         const texts = items.filter((item) => item.types.includes("text/plain"));
-        if (texts.length > 0) return { text: (await Promise.all(texts.map(async (item) => (await item.getType("text/plain")).text()))).join("") };
+        const text = (await Promise.all(texts.map(async (item) => (await item.getType("text/plain")).text()))).join("");
+        if (text.length > 0) return { text };
         for (const item of items) {
           const type = item.types.find((kind) => kind.startsWith("image/"));
           if (type !== undefined) return { image: await item.getType(type) };
         }
-        return null;
+        return { text };
       })
       : clipboard!.readText().then((text) => ({ text }));
     read.then(async (clip) => {
       if (!waiting.shown()) return;
-      if (clip !== null && "image" in clip) {
+      if ("image" in clip) {
+        // nothing uploaded for a line that changed while the clipboard answered
+        if (waiting.dropped()) return;
         try {
           assertAttachable(clip.image);
         } catch (error) {
@@ -370,10 +391,10 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
           return;
         }
         setPending(t("Uploading file…"));
-        await uploadPaths([clip.image]).then((paths) => waiting.place(paths), (error: unknown) => waiting.fail(uploadFailed(error)));
+        await uploadPaths([clip.image]).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error)));
         return;
       }
-      if (clip === null || clip.text.length === 0) {
+      if (clip.text.length === 0) {
         waiting.fail(readsFiles ? t("Nothing to paste: the clipboard is empty.") : t("No text on the clipboard. To paste an image, press and hold the input line, then choose Paste."));
         return;
       }
