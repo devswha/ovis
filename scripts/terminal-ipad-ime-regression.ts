@@ -320,6 +320,12 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       await input.press("Space");
       await check("hello worldx하 ", "typing after a whole-string key");
       report("typing after a whole-string key");
+      // a syllable still being typed goes first, then the whole string, each once
+      await reset();
+      await fresh("ㅎ"); await replace("ㅏ", "하");
+      await insertWhole("hello", 72);
+      await check("하hello", "a whole-string key after a pending syllable");
+      report("a whole-string key after a pending syllable");
 
       for (const [label, run, expected] of [
         ["test, test again, space", async () => { await typeText("test"); await composeWord("test"); await typeText(" "); }, "test "],
