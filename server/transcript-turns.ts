@@ -1,7 +1,7 @@
 import type { StreamSource } from "./conversation-shared.ts";
 import { claudePeerNotice, piMessage, piPromptImages } from "./transcript-records.ts";
 import type { TranscriptEntry } from "./claude-transcript.ts";
-import { claudeImages, isCommandEntry, withoutPictureBytes } from "./claude-transcript.ts";
+import { claudeImages, entryHostToolResults, isCommandEntry, withoutPictureBytes } from "./claude-transcript.ts";
 import { copilotRootRecord } from "./copilot.ts";
 import { musePrompt } from "./muse.ts";
 
@@ -129,6 +129,9 @@ function opensTurn(source: StreamSource, line: string, blobs: string | null): bo
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return false;
   const content = entry.message?.content;
   if (typeof content === "string") return !isCommandEntry(content, entry);
+  // senpi's host tool results answer the calls before them, so they stay on those calls' page, with
+  // any message sent along with them
+  if (entryHostToolResults(entry as Parameters<typeof entryHostToolResults>[0], content).length > 0) return false;
   // a prompt that is only a picture is one too, as the parser draws it; a picture beside a tool's
   // result opens nothing: the result must stay on the page of the call it answers
   return Array.isArray(content) && (content.some((block: { type?: unknown; text?: unknown } | null) =>
