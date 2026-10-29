@@ -200,10 +200,12 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       return new Map(previous).set(id, inventory);
     });
   }, []);
-  const branches = useMemo<MachineBranches>(() => new Map(machines.flatMap((machine) => {
+  // the palette stays mounted while closed: what it read while driving is dropped when the device turns to watching
+  useEffect(() => { if (watching) setInventories((previous) => previous.size === 0 ? previous : new Map()); }, [watching]);
+  const branches = useMemo<MachineBranches>(() => watching ? new Map() : new Map(machines.flatMap((machine) => {
     const inventory = inventories.get(machine.id);
     return inventory?.signature === worktreeWorkspaceSignature(machine.snapshot?.workspaces ?? []) ? [[machine.id, inventory.branches] as const] : [];
-  })), [inventories, machines]);
+  })), [inventories, machines, watching]);
 
   // Terminal attachment can move focus after the palette opens. Escape belongs to
   // this modal even then, and must not leak through to the underlying terminal.
