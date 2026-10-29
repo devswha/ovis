@@ -153,6 +153,44 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     expect(state.tasks.find((task) => task.id === "sh_ok")!.ended_at).toBe(new Date(NOW - 8 * MIN).toISOString());
   });
 
+  it("counts an older background command behind more than a thousand ended commands", () => {
+    const s = store();
+    s.add(s.parent, "shell", NOW - 50 * MIN, { metadata: { background: true }, shellID: "sh_early", status: "running" });
+    for (let n = 0; n < 1010; n++) {
+      s.add(s.parent, "shell", NOW - 30 * MIN + n, { metadata: { background: true }, shellID: `sh_done${n}`, status: "exited", exit: 0 });
+    }
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.running).toBe(1);
+    expect(state?.unlisted).toBe(0);
+    expect(state?.tasks.map((task) => task.id)).toEqual(["sh_early", ...Array.from({ length: 10 }, (_, n) => `sh_done${1009 - n}`)]);
+  });
+
+  it("counts every running background command beyond the display limit", () => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - 30 * MIN + n, { metadata: { background: true }, shellID: `sh_run${n}`, status: "running" });
+    }
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.running).toBe(1015);
+    expect(state?.unlisted).toBe(15);
+    expect(state?.turnRunning).toBe(0);
+    expect(state?.tasks).toHaveLength(1000);
+    expect(state?.tasks.map((task) => task.id)).toEqual(Array.from({ length: 1000 }, (_, n) => `sh_run${n + 15}`));
+  });
+
+  it.each([null, undefined])("marks an exited background command with exit %s as failed", (exit) => {
+    const s = store();
+    s.add(s.parent, "shell", NOW - MIN, { metadata: { background: true }, shellID: "sh_unknown", status: "exited", exit });
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.tasks.map((task) => [task.id, task.status])).toEqual([["sh_unknown", "failed"]]);
+  });
+
   it("leaves a running background command lost once its session is left, and lists only the recently ended", () => {
     const s = store();
     const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);

@@ -162,7 +162,7 @@ type ShellRow = {
  */
 function shellStep(db: Database, scan: Scan): void {
   scan.shells = [];
-  const rows = db.query<ShellRow, [string, number]>(`
+  const select = `
     SELECT m.id,
       CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.shellID') END AS shell,
       CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.command') END AS command,
@@ -173,13 +173,19 @@ function shellStep(db: Database, scan: Scan): void {
       m.time_created AS created, m.time_updated AS updated
     FROM session_message AS m
     WHERE m.session_id = ? AND m.type = 'shell' AND json_valid(m.data)
-      AND json_type(m.data, '$.metadata.background') = 'true'
-      AND ((CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.status') END) = 'running' OR m.time_updated >= ?)
-    ORDER BY m.time_updated DESC LIMIT ${RUNNING_LIMIT + RECENT_LIMIT}`).all(scan.sessionId, scan.now - RECENT_MS);
+      AND json_type(m.data, '$.metadata.background') = 'true'`;
+  // Count every running command, even behind a long ended history; only the ended selection is bounded.
+  const rows = [
+    ...db.query<ShellRow, [string]>(`${select}
+      AND json_extract(m.data, '$.status') = 'running'`).all(scan.sessionId),
+    ...db.query<ShellRow, [string, number]>(`${select}
+      AND json_extract(m.data, '$.status') IS NOT 'running' AND m.time_updated >= ?
+      ORDER BY m.time_updated DESC LIMIT ${RECENT_LIMIT}`).all(scan.sessionId, scan.now - RECENT_MS),
+  ];
   for (const row of rows) {
     const id = label(row.shell) ?? row.id;
     const ended = row.status === "running" ? null
-      : { status: row.exit !== null && row.exit !== 0 ? "failed" as const : "completed" as const, at: row.updated };
+      : { status: row.exit === 0 ? "completed" as const : "failed" as const, at: row.updated };
     const orphan = scan.serviceStart !== null && row.updated < scan.serviceStart - START_SLACK_MS;
     if (ended === null && scan.live && !orphan) {
       scan.shellRunning++;
