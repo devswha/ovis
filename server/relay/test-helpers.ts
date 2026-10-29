@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ClientMessage, ServerMessage } from "../../shared/protocol.ts";
 import {
   exportPublicKey, generateKeyPair, openClientSecureChannel, openDaemonSecureChannel,
 } from "../../shared/relay-e2ee.ts";
@@ -21,9 +22,9 @@ export function deferred<T>() {
 }
 
 /** Event barriers fail boundedly; no sleeps or polling of mutable state. */
-export async function bounded<T>(promise: Promise<T>): Promise<T> {
+export async function bounded<T>(promise: Promise<T>, milliseconds = 10_000): Promise<T> {
   const failure = deferred<T>();
-  const timer = setTimeout(() => failure.reject(new Error("Relay test event timed out")), 10_000);
+  const timer = setTimeout(() => failure.reject(new Error("Relay test event timed out")), milliseconds);
   try { return await Promise.race([promise, failure.promise]); }
   finally { clearTimeout(timer); }
 }
@@ -75,9 +76,9 @@ class DuplexTransport implements Transport {
   }
 }
 
-export function relayFixture(serveOnly = false) {
+export function relayFixture(serveOnly = false, options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-session-"));
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly, ...options });
   const closes: (() => void)[] = [];
   return {
     stateDir, app, closes,
@@ -186,6 +187,14 @@ export async function relayConnection(fixture: ReturnType<typeof relayFixture>,
       mux.sendSession({ type: FrameType.PAIR, flags: 0, stream_id: 0, payload: { code, label: "New phone", public_key: publicKey } });
       return (await bounded(beforeClose(authenticated.promise))).payload;
     },
+    async flush() {
+      // Subscribe to idle transitions on both senders, including their receipt replies.
+      let budget = 10_000;
+      do {
+        if (--budget === 0) throw new Error("Relay senders did not quiesce");
+        await bounded(Promise.all([mux.flush(), session.mux.flush()]));
+      } while (!mux.senderIdle || !session.mux.senderIdle);
+    },
     open(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}) {
       const stream = mux.openHttp({ target, method: "GET", headers: [], body: "none", ...init });
       const response = deferred<Response>();
@@ -194,6 +203,36 @@ export async function relayConnection(fixture: ReturnType<typeof relayFixture>,
       };
       stream.onDispose = (error) => { if (error) response.reject(error); };
       return { stream, response: bounded(response.promise) };
+    },
+    openSocket(target = "/ws") {
+      const stream = mux.openWs({ target, headers: [], protocols: [] });
+      const opened = deferred<void>();
+      const closed = deferred<{ code: number; reason: string; clean: boolean }>();
+      const messages: ServerMessage[] = [];
+      const listeners = new Set<(message: ServerMessage) => void>();
+      stream.onAccept = () => opened.resolve();
+      stream.onClose = (event) => { closed.resolve(event); opened.reject(new Error(`Socket closed: ${event.code}`)); };
+      stream.onMessage = (raw) => {
+        const message: ServerMessage = JSON.parse(String(raw));
+        messages.push(message);
+        for (const listener of listeners) listener(message);
+      };
+      return {
+        stream, opened: bounded(opened.promise), closed: closed.promise, messages, listeners,
+        send(message: ClientMessage) { stream.send(JSON.stringify(message)); },
+        async until(check: (message: ServerMessage) => boolean) {
+          const previous = messages.find(check);
+          if (previous) return previous;
+          const found = deferred<ServerMessage>();
+          const listener = (message: ServerMessage) => { if (check(message)) found.resolve(message); };
+          listeners.add(listener);
+          try {
+            return await bounded(Promise.race([found.promise, closed.promise.then((event) => {
+              throw new Error(`Socket closed before message: ${event.code}`);
+            })]));
+          } finally { listeners.delete(listener); }
+        },
+      };
     },
     stop() { clientTransport.close(); },
   };

@@ -8,6 +8,7 @@ import type { DeviceMatch } from "../devices.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
+import { VirtualSocket, type RelaySocketHandlers } from "./virtual-socket.ts";
 
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
 const SOURCE_LIMIT = 3 * 1024 * 1024;
@@ -41,6 +42,8 @@ export interface RelaySessionOptions {
   readonly maxWireMessageBytes: number;
   readonly clock?: MuxClock;
   readonly dispatch?: typeof handleRequest;
+  /** The core's SocketLike handlers. Without either adapter, WS_OPEN is refused. */
+  readonly websocket?: RelaySocketHandlers;
   /** Owns the upgrade and socket lifecycle, including stream disposal. Absent adapters refuse WS_OPEN. */
   readonly onWs?: (stream: WsStream, exchange: RelayWebSocketRequest) => void;
   readonly onClose?: (code: SessionError) => void;
@@ -66,6 +69,8 @@ export class RelaySession {
   private sourceBytes = 0;
   private readonly clock: MuxClock;
   private readonly activity = new Map<number, () => void>();
+  private readonly sockets = new Map<WsStream, VirtualSocket | undefined>();
+  private readonly requests = new Set<HttpStream>();
 
   constructor(private readonly options: RelaySessionOptions) {
     if (!options.channel.isOpen() || options.channel.securityMode() !== "protected") {
@@ -94,8 +99,9 @@ export class RelaySession {
       onHttp: (stream) => { void this.http(stream); },
       onWs: (stream) => {
         const device = this.principal();
-        if (!device) return;
-        if (!options.onWs) { stream.reset("refused"); return; }
+        if (!device) { stream.reset("refused"); return; }
+        if (!options.onWs && !options.websocket) { stream.reset("refused"); return; }
+        this.sockets.set(stream, undefined);
         const abort = new AbortController();
         let timer: (() => void) | undefined;
         const exchange: RelayWebSocketRequest = {
@@ -106,13 +112,19 @@ export class RelaySession {
             timer?.();
             timer = seconds > 0 ? this.clock.setTimeout(() => stream.reset("upstream_lost"), seconds * 1000) : undefined;
           }, (_request, upgrade) => {
-            if (!stream.live) return false;
+            if (!stream.live || this.state !== "ready") return false;
             exchange.upgrade = upgrade;
             return true;
           }),
         };
-        stream.onDispose = () => { timer?.(); abort.abort(); };
-        options.onWs(stream, exchange);
+        stream.onDispose = () => {
+          timer?.();
+          abort.abort();
+          exchange.upgrade?.data.relay?.close();
+          this.sockets.delete(stream);
+        };
+        if (options.onWs) options.onWs(stream, exchange);
+        else void this.websocket(stream, exchange);
       },
     });
     options.channel.onClose(() => this.mux.carrierLost());
@@ -124,6 +136,7 @@ export class RelaySession {
     if (typeof data === "string") { this.close("protocol_error"); return; }
     const bytes = new Uint8Array(data);
     this.mux.receive(bytes);
+    for (const socket of this.sockets.values()) socket?.drain();
     if (this.mux.active) this.touch(bytes);
   }
 
@@ -132,10 +145,23 @@ export class RelaySession {
   }
 
   close(code: SessionError = "auth_revoked"): void {
+    if (this.state === "closed") return;
     this.state = "closed";
     this.unwatch?.();
     this.unwatch = undefined;
-    this.mux.fail(code, code);
+    if (code !== "auth_revoked" && code !== "auth_changed") { this.mux.fail(code, code); return; }
+    // Stop application work now, but let the known WS policy close reach the peer before
+    // SESSION_ERROR tears down the carrier. WsStream bounds both draining and the close exchange.
+    for (const stream of this.requests) stream.reset("cancelled");
+    const closing: Promise<void>[] = [];
+    for (const [stream, socket] of this.sockets) {
+      if (!socket) { stream.reset("cancelled"); continue; }
+      closing.push(socket.closed);
+      socket.close(1008, "Device access revoked");
+    }
+    // An aborting CLOSE notifies locally before its urgent frame is submitted.
+    if (closing.length) void Promise.all(closing).then(() => this.mux.flush()).then(() => this.mux.fail(code, code));
+    else this.mux.fail(code, code);
   }
 
   private async admit(frame: SessionFrame): Promise<void> {
@@ -189,9 +215,37 @@ export class RelaySession {
   }
 
   private principal(): DeviceMatch | undefined {
+    if (this.state === "closed") return;
     if (this.state !== "ready" || !this.device) { this.close("protocol_error"); return; }
     if (!this.options.services.devices.has(this.device.id)) { this.close("auth_revoked"); return; }
     return this.device;
+  }
+
+  private async websocket(stream: WsStream, exchange: RelayWebSocketRequest): Promise<void> {
+    try {
+      const response = await (this.options.dispatch ?? handleRequest)(exchange.request, exchange.context);
+      if (!stream.live || this.state !== "ready") {
+        exchange.upgrade?.data.relay?.close();
+        await response?.body?.cancel();
+        return;
+      }
+      const handlers = this.options.websocket;
+      if (exchange.upgrade && handlers) {
+        const socket = new VirtualSocket(exchange.upgrade.data, stream, handlers);
+        this.sockets.set(stream, socket);
+        socket.open();
+        return;
+      }
+      if (!response) { stream.reset("internal_error"); return; }
+      const allowed: readonly string[] = RESPONSE_HEADERS;
+      const rejection = stream.reject(response.status, [...response.headers].filter(([name]) => allowed.includes(name)));
+      // Rejection transfers disposal to an HTTP stream; it still owns the request signal.
+      if (response.body) await rejection.sendBody(response.body);
+      else rejection.end();
+    } catch (error) {
+      exchange.upgrade?.data.relay?.close();
+      if (stream.live) stream.reset(error instanceof MuxStreamError ? error.code : "internal_error");
+    }
   }
 
   private context(device: DeviceMatch, timeout: ServerContext["timeout"], upgrade: ServerContext["upgrade"],
@@ -204,7 +258,8 @@ export class RelaySession {
 
   private async http(stream: HttpStream): Promise<void> {
     const device = this.principal();
-    if (!device) return;
+    if (!device) { stream.reset("refused"); return; }
+    this.requests.add(stream);
     const abort = new AbortController();
     let timer: (() => void) | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -231,6 +286,7 @@ export class RelaySession {
       release: (bytes) => { queued -= bytes; this.sourceBytes -= bytes; },
     };
     stream.onDispose = async () => {
+      this.requests.delete(stream);
       timer?.();
       if (id !== undefined) this.activity.delete(id);
       abort.abort();
