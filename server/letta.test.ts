@@ -6,7 +6,7 @@ import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOu
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaInStartFolder, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -157,8 +157,8 @@ describe("Letta conversation binding", () => {
     let owner = setup(settingsAfterNew, now - 60_000, now);
     expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toEqual({ path, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1" });
     // any write since: its own start on another conversation, its /new, or another letta
-    // a file system that keeps whole seconds puts a write just after the start up to a second before it
-    for (const at of [now - 999, now, now + 1, now + 2_000, now + 600_000]) {
+    // a file system that keeps whole seconds (HFS+) or two (FAT) puts a write just after the start up to two seconds before it
+    for (const at of [now - 1_999, now - 999, now, now + 1, now + 2_000, now + 600_000]) {
       owner = setup(settingsAfterNew, at, now);
       expect(lettaTranscriptFor(reported(owner.cwd), [reported(owner.cwd)], owner)).toBeNull();
     }
@@ -170,6 +170,22 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
     chmodSync(join(owner.cwd, ".letta", "settings.local.json"), 0o444);
     expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
+  });
+
+  test("a letta process is bound only in the folder it started in, and never again once seen elsewhere", () => {
+    const start = join(root, "project1");
+    const other = join(root, "project2");
+    mkdirSync(start); mkdirSync(other);
+    symlinkSync(start, join(root, "link1"));
+    const at = (pid: number, cwd: string, env: Record<string, string>): LettaProcess => ({ pid, cwd, startedAt: now, env });
+    expect(lettaInStartFolder(at(101, start, { PWD: start }))).toBe(true);
+    expect(lettaInStartFolder(at(102, start, { PWD: join(root, "link1") }))).toBe(true);
+    // no start folder to compare: its shell set no PWD
+    expect(lettaInStartFolder(at(103, start, {}))).toBe(false);
+    expect(lettaInStartFolder(at(104, start, { PWD: "relative" }))).toBe(false);
+    // SetWorkingDirectory moved it into project2; a later move back does not make project1's record its own again
+    expect(lettaInStartFolder(at(105, other, { PWD: start }))).toBe(false);
+    expect(lettaInStartFolder(at(105, start, { PWD: start }))).toBe(false);
   });
 
   test("a closed peer of the same agent that reopened the pane's old conversation binds nothing", () => {
@@ -268,9 +284,13 @@ describe("Letta conversation binding", () => {
     utimesSync(join(project, ".letta", "settings.local.json"), (Date.now() - 60_000) / 1000, (Date.now() - 60_000) / 1000);
     const config = join(root, "config");
     // a real process whose own environment names the store, as the pane's letta would
-    const child = Bun.spawn(["sleep", "300"], { env: { HOME: root, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    const child = Bun.spawn(["sleep", "300"], { env: { HOME: root, PWD: project, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    // the same process after SetWorkingDirectory moved it from project1 into this project: its environment keeps project1
+    mkdirSync(join(root, "project1"));
+    const movedIn = Bun.spawn(["sleep", "300"], { env: { HOME: root, PWD: join(root, "project1"), LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    let foreground = child.pid;
     const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({
-      pane_id: "w1:p1", foreground_processes: [{ pid: child.pid, argv: ["node", "/opt/letta/bin/letta"], cwd: project }],
+      pane_id: "w1:p1", foreground_processes: [{ pid: foreground, argv: ["node", "/opt/letta/bin/letta"], cwd: project }],
     }) as never);
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never);
     const resolve = (target: HerdrPane) => paneTranscript(target.pane_id, undefined, { panes: [target] } as SessionSnapshot);
@@ -290,13 +310,19 @@ describe("Letta conversation binding", () => {
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
       await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
       // another pane running Letta in the folder writes the same record
+      // project1 -> /new -> moved into this project, whose older record names the conversation it left
+      foreground = movedIn.pid;
+      await expect(resolve(bound)).rejects.toThrow("no_session_path");
+      foreground = child.pid;
+      expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
       const peer = pane("w2:p1", "default:agent-local-b", project);
       await expect(paneTranscript(bound.pane_id, undefined, { panes: [bound, peer] } as SessionSnapshot)).rejects.toThrow("no_session_path");
     } finally {
       info.mockRestore();
       rpc.mockRestore();
       child.kill();
-      await child.exited;
+      movedIn.kill();
+      await Promise.all([child.exited, movedIn.exited]);
     }
   });
 });

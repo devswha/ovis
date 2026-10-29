@@ -11,9 +11,10 @@
  *   a letta that opens the conversation the record names writes nothing (`setLocalLastSession`
  *   skips an equal session), and any later write (a `/new` or `/resume`, its own start on another
  *   conversation, or another letta, even one gone since) leaves Chat on Terminal until letta starts again.
- * - The pane's one letta process: its folder, and its own environment for where Letta keeps its
- *   files (`LETTA_CONFIG_DIR`, `LETTA_TRANSCRIPT_ROOT`, `HOME`), read from the process on Linux and
- *   macOS. Windows has no such read, and uses Terminal.
+ * - The pane's one letta process: its own environment for where Letta keeps its files
+ *   (`LETTA_CONFIG_DIR`, `LETTA_TRANSCRIPT_ROOT`, `HOME`), read from the process on Linux and macOS
+ *   (Windows has no such read, and uses Terminal), and the folder it started in (lettaInStartFolder),
+ *   whose record is the only one read, while the process is still there.
  * The transcript must then be a regular file at exactly the path Letta derives from the two ids.
  */
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
@@ -147,6 +148,28 @@ export function isLettaProcess(argv: readonly string[]): boolean {
 /** `startedAt`: no later than the process started (processStartLowerBound) */
 export interface LettaProcess { pid: number; cwd: string; startedAt: number; env: Env }
 
+/** Letta processes, by pid and start, seen in a folder other than the one they started in. */
+const moved = new Set<string>();
+
+/**
+ * Whether a letta process is in the folder it started in, and was in it every time it was looked at.
+ * Letta's SetWorkingDirectory and EnterWorktree tools move a running letta into another project without
+ * recording its conversation there, so that project's record is no record of it. The start folder is
+ * the `PWD` its shell gave it, which its environment keeps whatever it does later; without one, or
+ * once seen elsewhere, it is never bound again.
+ */
+export function lettaInStartFolder(owner: LettaProcess): boolean {
+  const key = `${owner.pid}:${owner.startedAt}`;
+  if (moved.has(key)) return false;
+  const start = owner.env["PWD"];
+  const here = canonical(owner.cwd);
+  if (start === undefined || !isAbsolute(start) || here === null) return false;
+  if (canonical(start) === here) return true;
+  moved.add(key);
+  if (moved.size > 256) moved.delete(moved.values().next().value!);
+  return false;
+}
+
 /** The pane's one letta process, or null for none, several, or one whose start or environment cannot be read. */
 export async function paneLettaProcess(paneId: string, known?: ProcessInfo | null): Promise<LettaProcess | null> {
   const info = known === undefined ? await paneProcessInfo(paneId).catch(() => null) : known;
@@ -179,10 +202,10 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
 }
 
 /**
- * A whole second: a file system that keeps whole seconds (HFS+) rounds a write after the start down
- * to before it by less than this.
+ * Two seconds: a file system that keeps whole seconds (HFS+) or two (FAT) rounds a write after the
+ * start down to before it by less than this.
  */
-const MTIME_SLACK_MS = 1000;
+const MTIME_SLACK_MS = 2000;
 
 /**
  * The text of Letta's record when it is a regular file Letta can still rewrite (it writes in place and
@@ -262,7 +285,7 @@ export function lettaLocalOwner(store: string, agent: string, conversation: stri
 /** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, or null. */
 export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<LettaTranscript | null> {
   const owner = await paneLettaProcess(pane.pane_id, known);
-  if (owner === null || !lettaRecordOwned(pane, panes, owner)) return null;
+  if (owner === null || !lettaInStartFolder(owner) || !lettaRecordOwned(pane, panes, owner)) return null;
   const found = lettaTranscriptFor(pane, panes, owner);
   const store = lettaLocalStore(owner.env);
   const root = lettaTranscriptRoot(owner.env);
