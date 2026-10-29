@@ -14,7 +14,7 @@ index 819654e4537eeb7b64364249e52274b7197b9c8a..6df7cfb20f4b5f16cb770377d029ba70
  
  .xterm .xterm-viewport {
 diff --git a/src/browser/CoreBrowserTerminal.ts b/src/browser/CoreBrowserTerminal.ts
-index 38ad467a519939798c005e4cbf78c7660ed359a3..b37fb3832b655e809418f71a182a8ca70bbec112 100644
+index 38ad467a519939798c005e4cbf78c7660ed359a3..cccf0254329aaa2315dd6cf39fd63c93c12b35a4 100644
 --- a/src/browser/CoreBrowserTerminal.ts
 +++ b/src/browser/CoreBrowserTerminal.ts
 @@ -111,6 +111,13 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
@@ -179,35 +179,47 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..b37fb3832b655e809418f71a182a8ca7
        this.textarea!.value = '';
      }
  
-@@ -1117,7 +1181,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
-   }
+@@ -1118,6 +1182,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
  
    protected _keyUp(ev: KeyboardEvent): void {
-+    this._sendTextKey();
      this._keyDownSeen = false;
 +    this._digitAwaitsKeyPress = false;
  
      if (this._customKeyEventHandler && this._customKeyEventHandler(ev) === false) {
        return;
-@@ -1170,6 +1236,17 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1140,6 +1205,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+   protected _keyPress(ev: KeyboardEvent): boolean {
+     let key;
  
-     key = String.fromCharCode(key);
++    this._sendTextKey();
++
+     this._keyPressHandled = false;
  
+     if (this._keyDownHandled) {
+@@ -1168,7 +1235,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+       return false;
+     }
+ 
+-    key = String.fromCharCode(key);
++    const charCode = key;
++    key = String.fromCharCode(charCode);
++
 +    // An iOS keyboard that commits a whole string at once (dictation, a keyboard extension's
 +    // insertText) names it as the key and its first character as the charCode, then inserts it.
 +    // Hold that character: the insertion that follows sends the whole string instead (#1488). A key
-+    // name is never such a string (Enter's charCode is 13, not E).
-+    if (this._keyDownSeen && ev.key && ev.key.length > 1 && ev.key.startsWith(key) && !this.optionsService.rawOptions.screenReaderMode) {
++    // name is never such a string (Enter's charCode is 13, not E). WebKit's charCode is the first
++    // code point, which may lie outside the BMP (an emoji, or a CJK extension character).
++    if (this._keyDownSeen && ev.key && ev.key.length > 1 && ev.key.codePointAt(0) === charCode && !this.optionsService.rawOptions.screenReaderMode
++      && !this._compositionHelper?.isComposing) {
 +      this._textKey = { text: ev.key, key, event: ev };
 +      this._keyPressHandled = true;
 +      this._unprocessedDeadKey = false;
 +      return true;
 +    }
-+
+ 
      this._onKey.fire({ key, domEvent: ev });
      this._showCursor();
-     this.coreService.triggerDataEvent(key, true);
-@@ -1190,10 +1267,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1190,10 +1271,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * @param ev The input event to be handled.
     */
    protected _inputEvent(ev: InputEvent): boolean {
@@ -230,7 +242,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..b37fb3832b655e809418f71a182a8ca7
        if (this._keyPressHandled) {
          return false;
        }
-@@ -1212,6 +1300,16 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1212,6 +1304,16 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      return false;
    }
  
@@ -247,7 +259,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..b37fb3832b655e809418f71a182a8ca7
    /**
     * Resizes the terminal.
     *
-@@ -1266,6 +1364,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1266,6 +1368,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * using DECSTR (soft reset, CSI ! p) or RIS instead (hard reset, ESC c).
     */
    public reset(): void {

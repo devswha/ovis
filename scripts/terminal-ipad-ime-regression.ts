@@ -91,19 +91,20 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
     // A keyboard that commits a whole string as one key (FluidVoice's dictation, any keyboard
     // extension calling insertText): WebKit names the string as the keydown's key, sends a keypress
     // with its first character's charCode, then inserts the whole string (iOS 27 simulator, #1488).
-    const insertWhole = (text: string, keyCode: number) => input.evaluate(async (element, { text, keyCode }) => {
+    // `inserted` is what the editor inserts after the keypress, if anything.
+    const insertWhole = (text: string, keyCode: number, inserted: string | null = text) => input.evaluate(async (element, { text, keyCode, inserted }) => {
       const box = element as HTMLTextAreaElement;
       const down = box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, composed: true, key: text, code: "Unidentified", keyCode }));
       const charCode = text.codePointAt(0)!;
       const press = down && box.dispatchEvent(new KeyboardEvent("keypress", { bubbles: true, cancelable: true, composed: true, key: text, code: "Unidentified", keyCode: charCode, charCode }));
-      if (down && press) {
-        box.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, composed: true, inputType: "insertText", data: text, isComposing: false }));
-        box.setRangeText(text, box.selectionStart, box.selectionEnd, "end");
-        box.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text, isComposing: false }));
+      if (down && press && inserted !== null) {
+        box.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, composed: true, inputType: "insertText", data: inserted, isComposing: false }));
+        box.setRangeText(inserted, box.selectionStart, box.selectionEnd, "end");
+        box.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: inserted, isComposing: false }));
       }
       box.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, composed: true, key: text, code: "Unidentified", keyCode }));
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }, { text, keyCode });
+    }, { text, keyCode, inserted });
     // SwiftKey (#3746 in Agent of Empires): letters as plain edits, then a composition that wraps the
     // word before the caret again and commits it, or a longer one.
     const typeText = (text: string) => input.evaluate(async (element, text) => {
@@ -292,11 +293,24 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         ["a sentence", "hello world this is a test", 72],
         ["a capitalised word", "Yes", 89],
         ["Hangul", "안녕하세요", 0],
+        // WebKit's charCode is the first code point, here outside the BMP
+        ["an emoji first", "😀 hello", 0],
+        ["a CJK extension character first", "𠮷野家", 0],
       ] as const) {
         await reset();
         await insertWhole(text, keyCode);
         await check(text, `a whole string committed as one key is sent whole, once: ${label}`);
         report(`a whole string committed as one key is sent whole, once: ${label}`);
+      }
+      // with no insertion of that string, the keypress's own character goes, as it always did
+      for (const [label, inserted] of [["no insertion", null], ["another insertion", "hey "]] as const) {
+        await reset();
+        // sent by the keyup (or the insertion) itself, not left for a later key to flush
+        const sentAlone = signal("input:h");
+        await insertWhole("hey", 72, inserted);
+        await sentAlone;
+        await check("h", `a whole-string key with ${label} sends its keypress's character`);
+        report(`a whole-string key with ${label} sends its keypress's character`);
       }
       // typing goes on as before after it: a letter, then a Hangul syllable composed in the editor
       await reset();

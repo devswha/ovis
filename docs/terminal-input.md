@@ -409,9 +409,9 @@ plain textarea but sent only `h` to the pane. WebKit reports such a commit as on
 keydown whose `key` is the whole string (`code` `Unidentified`), a keypress whose `charCode` is
 its first character, then `beforeinput` and `input` (`insertText`) with the whole string. xterm
 sent the keypress's character and then ignored the insertion as already handled. The patch now
-holds a keypress whose `key` is longer than one character and starts with that character (a
-key name never does: Enter's `charCode` is 13), and the insertion carrying that string sends it
-whole, once. If no such insertion follows before the next key, keyup, other input or blur, the
+holds a keypress whose `key` is longer than one character and starts with the code point its
+`charCode` names, which may be an emoji (a key name never does: Enter's `charCode` is 13), and
+the insertion carrying that string sends it whole, once. If no such insertion follows before the next key, keyup, other input or blur, the
 held character is sent, as before. Hangul committed this way is text too, not a syllable to
 compose. `scripts/terminal-ipad-ime-regression.ts` replays the recorded sequence.
 
