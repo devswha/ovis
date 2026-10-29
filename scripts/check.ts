@@ -27,11 +27,13 @@
  * the admission port, the queue's ticket desk and its ticket ports, MAX_RUNS_LIMIT + 2 + QUEUE_TICKETS
  * in all), so a run that died holds nothing.
  * A run that finds every slot taken names the holders and exits, and so does a second run in the
- * same checkout, which would share its dist/ and generated types.
+ * same checkout, which would share its dist/ and generated types. `fast` takes no slot, but it claims
+ * its checkout all the same: it rewrites the generated types file while it checks it and builds into
+ * dist/, so it and any other mode refuse each other in one checkout.
  *
- * What a run still shares with the PC: the checkout (`fast` rewrites the generated types file
- * while it checks it, and fast/lane modes build into dist/), herdr's worktree root, and Playwright's
- * browser cache. `run` does not rebuild dist/ unless asked with `--build`.
+ * What a run still shares with the PC: the checkout with whatever else writes there outside a check
+ * (a `bun run build` beside it), herdr's worktree root, and Playwright's browser cache. `run` does
+ * not rebuild dist/ unless asked with `--build`.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -579,7 +581,9 @@ function claimMarker(marker: string, pid: number, checkout: string, alive: (pid:
 /**
  * Admission is serialized on the port after the slot range. While holding it, claim explicit
  * resources and take a candidate slot, then scan ALL slots again: an earlier holder may have
- * turned over while we asked it. Zero slots claims only resources (fast needs no herdr slot).
+ * turned over while we asked it. Zero slots (fast needs no herdr) takes neither the admission port nor
+ * a slot: it only claims its resources and checkout, whose markers are taken atomically, so a fast run
+ * is never refused because another run is being admitted at that moment.
  * Taking over a dead run's marker is serialized by claimMarker's reclaim file, not by this port, since
  * runs on other CHECK_LOCK_PORT bases do not share it. A busy admission port refuses rather than waits.
  */
@@ -588,7 +592,7 @@ export async function acquire(
 ): Promise<{ release: () => void; port: number | null } | { refused: "busy" | "same-checkout" | "resource"; holders: SlotHolder[]; resource?: string }> {
   const admissionPort = base + Math.max(slots, scan);
   const claims = [...resources.map((path) => ({ path, report: false, checkout: false })), ...reports.map((path) => ({ path, report: true, checkout: false }))];
-  if (slots > 0 && checkoutLock) claims.push({ path: checkoutLock, report: true, checkout: true });
+  if (checkoutLock) claims.push({ path: checkoutLock, report: true, checkout: true });
   // A waiting run (`retry`, with a ticket or without one when every ticket was held) with an older
   // run ahead of it does not take the admission port at all: holding it only to find the queue would
   // keep the head of the queue out of it, round after round. Its checkout and resources come first
@@ -605,8 +609,8 @@ export async function acquire(
     const queued = await queuedAhead(base, slots, scan, ticket);
     if (queued.length > 0) return { refused: "busy", holders: queued };
   }
-  const admission = await lock(admissionPort, pid, checkout);
-  if (!("release" in admission)) return { refused: "busy", holders: [{ ...admission, port: admissionPort }] };
+  const admission = slots > 0 ? await lock(admissionPort, pid, checkout) : null;
+  if (admission && !("release" in admission)) return { refused: "busy", holders: [{ ...admission, port: admissionPort }] };
   let taken: { release: () => void; port: number } | null = null;
   const markers: string[] = [];
   let admitted = false;
@@ -659,7 +663,7 @@ export async function acquire(
     return { release, port: taken?.port ?? null };
   } finally {
     if (!admitted) release();
-    admission.release();
+    admission?.release();
   }
 }
 
@@ -745,49 +749,48 @@ export async function main(groupSeams: GroupSeams & {
       console.error(`check: teardown failed; kept ${result.retained} for diagnosis`);
     }
   })();
-  if (needsHerdr || resources.length > 0 || reports.length > 0) {
+  // Every mode claims its checkout, fast included: runs in one checkout share dist/ and the generated types.
+  try {
+    let slots: number;
+    let wait: number;
     try {
-      let slots: number;
-      let wait: number;
-      try {
-        slots = needsHerdr ? maxRuns(process.env) : 0;
-        wait = waitSeconds(process.env);
-      } catch (error) { console.error(`check: ${(error as Error).message}`); process.exit(2); }
-      const waitStarted = Date.now();
-      let waited = false;
-      let base: number;
-      try { base = lockPort(process.env); } catch (error) { console.error(`check: ${(error as Error).message}`); process.exit(2); }
-      const checkout = checkoutIdentity(realpathSync(cwd));
-      const checkoutLock = needsHerdr ? join(realpathSync(cwd), "node_modules", ".cache", "check", "checkout.lock") : undefined;
-      if (checkoutLock) mkdirSync(dirname(checkoutLock), { recursive: true, mode: 0o700 });
-      const held = await acquireWaiting({ slots, checkout, base, resources, reports, ...(checkoutLock ? { checkoutLock } : {}) }, {
-        waitMs: wait * 1000,
-        onWait: (holders) => {
-          waited = true;
-          const queued = holders.some((holder) => holder.queuedAt !== undefined);
-          console.error(`check: ${queued ? `runs that came first are waiting for a slot (${describeHolders(holders)}); waiting in line` : `the ${slots}-run limit is reached (${describeHolders(holders)}); waiting`} up to ${wait}s for a slot`);
-        },
-      });
-      if (waited && !("refused" in held)) console.error(`check: took a slot after ${Math.round((Date.now() - waitStarted) / 1000)}s`);
-      if ("refused" in held) {
-        const message = held.refused === "same-checkout"
-          ? `another herdr-backed \`bun run check\` is running in this checkout, and the two would share dist/ and the generated types (${describeHolders(held.holders)}); wait for it to end or use another worktree`
-          : held.refused === "resource"
-            ? `check resource ${held.resource} is already held (${describeHolders(held.holders)}); use a different CHECK_DIR / CHECK_REPORT or wait for the holder`
-            : held.holders.some((holder) => holder.queuedAt !== undefined)
-              ? wait > 0
-                ? `runs that came first were still waiting for a slot after ${wait}s (${describeHolders(held.holders)}); try again later, or wait longer with CHECK_WAIT_SECONDS`
-                : `runs that came first are waiting for a slot (${describeHolders(held.holders)}); wait your turn with CHECK_WAIT_SECONDS`
-              : `herdr-backed check admission is busy or the ${slots}-run limit is reached (${describeHolders(held.holders)}); wait for one to end, or set CHECK_MAX_RUNS (1 to ${MAX_RUNS_LIMIT})`;
-        console.error(`check: ${message}`);
-        process.exit(1);
-      }
-      // Keep output ownership through cleanup AND the final report write.
-      process.once("exit", held.release);
-    } catch (error) {
-      console.error(`check: could not acquire the herdr-backed check lock: ${(error as Error).message}`);
+      slots = needsHerdr ? maxRuns(process.env) : 0;
+      wait = waitSeconds(process.env);
+    } catch (error) { console.error(`check: ${(error as Error).message}`); process.exit(2); }
+    const waitStarted = Date.now();
+    let waited = false;
+    let base: number;
+    try { base = lockPort(process.env); } catch (error) { console.error(`check: ${(error as Error).message}`); process.exit(2); }
+    const checkout = checkoutIdentity(realpathSync(cwd));
+    const checkoutLock = join(realpathSync(cwd), "node_modules", ".cache", "check", "checkout.lock");
+    mkdirSync(dirname(checkoutLock), { recursive: true, mode: 0o700 });
+    const held = await acquireWaiting({ slots, checkout, base, resources, reports, checkoutLock }, {
+      waitMs: wait * 1000,
+      onWait: (holders) => {
+        waited = true;
+        const queued = holders.some((holder) => holder.queuedAt !== undefined);
+        console.error(`check: ${queued ? `runs that came first are waiting for a slot (${describeHolders(holders)}); waiting in line` : `the ${slots}-run limit is reached (${describeHolders(holders)}); waiting`} up to ${wait}s for a slot`);
+      },
+    });
+    if (waited && !("refused" in held)) console.error(`check: took a slot after ${Math.round((Date.now() - waitStarted) / 1000)}s`);
+    if ("refused" in held) {
+      const message = held.refused === "same-checkout"
+        ? `another \`bun run check\` is running in this checkout, and the two would share dist/ and the generated types (${describeHolders(held.holders)}); wait for it to end or use another worktree`
+        : held.refused === "resource"
+          ? `check resource ${held.resource} is already held (${describeHolders(held.holders)}); use a different CHECK_DIR / CHECK_REPORT or wait for the holder`
+          : held.holders.some((holder) => holder.queuedAt !== undefined)
+            ? wait > 0
+              ? `runs that came first were still waiting for a slot after ${wait}s (${describeHolders(held.holders)}); try again later, or wait longer with CHECK_WAIT_SECONDS`
+              : `runs that came first are waiting for a slot (${describeHolders(held.holders)}); wait your turn with CHECK_WAIT_SECONDS`
+            : `herdr-backed check admission is busy or the ${slots}-run limit is reached (${describeHolders(held.holders)}); wait for one to end, or set CHECK_MAX_RUNS (1 to ${MAX_RUNS_LIMIT})`;
+      console.error(`check: ${message}`);
       process.exit(1);
     }
+    // Keep output ownership through cleanup AND the final report write.
+    process.once("exit", held.release);
+  } catch (error) {
+    console.error(`check: could not acquire the check lock: ${(error as Error).message}`);
+    process.exit(1);
   }
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();

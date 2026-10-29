@@ -334,6 +334,44 @@ describe("slots", () => {
     release(next);
   });
 
+  it("claims the checkout for a run that takes no slot, so fast and a herdr-backed run refuse each other", async () => {
+    const base = await freeRange(3);
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const fast = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+    try {
+      expect("release" in fast).toBe(true);
+      const secondFast = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(secondFast).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/same" }] }); }
+      finally { release(secondFast); }
+      const lane = await acquire({ slots: 1, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(lane).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/same" }] }); }
+      finally { release(lane); }
+    } finally { release(fast); }
+    const lane = await acquire({ slots: 1, scan: 3, base, checkout: "/same", checkoutLock });
+    try {
+      expect("release" in lane).toBe(true);
+      const fastBeside = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(fastBeside).toMatchObject({ refused: "same-checkout" }); }
+      finally { release(fastBeside); }
+      // another checkout's fast run is no business of this one
+      const elsewhere = await acquire({ slots: 0, scan: 3, base, checkout: "/other", checkoutLock: join(scratch(), "checkout.lock") });
+      try { expect(elsewhere).toMatchObject({ port: null }); }
+      finally { release(elsewhere); }
+    } finally { release(lane); }
+  });
+
+  it("admits a run that takes no slot while another run holds the admission port", async () => {
+    const base = await freeRange(3);
+    // base + max(slots, scan): the port a herdr-backed run holds while it is admitted
+    const admitting = await lock(base + 3, 111, "/admitting");
+    if (!("release" in admitting)) throw new Error("the admission port was free");
+    try {
+      const fast = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock: join(scratch(), "checkout.lock") });
+      try { expect(fast).toMatchObject({ port: null }); }
+      finally { release(fast); }
+    } finally { release(admitting); }
+  });
+
   it("takes over a checkout claim left by a dead pid", async () => {
     const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
@@ -1432,10 +1470,6 @@ describe("check CLI", () => {
     delete env["CHECK_REPORT"];
     delete env["GITHUB_EVENT_NAME"];
     delete env["GITHUB_EVENT_PATH"];
-    // CHECK_DIR makes the nested run take the PC-wide admission port, which the self-hosted
-    // runners share with every lane of the PC that is waiting for a slot: without a wait, a
-    // moment's overlap refuses the run before it writes its report (#1225).
-    env["CHECK_WAIT_SECONDS"] = "20";
     const runCheck = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], {
       cwd,
       env,
@@ -1504,6 +1538,46 @@ describe("check CLI", () => {
     expect(missingBuildReport.errors).toContain("built dist identity unavailable; cannot verify the built artifact");
   }, 180_000);
 
+  it.skipIf(process.platform !== "linux" || process.arch !== "x64")("refuses a fast run in a checkout another check run holds, before any step", () => {
+    const cwd = realpathSync(scratch());
+    git(cwd, "init", "-q");
+    git(cwd, "config", "user.name", "check test");
+    git(cwd, "config", "user.email", "check@example.invalid");
+    writeFileSync(join(cwd, ".gitignore"), "node_modules/\ndist/\nran\n");
+    const noOp = 'node -e "process.exit(0)" --';
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({
+      name: "check-cli-fixture",
+      scripts: {
+        "generate:types": 'node -e "require(\'node:fs\').writeFileSync(\'ran\',\'\')" --',
+        "generate:themes": noOp,
+        typecheck: noOp,
+        build: 'node -e "const fs=require(\'node:fs\');fs.mkdirSync(\'dist\',{recursive:true});fs.writeFileSync(\'dist/index.html\',\'fixture\')"',
+        "test:unit": noOp,
+      },
+    }));
+    git(cwd, "add", ".gitignore", "package.json");
+    git(cwd, "commit", "-qm", "fixture");
+    const actionlintDirectory = join(cwd, "node_modules", ".cache", "actionlint-1.7.12");
+    mkdirSync(actionlintDirectory, { recursive: true });
+    writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
+    // a live run of this checkout (this test's own process stands in for it) holds the checkout claim
+    const marker = join(cwd, "node_modules", ".cache", "check", "checkout.lock.check-lock");
+    mkdirSync(join(cwd, "node_modules", ".cache", "check"), { recursive: true });
+    const holder = JSON.stringify({ pid: process.pid, checkout: "/the-other-run" });
+    writeFileSync(marker, holder);
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const name of ["CHECK_DIR", "CHECK_REPORT", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"]) delete env[name];
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("another `bun run check` is running in this checkout");
+    expect(result.stderr).toContain(`pid ${process.pid} in /the-other-run`);
+    expect(existsSync(join(cwd, "ran"))).toBe(false);
+    expect(readFileSync(marker, "utf8")).toBe(holder);
+  }, 60_000);
+
   it.skipIf(process.platform !== "linux" || process.arch !== "x64")("says on the console why a run whose steps all passed failed when the source changed mid-run", () => {
     const cwd = scratch();
     git(cwd, "init", "-q");
@@ -1529,8 +1603,7 @@ describe("check CLI", () => {
     mkdirSync(actionlintDirectory, { recursive: true });
     writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
-    // an admission port of its own: on the shared one this run would wait behind every real run
-    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check", CHECK_LOCK_PORT: String(freePortRange(MAX_RUNS_LIMIT)) };
+    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check" };
     for (const name of ["CHECK_REPORT", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"]) delete env[name];
 
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });
