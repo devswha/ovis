@@ -291,7 +291,10 @@ establishes up to 50 eligible rows, newest first, reading at most one chunk per 
 header (the existing 400-check discovery bound also limits invalid candidates). Header requests
 use the same reader/queue limits and share a ten-second deadline including queue time. Long headers
 and malformed preambles retain their bounded parser and offset for the next open rather than
-restarting at a fixed cutoff. A file whose header is not yet complete has no row yet, never a
+restarting at a fixed cutoff. A traversal also stops after 50 unfinished headers, independently
+of its 50-row limit, so scanning more files cannot churn those newest checkpoints out of the
+256-entry cache before the next open advances them. Ineligible completed headers do not count
+against this progress limit. A file whose header is not yet complete has no row yet, never a
 guessed identity. Files completed in that first chunk publish their EOF-checked labels immediately.
 The subsequent full label scans share a two-second deadline measured from before the header pass,
 including all queue time. Tests may lengthen both phase deadlines with `piSessionDeadlineMs`.

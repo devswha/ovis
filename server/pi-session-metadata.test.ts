@@ -211,6 +211,31 @@ describe("Pi native label semantics", () => {
 });
 
 describe("Pi stat-keyed streaming reader", () => {
+  it("keeps newest header checkpoints when more long headers exist than cache entries", async () => {
+    jest.useFakeTimers();
+    spyOn(performance, "now").mockReturnValue(0);
+    const f = fixture();
+    for (let n = 0; n < 257; n++) {
+      const path = join(f.folder, `${n}.jsonl`);
+      writeFileSync(path, line({
+        type: "session", version: 3, id: `long-header-${n}`, cwd: process.cwd(),
+        ignored: "x".repeat(70 * 1024),
+      }) + name(`Session ${n}`));
+      utimesSync(path, 1_790_000_000 + n, 1_790_000_000 + n);
+    }
+    // No first-line record fits in the first chunk. Keep those checkpoints rather than
+    // walking far enough to evict them before the next open can finish even one header.
+    await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
+    const firstReads = f.io.calls;
+    const rows = await f.list();
+    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `long-header-${256 - n}`));
+    expect(rows.map((row) => row.title)).toEqual(Array.from({ length: 50 }, (_, n) => `Session ${256 - n}`));
+    expect(firstReads).toBeLessThanOrEqual(50);
+    expect(f.io.calls - firstReads).toBe(50);
+    expect(f.reader.cacheSize()).toBeLessThanOrEqual(256);
+    expect(f.io.max).toBeLessThanOrEqual(PI_CHUNK_BYTES);
+  });
+
   for (const earlier of [false, true]) {
     it(`returns ${earlier ? "checked rows" : "busy, not empty"} when the header phase times out`, async () => {
       jest.useFakeTimers();
