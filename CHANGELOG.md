@@ -10,6 +10,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [0.4.20] - 2026-10-29
 
 ### Added
+- In New workspace and New tab, Claude Code's Ultracode switch fits on one line under Model and
+  Effort, with its minimum version visible on a phone too.
+  ([#2282](https://github.com/devswha/ovis/pull/2282) by @fivetaku)
 - The server lists every agent Ovis can install, with each vendor's own install command for the
   PC's operating system and whether the agent is installed there, at which version
   (`GET /api/agent-catalog`, also for remote PCs). Nothing is installed yet: the install flow
@@ -82,6 +85,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2272](https://github.com/devswha/ovis/pull/2272))
 
 ### Fixed
+- A message to Claude Code is sent at once when its own turn has ended and only background
+  agents are still working, instead of waiting for those agents to finish.
+  ([#2271](https://github.com/devswha/ovis/pull/2271) by @CharleoYang)
+- Switching Chat tabs loads a smaller page of history and keeps more tabs' pages ready, instead
+  of fetching the whole page again at each switch. Settings lets you choose the history page size.
+  ([#2274](https://github.com/devswha/ovis/pull/2274) by @CharleoYang)
 - A terminal resized while it attaches no longer shows its first screen at the old size, or takes
   input before the program has the new size. The bridge now waits for herdr's redraw at the
   terminal's current size, also after a resize back to the size it started at, for up to a
@@ -520,6 +529,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2335](https://github.com/devswha/ovis/pull/2335))
 
 ### Maintenance
+- Diagrams use updated DOMPurify and KaTeX versions without their published security advisories.
+  ([#2290](https://github.com/devswha/ovis/pull/2290) by @DravenDou)
 - A stopped server also closes its OpenCode event stream and forgets the OpenCode panes it verified, as
   it already did for Codex's app-server connections. The session list's Resume window and Hermes's
   result readers drop their duplicate code paths.
