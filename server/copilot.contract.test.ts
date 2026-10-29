@@ -25,10 +25,15 @@ let app: ReturnType<typeof createServer>;
 let workspace: string;
 let pane: string;
 
+/** The stand-in for this session in front of a pane, by its own process: herdr's agent label can outlast one that quit. */
+async function fixtureInFront(pane: string, session: string): Promise<number | undefined> {
+  return (await paneProcessInfo(pane))?.foreground_processes?.find((process) => process.argv?.includes(executable) && process.argv.includes(session))?.pid;
+}
+
 async function startFixture(pane: string, session: string, flags = "") {
   await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${session}${flags ? ` ${flags}` : ""}\n` });
   for (const deadline = Date.now() + 10_000;;) {
-    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot") return;
+    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot" && await fixtureInFront(pane, session) !== undefined) return;
     if (Date.now() > deadline) throw new Error(`isolated Copilot stand-in not detected in ${pane}`);
     await Bun.sleep(50);
   }
@@ -314,10 +319,24 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect((await read()).source).toBe("scrollback");
   expect((await fetch(`${url}&from=${encodeURIComponent(first.cursor!)}`)).status).toBe(409);
   expect((await fetch(toolUrl(completedRef))).status).toBe(404);
+  // the stand-in quits. Its process leaving the pane is the exit; herdr must also forget the Copilot
+  // session reported for it, or herdr 0.9.3 ignores the next stand-in's report: the session this test
+  // reported is released, as Copilot's own hook would at its exit, rather than left to herdr's detection
+  const quitting = await fixtureInFront(pane, id);
+  if (quitting === undefined) throw new Error(`the stand-in for ${id} is not in front of ${pane}: ${JSON.stringify((await paneProcessInfo(pane))?.foreground_processes)}`);
   await herdrRpc("pane.send_text", { pane_id: pane, text: ":quit\n" });
-  for (const deadline = Date.now() + 10_000;;) {
-    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent !== "copilot") break;
-    if (Date.now() > deadline) throw new Error("isolated fixture did not exit");
+  const quitState = async () => {
+    const label = (await sessionSnapshot()).panes.find((p) => p.pane_id === pane);
+    const state = (() => { try { return fs.readFileSync(`/proc/${quitting}/stat`, "utf8").split(") ")[1]?.split(" ")[0] ?? "?"; } catch { return "gone"; } })();
+    return JSON.stringify({ pid: quitting, state, front: (await paneProcessInfo(pane))?.foreground_processes?.map((process) => [process.pid, process.argv]), agent: label?.agent, status: label?.agent_status, session: label?.agent_session });
+  };
+  for (const deadline = Date.now() + 10_000; (await paneProcessInfo(pane))?.foreground_processes?.some((process) => process.pid === quitting);) {
+    if (Date.now() > deadline) throw new Error(`isolated fixture did not exit: ${await quitState()}`);
+    await Bun.sleep(50);
+  }
+  await herdrRpc("pane.release_agent", { pane_id: pane, source: "herdr:copilot", agent: "copilot" });
+  for (const deadline = Date.now() + 10_000; (await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot";) {
+    if (Date.now() > deadline) throw new Error(`herdr still names the quit stand-in: ${await quitState()}`);
     await Bun.sleep(50);
   }
   await startFixture(pane, other);
