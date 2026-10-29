@@ -469,17 +469,22 @@ describe("slots", () => {
     expect(said[1]).toBe(said[0]!);
   });
 
-  it.skipIf(process.platform !== "linux")("takes over a marker whose run has exited but is not reaped yet", async () => {
+  it.skipIf(process.platform !== "linux" || !Bun.which("perl"))("takes over a marker whose run has exited but is not reaped yet", async () => {
     const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
     const marker = `${checkoutLock}.check-lock`;
-    // `sleep 0` exits at once under a parent (sleep 30, exec'd in place of sh) that never reaps it
-    const parent = spawn("sh", ["-c", "sleep 0 & echo $!; exec sleep 30"], { stdio: ["ignore", "pipe", "inherit"] });
+    // a parent that never reaps its child: the child exits at once, and the parent's SIGCHLD, which the
+    // kernel sends as the child becomes a zombie, says so
+    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::pause() while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
     try {
-      const pid = Number((await new Promise<string>((resolve) => parent.stdout!.once("data", (chunk: Buffer) => resolve(chunk.toString())))).trim());
-      const stat = (): string => { try { return readFileSync(`/proc/${pid}/stat`, "utf8"); } catch { return ""; } };
-      const deadline = Date.now() + 5_000;
-      while (!/\) Z /.test(stat())) if (Date.now() > deadline) throw new Error(`${pid} never became a zombie: ${stat()}`);
+      let said = "";
+      const heard = new Promise<void>((resolve, reject) => {
+        parent.stdout!.on("data", (chunk: Buffer) => { said += chunk.toString(); if (/^PID \d+$/m.test(said) && /^ZOMBIE$/m.test(said)) resolve(); });
+        parent.once("exit", (code) => reject(new Error(`the parent exited (${code}) before its child was a zombie: ${said}`)));
+      });
+      await within(heard, 5_000, "the parent did not hear its child exit", () => said);
+      const pid = Number(/^PID (\d+)$/m.exec(said)![1]);
+      expect(readFileSync(`/proc/${pid}/stat`, "utf8")).toMatch(/\) Z /);
       const started = processStart(pid);
       for (const claim of [{ pid, checkout: "/exited", start: started }, { pid, checkout: "/exited-old" }]) {
         writeFileSync(marker, JSON.stringify(claim));
