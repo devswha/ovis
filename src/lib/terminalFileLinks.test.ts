@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
+import { bareNameLinks, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
 
 /** a plain press of the primary button, as xterm hands one to a link */
 const click = { button: 0 } as MouseEvent;
@@ -210,6 +210,68 @@ describe("terminal file links", () => {
     expect(texts(1)).toEqual([]);
     expect(texts(2)).toEqual(["src/App.tsx"]);
     expect(texts(3)).toEqual(["./notes.txt", "~/x/a.md", "/etc/hosts.conf"]);
+    term.dispose();
+  });
+  it("opens a bare file name on Cmd+click (Ctrl+click off a Mac) only, drawn while the key is held", async () => {
+    const term = new Terminal({ cols: 120, allowProposedApi: true });
+    await written(term, "설계 문서를 다시 썼습니다(11_two-version-design.md, push 완료). see src/App.tsx process.env Math.random 1.2.3");
+    for (const mac of [true, false]) {
+      const bare = bareNameLinks(mac);
+      const opened: string[] = [];
+      const links = terminalFileLinks(term.buffer.active, 1, (path) => opened.push(path), bare);
+      expect(links.map((link) => link.text)).toEqual(["11_two-version-design.md", "src/App.tsx"]);
+      const [name, folder] = links;
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: false, underline: false });
+      expect(folder?.decorations).toBeUndefined();
+      const cmd = { button: 0, metaKey: true, ctrlKey: false } as MouseEvent;
+      const ctrl = { button: 0, metaKey: false, ctrlKey: true } as MouseEvent;
+      name?.activate(click);
+      name?.activate(mac ? ctrl : cmd);
+      expect(opened).toEqual([]);
+      // xterm reads the decorations as the pointer reaches the link: the key held is drawn
+      bare.update(mac ? cmd : ctrl);
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: true, underline: true });
+      name?.activate(mac ? cmd : ctrl);
+      folder?.activate(click);
+      expect(opened).toEqual(["11_two-version-design.md", "src/App.tsx"]);
+      bare.reset();
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: false, underline: false });
+    }
+    term.dispose();
+  });
+  it("redraws only the link under the pointer as the key goes down and up", async () => {
+    const term = new Terminal({ cols: 120, allowProposedApi: true });
+    await written(term, "a.md b.md src/c.md");
+    const bare = bareNameLinks(false);
+    const [first, second, folder] = terminalFileLinks(term.buffer.active, 1, () => {}, bare);
+    // xterm swaps the decorations of the link it hovers for its own, whose setters redraw the
+    // link it hovers now, whichever link's object is written
+    const drawn = { pointerCursor: false, underline: false };
+    const hover = (link: typeof first) => {
+      Object.assign(drawn, { pointerCursor: link!.decorations?.pointerCursor ?? true, underline: link!.decorations?.underline ?? true });
+      link!.hover?.({} as MouseEvent, link!.text);
+      link!.decorations = { set pointerCursor(on: boolean) { drawn.pointerCursor = on; }, set underline(on: boolean) { drawn.underline = on; } } as never;
+    };
+    const leave = (link: typeof first) => link!.leave?.({} as MouseEvent, link!.text);
+    hover(first);
+    bare.update({ metaKey: false, ctrlKey: true });
+    bare.update({ metaKey: false, ctrlKey: false });
+    expect(drawn).toEqual({ pointerCursor: false, underline: false });
+    bare.update({ metaKey: false, ctrlKey: true });
+    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    // the pointer moves on to a path with a folder, drawn as a link without the key: letting go
+    // of the key must not undraw it through the bare name it left
+    leave(first);
+    expect(folder?.decorations).toBeUndefined();
+    Object.assign(drawn, { pointerCursor: true, underline: true });
+    bare.update({ metaKey: false, ctrlKey: false });
+    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    hover(second);
+    expect(drawn).toEqual({ pointerCursor: false, underline: false });
+    bare.update({ metaKey: false, ctrlKey: true });
+    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    bare.reset();
+    expect(drawn).toEqual({ pointerCursor: false, underline: false });
     term.dispose();
   });
   it("recognizes files with line and column suffixes", async () => {
