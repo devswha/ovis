@@ -34,12 +34,14 @@ function credentialHomePrefix(shell: PaneShell, name: string, home: string | nul
 /**
  * One directory's one name, however it is reached: its real path through any symlink, or for a home
  * not made yet, its nearest existing parent's real path and the rest. Two logins locked by spelling
- * would both write one home reached through an alias.
+ * would both write one home reached through an alias. Throws when it cannot be told (a directory it
+ * may not read): a guess would let a second login in.
  */
 function canonicalPath(path: string): string {
   const absolute = resolve(path);
   try { return realpathSync(absolute); }
-  catch {
+  catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     const parent = dirname(absolute);
     return parent === absolute ? absolute : join(canonicalPath(parent), basename(absolute));
   }
@@ -137,8 +139,14 @@ export class UsageLoginService {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
       // the home the CLI will write: the account's own, a new named one, or the provider's only one
-      const loginHome = place ? `${id}:${canonicalPath(place.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
-        : separate ? `${id}:${canonicalPath(join(this.home, `.${id}-${body["name"]}`))}` : id;
+      let loginHome: string;
+      try {
+        loginHome = place ? `${id}:${canonicalPath(place.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
+          : separate ? `${id}:${canonicalPath(join(this.home, `.${id}-${body["name"]}`))}` : id;
+      } catch (error) {
+        console.warn("Could not tell which credential home a sign-in would write", error);
+        return conflictResponse("credential_home_unreadable", "Ovis cannot read this account's credential folder, so it cannot tell whether a sign-in is already running there. Check the folder's permissions on the server PC.");
+      }
       if (!await this.reserve(loginHome)) {
         return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
       }

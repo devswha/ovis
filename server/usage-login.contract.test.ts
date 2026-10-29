@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { createServer } from "./index.ts";
 import { paneClose, workspaceClose, workspaceCreate } from "./herdr/client.ts";
@@ -42,7 +43,8 @@ if (provider === "claude") {
   const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "codex@example.test" } })).toString("base64url");
   await Bun.write(join(home, "auth.json"), JSON.stringify({ tokens: { access_token: "header." + claims + ".signature" } }));
 }
-const receipt = join(${JSON.stringify(root)}, provider + "-receipt.json");
+// a held launch names its own receipt, so a test waits for that launch and no other
+const receipt = process.env.TEST_LOGIN_RECEIPT ?? join(${JSON.stringify(root)}, provider + "-receipt.json");
 await Bun.write(receipt + ".tmp", JSON.stringify({ argv: process.argv.slice(2), home,
   ...(["claude", "codex"].includes(provider) ? { configured: process.env[variable] ?? null } : {}),
   ...(provider === "agent" ? { noOpenBrowser: process.env.NO_OPEN_BROWSER } : {}),
@@ -308,10 +310,31 @@ for (const [provider, variable] of [["codex", "CODEX_HOME"], ["claude", "CLAUDE_
 }
 
 /** Tabs whose fake CLI stays open, as a sign-in the user has not finished; restore when done. */
+/** Resolves once `path` exists; rejects after 10 s naming `what`. */
+async function fileWritten(path: string, what: string): Promise<void> {
+  const seen = Promise.withResolvers<void>();
+  const watcher = watch(dirname(path), (_event, filename) => { if (filename === basename(path) && existsSync(path)) seen.resolve(); });
+  const timer = setTimeout(() => seen.reject(new Error(`${what} did not write its receipt`)), 10_000);
+  try {
+    if (existsSync(path)) seen.resolve();
+    await seen.promise;
+  } finally { clearTimeout(timer); watcher.close(); }
+}
+
+let heldLaunches = 0;
+/**
+ * Tabs whose fake CLI stays open, as a sign-in the user has not finished, each with a receipt of its
+ * own: `launched(n)` waits for the n-th tab's CLI to have written its sign-in. Restore `create` when done.
+ */
 function holdLogins() {
   const realCreate = herdr.tabCreate;
-  return spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) =>
-    realCreate({ ...options, env: { ...options.env, TEST_LOGIN_HOLD: "1" } }));
+  const receipts: string[] = [];
+  const create = spyOn(herdr, "tabCreate").mockImplementation((options: Parameters<typeof realCreate>[0]) => {
+    const receipt = join(root, `held-${++heldLaunches}.json`);
+    receipts.push(receipt);
+    return realCreate({ ...options, env: { ...options.env, TEST_LOGIN_HOLD: "1", TEST_LOGIN_RECEIPT: receipt } });
+  });
+  return { create, launched: (n: number) => fileWritten(receipts[n]!, `held sign-in ${n}`) };
 }
 
 const statusAndCode = async (response: Response) => [response.status, response.status === 200 ? null : (await response.json()).error.code];
@@ -344,7 +367,7 @@ it("starts one sign-in again when two arrive at once for an account, also once i
   // Given: an expired account this PC lists, and logins that stay open
   expiredHome("claude", ".claude-race", "race@example.test");
   const key = (await listed(true)).find((usage) => usage.account === "race@example.test")!.key;
-  const create = holdLogins();
+  const { create, launched } = holdLogins();
   const elsewhere = (await workspaceCreate({ cwd: root, label: "usage-login-moved" })).workspace.workspace_id;
   try {
     // When: two requests for it race
@@ -367,6 +390,8 @@ it("starts one sign-in again when two arrive at once for an account, also once i
     expect(again.status).toBe(200);
     openedPanes.push((await again.json() as UsageLoginStarted).pane_id);
     expect(create).toHaveBeenCalledTimes(2);
+    // its CLI has run before the next test reads the homes
+    await launched(1);
   } finally { create.mockRestore(); await workspaceClose(elsewhere).catch(() => undefined); }
 });
 
@@ -378,16 +403,13 @@ for (const alias of [false, true]) {
     const homeCtx = { ...ctx, home, env: alias ? { CODEX_HOME: join(home, "alias") } : {} };
     const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
     const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
-    const written = Promise.withResolvers<void>();
-    const watcher = watch(root, (_event, filename) => { if (filename === "codex-receipt.json") written.resolve(); });
-    const timer = setTimeout(() => written.reject(new Error("Add account did not write its receipt")), 10_000);
-    const create = holdLogins();
+    const { create, launched } = holdLogins();
     try {
       const added = await post({ provider: "codex", name: "new" });
       expect(added.status).toBe(200);
       const pane = (await added.json() as UsageLoginStarted).pane_id;
       openedPanes.push(pane);
-      await written.promise;
+      await launched(0);
       if (alias) symlinkSync(join(home, ".codex-new"), join(home, "alias"));
       const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
       // When
@@ -399,9 +421,43 @@ for (const alias of [false, true]) {
       expect(later.status).toBe(200);
       openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
       expect(create).toHaveBeenCalledTimes(2);
-    } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); }
+      // the retry's CLI has run before the next test starts
+      await launched(1);
+    } finally { create.mockRestore(); }
   });
 }
+
+it("refuses a sign-in when it cannot tell which credential home it would write", async () => {
+  // Given: Add account's login is open in ~/.codex-new, and Sign in again names that home through a
+  // symlinked CODEX_HOME whose real path cannot be read
+  const home = mkdtempSync(join(root, "unreadable-"));
+  const homeCtx = { ...ctx, home, env: { CODEX_HOME: join(home, "alias") } };
+  const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
+  const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
+  const { create, launched } = holdLogins();
+  try {
+    const added = await post({ provider: "codex", name: "new" });
+    expect(added.status).toBe(200);
+    openedPanes.push((await added.json() as UsageLoginStarted).pane_id);
+    await launched(0);
+    symlinkSync(join(home, ".codex-new"), join(home, "alias"));
+    const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
+    const refuse = (): never => { throw Object.assign(new Error("fixture: permission denied"), { code: "EACCES" }); };
+    const denied = spyOn(fs, "realpathSync").mockImplementation(Object.assign(refuse, { native: refuse }));
+    let again: Response;
+    let another: Response;
+    try {
+      // When
+      again = await post({ provider: "codex", account: key });
+      another = await post({ provider: "codex", name: "other" });
+    } finally { denied.mockRestore(); }
+    // Then: neither starts a CLI on a home it cannot name, and Add account makes no home
+    expect(await statusAndCode(again)).toEqual([409, "credential_home_unreadable"]);
+    expect(await statusAndCode(another)).toEqual([409, "credential_home_unreadable"]);
+    expect(existsSync(join(home, ".codex-other"))).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+  } finally { create.mockRestore(); }
+});
 
 it("frees the home when the login command could not be sent to its new tab", async () => {
   // Given: an expired account, and a tab that opens but will not take the command once
