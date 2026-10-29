@@ -18,10 +18,9 @@ export interface PiDeliveryAnchor {
   size: number;
   prefix: string;
   /** Wall-clock time of this capture, taken before Ovis pressed Enter. Pi stamps a user message
-   * when it is submitted, so a record stamped earlier was submitted by someone else. */
+   * when it is submitted, so a record stamped earlier was submitted by someone else, or the clock
+   * was set back in between. */
   at: number;
-  /** Monotonic time of the same capture, so a wall clock set back since then lowers the bound. */
-  mono: number;
 }
 
 export interface PiDeliveryCandidate {
@@ -170,7 +169,7 @@ export type PiDeliveryCapture = { anchor: PiDeliveryAnchor | null; retry: boolea
 
 /** Try once to capture Pi's active transcript position, distinguishing a concurrent write from an unreadable transcript. */
 export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = false, expectedSession?: string): PiDeliveryCapture {
-  const at = Date.now(), mono = performance.now();
+  const at = Date.now();
   let fd: number | undefined;
   let before: ReturnType<typeof statSync> | undefined;
   try {
@@ -181,12 +180,12 @@ export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = fals
     if (session === null || expectedSession !== undefined && session !== expectedSession) return { anchor: null, retry: false };
     const prefix = tailAt(fd, before.size), file = identity(before);
     if (!stable(fd, path, file, before.size, prefix)) return { anchor: null, retry: true };
-    return { anchor: { path, file, session, leaf: leaf.start === 0 ? null : leaf.id, size: before.size, prefix, at, mono }, retry: false };
+    return { anchor: { path, file, session, leaf: leaf.start === 0 ? null : leaf.id, size: before.size, prefix, at }, retry: false };
   } catch (error) {
     const current = (() => { try { return statSync(path); } catch { return null; } })();
     const retry = error instanceof PiDeliveryIncomplete || before !== undefined && current !== null && (identity(current) !== identity(before) || current.size !== before.size || current.mtimeMs !== before.mtimeMs || current.ctimeMs !== before.ctimeMs);
     return { anchor: allowMissing && expectedSession && before === undefined && fileId(path) === null
-      ? { path, file: null, session: expectedSession, leaf: null, size: 0, prefix: EMPTY_TAIL, at, mono } : null, retry };
+      ? { path, file: null, session: expectedSession, leaf: null, size: 0, prefix: EMPTY_TAIL, at } : null, retry };
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
@@ -212,12 +211,14 @@ export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing
  * Match Ovis-origin typed receipts to durable user records on the active Pi branch.
  * Candidates and matching entries are both FIFO. Unrelated user records are skipped, while a
  * later Ovis receipt may not cross an earlier unmatched one. Content is only a bounded scoped
- * correlator: Pi does not expose a submission id in its TUI or transcript. A record Pi stamped
- * before the receipt's capture was submitted before Ovis's Enter, so it never matches. The same
- * text submitted elsewhere after that Enter, or staged by Pi during compaction (stamped only when
- * the stage drains), remains indistinguishable.
+ * correlator: Pi does not expose a submission id in its TUI or transcript. A record stamped no
+ * earlier than the receipt's capture confirms it. Where the only such text was stamped earlier,
+ * either someone else submitted it before Ovis's Enter or the wall clock was set back, so the
+ * receipt is `ambiguous`: neither confirmed nor left waiting for a record that may never come.
+ * The same text submitted elsewhere after that Enter, or staged by Pi during compaction (stamped
+ * only when the stage drains), remains indistinguishable.
  */
-export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; unavailable?: string[]; retry: boolean } {
+export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryCandidate[], consumedEntries = new Set<string>()): { consumed: string[]; changed: string[]; ambiguous?: string[]; unavailable?: string[]; retry: boolean } {
   if (candidates.length === 0) return { consumed: [], changed: [], retry: false };
   let fd: number | undefined;
   try {
@@ -225,7 +226,7 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
     const before = fstatSync(fd), file = identity(before), size = before.size;
     const session = sessionId(fd, size), tail = tailAt(fd, size);
     if (session === null) return { consumed: [], changed: [], retry: true };
-    const consumed: string[] = [], changed: string[] = [], matchedEntries: string[] = [];
+    const consumed: string[] = [], changed: string[] = [], ambiguous: string[] = [], matchedEntries: string[] = [];
     const updates = new Map<PiDeliveryAnchor, AppendState>();
     let afterMatched = -1;
     for (const candidate of candidates) {
@@ -247,13 +248,15 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       }
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
-      // The capture time on today's wall clock: a clock set back since the capture would otherwise
-      // put Ovis's own record before it and leave the receipt waiting for good.
-      const since = Math.min(anchor.at, Date.now() - (performance.now() - anchor.mono));
-      const match = chain.reverse().find((entry) => entry.start > afterMatched && entry.role === "user"
-        && entry.text === candidate.text && (entry.at === null || entry.at >= since) && !consumedEntries.has(key(entry)));
-      if (!match) break;
-      consumed.push(candidate.id); matchedEntries.push(key(match)); afterMatched = match.start;
+      const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
+        && entry.text === candidate.text && !consumedEntries.has(key(entry)));
+      const match = same.find((entry) => entry.at === null || entry.at >= anchor.at);
+      const earlier = match ? undefined : same[0];
+      if (match) consumed.push(candidate.id);
+      else if (earlier) ambiguous.push(candidate.id);
+      else break;
+      const used = (match ?? earlier)!;
+      matchedEntries.push(key(used)); afterMatched = used.start;
     }
     if (!stable(fd, path, file, size, tail)) return { consumed: [], changed: [], retry: true };
     for (const [anchor, state] of updates) {
@@ -261,7 +264,7 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
     }
     for (const [anchor, state] of updates) appends.set(anchor, state);
     for (const key of matchedEntries) consumedEntries.add(key);
-    return { consumed, changed, retry: false };
+    return { consumed, changed, ...(ambiguous.length ? { ambiguous } : {}), retry: false };
   } catch (error) {
     // No partial matches were committed. Conservatively settle the whole candidate batch:
     // FIFO correlation cannot safely cross the receipt whose bounded history is unavailable.

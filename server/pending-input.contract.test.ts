@@ -281,6 +281,22 @@ describe("Ovis-origin Pi transcript receipts", () => {
     await f.removed(second.id, "consumed");
   }, 20_000);
 
+  it("settles a receipt as unconfirmed when only an earlier-stamped record has its text", async () => {
+    const transcript = piFile("pi-earlier");
+    const f = await setup("pi-earlier", "pi", "\u203a Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    const typedEarlier = Date.now() - 1000;
+    f.socket.send({ type: "submit", id: 962, pane_id: f.pane, text: "same", payload: "same", delivery: "immediate" });
+    expect((await f.socket.result(962)).ok).toBe(true);
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.request_id === 962 && item.error?.code === "pi_transcript_pending"));
+    const from = f.socket.seen.length;
+    appendFileSync(transcript, piLine("external", "a0", "user", "same", typedEarlier));
+    const settled = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.request_id === 962 && item.error?.code === "transcript_unconfirmed"), from);
+    expect(settled.removed ?? []).toEqual([]);
+  }, 20_000);
+
   it("binds a production-shaped unwritten filename to its later header UUID", async () => {
     const id = crypto.randomUUID();
     const transcript = join(root, `2026-10-24T01-34-00-000Z_${id}.jsonl`);

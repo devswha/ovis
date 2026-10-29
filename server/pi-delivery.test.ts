@@ -175,7 +175,7 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "first", anchor)]).consumed).toEqual(["one"]);
   });
   it("retries a capture invalidated by a concurrent append, then uses the stable anchor", async () => {
-    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc", at: 1, mono: 1 };
+    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc", at: 1 };
     let captures = 0, waits = 0;
     const result = await capturePiDeliveryAnchorRetrying(anchor.path, false, undefined,
       () => ++captures < 3 ? { anchor: null, retry: true } : { anchor, retry: false },
@@ -263,27 +263,34 @@ describe("Pi delivery transcript matching", () => {
     // Typed into Pi's own terminal and queued while it worked, before Ovis pressed Enter.
     const typedEarlier = Date.now() - 1000;
     const anchor = capturePiDeliveryAnchor(path)!;
-    const consumed = new Set<string>();
     appendFileSync(path, entry("external", "a0", "user", "same", typedEarlier));
-    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)], consumed)).toEqual({ consumed: [], changed: [], retry: false });
-    appendFileSync(path, entry("ours", "external", "user", "same"));
-    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)], consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)])).toEqual({ consumed: [], changed: [], ambiguous: ["r1"], retry: false });
   });
 
-  it("still confirms Ovis's own record after the wall clock is set back past the capture", () => {
+  it("prefers the record stamped after the capture when an earlier one has the same text", () => {
+    const path = join(dir(), "both.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const typedEarlier = Date.now() - 1000;
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const consumed = new Set<string>();
+    appendFileSync(path, entry("external", "a0", "user", "same", typedEarlier) + entry("ours", "external", "user", "same"));
+    const receipts = [candidate("r1", "same", anchor), candidate("r2", "same", anchor)];
+    // the earlier record lies before the first receipt's match, so it cannot settle the second
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    appendFileSync(path, entry("ours-2", "ours", "user", "same"));
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+  });
+
+  it("settles, rather than strands, Ovis's own record stamped while the wall clock was set back", () => {
     const path = join(dir(), "clock.jsonl");
     writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
     const first = capturePiDeliveryAnchor(path)!;
-    const now = Date.now();
-    // the wall clock is corrected a minute back between the capture and Pi's stamp
-    const spy = spyOn(Date, "now").mockImplementation(() => now - 60_000);
-    try {
-      appendFileSync(path, entry("u1", "a0", "user", "first"));
-      const second = capturePiDeliveryAnchor(path)!;
-      appendFileSync(path, entry("u2", "u1", "user", "second"));
-      expect(matchPiDeliveries(path, [candidate("r1", "first", first), candidate("r2", "second", second)]))
-        .toEqual({ consumed: ["r1", "r2"], changed: [], retry: false });
-    } finally { spy.mockRestore(); }
+    // a clock corrected a minute back between the capture and Pi's stamp, and forward again
+    appendFileSync(path, entry("u1", "a0", "user", "first", first.at - 60_000));
+    const second = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u2", "u1", "user", "second"));
+    expect(matchPiDeliveries(path, [candidate("r1", "first", first), candidate("r2", "second", second)]))
+      .toEqual({ consumed: ["r2"], changed: [], ambiguous: ["r1"], retry: false });
   });
 
   it("does not reuse a consumed transcript entry across reconciliation calls", () => {
