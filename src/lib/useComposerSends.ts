@@ -1,7 +1,7 @@
 import { useCallback, useMemo, type MutableRefObject } from "react";
 import { ApiError } from "./api.ts";
 import { answerFromText, answerRefusal, needsConfirmation, type TypedAnswer } from "./promptAnswer.ts";
-import { composerDelivery, pendingActionUncertain, submitNotTyped, submitRefusal, type DraftRefusal } from "./compose.ts";
+import { composerDelivery, pendingActionUncertain, submitNote, submitNotTyped, submitRefusal, type DraftRefusal } from "./compose.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import { pendingMessages, UNCONFIRMED_SEND } from "./pendingMessages.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -92,7 +92,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       // Send it: the draft a refusal named goes as the message, over itself (the server clears it, then
       // sends the same text). A menu opened since would take it as a choice, so it is never an answer
       const asDraft = clearDraft !== undefined && text === clearDraft;
-      if (pane !== null && asDraft && answering !== null) return t("Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
+      if (pane !== null && asDraft && answering !== null) return submitNote("agent_blocked", "");
       if (pane !== null && answering !== null) {
         // never typed into the agent's menu: only as one of its options, or its own reply row
         const choice = answerFromText(answering, text);
