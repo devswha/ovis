@@ -73,7 +73,9 @@ export function hyperlinkFilter(): { handler: (payload: string) => boolean; rese
  * the key may have gone down in another window). xterm reads a link's decorations as the pointer
  * reaches it, then swaps them for its own object, whose setters redraw the link it hovers now,
  * whichever link's object is written: so only the hovered bare name's are written, never one the
- * pointer has left for a path with a folder, which stays drawn.
+ * pointer has left for a path with a folder, which stays drawn. A link hovered again on the same
+ * row is read from that object, which still holds how it was drawn when the pointer left: its
+ * hover draws it for the key as it is now.
  */
 export function bareNameLinks(mac: boolean) {
   let held = false;
@@ -88,8 +90,17 @@ export function bareNameLinks(mac: boolean) {
   return {
     /** the key that follows a bare name: Cmd on a Mac, Ctrl elsewhere */
     pressed: (event: { metaKey: boolean; ctrlKey: boolean }): boolean => mac ? event.metaKey : event.ctrlKey,
-    decorations: (): ILinkDecorations => ({ get pointerCursor() { return held; }, get underline() { return held; } }) as ILinkDecorations,
-    hover: (link: ILink): void => { hovered = link; },
+    // read when xterm first hovers the link; the hover's own write lands on nothing until xterm swaps them
+    decorations: (): ILinkDecorations => ({
+      get pointerCursor() { return held; }, set pointerCursor(_: boolean) {},
+      get underline() { return held; }, set underline(_: boolean) {},
+    }),
+    hover: (link: ILink): void => {
+      hovered = link;
+      if (!link.decorations) return;
+      link.decorations.pointerCursor = held;
+      link.decorations.underline = held;
+    },
     leave: (link: ILink): void => { if (hovered === link) hovered = null; },
     update: (event: { metaKey: boolean; ctrlKey: boolean }): void => show(mac ? event.metaKey : event.ctrlKey),
     reset: (): void => show(false),

@@ -239,39 +239,71 @@ describe("terminal file links", () => {
     }
     term.dispose();
   });
-  it("redraws only the link under the pointer as the key goes down and up", async () => {
+  it("redraws only the link under the pointer as the key goes down and up, and on a second hover", async () => {
     const term = new Terminal({ cols: 120, allowProposedApi: true });
     await written(term, "a.md b.md src/c.md");
     const bare = bareNameLinks(false);
     const [first, second, folder] = terminalFileLinks(term.buffer.active, 1, () => {}, bare);
-    // xterm swaps the decorations of the link it hovers for its own, whose setters redraw the
-    // link it hovers now, whichever link's object is written
-    const drawn = { pointerCursor: false, underline: false };
+    // what xterm 5.5's Linkifier does (_handleNewLink, _linkHover, _linkLeave): a hovered link's
+    // drawing is read from its decorations, which are then swapped for an object whose getters and
+    // setters reach the link hovered now. A link hovered again on its row is read from that object
+    // while it still answers with how the link was drawn when the pointer left it.
+    type Drawn = { pointerCursor: boolean; underline: boolean };
+    const states = new Map<object, { state?: Drawn }>();
+    let current: { state?: Drawn } | undefined;
     const hover = (link: typeof first) => {
-      Object.assign(drawn, { pointerCursor: link!.decorations?.pointerCursor ?? true, underline: link!.decorations?.underline ?? true });
+      const entry = states.get(link!) ?? {};
+      states.set(link!, entry);
+      current = entry;
+      entry.state = {
+        pointerCursor: link!.decorations === undefined ? true : link!.decorations.pointerCursor,
+        underline: link!.decorations === undefined ? true : link!.decorations.underline,
+      };
       link!.hover?.({} as MouseEvent, link!.text);
-      link!.decorations = { set pointerCursor(on: boolean) { drawn.pointerCursor = on; }, set underline(on: boolean) { drawn.underline = on; } } as never;
+      const decorations = {} as Drawn;
+      Object.defineProperties(decorations, {
+        pointerCursor: { get: () => current?.state?.pointerCursor, set: (on: boolean) => { if (current?.state) current.state.pointerCursor = on; } },
+        underline: { get: () => current?.state?.underline, set: (on: boolean) => { if (current?.state) current.state.underline = on; } },
+      });
+      link!.decorations = decorations;
     };
-    const leave = (link: typeof first) => link!.leave?.({} as MouseEvent, link!.text);
+    const leave = (link: typeof first) => {
+      link!.leave?.({} as MouseEvent, link!.text);
+      current = undefined;
+    };
+    const drawn = () => current?.state && { ...current.state };
+    const ctrl = (down: boolean) => bare.update({ metaKey: false, ctrlKey: down });
     hover(first);
-    bare.update({ metaKey: false, ctrlKey: true });
-    bare.update({ metaKey: false, ctrlKey: false });
-    expect(drawn).toEqual({ pointerCursor: false, underline: false });
-    bare.update({ metaKey: false, ctrlKey: true });
-    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    ctrl(true);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    ctrl(false);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    // drawn under the key, left for blank cells of the row, the key let go, then back: plain text
+    ctrl(true);
+    leave(first);
+    ctrl(false);
+    hover(first);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    // and the other way: left as text, the key held away from it, then back: a link
+    leave(first);
+    ctrl(true);
+    hover(first);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
     // the pointer moves on to a path with a folder, drawn as a link without the key: letting go
     // of the key must not undraw it through the bare name it left
     leave(first);
     expect(folder?.decorations).toBeUndefined();
-    Object.assign(drawn, { pointerCursor: true, underline: true });
-    bare.update({ metaKey: false, ctrlKey: false });
-    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    hover(folder);
+    ctrl(false);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    leave(folder);
     hover(second);
-    expect(drawn).toEqual({ pointerCursor: false, underline: false });
-    bare.update({ metaKey: false, ctrlKey: true });
-    expect(drawn).toEqual({ pointerCursor: true, underline: true });
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    ctrl(true);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
     bare.reset();
-    expect(drawn).toEqual({ pointerCursor: false, underline: false });
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
     term.dispose();
   });
   it("recognizes files with line and column suffixes", async () => {
