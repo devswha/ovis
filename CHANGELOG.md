@@ -261,10 +261,11 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Korean typed in the terminal in the iOS app now reaches the pane as whole syllables (안녕).
   Before, each jamo went out on its own (ㅇㅏㄴㄴㅕㅇ) because the app's web view does not say
   "Safari" in its user agent. Safari and the Home Screen app already worked.
+  This comes with the PC update; no new iOS app build is needed.
   ([#2307](https://github.com/devswha/ovis/pull/2307))
 - The iOS app no longer shows WebKit's form bar (the up and down arrows and the check mark) over
   the keyboard, so only Ovis's own key bar sits above it and the page keeps that row of the
-  screen.
+  screen. This needs the new iOS app build; updating the PC alone does not remove the bar.
   ([#2109](https://github.com/devswha/ovis/pull/2109))
 - A message sent to a PC whose Ovis is too old to confirm messages is no longer treated as delivered:
   the composer, Send now on a held copy and the held queue's Send now keep its text as a

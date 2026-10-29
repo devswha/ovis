@@ -16,7 +16,7 @@
         "Terminal text uses the same coding font on Mac, Safari and Chrome."
       ],
       "fixed": [
-        "Korean typed in the iOS terminal arrives as whole syllables.",
+        "Korean typing in the iOS app is fixed by the PC update, without a new app build.",
         "Chat keeps following new output when work blocks fold.",
         "Claude Code Chat follows the conversation after branching.",
         "Slow file previews no longer freeze every terminal.",
@@ -39,7 +39,7 @@
         "Mac 앱, Safari, Chrome에서 터미널 글꼴이 같아집니다."
       ],
       "fixed": [
-        "iOS 터미널에서 입력한 한글이 자모로 나뉘지 않고 온전한 글자로 전달됩니다.",
+        "PC를 업데이트하면 새 iOS 앱을 설치하지 않아도 터미널 한글 입력이 바로잡힙니다.",
         "작업 블록이 접혀도 채팅이 새 출력을 계속 따라갑니다.",
         "Claude Code에서 대화를 분기한 뒤에도 채팅이 그 대화를 따라갑니다.",
         "파일 미리보기가 느려도 모든 터미널이 함께 멈추지 않습니다.",
@@ -62,7 +62,7 @@
         "Mac アプリ、Safari、Chrome でターミナルのフォントがそろいます。"
       ],
       "fixed": [
-        "iOS のターミナルで入力した韓国語が、字母に分かれず音節のまま届きます。",
+        "PC を更新すると、iOS アプリを更新せずにターミナルの韓国語入力が直ります。",
         "作業ブロックが折りたたまれても、チャットが新しい出力を追い続けます。",
         "Claude Code で会話を分岐した後も、チャットがその会話を追います。",
         "ファイルのプレビューが遅くても、すべてのターミナルが止まらなくなりました。",
@@ -85,7 +85,7 @@
         "Mac 应用、Safari 和 Chrome 的终端使用相同的编程字体。"
       ],
       "fixed": [
-        "在 iOS 终端输入的韩文会以完整音节传送，不再拆成字母。",
+        "更新电脑上的 Ovis 即可修复 iOS 终端的韩文输入，无需更新手机应用。",
         "工作块折叠后，聊天仍会跟随新输出。",
         "在 Claude Code 中分支后，聊天仍会跟随该对话。",
         "文件预览缓慢时，不再导致所有终端卡住。",
