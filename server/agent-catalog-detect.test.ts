@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../shared/agent-catalog.ts";
 import { AgentDetector, catalogLocator, LOGIN_PATH_KEPT_MS, runVersion, TIMEOUT_KEPT_MS, versionSpawn } from "./agent-catalog-detect.ts";
@@ -142,6 +142,27 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     expect(await catalogLocator({ probe: null, servicePath: () => bin })("claude")).toBe(join(bin, "claude"));
     const detector = new AgentDetector({ home: emptyHome, locate: locateWithLogin });
     expect(await detector.state(entry("claude"), "linux")).toMatchObject({ installed: true, binary: "claude" });
+  });
+
+  it("runs a version flag with the PATH its agent was found on, so a script's interpreter there is found", async () => {
+    const agents = mkdtempSync(join(tmpdir(), "ovis-catalog-login-bin-"));
+    const runtime = mkdtempSync(join(tmpdir(), "ovis-catalog-login-runtime-"));
+    const script = (path: string, body: string) => { writeFileSync(path, body); chmodSync(path, 0o755); };
+    try {
+      // an interpreter only the login shell's PATH has, as nvm's node is for a server run as a service,
+      // and an npm-style agent run by it through env
+      script(join(runtime, "ovis-fake-node"), "#!/bin/sh\necho 'cmd 1.88.2'\n");
+      script(join(agents, "cmd"), "#!/usr/bin/env ovis-fake-node\n");
+      const locateWithLogin = catalogLocator({ probe: async () => ({ path: `${agents}${delimiter}${runtime}` }), servicePath: () => "/usr/bin/nonexistent" });
+      expect(await new AgentDetector({ home: emptyHome, locate: locateWithLogin }).state(entry("cmd"), "linux")).toMatchObject({ installed: true, version: "1.88.2", version_error: null });
+      // an interpreter beside the agent, as npm's global folder has node: found whatever the PATH
+      script(join(agents, "ovis-fake-node"), "#!/bin/sh\necho 'cmd 1.88.3'\n");
+      script(join(agents, "letta"), "#!/usr/bin/env ovis-fake-node\n");
+      expect(await new AgentDetector({ home: emptyHome, locate: async (binary) => binary === "letta" ? join(agents, "letta") : null }).state(entry("letta"), "linux")).toMatchObject({ installed: true, version_error: null });
+    } finally {
+      rmSync(agents, { recursive: true, force: true });
+      rmSync(runtime, { recursive: true, force: true });
+    }
   });
 
   it("finds an agent its installer put in its own folder, off PATH, and says so", async () => {
