@@ -209,7 +209,8 @@ const canonical = (path: string): string | null => { try { return realpathSync(p
  */
 export function lettaRecordOwned(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): boolean {
   const folder = canonical(owner.cwd);
-  if (folder === null || (owner.env["HOME"] !== undefined && canonical(owner.env["HOME"]) === folder)) return false;
+  const home = owner.env["HOME"] === undefined ? null : canonical(owner.env["HOME"]);
+  if (folder === null || home === null || home === folder) return false;
   return !panes.some((other) => other.pane_id !== pane.pane_id && (other.agent === "letta" || other.agent_session?.agent === "letta")
     && [other.foreground_cwd, other.cwd].some((cwd) => typeof cwd === "string" && cwd !== "" && canonical(cwd) === folder));
 }

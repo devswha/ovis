@@ -192,8 +192,10 @@ describe("Letta conversation binding", () => {
     // Letta with LETTA_CONFIG_DIR never rewrites ~/.letta/settings.local.json: an old one there is no record of this process
     expect(lettaRecordOwned(target, [target], { ...owner, cwd: root, env: { HOME: root, LETTA_CONFIG_DIR: join(root, "cfg") } })).toBe(false);
     expect(lettaRecordOwned(target, [target], { ...owner, cwd: root })).toBe(false);
+    expect(lettaRecordOwned(target, [target], { ...owner, env: {} })).toBe(false);
     // pane B reported default:agent-b, then /new wrote its own local-conv-1 into the shared record
-    const peer = { ...pane("w2:p1", "default:agent-local-b", join(owner.cwd, ".")), foreground_cwd: join(owner.cwd, ".letta", "..") } as HerdrPane;
+    symlinkSync(owner.cwd, join(root, "link"));
+    const peer = { ...pane("w2:p1", "default:agent-local-b", join(root, "link")), cwd: join(root, "elsewhere") } as HerdrPane;
     expect(lettaRecordOwned(target, [target, peer], owner)).toBe(false);
     expect(lettaRecordOwned(target, [target, { ...peer, agent: "letta", agent_session: undefined } as HerdrPane], owner)).toBe(false);
     expect(lettaRecordOwned(target, [target, { ...peer, agent: "claude", agent_session: undefined } as HerdrPane], owner)).toBe(true);
@@ -244,6 +246,9 @@ describe("Letta conversation binding", () => {
       expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
       await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
+      // another pane running Letta in the folder writes the same record
+      const peer = pane("w2:p1", "default:agent-local-b", project);
+      await expect(paneTranscript(bound.pane_id, undefined, { panes: [bound, peer] } as SessionSnapshot)).rejects.toThrow("no_session_path");
     } finally {
       info.mockRestore();
       rpc.mockRestore();
