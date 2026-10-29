@@ -699,6 +699,24 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     assert.deepEqual(uploads.map((upload) => [upload.pane_id, upload.content_type]), [[pane, "image/png"]], "one upload, for this pane");
     console.log(`PASS input line: a pasted screenshot is uploaded and its path inserted (${firstPath})`);
 
+    // a screenshot pasted over a selected word replaces it, though Chrome on Android collapses the
+    // selection to its end just after the paste
+    await line.fill("look at this");
+    const ranged = uploaded();
+    await line.evaluate((element, png) => {
+      const box = element as HTMLTextAreaElement;
+      box.focus();
+      box.setSelectionRange(8, 12);
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      box.setSelectionRange(12, 12);
+      document.dispatchEvent(new Event("selectionchange"));
+    }, PNG);
+    const rangedPath = await ranged;
+    await page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === value, `look at ${quoted(rangedPath)}`);
+    console.log("PASS input line: a screenshot pasted over a selected word replaces it");
+
     // the key bar's Paste with an image on the clipboard: read with clipboard.read(), the same upload
     await line.fill("");
     await page.evaluate((png) => {
@@ -713,7 +731,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await paste.tap();
     const secondPath = await second;
     await page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === value, quoted(secondPath));
-    assert.equal(uploads.length, 2, "the key bar's Paste uploaded the image once");
+    assert.equal(uploads.length, 3, "the key bar's Paste uploaded the image once");
     assert.equal(await note.count(), 0, "no note: the image was pasted");
     console.log("PASS key bar Paste: an image read with clipboard.read() is uploaded and its path inserted");
 
@@ -723,7 +741,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await paste.tap();
     await note.waitFor();
     assert.equal(await note.textContent(), "No text on the clipboard. To paste an image, press and hold the input line, then choose Paste.");
-    assert.equal(uploads.length, 2, "nothing uploaded");
+    assert.equal(uploads.length, 3, "nothing uploaded");
     console.log("PASS key bar Paste without clipboard.read(): an empty text read says how to paste an image");
 
     // a path that would be cut at the line's limit names no file: the line stays as it was

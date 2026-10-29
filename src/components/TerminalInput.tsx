@@ -239,10 +239,12 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
    * written; where the caret is; the compositions so far. An answer that comes after any of them
    * changed, even and back again (a selection moved, a composition begun and ended with nothing
    * written, the pane's input lost and given again), or for a line no longer shown, is dropped with
-   * a note. Null, with the note said, when the pane cannot take a paste now.
+   * a note. Null, with the note said, when the pane cannot take a paste now. `native`: the keyboard's
+   * own Paste, whose selection the browser collapses to its end after the paste event (Chrome on
+   * Android, even with the paste prevented): that collapse is the paste's own, not a move.
    */
   const pasting = useRef(false);
-  const beginPaste = useCallback((element: HTMLTextAreaElement, waiting: string) => {
+  const beginPaste = useCallback((element: HTMLTextAreaElement, waiting: string, native = false) => {
     const target = pasteTarget?.() ?? null;
     if (target === null) { setNote(t("Not pasted: the terminal is not ready.")); return null; }
     const version = terminalDraftVersion(owner);
@@ -250,14 +252,23 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     const end = element.selectionEnd;
     const composed = compositions.current;
     const selected = selections.current;
+    /** where the paste found the selection, or where the keyboard's own Paste leaves it */
+    const atPaste = (from: number, to: number): boolean => (from === start && to === end) || (native && from === end && to === end);
     // a caret moved in the focused line, by touch or by script, while the paste waits; each move
-    // counts, so a move and back still drops the paste. Chrome on Android reports a selectionchange
-    // just after the keyboard's own Paste with the caret where it was: that is no move
+    // reported counts, so a move and back reported on the way still drops the paste. Chrome on
+    // Android reports a selectionchange just after the keyboard's own Paste with the caret where it
+    // was, or a range collapsed to its end: neither is a move
     let seen = [start, end];
+    let first = true;
     const moved = (): void => {
-      if (document.activeElement !== element || (element.selectionStart === seen[0] && element.selectionEnd === seen[1])) return;
-      seen = [element.selectionStart, element.selectionEnd];
-      selections.current += 1;
+      if (document.activeElement !== element) return;
+      const from = element.selectionStart;
+      const to = element.selectionEnd;
+      if (from === seen[0] && to === seen[1]) return;
+      const own = first && atPaste(from, to);
+      first = false;
+      seen = [from, to];
+      if (!own) selections.current += 1;
     };
     document.addEventListener("selectionchange", moved);
     pasting.current = true;
@@ -268,7 +279,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     const shown = (): boolean => mounted.current && box.current === element;
     /** the line, its caret, a composition or the pane changed since the paste began, even and back again */
     const stale = (): boolean => composing.current || compositions.current !== composed || selections.current !== selected
-      || element.selectionStart !== start || element.selectionEnd !== end
+      || !atPaste(element.selectionStart, element.selectionEnd)
       || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
     const changed = t("Not pasted: the line or the terminal changed meanwhile. Paste again.");
     return {
@@ -342,7 +353,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       setNote(uploadFailed(error));
       return;
     }
-    const waiting = beginPaste(event.currentTarget, t("Uploading file…"));
+    const waiting = beginPaste(event.currentTarget, t("Uploading file…"), true);
     if (waiting === null) return;
     uploadPaths(files).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error))).finally(waiting.finish);
   };
