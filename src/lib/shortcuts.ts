@@ -23,6 +23,11 @@ export const SHORTCUTS = [
   { id: "split-down", label: "Split pane down", keys: [] },
   { id: "previous-pane", label: "Previous pane", keys: ["Mod", "Shift", "ArrowUp"] },
   { id: "next-pane", label: "Next pane", keys: ["Mod", "Shift", "ArrowDown"] },
+  // no default key either, as New tab: each person picks one in Settings
+  { id: "previous-tab", label: "Previous tab", keys: [] },
+  { id: "next-tab", label: "Next tab", keys: [] },
+  { id: "previous-workspace", label: "Previous workspace", keys: [] },
+  { id: "next-workspace", label: "Next workspace", keys: [] },
   { id: "settings", label: "Settings", keys: ["Mod", "Shift", ","] },
   // listed only: held, not dispatched; VoiceInput.tsx listens for it itself (isVoiceShortcut)
   { id: "voice", label: "Dictate (hold)", keys: ["Mod", "Shift", "Space"] },
@@ -290,6 +295,18 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
           break;
         case "next-pane":
           actions.selectAdjacentPane(1);
+          break;
+        case "previous-tab":
+          actions.selectAdjacentTab(-1);
+          break;
+        case "next-tab":
+          actions.selectAdjacentTab(1);
+          break;
+        case "previous-workspace":
+          actions.selectAdjacentWorkspace(-1);
+          break;
+        case "next-workspace":
+          actions.selectAdjacentWorkspace(1);
           break;
         case "settings":
           actions.openSettings();

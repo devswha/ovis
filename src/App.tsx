@@ -3,7 +3,7 @@ import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Searc
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { authenticate, createTab, moveTabToWorkspace, shareSeen, signOut, splitPane, swapPaneWith, zoomPane } from "./lib/api.ts";
-import { displayPaneTitle } from "./components/Sidebar.tsx";
+import { displayPaneTitle, storedWorktreeCollapsed } from "./components/Sidebar.tsx";
 import { PaneCanvas } from "./components/PaneCanvas.tsx";
 import { MachineSessionsProvider } from "./lib/machineSessionContext.tsx";
 import { PaneTerminal } from "./components/PaneTerminal.tsx";
@@ -40,6 +40,9 @@ import { paneStorageId } from "../shared/machines.ts";
 import { usePairedNotices } from "./lib/usePairedNotices.ts";
 import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
+import { adjacentTabPane, adjacentWorkspacePane, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
+import { lastViewedPane } from "./lib/lastViewedPane.ts";
+import { currentSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
 import { useSettings } from "./lib/settings.ts";
 import { useShownMachines } from "./lib/hiddenMachines.ts";
@@ -374,6 +377,25 @@ export function App() {
         const next = panes[(index + direction + panes.length) % panes.length];
         if (next) selectPane(next.pane_id);
       },
+      selectAdjacentTab: (direction) => {
+        const roster = snapshotRef.current;
+        const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
+        const next = roster ? adjacentTabPane(roster, selectedPaneId, direction, viewed) : null;
+        if (next) selectPane(next);
+      },
+      selectAdjacentWorkspace: (direction) => {
+        const roster = snapshotRef.current;
+        if (!roster) return;
+        // the rows the sidebar draws, in its order: a drag's until herdr has it, pins first, folds left out
+        const byId = new Map(roster.workspaces.map((workspace) => [workspace.workspace_id, workspace]));
+        const ordered = reorderCoordinator.order(selectedMachineId, roster.workspaces.map((workspace) => workspace.workspace_id)).flatMap((id) => byId.get(id) ?? []);
+        const selectedWorkspaceId = roster.panes.find((pane) => pane.pane_id === selectedPaneId)?.workspace_id ?? null;
+        const folded = (repoKey: string) => repoKey !== "" && storedWorktreeCollapsed(selectedMachineId, [repoKey]).has(repoKey);
+        const order = sidebarWorkspaceSteps(ordered, pinnedWorkspaceIds(currentSidebarPins(), selectedMachineId), folded, selectedWorkspaceId);
+        const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
+        const next = adjacentWorkspacePane(roster, order, selectedPaneId, direction, viewed);
+        if (next) selectPane(next);
+      },
       setView,
       // a peek shows the terminal over the chat: the shortcut takes the chat back, the lens stays Chat
       toggleView: () => { if (terminalPeek !== null) endPeek(); else setView(view === "chat" ? "terminal" : "chat"); setDrawerOpen(false); },
@@ -500,7 +522,7 @@ export function App() {
         void zoomPane(paneId, mode, machineId).then(() => void load()).catch((err) => layoutRefused("pane zoom failed", err));
       } : null,
     }),
-    [selectPane, selectedPaneId, selectedMachineId, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter],
+    [selectPane, selectedPaneId, selectedMachineId, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter],
   );
 
   useShortcuts(actions, locked === false);

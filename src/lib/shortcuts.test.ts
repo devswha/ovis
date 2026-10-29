@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { bindingDisplayKeys, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
+import { SHORTCUTS, bindingDisplayKeys, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
 import { isReservedShortcutKey, sanitizeShortcutOverrides } from "./shortcutBindings.ts";
 
 function keyEvent(key: string, patch: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
@@ -253,6 +253,27 @@ describe("new tab and split pane", () => {
     expect(shortcutDisplayKeys("new-tab", overrides)).toEqual(["Mod", "Shift", "Y"]);
     expect(shortcutConflict("split-down", ["y"], overrides)).toBe(true);
     expect(shortcutConflict("new-tab", ["k"], {})).toBe(true);
+  });
+});
+
+describe("previous and next tab and workspace", () => {
+  const ids = ["previous-tab", "next-tab", "previous-workspace", "next-workspace"] as const;
+
+  it("are listed with no key until one is chosen in Settings, and then work like any other binding", () => {
+    for (const id of ids) {
+      expect(SHORTCUTS.some((shortcut) => shortcut.id === id)).toBe(true);
+      expect(shortcutKeys(id, {})).toEqual([]);
+      expect(shortcutDisplayKeys(id, {})).toEqual([]);
+    }
+    expect(matchShortcut(keyEvent("ArrowLeft", { ctrlKey: true }), false)).toBeNull();
+    const overrides = sanitizeShortcutOverrides({ "previous-tab": "ArrowLeft", "next-tab": "ArrowRight", "previous-workspace": "[", "next-workspace": "meta+End" }, true);
+    expect(overrides).toEqual({ "previous-tab": "ArrowLeft", "next-tab": "ArrowRight", "previous-workspace": "[", "next-workspace": "meta+End" });
+    expect(matchShortcut(keyEvent("ArrowLeft", { metaKey: true }), true, overrides)).toBe("previous-tab");
+    expect(matchShortcut(keyEvent("ArrowRight", { metaKey: true }), true, overrides)).toBe("next-tab");
+    expect(matchShortcut(keyEvent("{", { code: "BracketLeft", metaKey: true }), true, overrides)).toBe("previous-workspace");
+    expect(matchShortcut(keyEvent("End", { metaKey: true, shiftKey: false }), true, overrides)).toBe("next-workspace");
+    expect(shortcutDisplayKeys("previous-tab", overrides)).toEqual(["Mod", "Shift", "ArrowLeft"]);
+    expect(shortcutConflict("next-tab", ["ArrowUp"], overrides)).toBe(true);
   });
 });
 
