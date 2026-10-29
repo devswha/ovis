@@ -395,6 +395,30 @@ it("starts one sign-in again when two arrive at once for an account, also once i
   } finally { create.mockRestore(); await workspaceClose(elsewhere).catch(() => undefined); }
 });
 
+/**
+ * Finishes a held sign-in and resolves once herdr says its pane ended, heard on a subscription of the
+ * test's own: the shared server hears no exit before the file's first (see beforeAll), and a server
+ * started in the test may subscribe after it.
+ */
+async function finishLoginInHerdr(paneId: string): Promise<void> {
+  const started = Promise.withResolvers<void>();
+  const ended = Promise.withResolvers<void>();
+  const subscription = herdr.subscribeEvents([{ type: "pane.exited" }], {
+    onStarted: () => started.resolve(),
+    onEvent: (frame) => { if (frame.data?.["type"] === "pane_exited" && frame.data["pane_id"] === paneId) ended.resolve(); },
+    onError: (error) => { started.reject(error); ended.reject(error); },
+  });
+  const timer = setTimeout(() => {
+    const error = new Error(`herdr did not say the sign-in in ${paneId} ended`);
+    started.reject(error); ended.reject(error);
+  }, 10_000);
+  try {
+    await started.promise;
+    await herdr.paneSendKeys(paneId, ["Enter"]);
+    await ended.promise;
+  } finally { clearTimeout(timer); subscription.close(); }
+}
+
 /** A server on `stateDir` signing in from the fixture home, as one started again after a restart would be. */
 function serveOn(stateDir: string) {
   return createServer({
@@ -421,6 +445,10 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
     const pane = (await first.json() as UsageLoginStarted).pane_id;
     openedPanes.push(pane);
     await launched(0);
+    // a server beside it on the same state refuses that home too
+    const beside = serveOn(stateDir);
+    try { expect(await statusAndCode(await startOn(beside, { provider: "claude", account: key }))).toEqual([409, "login_in_progress"]); }
+    finally { beside.stop(); }
     before.stop();
     // When: the server starts again on its state, and the same account is asked for
     after = serveOn(stateDir);
@@ -428,9 +456,8 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
     // Then: no second CLI signs in to that home while the first runs
     expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
     expect(create).toHaveBeenCalledTimes(1);
-    // once that sign-in ends, the home is free again: told by herdr's state, not by an exit this server
-    // may have subscribed too late to hear (the long-running server hears it)
-    await finishLogin(pane);
+    // once that sign-in ends, the home is free again: the restarted server asks herdr, not its own events
+    await finishLoginInHerdr(pane);
     const later = await startOn(after, { provider: "claude", account: key });
     expect(later.status).toBe(200);
     openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
@@ -438,12 +465,14 @@ it("keeps a home taken across a server restart while its sign-in still runs in i
   } finally { before.stop(); after?.stop(); create.mockRestore(); }
 });
 
-it("frees a home after a restart when its sign-in ended while no server ran, even when its pid now names another process", async () => {
+it("frees a home after a restart when its sign-in ended while no server ran, even when its pane ID now names another tab", async () => {
   // Given: a sign-in started by a server that stopped, whose tab then closed while none ran
   // Claude's stand-in keeps the account its home names, so the key still lists it once it has run
   expiredHome("claude", ".claude-restart-gone", "restart-gone@example.test");
   const key = (await listed(true)).find((usage) => usage.account === "restart-gone@example.test")!.key;
   const stateDir = mkdtempSync(join(root, "restart-gone-state-"));
+  // a plain tab, not one of the held sign-ins counted below
+  const plainTab = herdr.tabCreate;
   const { create, launched } = holdLogins();
   const before = serveOn(stateDir);
   let after: ReturnType<typeof createServer> | undefined;
@@ -453,11 +482,13 @@ it("frees a home after a restart when its sign-in ended while no server ran, eve
     await launched(0);
     before.stop();
     await paneClose((await first.json() as UsageLoginStarted).pane_id);
-    // a later boot can hand the CLI's pid to anything: here, this test's own process, which no tab runs
+    // a herdr started again hands the same pane IDs out again: here the saved one names another live tab
+    const other = (await plainTab({ cwd: root, label: "usage-login-other", workspaceId })).root_pane.pane_id;
+    openedPanes.push(other);
     const saved = join(stateDir, "usage-logins.json");
-    const state: { logins: { pid: number | null }[] } = JSON.parse(readFileSync(saved, "utf8"));
+    const state: { logins: { pane: string }[] } = JSON.parse(readFileSync(saved, "utf8"));
     expect(state.logins).toHaveLength(1);
-    writeFileSync(saved, JSON.stringify({ ...state, logins: state.logins.map((login) => ({ ...login, pid: process.pid })) }));
+    writeFileSync(saved, JSON.stringify({ ...state, logins: state.logins.map((login) => ({ ...login, pane: other })) }));
     // When: the server starts again and the account is asked for
     after = serveOn(stateDir);
     const again = await startOn(after, { provider: "claude", account: key });
