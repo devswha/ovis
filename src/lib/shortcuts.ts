@@ -167,6 +167,8 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
  * own input element is xterm's, not a field to edit). keepsKeyForText also lets them go where the
  * field has no text left that way.
  */
+const STEP_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace"]);
+
 export interface KeyTargetLike {
   tagName?: string;
   type?: string;
@@ -201,15 +203,15 @@ export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverr
 export { isMacPlatform };
 
 /**
- * Arrows, Home and End select or move in a field with text; there a matching binding gives way. A pane
- * step gives way only until the selection's moving end is at the edge the key goes to: then the key
- * has nothing left to do in the field. A pane switch focuses the next pane's message box, and a draft
- * there must not stop the next switch for good.
+ * Arrows, Home and End select or move in a field with text; there a matching binding gives way. A
+ * step to another pane, tab or workspace gives way only until the selection's moving end is at the
+ * edge the key goes to: then the key has nothing left to do in the field. A step focuses the next
+ * pane's message box, and a draft there must not stop the next step for good.
  */
 export function keepsKeyForText(event: { key: string; target: KeyTargetLike | EventTarget | null }, shortcut: ShortcutId): boolean {
   if (!(event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") || !keepsArrowsForText(event.target)) return false;
   const field = event.target as KeyTargetLike;
-  if (shortcut !== "previous-pane" && shortcut !== "next-pane") return true;
+  if (!STEP_SHORTCUTS.has(shortcut)) return true;
   // a field without a text selection (email, number, contenteditable) keeps the key while it has text
   if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") return true;
   const moving = field.selectionDirection === "backward" ? field.selectionStart : field.selectionEnd;

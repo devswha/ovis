@@ -3410,7 +3410,9 @@ The values are the ones in `src/styles.css`.
   Previous/Next tab and Previous/Next workspace follow Zed's and Warp's previous/next tab actions,
   with no default key (their ⌘⇧[ and ⌘⇧] are the browser's own tab switch): a step goes through the
   selected pane's tabs in the strip's order, or this PC's workspaces in the sidebar's (pins first,
-  a folded group's worktrees left out), wraps around, and opens the pane a click there opens.
+  a folded group's worktrees left out; a sidebar filter does not narrow it, as Previous/Next pane),
+  wraps around, and opens the pane a click there opens. A draft gives the key back at its edge, as
+  for the pane steps.
 - Text-field selection and IME composition keep their keys. Focus-local list/tab navigation and
   reordering are separate from global bindings; they must not intercept terminal input.
   Global actions target the selected pane, and the original handled chord must never also reach its PTY.

@@ -83,6 +83,16 @@ describe("keepsArrowsForText", () => {
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(2, 2) }, "next-pane")).toBe(true);
   });
 
+  it("lets a tab or workspace step go at the draft's edge too, as a pane step", () => {
+    const draft = (at: number) => ({ tagName: "TEXTAREA", value: "draft", selectionStart: at, selectionEnd: at, selectionDirection: "none", classList: classes("composer-text") });
+    expect(keepsKeyForText({ key: "ArrowRight", target: draft(5) }, "next-tab")).toBe(false);
+    expect(keepsKeyForText({ key: "ArrowLeft", target: draft(0) }, "previous-tab")).toBe(false);
+    expect(keepsKeyForText({ key: "ArrowDown", target: draft(5) }, "next-workspace")).toBe(false);
+    expect(keepsKeyForText({ key: "Home", target: draft(0) }, "previous-workspace")).toBe(false);
+    expect(keepsKeyForText({ key: "ArrowRight", target: draft(2) }, "next-tab")).toBe(true);
+    expect(keepsKeyForText({ key: "ArrowLeft", target: draft(5) }, "previous-workspace")).toBe(true);
+  });
+
   it("gives a draft's edge only to the pane steps: another binding on those keys stays with the text", () => {
     const atStart = { tagName: "TEXTAREA", value: "draft", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", classList: classes("composer-text") };
     const event = { key: "Home", code: "Home", ctrlKey: false, metaKey: true, shiftKey: true, altKey: false, target: atStart };
