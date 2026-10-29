@@ -2,6 +2,7 @@ import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMe
 import { receiptResumeId } from "./receiptResume.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
+import { getTransport, type WebSocketLike } from "./transport.ts";
 
 type Handler = (message: ServerMessage) => void;
 
@@ -107,7 +108,7 @@ function defaultUrl(): string {
  *   user reviews instead. Control frames (attach/resize/role) replay as before.
  */
 export class HerdrSocket {
-  private socket: WebSocket | null = null;
+  private socket: WebSocketLike | null = null;
   private readonly url: string;
   private readonly handlers = new Set<Handler>();
   private readonly disconnectHandlers = new Set<() => void>();
@@ -135,7 +136,7 @@ export class HerdrSocket {
   /** attempts given up at their deadline since the last one that opened */
   private connectTimeouts = 0;
   /** sockets wake() or a probe ended before their close event ran: that event can still say the output stopped */
-  private endedEarly = new WeakSet<WebSocket>();
+  private endedEarly = new WeakSet<WebSocketLike>();
   private disposed = false;
   private wakeListening = false;
   private connectionState: ConnectionState = "idle";
@@ -295,7 +296,7 @@ export class HerdrSocket {
     // a backoff retry still waiting would only open a second attempt later, past whatever ends this one
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    const socket = new WebSocket(this.url);
+    const socket = getTransport().openSocket(this.url);
     const epoch = ++this.connectionEpoch;
     const started = Date.now();
     this.socket = socket;
@@ -461,7 +462,7 @@ export class HerdrSocket {
   }
 
   /** The end of this connection, from its close event or a connect deadline; a stale socket's is ignored. */
-  private closed(socket: WebSocket, code: number): void {
+  private closed(socket: WebSocketLike, code: number): void {
     if (this.socket !== socket) return;
     this.endConnection();
     if (code === OUTPUT_STALLED_CLOSE_CODE) {
@@ -528,7 +529,7 @@ export class HerdrSocket {
   }
 
   /** Sends one of the probe's pings and arms its deadline; `attempt` 2 is the last before a drop. */
-  private ping(socket: WebSocket, attempt: 1 | 2): void {
+  private ping(socket: WebSocketLike, attempt: 1 | 2): void {
     const deadline = Math.min(PROBE_TIMEOUT_MAX_MS, PROBE_TIMEOUT_MS * 2 ** this.probeDrops);
     const armedAt = Date.now();
     this.probeTimer = window.setTimeout(() => {
@@ -566,7 +567,7 @@ export class HerdrSocket {
   }
 
   /** Waits out a probe in flight on `socket`; true when it is still this connection afterwards. */
-  private async probeSettled(socket: WebSocket): Promise<boolean> {
+  private async probeSettled(socket: WebSocketLike): Promise<boolean> {
     while (this.probing && this.socket === socket) await this.probeDone;
     return this.connected && this.socket === socket;
   }
@@ -577,7 +578,7 @@ export class HerdrSocket {
    * and a new socket connects now and replays the role and attaches. The old socket's late events
    * are ignored (it is no longer this.socket).
    */
-  private drop(socket: WebSocket): void {
+  private drop(socket: WebSocketLike): void {
     this.trace.record("probe_drop", { pending: this.submits.size }, true);
     this.probeDrops += 1;
     this.endConnection();
@@ -590,7 +591,7 @@ export class HerdrSocket {
     this.connect();
   }
 
-  private watchIdle(socket: WebSocket): void {
+  private watchIdle(socket: WebSocketLike): void {
     if (this.idleTimer !== null) window.clearInterval(this.idleTimer);
     this.idleTimer = window.setInterval(() => {
       if (this.socket !== socket) return;
