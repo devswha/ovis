@@ -62,6 +62,8 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
   useEffect(() => {
     if (!scanned.current) return;
     scanned.current = false;
+    // the address code goes once: a failed attempt leaves an empty field, not a spent code to send again
+    setCode("");
     const value = consumePairCode();
     if (value) void pair(value);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

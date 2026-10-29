@@ -76,6 +76,13 @@ describe("pairing link access gate", () => {
     expect(access!.pairCode).toBe("");
   });
 
+  it("leaves no link code in the field after a failed automatic attempt", async () => {
+    pairStatus = 401;
+    await act(async () => { renderer = create(view()); });
+    expect(pairRequests).toBe(1);
+    expect(renderer!.root.findByProps({ id: "access-gate-code" }).props.value).toBe("");
+  });
+
   it("pairs an already-open browser from the address once, without mounting the gate", async () => {
     initiallyOpen = true;
     await act(async () => { renderer = create(view()); });
