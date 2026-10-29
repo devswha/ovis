@@ -262,7 +262,8 @@ for (const ordering of ["a resize back to the start size", "a redraw later than 
     if (ordering === "a screen queued from before a round trip") {
       await resize(80, 24);
       // #2289 review: one read brings herdr's first screen, drawn before both resizes, and the redraw for the grid between them
-      attach.onData(herdrScreen(80, 24, "old", true) + herdrScreen(91, 27, "between"));
+      // the redraw for the grid between leaves the cursor at column 1, one more move to a row's start
+      attach.onData(herdrScreen(80, 24, "old", true) + herdrScreen(91, 27, "between").replaceAll("\x1b[1;8H", "\x1b[2;1H"));
       expect(ready()).toBe(false);
       current = herdrScreen(80, 24, "current");
     } else {
@@ -308,18 +309,29 @@ it("lets a resized attach go when herdr never draws its current grid", async () 
   expect(pane.ready()).toBe(true);
 });
 
-it("lets a resized attach go before a busy pane's held output is too much for one frame (#2289 review)", async () => {
+for (const late of [false, true]) {
+  it(`lets a resized attach go before a busy pane's held output is too much for one frame, ${late ? "after" : "in"} the hold (#2289 review)`, async () => {
+    using pane = await resizableAttach();
+    await pane.resize(91, 27);
+    pane.attach.onData(herdrScreen(80, 24, "old", true));
+    if (late) jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+    // the program keeps drawing at the old grid while herdr's redraw is late
+    const stale = herdrScreen(80, 24, "busy");
+    for (let read = 0; read < 600 && !pane.ready(); read++) pane.attach.onData(stale);
+    expect(pane.ready()).toBe(true);
+    pane.attach.onData(herdrScreen(91, 27, "current"));
+    expect(pane.ended).toEqual([]);
+    expect(pane.painted()).toContain("current");
+  });
+}
+
+it("settles on the redraw when a diff of the top row follows it in the same read (#2289 review)", async () => {
   using pane = await resizableAttach();
   await pane.resize(91, 27);
   pane.attach.onData(herdrScreen(80, 24, "old", true));
-  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
-  // the program keeps drawing at the old grid while herdr's redraw is late
-  const stale = herdrScreen(80, 24, "busy");
-  for (let read = 0; read < 600 && !pane.ready(); read++) pane.attach.onData(stale);
+  // a top row repainted at once: an update from row 1 that is no grid the pty had
+  pane.attach.onData(`${herdrScreen(91, 27, "current")}\x1b[?2026h\x1b[1;1H${"x".repeat(91)}\x1b[?2026l`);
   expect(pane.ready()).toBe(true);
-  pane.attach.onData(herdrScreen(91, 27, "current"));
-  expect(pane.ended).toEqual([]);
-  expect(pane.painted()).toContain("current");
 });
 
 it("marks a newcomer recovering after a ready stream ends and clears it when the next attach takes", async () => {

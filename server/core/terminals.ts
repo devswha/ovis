@@ -212,6 +212,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     attachment.cols = cols;
     attachment.rows = rows;
     attachment.resizes = (attachment.resizes ?? 0) + 1;
+    attachment.resizedTo = [...(attachment.resizedTo ?? []).slice(-15), `${cols}x${rows}`];
     attachment.process.resize(cols, rows);
     // herdr redraws the whole screen for a new size: a repaint still waiting would send it twice
     clearTimeout(attachment.repaint);

@@ -54,6 +54,8 @@ describe("screenGrid", () => {
   it("reads the grid a whole screen was drawn at", () => {
     expect(screenGrid(body(wholeScreen(80, 24, true)))).toEqual({ cols: 80, rows: 24 });
     expect(screenGrid(body(wholeScreen(91, 27)))).toEqual({ cols: 91, rows: 27 });
+    // the cursor herdr places before the update ends at column 1 (a command running on the next line): one more row move, no text
+    expect(screenGrid(body(wholeScreen(91, 27).replaceAll("\x1b[1;11H", "\x1b[2;1H")))).toEqual({ cols: 91, rows: 27 });
   });
   it("takes no update that does not draw every row, or whose plain rows differ in width, for a screen", () => {
     // an update of a few rows, as a program printing between screens gives
