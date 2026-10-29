@@ -128,6 +128,14 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
+ *  GET    /api/relay                     -> RelayStatus, no-store; also included in authenticated
+ *         /api/health and /api/access answers.
+ *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
+ *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
+ *  POST   /api/relay/offer               -> { url, expires_at }; a fresh one-time pairing offer
+ *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
+ *         Relay mutations require drive role, same origin and X-Herdr-Update: 1; offer and reset
+ *         additionally require a direct connection. Serve-only installs refuse relay start.
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
@@ -405,7 +413,9 @@ export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageRe
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, RemoteAccess, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+/** Older servers and the Tailscale-only builder omit relay state. */
+export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
 /**
  * Browser stream keys: how the server tells one browser from another without a credential, so a
@@ -434,6 +444,16 @@ export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, Bin
 export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
+
+/** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
+export interface RelayStatus {
+  readonly phase: "off" | "connecting" | "online" | "error";
+  readonly relay: string;
+  readonly app: string;
+  readonly sessions: number;
+  readonly blocked: null | "serve_only" | "identity_unreadable";
+  readonly error: string | null;
+}
 
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,

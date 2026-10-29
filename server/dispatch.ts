@@ -34,6 +34,8 @@ import { attachableIdentity } from "./pty/sidecar.ts";
 import { handleUpdateRequest } from "./update-api.ts";
 import { handleHerdrUpdateRequest } from "./herdr-update.ts";
 import { handlePortalRequest } from "./portal.ts";
+import { handleRelayRequest } from "./relay/routes.ts";
+import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
 import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
@@ -59,6 +61,7 @@ type PortalStartup = { ok: true } | { ok: false; error: unknown };
 
 /** Per-server services shared by socket requests and other dispatch callers. */
 export interface RequestServices {
+  readonly relay: RelayService;
   readonly options: NonNullable<Parameters<typeof createServer>[0]>;
   readonly hostname: string;
   readonly token: string;
@@ -351,6 +354,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
   }
+  if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
+    return handleRelayRequest(request, pathname, ctx);
+  }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
   // what every browser of this server shares; a watching device reads it and cannot change it (above)
@@ -407,12 +413,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       public_exposure: ingress === "funnel" ? "observed" : "unknown",
     } : undefined;
     const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
-    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...(security ? { security } : {}) }, 200, securityHeaders);
+    const relay = access.level === "full" ? { relay: ctx.services.relay.status() } : {};
+    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}) }, 200, securityHeaders);
     try {
       const info = await ping();
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
-      return jsonResponse({ ok: true, herdr, auth, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
+      return jsonResponse({ ok: true, herdr, auth, ...relay, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } }, 200, securityHeaders);
     } catch (error) {
       return errorResponse(error);
@@ -427,7 +434,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/access") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
-    return jsonResponse(await remoteAccess(ctx.port ?? DEFAULT_PORT), 200, { "cache-control": "no-store" });
+    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/session") {

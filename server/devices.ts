@@ -200,6 +200,17 @@ export class DeviceStore {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
+  /** Relay opt-in closes open LAN access before any outbound connection is made. */
+  closeGate(): void {
+    this.assertWritable();
+    if (this.gated) return;
+    const gate = new Date().toISOString();
+    this.save(this.devices, gate);
+    this.gateClosedAt = gate;
+    this.pending = null;
+    this.unconfirmedFirstPairs = [];
+  }
+
   /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
   onRevoke(id: string, close: () => void): () => void {
     if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
