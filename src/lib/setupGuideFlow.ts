@@ -75,6 +75,27 @@ export function preferredAgent(agents: readonly AgentCatalogRow[], ready: string
   return agents[0] ?? null;
 }
 
+/** how many times, and how far apart, a failed read of the signed-in accounts is tried */
+const USAGE_TRIES = 3;
+const USAGE_RETRY_MS = 2000;
+
+/**
+ * Reads how many plan accounts are signed in, trying a failed read again. The returned cancel (the
+ * guide closing) stops it: no retry runs after it, and an answer already on its way is dropped.
+ */
+export function readSignedIn(read: () => Promise<number>, found: (count: number) => void, schedule: (run: () => void, ms: number) => () => void): () => void {
+  let live = true;
+  let cancelRetry = (): void => {};
+  const attempt = (left: number): void => {
+    if (!live) return;
+    read().then((count) => { if (live) found(count); }, () => {
+      if (live && left > 1) cancelRetry = schedule(() => attempt(left - 1), USAGE_RETRY_MS);
+    });
+  };
+  attempt(USAGE_TRIES);
+  return () => { live = false; cancelRetry(); };
+}
+
 /** The plan accounts this PC is signed in to, which Start shows plan usage for without asking. */
 export function signedInAccounts(providers: readonly ProviderUsage[]): number {
   return providers.filter((usage) => usage.problem !== "expired").length;

@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, preferredAgent, readGuide, REOPENED, saveGuide, settleDelay, setupView, signedInAccounts, startAgents, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, preferredAgent, readGuide, readSignedIn, REOPENED, saveGuide, settleDelay, setupView, signedInAccounts, startAgents, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -161,5 +161,48 @@ describe("openSetupGuide", () => {
       if (saved) Object.defineProperty(globalThis, "window", saved);
       else Reflect.deleteProperty(globalThis, "window");
     }
+  });
+});
+
+describe("readSignedIn", () => {
+  /** a scheduler the test runs by hand: each retry waits here until \`run()\`, or is cancelled */
+  const scheduler = () => {
+    const waiting: (() => void)[] = [];
+    let cancelled = 0;
+    return { waiting, cancelled: () => cancelled, schedule: (run: () => void) => { waiting.push(run); return () => { cancelled += 1; }; } };
+  };
+  const settled = () => new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+
+  it("tries a failed read again, and reports the count once one answers", async () => {
+    const answers = [Promise.reject(new Error("offline")), Promise.resolve(2)];
+    const found: number[] = [];
+    const timer = scheduler();
+    readSignedIn(() => answers.shift()!, (count) => found.push(count), timer.schedule);
+    await settled();
+    expect(timer.waiting.length).toBe(1);
+    timer.waiting.shift()!();
+    await settled();
+    expect(found).toEqual([2]);
+  });
+
+  it("stops when cancelled: no retry runs and a late answer changes nothing", async () => {
+    let reads = 0;
+    const found: number[] = [];
+    const timer = scheduler();
+    const late = Promise.withResolvers<number>();
+    const cancel = readSignedIn(() => { reads += 1; return reads === 1 ? Promise.reject(new Error("offline")) : late.promise; }, (count) => found.push(count), timer.schedule);
+    await settled();
+    // the guide closed while the retry waited
+    cancel();
+    expect(timer.cancelled()).toBe(1);
+    expect(reads).toBe(1);
+
+    // and an answer already on its way when the guide closed is dropped too
+    const second = scheduler();
+    const stop = readSignedIn(() => late.promise, (count) => found.push(count), second.schedule);
+    stop();
+    late.resolve(3);
+    await settled();
+    expect(found).toEqual([]);
   });
 });

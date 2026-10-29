@@ -18,6 +18,7 @@ import { createRequest, newSessionLaunch } from "../lib/newSession.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 import { useSettings } from "../lib/settings.ts";
 import { checkList, foundAgents, preferredAgent, settleDelay, setupView, signedInAccounts, startAgents, type CheckStatus, type GuideEvent, type GuideState, type PcCheck } from "../lib/setupGuideFlow.ts";
+import { useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { userErrorMessage } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentSetupCard } from "./AgentSetupCard.tsx";
@@ -188,36 +189,13 @@ function Checking({ known, catalog }: { known: readonly KnownAgent[]; catalog: r
   );
 }
 
-/** how many times, and how far apart, a failed read of the signed-in accounts is tried */
-const USAGE_TRIES = 3;
-const USAGE_RETRY_MS = 2000;
-
-/** Reads the PC's signed-in plan accounts, trying a failed read again; it goes on after the guide has closed. */
-function readSignedIn(refresh: boolean, found: (count: number) => void, tries = USAGE_TRIES): void {
-  fetchUsage(refresh).then((report) => found(signedInAccounts(report.providers)), () => {
-    if (tries > 1) window.setTimeout(() => readSignedIn(refresh, found, tries - 1), USAGE_RETRY_MS);
-  });
-}
-
 function StartScreen({ agents, ready, onOpened, onOpenSettings }: { agents: readonly AgentCatalogRow[]; ready: string | null } & Pick<SetupGuideProps, "onOpened" | "onOpenSettings">) {
   const t = useT();
   const { settings, update } = useSettings();
   const [picked, setPicked] = useState<string | null>(null);
   const chosen = agents.find((agent) => agent.id === picked) ?? preferredAgent(agents, ready)!;
   // the plan accounts already signed in here: their usage is turned on as soon as they are seen, without a question
-  const [signedIn, setSignedIn] = useState(0);
-  const mounted = useRef(true);
-  const showing = useRef(settings.showUsage);
-  showing.current = settings.showUsage;
-  useEffect(() => {
-    mounted.current = true;
-    // an agent signed in just now: read the accounts afresh, not what the server last saw
-    readSignedIn(ready !== null, (count) => {
-      if (mounted.current) setSignedIn(count);
-      if (count > 0 && !showing.current) { showing.current = true; update({ showUsage: true }); }
-    });
-    return () => { mounted.current = false; };
-  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAccounts(report.providers)), settings.showUsage, () => update({ showUsage: true }));
   const [folder, setFolder] = useState<string>(() => recentDirectories.read("local")[0] ?? HOME);
   const [browsing, setBrowsing] = useState(false);
   // the folder the browser last said it shows, and how its Use this folder names it: the pick keeps the

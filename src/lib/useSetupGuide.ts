@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchPreferences } from "./api.ts";
 import { onSetupGuideRequest } from "./setupGuide.ts";
-import { autoOpen, GUIDE_STORAGE_KEY, guideStep, readGuide, REOPENED, saveGuide, WELCOME, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
+import { autoOpen, GUIDE_STORAGE_KEY, guideStep, readGuide, readSignedIn, REOPENED, saveGuide, WELCOME, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 const storage = (): Storage | null => {
@@ -107,4 +107,25 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
   useEffect(() => { if (watching) { setGuide(null); setPaused(false); } }, [watching]);
   // and the render that brings the role already shows none
   return { guide: watching ? null : guide, paused, dispatch, close, resume, stepAside };
+}
+
+/**
+ * How many plan accounts this PC is signed in to, read while the setup guide's Start screen shows; the
+ * first one seen turns plan usage on (`turnOn`) when it is off. Closing the guide stops it: no retry
+ * reads again, and no late answer turns usage on over a choice made since in Settings.
+ */
+export function useSignedInUsage(ready: string | null, read: (refresh: boolean) => Promise<number>, showing: boolean, turnOn: () => void): number {
+  const [signedIn, setSignedIn] = useState(0);
+  const shown = useRef(showing);
+  shown.current = showing;
+  useEffect(() => readSignedIn(
+    // an agent signed in just now: read the accounts afresh, not what the server last saw
+    () => read(ready !== null),
+    (count) => {
+      setSignedIn(count);
+      if (count > 0 && !shown.current) { shown.current = true; turnOn(); }
+    },
+    (run, ms) => { const timer = window.setTimeout(run, ms); return () => window.clearTimeout(timer); },
+  ), [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  return signedIn;
 }
