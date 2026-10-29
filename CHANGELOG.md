@@ -40,9 +40,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2266](https://github.com/devswha/ovis/pull/2266))
 - Chat shows a Letta Code pane's conversation, read from Letta's own transcript, when herdr's Letta
   integration reports it and Letta's own record names the same conversation; otherwise the
-  terminal's text stays. Letta writes a turn only when it ends, so while it works or waits for you,
-  Chat shows the live terminal.
+  terminal's text stays.
   ([#2312](https://github.com/devswha/ovis/pull/2312))
+  ([#2338](https://github.com/devswha/ovis/pull/2338))
 - The `ask_user` form of the `@eko24ive/pi-ask` pi package shows as a chat card and is answered
   from the chat, one question per step, once the web UI's pi extension is installed with
   `bun scripts/install-pi-integration.ts`. The answer goes to pi-ask through its own events,
