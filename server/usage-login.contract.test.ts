@@ -50,7 +50,8 @@ await Bun.write(receipt + ".tmp", JSON.stringify({ argv: process.argv.slice(2), 
 renameSync(receipt + ".tmp", receipt);
 console.log("Signed in to the isolated fixture.");
 // a login still open in its tab: it ends when the tab closes
-if (process.env.TEST_LOGIN_HOLD) await new Promise((resolve) => process.stdin.once("data", resolve));
+// (stdin, once read, would keep the process alive: exit with the sign-in)
+if (process.env.TEST_LOGIN_HOLD) { await new Promise((resolve) => process.stdin.once("data", resolve)); process.exit(0); }
 `, { mode: 0o755 });
   }
   workspaceId = (await workspaceCreate({ cwd: root, label: "usage-login-test" })).workspace.workspace_id;
@@ -315,11 +316,36 @@ function holdLogins() {
 
 const statusAndCode = async (response: Response) => [response.status, response.status === 200 ? null : (await response.json()).error.code];
 
-it("starts one sign-in again when two arrive at once for an account, and another once its tab is gone", async () => {
+/** Finishes a held sign-in as its user would, and resolves once the server says its pane (and so its CLI) ended. */
+async function finishLogin(paneId: string): Promise<void> {
+  const ended = Promise.withResolvers<void>();
+  const connected = Promise.withResolvers<void>();
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+  socket.onopen = () => connected.resolve();
+  socket.onmessage = (event) => {
+    if (typeof event.data !== "string") return;
+    const frame: unknown = JSON.parse(event.data);
+    if (isJsonObject(frame) && frame["type"] === "pane-exited" && frame["pane_id"] === paneId) ended.resolve();
+  };
+  const timer = setTimeout(async () => {
+    // say what the tab showed, so a CLI that never read the Enter is told from an exit that went unheard
+    const screen = await herdr.paneRead({ paneId, source: "visible", format: "text" }).then((read) => read.text.trimEnd(), (error: unknown) => `unreadable: ${String(error)}`);
+    const error = new Error(`sign-in in ${paneId} did not end; the pane shows:\n${screen}`);
+    ended.reject(error); connected.reject(error);
+  }, 10_000);
+  try {
+    await connected.promise;
+    await herdr.paneSendKeys(paneId, ["Enter"]);
+    await ended.promise;
+  } finally { clearTimeout(timer); socket.close(); }
+}
+
+it("starts one sign-in again when two arrive at once for an account, also once its tab moved, and another once it ended", async () => {
   // Given: an expired account this PC lists, and logins that stay open
   expiredHome("claude", ".claude-race", "race@example.test");
   const key = (await listed(true)).find((usage) => usage.account === "race@example.test")!.key;
   const create = holdLogins();
+  const elsewhere = (await workspaceCreate({ cwd: root, label: "usage-login-moved" })).workspace.workspace_id;
   try {
     // When: two requests for it race
     const raced = await Promise.all([start({ provider: "claude", account: key }), start({ provider: "claude", account: key })]);
@@ -327,17 +353,21 @@ it("starts one sign-in again when two arrive at once for an account, and another
     const results = await Promise.all(raced.map(statusAndCode));
     expect(results.map(([status]) => status).sort()).toEqual([200, 409]);
     expect(results.find(([status]) => status === 409)?.[1]).toBe("login_in_progress");
-    const winner = raced.find((response) => response.status === 200)!;
-    const pane = (await winner.json() as UsageLoginStarted).pane_id;
+    const pane = (await raced.find((response) => response.status === 200)!.json() as UsageLoginStarted).pane_id;
     openedPanes.push(pane);
     expect(await statusAndCode(await start({ provider: "claude", account: key }))).toEqual([409, "login_in_progress"]);
-    // When the tab is closed, the home is free again
-    await paneClose(pane);
+    // When its tab moves to another workspace, the same sign-in runs on under a new pane ID
+    const moved = (await herdr.paneMoveToNewTab(pane, elsewhere, null)).pane.pane_id;
+    openedPanes.push(moved);
+    expect(moved).not.toBe(pane);
+    expect(await statusAndCode(await start({ provider: "claude", account: key }))).toEqual([409, "login_in_progress"]);
+    // When it ends, the home is free again
+    await finishLogin(moved);
     const again = await start({ provider: "claude", account: key });
     expect(again.status).toBe(200);
     openedPanes.push((await again.json() as UsageLoginStarted).pane_id);
     expect(create).toHaveBeenCalledTimes(2);
-  } finally { create.mockRestore(); }
+  } finally { create.mockRestore(); await workspaceClose(elsewhere).catch(() => undefined); }
 });
 
 it("refuses Sign in again while Add account's sign-in into that home is still open", async () => {
@@ -359,14 +389,38 @@ it("refuses Sign in again while Add account's sign-in into that home is still op
     const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
     // When
     const again = await post({ provider: "codex", account: key });
-    // Then: no second CLI writes that home; once Add account's tab is gone, it may
+    // Then: no second CLI writes that home; once Add account's sign-in has ended, it may
     expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
-    await paneClose(pane);
+    await finishLogin(pane);
     const later = await post({ provider: "codex", account: key });
     expect(later.status).toBe(200);
     openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
     expect(create).toHaveBeenCalledTimes(2);
   } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); }
+});
+
+it("frees the home when the login command could not be sent to its new tab", async () => {
+  // Given: an expired account, and a tab that opens but will not take the command once
+  expiredHome("codex", ".codex-unsent", "unsent@example.test");
+  const key = (await listed(true)).find((usage) => usage.account === "unsent@example.test")!.key;
+  const send = spyOn(herdr, "paneSendText").mockRejectedValueOnce(new Error("fixture send failed"));
+  const realCreate = herdr.tabCreate;
+  // the tab left without its command is closed with the others
+  const create = spyOn(herdr, "tabCreate").mockImplementation(async (options: Parameters<typeof realCreate>[0]) => {
+    const created = await realCreate(options);
+    openedPanes.push(created.root_pane.pane_id);
+    return created;
+  });
+  let failed: Response;
+  try {
+    // When
+    failed = await start({ provider: "codex", account: key });
+  } finally { send.mockRestore(); create.mockRestore(); }
+  // Then: that request fails, and the next is not told a sign-in is open
+  expect(failed.status).toBe(500);
+  const retried = await start({ provider: "codex", account: key });
+  expect(retried.status).toBe(200);
+  openedPanes.push((await retried.json() as UsageLoginStarted).pane_id);
 });
 
 it("refuses to sign in again to an account this PC does not list, without opening a tab", async () => {

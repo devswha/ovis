@@ -31,31 +31,42 @@ function credentialHomePrefix(shell: PaneShell, name: string, home: string | nul
   return `set "${name}=${home ?? ""}" & `;
 }
 
+/** Whether a process still runs (one of another user is still running too). */
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
+}
+
 /** Only panes this service launched invalidate usage when their login process exits. */
 export class UsageLoginService {
   private readonly panes = new Set<string>();
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
-   * one home race each other's tokens. By home, the pane whose login holds it; null while launching.
+   * one home race each other's tokens. By home, the login holding it: its pane, and its shell's pid
+   * (with exec, the CLI's own), which a move to another workspace keeps while the pane ID changes;
+   * null while launching.
    */
-  private readonly logins = new Map<string, string | null>();
+  private readonly logins = new Map<string, { readonly pane: string; readonly pid: number | null } | null>();
 
   constructor(private readonly home = homedir(), private readonly env = process.env,
     private readonly context: UsageContext = { ...systemUsageContext(), home, env }) {}
 
   ended(paneId: string): boolean {
-    for (const [home, holder] of this.logins) if (holder === paneId) this.logins.delete(home);
+    for (const [home, holder] of this.logins) if (holder?.pane === paneId) this.logins.delete(home);
     return this.panes.delete(paneId);
   }
 
-  /** Takes `home` for one launch; false while another login holds it. A holder herdr no longer knows (its exit went unseen) lets go. */
+  /**
+   * Takes `home` for one launch; false while another login holds it. A holder lets go once herdr no
+   * longer knows its pane (its exit went unseen, or it moved and took a new ID) and its process is gone.
+   */
   private async reserve(home: string): Promise<boolean> {
     for (;;) {
       const holder = this.logins.get(home);
       if (holder === undefined) { this.logins.set(home, null); return true; }
       if (holder === null) return false;
-      const gone = await paneGet(holder).then(() => false, (error: unknown) => error instanceof HerdrError && error.code === "pane_not_found");
-      if (!gone) return false;
+      const paneGone = await paneGet(holder.pane).then(() => false, (error: unknown) => error instanceof HerdrError && error.code === "pane_not_found");
+      if (!paneGone || (holder.pid !== null && processAlive(holder.pid))) return false;
       if (this.logins.get(home) === holder) this.logins.delete(home);
     }
   }
@@ -158,9 +169,6 @@ export class UsageLoginService {
       };
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;
-      // the home is this pane's until its login exits (ended), or herdr no longer knows the pane
-      this.logins.set(reserved, paneId);
-      reserved = null;
       this.panes.add(paneId);
       trackPane?.(paneId);
       // All variable argv are quoted by the bridge's existing POSIX shell encoder.
@@ -171,10 +179,15 @@ export class UsageLoginService {
         await paneSendText(paneId, `${command}${shell === "cmd" ? " & exit" : "; exit $LASTEXITCODE"}`);
         unusedCredentialHome = null;
         await paneSendKeys(paneId, ["Enter"]);
+        this.logins.set(reserved, { pane: paneId, pid: info?.shell_pid ?? null });
       } else {
         await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place ? credentialHomePrefix("posix", homeVariable, againHome) : ""}${shellCommandLine("posix", executable, args)}\n`);
         unusedCredentialHome = null;
+        // exec keeps the shell's pid for the CLI
+        this.logins.set(reserved, { pane: paneId, pid: (await paneProcessInfo(paneId).catch(() => undefined))?.shell_pid ?? null });
       }
+      // the login runs: the home is its until it exits; a launch that failed before here frees it below
+      reserved = null;
       return jsonResponse({
         pane_id: paneId, workspace_id: created.tab.workspace_id, manual, device_auth: device,
       } satisfies UsageLoginStarted);
