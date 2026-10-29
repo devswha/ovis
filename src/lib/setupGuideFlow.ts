@@ -3,6 +3,7 @@
  * Plan usage, Phone and Alerts, each done or skipped, then Done. It opens by itself only on a fresh
  * install, and once: the record in this browser says it was closed, or where it was left.
  */
+import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 
 export type GuideStepId = "agent" | "usage" | "phone" | "alerts" | "done";
 export const GUIDE_STEPS: readonly GuideStepId[] = ["agent", "usage", "phone", "alerts", "done"];
@@ -72,6 +73,51 @@ export function guideProgress(state: GuideState): { number: number | null; segme
     return { id, state: index === at ? "now" : outcome ?? "next" };
   });
   return { number: at < 0 ? null : Math.min(at + 1, 4), segments };
+}
+
+/** The Agent step's look at the PC before its question: GET /api/agent-catalog, as far as it got. */
+export interface PcCheck {
+  /** a check in flight, or its answer still settling on screen */
+  checking: boolean;
+  /** the last answer */
+  catalog: readonly AgentCatalogRow[] | null;
+  /** the last check failed */
+  failed: boolean;
+}
+
+/** how long the check is on screen at least, so an instant answer is still seen */
+export const CHECK_SETTLE_MS = 300;
+
+/** How long an answer stays before the step moves on: what is left of CHECK_SETTLE_MS since the check began. */
+export function settleDelay(startedAt: number, answeredAt: number): number {
+  return Math.max(0, CHECK_SETTLE_MS - (answeredAt - startedAt));
+}
+
+/** The coding agents the PC surely has, in the catalog's order. */
+export function foundAgents(catalog: readonly AgentCatalogRow[]): AgentCatalogRow[] {
+  return catalog.filter((row) => row.kind === "harness" && row.state.installed === true);
+}
+
+/** What the Agent step shows before an agent is chosen: the check, the agents found, or the question. */
+export function agentView(check: PcCheck, installAnother: boolean): "checking" | "found" | "question" {
+  if (check.failed) return "question";
+  if (check.checking || check.catalog === null) return "checking";
+  return !installAnother && foundAgents(check.catalog).length > 0 ? "found" : "question";
+}
+
+export type CheckStatus = { kind: "looking" } | { kind: "installed"; version: string | null } | { kind: "missing" } | { kind: "unknown" };
+
+/** One agent's line in the check: undefined while the PC has not answered. */
+export function checkStatus(row: AgentCatalogRow | undefined): CheckStatus {
+  if (row === undefined) return { kind: "looking" };
+  if (row.state.installed === true) return { kind: "installed", version: row.state.version };
+  return row.state.installed === false ? { kind: "missing" } : { kind: "unknown" };
+}
+
+/** The check's lines: every coding agent this page knows while it looks, then each as the PC answered. */
+export function checkList(known: readonly Pick<AgentCatalogEntry, "id" | "name" | "kind">[], answer: readonly AgentCatalogRow[] | null): { id: string; name: string; status: CheckStatus }[] {
+  if (answer === null) return known.filter((entry) => entry.kind === "harness").map(({ id, name }) => ({ id, name, status: checkStatus(undefined) }));
+  return answer.filter((row) => row.kind === "harness").map((row) => ({ id: row.id, name: row.name, status: checkStatus(row) }));
 }
 
 /** Plan usage starts switched on only right after a sign-in to the agent's account. */

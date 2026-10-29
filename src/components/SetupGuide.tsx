@@ -6,20 +6,21 @@
  * first runs: one question per screen in the main area, the app's sidebar left in place.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Bell, Check, ChevronDown, ChevronRight, Circle, FolderOpen, Gauge, Gift, Info, Play, RotateCw, ShieldCheck, Smartphone, Sparkles, SquareTerminal } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bell, Check, ChevronDown, ChevronRight, Circle, FolderOpen, Gauge, Gift, Info, LoaderCircle, Play, Plus, RotateCw, ShieldCheck, Smartphone, Sparkles, SquareTerminal } from "lucide-react";
 
-import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { RemoteAccess } from "../../shared/protocol.ts";
 import { createWorkspace, fetchAgentCatalog, fetchRemoteAccess } from "../lib/api.ts";
 import type { SetupStep } from "../lib/agentSetup.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useInstallPrompt } from "../lib/install.ts";
+import { useMachineId } from "../lib/machineContext.tsx";
 import { createRequest, newSessionLaunch } from "../lib/newSession.ts";
 import { phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 import { useSettings } from "../lib/settings.ts";
-import { guideProgress, PLAN_AGENT, usageOnByDefault, type GuideEvent, type GuidePlan, type GuideState, type GuideStepId } from "../lib/setupGuideFlow.ts";
+import { agentView, checkList, foundAgents, guideProgress, PLAN_AGENT, settleDelay, usageOnByDefault, type CheckStatus, type GuideEvent, type GuidePlan, type GuideState, type GuideStepId, type PcCheck } from "../lib/setupGuideFlow.ts";
 import { PROVIDER_NAME, useUsage } from "../lib/usage.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { userErrorMessage } from "../lib/userError.ts";
@@ -36,6 +37,8 @@ import "./SetupGuide.css";
 const PHONE_QUERY = "(max-width: 768px) and (pointer: coarse)";
 /** recent folders offered at Done before "Choose another…" */
 const FOLDERS_SHOWN = 3;
+/** the catalog's agents, named in the check's lines before the PC answers */
+type KnownAgent = Pick<AgentCatalogEntry, "id" | "name" | "kind">;
 
 export interface SetupGuideProps {
   state: GuideState;
@@ -56,14 +59,47 @@ const basename = (path: string): string => path.replace(/\\/g, "/").replace(/\/+
 export function SetupGuide(props: SetupGuideProps) {
   const { state, onClose, hidden = false } = props;
   const t = useT();
+  const machineId = useMachineId();
+  // the PC check: GET /api/agent-catalog for the PC being set up, run once the guide is begun and on Look again
   const [catalog, setCatalog] = useState<AgentCatalogRow[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [known, setKnown] = useState<readonly KnownAgent[]>([]);
+  // said to a screen reader once the check is done; the step's heading changes without focus
+  const [announced, setAnnounced] = useState("");
+  const asked = useRef(0);
+  const settle = useRef<number | undefined>(undefined);
   const loadCatalog = (): void => {
+    const ask = ++asked.current;
+    const startedAt = Date.now();
+    window.clearTimeout(settle.current);
+    setCatalog(null);
     setCatalogError(null);
-    fetchAgentCatalog("local").then((answer) => setCatalog(answer.agents), (error: unknown) => setCatalogError(userErrorMessage(error).message));
+    setAnnounced("");
+    setChecking(true);
+    // the catalog's names, kept out of the app's main bundle; without them the lines come with the answer
+    import("../../shared/agent-catalog.ts").then((module) => setKnown(module.AGENT_CATALOG), () => {});
+    fetchAgentCatalog(machineId).then((answer) => {
+      if (ask !== asked.current) return;
+      setCatalog(answer.agents);
+      settle.current = window.setTimeout(() => {
+        if (ask !== asked.current) return;
+        setChecking(false);
+        setAnnounced(foundAgents(answer.agents).length > 0 ? t("Your agents are already here") : t("Which AI do you already pay for?"));
+      }, settleDelay(startedAt, Date.now()));
+    }, (error: unknown) => {
+      if (ask !== asked.current) return;
+      setCatalogError(userErrorMessage(error).message);
+      setChecking(false);
+    });
   };
-  useEffect(loadCatalog, []);
+  const begun = state.step !== "welcome";
+  useEffect(() => {
+    if (begun) loadCatalog();
+    return () => { asked.current += 1; window.clearTimeout(settle.current); };
+  }, [begun, machineId]); // eslint-disable-line react-hooks/exhaustive-deps
   const row = catalog?.find((candidate) => candidate.id === state.agent) ?? null;
+  const check: PcCheck = { checking, catalog, failed: catalogError !== null };
 
   const step = state.step;
   useEffect(() => {
@@ -75,7 +111,8 @@ export function SetupGuide(props: SetupGuideProps) {
     <div className="setup-guide" role="region" aria-label={t("Setup guide")} hidden={hidden}>
       <div className="setup-guide-inner">
         <Progress state={state} onClose={onClose} />
-        {state.step === "agent" && <AgentStep {...props} catalog={catalog} catalogError={catalogError} onReload={loadCatalog} row={row} />}
+        <p className="visually-hidden" role="status">{state.step === "agent" ? announced : ""}</p>
+        {state.step === "agent" && <AgentStep {...props} machineId={machineId} check={check} known={known} catalogError={catalogError} onReload={loadCatalog} row={row} />}
         {state.step === "usage" && <UsageStep state={state} dispatch={props.dispatch} row={row} />}
         {state.step === "phone" && <PhoneStep dispatch={props.dispatch} agentName={row?.name ?? null} />}
         {state.step === "alerts" && <AlertsStep dispatch={props.dispatch} agentName={row?.name ?? null} agentId={state.agent} onEnable={props.onEnableNotifications} />}
@@ -165,15 +202,38 @@ function initialStep(row: AgentCatalogRow): SetupStep {
   return row.sign_in === null ? { kind: "ready", version: row.state.version } : { kind: "installed", version: row.state.version, onPath: row.state.on_path !== false };
 }
 
-function AgentStep({ state, dispatch, onOpenTerminal, catalog, catalogError, onReload, row }: SetupGuideProps & { catalog: AgentCatalogRow[] | null; catalogError: string | null; onReload: () => void; row: AgentCatalogRow | null }) {
+function checkLine(t: Translate, status: CheckStatus): ReactNode {
+  switch (status.kind) {
+    case "looking": return <><LoaderCircle aria-hidden="true" className="agent-setup-spin" /><span className="visually-hidden">{t("Looking")}</span></>;
+    case "installed": return <><Check aria-hidden="true" />{status.version === null ? t("Installed") : t("Installed · v{version}", { version: status.version })}</>;
+    case "missing": return t("Not installed");
+    case "unknown": return t("Can't tell");
+  }
+}
+
+function AgentStep({ state, dispatch, onOpenTerminal, hidden = false, machineId, check, known, catalogError, onReload, row }: SetupGuideProps & { machineId: string; check: PcCheck; known: readonly KnownAgent[]; catalogError: string | null; onReload: () => void; row: AgentCatalogRow | null }) {
   const t = useT();
   const [others, setOthers] = useState(false);
+  // Install another agent: the question, though the PC has agents
+  const [installAnother, setInstallAnother] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
   const signedIn = useRef(false);
   // the step the card opens on, one per card shown: its first report (twice under StrictMode) is no move
   const initial = useMemo(() => row === null ? null : initialStep(row), [row?.id, state.agent]); // eslint-disable-line react-hooks/exhaustive-deps
+  const catalog = check.catalog;
   const recommended = new Set(Object.values(PLAN_AGENT));
   const otherAgents = (catalog ?? []).filter((candidate) => candidate.kind === "harness" && !recommended.has(candidate.id) && candidate.install !== null);
   const skip = () => dispatch({ type: "skip" });
+  const lookAgain = (): void => { setInstallAnother(false); onReload(); };
+  const view = agentView(check, installAnother);
+  const shown = state.agent !== null && row !== null ? "card" : view;
+  const shownBefore = useRef(shown);
+  useEffect(() => {
+    if (shownBefore.current === shown) return;
+    shownBefore.current = shown;
+    // the control that had focus went with the view it was in: the new view's heading takes it
+    if (!hidden && (document.activeElement === null || document.activeElement === document.body)) document.getElementById("setup-step-title")?.focus({ preventScroll: true });
+  }, [shown, hidden]);
 
   if (state.agent !== null && row !== null) {
     const onStep = (step: SetupStep): void => {
@@ -186,8 +246,56 @@ function AgentStep({ state, dispatch, onOpenTerminal, catalog, catalogError, onR
       <section className="setup-step" aria-labelledby="setup-step-title">
         <h2 id="setup-step-title" tabIndex={-1} className="visually-hidden">{t("Setting up {agent}", { agent: row.name })}</h2>
         {state.plan !== null && <p className="setup-lead">{planFit(t, state.plan)}</p>}
-        <AgentSetupCard key={row.id} agent={row} initial={initial ?? initialStep(row)} onOpenTerminal={onOpenTerminal} onStart={() => dispatch({ type: "agent-ready", signedIn: signedIn.current })} onStep={onStep} />
+        <AgentSetupCard key={row.id} agent={row} machineId={machineId} initial={initial ?? initialStep(row)} onOpenTerminal={onOpenTerminal} onStart={() => dispatch({ type: "agent-ready", signedIn: signedIn.current })} onStep={onStep} />
         <StepActions primary={<button type="button" className="btn btn-ghost" onClick={() => dispatch({ type: "back" })}><ArrowLeft aria-hidden="true" />{t("Back")}</button>} onSkip={skip} skipLabel={t("Skip this step")} />
+      </section>
+    );
+  }
+
+  if (view === "checking") {
+    const lines = checkList(known, catalog);
+    return (
+      <section className="setup-step" aria-labelledby="setup-step-title">
+        <h2 id="setup-step-title" tabIndex={-1}>{t("Checking this PC…")}</h2>
+        <p className="setup-lead">{t("Looking for AI coding helpers that are already installed.")}</p>
+        {lines.length > 0 && (
+          <ul className="setup-check" aria-busy={catalog === null}>
+            {lines.map((line) => (
+              <li key={line.id} data-status={line.status.kind}>
+                <AgentMark agent={line.id} size={18} />
+                <span className="setup-check-name">{line.name}</span>
+                <span className="setup-check-status">{checkLine(t, line.status)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <StepActions onSkip={skip} skipLabel={t("Skip this step")} />
+      </section>
+    );
+  }
+
+  if (view === "found" && catalog !== null) {
+    const found = foundAgents(catalog);
+    const chosen = found.find((agent) => agent.id === picked) ?? found[0]!;
+    return (
+      <section className="setup-step" aria-labelledby="setup-step-title">
+        <h2 id="setup-step-title" tabIndex={-1}>{t("Your agents are already here")}</h2>
+        <p className="setup-lead">{t("Ovis found these on this PC. Pick the one your first workspace opens with.")}</p>
+        <p className="setup-label" id="setup-found-label">{t("Found on this PC")}</p>
+        <div className="setup-choices" role="group" aria-labelledby="setup-found-label">
+          {found.map((agent) => (
+            <button key={agent.id} type="button" className="setup-choice setup-found" aria-pressed={agent.id === chosen.id} onClick={() => setPicked(agent.id)}>
+              <span className="setup-choice-icon"><AgentMark agent={agent.id} size={24} /></span>
+              <span className="setup-found-name"><strong>{agent.name}</strong>{agent.state.version !== null && <span>{agent.state.version}</span>}</span>
+              {agent.id === chosen.id && <Check aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+        <div className="setup-actions">
+          <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: "choose", plan: null, agent: chosen.id })}><Play aria-hidden="true" />{t("Continue with {agent}", { agent: chosen.name })}</button>
+          <button type="button" className="setup-link setup-install-another" onClick={() => setInstallAnother(true)}><Plus aria-hidden="true" />{t("Install another agent")}</button>
+          <button type="button" className="setup-link setup-skip" onClick={skip}>{t("Skip this step")}</button>
+        </div>
       </section>
     );
   }
@@ -232,7 +340,7 @@ function AgentStep({ state, dispatch, onOpenTerminal, catalog, catalogError, onR
       )}
       <div className="setup-actions">
         <span className="setup-muted">{t("Already installed one?")}</span>
-        <button type="button" className="btn btn-ghost" onClick={onReload}><RotateCw aria-hidden="true" />{t("Look again")}</button>
+        <button type="button" className="btn btn-ghost" onClick={lookAgain}><RotateCw aria-hidden="true" />{t("Look again")}</button>
         <button type="button" className="setup-link setup-skip" onClick={skip}>{t("Skip this step")}</button>
       </div>
     </section>

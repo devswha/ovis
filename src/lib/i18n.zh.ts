@@ -146,6 +146,8 @@ const BASE: Record<string, string> = {
   "Browse": "浏览",
   "Cancel": "取消",
   "Install": "安装",
+  "Installed": "已安装",
+  "Not installed": "未安装",
   "Sign in": "登录",
   "Starting…": "正在启动…",
   "Start": "启动",

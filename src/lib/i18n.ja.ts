@@ -144,6 +144,8 @@ const BASE: Record<string, string> = {
   "Browse": "参照",
   "Cancel": "キャンセル",
   "Install": "インストール",
+  "Installed": "インストール済み",
+  "Not installed": "未インストール",
   "Sign in": "ログイン",
   "Starting…": "起動しています…",
   "Start": "開始",

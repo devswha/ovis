@@ -3311,6 +3311,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as the usage preview (dashed `--border-strong` frame), Settings' switch, the phone QR code, and
   the in-app alert's colors for the sample alert. Done lists each step with a check or an empty
   circle and, for a skipped one, where Settings has it.
+- The Agent step first shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a
+  two-column `--bg-panel` list, each line a spinner until the answer, then "Installed · v…" in
+  `--status-done` or "Not installed" dim. The check is on screen at least 300ms, so an instant one
+  is still seen, then the step shows "Found on this PC" (the choice rows, the picked one with an accent
+  ring and a check, "Continue with …" and a quiet "Install another agent") or, with none found or
+  a failed check, the plan question.
 
 ### Token gate
 - A centered password card replaces the entire shell while authentication is required. It has a real
