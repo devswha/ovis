@@ -1,6 +1,6 @@
-import { mkdirSync, rmdirSync } from "node:fs";
+import { mkdirSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { HerdrError, paneGet, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
@@ -29,6 +29,20 @@ function credentialHomePrefix(shell: PaneShell, name: string, home: string | nul
   if (shell === "powershell") return home === null ? `Remove-Item Env:${name} -ErrorAction SilentlyContinue; ` : `$env:${name} = ${psQuote(home)}; `;
   if (/["%\r\n]/.test(home ?? "")) throw new Error("this credential home cannot be typed into cmd.exe");
   return `set "${name}=${home ?? ""}" & `;
+}
+
+/**
+ * One directory's one name, however it is reached: its real path through any symlink, or for a home
+ * not made yet, its nearest existing parent's real path and the rest. Two logins locked by spelling
+ * would both write one home reached through an alias.
+ */
+function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try { return realpathSync(absolute); }
+  catch {
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(canonicalPath(parent), basename(absolute));
+  }
 }
 
 /** Whether a process still runs (one of another user is still running too). */
@@ -123,8 +137,8 @@ export class UsageLoginService {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
       // the home the CLI will write: the account's own, a new named one, or the provider's only one
-      const loginHome = place ? `${id}:${place.home.kind === "dir" ? resolve(place.home.dir) : join(this.home, id === "claude" ? ".claude" : ".codex")}`
-        : separate ? `${id}:${join(this.home, `.${id}-${body["name"]}`)}` : id;
+      const loginHome = place ? `${id}:${canonicalPath(place.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
+        : separate ? `${id}:${canonicalPath(join(this.home, `.${id}-${body["name"]}`))}` : id;
       if (!await this.reserve(loginHome)) {
         return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
       }

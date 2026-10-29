@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
@@ -370,34 +370,38 @@ it("starts one sign-in again when two arrive at once for an account, also once i
   } finally { create.mockRestore(); await workspaceClose(elsewhere).catch(() => undefined); }
 });
 
-it("refuses Sign in again while Add account's sign-in into that home is still open", async () => {
-  // Given: Add account's login has written its sign-in and is still open in its tab
-  const home = mkdtempSync(join(root, "one-login-"));
-  const homeCtx = { ...ctx, home };
-  const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
-  const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
-  const written = Promise.withResolvers<void>();
-  const watcher = watch(root, (_event, filename) => { if (filename === "codex-receipt.json") written.resolve(); });
-  const timer = setTimeout(() => written.reject(new Error("Add account did not write its receipt")), 10_000);
-  const create = holdLogins();
-  try {
-    const added = await post({ provider: "codex", name: "new" });
-    expect(added.status).toBe(200);
-    const pane = (await added.json() as UsageLoginStarted).pane_id;
-    openedPanes.push(pane);
-    await written.promise;
-    const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
-    // When
-    const again = await post({ provider: "codex", account: key });
-    // Then: no second CLI writes that home; once Add account's sign-in has ended, it may
-    expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
-    await finishLogin(pane);
-    const later = await post({ provider: "codex", account: key });
-    expect(later.status).toBe(200);
-    openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
-    expect(create).toHaveBeenCalledTimes(2);
-  } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); }
-});
+for (const alias of [false, true]) {
+  it(`refuses Sign in again while Add account's sign-in into that home is still open${alias ? ", reached through a symlinked CODEX_HOME" : ""}`, async () => {
+    // Given: Add account's login has written its sign-in and is still open in its tab
+    const home = mkdtempSync(join(root, "one-login-"));
+    // through an alias, Sign in again names the home by another path than Add account made it at
+    const homeCtx = { ...ctx, home, env: alias ? { CODEX_HOME: join(home, "alias") } : {} };
+    const local = new UsageLoginService(home, { ...process.env, PATH: bin }, homeCtx);
+    const post = (body: unknown) => local.handle(new Request("http://localhost/api/usage/login", { method: "POST", body: JSON.stringify(body) }));
+    const written = Promise.withResolvers<void>();
+    const watcher = watch(root, (_event, filename) => { if (filename === "codex-receipt.json") written.resolve(); });
+    const timer = setTimeout(() => written.reject(new Error("Add account did not write its receipt")), 10_000);
+    const create = holdLogins();
+    try {
+      const added = await post({ provider: "codex", name: "new" });
+      expect(added.status).toBe(200);
+      const pane = (await added.json() as UsageLoginStarted).pane_id;
+      openedPanes.push(pane);
+      await written.promise;
+      if (alias) symlinkSync(join(home, ".codex-new"), join(home, "alias"));
+      const key = (await new UsageService(homeCtx, USAGE_PROVIDERS.filter((usage) => usage.id === "codex")).report()).providers[0]!.key;
+      // When
+      const again = await post({ provider: "codex", account: key });
+      // Then: no second CLI writes that home; once Add account's sign-in has ended, it may
+      expect(await statusAndCode(again)).toEqual([409, "login_in_progress"]);
+      await finishLogin(pane);
+      const later = await post({ provider: "codex", account: key });
+      expect(later.status).toBe(200);
+      openedPanes.push((await later.json() as UsageLoginStarted).pane_id);
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally { create.mockRestore(); clearTimeout(timer); watcher.close(); }
+  });
+}
 
 it("frees the home when the login command could not be sent to its new tab", async () => {
   // Given: an expired account, and a tab that opens but will not take the command once
