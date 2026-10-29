@@ -65,6 +65,10 @@ try {
       let release = (): void => undefined;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       await page.route((address) => /\/assets\/index-[\w-]+\.js$/.test(address.pathname), async (route) => { await gate; await route.continue(); });
+      // a face asked for while the app is held downloads beside its script, on the same slow link
+      const heldFonts: string[] = [];
+      let held = true;
+      page.on("request", (request) => { if (held && request.resourceType() === "font") heldFonts.push(request.url()); });
       await page.goto(url, { waitUntil: "commit" });
 
       // the app's script is held: the page itself must say it is loading, drawn and opaque
@@ -95,7 +99,7 @@ try {
       assert.ok(Math.abs(shown.spinner.center[0]! - shown.window[0]! / 2) <= 2 && Math.abs(shown.spinner.center[1]! - shown.window[1]! / 2) <= 2, `${item.name}: the spinner sits in the middle of the window (${shown.spinner.center.join(",")} in ${shown.window.join("x")})`);
       // a fast start does not flash it: it shows only after a moment
       assert.equal(shown.show.name, "boot-show", `${item.name}: the status waits before it shows`);
-      assert.ok(shown.show.delay >= 300, `${item.name}: the status shows only after a moment, not at once (${shown.show.delay} ms)`);
+      assert.ok(shown.show.delay >= 300 && shown.show.delay <= 1000, `${item.name}: the status shows after a moment, and within a second (${shown.show.delay} ms)`);
       rings.set(item.name, shown.spinner.border);
       if (item.reducedMotion) assert.equal(shown.spinner.animation, "none", `${item.name}: under reduced motion the spinner keeps still`);
       else {
@@ -108,7 +112,10 @@ try {
         await page.screenshot({ path: join(evidence, `boot-loading-${item.name.replace(/\W+/g, "-")}.png`) });
       }
 
+      assert.deepEqual(heldFonts, [], `${item.name}: the status asks for no font while the app's script is on its way`);
+
       // the app comes: it draws over the status, which is gone with its first frame
+      held = false;
       release();
       await page.locator(".app").first().waitFor({ timeout: 30_000 });
       assert.equal(await page.locator("#root > [role='status']").count(), 0, `${item.name}: the loading status is gone once the app draws`);
