@@ -83,14 +83,31 @@ again, and clients reconnect.
 
 ## Deploy
 
-`relay.ovis.sh` is deployed from CI only (`bunx wrangler deploy` in `relay/`, with
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`); the workflow comes with the deploy pipeline
-(todo 22 of the relay plan), never from a laptop. It needs the `ovis.sh` zone on the deploying
+`relay.ovis.sh` is deployed from CI only, never from a laptop: the Relay deploy workflow
+(`.github/workflows/relay-deploy.yml`) runs on a push to main that touches `relay/` once CI passes,
+and by hand from main. It runs `bun test ./relay`, then `bunx wrangler deploy` in `relay/` with
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, then `curl -fsS https://relay.ovis.sh/health`.
+A deploy drops every socket; the PC and clients reconnect. Without the two secrets the job passes
+with a notice naming the missing one and deploys nothing. It needs the `ovis.sh` zone on the deploying
 account: the route in `wrangler.toml` makes `relay.ovis.sh` a custom domain of the Worker, and
 `workers_dev = false` leaves no second address. The deploy creates the Durable Object class
 (`[[migrations]]`) and the two rate limiters (`[[ratelimits]]`, whose `namespace_id` only has to
-be unique among the account's limiters). There are no secrets. To check the bundle without
-deploying:
+be unique among the account's limiters). The Worker itself has no secrets.
+
+One-time setup by the owner:
+
+1. Put the account on the Workers Paid plan (Durable Objects need it) and set a billing alert at
+   $20 a month.
+2. Add the `ovis.sh` zone to that account; the first deploy attaches `relay.ovis.sh` to it as the
+   Worker's custom domain.
+3. Create an API token that can edit Workers (Workers Scripts: Edit, plus the zone's Workers
+   Routes and DNS for the custom domain) and note the account ID.
+4. In GitHub, create the `production` environment (Settings > Environments) with the maintainer as
+   a required reviewer, and add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as secrets of
+   that environment. The reviewer is configured in GitHub, not in the workflow.
+
+A release guard like the Worker one in `scripts/release-guards.ts` is added only when the relay's
+wire version changes (`v=1`); there is none in v1. To check the bundle without deploying:
 
 ```sh
 cd relay
