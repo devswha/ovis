@@ -1404,6 +1404,15 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   };
+  /** A server that sends `answer` once, holding it no longer than that: a handler that kept it would keep its descriptor past the collection. */
+  const serveOnce = (answer: Response) => {
+    const slot: { answer: Response | null } = { answer };
+    return Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => {
+      const sent = slot.answer;
+      slot.answer = null;
+      return sent ?? new Response(null, { status: 410 });
+    } });
+  };
   const fromScratch = async (name: string, cwd: string, scratch: string) => {
     const found = await fileView.findFile(name, cwd, async () => scratch);
     if (found === null || !("info" in found)) throw new Error("expected the scratch file");
@@ -1550,8 +1559,7 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
       // descriptor; more than the cap there once was (256), and well within any open-file limit
       for (let at = 0; at < 384; at += 1) await fileResponse(found.info, true, false, null, null, undefined, found.within);
       // the next answer made at once, before the event loop turns and a collection that happens to run lets any go
-      const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
-      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
+      const server = serveOnce(await fileResponse(found.info, true, false, null, null, undefined, found.within));
       try {
         const next = await fetch(server.url);
         expect(next.headers.get("content-length")).toBe(String(size));
@@ -1575,8 +1583,7 @@ describe("Claude scratch fallback served from what it opened in its folder (#225
       // downloads still under way, kept until the next answer is sent, so no collection lets one go
       const held: Response[] = [];
       for (let at = 0; at < 256; at += 1) held.push(await fileResponse(found.info, true, false, null, null, undefined, found.within));
-      const answer = await fileResponse(found.info, true, false, null, null, undefined, found.within);
-      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer });
+      const server = serveOnce(await fileResponse(found.info, true, false, null, null, undefined, found.within));
       try {
         const next = await fetch(server.url);
         expect(held).toHaveLength(256);
