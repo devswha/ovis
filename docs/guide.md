@@ -278,9 +278,9 @@ in the folder it started in (for a local-backend conversation, Letta's local sto
 that agent for it). That holds when `letta` resumes the conversation it last had in that folder
 (`letta`, or `letta --conversation <id>` on that one). After `/new` or `/resume`, a start on another
 conversation (`--new` included), once `letta` has moved to another folder (its SetWorkingDirectory
-or EnterWorktree tools), another `letta` writing that record, or in the home folder, Chat uses the
-terminal's text until `letta` starts again on that conversation. It also does while another pane
-runs `letta` in the same folder or reports the same conversation, and until the conversation's
+or EnterWorktree tools), or another `letta` writing that record, Chat uses the terminal's text
+until `letta` starts again on that conversation. In the home folder it always does. It also does
+while another pane runs `letta` in the same folder or reports the same conversation, and until the conversation's
 first turn on this PC has ended; Chat comes back by itself once that is no longer so.
 
 Letta writes a turn only when it ends, so a turn appears once it is done, and a cancelled one
