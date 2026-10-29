@@ -300,7 +300,8 @@ export class UsageLoginService {
       const opened: LoginHolder = { pane: paneId, terminal: created.root_pane.terminal_id };
       holding = opened;
       if (this.logins.get(reserved) === launch) this.logins.set(reserved, opened);
-      // the launch's entry holds the home for other servers until then (the tab opens well within its minute)
+      // the launch's entry held the home for other servers until now; when this write fails, it still does,
+      // but only for the rest of its minute
       const home = reserved;
       try { this.edit((saved) => { const now = saved.get(home); if (now === undefined || sameHolder(now, launch)) saved.set(home, opened); }); }
       catch (error) { console.warn("Could not record a sign-in's credential home for other servers", error); }
