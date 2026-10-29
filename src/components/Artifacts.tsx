@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AppWindow, ExternalLink } from "lucide-react";
 
 import "./BackgroundTasks.css";
@@ -25,14 +25,25 @@ export function Artifacts({ paneId, status }: { paneId: string; status: AgentSta
   const [artifacts, setArtifacts] = useState<ClaudeArtifact[]>([]);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const id = useId();
   usePhoneSheetBack(() => setOpen(false), open);
   // another pane or PC: its own pages, never these
   useEffect(() => { setArtifacts([]); setOpen(false); }, [paneId, machineId]);
   useEffect(() => {
     let alive = true;
-    fetchPaneArtifacts(paneId).then((found) => { if (alive) setArtifacts(found); }, () => undefined);
-    return () => { alive = false; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Session discovery may outlast the route's one-second budget even for an idle pane.
+    // Keep asking while empty: there is no chip to reopen and no later status edge is promised.
+    const load = (): void => {
+      fetchPaneArtifacts(paneId).then((found) => {
+        if (!alive) return;
+        setArtifacts(found);
+        if (found.length === 0) timer = setTimeout(load, 3000);
+      }, () => undefined);
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
   }, [fetchPaneArtifacts, paneId, status, open]);
   useEffect(() => {
     if (!open) return;
@@ -41,6 +52,21 @@ export function Artifacts({ paneId, status }: { paneId: string; status: AgentSta
     window.addEventListener("pointerdown", outside);
     window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape); };
+  }, [open]);
+  // Match BackgroundTasks: bound the upward-opening list to the room above the input card.
+  useLayoutEffect(() => {
+    const list = menu.current;
+    const anchor = list?.offsetParent;
+    const composer = anchor?.closest(".composer") ?? null;
+    const frame = (composer ?? anchor)?.parentElement;
+    if (!open || !list || !anchor || !frame) return;
+    const measure = (): void => list.style.setProperty("--bg-tasks-room", `${anchor.getBoundingClientRect().top - frame.getBoundingClientRect().top}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(anchor);
+    observer.observe(frame);
+    if (composer) observer.observe(composer);
+    return () => observer.disconnect();
   }, [open]);
 
   if (artifacts.length === 0) return null;
@@ -51,7 +77,7 @@ export function Artifacts({ paneId, status }: { paneId: string; status: AgentSta
     <button type="button" className="bg-tasks-toggle is-idle" aria-label={name} title={name} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
       <AppWindow aria-hidden="true" /><span className="bg-tasks-label">{name}</span><span className="bg-tasks-count" aria-hidden="true">{artifacts.length}</span>
     </button>
-    {open && <div id={id} className="menu bg-tasks-menu" role="dialog" aria-label={t("Artifacts")}>
+    {open && <div ref={menu} id={id} className="menu bg-tasks-menu" role="dialog" aria-label={t("Artifacts")}>
       <div className="menu-heading">{t("Artifacts")}</div>
       <ul className="bg-task-list">{artifacts.map((artifact) => {
         const when = formatChatTimestamp(artifact.at, now, locale, t);
