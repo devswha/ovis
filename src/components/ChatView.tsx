@@ -1205,18 +1205,33 @@ export function turnOnlyInTerminal(source: ConversationResponse["source"] | unde
  * The live box of one running turn: `after` counts the pane's newest-page reads started before the
  * turn ran; `key` is the transcript (its newest turn as a key) the first read started after it
  * returned. That read cannot hold the running turn: such a store appends a turn only when it ends.
+ * `ended`: the reads started when the pane's status said the turn was over.
  */
-export type LiveTurnArm = { pane: string; after: number; key: string | null };
+export type LiveTurnArm = { pane: string; after: number; key: string | null; ended: number | null };
+/** The pane's last newest-page read to end: laid out (or confirmed unchanged by a 304), or failed. */
+export type SettledRead = { pane: string; read: number; ok: boolean };
 
 /**
- * The arm for this render. A transcript shown before the turn ran (a cached answer, a page that
- * was hidden) is no baseline: turns written meanwhile would read as this one's end.
+ * The arm for this render. `watching`: the chat is up and online on such a transcript; a chat
+ * hidden or offline can miss a turn's end and the next one's start, so it arms afresh when back. A
+ * transcript shown before the turn ran (a cached answer, a page that was hidden) is no baseline:
+ * turns written meanwhile would read as this one's end. Letta writes the turn before herdr's status
+ * says it ended, but the chat reads it after: past that edge the box stays until a read started
+ * after it ends, and it goes in the render that lays the turn out, or when that read fails (each is
+ * bounded by the chat's read deadline). A turn cancelled is never written: that read ends it too.
  */
-export function nextLiveTurnArm(arm: LiveTurnArm | null, pane: string, running: boolean, readsStarted: number, settled: { pane: string; read: number } | null, written: string): LiveTurnArm | null {
-  if (!running) return null;
-  if (arm === null || arm.pane !== pane) return { pane, after: readsStarted, key: null };
-  if (arm.key === null && settled !== null && settled.pane === pane && settled.read > arm.after) return { ...arm, key: written };
-  return arm;
+export function nextLiveTurnArm(arm: LiveTurnArm | null, pane: string, watching: boolean, running: boolean, readsStarted: number, settled: SettledRead | null, written: string): LiveTurnArm | null {
+  if (!watching) return null;
+  const held = arm !== null && arm.pane === pane ? arm : null;
+  const read = settled !== null && settled.pane === pane ? settled : null;
+  if (running) {
+    if (held === null || held.ended !== null) return { pane, after: readsStarted, key: null, ended: null };
+    if (held.key === null && read !== null && read.ok && read.read > held.after) return { ...held, key: written };
+    return held;
+  }
+  if (held === null) return null;
+  if (held.ended === null) return { ...held, ended: readsStarted };
+  return read !== null && read.read > held.ended ? null : held;
 }
 
 /** The box shows until the transcript moves past its baseline: then it holds the turn, and the box goes in that render. */
@@ -1299,15 +1314,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const workStatus = state.activity !== undefined && agentStatus !== "blocked" ? activity === "idle" ? "idle" : "working" : agentStatus;
   const newestTurn = state.turns.at(-1);
   const writtenKey = `${state.turns.length}\0${newestTurn?.ts ?? ""}\0${newestTurn?.end_ts ?? ""}`;
-  const turnRunning = state.source === "conversation" && turnOnlyInTerminal(state.conversationSource, agentStatus);
-  /** newest-page reads started, and the last one laid out (or confirmed unchanged): the live box's baseline */
+  const turnEndView = state.source === "conversation" && state.conversationSource !== undefined && TURN_END_SOURCES.has(state.conversationSource);
+  /** newest-page reads started, and the last one to end: the live box's baseline and its end */
   const newestReads = useRef(0);
-  const [settledRead, setSettledRead] = useState<{ pane: string; read: number } | null>(null);
+  const [settledRead, setSettledRead] = useState<SettledRead | null>(null);
   const [liveArm, setLiveArm] = useState<LiveTurnArm | null>(null);
-  // a chat hidden or offline can miss a turn's end and the next one's start: it arms afresh when back
-  const nextLiveArm = nextLiveTurnArm(liveArm, paneId, turnRunning && connected && visible, newestReads.current, settledRead, writtenKey);
+  const nextLiveArm = nextLiveTurnArm(liveArm, paneId, turnEndView && connected && visible, turnOnlyInTerminal(state.conversationSource, agentStatus), newestReads.current, settledRead, writtenKey);
   if (nextLiveArm !== liveArm) setLiveArm(nextLiveArm);
-  const liveTurnOpen = turnRunning && liveTurnShown(nextLiveArm, writtenKey);
+  const liveTurnOpen = liveTurnShown(nextLiveArm, writtenKey);
   const [error, setError] = useState<UserFailure | null>(null);
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
   /** reads failed in a row: a slow PC is waited for this many times before the chat alarms */
@@ -1583,7 +1597,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           if (!continued) { pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; setNewMessages(false); setAway(false); }
         }
         // a 304 hands back the answer already shown: nothing to compare or lay out again
-        if (conversation === lastAnswer.current) { setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); setSettledRead({ pane: paneId, read: started }); return; }
+        if (conversation === lastAnswer.current) { setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); setSettledRead({ pane: paneId, read: started, ok: true }); return; }
         // The newest page moved past the held start: the turns in between join the older
         // pages and the newest page is held from its new start, so no poll reads more than a page.
         const previous = lastAnswer.current;
@@ -1620,9 +1634,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         }
         showAnswer(conversation, next);
         setReadPresentation(proved ? readKey : undefined);
-        setSettledRead({ pane: paneId, read: started });
+        setSettledRead({ pane: paneId, read: started, ok: true });
       } catch (cause) {
         if (cancelled || generation !== olderGeneration.current) return;
+        setSettledRead({ pane: paneId, read: started, ok: false });
         setLoaded(true);
         setError(userFailure(cause));
         setErrorStatus(cause instanceof ApiError ? cause.status : null);

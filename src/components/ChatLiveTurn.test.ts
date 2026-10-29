@@ -17,11 +17,11 @@ const render = (live: boolean): string => {
 };
 
 /** Renders of one pane: each step is what ChatView holds then, and whether the box shows. */
-function run(steps: { running: boolean; started: number; settled: number | null; written: string }[]): boolean[] {
+function run(steps: { watching?: boolean; running: boolean; started: number; settled: number | null; ok?: boolean; written: string }[]): boolean[] {
   let arm: LiveTurnArm | null = null;
-  return steps.map(({ running, started, settled, written }) => {
-    arm = nextLiveTurnArm(arm, "w1:p1", running, started, settled === null ? null : { pane: "w1:p1", read: settled }, written);
-    return running && liveTurnShown(arm, written);
+  return steps.map(({ watching = true, running, started, settled, ok = true, written }) => {
+    arm = nextLiveTurnArm(arm, "w1:p1", watching, running, started, settled === null ? null : { pane: "w1:p1", read: settled, ok }, written);
+    return liveTurnShown(arm, written);
   });
 }
 
@@ -64,11 +64,34 @@ describe("a Letta turn still running", () => {
     ])).toEqual([true, true, true, false]);
   });
 
-  it("arms afresh after the chat was hidden or offline, when a turn may have ended and the next begun unseen", () => {
+  it("stays past the status edge until a read started after it shows the turn, so the chat is never without it", () => {
     expect(run([
       { running: true, started: 2, settled: 2, written: "4" },
       { running: true, started: 3, settled: 3, written: "4" },
       { running: false, started: 3, settled: 3, written: "4" },
+      { running: false, started: 4, settled: 3, written: "4" },
+      { running: false, started: 4, settled: 4, written: "6" },
+    ])).toEqual([true, true, true, true, false]);
+  });
+
+  it("goes after the status edge once a read started after it fails, or shows no turn: a cancelled turn is never written", () => {
+    expect(run([
+      { running: true, started: 2, settled: 2, written: "4" },
+      { running: false, started: 2, settled: 2, written: "4" },
+      { running: false, started: 3, settled: 3, ok: false, written: "4" },
+    ])).toEqual([true, true, false]);
+    expect(run([
+      { running: true, started: 2, settled: 2, written: "4" },
+      { running: false, started: 2, settled: 2, written: "4" },
+      { running: false, started: 3, settled: 3, written: "4" },
+    ])).toEqual([true, true, false]);
+  });
+
+  it("arms afresh after the chat was hidden or offline, when a turn may have ended and the next begun unseen", () => {
+    expect(run([
+      { running: true, started: 2, settled: 2, written: "4" },
+      { running: true, started: 3, settled: 3, written: "4" },
+      { watching: false, running: true, started: 3, settled: 3, written: "4" },
       { running: true, started: 3, settled: 3, written: "4" },
       { running: true, started: 4, settled: 4, written: "6" },
       { running: true, started: 5, settled: 5, written: "8" },
@@ -76,11 +99,14 @@ describe("a Letta turn still running", () => {
   });
 
   it("arms afresh for the next turn and for another pane", () => {
-    let arm = nextLiveTurnArm(null, "w1:p1", true, 1, { pane: "w1:p1", read: 2 }, "4");
-    arm = nextLiveTurnArm(arm, "w1:p1", true, 2, { pane: "w1:p1", read: 2 }, "4");
+    const read = { pane: "w1:p1", read: 2, ok: true };
+    let arm = nextLiveTurnArm(null, "w1:p1", true, true, 1, read, "4");
+    arm = nextLiveTurnArm(arm, "w1:p1", true, true, 2, read, "4");
     expect(arm?.key).toBe("4");
-    expect(nextLiveTurnArm(arm, "w1:p2", true, 2, { pane: "w1:p1", read: 2 }, "9")).toEqual({ pane: "w1:p2", after: 2, key: null });
-    expect(nextLiveTurnArm(arm, "w1:p1", false, 2, { pane: "w1:p1", read: 2 }, "6")).toBeNull();
+    expect(nextLiveTurnArm(arm, "w1:p2", true, true, 2, read, "9")).toEqual({ pane: "w1:p2", after: 2, key: null, ended: null });
+    const ended = nextLiveTurnArm(arm, "w1:p1", true, false, 2, read, "4");
+    expect(nextLiveTurnArm(ended, "w1:p1", true, true, 3, read, "4")).toEqual({ pane: "w1:p1", after: 3, key: null, ended: null });
+    expect(nextLiveTurnArm(arm, "w1:p1", false, true, 2, read, "6")).toBeNull();
   });
 
   it("opens under the turns with its full height from the start, out of the chat's live announcements", () => {
