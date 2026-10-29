@@ -518,17 +518,19 @@ export class Telemetry {
         }
       } catch (error) {
         console.error(`telemetry: ${this.file} could not be written (${message(error)})`);
-      } finally {
-        this.activeSending = null;
-        this.activeAbort = undefined;
-        if (this.activeAgain) {
-          const again = this.activeAgainVisit;
-          this.activeAgain = false;
-          this.activeAgainVisit = false;
-          void this.flushActive(again);
-        }
       }
-    })();
+    })().finally(() => {
+      // after the assignment, even when the first write failed before any await: else the failed
+      // run would stand as in flight and hold every later delivery behind it
+      this.activeSending = null;
+      this.activeAbort = undefined;
+      if (this.activeAgain) {
+        const again = this.activeAgainVisit;
+        this.activeAgain = false;
+        this.activeAgainVisit = false;
+        void this.flushActive(again);
+      }
+    });
     return this.activeSending;
   }
 

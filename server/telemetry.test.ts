@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
@@ -581,6 +581,22 @@ describe("daily usage", () => {
         { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] },
       ]);
     }
+  });
+
+  test("a state file that cannot be written just before a message goes stops only that try: the next visit sends", async () => {
+    const { telemetry, actives, stateDir, clock, fireTimer } = setup({ grace: 60_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    clock.now += 60_000;
+    // the write before the message fails: a directory where its temporary file goes
+    const temp = join(stateDir, `telemetry.json.${process.pid}.tmp`);
+    mkdirSync(temp);
+    fireTimer();
+    await settled();
+    rmSync(temp, { recursive: true });
+    expect(actives).toEqual([]);
+    await telemetry.active(["codex"]);
+    expect(actives.map((active) => active.harnesses)).toEqual([["claude", "codex"]]);
   });
 
   test("fresh usage goes only with a visit: a settings change or a late notice timer past the hour sends none", async () => {
