@@ -405,22 +405,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * The process a check passed for is still in front, read once more after the awaits that followed it and just
    * before a write: herdr cannot compare and send in one step, so this keeps the window to the write's own call.
    */
-  async function stillInFront(paneId: string, pid: number | null | undefined): Promise<void> {
-    if (pid == null) return;
-    const info = await paneProcessInfo(paneId);
-    if (!(info?.foreground_processes ?? []).some((entry) => entry.pid === pid)) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
+  async function stillInFront(paneId: string, pid: number | null | undefined, pinned: PendingIdentity | null = null): Promise<void> {
+    // /clear and /resume switch Claude's session in the same process, so its PID in front says nothing of the
+    // session: the one the message is pinned to is read last, from Claude's own records once herdr answered, and
+    // herdr is asked nothing more before the write (#2279). A record caught being rewritten is read once more
+    const session = pinned?.agent === "claude" ? pinned.claudeSession ?? null : null;
+    if (pid == null && session === null) return;
+    const foreground = (await paneProcessInfo(paneId))?.foreground_processes ?? [];
+    if ((pid != null && !foreground.some((entry) => entry.pid === pid))
+      || (session !== null && (await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session)) {
+      throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
     }
-  }
-  /**
-   * For Claude, the session a check passed for is still the one its process names, read again after the awaits
-   * that followed the check: /clear and /resume switch sessions in the same process, so its PID still in front
-   * says nothing of the session (#2279). A record that cannot be read is read once more, as in pendingContext.
-   */
-  async function stillClaudeSession(paneId: string, identity: PendingIdentity): Promise<void> {
-    if (identity.agent !== "claude" || identity.claudeSession == null) return;
-    const read = async (): Promise<string | null> => await claudeForegroundSession((await paneProcessInfo(paneId))?.foreground_processes ?? []);
-    if ((await read() ?? await read()) !== identity.claudeSession) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null }> {
     authorizePending(owner, paneId, lease);
@@ -466,7 +461,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
     }
     // the screen and card reads above awaited: what they were read for must still be in front
-    await stillInFront(paneId, current.processPid);
+    await stillInFront(paneId, current.processPid, identity ?? null);
     authorizePending(owner, paneId, lease);
     return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen, processes, held: holder };
   }
@@ -517,8 +512,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       watch = startOpenCodeWatch(context.pane, command, options.openCodeStateDir);
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
-      await stillClaudeSession(paneId, identity);
-      await stillInFront(paneId, context.identity.processPid);
+      await stillInFront(paneId, context.identity.processPid, identity);
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {

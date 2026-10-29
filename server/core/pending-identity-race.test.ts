@@ -94,26 +94,44 @@ it.each([
 it.each([
   { when: "box", to: "B", misses: 0, label: "the input-box read before the paste, to a readable session", writes: [] as string[], state: "held" },
   { when: "box", to: null, misses: 0, label: "the input-box read before the paste, to an unreadable session", writes: [] as string[], state: "held" },
-  { when: "box", to: "A", misses: 1, label: "the input-box read before the paste, unreadable for one read (control)", writes: ["paste", "Enter"], state: "removed" },
-  { when: "paste", to: "B", misses: 0, label: "the paste, to a readable session", writes: ["paste"], state: "uncertain" },
-  { when: "paste", to: null, misses: 0, label: "the paste, to an unreadable session", writes: ["paste"], state: "uncertain" },
-  { when: "paste", to: "A", misses: 1, label: "the paste, unreadable for one read (control)", writes: ["paste", "Enter"], state: "removed" },
+  { when: "box", to: "A", misses: 1, label: "the input-box read before the paste, unreadable for one read (control)", writes: ["paste", "Enter"] as string[], state: "removed" },
+  { when: "paste", to: "B", misses: 0, label: "the paste, to a readable session", writes: ["paste"] as string[], state: "uncertain" },
+  { when: "paste", to: null, misses: 0, label: "the paste, to an unreadable session", writes: ["paste"] as string[], state: "uncertain" },
+  { when: "paste", to: "A", misses: 1, label: "the paste, unreadable for one read (control)", writes: ["paste", "Enter"] as string[], state: "removed" },
+  // the last check before the paste reads the session after herdr's answer, and herdr is read no more before the
+  // paste: a switch during any herdr read after that session read would reach the paste (none here: it goes to A)
+  { when: "after check", to: "B", misses: 0, label: "a herdr read after the last session check before the paste (control: none is made)", writes: ["paste", "Enter"] as string[], state: "removed" },
+  // the check before Enter read the session first; its screen and card reads awaited after it
+  { when: "enter", to: "B", misses: 0, label: "the screen read before Enter, to a readable session", writes: ["paste"] as string[], state: "uncertain" },
+  { when: "enter", to: null, misses: 0, label: "the screen read before Enter, to an unreadable session", writes: ["paste"] as string[], state: "uncertain" },
+  { when: "enter", to: "A", misses: 1, label: "the screen read before Enter, unreadable for one read (control)", writes: ["paste", "Enter"] as string[], state: "removed" },
 ])("keeps a queued Claude message from another session the same process switched to during $label (#2279)", async ({ when, to, misses: miss, writes: expected, state }) => {
   const settled = Promise.withResolvers<PendingFrame>();
   let session: string | null = "A";
   let misses = 0;
   const sessionReads = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () => {
+    if (boxReads >= 3 && !pasted) checked = true;
     if (misses > 0) { misses--; return null; }
     return session;
   });
   const switchSession = (): void => { session = to; misses = miss; };
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
-  spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] }));
   let pasted = false;
   let boxReads = 0;
+  /** a session read after Claude's input box, before the paste */
+  let checked = false;
+  const afterCheck = (): void => { if (when === "after check" && checked && !pasted && session === "A") switchSession(); };
+  spyOn(client, "paneProcessInfo").mockImplementation(async () => {
+    afterCheck();
+    return { pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] };
+  });
+  let afterPaste = 0;
   spyOn(client, "paneRead").mockImplementation(async () => {
     // read 1 is the queueing's, read 2 the check's screen, read 3 Claude's input box (freeClaudeBox) after the check
-    if (when === "box" && !pasted && ++boxReads === 3) switchSession();
+    afterCheck();
+    if (!pasted && ++boxReads === 3 && when === "box") switchSession();
+    // the first read after the paste is the screen the check before Enter reads
+    if (when === "enter" && pasted && ++afterPaste === 1) switchSession();
     return { text: "" } as Awaited<ReturnType<typeof client.paneRead>>;
   });
   const writes: string[] = [];
