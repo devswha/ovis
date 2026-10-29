@@ -1,12 +1,13 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
  * Keeps only what usage reads from the payload Claude Code hands its status line: the five-hour and
  * weekly windows, and the account of the CLI that drew it (from its config, not whichever account
- * is signed in at read time). The rest of the payload (cwd, cost, session, transcript path) is
+ * is signed in at read time). Separate session files keep the model and context window.
+ * The rest of the payload (cwd, cost, transcript path) is
  * never written. The file starts with the installer's mark (MARK in server/statusline-install.ts),
  * and one at that path without it is not this capture's, so it is never replaced.
  */
@@ -37,6 +38,30 @@ function window(value: unknown): { used_percentage: number; resets_at?: number }
   const used = number(found["used_percentage"]);
   return used === undefined ? undefined : { used_percentage: used, resets_at: number(found["resets_at"]) };
 }
+/** Context is session-scoped, not account-wide like quota; another pane must not overwrite it. */
+function captureContext(body: Record<string, unknown>): void {
+  const session = body["session_id"];
+  const model = record(body["model"])["id"];
+  const capacity = record(body["context_window"])["context_window_size"];
+  if (typeof session !== "string" || !/^[a-zA-Z0-9-]{1,128}$/.test(session)
+    || typeof model !== "string" || model.trim() === "" || model.length > 256
+    || typeof capacity !== "number" || !Number.isSafeInteger(capacity) || capacity <= 0) return;
+  const contexts = join(dir, "statusline-context");
+  const pending = join(contexts, "." + session + "." + randomUUID() + ".tmp");
+  try {
+    mkdirSync(contexts, { recursive: true, mode: 0o700 });
+    if (!lstatSync(contexts).isDirectory()) return;
+    chmodSync(contexts, 0o700);
+    // The profile fingerprint lets uninstall remove only this installation's captures.
+    const profile = createHash("sha256").update(realpathSync(process.env["CLAUDE_CONFIG_DIR"] || join(home, ".claude"))).digest("hex");
+    writeFileSync(pending, `${MARK}${JSON.stringify({ session_id: session, model, window: capacity, _herdr: { profile } }).slice(1)}`, { mode: 0o600, flag: "wx" });
+    const target = join(contexts, session + ".json");
+    if (!startsWith(import.meta.path, `// ${GENERATED}\n`)) return;
+    if (lstatSync(target, { throwIfNoEntry: false }) === undefined) linkSync(pending, target);
+    else if (startsWith(target, MARK)) renameSync(pending, target);
+  } catch { /* A missing context must not prevent quota capture or the original status line. */ }
+  finally { try { rmSync(pending, { force: true }); } catch { /* A blocked directory leaves no temp file. */ } }
+}
 /** Claude's payload is a few kilobytes; one past this is not read whole, and the last reading stays. */
 const MAX_PAYLOAD_BYTES = 256 * 1024;
 async function payload(): Promise<string | null> {
@@ -52,7 +77,9 @@ async function payload(): Promise<string | null> {
 try {
   const text = await payload();
   if (text === null) process.exit(0);
-  const limits = record(record(JSON.parse(text))["rate_limits"]);
+  const body = record(JSON.parse(text));
+  captureContext(body);
+  const limits = record(body["rate_limits"]);
   const fiveHour = window(limits["five_hour"]);
   const sevenDay = window(limits["seven_day"]);
   // a render before Claude's first answer names no limits; the last reading stays

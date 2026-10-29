@@ -17,7 +17,7 @@
  * install (deleting it when the install created it), and otherwise puts back only the status line
  * it replaced (or its absence). It then deletes the installer's own files and the captured payload.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -530,6 +530,24 @@ function removeUnlocked(options: StatuslineInstallOptions): string {
   for (const name of OWN_FILES) if (ownFile(join(where.own, name))) removeFile(join(where.own, name));
   for (const name of readdirSync(where.own).filter((name) => LEFTOVER.test(name))) if (ownLeftover(join(where.own, name))) removeFile(join(where.own, name));
   const payload = ownFile(where.payload) ? (removeFile(where.payload), ` and ${where.payload}`) : "";
+  const contexts = join(where.home, ".herdr", "statusline-context");
+  try {
+    // Other Claude profiles share the home; their context captures must survive this removal.
+    if (lstatSync(contexts).isDirectory()) {
+      const profile = createHash("sha256").update(realpathSync(where.configDir)).digest("hex");
+      for (const name of readdirSync(contexts)) {
+        if (!/^[a-zA-Z0-9-]{1,128}\.json$/.test(name)) continue;
+        const path = join(contexts, name);
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.size > 4096) continue;
+        if (!readFileSync(path, "utf8").startsWith(MARK["statusline-last.json"]!)) continue;
+        let captured;
+        try { captured = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        if (captured?._herdr?.profile === profile) rmSync(path);
+      }
+      if (readdirSync(contexts).length === 0) rmdirSync(contexts);
+    }
+  } catch (error) { if (!isMissing(error)) throw error; }
   const left = readdirSync(where.own);
   if (left.length > 0) return `removed: ${outcome}, and deleted the installer's files${payload}; ${where.own} stays for what else is in it (${left.join(", ")})`;
   rmdirSync(where.own);

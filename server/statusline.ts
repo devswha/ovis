@@ -41,15 +41,15 @@ export const statuslinePath = (home: string): string => join(home, ".herdr", "st
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
 /** The file's text, or null where it is not a regular file of at most MAX_CAPTURE_BYTES. */
-function readCapture(path: string): string | null {
+function readCapture(path: string, maxBytes = MAX_CAPTURE_BYTES): string | null {
   // stat first: opening a FIFO left at this path would wait for a writer
   if (!statSync(path).isFile()) return null;
   const fd = openSync(path, "r");
   try {
-    const buffer = Buffer.alloc(MAX_CAPTURE_BYTES + 1);
+    const buffer = Buffer.alloc(maxBytes + 1);
     let read = 0;
     for (let got = 1; got > 0 && read < buffer.length; read += got) got = readSync(fd, buffer, read, buffer.length - read, read);
-    return read > MAX_CAPTURE_BYTES ? null : buffer.subarray(0, read).toString("utf8");
+    return read > maxBytes ? null : buffer.subarray(0, read).toString("utf8");
   } finally {
     closeSync(fd);
   }
@@ -96,4 +96,21 @@ export function readStatusline(home: string, now: number = Date.now()): Statusli
   } catch {
     return null;
   }
+}
+
+/** The exact context limit for one Claude session and model, even below 200k tokens.
+ * Usage remains the transcript's input/cache total. No subscription or account is required. */
+export function readStatuslineContext(home: string, sessionId: string, model: string | null, now = Date.now()): number | null {
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId) || model === null) return null;
+  const path = join(home, ".herdr", "statusline-context", sessionId + ".json");
+  try {
+    const stat = statSync(path);
+    if (stat.size > 4096 || now - stat.mtimeMs > STALE_MS || stat.mtimeMs - now > 60_000) return null;
+    const text = readCapture(path, 4096);
+    if (text === null) return null;
+    const body = record(JSON.parse(text));
+    const capacity = body["window"];
+    return body["session_id"] === sessionId && body["model"] === model
+      && typeof capacity === "number" && Number.isSafeInteger(capacity) && capacity > 0 ? capacity : null;
+  } catch { return null; }
 }

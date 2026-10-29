@@ -375,7 +375,7 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
-  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  set). It also stores each session’s model and context limit under `~/.herdr/statusline-context/`, readable only by you. The chat uses a context limit only for the matching session and model, from a capture less than six hours old. This needs no subscription usage data. The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
   deletes what was added; a file there that it did not write is never replaced or deleted. If you have
