@@ -83,14 +83,40 @@ interface Scan { result: Promise<SlashCommand[]>; waiters: number; running: bool
 /** Scans under way, by what they were asked: a request for the same scan waits for that one. */
 const scans = new Map<string, Scan>();
 /** Scans that finished with nobody waiting for them, by what they were asked, each taken once. */
-const unclaimed = new Map<string, { commands: SlashCommand[]; timer: ReturnType<typeof setTimeout> }>();
+const unclaimed = new Map<string, { commands: SlashCommand[]; size: number; timer: ReturnType<typeof setTimeout> }>();
+/**
+ * At most this many unclaimed answers, of about this many characters in all, are kept; the oldest go
+ * first. A request that leaves (a client gone) can be repeated for many folders, and each answer
+ * holds every skill's description.
+ */
+const UNCLAIMED_LIMITS = { entries: 16, chars: 8 * 1024 * 1024 };
+let unclaimedLimits = UNCLAIMED_LIMITS;
+let unclaimedChars = 0;
+
+/** For tests: how many unclaimed answers, and how many characters, are kept; no argument restores the defaults. */
+export function setUnclaimedLimits(limits: Partial<typeof UNCLAIMED_LIMITS> = {}): void {
+  unclaimedLimits = { ...UNCLAIMED_LIMITS, ...limits };
+  for (const key of [...unclaimed.keys()]) dropUnclaimed(key);
+}
+
+function dropUnclaimed(key: string): SlashCommand[] | undefined {
+  const kept = unclaimed.get(key);
+  if (kept === undefined) return undefined;
+  unclaimed.delete(key);
+  clearTimeout(kept.timer);
+  unclaimedChars -= kept.size;
+  return kept.commands;
+}
 
 function keepUnclaimed(key: string, commands: SlashCommand[]): void {
-  const previous = unclaimed.get(key);
-  if (previous) clearTimeout(previous.timer);
-  const timer = setTimeout(() => { if (unclaimed.get(key)?.timer === timer) unclaimed.delete(key); }, UNCLAIMED_SCAN_MS);
+  dropUnclaimed(key);
+  const size = commands.reduce((sum, command) => sum + JSON.stringify(command).length, 0);
+  if (size > unclaimedLimits.chars) return;
+  while (unclaimed.size > 0 && (unclaimed.size >= unclaimedLimits.entries || unclaimedChars + size > unclaimedLimits.chars)) dropUnclaimed(unclaimed.keys().next().value!);
+  const timer = setTimeout(() => { if (unclaimed.get(key)?.timer === timer) dropUnclaimed(key); }, UNCLAIMED_SCAN_MS);
   timer.unref?.();
-  unclaimed.set(key, { commands, timer });
+  unclaimed.set(key, { commands, size, timer });
+  unclaimedChars += size;
 }
 
 /** Once every scan under way has finished (tests). */
@@ -119,12 +145,8 @@ export function scanPaneCommands(agent: string | null | undefined, cwd: string |
   const roots: ProcessRoots = { agentDir: process.agentDir ?? null, pluginDir: process.pluginDir ?? null, environ: process.environ ?? null };
   const task: FileTask = { op: "commands", agent, cwd: cwd ?? null, home: userHome(), roots, version: version ?? null, serverEnv: { ...globalThis.process.env } };
   const key = JSON.stringify(task);
-  const kept = unclaimed.get(key);
-  if (kept !== undefined) {
-    unclaimed.delete(key);
-    clearTimeout(kept.timer);
-    return Promise.resolve(kept.commands);
-  }
+  const kept = dropUnclaimed(key);
+  if (kept !== undefined) return Promise.resolve(kept);
   let scan = scans.get(key);
   if (scan === undefined) {
     const abort = new AbortController();

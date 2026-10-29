@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { FileInfo, SlashCommand } from "../shared/protocol.ts";
-import { scanPaneCommands, setCommandsWait } from "./commands.ts";
+import { commandScansSettled, scanPaneCommands, setCommandsWait, setUnclaimedLimits } from "./commands.ts";
 import { FileBusyError, filePoolSize, fileTask, fileThreadsClosed, holdFilePool, setFilePoolOptions } from "./file-pool.ts";
 import type { FileTask, OpenedFile } from "./file-tasks.ts";
 
@@ -209,6 +209,46 @@ describe("file threads", () => {
       expect(await busy).toMatchObject({ size: 5 });
       expect(await next).toMatchObject({ size: 5 });
     } finally { setCommandsWait(); }
+  });
+
+  it("keeps a bounded number of unclaimed scan answers, the oldest dropped first (#2254)", async () => {
+    setUp({ workers: 4, waiting: 0, deadlineMs: 30_000 });
+    const before = process.env["HOME"];
+    process.env["HOME"] = join(root, "home");
+    const skill = (folder: string, name: string) => {
+      mkdirSync(join(root, folder, ".claude", "skills", name), { recursive: true });
+      writeFileSync(join(root, folder, ".claude", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: A skill of ${folder}.\n---\n`);
+    };
+    /** a scan of `folder` whose request leaves as soon as a thread took it (one is free): it finishes unclaimed */
+    const abandoned = async (folder: string) => {
+      const leaving = new AbortController();
+      const scan = scanPaneCommands("claude", join(root, folder), {}, null, leaving.signal);
+      leaving.abort();
+      await expect(scan).rejects.toBeInstanceOf(FileBusyError);
+      await commandScansSettled();
+    };
+    try {
+      setUnclaimedLimits({ entries: 2 });
+      for (const folder of ["one", "two", "three"]) {
+        skill(folder, `${folder}-before`);
+        await abandoned(folder);
+      }
+      await commandScansSettled();
+      for (const folder of ["one", "two", "three"]) skill(folder, `${folder}-after`);
+      // "one" was dropped for "three": scanned again, it has the skill added since; "three"'s kept answer has not
+      expect(names(await scanPaneCommands("claude", join(root, "one")))).toContain("one-after");
+      expect(names(await scanPaneCommands("claude", join(root, "three")))).not.toContain("three-after");
+      // an answer larger than the whole allowance is not kept
+      setUnclaimedLimits({ chars: 1 });
+      await abandoned("two");
+      await commandScansSettled();
+      skill("two", "two-later");
+      expect(names(await scanPaneCommands("claude", join(root, "two")))).toContain("two-later");
+    } finally {
+      setUnclaimedLimits();
+      if (before === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = before;
+    }
   });
 
   it("closes a descriptor whose thread is ended before it answers", async () => {
