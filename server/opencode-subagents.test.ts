@@ -117,8 +117,62 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     expect(state.tasks.find((task) => task.id === "ses_continued")!.ended_at).toBeNull();
   });
 
-  it("counts for the turn only what that turn started, and reads nothing for the list when only counting", () => {
+  it("lists the session's background commands with its subagents, as Claude's are listed", () => {
     const s = store();
+    s.prompt(s.parent, NOW - 30 * MIN);
+    s.session("ses_working", NOW - 20 * MIN, { title: "index the repo" });
+    s.prompt("ses_working", NOW - 20 * MIN);
+    s.step("ses_working", NOW - 19 * MIN);
+    s.session("ses_done", NOW - 40 * MIN, { title: "find the bug" });
+    s.prompt("ses_done", NOW - 40 * MIN);
+    s.step("ses_done", NOW - 39 * MIN);
+    s.step("ses_done", NOW - 38 * MIN, { finish: "stop", content: [{ type: "text", text: "found it" }] });
+    s.idle("ses_done", NOW - 37 * MIN);
+    const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);
+    // the rows the chat reads: running, exited well, exited badly
+    shell(NOW - 6 * MIN, { metadata: { background: true }, shellID: "sh_run", command: "sleep 60", status: "running", exit: null, output: null, time: { created: NOW - 6 * MIN } });
+    shell(NOW - 8 * MIN, { metadata: { background: true }, shellID: "sh_ok", command: "make build", status: "exited", exit: 0, output: { output: "done", size: 4, truncated: false }, time: { created: NOW - 9 * MIN } });
+    shell(NOW - 10 * MIN, { metadata: { background: true }, shellID: "sh_bad", command: "make test", status: "exited", exit: 2, output: null, time: { created: NOW - 12 * MIN } });
+    // a foreground command and a `!` command are not background work
+    shell(NOW - 4 * MIN, { command: "ls", status: "exited", exit: 0, time: { created: NOW - 4 * MIN } });
+    shell(NOW - 3 * MIN, { metadata: { background: false }, shellID: "sh_fg", command: "echo hi", status: "exited", exit: 0, output: null, time: { created: NOW - 3 * MIN } });
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW)!;
+    expect(state.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["ses_working", "running"], ["sh_run", "running"],
+      ["sh_ok", "completed"], ["sh_bad", "failed"], ["ses_done", "completed"],
+    ]);
+    expect(state.running).toBe(2);
+    // a command never counts for the turn: the parent does not wait on it
+    expect(state.turnRunning).toBe(1);
+    expect(state.tasks.find((task) => task.id === "sh_run")).toEqual({
+      id: "sh_run", title: "sleep 60", category: "shell", model: null, status: "running",
+      started_at: new Date(NOW - 6 * MIN).toISOString(), ended_at: null,
+      turns: null, tool_calls: null, tokens: null, detail_kind: null,
+    });
+    expect(state.tasks.find((task) => task.id === "sh_ok")!.ended_at).toBe(new Date(NOW - 8 * MIN).toISOString());
+  });
+
+  it("leaves a running background command lost once its session is left, and lists only the recently ended", () => {
+    const s = store();
+    const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);
+    shell(NOW - 6 * MIN, { metadata: { background: true }, shellID: "sh_run", command: "sleep 60", status: "running", exit: null, output: null, time: { created: NOW - 6 * MIN } });
+    shell(NOW - 2 * MIN, { metadata: { background: true }, shellID: "sh_new", command: "make build", status: "exited", exit: 0, output: null, time: { created: NOW - 5 * MIN } });
+    shell(NOW - 26 * 60 * MIN, { metadata: { background: true }, shellID: "sh_old", command: "make old", status: "exited", exit: 0, output: null, time: { created: NOW - 30 * 60 * MIN } });
+
+    const live = opencodeSubagentState(s.path, s.parent, true, NOW)!;
+    expect(live.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["sh_run", "running"], ["sh_new", "completed"],
+    ]);
+    expect(live.running).toBe(1);
+    const gone = opencodeSubagentState(s.path, s.parent, false, NOW)!;
+    expect(gone.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["sh_new", "completed"], ["sh_run", "lost"],
+    ]);
+    expect(gone.running).toBe(0);
+  });
+
+  it("counts for the turn only what that turn started, and reads nothing for the list when only counting", () => {    const s = store();
     s.session("ses_before", NOW - 20 * MIN);
     s.prompt("ses_before", NOW - 20 * MIN);
     s.prompt(s.parent, NOW - 10 * MIN);
