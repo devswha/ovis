@@ -302,20 +302,29 @@ function keepClaudeSetting(settings: ClaudeSettings, entry: unknown, start: numb
   const set = claudeSetting(entry);
   const keep = (field: keyof ClaudeSettings, line: string): void => {
     const last = settings[field].at(-1);
+    // a repeated value keeps one string, not one per record
     settings[field].push({ line: last?.line === line ? last.line : line, start, end });
   };
   if (set.model !== undefined) keep("model", JSON.stringify({ type: "assistant", message: { model: set.model } }));
   if (set.effort !== undefined) keep("effort", JSON.stringify({ type: "assistant", effort: set.effort }));
 }
 
-/** whether the ranges cover [from, to) whole (adjoining forks can share a record's bytes) */
-function covered(ranges: readonly [number, number][], from: number, to: number): boolean {
-  let reached = from;
+/** the ranges in order, those that overlap or adjoin made one */
+function mergedRanges(ranges: readonly [number, number][]): [number, number][] {
+  const merged: [number, number][] = [];
   for (const [low, high] of [...ranges].sort((a, b) => a[0] - b[0])) {
-    if (low > reached) break;
-    reached = Math.max(reached, high);
+    const last = merged.at(-1);
+    if (last !== undefined && low <= last[1]) last[1] = Math.max(last[1], high);
+    else merged.push([low, high]);
   }
-  return reached >= to;
+  return merged;
+}
+
+/** how many of the ascending values lie before `bound` */
+function countBefore<T>(items: readonly T[], value: (item: T) => number, bound: number): number {
+  let low = 0, high = items.length;
+  while (low < high) { const middle = (low + high) >> 1; if (value(items[middle]!) < bound) low = middle + 1; else high = middle; }
+  return low;
 }
 /** a Claude record that holds a picture, up to the largest one the chat shows, is followed whole when it crosses a window */
 const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
@@ -725,10 +734,13 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
     .map((setting) => setting.line);
   // Claude: each field's latest record before the page that is still on the branch, when the head does
   // not hold it whole (a record from before a clear ends inside the head, which starts at the clear)
+  const hidden = mergedRanges(stream.hidden ?? []);
   for (const records of Object.values(scan?.claude ?? {})) {
-    for (let index = records.length - 1; index >= 0; index -= 1) {
+    // records ascend by start: a hidden range is passed in one step, not one record at a time
+    for (let index = countBefore(records, (setting) => setting.start, start) - 1; index >= 0;) {
       const setting = records[index]!;
-      if (setting.start >= start || covered(stream.hidden ?? [], setting.start, setting.end)) continue;
+      const range = hidden[countBefore(hidden, ([low]) => low, setting.start + 1) - 1];
+      if (range !== undefined && range[1] >= setting.end) { index = countBefore(records, (other) => other.start, range[0]) - 1; continue; }
       if (setting.end > end) later.push(setting.line);
       break;
     }
