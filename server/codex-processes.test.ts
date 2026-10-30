@@ -69,7 +69,7 @@ beforeEach(() => {
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: peerScreen.message } })}\n`);
           return;
         }
-        const own = request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
+        const own = request.method === "pane.process_info" && request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
         const result = request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
           : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
           : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
@@ -1666,6 +1666,26 @@ describe("another session's conversation is never shown for a plain Codex pane",
       expect(await resolve()).toBeNull();
     });
   }
+
+  it("takes no short answers given to prompts that differ from the shown ones only in punctuation", async () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check whether a < b for these inputs" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[0] } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check the branch named feature-one" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[1] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    otherFolderThread([
+      { type: "user_message", message: "Check whether a > b for these inputs" },
+      { type: "agent_message", message: replies[0]! },
+      { type: "user_message", message: "Check the branch named feature_one" },
+      { type: "agent_message", message: replies[1]! },
+    ]);
+    foreground = live;
+    screen = `OpenAI Codex (v0.165.0)\n\n› Check whether a > b for these inputs\n\n• ${replies[0]}\n\n› Check the branch named feature_one\n\n• ${replies[1]}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
 
   it("still takes short answers below the prompts they answered", async () => {
     foreground = live;

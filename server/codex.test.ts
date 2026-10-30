@@ -943,6 +943,18 @@ describe("Codex rollout resolution", () => {
     expect(matchShortCodexAnswers(`  ↳ ${asked}\n${texts.map((text) => `• ${text}`).join("\n")}`, [{ path: "only", text: answered(...texts) }])).toBeNull();
   });
 
+  it("reads no short answers below a prompt that differs from theirs only in punctuation, and reads a prompt wrapped over lines", () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    const rollout = (prompt: string) => jsonl(message("user", prompt), ...replies.map((text) => message("assistant", text)));
+    const screen = (...prompt: string[]) => [`› ${prompt[0]}`, ...prompt.slice(1).map((line) => `  ${line}`), ...replies.map((text) => `• ${text}`)].join("\n");
+    for (const [said, shown] of [["Check whether a < b for these inputs", "Check whether a > b for these inputs"], ["Check the branch named feature-one", "Check the branch named feature_one"]] as const) {
+      expect(matchShortCodexAnswers(screen(shown), [{ path: "peer", text: rollout(said) }])).toBeNull();
+      expect(matchShortCodexAnswers(screen(said), [{ path: "peer", text: rollout(said) }])).toBe("peer");
+    }
+    const long = "Check the branch named feature-one, then compare a < b against the release branch";
+    expect(matchShortCodexAnswers(screen("Check the branch named feature-one, then compare", "a < b against the release branch"), [{ path: "own", text: rollout(long) }])).toBe("own");
+  });
+
   it("reads no short answers when a rollout was not read whole, the one that shows them included", () => {
     const texts = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
     const screen = bullets(...texts);

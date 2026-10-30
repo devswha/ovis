@@ -914,6 +914,12 @@ export function codexHistoryTail(path: string, budget: number, home = defaultCod
 const normalizeDisplay = (text: string): string => text.normalize("NFKC").replace(/[^\p{L}\p{N}]/gu, "");
 
 /**
+ * A prompt as compared with the one an answer answered: without Codex's "›" marker and the spaces
+ * and line breaks the screen wraps it at, punctuation kept (`a < b` and `a > b` are other prompts).
+ */
+const promptKey = (text: string): string => text.normalize("NFKC").replace(/^\s*\u203a/, "").replace(/\s+/g, "");
+
+/**
  * A Codex screen cut at what was typed: each prompt (a line Codex starts with "›", a prompt sent or
  * the input box, or an indented "↳", a message queued to be sent; with the indented and blank lines
  * it wraps onto) and the stretches between them. A prompt is no evidence of the conversation shown:
@@ -1190,7 +1196,7 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
   const prompts: { at: number; text: string }[] = [];
   for (const part of codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen)) {
     // only one typed and sent is what an answer below it answered; a queued one is not sent yet
-    if (part.prompt && part.text.startsWith("\u203a")) prompts.push({ at: display.length, text: normalizeDisplay(part.text) });
+    if (part.prompt && part.text.startsWith("\u203a")) prompts.push({ at: display.length, text: promptKey(part.text) });
     display += part.prompt ? "\0" : normalizeDisplay(part.text);
   }
   // every turn of what was read, not the newest 100: an answer said long ago is said; with the prompt it answered
@@ -1198,7 +1204,7 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
     let prompt = "";
     return parseCodexTranscript(candidate.text, Infinity).flatMap((turn) => {
       const texts = turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : []);
-      if (turn.role === "user") prompt = normalizeDisplay(texts.join("\n"));
+      if (turn.role === "user") prompt = promptKey(texts.join("\n"));
       return turn.role === "assistant" ? texts.map((text) => ({ text, prompt })) : [];
     });
   });
