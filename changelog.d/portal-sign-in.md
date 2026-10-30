@@ -3,7 +3,8 @@
   private link, an Ethereum wallet, or Google or company login (OpenID Connect), each with the
   names, wallets or accounts it lets in. Whoever gets through is let in like a paired device,
   with no access token asked, and Devices says who signed in. A visitor let in this way cannot
-  pair or revoke devices, subscribe to push alerts or control Portal. A private-link Portal
+  pair or revoke devices, subscribe to push alerts or control Portal, and a page of theirs left
+  open loses access within 5 minutes of the link expiring or a sign-out. A private-link Portal
   offers **Invite someone**: a link for 1, 7, 30 or 90 days, shown once. The app believes who
   Portal signed in only with a proof it hands that Portal in its environment, so other ways to
   the app's port cannot pass for it. A sign-in needs Portal v2.7.0 or later, which lists
