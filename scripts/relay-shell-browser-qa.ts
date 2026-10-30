@@ -195,7 +195,7 @@ async function scriptedPc(behaviour: "refuse" | "stall", name: string) {
     socket.onclose = (event) => transport.onclose?.(event.code, event.reason);
     let channel: SecureChannel | undefined;
     let incoming = Promise.resolve();
-    const opening = openDaemonSecureChannel(transport, { daemonKeyPair: keys, minimumMode: "protected", events: {
+    const opening = openDaemonSecureChannel(transport, { daemonKeyPair: keys, events: {
       onmessage: () => {
         if (behaviour === "stall") return;
         incoming = incoming.then(async () => {

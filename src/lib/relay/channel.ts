@@ -231,7 +231,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (!heardPc) expect(PC_ANSWER_MS, () => new MuxProtocolError("timeout", "The PC did not answer through the relay"));
         const opened = Promise.withResolvers<void>();
         secure = await openClientSecureChannel(transport, {
-          daemonPublicKeyB64: offer.server_public_key, minimumMode: "protected",
+          daemonPublicKeyB64: offer.server_public_key,
           events: {
             onopen: () => opened.resolve(),
             onmessage: (data) => { incoming = incoming.then(() => receive(data)).catch(failed); },

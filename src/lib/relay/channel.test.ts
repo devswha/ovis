@@ -79,7 +79,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
   void httpSeen.promise.catch(() => {});
   let incoming = Promise.resolve();
   const daemonOpening = openDaemonSecureChannel(daemon, {
-    daemonKeyPair: keys, minimumMode: "protected",
+    daemonKeyPair: keys,
     events: { onmessage: (data) => {
       if (!(data instanceof ArrayBuffer)) throw new Error("Expected mux bytes");
       const bytes = new Uint8Array(data);
