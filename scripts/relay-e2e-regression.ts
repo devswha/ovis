@@ -44,6 +44,8 @@ import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket } from "./relay-browser-bridge.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
 const repo = join(import.meta.dir, "..");
 
@@ -645,14 +647,25 @@ async function main(): Promise<void> {
    */
   async function scriptedPc(behaviour: "refuse" | "stall") {
     const keys = generateKeyPair();
-    const serverId = randomBytes(16).toString("hex");
+    const serverId = deriveServerId(keys.publicKey);
+    const proofQuery = `proof=1&public_key=${bytesToHex(keys.publicKey)}`;
     const sockets: WebSocket[] = [];
     const dataFor = (connectionId: string): void => {
-      const socket = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&connection_id=${connectionId}&v=1`);
+      const socket = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&connection_id=${connectionId}&v=1&${proofQuery}`);
       socket.binaryType = "arraybuffer";
       sockets.push(socket);
       const transport: Transport = { onmessage: null, onclose: null, onerror: null, send: (data) => { socket.send(data); }, close: (code, reason) => socket.close(code, reason) };
-      socket.onmessage = (event) => transport.onmessage?.({ data: event.data as string | ArrayBuffer, isBinary: typeof event.data !== "string" });
+      let proved = false;
+      socket.onmessage = (event) => {
+        if (!proved) {
+          const answer = answerServerChallenge(event.data, keys.secretKey, { server_id: serverId, role: "data", connection_id: connectionId });
+          assert.ok(answer, "scripted PC received its proof challenge");
+          proved = true;
+          socket.send(answer);
+          return;
+        }
+        transport.onmessage?.({ data: event.data as string | ArrayBuffer, isBinary: typeof event.data !== "string" });
+      };
       socket.onclose = (event) => transport.onclose?.(event.code, event.reason);
       let channel: SecureChannel | undefined;
       let incoming = Promise.resolve();
@@ -667,9 +680,11 @@ async function main(): Promise<void> {
       } }).then((opened) => { channel = opened; return opened; });
       opening.catch(() => socket.close());
     };
-    const control = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&v=1`);
+    const control = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&v=1&${proofQuery}`);
     sockets.push(control);
     control.onmessage = (event) => {
+      const answer = answerServerChallenge(event.data, keys.secretKey, { server_id: serverId, role: "control", connection_id: null });
+      if (answer) { control.send(answer); return; }
       const value = JSON.parse(String(event.data)) as { type: string; connection_id?: string; connection_ids?: string[] };
       if (value.type === "sync") for (const id of value.connection_ids ?? []) dataFor(id);
       else if (value.type === "connected" && value.connection_id) dataFor(value.connection_id);
