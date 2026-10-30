@@ -19,13 +19,13 @@ afterEach(() => {
   else process.env["HERDR_SOCKET"] = previousSocket;
 });
 
-it.skipIf(platform === "win32")("tightens an existing state directory and socket on every start", () => {
+it.skipIf(platform === "win32")("tightens an existing state directory and socket on every start", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-mode-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   process.env["OVIS_RUNTIME"] = "herdr-core";
   for (let start = 0; start < 2; start++) {
     chmodSync(dir, 0o755);
-    const adapter = startRuntime(dir);
+    const adapter = await startRuntime(dir);
     if (!adapter) throw new Error("runtime did not start");
     try {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
@@ -37,35 +37,35 @@ it.skipIf(platform === "win32")("tightens an existing state directory and socket
   }
 });
 
-it.skipIf(platform === "win32")("refuses another user's state directory before changing its mode", () => {
+it.skipIf(platform === "win32")("refuses another user's state directory before changing its mode", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-owner-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   chmodSync(dir, 0o755);
   process.env["OVIS_RUNTIME"] = "herdr-core";
   spyOn(process, "geteuid").mockReturnValue(statSync(dir).uid + 1);
-  expect(() => startRuntime(dir)).toThrow();
+  await expect(startRuntime(dir)).rejects.toThrow();
   expect(statSync(dir).mode & 0o777).toBe(0o755);
   expect(existsSync(join(dir, "herdr-core.sock"))).toBe(false);
 });
 
-it("rejects herdr-core on Windows before creating state", () => {
+it("rejects herdr-core on Windows before creating state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-windows-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   const state = join(dir, "state");
   process.env["OVIS_RUNTIME"] = "herdr-core";
   Object.defineProperty(process, "platform", { value: "win32" });
-  expect(() => startRuntime(state)).toThrow();
+  await expect(startRuntime(state)).rejects.toThrow();
   expect(existsSync(state)).toBe(false);
 });
 
-it("leaves the default runtime's state and socket unchanged even on Windows", () => {
+it("leaves the default runtime's state and socket unchanged even on Windows", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-default-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   const state = join(dir, "state");
   delete process.env["OVIS_RUNTIME"];
   process.env["HERDR_SOCKET"] = "default-socket";
   Object.defineProperty(process, "platform", { value: "win32" });
-  expect(startRuntime(state)).toBeNull();
+  expect(await startRuntime(state)).toBeNull();
   expect(existsSync(state)).toBe(false);
   expect(process.env["HERDR_SOCKET"]).toBe("default-socket");
 });

@@ -186,16 +186,27 @@ export class HcConnection {
 
   private async request<T>(method: string, params: Record<string, unknown>, timeoutMs: number, channel?: ChannelHandlers, given?: Line): Promise<T> {
     const line = given ?? this.current();
-    await line.hello;
-    if (line.dead) throw new HcError("closed", `hc closed the connection before ${method} was sent`);
     const id = this.nextId++;
     const { promise, resolve, reject } = Promise.withResolvers<T>();
+    let waitingHello = true;
     const timer = setTimeout(() => {
+      if (waitingHello) {
+        this.end(line, "timeout", `hc hello timed out after ${timeoutMs}ms`);
+        return;
+      }
       line.pending.delete(id);
       reject(new HcError("timeout", `hc ${method} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     line.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer, ...(channel ? { channel } : {}) });
-    line.transport.write(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id, method, params })));
+    void line.hello.then(() => {
+      waitingHello = false;
+      if (line.dead || !line.pending.has(id)) return;
+      line.transport.write(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id, method, params })));
+    }).catch((error: unknown) => {
+      line.pending.delete(id);
+      clearTimeout(timer);
+      reject(error);
+    });
     return promise;
   }
 

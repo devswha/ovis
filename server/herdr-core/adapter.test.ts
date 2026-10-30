@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
-import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, type HcTransport, makeFrameReader } from "./connection.ts";
+import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
 import type { HcTerminal } from "./snapshot.ts";
 
 type Handler = (params: Record<string, unknown>) => unknown;
@@ -17,13 +17,16 @@ class FakeCore implements HcTransport {
   readonly typed: { channel: number; text: string }[] = [];
   readonly closed: number[] = [];
   readonly calls: { method: string; params: Record<string, unknown> }[] = [];
+  /** Stream frames bundled with the next RPC response in one pipe read. */
+  replyTail: Uint8Array = new Uint8Array(0);
+  killed = false;
   private controller!: ReadableStreamDefaultController<Uint8Array>;
   private endExited!: () => void;
   private plain = true;
   private nextChannel = 1;
   private readonly frames = makeFrameReader((frame) => this.onFrame(frame.channel, frame.kind, frame.payload), () => {});
 
-  constructor(readonly handlers: Record<string, Handler>) {
+  constructor(readonly handlers: Record<string, Handler>, readonly answerHello = true) {
     this.readable = new ReadableStream({ start: (controller) => { this.controller = controller; } });
     const { promise, resolve } = Promise.withResolvers<unknown>();
     this.exited = promise;
@@ -33,6 +36,7 @@ class FakeCore implements HcTransport {
   write(bytes: Uint8Array): void {
     if (this.plain) {
       this.plain = false;
+      if (!this.answerHello) return;
       this.controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ id: 0, jsonrpc: "2.0", result: { generation: 1, framed: true, version: "0.1.14", core: { id: "c1", name: "lab" }, methods: [], features: [] } })}\n`));
       return;
     }
@@ -40,6 +44,7 @@ class FakeCore implements HcTransport {
   }
 
   kill(): void {
+    this.killed = true;
     try { this.controller.close(); } catch { /* closed */ }
     this.endExited();
   }
@@ -69,7 +74,8 @@ class FakeCore implements HcTransport {
     const reply = handler
       ? (() => { try { return { result: handler(message.params) }; } catch (error) { return { error: { code: -32000, message: String(error), data: { kind: "not_found" } } }; } })()
       : { error: { code: -32601, message: `no ${message.method}`, data: { kind: "unknown_method" } } };
-    this.controller.enqueue(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply })));
+    this.controller.enqueue(Buffer.concat([encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply })), this.replyTail]));
+    this.replyTail = new Uint8Array(0);
   }
 }
 
@@ -85,7 +91,32 @@ afterEach(() => {
   cleanups = [];
 });
 
-function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}) {
+for (const method of ["call", "open"] as const) {
+  it(`times out ${method} while hc never answers hello and reconnects on the next call`, async () => {
+    const cores: FakeCore[] = [];
+    const hc = new HcConnection(() => {
+      const core = new FakeCore({ ping: () => ({ ok: true }) }, cores.length > 0);
+      cores.push(core);
+      return core;
+    });
+    jest.useFakeTimers();
+    try {
+      const pending = method === "call" ? hc.call("ping", {}, 50)
+        : hc.open("events.subscribe", {}, { onData() {}, onClose() {} }, 50);
+      const failure = pending.then(() => "resolved", (error: unknown) => error instanceof HcError ? error.kind : "unexpected");
+      jest.advanceTimersByTime(50);
+      expect(cores[0]?.killed).toBe(true);
+      expect(await failure).toBe("timeout");
+      expect(await hc.call<{ ok: boolean }>("ping", {}, 50)).toEqual({ ok: true });
+      expect(cores).toHaveLength(2);
+    } finally {
+      hc.close();
+      jest.useRealTimers();
+    }
+  });
+}
+
+async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
   const socket = join(dir, "herdr.sock");
   const cores: FakeCore[] = [];
@@ -106,21 +137,31 @@ function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}) {
     cores.push(core);
     return core;
   });
-  const adapter = startHerdrCoreAdapter(hc, socket);
+  const adapter = await startHerdrCoreAdapter(hc, socket);
   cleanups.push(() => { adapter.stop(); hc.close(); rmSync(dir, { recursive: true, force: true }); });
   return { socket, cores, hc };
 }
 
 describe("herdr-core adapter", () => {
+  it("refuses a second adapter on a live socket and leaves the first serving", async () => {
+    const { socket, hc } = await setup([terminal("t1")]);
+    await sessionSnapshot(socket);
+    await expect((async () => {
+      const second = await startHerdrCoreAdapter(hc, socket);
+      cleanups.push(() => second.stop());
+    })()).rejects.toThrow();
+    expect((await sessionSnapshot(socket)).panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
+  });
+
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
-    const { socket } = setup([terminal("t1", { status: { app: "claude", state: "blocked" } }), terminal("t2")]);
+    const { socket } = await setup([terminal("t1", { status: { app: "claude", state: "blocked" } }), terminal("t2")]);
     const snapshot = await sessionSnapshot(socket);
     expect(snapshot.workspaces.map((w) => w.label)).toEqual(["api", "Other terminals"]);
     expect(snapshot.panes.map((p) => [p.pane_id, p.agent, p.agent_status])).toEqual([["t1", "claude", "blocked"], ["t2", null, "unknown"]]);
   });
 
   it("types send_text into an attach at the terminal's own grid, then lets the attach go", async () => {
-    const { socket, cores } = setup([terminal("t1", { cols: 90, rows: 20 })]);
+    const { socket, cores } = await setup([terminal("t1", { cols: 90, rows: 20 })]);
     await paneSendText("t1", "héllo 한글", socket);
     const core = cores[0]!;
     expect(core.calls.find((call) => call.method === "terminal.attach")?.params).toEqual({ terminal: "t1", cols: 90, rows: 20 });
@@ -130,7 +171,7 @@ describe("herdr-core adapter", () => {
   });
 
   it("presses keys in order: plain ones typed together, the others through hc's encoder", async () => {
-    const { socket, cores } = setup([terminal("t1")]);
+    const { socket, cores } = await setup([terminal("t1")]);
     await paneSendKeys("t1", ["Escape", "Enter", "ctrl+shift+left", "x"], socket);
     const core = cores[0]!;
     expect(core.typed.map((write) => write.text)).toEqual(["\x1b\r", "x"]);
@@ -140,7 +181,7 @@ describe("herdr-core adapter", () => {
   });
 
   it("refuses what only the Herdr app does, and a pane hc does not have, in herdr's codes", async () => {
-    const { socket } = setup([terminal("t1")]);
+    const { socket } = await setup([terminal("t1")]);
     const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
     expect(await failure(herdrRpc("pane.split", { pane_id: "t1", direction: "right" }, socket))).toBe("unsupported");
     expect(await failure(paneGet("t9", socket))).toBe("pane_not_found");
@@ -149,7 +190,7 @@ describe("herdr-core adapter", () => {
 
   it("streams status for the subscribed panes only, a finish as herdr's exit and close, and ends on hc's missed", async () => {
     let channel = 0;
-    const { socket, cores } = setup([terminal("t1"), terminal("t2")], {
+    const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {
       "events.subscribe": () => {
         channel = cores.at(-1)!.channel();
         return { channel, seq: 1, terminals: [] };
@@ -179,8 +220,26 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
+  it("acknowledges before an event bundled with the hc subscribe response", async () => {
+    const { socket, cores } = await setup([terminal("t1")], {
+      "events.subscribe": () => ({ channel: cores[0]!.channel(), seq: 1, terminals: [] }),
+    });
+    await sessionSnapshot(socket);
+    cores[0]!.replyTail = encodeFrame(1, FRAME_DATA, `${JSON.stringify({ method: "event", params: { type: "created", terminal: "t1" } })}\n`);
+    const order: (string | undefined)[] = [];
+    const received = Promise.withResolvers<EventFrame>();
+    const subscription = subscribeEvents([{ type: "pane.created" }], {
+      onStarted: () => order.push("ack"),
+      onEvent: (event) => { order.push(event.event); received.resolve(event); },
+      onError: (error) => received.reject(error),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    expect(await received.promise).toEqual({ event: "pane.created", data: { type: "pane_created", pane_id: "t1" } });
+    expect(order).toEqual(["ack", "pane.created"]);
+  });
+
   it("fails what waited on a line to hc that ended, and opens a new one for the next call", async () => {
-    const { socket, cores } = setup([terminal("t1")]);
+    const { socket, cores } = await setup([terminal("t1")]);
     await sessionSnapshot(socket);
     cores[0]!.kill();
     await cores[0]!.exited;
@@ -192,7 +251,7 @@ describe("herdr-core adapter", () => {
   for (const newline of ["", "\n"]) {
     it(`closes an oversized event line across frames ${newline ? "with" : "without"} a newline with an error`, async () => {
       let channel = 0;
-      const { socket, cores } = setup([terminal("t1")], {
+      const { socket, cores } = await setup([terminal("t1")], {
         "events.subscribe": () => {
           channel = cores.at(-1)!.channel();
           return { channel, seq: 1, terminals: [] };

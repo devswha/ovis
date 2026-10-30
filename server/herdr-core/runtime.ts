@@ -27,7 +27,7 @@ export function hcBin(): string {
  * listening in the state folder, and HERDR_SOCKET pointed at it before anything reads it; on
  * herdr, nothing.
  */
-export function startRuntime(stateDir: string): HerdrCoreAdapter | null {
+export async function startRuntime(stateDir: string): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error("OVIS_RUNTIME=herdr-core is Linux/macOS only: no Windows named pipe support yet");
@@ -37,7 +37,7 @@ export function startRuntime(stateDir: string): HerdrCoreAdapter | null {
   if (statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   chmodSync(stateDir, 0o700);
   const hc = new HcConnection(() => spawnHcConnect(hcBin()));
-  const adapter = startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
+  const adapter = await startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
   chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
   return {

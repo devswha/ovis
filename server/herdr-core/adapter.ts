@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
+import { createConnection } from "node:net";
 import type { Socket } from "bun";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
 import { type HcConnection, HcError } from "./connection.ts";
@@ -64,9 +65,19 @@ export interface HerdrCoreAdapter {
   stop: () => void;
 }
 
-export function startHerdrCoreAdapter(hc: HcConnection, socketPath: string): HerdrCoreAdapter {
-  // a previous server's socket file: nothing listens on it once that server is gone
-  if (existsSync(socketPath)) rmSync(socketPath, { force: true });
+export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string): Promise<HerdrCoreAdapter> {
+  if (existsSync(socketPath)) {
+    const live = await new Promise<boolean>((resolve, reject) => {
+      const probe = createConnection(socketPath);
+      probe.once("connect", () => { probe.destroy(); resolve(true); });
+      probe.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve(false);
+        else reject(error);
+      });
+    });
+    if (live) throw new Error("Another Ovis owns this state directory: the herdr-core socket is still listening");
+    rmSync(socketPath, { force: true });
+  }
   const answers = createAnswers(hc);
   const listener = Bun.listen<ConnectionState>({
     unix: socketPath,
@@ -296,7 +307,13 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     ack();
     return;
   }
-  const emit = (event: string, data: Record<string, unknown>) => send(socket, `${JSON.stringify({ event, data })}\n`);
+  let acknowledged = false;
+  const queued: string[] = [];
+  const emit = (event: string, data: Record<string, unknown>) => {
+    const frame = `${JSON.stringify({ event, data })}\n`;
+    if (acknowledged) send(socket, frame);
+    else queued.push(frame);
+  };
   const lifecycle = (event: string, type: string, paneId?: string) => {
     if (structure) emit(event, { type, ...(paneId ? { pane_id: paneId } : {}) });
   };
@@ -360,6 +377,9 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     if (socket.data.closed || socket.data.ending) { channel.close(); return; }
     socket.data.unsubscribe = () => channel.close();
     ack();
+    acknowledged = true;
+    for (const frame of queued) send(socket, frame);
+    queued.length = 0;
   } catch (error) {
     const reply = error instanceof HcError ? { code: herdrCode(error, "not_found"), message: error.message } : { code: "internal", message: String(error) };
     send(socket, `${JSON.stringify({ id: request.id, error: reply })}\n`, true);
