@@ -57,6 +57,7 @@ import type {
   PortalInvite,
   PushSubscriptionStatus,
   PortalStatus,
+  RelayStatus,
   RemoteAccess,
   RemoveWorktreeRequest,
   ResizePaneRequest,
@@ -215,6 +216,37 @@ export async function issuePortalInvite(name: string, days: number): Promise<Por
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ name, days }) });
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as PortalInvite;
+}
+
+/** Settings → Phone & devices: the Ovis relay, through which paired phones reach this PC from anywhere. */
+export function fetchRelay(): Promise<RelayStatus> {
+  return getJson<RelayStatus>("/api/relay");
+}
+
+/** POST /api/relay/offer: a one-time pairing offer for the QR code, good until `expires_at`. */
+export interface RelayOffer {
+  readonly url: string;
+  readonly expires_at: string;
+}
+
+/**
+ * The relay actions answer with the state they left the relay in, a refusal too: a start that
+ * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
+ * Only a body without a phase (the origin gate, a watching device, an older server) is one.
+ */
+export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
+  const url = `/api/relay/${action}`;
+  const response = await fetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) {
+    const body: unknown = await response.clone().json().catch(() => null);
+    if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
+    throw await errorFrom(url, response);
+  }
+  return (await response.json()) as RelayStatus;
+}
+
+export function requestRelayOffer(): Promise<RelayOffer> {
+  return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
 /** Anonymous install and update counts; null from a server that sends none (404). */
