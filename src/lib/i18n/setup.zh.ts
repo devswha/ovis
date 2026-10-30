@@ -80,4 +80,5 @@ export const SETUP_ZH: Record<string, string> = {
   "Signed in": "已登录",
   "New agents": "新代理",
   "Not found on this PC": "此 PC 上未找到",
+  "Its account needs attention": "账号需要处理",
 };

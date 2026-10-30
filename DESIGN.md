@@ -671,7 +671,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   `diffStyle`: `unified` (default) or `split` for a repository diff (a phone draws one column
   whatever it says, and the viewer says so).
   These layout choices stay on this device, like chat width.
-- New agents (Settings → Integrations): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
+- New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
   workspace, tab and worktree dialogs send (src/lib/agentLaunchMode.ts). `default` (the default)
@@ -3030,11 +3030,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   version, one state line: a status dot and Signed in · account, N accounts · M need attention, Not
   signed in, or Installed where Ovis reads no sign-in for it), with one action while shut (Sign in
   again for its one expired account, or Sign in when it has none) and a chevron; opened, its accounts
-  (Add account, then the rows below, each with its glance limit), its launch mode (Claude Code,
-  Codex) and Session resume (herdr's integration, with its command and Copy when off). An account
+  (Add account, then the rows below, each with its glance limit) and Session resume (herdr's
+  integration, with its command and Copy when off). An account
   goes under the one agent whose `sign_in.provider` it is; the rest (Cursor, an agent not here, every
   account on a remote PC) and the hub are under **Other accounts** with its **Add account**. **Install
-  another agent (N)** is shut until opened (the setup guide's tiles), and **Plan limits** closes the
+  another agent (N)** is shut until opened (the setup guide's tiles), **New agents** holds the
+  launch modes of Claude Code and Codex (always shown, whatever the PC has), and **Plan limits** closes the
   page: Show plan limits, then Meters show and Limit shown side by side on one row, then Claude's
   status-line switch. Old `?settings=usage` and `?settings=integrations` links open Agents.
 - An account row (Agents) has email/name, then dim source (**This PC** or **Hub**), known plan and written

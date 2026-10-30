@@ -146,7 +146,7 @@ const landing = async (page: Page, label: (name: string) => string): Promise<{ p
   return { page: id, section, visible };
   });
   // the panel is named by its page's label in the language shown: back to the page's id
-  const ids = ["appearance", "chat", "terminal", "alerts", "voice", "usage", "shortcuts", "devices", "remote", "integrations", "about"];
+  const ids = ["appearance", "chat", "terminal", "alerts", "voice", "agents", "shortcuts", "devices", "remote", "about"];
   return { ...shown, page: shown.page === null ? null : ids[PAGES.findIndex((name) => label(name) === shown.page)] ?? `unknown: ${shown.page}` };
 };
 /** Anything in the palette or Settings wider than the window: a long query or label must not push the sheet sideways. */
@@ -559,6 +559,21 @@ try {
               const order = await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).usageOrder as string[]);
               assert.ok(order[0]!.startsWith("claude"), `Claude keeps the first place: ${order.join(", ")}`);
               assert.equal(await codex.locator(".usage-accounts-row").first().locator(".usage-accounts-account").textContent(), moved);
+              // a Check again that fails after a good read keeps the rows it had, and says why beside them
+              await page.evaluate(() => {
+                const passing = window.fetch;
+                (window as unknown as { restoreCatalog: () => void }).restoreCatalog = () => { window.fetch = passing; };
+                window.fetch = (input, init) => new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname === "/api/agent-catalog"
+                  ? Promise.resolve(Response.json({ error: { code: "fixture", message: "The catalog check failed (fixture)." } }, { status: 500 }))
+                  : passing(input, init);
+              });
+              await body.getByRole("button", { name: label("Check again"), exact: true }).tap();
+              await body.locator("[data-section='agents-installed'] [role='alert']").filter({ hasText: "The catalog check failed (fixture)." }).waitFor();
+              assert.equal(await codex.locator(".usage-accounts-row").count(), 2, "Codex's accounts stay after a failed Check again");
+              assert.deepEqual(await body.locator(".agents-item").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent"))), ["claude", "codex", "omp", "pi", "hermes"]);
+              await page.evaluate(() => (window as unknown as { restoreCatalog: () => void }).restoreCatalog());
+              await body.getByRole("button", { name: label("Check again"), exact: true }).tap();
+              await body.locator("[data-section='agents-installed'] [role='alert']").waitFor({ state: "detached" });
               await codex.locator(".agents-toggle").tap();
             }
             if (name === "Appearance" && language === "en") {

@@ -80,4 +80,5 @@ export const SETUP_KO: Record<string, string> = {
   "Signed in": "로그인됨",
   "New agents": "새 에이전트",
   "Not found on this PC": "이 PC에서 찾을 수 없음",
+  "Its account needs attention": "계정 확인 필요",
 };

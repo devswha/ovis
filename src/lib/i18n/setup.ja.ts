@@ -80,4 +80,5 @@ export const SETUP_JA: Record<string, string> = {
   "Signed in": "ログイン済み",
   "New agents": "新しいエージェント",
   "Not found on this PC": "この PC には見つかりません",
+  "Its account needs attention": "アカウントの確認が必要",
 };

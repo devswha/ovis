@@ -158,7 +158,7 @@ function stateLine(entry: AgentsPageRow, read: boolean, t: Translate): { text: s
     case "unknown": return { text: t("Installed"), tone: "dim" };
     case "none": return { text: t("Not signed in"), tone: "none" };
     case "signed-in": return { text: state.count > 1 ? t("Signed in · {count} accounts", { count: state.count }) : state.account ? t("Signed in · {account}", { account: state.account }) : t("Signed in"), tone: "ok" };
-    case "problem": return { text: t("{count} accounts · {problems} need attention", { count: state.count, problems: state.problems }), tone: "warn" };
+    case "problem": return { text: state.count === 1 ? t("Its account needs attention") : t("{count} accounts · {problems} need attention", { count: state.count, problems: state.problems }), tone: "warn" };
     default: { const unexpected: never = state; throw new Error(String(unexpected)); }
   }
 }
@@ -344,8 +344,10 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
         <SectionHead id="settings-agents-here" title={t("On this PC")}>
           <button type="button" ref={checkAgain} className="btn btn-ghost" onClick={() => setReads((count) => count + 1)}><RotateCw aria-hidden="true" />{t("Check again")}</button>
         </SectionHead>
-        {catalogError !== null ? <div className="settings-card"><p className="settings-item settings-hint" role="alert">{catalogError.message}{catalogError.detail !== null && <><br /><code>{catalogError.detail}</code></>}</p></div>
-          : page === null ? <div className="settings-card"><p className="settings-item settings-hint" role="status">{t("Loading…")}</p></div>
+        {/* a failed read, the first or a Check again: the rows the last good one gave stay, with the error beside them */}
+        {catalogError !== null && <p className="settings-hint agents-note" role="alert">{catalogError.message}{catalogError.detail !== null && <><br /><code>{catalogError.detail}</code></>}</p>}
+        {agents === null ? catalogError === null && <div className="settings-card"><p className="settings-item settings-hint" role="status">{t("Loading…")}</p></div>
+          : page === null ? null
             : page.rows.length === 0 ? <div className="settings-card"><p className="settings-item settings-hint">{t("None on this PC yet.")}</p></div>
               : <ul className="settings-card agents-card">
                 {page.rows.map((entry) => <AgentItem key={entry.agent.id} entry={entry} open={open.has(entry.agent.id)} onToggle={() => toggle(entry.agent.id)}
