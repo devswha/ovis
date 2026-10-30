@@ -334,8 +334,8 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await following.getByRole("alert").filter({ hasText: "Install the official CLI on this PC before signing in" }).waitFor();
       await following.getByRole("button", { name: "Done", exact: true }).click();
       await following.waitFor({ state: "detached" });
-      // started: its Open terminal hands the tab over
-      await openDrawer();
+      // started: its Open terminal hands the tab over (a phone's drawer is still out after Done)
+      if (!(await page.locator(".usage-strip").isVisible())) await openDrawer();
       await page.locator(".usage-strip").click();
       await popover.getByRole("button", { name: /^Sign in again/ }).click();
       await following.getByText("Waiting for Claude to show its sign-in page…", { exact: true }).waitFor();
