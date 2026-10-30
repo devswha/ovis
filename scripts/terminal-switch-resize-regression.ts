@@ -122,9 +122,9 @@ try {
     if (!settled.matched) {
       failures.push(`${round}: the returned tab differs from a fresh attach\n--- returned\n${actual.join("\n")}\n--- fresh attach\n${expected.join("\n")}`);
     } else {
-      // the screen's six edge markers are all on it, each on a row of its own, and the long line once
-      const torn = settled.painted.find((lines) => lines.join("\n").includes("ROW1") && (lines.join("").split("#").length - 1 < 6
-        || lines.some((line) => line.split("#").length > 2) || lines.join("\n").split("LONG0014").length > 2));
+      // a frame drawn for a wider grid is shown cut at this one's edge (herdr's own view of it), so only
+      // what no single grid draws marks a torn frame: two edge markers on one row, or the long line twice
+      const torn = settled.painted.find((lines) => lines.some((line) => line.split("#").length > 2) || lines.join("\n").split("LONG0014").length > 2);
       if (torn) failures.push(`${round}: a frame painted on return mixes two grids\n${torn.join("\n")}`);
     }
     if (evidence) {
