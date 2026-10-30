@@ -129,6 +129,18 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.panes.find((p) => p.pane_id === "t4")!.workspace_id).toBe(OTHER_WORKSPACE_ID);
   });
 
+  it("never gives a workspace and a tab the same id, even when only labels made them", () => {
+    const snapshot = buildSnapshot([
+      terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }),
+      terminal("t2", { labels: { "herdr.space": "X", "herdr.tab": "S" } }),
+      terminal("t3", { labels: { "herdr.space": "T" } }),
+    ], null, "0.1.14");
+    const workspaceIds = snapshot.workspaces.map((w) => w.workspace_id);
+    const tabIds = snapshot.tabs.map((t) => t.tab_id);
+    expect(workspaceIds.filter((id) => tabIds.includes(id))).toEqual([]);
+    expect(snapshot.panes.find((p) => p.pane_id === "t2")!.tab_id).toBe("X:t2");
+  });
+
   it("puts a second unplaced terminal of a tab beside the first, not over it", () => {
     const snapshot = buildSnapshot([
       terminal("t1", { cols: 80, labels: { "herdr.space": "ovis-s", "herdr.tab": "ovis-t" } }),

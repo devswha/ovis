@@ -175,6 +175,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     if (!spaceId || (!group && ids.has(spaceId))) { rest.push(terminal); continue; }
     if (!group) {
       group = { id: spaceId, label: terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd), tabs: [] };
+      ids.add(spaceId);
       result.push(group);
     }
     const labeled = terminal.labels?.[TAB_LABEL];
@@ -183,7 +184,10 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
     // beside what the tab already shows, never over it: the app places it when it adopts it
     if (tab) tab.placed.push({ terminal, x: Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)), y: 0 });
-    else group.tabs.push({ id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+    else {
+      ids.add(tabId);
+      group.tabs.push({ id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+    }
   }
   if (rest.length > 0) {
     result.push({
