@@ -4,10 +4,12 @@
  * offer comes with its countdown, New code starts another code, a code the Devices group starts
  * refreshes the offer, and the offer's code and the Devices group's code are one and the same
  * both ways (the server keeps one pending code and the offer reuses it), the identity reset
- * gives the PC a new server id, the switch turns the relay off and the row says Off; a
- * serve-only install disables the switch with the reason; the hosted shell shows no group; a
- * device paired through the relay wears the via relay pill. Imported by ui-regression.ts;
- * `startRelayFixture` also serves the manual QA script.
+ * gives the PC a new server id, the switch turns the relay off and the row says Off; a device
+ * paired through the relay wears the via relay pill; a serve-only install disables the switch
+ * with the reason. All on pages the PC serves: that the hosted shell's Settings has no relay
+ * group is checked where the app really runs under the shell, in relay-shell-browser-qa.ts (a
+ * page of the PC's own build given the shell's meta boots the shell, not the app). Imported by
+ * ui-regression.ts; `startRelayFixture` also serves the manual QA script.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -183,33 +185,12 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await group.getByRole("button", { name: "New code", exact: true }).count(), 0, "no offer while the relay is off");
     assert.equal((await relayState()).phase, "off", "the server's relay link is off");
 
-    // the hosted shell: the same page with the shell's meta tag has no relay group. The tag goes in from an init
-    // script, not a rewritten document: a document Playwright fulfils leaves the local address space, and Chrome's
-    // local-network-access check then blocks the page's own WebSocket to 127.0.0.1.
-    const shell = await englishContext(browser);
-    contexts.push(shell);
-    await shell.addInitScript(() => {
-      const add = () => {
-        const meta = document.createElement("meta");
-        meta.name = "ovis-shell";
-        meta.content = "relay";
-        document.head.appendChild(meta);
-      };
-      if (document.head) add();
-      else new MutationObserver((_, observer) => { if (document.head) { observer.disconnect(); add(); } }).observe(document, { childList: true, subtree: true });
-    });
-    const shellPage = await shell.newPage();
-    shellPage.setDefaultTimeout(15_000);
-    shellPage.on("pageerror", (error) => pageErrors.push(error.message));
-    await openPhoneSettings(shellPage, fixture.origin);
-    await shellPage.locator('.settings-dialog [data-section="devices"]').waitFor();
-    assert.equal(await shellPage.locator('.settings-dialog [data-section="relay"]').count(), 0, "the hosted shell shows no relay group");
-
-    // a device paired through the relay wears the pill
+    // a device paired through the relay wears the pill: the Devices group of the PC's page lists one (the
+    // real pairing of a phone through the relay is relay-shell-browser-qa.ts's)
     const paired: PairedDevice = { id: "0123456789abcdef", label: "Pixel 9", role: "drive", created_at: new Date().toISOString(), last_seen_at: null, current: false, via_relay: true };
-    await shellPage.route("**/api/devices", (route) => route.request().method() === "GET" ? route.fulfill({ json: { devices: [paired] } }) : route.continue());
-    await openPhoneSettings(shellPage, fixture.origin);
-    const row = shellPage.locator(".devices-row").filter({ hasText: "Pixel 9" });
+    await page.route("**/api/devices", (route) => route.request().method() === "GET" ? route.fulfill({ json: { devices: [paired] } }) : route.continue());
+    await openPhoneSettings(page, fixture.origin);
+    const row = page.locator(".devices-row").filter({ hasText: "Pixel 9" });
     await row.locator(".devices-via-relay", { hasText: "via relay" }).waitFor();
 
     // serve-only: the switch is there and disabled, with the reason in the row
@@ -231,7 +212,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await blockedGroup.getByRole("button", { name: "Reset", exact: true }).count(), 0, "a serve-only install is offered no reset, which it would refuse");
     assert.equal(await blockedGroup.locator(".settings-condition").count(), 0, "a switch that cannot be turned on carries no note about turning it on");
     assert.deepEqual(pageErrors, [], "the relay panel raises no page error");
-    console.log("PASS the relay panel turns the relay on and off, offers a QR code and resets the identity; serve-only blocks it and the shell hides it");
+    console.log("PASS the relay panel turns the relay on and off, offers a QR code and resets the identity; a relay-paired device wears the pill and serve-only blocks the switch");
   } finally {
     for (const context of contexts) await context.close();
     for (const fixture of fixtures) await fixture.stop();

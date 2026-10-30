@@ -501,9 +501,24 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await context.close();
     }
 
-    // (c) connecting, then paired through the real relay to the real PC; then revoked on the PC while in the app
+    // (c) connecting, then paired through the real relay to the real PC; its Settings → Phone & devices has no
+    // relay group; then revoked on the PC while in the app
     {
       const { context, page, bridge } = await open({ mode: "hold" });
+      // every relay status the page consumes, counted: the relay panel asks GET /api/relay (over the relay) while
+      // Phone & devices is open (lib/useRelay.ts), and would show its group on the answer
+      await page.addInitScript(() => {
+        const json = Response.prototype.json;
+        Response.prototype.json = async function () {
+          const body: unknown = await json.call(this);
+          if (typeof body === "object" && body !== null && "phase" in body && "sessions" in body && "relay" in body) {
+            const counted = window as unknown as { qaRelayStatuses?: number };
+            counted.qaRelayStatuses = (counted.qaRelayStatuses ?? 0) + 1;
+          }
+          return body;
+        };
+      });
+      const relayStatuses = (): Promise<number> => page.evaluate(() => (window as unknown as { qaRelayStatuses?: number }).qaRelayStatuses ?? 0);
       const offer = await serverOffer();
       await page.goto(offerUrl(offer));
       await state(page, "confirm").waitFor();
@@ -533,9 +548,20 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(renamed.status, 200);
       assert.equal((await renamed.json() as { label: string }).label, "Renamed QA phone");
       // A same-carrier relay API round trip is a barrier after the rename, not a timed absence check.
+      const statusesBefore = await relayStatuses();
       await page.keyboard.press("ControlOrMeta+Shift+Comma");
       await openSettingsPage(page, "Phone & devices");
       await page.getByRole("button", { name: "Rename Renamed QA phone", exact: true }).waitFor();
+      // the hosted shell's Settings has no relay group (a relayed phone can neither pair nor reset there:
+      // components/RelayPanel.tsx), checked once the page consumed the relay status the group would follow,
+      // plus two frames for its render
+      await page.waitForFunction((seen) => ((window as unknown as { qaRelayStatuses?: number }).qaRelayStatuses ?? 0) > seen, statusesBefore);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const settings = page.locator(".settings-dialog");
+      assert.equal(await settings.locator('[data-section="devices"]').count(), 1, "the shell's Phone & devices lists the devices");
+      assert.equal(await settings.locator('[data-section="relay"]').count(), 0, "the hosted shell's Settings has no relay group");
+      assert.equal(await settings.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 0, "no relay switch under the shell");
+      note(`settings: Phone & devices in the shell lists the phone and has no relay group (relay statuses consumed: ${await relayStatuses()})`);
       await inApp(page);
       assert.equal(service.status().sessions, 1, "renaming keeps the admitted PC session");
       assert.equal(bridge.sockets.length, socketsBeforeRename, "renaming never reconnects the carrier");
