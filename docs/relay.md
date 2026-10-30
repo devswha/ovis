@@ -347,8 +347,9 @@ WebSocket close codes the app can see through the relay:
 | `1009` | a message over 1 MiB |
 | `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
 
-The encryption closes its connection with `1008` when the other end won't use protected mode, `4002`
-when the handshake fails and `4003` when a record fails its check (in
+The encryption closes its connection with `1008` when the other end won't use protected mode. On
+the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
+check; on the PC's side a record that fails closes the connection with `1011` (in
 [`shared/vendor/paseo-e2ee/secure-channel.ts`](../shared/vendor/paseo-e2ee/secure-channel.ts)). The
 relay service's own close codes are in [relay/README.md](../relay/README.md#limits-and-close-codes).
 

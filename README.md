@@ -68,7 +68,7 @@ With Tailscale on in both, scan the QR code your computer shows to connect. No T
 
 **Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on, and your phone has to reach it (Tailscale, a VPN, an SSH tunnel or the Ovis relay).
 
-**Privacy:** sessions stay on the computer that runs each agent, and Ovis has no account. Its optional relay, off until you turn it on, sees when and how much is sent but can't read it ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About → Anonymous usage counts** shows what is sent and turns them off, as does `OVIS_TELEMETRY=0`. [What is sent →](docs/guide.md#anonymous-usage-counts)
+**Privacy:** sessions stay on the computer that runs each agent, and Ovis has no account. Its optional relay, off until you turn it on, sees which phone connects to which PC, from which address, when and how much, but can't read what is sent ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About → Anonymous usage counts** shows what is sent and turns them off, as does `OVIS_TELEMETRY=0`. [What is sent →](docs/guide.md#anonymous-usage-counts)
 
 ## docs
 
