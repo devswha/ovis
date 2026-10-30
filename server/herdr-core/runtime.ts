@@ -23,6 +23,12 @@ export function hcBin(): string {
 }
 
 let connection: HcConnection | null = null;
+/** whether this process serves herdr-core (startRuntime ran): a remote bridge inheriting OVIS_RUNTIME does not */
+let serving = false;
+
+export function servingCore(): boolean {
+  return serving;
+}
 
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
@@ -48,12 +54,14 @@ export async function startRuntime(stateDir: string): Promise<HerdrCoreAdapter |
   const adapter = await startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
   chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
+  serving = true;
   return {
     socketPath: adapter.socketPath,
     stop: () => {
       adapter.stop();
       hc.close();
       connection = null;
+      serving = false;
     },
   };
 }
