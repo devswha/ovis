@@ -1058,7 +1058,8 @@ function usageReport(): UsageReport {
       { kind: "month", scope: null, used_percent: 15, resets_at: at(520), starts_at: null },
     ] },
   ] };
-  return SIGN_IN_DEMO && !signInDemo.signedIn.has("claude") ? { providers: report.providers.filter((usage) => usage.id !== "claude") } : report;
+  // with `demo_usage=refused` Claude keeps its expired account, so its row offers Sign in again instead
+  return SIGN_IN_DEMO && USAGE_STATE !== "refused" && !signInDemo.signedIn.has("claude") ? { providers: report.providers.filter((usage) => usage.id !== "claude") } : report;
 }
 
 // ---- paired devices (Settings → Phone & devices) ----------------------------------------------
@@ -1251,7 +1252,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const body = JSON.parse(String(init?.body ?? "{}")) as { pane?: string; code?: string };
     const login = signInDemo.panes.get(body.pane ?? "");
     if (login === undefined) return error("login_not_found", "This sign-in has ended. Start it again.", 404);
-    if (!/^[\x21-\x7e]{1,2048}$/.test((body.code ?? "").trim())) return error("invalid_code", "Paste the code the sign-in page showed, as it is", 400);
+    if (!/^[A-Za-z0-9._~#-]{1,2048}$/.test((body.code ?? "").trim())) return error("invalid_code", "Paste the code the sign-in page showed, as it is", 400);
     login.code = true;
     return new Response(null, { status: 204 });
   }

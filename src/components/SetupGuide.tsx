@@ -234,10 +234,11 @@ function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onO
   // the agents already signed in here: their plan usage is turned on as soon as they are seen, without a question
   const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }));
   // Claude Code and Codex, installed here and not signed in yet: signed in from the guide, in the browser
-  // (UsageSignInDialog). Accounts are read on the server's PC, so only its own guide offers it
+  // (UsageSignInDialog). Accounts are read on the server's PC, so only its own guide offers it, and a
+  // watching device signs in to nothing
   // signed in from here: the usage read that would say so may not come again while the guide is open
   const [signedHere, setSignedHere] = useState<readonly string[]>([]);
-  const unsigned = machineId === "local" ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
+  const unsigned = machineId === "local" && auth?.role !== "watch" ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
   const [signingIn, setSigningIn] = useState<{ provider: "claude" | "codex"; default: true } | null>(null);
   // the tiles whose install runs: Look again waits for them (a fresh read would end their watch);
   // Start does not: an install runs on in its tab whatever the guide does

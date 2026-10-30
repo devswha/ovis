@@ -79,4 +79,7 @@ export const USAGE_JA: Record<string, string> = {
   "The sign-in page, and the code it asks for, show here in the browser.": "ログインページと、そこで求められるコードはこのブラウザに表示されます。",
   "Waiting for the page to approve it…": "ページでの承認を待っています…",
   "Waiting for {provider} to show its sign-in page…": "{provider} がログインページを表示するのを待っています…",
+  "This version signs in only in its terminal. Open it to finish.": "このバージョンはターミナルでのみログインします。ターミナルを開いて完了してください。",
+  "The sign-in asked for the code again. Paste it once more.": "ログインがコードを再度求めました。もう一度貼り付けてください。",
+  "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent} はこの PC ですでにログインしています。続けるとそのログインが置き換わる場合があります。",
 };

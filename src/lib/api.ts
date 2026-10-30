@@ -111,9 +111,11 @@ export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void>
   await sendJson("/api/usage/login/code", "POST", request);
 }
 
-export function startUsageLogin(request: UsageLoginRequest): Promise<UsageLoginStarted> {
+export function startUsageLogin(request: UsageLoginRequest, signal?: AbortSignal): Promise<UsageLoginStarted> {
+  // a request the asker gave up on opens no tab (the server checks before it does)
+  const timeout = AbortSignal.timeout(30_000);
   return getJson<UsageLoginStarted>("/api/usage/login", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), signal: AbortSignal.timeout(30_000),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
 }
 

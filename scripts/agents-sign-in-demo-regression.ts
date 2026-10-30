@@ -111,6 +111,26 @@ try {
         await page.locator(".usage-account-dialog").first().waitFor({ state: "detached" });
         console.log(`PASS Codex's Add account follows its device code in the browser, then names the account (${at})`);
 
+        // Sign in again on a shut row: the dialog lives on the page, so a click into it toggles no row
+        // and the end of the expiry it was opened for does not take it away
+        await page.goto(`${root}&demo_usage=refused&settings=agents`);
+        const expired = page.locator(".agents-item[data-agent='claude']");
+        const renew = expired.getByRole("button", { name: /^Sign in again/ });
+        await renew.waitFor();
+        await press(renew);
+        const renewing = page.getByRole("dialog", { name: "Sign in to Claude Code", exact: true });
+        const renewBox = renewing.getByLabel("Paste the code the page shows", { exact: true });
+        await renewBox.waitFor();
+        await press(renewBox);
+        await press(renewing.locator(".usage-sign-in-host"));
+        assert.equal(await expired.locator(".agents-toggle").getAttribute("aria-expanded"), "false", `a click in the dialog leaves its row shut ${at}`);
+        await renewBox.fill("demo-code#demo-state");
+        await press(renewing.getByRole("button", { name: "Send code", exact: true }));
+        await renewing.getByRole("status").filter({ hasText: /^(Signed in as me@example\.test\.|The sign-in finished\.)$/ }).waitFor();
+        await press(renewing.getByRole("button", { name: "Done", exact: true }));
+        await renewing.waitFor({ state: "detached" });
+        console.log(`PASS Sign in again on a shut row stays open through clicks and the end of the expiry, to its outcome (${at})`);
+
         // the setup guide offers the first sign-in under its tiles
         await page.goto(`${root}&settings=agents`);
         await page.locator(".agents-item").first().waitFor();

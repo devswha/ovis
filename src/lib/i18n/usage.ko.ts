@@ -79,4 +79,7 @@ export const USAGE_KO: Record<string, string> = {
   "The sign-in page, and the code it asks for, show here in the browser.": "로그인 페이지와 거기서 요구하는 코드가 이 브라우저에 표시됩니다.",
   "Waiting for the page to approve it…": "페이지에서 승인하기를 기다리는 중…",
   "Waiting for {provider} to show its sign-in page…": "{provider}이(가) 로그인 페이지를 보여 주기를 기다리는 중…",
+  "This version signs in only in its terminal. Open it to finish.": "이 버전은 터미널에서만 로그인합니다. 터미널을 열어 마무리하세요.",
+  "The sign-in asked for the code again. Paste it once more.": "로그인에서 코드를 다시 요청했습니다. 한 번 더 붙여 넣으세요.",
+  "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent}는 이미 이 PC에 로그인되어 있습니다. 계속하면 그 로그인을 대체할 수 있습니다.",
 };

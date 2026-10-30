@@ -22,10 +22,12 @@ import "./UsageAccountDialog.css";
 const PROMPT_POLL_MS = 1000;
 /** Codex's device code lives 15 minutes; a login still open past this is left to its terminal */
 const FOLLOW_MS = 16 * 60_000;
+/** reads of the login's screen that may fail in a row (a herdr busy for a moment) before the dialog hands over */
+const READ_FAILURES_MAX = 3;
 
 type Phase =
   | { kind: "starting" }
-  | { kind: "confirm"; message: string }
+  | { kind: "confirm" }
   | { kind: "following"; pane: string }
   | { kind: "ended"; pane: string; outcome: SignInOutcome }
   | { kind: "failed"; message: string; pane: string | null };
@@ -41,10 +43,10 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
 }) {
   const t = useT();
   const provider = request.provider;
-  const again = "account" in request;
+  const [replace, setReplace] = useState(false);
+  const again = "account" in request || replace;
   const [phase, setPhase] = useState<Phase>({ kind: "starting" });
   const [prompt, setPrompt] = useState<UsageLoginPrompt | null>(null);
-  const [replace, setReplace] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
@@ -53,6 +55,9 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   const signedInRef = useRef(onSignedIn);
   signedInRef.current = onSignedIn;
   const codeInput = useRef<HTMLInputElement>(null);
+  // the code was sent, and the CLI has shown something else since: the follow loop reads these
+  const sentRef = useRef(false);
+  const answered = useRef(false);
   const surface = useFocusTrap<HTMLDivElement>(true);
   const title = t("Sign in to {provider}", { provider: provider === "claude" ? "Claude Code" : PROVIDER_NAME[provider] });
 
@@ -63,11 +68,18 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     void (async () => {
       try {
         before.current ??= (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
-        const started = await startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request);
-        if (!controller.signal.aborted) setPhase({ kind: "following", pane: started.pane_id });
+        const started = await startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request, controller.signal);
+        if (controller.signal.aborted) return;
+        // a CLI the browser cannot follow: a Claude Code without `auth login` signs in inside the agent, and
+        // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
+        if ((provider === "claude" && started.manual) || (provider === "codex" && !started.device_auth)) {
+          setPhase({ kind: "failed", message: t("This version signs in only in its terminal. Open it to finish."), pane: started.pane_id });
+          return;
+        }
+        setPhase({ kind: "following", pane: started.pane_id });
       } catch (cause) {
         if (controller.signal.aborted) return;
-        if (cause instanceof ApiError && cause.code === "account_confirmation_required") setPhase({ kind: "confirm", message: cause.detail });
+        if (cause instanceof ApiError && cause.code === "account_confirmation_required") setPhase({ kind: "confirm" });
         else setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in"), pane: null });
       }
     })();
@@ -81,10 +93,15 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     const controller = new AbortController();
     const until = Date.now() + FOLLOW_MS;
     let timer: number | undefined;
+    let failures = 0;
     const look = async (): Promise<void> => {
       try {
         const next = await fetchUsageLoginPrompt(pane, controller.signal);
         if (controller.signal.aborted) return;
+        failures = 0;
+        // a sent code the CLI moved on from; a prompt that comes back after that asks for the code again
+        if (!next.wants_code) answered.current = true;
+        else if (answered.current && sentRef.current) { sentRef.current = false; setSent(false); setCodeError(t("The sign-in asked for the code again. Paste it once more.")); }
         setPrompt(next);
         if (next.ended) {
           const after = (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
@@ -96,8 +113,11 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
         }
       } catch (cause) {
         if (controller.signal.aborted) return;
-        setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Open its terminal."), pane });
-        return;
+        failures += 1;
+        if (failures >= READ_FAILURES_MAX || (cause instanceof ApiError && cause.status === 404)) {
+          setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Open its terminal."), pane });
+          return;
+        }
       }
       if (Date.now() > until) { setPhase({ kind: "failed", message: t("The sign-in is still open. Finish it in its terminal."), pane }); return; }
       timer = window.setTimeout(() => void look(), PROMPT_POLL_MS);
@@ -112,11 +132,13 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
 
   const sendCode = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
+    // a form inside another (Add account's): its submit is this one's alone
+    event.stopPropagation();
     const input = codeInput.current;
     if (pane === null || input === null || sending) return;
     setSending(true); setCodeError(null);
     // the code is read from the input once and sent; nothing keeps it after
-    void sendUsageLoginCode({ pane, code: input.value }).then(() => { input.value = ""; setSent(true); })
+    void sendUsageLoginCode({ pane, code: input.value }).then(() => { input.value = ""; answered.current = false; sentRef.current = true; setSent(true); })
       .catch((cause: unknown) => setCodeError(cause instanceof ApiError ? cause.detail : t("Could not send the code")))
       .finally(() => setSending(false));
   };
@@ -132,7 +154,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
       break;
     case "confirm":
       body = <div className="account-auth-form">
-        <p className="settings-hint">{phase.message}</p>
+        <p className="settings-hint">{t("{agent} is already signed in on this PC. Continuing may replace that sign-in.", { agent: provider === "claude" ? "Claude Code" : PROVIDER_NAME[provider] })}</p>
         <button type="button" className="btn" onClick={() => { setReplace(true); setPhase({ kind: "starting" }); }}>{t("Continue")}</button>
       </div>;
       break;
@@ -153,7 +175,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
           </>}
           {prompt.wants_code && !sent && <form className="usage-sign-in-paste" onSubmit={sendCode}>
             <label className="settings-label" htmlFor="usage-sign-in-code">{t("Paste the code the page shows")}</label>
-            <input ref={codeInput} className="input" id="usage-sign-in-code" name="code" autoComplete="off" spellCheck={false} required maxLength={2048} disabled={sending} />
+            <input ref={codeInput} className="input" id="usage-sign-in-code" name="code" autoComplete="off" spellCheck={false} required maxLength={2048} pattern="[A-Za-z0-9._~#\-]+" disabled={sending} />
             {codeError && <p className="settings-hint account-error" role="alert">{codeError}</p>}
             <button type="submit" className="btn" disabled={sending}>{sending ? t("Sending…") : t("Send code")}</button>
           </form>}

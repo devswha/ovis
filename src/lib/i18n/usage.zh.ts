@@ -79,4 +79,7 @@ export const USAGE_ZH: Record<string, string> = {
   "The sign-in page, and the code it asks for, show here in the browser.": "登录页面及其要求的代码会显示在这个浏览器中。",
   "Waiting for the page to approve it…": "正在等待页面批准…",
   "Waiting for {provider} to show its sign-in page…": "正在等待 {provider} 显示登录页面…",
+  "This version signs in only in its terminal. Open it to finish.": "此版本只能在终端中登录。请打开终端完成登录。",
+  "The sign-in asked for the code again. Paste it once more.": "登录再次要求输入代码。请再粘贴一次。",
+  "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent} 已在这台电脑上登录。继续可能会替换该登录。",
 };

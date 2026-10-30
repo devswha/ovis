@@ -58,6 +58,19 @@ describe("a first sign-in, in the agent's own home", () => {
     expect((await prompt(service, "w1:p9")).status).toBe(200);
   });
 
+  it("asks nothing for a sign-in in another account's home, which it does not replace", async () => {
+    stubHerdr();
+    const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "other@example.test" } })).toString("base64url");
+    mkdirSync(join(root, ".codex-other"), { recursive: true });
+    writeFileSync(join(root, ".codex-other", "auth.json"), JSON.stringify({ tokens: { access_token: `header.${claims}.signature` } }));
+    try {
+      const service = new UsageLoginService(root, { PATH: bin });
+      expect((await service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "codex", default: true }) }))).status).toBe(200);
+    } finally {
+      rmSync(join(root, ".codex-other"), { recursive: true, force: true });
+    }
+  });
+
   it("asks before replacing a sign-in the PC already has, and takes no name", async () => {
     stubHerdr();
     const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "codex@example.test" } })).toString("base64url");
@@ -70,6 +83,11 @@ describe("a first sign-in, in the agent's own home", () => {
       expect(refused.status).toBe(409);
       expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("account_confirmation_required");
       expect((await ask({ provider: "codex", default: true, name: "work" })).status).toBe(400);
+      // a sign-in it cannot read is still one: unreadable, it is asked about all the same
+      rmSync(join(root, ".codex", "auth.json"));
+      writeFileSync(join(root, ".codex", "auth.json"), "{}", { mode: 0o000 });
+      const unreadable = await ask({ provider: "codex", default: true });
+      expect(((await unreadable.json()) as { error: { code: string } }).error.code).toBe("account_confirmation_required");
       expect((await ask({ provider: "grok", default: true })).status).toBe(400);
       expect(typed).toEqual([]);
     } finally {
@@ -101,6 +119,24 @@ describe("the sign-in prompt of a login this server launched", () => {
     expect((await prompt(service, "w1:p9", true)).status).toBe(403);
   });
 
+  it("sends nothing once the pane is another terminal than the login's (herdr restarted and gave its id out again)", async () => {
+    const service = await launched("claude");
+    screen = readFileSync(join(import.meta.dir, "fixtures/usage-login/claude.recent_unwrapped.txt"), "utf8");
+    (herdr.sessionSnapshot as unknown as { mockResolvedValue(value: unknown): void }).mockResolvedValue({ workspaces: [{ workspace_id: "w1" }], panes: [{ pane_id: "w1:p9", terminal_id: "t-other" }] });
+    expect((await code(service, { pane: "w1:p9", code: "abc123#state" })).status).toBe(404);
+    expect(typed).toEqual([]);
+    expect(keys).toEqual([]);
+  });
+
+  it("types one code when two arrive at once", async () => {
+    const service = await launched("claude");
+    screen = readFileSync(join(import.meta.dir, "fixtures/usage-login/claude.recent_unwrapped.txt"), "utf8");
+    const both = await Promise.all([code(service, { pane: "w1:p9", code: "abc123#one" }), code(service, { pane: "w1:p9", code: "abc123#two" })]);
+    expect(both.map((response) => response.status).sort()).toEqual([204, 409]);
+    expect(typed).toHaveLength(1);
+    expect(keys).toHaveLength(1);
+  });
+
   it("types a pasted code into the login's own pane, then Enter, and nothing else", async () => {
     const service = await launched("claude");
     screen = readFileSync(join(import.meta.dir, "fixtures/usage-login/claude.recent_unwrapped.txt"), "utf8");
@@ -113,6 +149,8 @@ describe("the sign-in prompt of a login this server launched", () => {
     const service = await launched("claude");
     screen = readFileSync(join(import.meta.dir, "fixtures/usage-login/claude.recent_unwrapped.txt"), "utf8");
     expect((await code(service, { pane: "w1:p9", code: "abc\u0003rm -rf ~\r" })).status).toBe(400);
+    // nothing a shell would read as more than a word: no $, {, /, ;, quotes or spaces
+    for (const shellish of ["touch${IFS}/tmp/x", "a;b", "$(id)", "a'b", "a|b", "`id`"]) expect((await code(service, { pane: "w1:p9", code: shellish })).status).toBe(400);
     expect((await code(service, { pane: "w1:p1", code: "abc" })).status).toBe(404);
     screen = "bash-5.3$ ";
     expect((await code(service, { pane: "w1:p9", code: "abc" })).status).toBe(409);

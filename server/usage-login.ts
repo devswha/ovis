@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
@@ -67,8 +67,11 @@ const LAUNCH_MS = 60_000;
 
 /** The logins whose prompt the browser may follow, newest last: older ones are forgotten past this many. */
 const PROMPT_PANES_MAX = 32;
-/** A pasted sign-in code: printable ASCII without spaces (Claude's is `code#state`), and short. */
-const SIGN_IN_CODE = /^[\x21-\x7e]{1,2048}$/;
+/**
+ * A pasted sign-in code: Claude's is `code#state`, both base64url. Nothing else is typed, so a code that
+ * reached a shell after all would be one word it cannot run: no `$`, quotes, separators or spaces.
+ */
+const SIGN_IN_CODE = /^[A-Za-z0-9._~#-]{1,2048}$/;
 
 const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
 const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch : !isLaunch(b) && a.terminal === b.terminal;
@@ -94,7 +97,7 @@ export class UsageLoginService {
    * The Claude and Codex logins this server launched, by pane: only their screens are read for the
    * browser's sign-in dialog, and only their panes take a pasted code. Kept after the CLI exits, as ended.
    */
-  private readonly prompts = new Map<string, { provider: PromptProvider; ended: boolean }>();
+  private readonly prompts = new Map<string, { provider: PromptProvider; terminal: string; ended: boolean; sending: boolean }>();
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
    * one home race each other's tokens. By home, the login or launch of this server holding it.
@@ -149,12 +152,24 @@ export class UsageLoginService {
         if (pane === null || code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
         const login = this.prompts.get(pane);
         if (login === undefined || login.ended) return jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
-        // typed only where the CLI asks for it now: a code sent to a shell would run as a command
-        const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
-        if (!loginPrompt(login.provider, screen.text).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now. Open its terminal to see where it is.");
-        await paneSendText(pane, code);
-        await paneSendKeys(pane, ["Enter"]);
-        return new Response(null, { status: 204 });
+        // one code at a time: two sends could both find the prompt and type twice
+        if (login.sending) return conflictResponse("code_in_progress", "A code is being sent to this sign-in already.");
+        login.sending = true;
+        try {
+          // typed only where the CLI asks for it now: a code sent to a shell would run as a command
+          const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
+          if (!loginPrompt(login.provider, screen.text).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now. Open its terminal to see where it is.");
+          // the pane is still the login's own terminal: a restarted herdr gives pane IDs out again
+          if (!(await sessionSnapshot()).panes.some((candidate) => candidate.pane_id === pane && candidate.terminal_id === login.terminal)) {
+            login.ended = true;
+            return jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
+          }
+          await paneSendText(pane, code);
+          await paneSendKeys(pane, ["Enter"]);
+          return new Response(null, { status: 204 });
+        } finally {
+          login.sending = false;
+        }
       }
       return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
     } catch (error) {
@@ -323,7 +338,13 @@ export class UsageLoginService {
         return conflictResponse("account_ambiguous", "This account is signed in in more than one credential folder on this PC, so Ovis cannot tell which one to renew. Sign in again from a terminal in the folder you want.");
       }
       const place = found;
-      if ((!separate || asDefault) && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
+      // a default home holding the CLI's credential file has a sign-in, even one this server cannot read;
+      // only a sign-in in that home is replaced, so another account's home (~/.codex-work) asks nothing
+      const defaultDir = resolve(this.home, id === "claude" ? ".claude" : ".codex");
+      const replacesDefault = asDefault && (existsSync(join(defaultDir, id === "claude" ? ".credentials.json" : "auth.json"))
+        || (await provider.signIns(this.context)).some((signIn) => signIn.home === undefined || signIn.home.kind === "default" || resolve(signIn.home.dir) === defaultDir));
+      if (!asDefault && !separate && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0
+        || replacesDefault && body["replace"] !== true) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
       // the home the CLI will write: the account's own, a new named one, or the provider's only one
@@ -387,7 +408,7 @@ export class UsageLoginService {
       const paneId = created.root_pane.pane_id;
       this.panes.add(paneId);
       if (id === "claude" || id === "codex") {
-        this.prompts.set(paneId, { provider: id, ended: false });
+        this.prompts.set(paneId, { provider: id, terminal: created.root_pane.terminal_id, ended: false, sending: false });
         for (const old of this.prompts.keys()) { if (this.prompts.size <= PROMPT_PANES_MAX) break; this.prompts.delete(old); }
       }
       trackPane?.(paneId);
