@@ -895,6 +895,48 @@ describe("connection-owned pending input", () => {
     expect(f.bytes()).toBe(`barrier\r${paste("late hold")}\r`);
   }, 30_000);
 
+  // #511: Send now types a held message only as the immediate path would: never past Codex's collapsed queue for an agent alone
+  it("refuses Send now of a held agent-only message while Codex's collapsed queue blocks it, typing nothing", async () => {
+    const queueScreen = "• WAITING\n• Queued follow-up inputs\n  ? 2 questions · 8s\n    alt+↑ to answer\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n";
+    for (const agentOnly of [true, false]) {
+      const f = await setup(`hold-collapsed-${agentOnly}`, "codex");
+      f.socket.send({ type: "submit", id: 1, pane_id: f.pane, text: "> backup.txt\nkeep it", payload: "unused\r", delivery: "hold", ...(agentOnly ? { agent_only: true } : {}) });
+      const answer = await f.socket.result(1);
+      expect(answer).toMatchObject({ ok: true, pending: { request_id: 1, state: "held" } });
+      await f.showScreen(queueScreen); await f.state("blocked");
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: answer.pending.id, action: "steer" });
+      if (agentOnly) {
+        expect(await f.socket.action(10)).toMatchObject({ ok: false, code: "agent_blocked" });
+        expect(f.bytes()).toBe("");
+      } else {
+        // control: an ordinary held message is typed into Codex's main prompt past the collapsed queue
+        await f.socket.action(10);
+        expect(f.bytes().startsWith(paste("> backup.txt\nkeep it"))).toBe(true);
+      }
+    }
+  }, 60_000);
+
+  // #511: a queued message for an agent alone waits through a turn that ends behind Codex's collapsed queue, and a
+  // resend of its saved copy that names no flag is still for an agent alone (the server's record says so)
+  it("keeps a queued agent-only message out of a collapsed Codex queue, its resend agent-only too", async () => {
+    const queueScreen = "• WAITING\n• Queued follow-up inputs\n  ? 2 questions · 8s\n    alt+↑ to answer\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n";
+    const f = await setup("queue-collapsed", "codex");
+    await f.showScreen(queueScreen);
+    f.socket.send({ type: "submit", id: 1, pane_id: f.pane, text: "> backup.txt\nkeep it", payload: "unused\r", delivery: "queue", agent_only: true });
+    const answer = await f.socket.result(1);
+    expect(answer).toMatchObject({ ok: true, pending: { request_id: 1, state: "queued" } });
+    await f.state("idle");
+    // the turn's end tried it and typed nothing: a message typed after it is the first thing the pane gets
+    f.socket.send({ type: "submit", id: 2, pane_id: f.pane, text: "barrier", payload: "barrier", typed: true });
+    expect(await f.socket.result(2)).toMatchObject({ ok: true }); await f.waitBytes("barrier\r");
+    expect(f.bytes()).toBe("barrier\r");
+    // blocked behind the collapsed queue, agent.prompt refuses; an unflagged message would be typed past it
+    await f.state("blocked");
+    f.socket.send({ type: "submit", id: 3, pane_id: f.pane, text: "> backup.txt\nkeep it", payload: paste("> backup.txt\rkeep it"), resend_id: answer.pending.id, resend_generation: 0 });
+    expect(await f.socket.result(3)).toMatchObject({ ok: false, code: "agent_blocked" });
+    expect(f.bytes()).toBe("barrier\r");
+  }, 60_000);
+
   it("closes a trailing @file mention with a space before its Enter", async () => {
     const f = await setup("mention");
     const message = await f.queue(1, "look at @/tmp/shot.png");
