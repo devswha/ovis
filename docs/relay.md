@@ -324,7 +324,7 @@ The relay service has limits of its own (frame size, phones per PC, connections 
 | `protocol_error` | a malformed frame, or one out of order, such as a request before `AUTH_OK` |
 | `auth_failed` | a wrong, spent or expired pairing code, an unknown device or a bad signature, and every admission on a serve-only PC |
 | `auth_revoked` | the device was revoked |
-| `auth_changed` | the device's entry on the PC changed while it was connected, as renaming it under **Phone & devices** does |
+| `auth_changed` | the device's role changed while it was connected; its terminal sockets close with 1008 and the app reconnects by itself with the new role. Renaming a device ends no session |
 | `flow_control_error` | data past a stream's window |
 | `resource_exhausted` | too many new streams or frames a second, or a queue over its limit |
 | `timeout` | admission or a keepalive took too long |
@@ -362,7 +362,8 @@ What the app on the phone shows when a connection doesn't come up
 | … did not finish connecting | the PC answered, but admission didn't finish within 10 seconds |
 | That pairing code no longer works | the code was wrong, spent or expired |
 | This phone was removed from … | the device was revoked; the phone has deleted its key |
-| … has a new identity | the PC's key isn't the one the phone paired with, or the PC changed this phone's entry while it was connected (`auth_changed`), as renaming it does |
+| … has a new identity | the PC's key isn't the one the phone paired with |
+| This phone forgot … | **Forget this PC** on the new-identity screen removed the saved key; it pairs with nothing, so pairing again needs a new QR code from the PC itself |
 | Update needed | the PC speaks another relay protocol or mux version |
 | Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
 | This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
