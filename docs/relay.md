@@ -95,7 +95,8 @@ browsers never send to a server, and the app takes it off the address bar before
 ([`src/lib/relay/boot.ts`](../src/lib/relay/boot.ts)). The code is the same kind the Devices group
 shows: six digits, good for ten minutes, spent after five wrong tries. The PC makes at most 10
 pairing codes in 10 minutes, and after 20 failed relay pairings in 10 minutes it takes none for the
-next 10.
+next 10: a pairing tried then ends with `auth_failed`, and the phone shows **That pairing code no
+longer works**.
 
 **Device keys.** Pairing makes a key pair on the phone for that one PC: ECDSA P-256, made by
 WebCrypto as non-extractable, so no script, the app's own included, can read the private half out.
@@ -150,7 +151,8 @@ it, and the identity reset is refused.
    HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). The relay closes
    the socket with `4401` when the PC didn't offer the proof at all, when its key doesn't match the
    `server_id`, or when the answer is wrong. A challenge left unanswered for 10 seconds, or answered
-   after that, closes it with `1013`. The PC closes the socket itself with `4000` when the challenge
+   after that, closes it with `1013`, as does a new PC socket while four of that PC's proofs are
+   still pending. The PC closes the socket itself with `4000` when the challenge
    it got is invalid or out of order. Both `1013` and `4000` are hiccups, and the PC keeps
    reconnecting with its usual backoff. Only a `4401` on the control socket stops the PC retrying,
    and its relay status shows an error with the reason. A refused data
@@ -356,7 +358,7 @@ The relay service has limits of its own (frame size, phones per PC, connections 
 | `unsupported_extension` | one side requires a feature the other lacks |
 | `unsupported_transport` | the connection can't carry a full-size frame |
 | `protocol_error` | a malformed frame, or one out of order, such as a request before `AUTH_OK` |
-| `auth_failed` | a wrong, spent or expired pairing code, an unknown device or a bad signature, and every admission on a serve-only PC |
+| `auth_failed` | a wrong, spent or expired pairing code, an unknown device or a bad signature, a pairing while the PC takes none after too many failures, and every admission on a serve-only PC |
 | `auth_revoked` | the device was revoked |
 | `auth_changed` | the device's role changed while it was connected; its terminal sockets close with 1008 and the app reconnects by itself with the new role. Renaming a device ends no session |
 | `flow_control_error` | data past a stream's window |
@@ -383,7 +385,7 @@ WebSocket close codes the app can see through the relay:
 
 The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing, its key
 doesn't match the `server_id` or the answer is wrong, and with `1013` when the challenge goes
-unanswered for 10 seconds. The PC closes a socket itself with `4000` when the challenge is invalid or
+unanswered for 10 seconds or four of the PC's proofs are already pending. The PC closes a socket itself with `4000` when the challenge is invalid or
 out of order. It retries after `1013` and `4000`, and stops only after a `4401` on its control socket
 ([step 1](#how-a-connection-is-made)). A phone never sees these codes: it finds the PC offline.
 
@@ -423,8 +425,10 @@ can be apart.
   **Update now**, which asks the PC to install the latest release through the relay, when the PC's
   install updates itself, and with the installer and plugin steps otherwise. Raise it only in a PR
   that makes the app need a newer PC, with a changelog line, and mark code kept for older PCs
-  `// COMPAT(relay): added in <v>, remove after <v+2>`. CI's `relay-skew` job runs the app against
-  the release tagged `MIN_SERVER_VERSION` and against the latest release.
+  `// COMPAT(relay): added in <v>, remove after <v+2>`. A CI job that runs the app against the release
+  tagged `MIN_SERVER_VERSION` and against the latest release returns once a release holds
+  `server/relay/`; until then `bun scripts/relay-e2e-regression.ts --skew <tag>` runs that check
+  by hand.
 - **Newer PC.** A PC newer than the app means the app's cached copy is out of date: the app checks
   for a newer version of itself and reloads, once.
 
@@ -447,10 +451,8 @@ in all, 1024 sockets, 256 PCs and 4096 addresses tracked at once. Raise them wit
 `--per-address-per-minute`, `--global-per-minute`, `--max-sockets`, `--max-rooms` and
 `--max-addresses`, or `RELAY_PER_ADDRESS_PER_MINUTE`, `RELAY_GLOBAL_PER_MINUTE`, `RELAY_MAX_SOCKETS`,
 `RELAY_MAX_ROOMS` and `RELAY_MAX_ADDRESSES`. Behind a TLS proxy on the same machine every
-connection comes from the proxy's address, so raise the per-address limit and limit addresses at
-the proxy instead.
-Behind a TLS proxy, all clients share the proxy's address, so size the per-address budget for the
-whole deployment.
+connection comes from the proxy's address, so size the per-address limit for the whole deployment
+and limit addresses at the proxy instead.
 
 To run your own relay, or your own copy of the app, see
 [Running your own relay](guide.md#running-your-own-relay) and
