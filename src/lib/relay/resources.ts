@@ -37,7 +37,12 @@ export async function relayResourceBlob(response: Response): Promise<Blob> {
       }
     }
   }
-  return new Blob(chunks, { type: response.headers.get("content-type") ?? "" });
+  const mime = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+  // Blob URLs have the shell's origin but none of the PC's response policy. SVG
+  // is active content when framed or navigated, so it is a download, not an image blob.
+  const inline = mime !== "image/svg+xml" && /^(?:image|video|audio)\/[a-z0-9!#$&^_.+-]+$/.test(mime)
+    || mime === "application/pdf";
+  return new Blob(chunks, { type: inline ? mime : "application/octet-stream" });
 }
 
 /** Older shell workers control pages too: require the resource protocol before giving out its URL. */

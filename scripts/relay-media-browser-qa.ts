@@ -76,8 +76,11 @@ const shell = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   if (!new URL(request.url).pathname.endsWith("/sw.js")) return response;
   let source = await response.text();
   if (workerMode === "old") source = source.replace(/const RELAY_RESOURCES = .*;/, "const RELAY_RESOURCES = null;");
-  if (workerMode === "drop-csp") source = source.replace('const headers = data.headers.filter(([name]) => RELAY_RESOURCES.headers.includes(name));',
-    'const headers = data.headers.filter(([name]) => name !== "content-security-policy" && RELAY_RESOURCES.headers.includes(name));');
+  if (workerMode === "drop-csp") {
+    const enforcement = /headers.append\("content-security-policy", .*;\n/;
+    assert.match(source, enforcement, "mutation must remove the worker-enforced policy");
+    source = source.replace(enforcement, "");
+  }
   return new Response(source, { headers: response.headers });
 } });
 const origin = `http://127.0.0.1:${shell.port}`;
@@ -98,6 +101,7 @@ const attack = (id: string): string => `(async () => {
   const result = {};
   try { indexedDB.open("ovis-relay"); result.indexedDB = "allowed"; } catch (e) { result.indexedDB = e.name; }
   try { void parent.document.body; result.parent = "allowed"; } catch (e) { result.parent = e.name; }
+  try { top.location.hash = "untrusted-navigation"; result.top = "allowed"; } catch (e) { result.top = e.name; }
   try { await fetch(${JSON.stringify(`/s/${id}/~/api/fs/file?path=/etc/hostname`)}); result.fetch = "allowed"; } catch (e) { result.fetch = e.name; }
   parent.postMessage({ type: "isolation", result }, "*");
 })();`;
@@ -161,7 +165,18 @@ async function pc(name: string) {
   // Observe the real dispatcher, without changing any response or endpoint behavior.
   logger.handle = async (request, dispatch) => {
     record(name, request);
-    const response = await handle(request, dispatch);
+    let response = await handle(request, dispatch);
+    const path = new URL(request.url).searchParams.get("path") ?? "";
+    // A compromised PC omits all isolation headers, even for files advertised as PDFs.
+    if (response && new URL(request.url).pathname.endsWith("/fs/file")
+      && /(?:page\.html|evil\.svg|hostile-(?:html|svg)\.pdf)$/.test(path)) {
+      const headers = new Headers(response.headers);
+      headers.delete("content-security-policy");
+      headers.delete("x-content-type-options");
+      if (path.endsWith("hostile-html.pdf")) headers.set("content-type", "text/html");
+      if (path.endsWith("hostile-svg.pdf")) headers.set("content-type", "image/svg+xml");
+      response = new Response(response.body, { status: response.status, headers });
+    }
     if (response && response.status >= 400 && request.url.includes("/fs/")) note(`${name} ${response.status}: ${request.url} ${await response.clone().text()}`);
     return response;
   };
@@ -172,6 +187,9 @@ async function pc(name: string) {
   const id = offer.server_id;
   writeFileSync(join(dir, "page.html"), `<!doctype html><body><h1>${name} rendered</h1><script>${attack(id)}</script></body>`);
   writeFileSync(join(dir, "evil.svg"), `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="green"/><script><![CDATA[${attack(id)}]]></script></svg>`);
+  copyFileSync(join(dir, "page.html"), join(dir, "hostile-html.pdf"));
+  copyFileSync(join(dir, "evil.svg"), join(dir, "hostile-svg.pdf"));
+  copyFileSync(join(dir, "page.html"), join(dir, "spoof.pdf"));
   return { name, dir, stateDir, app, service, offer: { ...offer, name }, id, pane };
 }
 
@@ -239,17 +257,35 @@ async function image(page: Page): Promise<void> {
   const dimensions = await picture.evaluate(async (image: HTMLImageElement) => { await image.decode(); return image.naturalWidth; });
   assert.ok(dimensions > 0);
 }
-async function pdf(page: Page, p: typeof pcs[number], machine = "local"): Promise<void> {
-  const response = page.waitForResponse((response) => response.url().includes("/~/api/")
-    && new URL(response.url()).searchParams.get("path")?.endsWith("document.pdf") === true
+async function pdf(page: Page, p: typeof pcs[number], machine = "local", blob = false, name = "document.pdf"): Promise<void> {
+  const viewer = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().startsWith("chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/") });
+  const response = blob ? null : page.waitForResponse((response) => response.url().includes("/~/api/")
+    && new URL(response.url()).searchParams.get("path")?.endsWith(name) === true
     && new URL(response.url()).searchParams.get("download") !== "1");
-  await read(page, p, "document.pdf", machine);
-  const navigation = await response;
-  assert.equal(navigation.status(), 200);
-  assert.equal(navigation.headers()["content-type"], "application/pdf");
-  assert.ok(navigation.fromServiceWorker());
-  assert.equal(navigation.request().isNavigationRequest(), true);
+  await read(page, p, name, machine);
+  if (response) {
+    const navigation = await response;
+    assert.equal(navigation.status(), 200);
+    assert.equal(navigation.headers()["content-type"], "application/pdf");
+    assert.ok(navigation.fromServiceWorker());
+    assert.equal(navigation.request().isNavigationRequest(), true);
+  }
   await page.locator("iframe.file-viewer-pdf").waitFor();
+  const frame = await viewer;
+  const loaded = await bounded(frame.evaluate(async () => {
+    await customElements.whenDefined("pdf-viewer");
+    const loaded = new Promise<string>((resolve) => addEventListener("message", function receive(event) {
+      if (event.data?.type !== "documentLoaded") return;
+      removeEventListener("message", receive);
+      resolve(event.data.load_state);
+    }));
+    // Chrome's viewer reports its completed parser/render state through its scripting API.
+    postMessage({ type: "getSelectedText" }, "*");
+    return loaded;
+  }), "Chrome PDF viewer documentLoaded");
+  assert.equal(loaded, name === "spoof.pdf" ? "failed" : "success", "Chrome reports the PDF parser state, not just iframe navigation");
+  await shot(page, `${p.name}-${blob ? "blob" : machine === "local" ? "local" : "remote"}-${name}`);
+  note(`PDF ${p.name}/${blob ? "blob" : machine}/${name}: Chrome documentLoaded=${loaded}`);
 }
 async function isolation(page: Page): Promise<Record<string, string>> {
   return bounded(page.evaluate(async () => {
@@ -264,6 +300,7 @@ function isolated(result: Record<string, string>): void {
   assert.equal(result.indexedDB, "SecurityError");
   assert.equal(result.parent, "SecurityError");
   assert.equal(result.fetch, "TypeError");
+  assert.equal(result.top, "SecurityError");
 }
 async function seek(page: Page, p: typeof pcs[number], machine = "local"): Promise<void> {
   const path = machine === "local" ? join(p.dir, "seek.mp4") : "/remote/seek.mp4";
@@ -310,6 +347,11 @@ try {
   const [first, second] = pcs;
   assert.ok(first && second);
   assert.notEqual(first.stateDir, second.stateDir);
+  for (const [p, other] of [[first, second], [second, first]]) {
+    assert.ok(p && other);
+    writeFileSync(join(p.dir, "hostile-html.pdf"), `<!doctype html><body><script>${attack(other.id)}</script></body>`);
+    writeFileSync(join(p.dir, "hostile-svg.pdf"), `<svg xmlns="http://www.w3.org/2000/svg"><script><![CDATA[${attack(other.id)}]]></script></svg>`);
+  }
   for (const name of ["picture.png", "seek.mp4", "document.pdf"]) copyFileSync(join(first.dir, name), join(remoteDir, name));
   remote = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     record("remote", request);
@@ -378,11 +420,11 @@ try {
     await read(page, first, "page.html");
     const result = await isolation(page);
     isolated(result);
-    await read(page, first, "evil.svg");
-    await image(page);
-    assert.equal(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults.length), 0, "SVG image scripts never run");
-    const src = await page.locator("img.file-viewer-media").getAttribute("src");
-    assert.ok(src?.startsWith(blob ? "blob:" : `/s/${first.id}/~/`));
+    if (!blob) {
+      await read(page, first, "evil.svg");
+      await image(page);
+      assert.equal(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults.length), 0, "SVG image scripts never run");
+    }
     // Execute the SVG's script inside the same opaque render host, proving its attempted APIs
     // fail too, rather than counting the image decoder's non-execution as those three attempts.
     const svg = readFileSync(join(first.dir, "evil.svg"), "utf8");
@@ -394,8 +436,38 @@ try {
       document.body.append(frame);
     }, `<!doctype html><body>${svg}</body>`);
     isolated(await isolation(page));
-    note(`isolation ${blob ? "blob" : "SW"}: HTML and SVG attempts blocked for IndexedDB, relay fetch and parent.document`);
+    note(`isolation ${blob ? "blob" : "SW"}: rendered HTML and SVG attempts blocked for IndexedDB, relay fetch, parent.document and top navigation`);
+    for (const name of ["hostile-html.pdf", "hostile-svg.pdf"]) {
+      const before = requests.length;
+      if (blob) {
+        const downloaded = page.waitForEvent("download");
+        await read(page, first, name);
+        const download = await downloaded;
+        assert.equal(await download.failure(), null);
+        assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
+        note(`blob no-CSP ${name}: octet-stream downloaded, no script or top navigation`);
+      } else {
+        const navigated = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().includes(encodeURIComponent(name)) });
+        await read(page, first, name);
+        const frame = await navigated;
+        await bounded(frame.evaluate(async () => {
+          if (document.readyState === "complete") return;
+          await new Promise<void>((resolve) => addEventListener("load", () => resolve(), { once: true }));
+        }), "raw malicious frame loaded");
+        assert.equal(await frame.evaluate(() => document.body?.dataset["ran"] ?? null), null);
+        assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
+        note(`SW no-CSP ${name}: enforced sandbox prevents all script execution`);
+      }
+      assert.ok(!page.url().includes("#untrusted-navigation"));
+      assert.ok(!requests.slice(before).some((entry) => entry.target.includes("path=/etc/hostname")), "no other-PC fetch reached either PC");
+    }
+    await pdf(page, first, "local", blob, "spoof.pdf");
+    assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), [], "HTML claiming application/pdf never executes");
+    assert.ok(!page.url().includes("#untrusted-navigation"));
     if (blob) {
+      await read(page, first, "picture.png");
+      await image(page);
+      await pdf(page, first, "local", true);
       await read(page, first, "seek.mp4");
       const video = page.locator('video[src^="blob:"]');
       await video.waitFor();
@@ -485,15 +557,24 @@ try {
     const ctx = await context();
     const page = await pair(ctx, first);
     await controlled(page);
-    await page.evaluate((src) => { const frame = document.createElement("iframe"); frame.src = src; document.body.append(frame); },
-      relayResourcePath(first.id, fileUrl(join(first.dir, "page.html"), null) + "&render=1"));
-    const result = await isolation(page);
+    const src = relayResourcePath(first.id, fileUrl(join(first.dir, "hostile-html.pdf"), null));
+    await page.evaluate(async (src) => {
+      const frame = document.createElement("iframe");
+      const loaded = new Promise<void>((resolve) => frame.addEventListener("load", () => resolve(), { once: true }));
+      frame.src = src;
+      document.body.append(frame);
+      await loaded;
+    }, src);
     if (mutate) {
+      const result = await isolation(page);
       assert.throws(() => isolated(result));
       assert.equal(result.indexedDB, "allowed");
       assert.equal(result.parent, "allowed");
-      note(`mutation detected: dropping SW CSP breaks isolation: ${JSON.stringify(result)}`);
-    } else isolated(result);
+      note(`mutation detected: removing SW-enforced CSP for no-CSP HTML breaks isolation: ${JSON.stringify(result)}`);
+    } else {
+      assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
+      note("SW no-CSP HTML negative-control baseline: no script executed");
+    }
     await ctx.close();
   }
   workerMode = "current";

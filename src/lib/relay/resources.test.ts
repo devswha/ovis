@@ -70,9 +70,26 @@ describe("bounded blob resources", () => {
   });
 
   it("keeps the MIME and bytes of an allowed image", async () => {
-    const blob = await relayResourceBlob(new Response("image", { headers: { "content-type": "image/svg+xml" } }));
-    expect(blob.type).toBe("image/svg+xml");
+    const blob = await relayResourceBlob(new Response("image", { headers: { "content-type": "image/png" } }));
+    expect(blob.type).toBe("image/png");
     expect(await blob.text()).toBe("image");
+  });
+
+  for (const [mime, expected] of [
+    [" IMAGE/PNG ; charset=binary ", "image/png"], ["Video/MP4; codecs=avc1", "video/mp4"],
+    [" audio/ogg ", "audio/ogg"], [" APPLICATION/PDF ; version=1.7", "application/pdf"],
+    ["IMAGE/SVG+XML ; charset=utf-8", "application/octet-stream"], ["text/html", "application/octet-stream"],
+    ["application/xhtml+xml", "application/octet-stream"], ["image/", "application/octet-stream"],
+    ["image/png garbage", "application/octet-stream"], ["application/pdfx", "application/octet-stream"],
+    ["", "application/octet-stream"],
+  ] as const) it(`opens only inert media or PDF for MIME ${mime}`, async () => {
+    const transport = { ...nativeTransport, fetch: async () => new Response("bytes", { headers: { "content-type": mime ?? "" } }) };
+    const url = await relayResourceUrl(transport, id, "/api/fs/file?path=untrusted.pdf");
+    try {
+      const response = await fetch(url);
+      expect(response.headers.get("content-type")).toBe(expected);
+      expect(await response.text()).toBe("bytes");
+    } finally { URL.revokeObjectURL(url); }
   });
 
   it("makes downloads inert even if a WebView opens them in place", async () => {
