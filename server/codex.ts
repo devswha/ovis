@@ -920,19 +920,45 @@ const normalizeDisplay = (text: string): string => text.normalize("NFKC").replac
 const promptKey = (text: string): string => text.normalize("NFKC").replace(/^\s*\u203a/, "").replace(/\s+/g, "");
 
 /**
- * A Codex screen cut at what was typed: each prompt (a line Codex starts with "›", a prompt sent or
- * the input box, or an indented "↳", a message queued to be sent; with the indented and blank lines
- * it wraps onto) and the stretches between them. A prompt is no evidence of the conversation shown:
- * it may quote any conversation's answer.
+ * A text as its letters and digits and the symbols that change what it says (`a < b`, `feature-one`),
+ * as a screen shows an answer: without the markers markdown starts a line with (a list's, a quote's,
+ * a heading's) and the runs of a symbol it draws rules or emphasis with (`---`, `__`), which Codex
+ * renders its own way.
  */
-function codexScreenParts(screen: string): { prompt: boolean; text: string }[] {
-  const parts: { prompt: boolean; text: string }[] = [];
+const markedDisplay = (text: string): string => text.normalize("NFKC")
+  .replace(/^[ \t]*(?:[-*+]|>+|#{1,6}|\d+[.)])[ \t]+/gm, "")
+  .replace(/([-=_])\1+/g, "")
+  .replace(/[^\p{L}\p{N}<>=+\-_/]/gu, "");
+
+/**
+ * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
+ * "›", a prompt sent or the input box, or an indented "↳", a message queued to be sent), each tool
+ * call (an indented "└" and the lines below it, its output, with the "•" line above it and the lines
+ * that line wraps onto, its call; or a "• Running"/"• Calling" line of one still running), with the
+ * indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor a
+ * tool call is evidence of the conversation shown: either may quote any conversation's answer.
+ */
+function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text: string }[] {
+  const parts: { prompt: boolean; tool?: true; text: string }[] = [];
   for (const line of screen.split("\n")) {
     const last = parts.at(-1);
-    const begins = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
-    const prompt = begins || (last?.prompt === true && /^(?:\s|$)/.test(line));
-    if (last !== undefined && last.prompt === prompt && !begins) last.text += `\n${line}`;
-    else parts.push({ prompt, text: line });
+    const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
+    const output = !prompt && /^\s+\u2514(?:\s|$)/.test(line);
+    const running = !prompt && /^\u2022 (?:Running|Calling) /.test(line);
+    if (output && last !== undefined && !last.prompt && !last.tool) {
+      // the call's "•" line and what it wraps onto, above its output
+      const call = last.text.lastIndexOf("\n\u2022");
+      const at = call >= 0 ? call + 1 : last.text.startsWith("\u2022") ? 0 : -1;
+      if (at >= 0) {
+        const head = last.text.slice(0, at > 0 ? at - 1 : 0);
+        parts.splice(parts.length - 1, 1, ...(at > 0 ? [{ prompt: false, text: head }] : []), { prompt: false, tool: true, text: `${last.text.slice(at)}\n${line}` });
+        continue;
+      }
+    }
+    if (prompt || output || running) parts.push({ prompt, ...(output || running ? { tool: true as const } : {}), text: line });
+    else if (last !== undefined && (last.prompt || last.tool) && /^(?:\s|$)/.test(line)) last.text += `\n${line}`;
+    else if (last !== undefined && !last.prompt && !last.tool) last.text += `\n${line}`;
+    else parts.push({ prompt: false, text: line });
   }
   return parts;
 }
@@ -948,12 +974,21 @@ function answerAnchor(text: string): Anchor | null {
   const pieces = cutAtLinkTargets(text).map((piece) => piece.text);
   for (let index = pieces.length - 1; index >= 0; index--) {
     const anchor = normalizeDisplay(pieces[index]!).slice(-160);
-    if (anchor.length >= 64 && new Set(anchor).size >= 12) return { anchor, words: wordsEnding(pieces[index]!, anchor.length) };
+    if (anchor.length >= 64 && new Set(anchor).size >= 12) return { anchor, words: wordsEnding(pieces[index]!, anchor.length), marked: markedEnding(pieces[index]!, anchor.length) };
   }
   return null;
 }
 
-interface Anchor { anchor: string; words: string[] }
+/** `marked`: the anchor as markedDisplay reads it, symbols included, for a screen to show as well. */
+interface Anchor { anchor: string; words: string[]; marked: string }
+
+/** The end of a text as markedDisplay reads it that holds its last `letters` letters and digits. */
+function markedEnding(text: string, letters: number): string {
+  const marked = markedDisplay(text);
+  let at = marked.length;
+  for (let counted = 0; at > 0 && counted < letters;) if (/[\p{L}\p{N}]/u.test(marked[--at]!)) counted++;
+  return marked.slice(at);
+}
 
 /** The words a text ends with (runs of letters and digits), as many as make up its last `length` of them, the first cut to fit. */
 function wordsEnding(text: string, length: number): string[] {
@@ -979,8 +1014,11 @@ function wordsEnding(text: string, length: number): string[] {
  * runs across blocks is answers side by side, another conversation's. */
 export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, Said> = new Map(), blocks = false): string | null {
   const lastHeader = screen.lastIndexOf("OpenAI Codex (v");
-  const displays = blocks ? screen.split(/\n(?=\u2022)/).map(normalizeDisplay)
-    : [normalizeDisplay(codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen).filter((part) => !part.prompt).map((part) => part.text).join("\n"))];
+  const texts = blocks ? screen.split(/\n(?=\u2022)/)
+    : [codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen).filter((part) => !part.prompt && !part.tool).map((part) => part.text).join("\n")];
+  const displays = texts.map(normalizeDisplay);
+  // an answer differing from the one shown in a symbol that changes what it says is another's
+  const markedDisplays = texts.map(markedDisplay);
   const answersOf = (turns: ConversationTurn[]) => turns.filter((turn) => turn.role === "assistant")
     .flatMap((turn) => turn.parts).filter((part) => part.kind === "text").map((part) => part.text);
   const parsed = candidates.map((candidate) => parseCodexTranscript(candidate.text, Infinity));
@@ -993,7 +1031,8 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   let open = false;
   for (const [index, candidate] of candidates.entries()) {
     const anchors = answersOf(parsed[index]!.slice(-100)).slice(-8).map(answerAnchor)
-      .filter((found): found is Anchor => found !== null && displays.some((display) => display.includes(found.anchor)));
+      .filter((found): found is Anchor => found !== null
+        && displays.some((display, at) => display.includes(found.anchor) && markedDisplays[at]!.includes(found.marked)));
     if (anchors.length === 0) continue;
     if (!scrutinized.has(candidate.path) || anchors.some((anchor) => !givenElsewhere(index, anchor))) matching.add(candidate.path);
     else open = true;
@@ -1197,7 +1236,7 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
   for (const part of codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen)) {
     // only one typed and sent is what an answer below it answered; a queued one is not sent yet
     if (part.prompt && part.text.startsWith("\u203a")) prompts.push({ at: display.length, text: promptKey(part.text) });
-    display += part.prompt ? "\0" : normalizeDisplay(part.text);
+    display += part.prompt || part.tool ? "\0" : normalizeDisplay(part.text);
   }
   // every turn of what was read, not the newest 100: an answer said long ago is said; with the prompt it answered
   const exchanges = candidates.map((candidate) => {
@@ -2576,6 +2615,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const session = agent.agent_session;
 
   const { codexProcesses, processes, open } = await openRollouts(paneId, home);
+  // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
+  // a Codex gone since) ties it to no conversation, and the terminal stands in
+  if (codexProcesses.length === 0) return null;
   if (open.size === 1) return [...open][0]!;
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 

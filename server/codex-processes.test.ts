@@ -173,6 +173,8 @@ it.skipIf(process.platform !== "linux")("drops the recovered binding when its pr
 
 it("finds the threads of a Windows cwd that Codex stored with the \\\\?\\ prefix (#518)", async () => {
   const cwd = "D:\\work\\app";
+  // a running Codex in the pane: a screen with none proves nothing
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
   const db = new Database(join(home, "state_5.sqlite"));
   db.query("UPDATE threads SET cwd = ?").run(`\\\\?\\${cwd}`);
   db.close();
@@ -1769,6 +1771,51 @@ describe("another session's conversation is never shown for a plain Codex pane",
       db.close();
       expect(await resolve()).toBeNull();
     } finally { bound.mockRestore(); upper.mockRestore(); }
+  });
+
+  it("reads nothing from a screen once the pane's last process lookup finds no Codex", async () => {
+    // Given a pane showing this cwd thread's long answer, as an earlier occupant left it on screen
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain the selection\n\n• ${answer}\n\n› `;
+    // When herdr's process facts for the lookup show no Codex any more
+    foreground = live;
+    processReads = [[]];
+    // Then nothing ties the screen to a running Codex: the terminal stands in
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no long answer that differs from the shown one in its punctuation", async () => {
+    const answers = [
+      ["After carefully reviewing the requested configuration, the decisive result is a < b and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the decisive result is a > b and all remaining verification steps completed successfully."],
+      ["After carefully reviewing the requested configuration, the branch to release is feature-one and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the branch to release is feature_one and all remaining verification steps completed successfully."],
+    ] as const;
+    for (const [index, [said, shown]] of answers.entries()) {
+      // a Codex process of its own each time: a pane a match bound keeps that rollout while its screen says nothing new
+      foreground = [{ pid: 2147483640 - index, argv: ["/usr/bin/codex"] }];
+      // Given this cwd's thread said one answer, and the pane shows its own conversation's other one
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Check the release configuration\n\n• ${shown}\n\n› `;
+      expect(await resolve()).toBeNull();
+      // and the same answer, as said, still tells
+      screen = `OpenAI Codex (v0.165.0)\n\n› Review the configuration\n\n• ${said}\n\n› `;
+      expect(await resolve()).toBe(path);
+    }
+  });
+
+  it("takes no long answer a tool call's command quotes", async () => {
+    foreground = live;
+    for (const shown of [
+      `• Ran printf "${answer}"\n  └ command is still running`,
+      `• Running printf "${answer}"`,
+    ]) {
+      screen = `OpenAI Codex (v0.165.0)\n\n› Execute the diagnostic\n\n${shown}\n\n• Working (3s • esc to interrupt)\n\n› `;
+      expect(await resolve()).toBeNull();
+    }
   });
 
   it("takes no long answer the pane only quotes in a prompt (#2420's review, H3)", async () => {
