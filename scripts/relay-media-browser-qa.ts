@@ -511,12 +511,25 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         });
         await check(async (page) => { await pdf(page, first, "local", true); });
         await check(async (page) => {
-          await read(page, first, "seek.mp4");
+          const metadata = Promise.withResolvers<void>();
+          page.once("close", () => metadata.reject(new Error("Blob video page closed before metadata")));
+          page.once("crash", () => metadata.reject(new Error("Blob video page crashed before metadata")));
+          await page.exposeFunction("relayVideoMetadata", () => metadata.resolve());
+          await page.addInitScript(() => {
+            addEventListener("loadedmetadata", (event) => {
+              if (event.target instanceof HTMLVideoElement && event.target.currentSrc.startsWith("blob:")) {
+                const ready: () => Promise<void> = Reflect.get(window, "relayVideoMetadata");
+                void ready();
+              }
+            }, { capture: true });
+          });
+          // The whole body may still be downloading at the locator deadline. Observe native
+          // readiness before asserting its source; the command's timeout bounds the whole run.
+          await Promise.all([metadata.promise, read(page, first, "seek.mp4")]);
           const video = page.locator('video[src^="blob:"]');
           await video.waitFor();
-          const size = await video.evaluate(async (element: HTMLVideoElement) => {
-            if (element.readyState < 1) await new Promise<void>((resolve) => element.addEventListener("loadedmetadata", () => resolve(), { once: true }));
-            if (!(element.duration > 0)) throw new Error("blob video has no duration");
+          const size = await video.evaluate((element: HTMLVideoElement) => {
+            if (element.readyState < 1 || !(element.duration > 0)) throw new Error("blob video has no metadata");
             return Math.max(...(window as Window & { blobSizes: number[] }).blobSizes);
           });
           assert.ok(size > 32 * 1024 * 1024 && size < 64 * 1024 * 1024);
