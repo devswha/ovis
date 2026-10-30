@@ -1663,16 +1663,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Every pane keeps its own xterm, attachment, input ownership, lens, chat state and file-path
   context. Only the active pane may take keyboard focus after an asynchronous operation.
 - The four most recently visited tabs (two on a phone: a coarse pointer or a viewport up to 768px,
-  to save its battery) keep their already-mounted terminal screens live while the browser is in use. Hidden clients give up size ownership and cannot take input, focus or
-  the clipboard (OSC 52). When another client sizes the pane to another grid, a hidden client lets go
-  of its attach, as before, and its return attaches again for a whole screen at its own size.
-  Leaving the window, eviction, or **Use alongside herdr's own window** releases their attach.
-  A reconnect or replaced terminal never acquires a fresh hidden attach. This follows Zed's
-  multiple terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather
-  than retaining every terminal indefinitely. No attached screen is rebuilt from `pane.read`.
+  to save its battery) keep their mounted terminal screens current while the browser is in use. A
+  hidden tab lets go of its attach as before, and with it the pane's input and size: it watches the
+  pane through herdr's read-only view (`watch`), drawn for this tab's own grid, so a return shows the
+  pane as it is now while the new attach is made. It cannot take input, focus or the clipboard (OSC 52).
+  Leaving the window, eviction, or **Use alongside herdr's own window** stops the view.
+  A reconnect or replaced terminal never starts a hidden view. This follows Zed's multiple
+  terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather than
+  retaining every terminal indefinitely. No attached screen is rebuilt from `pane.read`.
 - Switching tabs retains an outgoing terminal while its explicit submit awaits a receipt;
   its chat/input UI is unmounted and its grid is not resized. The receipt settles the original
-  draft; the attachment then follows the recent-tab rule above. No input is replayed. A canvas that already released
+  draft before the pane attachment is released. No input is replayed. A canvas that already released
   its panes while away opens a replacement as view-only until the user returns.
   An automatic queue also retains its original pane lease until sent, discarded or held.
 - The unlocked app owns one connection per visited PC, shared by its pane mounts. A pane leaving

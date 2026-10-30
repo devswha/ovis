@@ -77,15 +77,15 @@ try {
     const cached = await viewer(cachedWidth, target, panes);
     await paneSendText(target, `sh ${draw} before-${round}\n`);
     await shows(cached.page, target, `DRAWN-before-${round}`);
-    const left = await rows(cached.page, target);
     await select(cached.page, panes[1]!);
     // The other device drives the pane at its own size and the program draws for it.
     const driver = await viewer(driverWidth, target, panes);
     await paneSendText(target, `sh ${draw} hidden-${round}\n`);
     await shows(driver.page, target, `DRAWN-hidden-${round}`);
     await driver.close();
-    // Back on the tab: it shows the screen it left, then the pane at its own size, and never a
-    // screen drawn for another grid parsed into its own.
+    // Back on the tab: whatever it paints on the way (the screen it left, the pane as herdr shows it
+    // now, the pane at its own size) is drawn for one grid, never output for another grid parsed
+    // into its own (a row with two edge markers, the long line twice), and it ends as a fresh attach.
     await cached.page.evaluate((pane) => {
       const frames: string[][] = [];
       const matched = Promise.withResolvers<void>();
@@ -119,8 +119,8 @@ try {
     if (!settled.matched) {
       failures.push(`${round}: the returned tab differs from a fresh attach\n--- returned\n${actual.join("\n")}\n--- fresh attach\n${expected.join("\n")}`);
     } else {
-      const torn = settled.painted.find((lines) => lines.join("\n") !== left.join("\n") && lines.join("\n") !== expected.join("\n"));
-      if (torn) failures.push(`${round}: a frame painted on return is neither the screen it left nor the pane at its size\n${torn.join("\n")}`);
+      const torn = settled.painted.find((lines) => lines.some((line) => line.split("#").length > 2) || lines.join("\n").split("LONG0014").length > 2);
+      if (torn) failures.push(`${round}: a frame painted on return mixes two grids\n${torn.join("\n")}`);
     }
     if (evidence) {
       await cached.page.screenshot({ path: join(evidence, `returned-${round}.png`) });

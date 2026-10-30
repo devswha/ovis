@@ -93,7 +93,15 @@ try {
       const warm = frames.slice(start);
       console.log(JSON.stringify({ width, theme, baseline, samples, attaches: warm.filter((frame) => frame.type === "attach").length, detaches: warm.filter((frame) => frame.type === "detach").length }));
       if (!baseline) {
-        assert.equal(warm.filter((frame) => frame.type === "attach" || frame.type === "detach").length, 0, "warm switching keeps the existing attachment");
+        // A hidden tab holds no attach, and so no input: only the tab on screen is attached.
+        const attached = new Set<string>();
+        for (const sent of frames) {
+          if (sent.type === "attach" && sent.pane_id) attached.add(sent.pane_id);
+          if (sent.type === "detach" && sent.pane_id) attached.delete(sent.pane_id);
+        }
+        assert.deepEqual([...attached], [panes[0]], "only the tab on screen holds the pane's attach");
+        // its screen stays current through herdr's read-only view instead
+        assert.ok(warm.some((sent) => sent.type === "watch" && sent.pane_id === panes[1]), "a hidden recent tab watches its pane");
       }
       if (evidence) await page.screenshot({ path: join(evidence, `terminal-switch-${width}-${theme}.png`) });
       if (!baseline) {
@@ -102,17 +110,17 @@ try {
         await frame(panes[1]!).locator(".xterm-rows", { hasText: "OVIS-HIDDEN-UPDATE" }).waitFor({ state: "attached" });
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
-        assert.ok(frames.some((frame) => frame.type === "detach" && frame.pane_id === panes[1]), "eviction releases the pane");
+        assert.ok(frames.some((frame) => frame.type === "unwatch" && frame.pane_id === panes[1]), "eviction stops the tab's view");
         // a phone keeps one recent tab beside the current one, a desktop three
         const bound = width === 390 ? 2 : 4;
         assert.equal(await page.locator("[data-layout-pane]").count(), bound, `the ${bound}-tab bound holds`);
-        // Leaving the window releases cached attachments even with releasePaneAway off.
+        // Leaving the window stops the cached tabs' views even with releasePaneAway off.
         const away = new Set(panes.slice(bound === 4 ? 2 : 3, 4));
         const released = Promise.withResolvers<void>();
-        const timeout = setTimeout(() => released.reject(new Error("cached attachments were not released")), 5000);
+        const timeout = setTimeout(() => released.reject(new Error("cached views were not stopped")), 5000);
         const observe = ({ payload }: { payload: string | Buffer }) => {
           const message = JSON.parse(String(payload));
-          if (message.type === "detach") away.delete(message.pane_id);
+          if (message.type === "unwatch") away.delete(message.pane_id);
           if (away.size === 0) released.resolve();
         };
         // Subscribe before blur, including already-open sockets.

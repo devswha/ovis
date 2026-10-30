@@ -1,3 +1,5 @@
 ### Fixed
-- Recently viewed terminal tabs keep their live screen while this window is in use, without
-  reattaching on every switch: the current tab and three recent ones, or one recent tab on a phone. The existing alongside-herdr setting still releases hidden panes.
+- Recently viewed terminal tabs keep their screen current while this window is in use, so switching
+  back shows the pane as it is now at once: the current tab and three recent ones, or one recent tab
+  on a phone. A hidden tab still lets go of the pane and its input; the existing alongside-herdr
+  setting still releases hidden panes.
