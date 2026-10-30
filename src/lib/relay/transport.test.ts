@@ -375,11 +375,13 @@ it("tells a refusal that cannot change from a carrier that may come back", () =>
 });
 
 it("reconnects after an authorization change without telling the shell to forget the PC", async () => {
-  const f = await fixture();
+  // Keep the post-reconnect request independent of herdr, which unit runs never start.
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   const connection = f.connections.at(-1);
   if (!connection) throw new Error("Missing relay connection");
   f.callbacks.at(-1)?.(new MuxProtocolError("auth_changed", "Role changed"));
   connection.stop();
+  await bounded(connection.closed);
   expect(f.fatal).toEqual([]);
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
   f.clock.advance(1000);
