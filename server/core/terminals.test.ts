@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, jest, mock, spyOn } from "bun:test";
 import { ReplayBuffer } from "../output-window.ts";
-import { connectionData, type Client } from "./connections.ts";
+import { connectionData } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
 import * as pty from "../pty/session.ts";
@@ -23,7 +23,7 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
     data: connectionData({ deviceId: undefined, readOnly }), readyState: WebSocket.OPEN,
     getBufferedAmount: () => 0, send: (text: string) => { frames.push(JSON.parse(text)); return text.length; },
     close() {},
-  } as unknown as Client;
+  };
   const replay = new ReplayBuffer(1024);
   replay.append("retained screen");
   attachment = {
@@ -113,7 +113,7 @@ for (const [name, reads, screen] of [
     const client = {
       data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
       getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
-    } as unknown as Client;
+    };
     // a hold and a retry that never run out here: only what the reads say decides
     const registry = createTerminalRegistry({
       options: {}, clients: new Set([client]), stopped: () => false,
@@ -167,7 +167,7 @@ for (const resized of [false, true]) {
     const client = {
       data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
       getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
-    } as unknown as Client;
+    };
     const registry = createTerminalRegistry({
       options: {}, clients: new Set([client]), stopped: () => false,
       terminalAttach: async () => true, holdFor: 60_000, heldRetry: 60_000, retryFor: 0, relookupFor: 5_000,
@@ -230,7 +230,7 @@ async function resizableAttach() {
       return raw.length;
     },
     close() {},
-  } as unknown as Client;
+  };
   jest.useFakeTimers();
   const registry = createTerminalRegistry({
     options: {}, clients: new Set([client]), stopped: () => false,
@@ -370,7 +370,7 @@ it("marks a newcomer recovering after a ready stream ends and clears it when the
     const client = {
       data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
       getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
-    } as unknown as Client;
+    };
     return { client, frames };
   };
   const owner = record(), recovering = record(), recovered = record();

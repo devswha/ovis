@@ -3,7 +3,6 @@
  * sent to it, the presence beat it sends, and how it ends. Only this module changes a connection's
  * authority, its observe processes and its closing.
  */
-import type { ServerWebSocket } from "bun";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -78,7 +77,15 @@ export function presenceOf(raw: string | Buffer): boolean | null {
   }
 }
 
-export type Client = ServerWebSocket<SocketData>;
+export interface SocketLike {
+  data: SocketData;
+  readonly readyState: number;
+  send(data: string): number;
+  getBufferedAmount(): number;
+  close(code?: number, reason?: string): void;
+}
+
+export type Client = SocketLike;
 
 export function send(client: Client, message: ServerMessage): number {
   if (stateOf(client).closing) return 0;
