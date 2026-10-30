@@ -283,6 +283,11 @@ until `letta` starts again on that conversation. In the home folder it always do
 while another pane runs `letta` in the same folder or reports the same conversation, and until the conversation's
 first turn on this PC has ended; Chat comes back by itself once that is no longer so.
 
+With Letta's local backend, the composer shows the model and reasoning effort the conversation
+runs with, read from Letta's local store (`lc-local-backend`): the conversation's own `/model`
+choice, else its agent's. A cloud conversation keeps those on Letta's server, so its composer shows
+none.
+
 Letta writes a turn only when it ends, so a turn appears once it is done, and a cancelled one
 never does. While it runs, Chat shows the turns written so far and **Working…**, and a message you
 sent stays a faded bubble for a minute at most; the Terminal shows the turn as it happens. Only
