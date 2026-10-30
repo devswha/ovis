@@ -65,6 +65,8 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
       if (method === "pane.read" && params?.lines !== 400) return;
       const result = method === "session.snapshot" ? { snapshot: { panes: [pane], agents: [], workspaces: [], tabs: [], layouts: [] } }
         : method === "agent.get" ? { agent: pane }
+        // a Codex runs in the pane: a screen with none proves no conversation
+        : method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] } }
         : method === "pane.read" ? { read: { text: `• ${answer(119)}\n\n› ` } } : {};
       const reply = () => { if (!socket.destroyed) socket.write(JSON.stringify({ id, result }) + "\n"); };
       if (slow && (method === "session.snapshot" || method === "agent.get")) {

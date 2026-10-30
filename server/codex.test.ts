@@ -785,7 +785,8 @@ describe("Codex rollout resolution", () => {
         const literal = `${answer} [Daily report](${target})`;
         const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
         expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
-        expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+        // as Codex shows the answer: its second line indented below the bullet
+        expect(matchCodexTranscript(`• ${literal.replace(/\r?\n/g, "\n  ")}`, candidates)).toBe("own");
       }
     }
   });
