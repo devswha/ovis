@@ -126,7 +126,7 @@ export class RelayService {
 
   offer(): { url: string; expires_at: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
-    const pairing = this.services.devices.startPairing();
+    const pairing = this.services.devices.activePairing() ?? this.services.devices.startPairing();
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
         relay: this.relay, code: pairing.code }, this.app),

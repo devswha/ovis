@@ -251,6 +251,13 @@ export class DeviceStore {
     return this.devices.map((d) => ({ id: d.id, label: d.label, role: d.role, created_at: d.created_at, last_seen_at: d.last_seen_at, current: d.id === currentId, ...(d.relay_public_key === undefined ? {} : { via_relay: true as const }) }));
   }
 
+  /** The current code when it can still be used, without changing its attempts or expiry. */
+  activePairing(now = Date.now()): PairingCode | null {
+    const pending = this.pending;
+    if (pending === null || now > pending.expires || pending.attempts >= CODE_ATTEMPTS) return null;
+    return { code: pending.code, expires_at: new Date(pending.expires).toISOString() };
+  }
+
   /** A fresh six-digit code, replacing any code still pending. */
   startPairing(now = Date.now()): PairingCode {
     this.assertWritable();

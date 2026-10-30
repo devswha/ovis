@@ -207,6 +207,60 @@ it("relay off makes no connection", async () => {
   expect(f.app.context.services.devices.gated).toBe(false);
 });
 
+it("reuses the active device pairing code for the relay offer", async () => {
+  const f = await fixture();
+  await f.start();
+  const guard = { origin: f.base, "x-herdr-machine": "1" };
+  const started = await fetch(`${f.base}/api/devices/pair/start`, { method: "POST", headers: guard });
+  expect(started.status).toBe(200);
+  const pairing = await started.json() as { code: string; expires_at: string };
+  const response = await f.request("/offer", "POST");
+  expect(response.status).toBe(200);
+  const result = await response.json() as { url: string; expires_at: string };
+  const offer = decodeOffer(result.url);
+  if (!offer) throw new Error("Offer missing");
+  expect(offer.code).toBe(pairing.code);
+  expect(result.expires_at).toBe(pairing.expires_at);
+  const paired = await fetch(`${f.base}/api/devices/pair`, {
+    method: "POST", headers: { ...guard, "content-type": "application/json" },
+    body: JSON.stringify({ code: pairing.code, label: "CLI pairing" }),
+  });
+  expect(paired.status).toBe(204);
+  const subsequentOffer = await f.offer();
+  expect(f.app.context.services.devices.activePairing()?.code).toBe(subsequentOffer.code);
+});
+
+it("creates a new active code when the relay offer has none to reuse", async () => {
+  const f = await fixture();
+  await f.start();
+  expect(f.app.context.services.devices.activePairing()).toBeNull();
+  const offer = await f.offer();
+  expect(offer.code).toMatch(/^\d{6}$/);
+  expect(f.app.context.services.devices.activePairing()?.code).toBe(offer.code);
+});
+
+it("does not reuse an expired or exhausted pairing code", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const now = Date.now();
+
+  const expired = devices.startPairing(now - 10 * 60_000 - 1);
+  expect(devices.activePairing(now)).toBeNull();
+  const expiredOffer = await f.offer();
+  expect(devices.activePairing()?.code).toBe(expiredOffer.code);
+  expect(Date.parse(devices.activePairing()!.expires_at)).toBeGreaterThan(now);
+  expect(Date.parse(devices.activePairing()!.expires_at)).toBeGreaterThan(Date.parse(expired.expires_at));
+
+  const exhausted = devices.startPairing(now - 60_000);
+  const wrong = exhausted.code === "000000" ? "000001" : "000000";
+  for (let attempt = 0; attempt < 5; attempt += 1) expect(devices.pair(wrong, "Wrong", "drive")).toBeNull();
+  expect(devices.activePairing()).toBeNull();
+  const exhaustedOffer = await f.offer();
+  expect(devices.activePairing()?.code).toBe(exhaustedOffer.code);
+  expect(Date.parse(devices.activePairing()!.expires_at)).toBeGreaterThan(Date.parse(exhausted.expires_at));
+});
+
 it("starts, decodes an offer, pairs, authenticates, and carries full HTTP and WS through the relay", async () => {
   const f = await fixture();
   await f.start();

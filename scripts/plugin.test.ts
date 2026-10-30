@@ -801,7 +801,7 @@ describe("pair relay offer", () => {
     });
     try {
       const result = await run("pair", { PORT: String(server.port) });
-      return { ...result, offerRequests, validOfferUrl };
+      return { ...result, offerRequests };
     } finally {
       await server.stop(true);
     }
@@ -811,8 +811,13 @@ describe("pair relay offer", () => {
     const result = await pairWithRelay("online");
     expect(result.exitCode, result.err).toBe(0);
     expect(result.out).toContain("Ovis relay");
-    expect(result.out).toContain("#offer=");
-    expect(decodeOffer(result.validOfferUrl)?.code).toBe("123456");
+    const printedUrl = result.out.split("\n").find((line) => line.includes("#offer="));
+    expect(printedUrl).toBeString();
+    const offer = decodeOffer(printedUrl!);
+    expect(offer?.code).toBe("123456");
+    const printedCode = /Pairing code: (\d{3}) (\d{3})/.exec(result.out);
+    expect(printedCode?.[1] + printedCode?.[2]).toBe(offer?.code);
+    expect(result.out.slice(result.out.indexOf(printedUrl!) + printedUrl!.length)).toContain("█");
     expect(result.offerRequests).toBe(1);
   });
 
