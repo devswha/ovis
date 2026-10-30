@@ -53,7 +53,7 @@ In scope, for example:
 - push keys and subscriptions (`server/push.ts`);
 - the Ovis relay path: anything that lets the relay, whoever runs it or anyone else read, change,
   replay or inject traffic between a phone and the PC, or get in through the relay without a paired
-  device's key, and a revoke or relay identity reset that leaves a phone connected. That covers
+  device's key, anyone taking a PC's place on the relay without that PC's secret key, and a revoke or relay identity reset that leaves a phone connected. That covers
   `shared/relay-e2ee.ts` and the paseo code it wraps (`shared/vendor/paseo-e2ee/`),
   `shared/relay-mux.ts`, `shared/relay-mux-engine.ts`, `server/relay/`, the relay parts of
   `server/devices.ts` and `server/access.ts`, and the relay service itself (`relay/`,

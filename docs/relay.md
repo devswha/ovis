@@ -25,8 +25,8 @@ speak. There are three parts:
 
 ### What the relay sees
 
-For every connection, the relay sees the PC's relay ID (`server_id`: 32 random hex characters, made
-the first time the relay is turned on), whether the PC or a phone is connecting, the connecting
+For every connection, the relay sees the PC's relay ID (`server_id`: 32 hex characters worked out from
+the PC's public key, made the first time the relay is turned on), that public key, whether the PC or a phone is connecting, the connecting
 address, and when each frame passes and how big it is. From that it can tell which PC a phone uses,
 when and for how long, and how much goes each way. The rhythm of the traffic shows too: a key typed
 in a terminal goes out at once as a small frame, so the timing of keystrokes is visible, and so is
@@ -56,6 +56,10 @@ network in front of it (Cloudflare, for `relay.ovis.sh`), can record everything 
 What the relay can do is hold the traffic up: refuse connections, cut them or delay frames. The app
 then reconnects by itself or says the relay can't be reached, and nothing you typed is sent again on
 its own.
+
+Nobody else can take the PC's place on the relay. Knowing a PC's `server_id` isn't enough: on every
+socket it opens, the PC has to prove to the relay that it holds the secret key behind that ID
+([step 1](#how-a-connection-is-made)), so a stranger can't push the PC off or catch its phones.
 
 ### The hosted app is a trust root
 
@@ -109,8 +113,8 @@ relay can't show a relay QR code or reset the relay identity (403 `local_require
 device that can type, it can still start a pairing code under Devices.
 
 **What it may do.** A phone paired through the relay gets the same access as a device paired with a
-code: it can type into terminals and change settings. A device marked watch-only stays read-only
-through the relay too.
+code: it can type into terminals and change settings. Every pairing, through the relay or not,
+makes such a device, and the app has no way to make a paired device watch-only.
 
 **The device gate.** Turning the relay on in an install with no token and no paired device closes
 the device gate first, so from then on a new browser on the LAN or behind a proxy needs a pairing
@@ -129,7 +133,8 @@ code as well ([Access and safety](guide.md#access-and-safety)).
   still need a valid one.
 - A relay identity file that can't be read is never replaced silently, since a new identity cuts
   off every paired phone: the relay stays off (`identity_unreadable`) until **Reset relay identity**
-  makes a new one. The identity lives in `relay/identity.json` under `OVIS_STATE_DIR`, readable by
+  makes a new one. That includes an identity made by a prerelease build, from before the PC proved
+  its key to the relay: reset it, then scan a new QR code on each phone. The identity lives in `relay/identity.json` under `OVIS_STATE_DIR`, readable by
   your user only.
 
 **Serve-only installs.** `OVIS_TAILSCALE_SERVE_ONLY=1` says `tailscale serve` is the only way into
@@ -139,7 +144,13 @@ it, and the identity reset is refused.
 ## How a connection is made
 
 1. **The PC connects.** With the relay on, the PC opens a control WebSocket to
-   `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1`, sends a keepalive every 10 seconds
+   `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1`, with its public key. Before the
+   relay lets that socket, or any data socket below, take the PC's place, it sends a fresh
+   challenge, and the PC answers with a code only its secret key can make (X25519 and
+   HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). An answer that's
+   wrong, missing or later than 10 seconds closes the socket with `4401`, and the PC stops and shows
+   the reason instead of retrying (`shared/relay-server-proof.ts`,
+   [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
    1 second longer each time up to 30 seconds, each wait varied by up to 20%
    ([`server/relay/link.ts`](../server/relay/link.ts)).
@@ -242,7 +253,10 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
 - **With the service worker.** The worker hands the request, with its `Range` header, to a window
   of the same PC whose relay connection is open. That window fetches the file through the mux and
   streams the answer back with its status and the headers the mux keeps, security headers included,
-  so a video can skip ahead. Nothing is cached. The worker answers GET requests for three read-only
+  so a video can skip ahead. Nothing is cached. The worker adds a policy of its own to every file:
+  it runs in a sandbox with no scripts, and a PDF, which the browser's viewer won't open in a
+  sandbox, still gets the no-script policy. The app's address is shared by every PC it's paired
+  with, so a file from one PC can't reach the others or the app's keys. The worker answers GET requests for three read-only
   routes only, `fs/file`, `fs/favicon` and `pane/conversation/image`, on this PC or on a remote PC
   behind it (`/api/machines/<id>/…`), from one list (`RELAY_RESOURCE_ROUTES` in
   [`shared/relay-mux.ts`](../shared/relay-mux.ts)). With no window of that PC connected, it answers
@@ -253,7 +267,9 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
   and `X-Frame-Options: SAMEORIGIN`.
 - **Without it.** Where no service worker that speaks this protocol controls the page, the app
   fetches the whole file through the relay and shows a `blob:` copy of at most 64 MiB
-  (`RELAY_BLOB_LIMIT` in `src/lib/relay/resources.ts`). For a larger file the viewer says "Too large
+  (`RELAY_BLOB_LIMIT` in `src/lib/relay/resources.ts`). Only pictures, videos, sounds and PDFs
+  open in place this way. Everything else, SVG pictures included, comes down as a download, since a
+  `blob:` copy would run with the app's own address. For a larger file the viewer says "Too large
   to open on the phone - download on the PC". A download is handed over as
   `application/octet-stream`, so a web view that opens it in place doesn't run it.
 - **Rendered HTML pages.** The app fetches the rendered page through the relay, at most 64 MiB, and
@@ -347,6 +363,9 @@ WebSocket close codes the app can see through the relay:
 | `1009` | a message over 1 MiB |
 | `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
 
+The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing, wrong or
+late ([step 1](#how-a-connection-is-made)). A phone never sees it: it finds the PC offline.
+
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
 check; on the PC's side a record that fails closes the connection with `1011` (in
@@ -401,6 +420,14 @@ is always up.
 - **`app.ovis.sh`** is a Cloudflare Pages project. The Release workflow deploys it from each release
   tag, and [Releasing](development.md#releasing) has its one-time setup.
 - To report abuse that goes through `relay.ovis.sh`, see [SECURITY.md](../SECURITY.md#the-ovis-relay).
+
+A relay you run with Bun limits connections by default: 30 a minute from one address, 600 a minute
+in all, 1024 sockets, 256 PCs and 4096 addresses tracked at once. Raise them with
+`--per-address-per-minute`, `--global-per-minute`, `--max-sockets`, `--max-rooms` and
+`--max-addresses`, or `RELAY_PER_ADDRESS_PER_MINUTE`, `RELAY_GLOBAL_PER_MINUTE`, `RELAY_MAX_SOCKETS`,
+`RELAY_MAX_ROOMS` and `RELAY_MAX_ADDRESSES`. Behind a TLS proxy on the same machine every
+connection comes from the proxy's address, so raise the per-address limit and limit addresses at
+the proxy instead.
 
 To run your own relay, or your own copy of the app, see
 [Running your own relay](guide.md#running-your-own-relay) and
