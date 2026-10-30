@@ -65,7 +65,6 @@ export const DEVICES_KO: Record<string, string> = {
   "{n} min ago": "{n}분 전",
   "{n} h ago": "{n}시간 전",
   "Asking this PC about Tailscale…": "이 PC의 Tailscale 상태를 확인하는 중…",
-  "Check again": "다시 확인",
   "Tailscale already serves this PC": "Tailscale이 이미 이 PC를 서빙하고 있습니다",
   "Once it is open, install the app, then open the ⋯ menu and tap Alerts.": "열리면 앱을 설치한 뒤 ⋯ 메뉴에서 알림을 누르세요.",
   "In a terminal on this PC, publish the app to your tailnet. Only devices in your tailnet can open the address.": "이 PC의 터미널에서 앱을 테일넷에 공개하세요. 테일넷 안의 기기만 이 주소를 열 수 있습니다.",

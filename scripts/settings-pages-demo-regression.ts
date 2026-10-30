@@ -531,7 +531,8 @@ try {
               const body = page.locator(".settings-body:not([hidden])");
               assert.equal(await body.locator("[role='alert']").count(), 0, "the integrations page shows no error");
               const install = (target: string): string => `herdr integration install ${target}`;
-              const shown = await body.locator(".settings-row").evaluateAll((nodes) => nodes.map((node) => ({
+              // the setup guide's row and the install catalog's agents lead the page; these are the rows after them
+              const shown = await body.locator("[data-section='guide'] ~ * .settings-row:not(.settings-agent-row), .settings-section:not([data-section='guide']) .settings-row:not(.settings-agent-row)").evaluateAll((nodes) => nodes.map((node) => ({
                 label: node.querySelector(".settings-label")?.textContent ?? "",
                 description: node.querySelector(".settings-description")?.textContent ?? "",
                 command: node.querySelector("code")?.textContent ?? null,
@@ -552,7 +553,7 @@ try {
                 { label: "cursor", description: missing + install("cursor"), command: install("cursor"), copy: copyLabel("cursor") },
                 { label: "antigravity-cli", description: missing + install("antigravity-cli"), command: install("antigravity-cli"), copy: copyLabel("antigravity-cli") },
               ], "every fixture integration, with its state and install command");
-              assert.deepEqual(await body.locator("h3").allTextContents(), [label("New agents"), label("Not found on this PC")]);
+              assert.deepEqual(await body.locator("h3").allTextContents(), [label("Agents"), label("Installed"), label("Can be installed"), label("New agents"), label("Not found on this PC")]);
               const copy = body.getByRole("button", { name: copyLabel("codex"), exact: true });
               await copy.tap();
               await body.getByRole("button", { name: copyLabel("codex"), exact: true }).filter({ hasText: label("Copied") }).waitFor();

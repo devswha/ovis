@@ -65,7 +65,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "{n} min ago": "{n} 分钟前",
   "{n} h ago": "{n} 小时前",
   "Asking this PC about Tailscale…": "正在查询此 PC 的 Tailscale 状态…",
-  "Check again": "重新检查",
   "Tailscale already serves this PC": "Tailscale 已在为此 PC 提供服务",
   "Once it is open, install the app, then open the ⋯ menu and tap Alerts.": "打开后安装应用，然后在 ⋯ 菜单中点按“提醒”。",
   "In a terminal on this PC, publish the app to your tailnet. Only devices in your tailnet can open the address.": "在此 PC 的终端中将应用发布到你的 tailnet。只有 tailnet 中的设备才能打开此地址。",

@@ -7,6 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
 import { createServer } from "./index.ts";
+import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import * as appModule from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
@@ -1723,7 +1724,7 @@ describe("workspace and discovery endpoints", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("offers a shell agent found only on its login shell's PATH, starts that same executable, and keeps hits and misses until the next run", async () => {
+  it.skipIf(process.platform === "win32")("offers a shell agent found only on its login shell's PATH, starts that same executable, keeps its hits until the next run, and finds a missed one put back on the PATH that run read", async () => {
     // a service PATH without gjc, and a test-owned login shell whose -l run puts it on PATH: no dotfile is read
     const root = mkdtempSync(join(tmpdir(), "ovis-login-path-"));
     const home = join(root, "home"), serviceBin = join(root, "service bin"), loginBin = join(root, "login bin");
@@ -1744,7 +1745,9 @@ describe("workspace and discovery endpoints", () => {
     let clock = 0;
     const shellAgents = new ShellAgentLocator({ servicePath: () => serviceBin, probe, now: () => clock });
     const state = mkdtempSync(join(tmpdir(), "ovis-login-path-state-"));
-    const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, shellAgents });
+    // installers' folders are looked up under the test's home, never the user's
+    const agentDetector = new AgentDetector({ home, locate: catalogLocator({ probe: null, servicePath: () => serviceBin }) });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, shellAgents, agentDetector });
     const url = `http://127.0.0.1:${app.port}`;
     const kinds = async () => ((await (await fetch(`${url}/api/agents`)).json()) as { agents: AgentKind[] }).agents;
     const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-login-path" });
@@ -1798,12 +1801,10 @@ describe("workspace and discovery endpoints", () => {
       expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
       clock += 60_000;
       expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
-      // back again: the kept miss holds until a read after the answer is a minute old runs the next one
+      // back again on the PATH the last run read: found at once, with no new login shell, as a just-installed agent is
       writeGjc();
-      expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
-      clock += 60_000;
       expect(await kinds()).toContainEqual({ kind: "gjc", label: "Gajae Code", installed: true });
-      expect(runs).toBe(3);
+      expect(runs).toBe(2);
 
       // released, the fixture agent ends: nothing of it outlives the test
       releaseFixture();

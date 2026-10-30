@@ -1511,6 +1511,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Code into a shell without a pick, neither disables Start nor goes with the launch
   (`lib/newSession.ts` dialogLaunch). The agent picker's rows carry a `.menu-item-hint` (**model,
   effort**) beside the agents whose launch takes them.
+- **Add another agent…** is the picker's last row (here, New tab and New worktree): a hairline above
+  it, `--text-dim`, a plus where a mark goes, never bold and never the value. It swaps the dialog's
+  body for `AddAgentPanel` (the fields keep what was typed): the catalog agents the dialog's PC lacks
+  and a picker can start, as the setup guide's tiles (`AgentTile`). Install is the one tap; the ring
+  turns on the tile until the PC lists the agent, then the dialog re-reads the PC's agents and picks
+  it. There is no sign-in step: the agent asks when it first starts. **Back** returns focus to the
+  picker. Like the Codex app's model
+  menu, the way to get more sits at the end of the list it adds to, not as a separate button.
 - **First message** is a `.input` textarea (three rows, grown by hand) whose hint says where it goes.
   Codex takes it as its own positional argument behind `--` (`codex [OPTIONS] [PROMPT]`; clap matches
   a subcommand only before the separator, verified on codex 0.163.0: `codex -- logout` starts the TUI),
@@ -2930,7 +2938,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   **Typography**: interface font size and interface font), **Chat**
   (panes open in, show thinking, chat width, chat font size and family; then
   **Composer**: Enter sends, send queued messages automatically, in a mouse-driven window wider than
-  640px the New tab button (off by default), and on a touch screen the suggestion chip (off by default); then
+  640px the New tab button (off by default), the Artifacts chip (off by default, the device setting
+  `composerArtifacts`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
   speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Subscription usage**,
@@ -3410,8 +3419,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   tile (a tap on it opens that tab); once the catalog lists the agent the tile is an installed one,
   picked. Several can install at once, and Start does not wait for them: an install runs on in its
   tab. One that never shows up stops after ten minutes with Try again. The guide has no sign-in step:
-  the agent asks for its own when it first starts. Plan usage turns on by itself for accounts already
-  signed in.
+  the agent asks for its own when it first starts. On a first run, plan usage turns on by itself for
+  accounts already signed in; the guide opened again from Settings changes no setting (nor says it
+  will).
 - "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them:
   a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
   code. The code is asked for when the box opens and never renewed behind the user's back (it would
@@ -3425,6 +3435,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   being on the home screen first, so they stay in Settings → Alerts. A failed check says "Couldn't
   check this PC" with its error and Look again. On a phone Start and Connect your phone take the full
   width.
+- The tile is `AgentTile` (`AgentTile.css`), shared with a creation dialog's Add another agent… and
+  Settings → Agent integrations, where the PC's agents that can be installed are the same tiles (an
+  installed one there is only shown, never picked). Settings → Agent integrations starts with **Open
+  setup guide**, which opens this guide again (`lib/setupGuide.ts`); a watching device gets neither
+  the row nor the Install buttons.
 
 ### Token gate
 - A centered password card replaces the entire shell while authentication is required. It has a real

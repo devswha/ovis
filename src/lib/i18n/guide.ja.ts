@@ -3,7 +3,6 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const GUIDE_JA: Record<string, string> = {
-  "Setup guide": "セットアップガイド",
   "Welcome to Ovis": "Ovis へようこそ",
   "Is this your first time using Ovis?": "Ovis を使うのは初めてですか?",
   "I'm new to Ovis": "初めてです",
@@ -14,10 +13,6 @@ export const GUIDE_JA: Record<string, string> = {
   "Already installed one?": "もうインストールしましたか?",
   "Look again": "もう一度確認",
   "This browser is paired first: other browsers now need pairing too.": "このブラウザーを先にペアリングしました。ほかのブラウザーもペアリングが必要になります。",
-  "Installing {agent}… Open terminal": "{agent} をインストール中… ターミナルを開く",
-  "Try installing {agent} again": "{agent} をもう一度インストール",
-  "It took too long. Try again.": "時間がかかりすぎています。もう一度お試しください。",
-  "{agent} did not install. {reason}": "{agent} のインストールが終わりませんでした。{reason}",
   "You're set up": "準備ができました",
   "Ovis found these on this PC. Start opens your first project with the one picked.": "この PC で見つかりました。開始すると、選んだもので最初のプロジェクトが開きます。",
   "Pick an AI coding helper": "AI コーディングアシスタントを選んでください",

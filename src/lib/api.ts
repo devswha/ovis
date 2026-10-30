@@ -28,6 +28,7 @@ import type {
   TabMoved,
   TabMovedToWorkspace,
   OmoActivity,
+  ClaudeArtifact,
   PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
   PairedDevice,
@@ -972,6 +973,11 @@ export async function fetchPaneOmoActivity(paneId: string, machineId = "local"):
 export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
   const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
   return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
+}
+
+/** GET /api/pane/artifacts: the pages the pane's Claude Code session published, newest first. */
+export async function fetchPaneArtifacts(paneId: string, machineId = "local"): Promise<ClaudeArtifact[]> {
+  return (await getJson<{ artifacts: ClaudeArtifact[] }>(machinePath(machineId, `pane/artifacts?pane_id=${encodeURIComponent(paneId)}`))).artifacts;
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */
