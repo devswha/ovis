@@ -2436,7 +2436,12 @@ function reportedRollout(session: AgentInfo["agent_session"], home: string): str
 async function freshReportedThread(
   paneId: string, cwd: string, home: string, reported: string, processes: readonly { pid: number }[], panes?: HerdrPane[],
 ): Promise<boolean> {
-  const starts = processes.map(({ pid }) => processStartUpperBound(pid));
+  // macOS's kernel record is the start to the millisecond (processStartedAt); elsewhere a bound from above
+  const starts = processes.map(({ pid }) => {
+    if (process.platform !== "darwin") return processStartUpperBound(pid);
+    const started = processStartedAt(pid);
+    return started === null ? null : started + 1;
+  });
   if (starts.length === 0 || starts.some((start) => start === null || !Number.isFinite(start))) return false;
   const notBefore = Math.min(...starts as number[]);
   if (theirs([reported], paneId).length !== 1) return false;
