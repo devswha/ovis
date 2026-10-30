@@ -1,4 +1,23 @@
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { WebSocketRoute } from "playwright-core";
+import type { createServer } from "../server/index.ts";
+import type { RelayService } from "../server/relay/service.ts";
+
+/** The PC side of a relay browser run: this checkout's server, or another tree's (RELAY_E2E_SERVER_DIR). */
+export interface RelayServerTree { dir: string; createServer: typeof createServer; RelayService: typeof RelayService }
+
+/**
+ * The server named by RELAY_E2E_SERVER_DIR, else this checkout's: both modules are imported from
+ * that tree, so the PCs a run starts are that version's. The shell and the relay stay this checkout's.
+ */
+export async function relayServerTree(dir = process.env["RELAY_E2E_SERVER_DIR"] || join(import.meta.dir, "..")): Promise<RelayServerTree> {
+  const tree = resolve(dir);
+  if (!existsSync(join(tree, "server/relay/service.ts"))) throw new Error(`${tree} holds no server/relay/: not a relay-capable server tree`);
+  const { createServer } = await import(join(tree, "server/index.ts")) as typeof import("../server/index.ts");
+  const { RelayService } = await import(join(tree, "server/relay/service.ts")) as typeof import("../server/relay/service.ts");
+  return { dir: tree, createServer, RelayService };
+}
 
 /**
  * The shell's wss: origin carried to a test relay, shared by the shell, media and end-to-end browser

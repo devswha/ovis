@@ -11,6 +11,7 @@ bun() {
     scripts/demo-build.ts) printf 'DEMO_DIR=%s\\n' "$HERDR_DEMO_BUILD";;
     scripts/*)
       [ "\${CHROME_PATH:-}" = /stub/chrome ] || return 91
+      [ "\${FFMPEG:-}" = /stub/ffmpeg ] || return 92
       printf 'PASS stubbed browser step\\nFAIL stubbed browser marker\\nSERVER listening on http://127.0.0.1:3000\\nSTEP=%s EVIDENCE=%s\\n' "$1" "\${UI_EVIDENCE_DIR:-}";;
   esac
   if [ "$1" = "\${FAIL_SCRIPT:-}" ]; then return 7; fi
@@ -19,6 +20,8 @@ sudo() { return 0; }
 bash() {
   if [ "$#" -eq 1 ] && [ "$1" = scripts/ci-chromium.sh ]; then
     printf '/stub/chrome\\n'
+  elif [ "$#" -eq 1 ] && [ "$1" = scripts/ci-ffmpeg.sh ]; then
+    printf '/stub/ffmpeg\\n'
   else
     command bash "$@"
   fi

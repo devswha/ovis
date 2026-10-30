@@ -423,12 +423,12 @@ jobs:
           key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      # the relay scripts (relay-shell, relay-media, relay-e2e) drive the hosted shell, and the media one encodes its video
+      # the relay end-to-end run drives the hosted shell, and its media part encodes a video
       - run: bun run build:shell
         if: needs.changes.outputs.draft != 'true'
-      - name: ffmpeg for the relay media run
+      - name: Pinned ffmpeg for the relay media run
         if: needs.changes.outputs.draft != 'true'
-        run: command -v ffmpeg || { sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg; }
+        run: echo "FFMPEG=$(bash scripts/ci-ffmpeg.sh)" >> "$GITHUB_ENV"
       - name: Browser regression (parallel)
         if: needs.changes.outputs.draft != 'true'
         env:
