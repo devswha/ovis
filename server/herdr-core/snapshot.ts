@@ -149,10 +149,11 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       ids.add(tab["id"]);
       const held: Placed[] = [];
       tile(tab["root"], 0, 0, take, held);
-      if (held.length === 0) continue;
+      const tabName = tab["name"];
+      // a tab with no live terminal stays a place: a labeled terminal the app will adopt into it keeps its ids
+      if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : String(index + 1), placed: [] }); continue; }
       const first = held[0]!.terminal;
       const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
-      const tabName = tab["name"];
       group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || String(index + 1), placed: held });
       if (!group.label) {
         const spaceName = space["name"];
@@ -161,7 +162,12 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
           : where?.[0] || first.labels?.[WORKSPACE_NAME_LABEL] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
       }
     }
-    if (group.tabs.length > 0) result.push(group);
+    if (!group.label) {
+      const spaceName = space["name"];
+      const folder = space["folder"];
+      group.label = typeof spaceName === "string" && spaceName ? spaceName : typeof folder === "string" && folder ? basename(folder) : "";
+    }
+    result.push(group);
   }
   // a terminal the app has not placed yet, labeled with its space (and tab) the way the app labels
   // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
@@ -176,25 +182,28 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       ids.add(spaceId);
       result.push(group);
     }
+    if (!group.label) group.label = terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd);
     const labeled = terminal.labels?.[TAB_LABEL];
     // a tab id the app uses in another space would make one tab of two: this terminal gets its own
     const tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
     // beside what the tab already shows, never over it: the app places it when it adopts it
-    if (tab) tab.placed.push({ terminal, x: Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)), y: 0 });
+    if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
     else {
       ids.add(tabId);
       group.tabs.push({ id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
     }
   }
+  // a space or tab of the app's with nothing live in it shows nothing
+  const shown = result.map((group) => ({ ...group, tabs: group.tabs.filter((tab) => tab.placed.length > 0) })).filter((group) => group.tabs.length > 0);
   if (rest.length > 0) {
-    result.push({
+    shown.push({
       id: OTHER_WORKSPACE_ID,
       label: "Other terminals",
       tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.labels?.[TAB_NAME_LABEL] || terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
     });
   }
-  return result;
+  return shown;
 }
 
 function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string): PaneInfo {

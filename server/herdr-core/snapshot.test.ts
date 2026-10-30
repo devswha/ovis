@@ -130,6 +130,22 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.panes.find((p) => p.pane_id === "t4")!.workspace_id).toBe(OTHER_WORKSPACE_ID);
   });
 
+  it("puts a labeled terminal in the app's space and tab even when nothing else there is live, so adoption keeps its ids", () => {
+    // the app's document still names space S and its tab T, whose own terminal is gone
+    const layout = { spaces: [{ id: "S", name: "work", tabs: [{ id: "T", name: "main", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T" } })], layout, "0.1.14");
+    const pane = snapshot.panes.find((p) => p.pane_id === "t5")!;
+    expect([pane.workspace_id, pane.tab_id]).toEqual(["S", "T"]);
+    expect(snapshot.workspaces.find((w) => w.workspace_id === "S")!.label).toBe("work");
+    expect(snapshot.tabs.find((t) => t.tab_id === "T")!.label).toBe("main");
+  });
+
+  it("shows no space or tab of the app's with nothing live in it", () => {
+    const layout = { spaces: [{ id: "S", name: "work", tabs: [{ id: "T", name: "main", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([], layout, "0.1.14");
+    expect([snapshot.workspaces, snapshot.tabs]).toEqual([[], []]);
+  });
+
   it("never gives a workspace and a tab the same id, even when only labels made them", () => {
     const snapshot = buildSnapshot([
       terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }),

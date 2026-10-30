@@ -414,7 +414,7 @@ describe("herdr-core adapter, agents", () => {
   it("starts an agent by typing its kind and quoted arguments into the pane's idle shell, and answers once it is in front", async () => {
     const shell = { pid: 10, name: "bash" };
     const agent = { pid: 11, name: "claude" };
-    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, foreground: shell });
+    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, argv: ["/bin/bash"], foreground: shell });
     const { socket, cores } = await setup([record], {
       // hc's foreground: the shell until the line was typed, then the agent
       "terminal.get": () => ({ terminal: { ...record, foreground: cores[0]!.typed.length > 0 ? agent : shell } }),
@@ -432,7 +432,7 @@ describe("herdr-core adapter, agents", () => {
     const shell = { pid: 10, name: "bash" };
     // hc's foreground: the shell until the line is typed, then each later look sees the next one
     const sequence = (after: { pid: number; name: string; argv?: string[] }[]) => {
-      const record = terminal("t1", { pid: 10, foreground: shell });
+      const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
       const holder: { cores: FakeCore[] } = { cores: [] };
       let seen = 0;
       const get = () => ({ terminal: { ...record, foreground: holder.cores[0]?.typed.length ? after[Math.min(seen++, after.length - 1)] : shell } });
@@ -450,7 +450,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("lets what is typed after a start reach the pane while the start waits for its agent", async () => {
     const shell = { pid: 10, name: "bash" };
-    const record = terminal("t1", { pid: 10, foreground: shell });
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[]; agentUp: boolean } = { cores: [], agentUp: false };
     const ready = await setup([record], { "terminal.get": () => ({ terminal: { ...record, foreground: holder.agentUp ? { pid: 11, name: "claude" } : shell } }) });
     holder.cores = ready.cores;
@@ -467,7 +467,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("types Cursor's agent command, not the IDE's, and waits for it in front", async () => {
     const shell = { pid: 10, name: "bash" };
-    const record = terminal("t1", { pid: 10, foreground: shell });
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[] } = { cores: [] };
     const ready = await setup([record], { "terminal.get": () => ({ terminal: { ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "cursor-agent" } : shell } }) });
     holder.cores = ready.cores;
@@ -481,6 +481,13 @@ describe("herdr-core adapter, agents", () => {
     await expect(agentStart({ name: "x", kind: "rm -rf /", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: ["a\u0015touch /tmp/x\r"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t9" }, socket)).rejects.toMatchObject({ code: "pane_not_found" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("types into no pane whose own program is not a shell, even with that program in front of itself", async () => {
+    // a terminal the app started as a program: hc reports it in front of itself, like a shell
+    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["claude"], foreground: { pid: 10, name: "claude", argv: ["claude"] } })]);
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
     expect(cores[0]!.typed).toEqual([]);
   });
 

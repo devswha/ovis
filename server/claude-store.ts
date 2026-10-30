@@ -325,6 +325,18 @@ export async function processClaudeSource(
   return (await processRead(pid, argv, home, platform, table)).source;
 }
 
+/**
+ * The store source a terminal herdr-core starts inherits: the environment of its core process
+ * (`server.status`'s pid), which hc hands every shell it starts (a terminal's own env aside).
+ * macOS and Windows let no one read it, so the bridge server's own (`env`) stands in, as for herdr.
+ */
+export async function processLaunchSource(pid: number, platform: string = process.platform, proc = "/proc", env: Record<string, string | undefined> = process.env): Promise<ClaudeSource> {
+  if (platform !== "linux") return env["CLAUDE_CONFIG_DIR"] === undefined ? { state: "absent" } : overrideSource(env["CLAUDE_CONFIG_DIR"]);
+  let environ: string;
+  try { environ = await readFile(join(proc, String(pid), "environ"), "utf8"); } catch { return { state: "unreadable" }; }
+  return (await environSource(environ)).source;
+}
+
 /** herdrLaunchSource's answer by proc root and socket, with the listening socket's inodes it was read for. */
 const launchSources = new Map<string, { inodes: string; source: ClaudeSource }>();
 

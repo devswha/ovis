@@ -163,6 +163,9 @@ function flush(socket: Socket<ConnectionState>): void {
 /** An agent whose command is not its kind, as the Herdr app runs it (herdr-app defaults/programs.json): the Cursor IDE is `cursor`. */
 const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent" };
 
+/** A POSIX shell's program, as hc reports a terminal started with no program (`/bin/bash`, a login `-zsh`). */
+const POSIX_SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash)$/u;
+
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
 
@@ -324,7 +327,9 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       // pane's input turn is held for the typing only, so nothing typed after waits on the start.
       await inTurn(paneId, async () => {
         const ready = await terminal(paneId);
-        if (!ready.pid || ready.foreground?.pid !== ready.pid) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+        // the terminal's own program must be a POSIX shell: one the app started as a program (`claude`)
+        // is in front of itself too, and the line is quoted for a POSIX shell (hc reports `/bin/bash`)
+        if (!ready.pid || ready.foreground?.pid !== ready.pid || !POSIX_SHELL.test(ready.argv?.[0] ?? "")) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
         // Ctrl-U first: a line someone left half typed is cleared, not run with the command after it
         await type(paneId, `\u0015${shellCommandLine("posix", command, args)}\r`);
       });
