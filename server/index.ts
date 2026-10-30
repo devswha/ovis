@@ -249,6 +249,8 @@ export function createServer(
   // a sign-in runs in a herdr tab, which outlives this server: the next one must know its home is taken (#2313)
   usageLogin.persistTo(stateDir);
   const usage = options.usage ?? new UsageService(undefined, undefined, (refresh) => cliProxy.report(refresh));
+  // a sign-in the browser followed ends in the server's own PTY, not a herdr pane: it says so itself
+  usageLogin.onLoginEnded(() => usage.invalidate());
   const voice = options.voice ?? new VoiceService({ stateDir, env: process.env, fetch });
   /** a login named here is taken as it is: a tagged node has none of its own to read (OVIS_TAILSCALE_OWNER) */
   const namedOwner = options.tailscaleOwner !== undefined ? options.tailscaleOwner : process.env["OVIS_TAILSCALE_OWNER"]?.trim() || undefined;
@@ -545,8 +547,8 @@ export function createServer(
       // on or off only: the server decides what is installed and where (server/statusline-install.ts)
       if (pathname === "/api/usage/statusline") { setRequestRoute(pathname); return handleStatuslineRequest(request, usage); }
       if (pathname === "/api/usage/login") { setRequestRoute(pathname); bunServer.timeout(request, 30); return usageLogin.handle(request, collector.trackPane); }
-      // the browser's sign-in dialog: a launched login's prompt, and the code its page showed (a watching device: neither)
-      if (pathname === "/api/usage/login/prompt" || pathname === "/api/usage/login/code") { setRequestRoute(pathname); return usageLogin.handlePrompt(request, readOnly); }
+      // the browser's sign-in dialog: a followed login's prompt, the code its page showed, and stopping it (a watching device: none)
+      if (pathname === "/api/usage/login/prompt" || pathname === "/api/usage/login/code" || pathname === "/api/usage/login/cancel") { setRequestRoute(pathname); return usageLogin.handlePrompt(request, readOnly); }
       if (pathname === "/api/cliproxy" || pathname.startsWith("/api/cliproxy/")) { bunServer.timeout(request, 60); return cliProxyRoutes.handle(request); }
       // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
       if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { bunServer.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }

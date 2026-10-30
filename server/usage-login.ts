@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "no
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
-import type { UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
-import { paneClose, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
-import { loginPrompt, type PromptProvider } from "./usage-login-prompt.ts";
+import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
+import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
+import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
 import { withOwnerGuard } from "./owner-guard.ts";
@@ -60,13 +60,29 @@ function canonicalPath(path: string): string {
 interface LoginHolder { readonly pane: string; readonly terminal: string }
 /** A home taken for a launch whose tab has not opened yet: by which server process, since when, and the launch's own id. */
 interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
-type Holder = LoginHolder | Launch;
+/** A login the browser follows, run by the server process `pid` in a terminal of its own: it ends with that process. */
+interface PrivateHolder { readonly private: string; readonly pid: number }
+type Holder = LoginHolder | Launch | PrivateHolder;
+
+/** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
+interface PrivateLogin {
+  readonly provider: PromptProvider;
+  readonly proc: Bun.Subprocess;
+  /** the CLI's recent output, in memory only, for its prompt; emptied when it ends */
+  output: string;
+  ended: boolean;
+  sending: boolean;
+}
 
 /** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
 const LAUNCH_MS = 60_000;
 
-/** The logins whose prompt the browser may follow, newest last: older ones are forgotten past this many. */
-const PROMPT_PANES_MAX = 32;
+/** The followed logins kept, newest last: ended ones past this many are forgotten. */
+const PRIVATE_LOGINS_MAX = 32;
+/** the most of a login's output kept for its prompt: its address and code are near the end */
+const PRIVATE_OUTPUT_MAX = 65_536;
+/** wide enough that a CLI laying its sign-in address out by width keeps it on one line */
+const PRIVATE_COLUMNS = 400;
 /**
  * A pasted sign-in code: Claude's is `code#state`, both base64url. Nothing else is typed, so a code that
  * reached a shell after all would be one word it cannot run: no `$`, quotes, separators or spaces.
@@ -74,7 +90,10 @@ const PROMPT_PANES_MAX = 32;
 const SIGN_IN_CODE = /^[A-Za-z0-9._~#-]{1,2048}$/;
 
 const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
-const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch : !isLaunch(b) && a.terminal === b.terminal;
+const isPrivate = (holder: Holder): holder is PrivateHolder => "private" in holder;
+const isTab = (holder: Holder): holder is LoginHolder => !isLaunch(holder) && !isPrivate(holder);
+const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch
+  : isPrivate(a) ? isPrivate(b) && a.private === b.private : isTab(b) && a.terminal === b.terminal;
 
 /** The file of running sign-ins exists but cannot be read or understood: it may name one still running. */
 class LoginStateUnreadable extends Error {
@@ -94,10 +113,15 @@ function processAlive(pid: number): boolean {
 export class UsageLoginService {
   private readonly panes = new Set<string>();
   /**
-   * The Claude and Codex logins this server launched, by pane: only their screens are read for the
-   * browser's sign-in dialog, and only their panes take a pasted code. Kept after the CLI exits, as ended.
+   * The sign-ins the browser follows, by the random id only the browser that started one is given: each
+   * runs in this server's own PTY, so no herdr pane (read, attached, streamed or listed by any device) ever
+   * holds its sign-in address or the code typed into it. Kept a while after the CLI exits, as ended.
    */
-  private readonly prompts = new Map<string, { provider: PromptProvider; terminal: string; ended: boolean; sending: boolean }>();
+  private readonly privates = new Map<string, PrivateLogin>();
+  private readonly endedListeners: (() => void)[] = [];
+
+  /** Called once a followed sign-in's CLI exits: the usage it may have changed is read again. */
+  onLoginEnded(listener: () => void): void { this.endedListeners.push(listener); }
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
    * one home race each other's tokens. By home, the login or launch of this server holding it.
@@ -115,57 +139,58 @@ export class UsageLoginService {
     private readonly context: UsageContext = { ...systemUsageContext(), home, env }) {}
 
   ended(paneId: string): boolean {
-    const prompt = this.prompts.get(paneId);
-    if (prompt !== undefined) prompt.ended = true;
-    for (const [home, holder] of this.logins) if (!isLaunch(holder) && holder.pane === paneId) this.release(home, holder);
+    for (const [home, holder] of this.logins) if (isTab(holder) && holder.pane === paneId) this.release(home, holder);
     return this.panes.delete(paneId);
   }
 
   persistTo(stateDir: string): void { this.file = join(stateDir, "usage-logins.json"); }
 
   /**
-   * GET /api/usage/login/prompt?pane= and POST /api/usage/login/code: the browser's view of a login
-   * this server launched. It reads the CLI's screen for the page to open and the code to enter, and
-   * types a code the page showed into that pane, then Enter: the CLI signs in and writes its own
-   * credentials. Nothing here keeps or logs a code. A watching device reads no prompt (it could
-   * approve a device code with its own account) and, as for every change, sends no code.
+   * The browser's view of a sign-in it follows, by its login id: GET /api/usage/login/prompt?login= reads
+   * the CLI's screen for the page to open and the code to enter; POST /api/usage/login/code types a code the
+   * page showed into the CLI, then Enter; POST /api/usage/login/cancel stops the CLI. The CLI signs in and
+   * writes its own credentials; nothing here keeps or logs a code. A watching device reads no prompt (it
+   * could approve a device code with its own account) and, as for every change, sends nothing.
    */
   async handlePrompt(request: Request, readOnly: boolean): Promise<Response> {
     const { pathname, searchParams } = new URL(request.url);
+    const gone = () => jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
     try {
       if (pathname.endsWith("/prompt")) {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         if (readOnly) return jsonResponse({ error: { code: "forbidden", message: "A device that only watches cannot follow a sign-in" } }, 403);
-        const pane = searchParams.get("pane") ?? "";
-        const login = this.prompts.get(pane);
-        if (login === undefined) return jsonResponse({ error: { code: "login_not_found", message: "No sign-in this server started runs in that pane" } }, 404);
+        const login = this.privates.get(searchParams.get("login") ?? "");
+        if (login === undefined) return gone();
         if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
-        const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
-        return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screen.text), ended: false } satisfies UsageLoginPrompt);
+        return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
+      }
+      if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST");
+      let body: unknown;
+      try { body = await request.json(); } catch { return badRequest("invalid_json", "Request body must be JSON"); }
+      const id = isJsonObject(body) && typeof body["login"] === "string" ? body["login"] : "";
+      if (pathname.endsWith("/cancel")) {
+        const login = this.privates.get(id);
+        if (login !== undefined && !login.ended) {
+          login.proc.kill();
+          // ended once it has exited: a second sign-in may take its home right after this answer
+          const exited = await Promise.race([login.proc.exited.then(() => true), Bun.sleep(3000).then(() => false)]);
+          if (!exited) { login.proc.kill("SIGKILL"); await login.proc.exited; }
+          await this.settle(id);
+        }
+        return new Response(null, { status: 204 });
       }
       if (pathname.endsWith("/code")) {
-        if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST");
-        let body: unknown;
-        try { body = await request.json(); } catch { return badRequest("invalid_json", "Request body must be JSON"); }
-        const pane = isJsonObject(body) && typeof body["pane"] === "string" ? body["pane"] : null;
         const code = isJsonObject(body) && typeof body["code"] === "string" ? body["code"].trim() : null;
-        if (pane === null || code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
-        const login = this.prompts.get(pane);
-        if (login === undefined || login.ended) return jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
+        if (code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
+        const login = this.privates.get(id);
+        if (login === undefined || login.ended) return gone();
         // one code at a time: two sends could both find the prompt and type twice
         if (login.sending) return conflictResponse("code_in_progress", "A code is being sent to this sign-in already.");
         login.sending = true;
         try {
-          // typed only where the CLI asks for it now: a code sent to a shell would run as a command
-          const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
-          if (!loginPrompt(login.provider, screen.text).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now. Open its terminal to see where it is.");
-          // the pane is still the login's own terminal: a restarted herdr gives pane IDs out again
-          if (!(await sessionSnapshot()).panes.some((candidate) => candidate.pane_id === pane && candidate.terminal_id === login.terminal)) {
-            login.ended = true;
-            return jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
-          }
-          await paneSendText(pane, code);
-          await paneSendKeys(pane, ["Enter"]);
+          // typed only while the CLI asks for it
+          if (!loginPrompt(login.provider, screenText(login.output)).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
+          login.proc.terminal?.write(`${code}\r`);
           return new Response(null, { status: 204 });
         } finally {
           login.sending = false;
@@ -175,6 +200,25 @@ export class UsageLoginService {
     } catch (error) {
       return errorResponse(error);
     }
+  }
+
+  /** A followed sign-in's CLI has exited: its output goes, its home is free, and the usage is read again (once). */
+  private readonly settling = new Map<string, Promise<void>>();
+  private settle(id: string): Promise<void> {
+    const known = this.settling.get(id);
+    if (known !== undefined) return known;
+    const done = (async () => {
+      const login = this.privates.get(id);
+      if (login === undefined || login.ended) return;
+      login.ended = true;
+      login.output = "";
+      for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.private === id) this.release(home, holder);
+      for (const listener of this.endedListeners) listener();
+      const ended = [...this.privates].filter(([, entry]) => entry.ended);
+      for (const [old] of ended.slice(0, Math.max(0, ended.length - PRIVATE_LOGINS_MAX))) { this.privates.delete(old); this.settling.delete(old); }
+    })();
+    this.settling.set(id, done);
+    return done;
   }
 
   /**
@@ -196,6 +240,7 @@ export class UsageLoginService {
       if (!isJsonObject(entry) || typeof entry["home"] !== "string") throw new LoginStateUnreadable(file, "a sign-in without its home");
       const { home, pane, terminal, launch, pid, at } = entry;
       if (typeof pane === "string" && typeof terminal === "string") found.set(home, { pane, terminal });
+      else if (typeof entry["private"] === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0) found.set(home, { private: entry["private"], pid });
       else if (typeof launch === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && typeof at === "number" && Number.isFinite(at)) found.set(home, { launch, pid, at });
       else throw new LoginStateUnreadable(file, "a sign-in it cannot tell");
     }
@@ -238,6 +283,8 @@ export class UsageLoginService {
    */
   private async holds(holder: Holder): Promise<boolean> {
     if (isLaunch(holder)) return Date.now() - holder.at <= LAUNCH_MS && processAlive(holder.pid);
+    // this server's own: while its CLI runs; another server's: while that server runs (its PTY dies with it)
+    if (isPrivate(holder)) return holder.pid === process.pid ? this.privates.get(holder.private)?.ended === false : processAlive(holder.pid);
     try { return (await sessionSnapshot()).panes.some((pane) => pane.terminal_id === holder.terminal); }
     catch { return true; }
   }
@@ -306,6 +353,9 @@ export class UsageLoginService {
     const again = body["account"] !== undefined;
     // a first sign-in in the CLI's own home (no CLAUDE_CONFIG_DIR or CODEX_HOME), the one its plain command reads
     const asDefault = body["default"] !== undefined;
+    // followed in the browser: the CLI runs in this server's own PTY, not a herdr tab (Claude Code and Codex)
+    const follow = body["follow"] !== undefined;
+    if (follow && (body["follow"] !== true || !separate)) return badRequest("invalid_provider", "Only Claude Code and Codex sign in from the browser");
     if (asDefault) {
       if (!separate || again || body["default"] !== true || body["name"] !== undefined || (body["replace"] !== undefined && body["replace"] !== true)) {
         return badRequest("invalid_account", "Only Claude and Codex sign in to their own home this way, without a name");
@@ -398,6 +448,49 @@ export class UsageLoginService {
       if (id === "cursor") env["NO_OPEN_BROWSER"] = "1";
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
       if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
+      if (follow) {
+        // a CLI the browser cannot follow: an old Claude Code without `auth login` signs in inside the agent, and
+        // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
+        if (manual || (id === "codex" && !device)) return conflictResponse("follow_unsupported", "This version signs in only in a terminal.");
+        const procEnv: Record<string, string | undefined> = { ...this.env, ...env, BROWSER: "true" };
+        // the CLI's own home: the variable a parent shell may have set is removed, as the tab's `env -u` does
+        if ((place || asDefault) && againHome === null) delete procEnv[homeVariable];
+        const loginId = randomUUID();
+        const privateHolder: PrivateHolder = { private: loginId, pid: process.pid };
+        const home = reserved;
+        const launch = holding;
+        const recorded = this.edit((saved) => {
+          const now = saved.get(home);
+          if (now !== undefined && !sameHolder(now, launch)) return false;
+          saved.set(home, privateHolder);
+          return true;
+        });
+        if (!recorded) return conflictResponse("login_in_progress", "A sign-in to this account is already open. Finish or close it first.");
+        holding = privateHolder;
+        this.logins.set(home, privateHolder);
+        const decoder = new TextDecoder();
+        let proc: Bun.Subprocess;
+        try {
+          proc = Bun.spawn([executable, ...args], {
+            env: procEnv,
+            cwd: againHome !== null && !isAbsolute(againHome) ? process.cwd() : this.home,
+            terminal: { cols: PRIVATE_COLUMNS, rows: 50, data: (_terminal, data) => {
+              const login = this.privates.get(loginId);
+              if (login !== undefined && !login.ended) login.output = (login.output + decoder.decode(data, { stream: true })).slice(-PRIVATE_OUTPUT_MAX);
+            } },
+          });
+        } catch (error) {
+          console.warn("Could not start a sign-in in a private terminal", error instanceof Error ? error.message : String(error));
+          return conflictResponse("follow_unsupported", "This server cannot run a sign-in here. Use a terminal instead.");
+        }
+        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", proc, output: "", ended: false, sending: false });
+        unusedCredentialHome = null;
+        reserved = null;
+        void proc.exited.then(() => this.settle(loginId));
+        // the browser that asked has gone: it would never see or end this sign-in
+        if (request.signal.aborted) { proc.kill(); return conflictResponse("request_cancelled", "The sign-in request was cancelled"); }
+        return jsonResponse({ login_id: loginId, device_auth: device } satisfies UsageLoginFollowed);
+      }
       const snapshot = await sessionSnapshot();
       if (request.signal.aborted) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
       const workspace = snapshot.workspaces[0];
@@ -408,10 +501,6 @@ export class UsageLoginService {
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;
       this.panes.add(paneId);
-      if (id === "claude" || id === "codex") {
-        this.prompts.set(paneId, { provider: id, terminal: created.root_pane.terminal_id, ended: false, sending: false });
-        for (const old of this.prompts.keys()) { if (this.prompts.size <= PROMPT_PANES_MAX) break; this.prompts.delete(old); }
-      }
       trackPane?.(paneId);
       // the tab is open: from here on its terminal holds the home, also for a server started again. The
       // login is sent only once the file says so: run under a launch entry that expires, or one another

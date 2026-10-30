@@ -2,14 +2,15 @@ import type { UsageProviderId } from "./protocol.ts";
 
 export type LocalUsageProvider = Exclude<UsageProviderId, "antigravity">;
 
-/** Local account sign-in never accepts a command or a credential path from the browser. */
+/** Local account sign-in never accepts a command or a credential path from the browser. A Claude or Codex
+ * request with `follow: true` runs in the server's own PTY for the browser to follow (UsageLoginFollowed). */
 export type UsageLoginRequest =
-  | { readonly provider: "claude" | "codex"; readonly name: string }
+  | { readonly provider: "claude" | "codex"; readonly name: string; readonly follow?: true }
   | { readonly provider: Exclude<LocalUsageProvider, "claude" | "codex">; readonly replace?: true }
   /** Signs in again to an account GET /api/usage lists, by its key: the server finds its credential home. */
-  | { readonly provider: "claude" | "codex"; readonly account: string }
+  | { readonly provider: "claude" | "codex"; readonly account: string; readonly follow?: true }
   /** A first sign-in in the CLI's own home, the one its plain command reads; `replace` once the PC has a sign-in. */
-  | { readonly provider: "claude" | "codex"; readonly default: true; readonly replace?: true };
+  | { readonly provider: "claude" | "codex"; readonly default: true; readonly replace?: true; readonly follow?: true };
 
 /** Local PATH and credential discovery only, never a provider usage request or a credential. */
 export interface UsageLoginProvider {
@@ -34,17 +35,23 @@ export interface UsageLoginPromptText {
   readonly wants_code: boolean;
 }
 
-/** GET /api/usage/login/prompt?pane=: a login this server launched, as its pane shows it. */
+/** GET /api/usage/login/prompt?login=: a sign-in the browser follows, as its CLI's screen shows it. */
 export interface UsageLoginPrompt extends UsageLoginPromptText {
   readonly provider: "claude" | "codex";
   /** the CLI has exited: whether it signed in, the accounts (GET /api/usage) tell */
   readonly ended: boolean;
 }
 
-/** POST /api/usage/login/code: the code a sign-in page showed, typed into that login's pane. */
+/** POST /api/usage/login/code: the code a sign-in page showed, typed into that login's CLI. */
 export interface UsageLoginCode {
-  readonly pane: string;
+  readonly login: string;
   readonly code: string;
+}
+
+/** POST /api/usage/login with `follow: true`: the sign-in runs in the server's own PTY, reached by this id alone. */
+export interface UsageLoginFollowed {
+  readonly login_id: string;
+  readonly device_auth: boolean;
 }
 
 export interface UsageLoginStarted {

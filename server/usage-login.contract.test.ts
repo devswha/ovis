@@ -36,6 +36,11 @@ if (process.argv.includes("--help")) { console.log(provider === "claude" || proc
 const variable = provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME";
 // the CLIs' default homes when no variable names another; a relative one is read from where the CLI runs
 const home = process.env[variable] ?? join(process.env.HOME, provider === "codex" ? ".codex" : ".claude");
+// a home named *-private is a sign-in the browser follows: the recorded screen, then a pasted code, as the real CLI asks
+if (provider === "claude" && home.endsWith("-private")) {
+  process.stdout.write(await Bun.file(${JSON.stringify(join(import.meta.dir, "fixtures/usage-login/claude.pty"))}).text());
+  for await (const line of console) { await Bun.write(join(home, "pasted-code"), line); break; }
+}
 if (provider === "claude") {
   await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-local-token:" + home } }));
   // signing in again keeps the account the home already names
@@ -160,6 +165,36 @@ for (const provider of ["claude", "codex"] as const) {
     } finally { clearTimeout(timer); watcher.close(); socket.close(); }
   });
 }
+
+it("follows a sign-in in the server's own terminal: no herdr pane, on any device, ever holds its address", async () => {
+  const response = await start({ provider: "claude", name: "private", follow: true });
+  expect(response.status).toBe(200);
+  const started = await response.json() as Record<string, unknown>;
+  expect(started).not.toHaveProperty("pane_id");
+  const login = started["login_id"] as string;
+  const prompt = async (): Promise<Record<string, unknown>> => await (await fetch(`http://127.0.0.1:${server.port}/api/usage/login/prompt?login=${login}`)).json() as Record<string, unknown>;
+  const deadline = Date.now() + 10_000;
+  let shown = await prompt();
+  while (shown["wants_code"] !== true) {
+    if (Date.now() > deadline) throw new Error(`the sign-in never asked for its code: ${JSON.stringify(shown)}`);
+    await Bun.sleep(25);
+    shown = await prompt();
+  }
+  const state = /state=([\w-]+)/.exec(String(shown["url"]))?.[1];
+  expect(state).toBeString();
+  // every pane herdr has, read as any device's GET /api/pane/read would: none shows the sign-in's address
+  const panes = (await herdr.sessionSnapshot()).panes;
+  const screens = await Promise.all(panes.map((pane) => herdr.paneRead({ paneId: pane.pane_id, source: "recent_unwrapped", lines: 500 }).then((read) => read.text, () => "")));
+  expect(screens.filter((text) => text.includes(state!))).toEqual([]);
+  // the code goes to the CLI itself, which signs in and ends
+  const sent = await fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ login, code: "fixture-code#fixture-state" }) });
+  expect(sent.status).toBe(204);
+  while ((await prompt())["ended"] !== true) {
+    if (Date.now() > deadline + 10_000) throw new Error("the sign-in never ended");
+    await Bun.sleep(25);
+  }
+  expect(readFileSync(join(root, ".claude-private", "pasted-code"), "utf8")).toBe("fixture-code#fixture-state");
+});
 
 it("rejects shell syntax and traversal when an account name is not a short slug", async () => {
   // Given

@@ -1,16 +1,16 @@
 /**
- * Signs Claude Code or Codex in from the browser. The server runs the agent's own login on the PC, in a
- * terminal tab as before (server/usage-login.ts); this dialog follows that tab: it shows the page to open
+ * Signs Claude Code or Codex in from the browser. The server runs the agent's own login on the PC in a
+ * terminal of its own that no herdr pane shows (server/usage-login.ts), and this dialog follows it: it shows the page to open
  * (and Codex's one-time code), takes the code Claude's page shows and types it into the login, and says
  * how it ended. The CLI writes its own credentials; the code lives only in the input until it is sent.
- * Open terminal hands over to the tab whenever the browser cannot follow (or the user would rather).
+ * Open terminal stops it and starts the same sign-in in a terminal tab instead; closing the dialog stops it.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, ExternalLink, SquareTerminal, X } from "lucide-react";
 
 import type { UsageLoginPrompt, UsageLoginRequest } from "../../shared/usage-login.ts";
-import { ApiError, fetchUsageLoginAccounts, fetchUsageLoginPrompt, sendUsageLoginCode, startUsageLogin } from "../lib/api.ts";
+import { ApiError, cancelUsageLogin, fetchUsageLoginAccounts, fetchUsageLoginPrompt, followUsageLogin, sendUsageLoginCode, startUsageLogin } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { signInOutcome, type SignInOutcome } from "../lib/signInOutcome.ts";
@@ -28,9 +28,11 @@ const READ_FAILURES_MAX = 3;
 type Phase =
   | { kind: "starting" }
   | { kind: "confirm" }
-  | { kind: "following"; pane: string }
-  | { kind: "ended"; pane: string; outcome: SignInOutcome }
-  | { kind: "failed"; message: string; pane: string | null };
+  | { kind: "following"; login: string }
+  | { kind: "ended"; outcome: SignInOutcome }
+  | { kind: "failed"; message: string }
+  /** handing over to a terminal tab: the private sign-in stopped, the visible one starting */
+  | { kind: "handing-over" };
 
 export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose }: {
   /** a first sign-in in the agent's own home, or signing an account in again */
@@ -52,6 +54,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   const [codeError, setCodeError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const before = useRef<readonly (string | null)[] | null>(null);
+  const following = useRef<string | null>(null);
   const signedInRef = useRef(onSignedIn);
   signedInRef.current = onSignedIn;
   const codeInput = useRef<HTMLInputElement>(null);
@@ -68,35 +71,32 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     void (async () => {
       try {
         before.current ??= (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
-        const started = await startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request, controller.signal);
-        if (controller.signal.aborted) return;
-        // a CLI the browser cannot follow: a Claude Code without `auth login` signs in inside the agent, and
-        // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
-        if ((provider === "claude" && started.manual) || (provider === "codex" && !started.device_auth)) {
-          setPhase({ kind: "failed", message: t("This version signs in only in its terminal. Open it to finish."), pane: started.pane_id });
-          return;
-        }
-        setPhase({ kind: "following", pane: started.pane_id });
+        const started = await followUsageLogin(replace && "default" in request ? { ...request, replace: true } : request, controller.signal);
+        if (controller.signal.aborted) { cancelUsageLogin(started.login_id); return; }
+        following.current = started.login_id;
+        setPhase({ kind: "following", login: started.login_id });
       } catch (cause) {
         if (controller.signal.aborted) return;
         if (cause instanceof ApiError && cause.code === "account_confirmation_required") setPhase({ kind: "confirm" });
-        else setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in"), pane: null });
+        // a CLI the browser cannot follow (an old Claude Code without `auth login`, a Codex without a device code)
+        else if (cause instanceof ApiError && cause.code === "follow_unsupported") setPhase({ kind: "failed", message: t("This version signs in only in its terminal. Open it to finish.") });
+        else setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in") });
       }
     })();
     return () => controller.abort();
   }, [phase.kind, provider, replace, request, t]);
 
   // follows the login's screen until its CLI exits, then reads the sign-ins again
-  const pane = phase.kind === "following" ? phase.pane : null;
+  const login = phase.kind === "following" ? phase.login : null;
   useEffect(() => {
-    if (pane === null) return;
+    if (login === null) return;
     const controller = new AbortController();
     const until = Date.now() + FOLLOW_MS;
     let timer: number | undefined;
     let failures = 0;
     const look = async (): Promise<void> => {
       try {
-        const next = await fetchUsageLoginPrompt(pane, controller.signal);
+        const next = await fetchUsageLoginPrompt(login, controller.signal);
         if (controller.signal.aborted) return;
         // a sent code the CLI moved on from; a prompt that comes back after that asks for the code again
         if (!next.wants_code) answered.current = true;
@@ -106,7 +106,8 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
           const after = (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
           window.dispatchEvent(new Event("herdr-usage-changed"));
           const outcome = signInOutcome(before.current ?? [], after, again);
-          setPhase({ kind: "ended", pane, outcome });
+          following.current = null;
+          setPhase({ kind: "ended", outcome });
           if (outcome.kind === "signed-in") signedInRef.current?.();
           return;
         }
@@ -116,16 +117,16 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
         if (controller.signal.aborted) return;
         failures += 1;
         if (failures >= READ_FAILURES_MAX || (cause instanceof ApiError && cause.status === 404)) {
-          setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Open its terminal."), pane });
+          setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Open its terminal.") });
           return;
         }
       }
-      if (Date.now() > until) { setPhase({ kind: "failed", message: t("The sign-in is still open. Finish it in its terminal."), pane }); return; }
+      if (Date.now() > until) { setPhase({ kind: "failed", message: t("The sign-in is still open. Finish it in its terminal.") }); return; }
       timer = window.setTimeout(() => void look(), PROMPT_POLL_MS);
     };
     void look();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [pane, provider, again, t]);
+  }, [login, provider, again, t]);
 
   useLayoutEffect(() => {
     (surface.current?.querySelector<HTMLElement>(".account-step-content input, .account-step-content a, .account-step-content button") ?? surface.current)?.focus();
@@ -136,17 +137,34 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     // a form inside another (Add account's): its submit is this one's alone
     event.stopPropagation();
     const input = codeInput.current;
-    if (pane === null || input === null || sending) return;
+    if (login === null || input === null || sending) return;
     setSending(true); setCodeError(null);
     // the code is read from the input once and sent; nothing keeps it after
-    void sendUsageLoginCode({ pane, code: input.value }).then(() => { input.value = ""; answered.current = false; sentRef.current = true; setSent(true); })
+    void sendUsageLoginCode({ login, code: input.value }).then(() => { input.value = ""; answered.current = false; sentRef.current = true; setSent(true); })
       .catch((cause: unknown) => setCodeError(cause instanceof ApiError ? cause.detail : t("Could not send the code")))
       .finally(() => setSending(false));
   };
   const copyCode = async (code: string): Promise<void> => {
     if (await copyText(code, null)) setCopied(true);
   };
-  const terminalPane = phase.kind === "following" || phase.kind === "ended" ? phase.pane : phase.kind === "failed" ? phase.pane : null;
+  // the private sign-in still running, if any: closing the dialog in any way stops it
+  const stopFollowing = (): void => {
+    const running = following.current;
+    following.current = null;
+    if (running !== null) cancelUsageLogin(running);
+  };
+  useEffect(() => stopFollowing, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const close = (): void => { stopFollowing(); onClose(); };
+  // Open terminal: the private sign-in stops and the same one starts in a terminal tab, which any device that
+  // reads this PC's terminals can see; the user chose it
+  const toTerminal = (): void => {
+    stopFollowing();
+    setPhase({ kind: "handing-over" });
+    void startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request)
+      .then((started) => onOpenTerminal(started.pane_id))
+      .catch((cause: unknown) => setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in") }));
+  };
+  const terminalOffered = phase.kind === "following" || phase.kind === "failed";
 
   let body;
   switch (phase.kind) {
@@ -189,26 +207,29 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
           : phase.outcome.kind === "finished" ? t("The sign-in finished.") : t("The sign-in ended without signing in. Try again, or sign in from a terminal.")}
       </p>;
       break;
+    case "handing-over":
+      body = <p className="settings-hint" role="status">{t("Starting the sign-in on this PC…")}</p>;
+      break;
     case "failed":
       body = <p className="settings-hint account-error" role="alert">{phase.message}</p>;
       break;
     default: { const unexpected: never = phase; throw new Error(String(unexpected)); }
   }
 
-  return createPortal(<div className="modal-scrim" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+  return createPortal(<div className="modal-scrim" onClick={(event) => { if (event.target === event.currentTarget) close(); }}
     onKeyDown={(event) => {
-      if (event.key === "Escape" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); onClose(); }
+      if (event.key === "Escape" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); close(); }
     }}>
     <div ref={surface} className="modal usage-account-dialog usage-sign-in-dialog" role="dialog" aria-modal="true" aria-labelledby="usage-sign-in-title" tabIndex={-1}>
       <div className="modal-header">
         <h2 className="modal-title" id="usage-sign-in-title">{title}</h2>
-        <button className="icon-button" type="button" aria-label={t("Close")} onClick={onClose}><X size={18} aria-hidden="true" /></button>
+        <button className="icon-button" type="button" aria-label={t("Close")} onClick={close}><X size={18} aria-hidden="true" /></button>
       </div>
       <div className="modal-body">
         <div className="account-step-content">{body}</div>
         <div className="usage-sign-in-footer">
-          {terminalPane !== null && phase.kind !== "ended" && <button type="button" className="btn btn-ghost" onClick={() => onOpenTerminal(terminalPane)}><SquareTerminal aria-hidden="true" />{t("Open terminal")}</button>}
-          {(phase.kind === "ended" || phase.kind === "failed") && <button type="button" className="btn" onClick={onClose}>{t("Done")}</button>}
+          {terminalOffered && <button type="button" className="btn btn-ghost" onClick={toTerminal}><SquareTerminal aria-hidden="true" />{t("Open terminal")}</button>}
+          {(phase.kind === "ended" || phase.kind === "failed") && <button type="button" className="btn" onClick={close}>{t("Done")}</button>}
         </div>
       </div>
     </div>

@@ -1238,7 +1238,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ installed: demoStatusline, supported: true }, 200, { "cache-control": "no-store" });
   }
   if (SIGN_IN_DEMO && path === "/api/usage/login/prompt") {
-    const login = signInDemo.panes.get(url.searchParams.get("pane") ?? "");
+    const login = signInDemo.panes.get(url.searchParams.get("login") ?? "");
     if (login === undefined) return error("login_not_found", "No sign-in this server started runs in that pane", 404);
     login.reads += 1;
     const ended = login.provider === "claude" ? login.code : login.reads > 3;
@@ -1249,20 +1249,25 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       : { provider: "codex", url: "https://auth.openai.com/codex/device", user_code: "PDLB-SLDUA", wants_code: false, ended: false }, 200, { "cache-control": "no-store" });
   }
   if (SIGN_IN_DEMO && path === "/api/usage/login/code" && method === "POST") {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { pane?: string; code?: string };
-    const login = signInDemo.panes.get(body.pane ?? "");
+    const body = JSON.parse(String(init?.body ?? "{}")) as { login?: string; code?: string };
+    const login = signInDemo.panes.get(body.login ?? "");
     if (login === undefined) return error("login_not_found", "This sign-in has ended. Start it again.", 404);
     if (!/^[A-Za-z0-9._~#-]{1,2048}$/.test((body.code ?? "").trim())) return error("invalid_code", "Paste the code the sign-in page showed, as it is", 400);
     login.code = true;
     return new Response(null, { status: 204 });
   }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/cancel" && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { login?: string };
+    signInDemo.panes.delete(body.login ?? "");
+    return new Response(null, { status: 204 });
+  }
   if (path === "/api/usage/login") {
     if (SIGN_IN_DEMO && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string };
-      if (body.provider !== "claude" && body.provider !== "codex") return error("demo", "This demo follows Claude Code and Codex only.", 409);
-      const pane = `w9:p${signInDemo.next++}`;
-      signInDemo.panes.set(pane, { provider: body.provider, reads: 0, code: false });
-      return json({ pane_id: pane, workspace_id: "w9", manual: false, device_auth: body.provider === "codex" });
+      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string; follow?: boolean };
+      if (!body.follow || (body.provider !== "claude" && body.provider !== "codex")) return error("demo", "This demo follows Claude Code and Codex only.", 409);
+      const login = `demo-login-${signInDemo.next++}`;
+      signInDemo.panes.set(login, { provider: body.provider, reads: 0, code: false });
+      return json({ login_id: login, device_auth: body.provider === "codex" });
     }
     if (method === "GET") {
       const asked = url.searchParams.get("provider");

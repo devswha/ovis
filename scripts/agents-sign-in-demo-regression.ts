@@ -131,6 +131,27 @@ try {
         await renewing.waitFor({ state: "detached" });
         console.log(`PASS Sign in again on a shut row stays open through clicks and the end of the expiry, to its outcome (${at})`);
 
+        // closing the dialog stops the sign-in: Escape while Claude's waits for its code cancels it by its id
+        await page.goto(`${root}&settings=agents`);
+        await page.evaluate(() => {
+          const passing = window.fetch;
+          const seen: string[] = [];
+          (window as unknown as { cancels: string[] }).cancels = seen;
+          window.fetch = (input, init) => {
+            const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
+            if (path === "/api/usage/login/cancel") seen.push(String(init?.body ?? ""));
+            return passing(input, init);
+          };
+        });
+        await press(page.locator(".agents-item[data-agent='claude']").getByRole("button", { name: "Sign in to Claude Code", exact: true }));
+        const closing = page.getByRole("dialog", { name: "Sign in to Claude Code", exact: true });
+        await closing.getByLabel("Paste the code the page shows", { exact: true }).waitFor();
+        await page.keyboard.press("Escape");
+        await closing.waitFor({ state: "detached" });
+        await page.waitForFunction(() => (window as unknown as { cancels: string[] }).cancels.length === 1);
+        assert.match((await page.evaluate(() => (window as unknown as { cancels: string[] }).cancels))[0]!, /"login":"demo-login-\d+"/, `Escape cancels the running sign-in ${at}`);
+        console.log(`PASS closing the dialog stops the sign-in it was following (${at})`);
+
         // the setup guide offers the first sign-in under its tiles
         await page.goto(`${root}&settings=agents`);
         await page.locator(".agents-item").first().waitFor();

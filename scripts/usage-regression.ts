@@ -294,18 +294,24 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
     const context = await usageContext(browser, { viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, locale: "en-US", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
     try {
       const posted: unknown[] = [];
+      // a followed start (the dialog) is refused, then runs; Open terminal's start opens the tab
       const answers = [
         { status: 409, json: { error: { code: "cli_unavailable", message: "Install the official CLI on this PC before signing in" } } },
-        { status: 200, json: { pane_id: "w9:p9", workspace_id: "w9", manual: false, device_auth: false } },
+        { status: 200, json: { login_id: "00000000-0000-4000-8000-000000000009", device_auth: false } },
       ];
+      const tab = { status: 200, json: { pane_id: "w9:p9", workspace_id: "w9", manual: false, device_auth: false } };
+      const cancelled: unknown[] = [];
+      await context.route("**/api/usage/login/cancel", (route) => { cancelled.push(route.request().postDataJSON()); return route.fulfill({ status: 204 }); });
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
       // the dialog reads the provider's sign-ins and the login's screen: a login still starting
       await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
       await context.route("**/api/usage/login/prompt*", (route) => route.fulfill({ json: { provider: "claude", url: null, user_code: null, wants_code: false, ended: false } }));
       await context.route("**/api/usage/login", (route) => {
         if (route.request().method() !== "POST") return route.continue();
-        posted.push(route.request().postDataJSON());
-        return route.fulfill(answers[(posted.length - 1) % answers.length]!);
+        const body = route.request().postDataJSON() as { follow?: boolean };
+        posted.push(body);
+        if (!body.follow) return route.fulfill(tab);
+        return route.fulfill(answers[(posted.filter((sent) => (sent as { follow?: boolean }).follow).length - 1) % answers.length]!);
       });
       await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
       const page = await context.newPage();
@@ -360,7 +366,10 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await rowAgain.click();
       await following.getByRole("button", { name: "Open terminal", exact: true }).click();
       await page.locator(".settings-dialog").waitFor({ state: "detached" });
-      assert.deepEqual(posted, Array(4).fill({ provider: "claude", account: "claude:team" }), "the server is asked by the account's key, never a path");
+      const followed = { provider: "claude", account: "claude:team", follow: true };
+      const inTab = { provider: "claude", account: "claude:team" };
+      assert.deepEqual(posted, [followed, followed, inTab, followed, followed, inTab], "the server is asked by the account's key, never a path: followed, and in a tab once Open terminal is chosen");
+      assert.deepEqual(cancelled, Array(2).fill({ login: "00000000-0000-4000-8000-000000000009" }), "Open terminal stops the followed sign-in before the tab starts");
       assert.deepEqual(errors, []);
     } finally {
       await context.close();
