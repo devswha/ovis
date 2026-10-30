@@ -236,7 +236,7 @@ export interface RelayOffer {
  */
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
-  const response = await fetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
   if (!response.ok) {
     const body: unknown = await response.clone().json().catch(() => null);
     if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;

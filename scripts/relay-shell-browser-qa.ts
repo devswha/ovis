@@ -31,6 +31,7 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import type { BunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
+import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { startFakePushService } from "../server/push.fake.ts";
 import type { FakePushService } from "../server/push.fake.ts";
 import { RelayService } from "../server/relay/service.ts";
@@ -93,6 +94,8 @@ let relayPort = relay.port;
 const relayUrl = (url: string): string => { const target = new URL(url); return `ws://127.0.0.1:${relayPort}${target.pathname}${target.search}`; };
 let synced = deferred<void>();
 const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-shell-qa-"));
+const herdrConfigPath = join(stateDir, "config.toml");
+writeFileSync(herdrConfigPath, "[ui]\ncopy_on_select = true\n");
 const service = new RelayService({ stateDir, relay: RELAY, connect: (url) => {
   const socket = new WebSocket(relayUrl(url));
   socket.addEventListener("message", (event) => {
@@ -100,7 +103,7 @@ const service = new RelayService({ stateDir, relay: RELAY, connect: (url) => {
   });
   return socket;
 } });
-const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, pushLoopbackHttp: true });
+const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, pushLoopbackHttp: true, herdrConfigPath });
 const base = `http://127.0.0.1:${app.port}`;
 const devices = app.context.services.devices;
 const relayApi = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
@@ -390,6 +393,61 @@ try {
   const identity = await serverOffer();
   const ID = identity.server_id;
   const scope = scopeOf(ID);
+
+  // The terminal's own preference read must reach the PC, not the static shell host.
+  {
+    const workspace = await workspaceCreate({ cwd: stateDir, label: "relay-transport-parity" });
+    const { context, page } = await open({ width: 1440, height: 900 });
+    try {
+      const preference = deferred<boolean>();
+      const nativeApi: string[] = [];
+      page.on("request", (request) => {
+        if (new URL(request.url()).origin === origin && new URL(request.url()).pathname === "/api/herdr-ui") nativeApi.push(request.url());
+      });
+      await page.exposeFunction("qaHerdrUi", (value: boolean) => preference.resolve(value));
+      await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+      await page.addInitScript(() => {
+        const json = Response.prototype.json;
+        Response.prototype.json = async function () {
+          const body: unknown = await json.call(this);
+          if (typeof body === "object" && body !== null && "copy_on_select" in body && typeof body.copy_on_select === "boolean") {
+            const report = Reflect.get(window, "qaHerdrUi");
+            await report(body.copy_on_select);
+          }
+          return body;
+        };
+      });
+      await herdrRpc("pane.send_text", { pane_id: workspace.root_pane.pane_id, text: "printf '\\033[2J\\033[HRELAY_COPY_ON_SELECT\\n'\n" });
+      const url = new URL(offerUrl(await serverOffer()));
+      url.searchParams.set("pane", workspace.root_pane.pane_id);
+      url.searchParams.set("view", "terminal");
+      await page.goto(url.href);
+      await page.getByRole("button", { name: "Pair", exact: true }).click();
+      await inApp(page);
+      assert.equal(await bounded(preference.promise, "the app consumed the PC's /api/herdr-ui answer"), true);
+      assert.deepEqual(nativeApi, [], "/api/herdr-ui never went to the static shell host");
+      const terminal = page.locator(".terminal-stack[data-pane-content] .xterm-screen");
+      await terminal.waitFor();
+      const box = await terminal.boundingBox();
+      assert.ok(box);
+      await shot(page, "transport-parity");
+      await page.evaluate(() => navigator.clipboard.writeText(""));
+      await page.mouse.move(box.x + 2, box.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width - 8, box.y + box.height - 8, { steps: 8 });
+      await page.mouse.up();
+      await page.locator(".terminal-banner", { hasText: "copied to clipboard" }).waitFor();
+      assert.match(await page.evaluate(() => navigator.clipboard.readText()), /RELAY_COPY_ON_SELECT/);
+      const receipt = "transport parity: app consumed copy_on_select=true from the PC over the relay; zero shell-host /api/herdr-ui requests; terminal drag copied nonempty text";
+      keep("fix-transport-parity.txt", `${receipt}\n`);
+      note(receipt);
+    } finally {
+      const paired = await saved(page, ID);
+      if (paired?.device_id) devices.revoke(paired.device_id);
+      await context.close();
+      await workspaceClose(workspace.workspace.workspace_id);
+    }
+  }
 
   // (a) nothing saved, no offer: the front page asks for the PC's QR code, both themes, both widths
   for (const [device, width, height] of [["mobile", 390, 844], ["desktop", 1440, 900]] as const) {
