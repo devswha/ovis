@@ -356,6 +356,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     let recoveryDeadline: number | null = null;
     let recoveryRetries = 0;
     const start = (): PtySession => {
+      const onCore = runtime() === "herdr-core";
       let takingOver = mayTakeOver(takeover) ? takeover : null;
       takeover = null;
       trying = true;
@@ -368,7 +369,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       let heldSince = 0;
       let holding = false;
       let holdTimer: ReturnType<typeof setTimeout> | undefined;
-      const probes = new AttachStartupProbes();
+      const probes = onCore ? null : new AttachStartupProbes();
       const outputTail = new AttachOutputTail();
       let tailTimer: ReturnType<typeof setTimeout> | undefined;
       const flushTail = (taken = false): void => {
@@ -411,7 +412,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         clearTimeout(holdTimer);
         if (held === null) return;
         // a read that ended inside what could have been a probe is output after all
-        const data = held + probes.flush();
+        const data = held + (probes?.flush() ?? "");
         held = null;
         // the look for a resize's redraw is over: an update it kept open is not kept for the session
         update = null;
@@ -595,7 +596,6 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         else retryLookup();
       };
       // herdr-core shares a terminal among its viewers: `hc attach` has no slot to take over
-      const onCore = runtime() === "herdr-core";
       const command = onCore ? hcBin() : process.env["OVIS_HERDR_BIN"] || "herdr";
       // node-pty reports a command it cannot exec only as a silent exit 1, which reads as an
       // ended attach (#925): look it up on the PATH and from the home directory the sidecar uses.
@@ -670,18 +670,31 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         // herdr's CLI reads HERDR_SOCKET_PATH, not HERDR_SOCKET: the stream must reach
         // the same session the RPCs talk to, or a named session's terminals are
         // looked up on the default socket and the attach dies.
-        env: { HERDR_SOCKET_PATH: herdrSocketPath() },
+        ...(onCore ? {
+          // hc inherits HC_SOCKET / HC_SESSION, never herdr's CLI socket override.
+          inheritEnv: false,
+          env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[0] !== "HERDR_SOCKET_PATH" && entry[1] !== undefined)),
+        } : { env: { HERDR_SOCKET_PATH: herdrSocketPath() } }),
         cols: attachment.cols,
         rows: attachment.rows,
         onData: (data) => {
           if (retired || attachments.get(paneId) !== attachment) return;
+          if (onCore) {
+            // hc has no herdr preamble, startup queries or exclusive-attach diagnostics.
+            if (!attachment.ready) {
+              held = null;
+              took();
+            }
+            forward(data);
+            return;
+          }
           // herdr's startup queries are the bridge's to answer: never readiness, broadcast or replay
-          if (!holding && held !== null) {
+          if (probes && !holding && held !== null) {
             const before = held;
             const taken = probes.take(data, (text) => ATTACH_PREAMBLE_RE.test(before + text));
             if (taken.replies) session.write(taken.replies);
             data = taken.output;
-          } else data = probes.flush() + data;
+          } else data = (probes?.flush() ?? "") + data;
           if (!data) return;
           output = (output + data).slice(-1024);
           if (held === null) return guard(data);
