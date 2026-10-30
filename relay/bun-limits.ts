@@ -1,7 +1,7 @@
 import type { Limiters, RateLimiter } from "./core.ts";
 
 export const DEFAULT_RELAY_LIMITS = {
-  perAddressPerMinute: 30,
+  perAddressPerMinute: 120,
   globalPerMinute: 600,
   maxSockets: 1024,
   maxRooms: 256,

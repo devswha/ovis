@@ -10,15 +10,15 @@ const upgrade = { headers: { upgrade: "websocket", connection: "Upgrade", "sec-w
 const request = () => new Request(relayUrls("http://relay.test", randomServerId()).client, upgrade);
 const status = async (response: Awaited<ReturnType<typeof admit>>) => response instanceof Response ? response.status : 101;
 
-test("default token buckets enforce 30 per address and refill without sleeps", async () => {
+test("default token buckets enforce 120 per address and refill without sleeps", async () => {
   let now = 0;
   const limiters = memoryLimiters(relayLimits(), () => now);
   const req = request();
-  for (let i = 0; i < 30; i++) expect(await status(await admit(req, "a", limiters))).toBe(101);
+  for (let i = 0; i < 120; i++) expect(await status(await admit(req, "a", limiters))).toBe(101);
   expect(await status(await admit(req, "a", limiters))).toBe(429);
-  now = 1999;
+  now = 499;
   expect(await status(await admit(req, "a", limiters))).toBe(429);
-  now = 2000;
+  now = 500;
   expect(await status(await admit(req, "a", limiters))).toBe(101);
   expect(await status(await admit(req, "a", limiters))).toBe(429);
 });
@@ -62,7 +62,7 @@ test("Bun starts with default rate limiting and ignores spoofed forwarding addre
   const base = `http://127.0.0.1:${relay.port}`;
   // Invalid WebSocket keys make upgrade fail after admission without retaining sockets.
   const headers = { ...upgrade.headers, "sec-websocket-key": "invalid" };
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 120; i++) {
     expect((await fetch(relayUrls(base, randomServerId()).client, { headers })).status).toBe(426);
   }
   const refused = await fetch(relayUrls(base, randomServerId()).client, {

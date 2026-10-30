@@ -71,7 +71,7 @@ out takes 16 arrivals within its one round trip.
 | a PC socket answering its challenge | 10 s, 16 at once per `server_id` | `4401`; past 16 the oldest closes `1013` |
 | frames held for a waiting client | 200 frames or 1 MiB, whichever comes first | the client closes `1013` |
 | idle | 120 s without a frame or keepalive | the socket closes `1001` |
-| connections per address | 30 a minute | `429`, `Retry-After: 60` |
+| connections per address | 120 a minute | `429`, `Retry-After: 60` |
 | connections from all addresses | 600 a minute | `429`, `Retry-After: 60` |
 | total sockets (Bun, including pending upgrades/proofs) | 1024 | `503`, `Retry-After: 60` |
 | rooms (Bun, including pending upgrades) | 256 | `503`, `Retry-After: 60` |
@@ -155,20 +155,21 @@ bun relay/bun.ts --port 8787 --hostname 127.0.0.1
 
 It listens on plain HTTP, so put it behind a TLS proxy (Caddy, nginx, `tailscale serve`) and give
 the PC and devices the `wss://` address. Bun enables in-memory token buckets by default,
-matching the Worker's 30/address/minute and 600/global/minute budgets. They start full and
-refill continuously (bursts of 30 and 600 respectively); they are process-local, whereas
+with a 120/address/minute and 600/global/minute budget. They start full and
+refill continuously (bursts of 120 and 600 respectively); they are process-local, whereas
 Cloudflare's approximate counters are per location. An address refusal does not spend global
 tokens. Idle address buckets expire after a minute; active buckets are never evicted to admit
 new addresses. Restarting the process clears the budgets.
 
 The address is the TCP peer, never an untrusted forwarding header. Behind a local TLS proxy,
-all users share that proxy's address bucket. Set its budget for that deployment and also limit
+all users share that proxy's address bucket, so size this budget for the whole deployment. Set
+its budget for that deployment and also limit
 real client addresses at the trusted proxy; do not simply trust `X-Forwarded-For` from callers.
 The global cap remains a backstop.
 
 | Flag | Environment | Default |
 |---|---|---|
-| `--per-address-per-minute` | `RELAY_PER_ADDRESS_PER_MINUTE` | 30 |
+| `--per-address-per-minute` | `RELAY_PER_ADDRESS_PER_MINUTE` | 120 |
 | `--global-per-minute` | `RELAY_GLOBAL_PER_MINUTE` | 600 |
 | `--max-sockets` | `RELAY_MAX_SOCKETS` | 1024 |
 | `--max-rooms` | `RELAY_MAX_ROOMS` | 256 |

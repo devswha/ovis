@@ -65,8 +65,7 @@ function nextRange(pc: string, path: string): Promise<{ pc: string; target: stri
 }
 
 // Every full-page read opens a client/data pair, all from the same loopback address.
-// Budget this navigation-heavy run explicitly; production defaults stay covered by relay tests.
-const relay = startBunRelay({ port: 0, limits: { perAddressPerMinute: 120 } });
+const relay = startBunRelay({ port: 0 });
 const relayAddress = (address: string): string => {
   const url = new URL(address);
   return `ws://127.0.0.1:${relay.port}${url.pathname}${url.search}`;
