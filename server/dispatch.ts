@@ -212,9 +212,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
   // A visitor Portal's own sign-in let in (a link that expires, a wallet or account on a list) uses the
-  // app like a device that may drive, and leaves nothing standing behind: only the link's expiry and
-  // Portal's list end that access, so no pairing code or revoking, no push subscription to alert a phone
-  // of theirs after it, no say over Portal itself. Redeeming a code the owner gave stays open.
+  // app like a device that may drive, and the app's own controls leave nothing standing behind for it: only
+  // the link's expiry and Portal's list end that access, so no pairing code or revoking, no push subscription
+  // to alert a phone of theirs after it, no say over Portal itself. Redeeming a code the owner gave stays open.
+  // This is no boundary against the visitor: driving a terminal is a shell as this PC's user, which can read
+  // OVIS_TOKEN and Portal's identity (docs/guide.md says so); it keeps the app from handing out more by itself.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || (pathname.startsWith("/api/devices/") && pathname !== "/api/devices/pair")
@@ -224,7 +226,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {
     setRequestRoute("owner-refusal");
-    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot change who else gets in or leave access behind. Use the access token or a paired device." } }, 403);
+    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal here. Use the access token or a paired device." } }, 403);
   }
 
   // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return

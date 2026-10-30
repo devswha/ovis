@@ -1,8 +1,9 @@
 ### Added
 - **Settings → Phone & devices → Portal** can put Portal's own sign-in in front of the address: a
   private link, an Ethereum wallet, or Google or company login (OpenID Connect), each with the
-  names, wallets or accounts it lets in. Whoever gets through is let in like a paired device,
-  with no access token asked, and Devices says who signed in. A visitor let in this way cannot
+  names, wallets or accounts it lets in. Whoever gets through is let in like a paired device
+  that may drive, with no access token asked, so list only people you would give the token:
+  driving the terminals is a shell as your user. Devices says who signed in. A visitor let in this way cannot
   pair or revoke devices, subscribe to push alerts or control Portal, and a page of theirs left
   open loses access within 5 minutes of the link expiring or a sign-out. A private-link Portal
   offers **Invite someone**: a link for 1, 7, 30 or 90 days, shown once. The app believes who

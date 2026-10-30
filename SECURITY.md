@@ -34,7 +34,9 @@ In scope, for example:
 - getting in without a matching token, a paired device, the PC's own Tailscale login, a local
   connection or a visitor Portal's own sign-in vouches for with its proof (`server/access.ts`,
   `server/auth.ts`, `server/portal.ts`), including through a proxy or forged headers; and a visitor
-  Portal let in leaving access behind, such as pairing a device or subscribing to push alerts;
+  Portal let in using the app's own controls to leave access behind, such as pairing a device,
+  subscribing to push alerts or issuing a link (what such a visitor does in a terminal is the next
+  item: they drive the terminals, so they can do whatever this PC's user can);
 - pairing codes, device cookies and revocation (`server/devices.ts`); a revoked or observe-only
   device that can still type, send keys or resize;
 - reading files, transcripts or screens outside what the app shows a signed-in client;
@@ -55,7 +57,8 @@ Out of scope, as documented in [Access and safety](docs/guide.md#access-and-safe
   the gate once a token is set or a device is paired is in scope;
 - anything reached through `tailscale funnel`, which is unsupported;
 - people you gave access to (a paired device, the token, your tailnet login, a name or account on a
-  Portal sign-in list, a private link you sent) using it;
+  Portal sign-in list, a private link you sent) using it, including through a terminal: reading the
+  server's environment or state files, or keeping a way in after their access ends;
 - vulnerabilities in herdr, the agents, Tailscale or the browser themselves: report those upstream.
 
 Test only on PCs and accounts you own.

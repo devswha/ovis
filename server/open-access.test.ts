@@ -414,7 +414,7 @@ describe("a Portal that signs its visitors in", () => {
     expect(await Promise.race([drained, Bun.sleep(3_000).then(() => "still open" as const)])).toBe("ended");
   });
 
-  it("does not let a visitor it signed in decide who else gets in or leave access behind, while the owner's token may", async () => {
+  it("does not let a visitor it signed in use the app's controls to decide who else gets in or leave access behind, while the owner's token may", async () => {
     const portal = serving();
     const proof = await portal.start(credential);
     const visitor = { ...identity, "x-portal-proof": proof, "x-herdr-update": "1", "x-herdr-machine": "1", "content-type": "application/json" };
