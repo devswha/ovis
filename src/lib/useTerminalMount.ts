@@ -18,10 +18,10 @@ import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import { terminalTheme, type Palette, type ResolvedTheme, type Settings } from "./settings.ts";
 import { measurableFontStack, openingFontStack, TERMINAL_FONT_STACK } from "./fontFamily.ts";
 import type { Translate } from "./i18n.ts";
-import { isAppShortcut } from "./shortcuts.ts";
+import { isAppShortcut, isMacPlatform } from "./shortcuts.ts";
 import { keyboardHoldsGrid, keyboardUp } from "./keyboard.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { hyperlinkFilter, isWebLink, openWebLink, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
+import { bareNameLinks, hyperlinkFilter, isWebLink, openWebLink, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
 import { adjustTerminalGlyphs } from "./terminalGlyphs.ts";
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
@@ -247,7 +247,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       matchHerdrWidths(term);
       // the same policy as the linkHandler above: an http(s) address or nothing (S10)
       term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !openWebRef.current(uri, event.shiftKey)) openWebLink(uri); }));
-      term.registerLinkProvider(terminalFileLinkProvider(() => term.buffer.active, (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }));
+      // a bare file name (`design.md`) is a link only under Cmd (Ctrl off a Mac), drawn as the key goes down
+      const bareLinks = bareNameLinks(isMacPlatform());
+      const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
+      const offLinkKey = (): void => bareLinks.reset();
+      term.registerLinkProvider(terminalFileLinkProvider(() => term.buffer.active, (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -451,7 +455,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           const y = buffer.viewportY + target.row + 1;
           const x = target.col + 1;
-          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); })
+          // a bare name is a link here only under its key: a plain tap on one still lands on the terminal
+          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined)
             .find(({ range: { start, end } }) => (y > start.y || (y === start.y && x >= start.x)) && (y < end.y || (y === end.y && x <= end.x)));
           if (!link) return false;
           link.activate(event);
@@ -845,6 +850,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       window.addEventListener("mousemove", onMouseMove, { capture: true });
       window.addEventListener("blur", onBlur);
       window.addEventListener("mouseup", onMouseUp);
+      for (const type of ["keydown", "keyup", "mousemove"] as const) window.addEventListener(type, onLinkKey, { capture: true });
+      window.addEventListener("blur", offLinkKey);
       // herdr's copy_on_select, read again on each mount; a failed read is tried again once online
       void loadHerdrUi();
       const onOnline = (): void => { if (!herdrUiKnown()) void loadHerdrUi(); };
@@ -2188,6 +2195,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         window.removeEventListener("mousemove", onMouseMove, { capture: true });
         window.removeEventListener("blur", onBlur);
         window.removeEventListener("mouseup", onMouseUp);
+        for (const type of ["keydown", "keyup", "mousemove"] as const) window.removeEventListener(type, onLinkKey, { capture: true });
+        window.removeEventListener("blur", offLinkKey);
         window.removeEventListener("online", onOnline);
         host.removeEventListener("copy", onCopy);
         stopEdge();
