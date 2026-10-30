@@ -9,6 +9,8 @@ import type { ClaudeArtifact } from "../../shared/protocol.ts";
 const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
+// the device's stored settings: the chip is off until Settings → Chat → Composer turns it on
+let stored: string | null = JSON.stringify({ composerArtifacts: true });
 
 beforeEach(() => {
   const listen = { addEventListener() {}, removeEventListener() {} };
@@ -17,7 +19,7 @@ beforeEach(() => {
     IS_REACT_ACT_ENVIRONMENT: true,
     window: {
       ...listen,
-      localStorage: { getItem: () => null, setItem() {} },
+      localStorage: { getItem: (key: string) => (key === "ovis:settings" ? stored : null), setItem() {} },
       matchMedia: () => ({ ...listen, matches: false }),
     },
     document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
@@ -34,10 +36,28 @@ afterEach(async () => {
   renderer = undefined;
   jest.useRealTimers();
   jest.restoreAllMocks();
+  stored = JSON.stringify({ composerArtifacts: true });
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
   }
+});
+
+test("shows no chip and asks for no pages while Settings leaves the Artifacts chip off", async () => {
+  stored = null;
+  const pages: ClaudeArtifact[] = [{ url: "https://claude.ai/artifact/fixture", title: "Fixture", at: null }];
+  const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: pages }), globalThis.fetch));
+  await act(async () => { renderer = create(pane()); });
+  expect(renderer?.toJSON()).toBeNull();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test("shows the chip for a session's pages once Settings turns the Artifacts chip on", async () => {
+  const pages: ClaudeArtifact[] = [{ url: "https://claude.ai/artifact/fixture", title: "Fixture", at: null }];
+  jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: pages }), globalThis.fetch));
+  await act(async () => { renderer = create(pane()); });
+  expect(renderer?.root.findAllByType("button")).toHaveLength(1);
 });
 
 test("discovers published pages after an empty initial lookup without a status change", async () => {

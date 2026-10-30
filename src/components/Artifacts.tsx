@@ -6,6 +6,7 @@ import "./BackgroundTasks.css";
 import { formatChatTimestamp } from "../lib/chatTimestamp.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
+import { useSettings } from "../lib/settings.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import type { AgentStatus, ClaudeArtifact } from "../../shared/protocol.ts";
 
@@ -15,9 +16,15 @@ import type { AgentStatus, ClaudeArtifact } from "../../shared/protocol.ts";
  * (BackgroundTasks.css). Each row opens its page on claude.ai in a new tab. A page is published
  * during a turn, so the list is read when the pane is shown, when its status changes and when the
  * list opens; the chip shows only once there is a page. A PC from before the route answers 404,
- * which reads as none.
+ * which reads as none. The chip is off until this device turns it on (Settings > Chat > Composer,
+ * Artifacts chip), so the composer's row stays minimal; while off, nothing is asked.
  */
-export function Artifacts({ paneId, status }: { paneId: string; status: AgentStatus | undefined }) {
+export function Artifacts(props: { paneId: string; status: AgentStatus | undefined }) {
+  const { settings } = useSettings();
+  return settings.composerArtifacts ? <ArtifactsChip {...props} /> : null;
+}
+
+function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus | undefined }) {
   const t = useT();
   const locale = useLocale();
   const { fetchPaneArtifacts } = useMachineApi();

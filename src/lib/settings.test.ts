@@ -222,6 +222,13 @@ it("keeps the composer's New tab button off until this device turns it on, and k
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
 });
 
+it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).composerArtifacts).toBe(false);
+  expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
+  expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
+  expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
 it("keeps the screen wake lock off until this device explicitly enables it", () => {
   expect(DEFAULT_SETTINGS.keepScreenOn).toBe(false);
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);
