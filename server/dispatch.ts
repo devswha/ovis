@@ -220,6 +220,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     || (pathname.startsWith("/api/devices/") && pathname !== "/api/devices/pair")
     || (request.method === "POST" && pathname === "/api/push/subscribe")
   );
+  // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
+  const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot change who else gets in or leave access behind. Use the access token or a paired device." } }, 403);
@@ -263,7 +265,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // that closed the gate, so whoever holds it has no access left by the time there is news
       const openAccess = access.level === "full" && access.via === "open";
       const pairings = { subscribe: (listener: (event: DevicePairedEvent) => void) => devices.onPaired((event, origin) => { if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event); }) };
-      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : undefined, preferences, readOnly, herdrSidebar, seen, pairings);
+      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -273,6 +275,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute(pathname);
     if (!sameOrigin(request)) return new Response("invalid origin", { status: 403 });
     const deviceId = access.level === "full" ? access.device?.id : undefined;
+    const recheck = portalRecheckMs === undefined ? {} : { recheckMs: portalRecheckMs };
     const machineId = url.searchParams.get("machine_id");
     if (machineId && machineId !== "local") {
       if (access.level === "none") return unauthorizedJson(access.reason);
@@ -281,7 +284,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       try {
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot);
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -292,7 +295,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const observed = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
     const surface = bridgeAuthorized ? false : visitSurface(url.searchParams.get("surface"));
     const ingress: TelemetryIngress = observed === "direct" ? (loopback ? "local" : "lan") : observed;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }) }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }

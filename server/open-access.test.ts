@@ -250,9 +250,9 @@ describe("a Portal that signs its visitors in", () => {
   const credential = { method: "credential", allow: [] };
 
   /** a server whose Portal can be started on a sign-in, and asked for the proof it was given */
-  function serving() {
+  function serving(recheckMs?: number) {
     const stateDir = mkdtempSync(join(root, "portal-"));
-    const server = createServer({ port: 0, stateDir, token: TOKEN, portal: new PortalService({ stateDir, bin, fetch: relay }) });
+    const server = createServer({ port: 0, stateDir, token: TOKEN, portal: new PortalService({ stateDir, bin, fetch: relay, ...(recheckMs === undefined ? {} : { recheckMs }) }) });
     servers.push(server);
     const main = `http://127.0.0.1:${server.port}`;
     const owner = { authorization: `Bearer ${TOKEN}` };
@@ -385,6 +385,33 @@ describe("a Portal that signs its visitors in", () => {
     }
     expect(frames.find((frame) => frame.type === "pong")).toEqual({ type: "pong", id: 7 });
     socket.close();
+  });
+
+  it("ends a visitor's WebSocket after a while, so its reconnect meets Portal's sign-in again, and leaves the owner's open", async () => {
+    // Portal checks its sign-in on each request, so a link that expires or a sign-out ends a visitor's HTTP at once;
+    // a socket opened before that would otherwise drive the terminals for as long as it stays open
+    const portal = serving(300);
+    const proof = await portal.start(credential);
+    const port = new URL(portal.main).port;
+    const open = (headers: Record<string, string>) => new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers } as unknown as string[]);
+      socket.onopen = () => resolve(socket);
+      socket.onerror = () => reject(new Error("the upgrade was refused"));
+    });
+    const owner = await open({ ...portal.owner, host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
+    const ownerClosed = new Promise<void>((resolve) => owner.addEventListener("close", () => resolve()));
+    const visitor = await open({ ...identity, "x-portal-proof": proof });
+    const visitorClosed = new Promise<number>((resolve) => visitor.addEventListener("close", (event) => resolve(event.code)));
+    const code = await Promise.race([visitorClosed, Bun.sleep(3_000).then(() => "still open" as const)]);
+    expect(code).toBe(1000);
+    expect(owner.readyState).toBe(WebSocket.OPEN);
+    owner.close();
+    await ownerClosed;
+    // the PCs' event stream too: it ends, and the page opens it again through Portal
+    const events = await fetch(`${portal.main}/api/machines/events`, { headers: { ...identity, "x-portal-proof": proof } });
+    expect(events.status).toBe(200);
+    const drained = events.body!.pipeTo(new WritableStream()).then(() => "ended" as const, () => "ended" as const);
+    expect(await Promise.race([drained, Bun.sleep(3_000).then(() => "still open" as const)])).toBe("ended");
   });
 
   it("does not let a visitor it signed in decide who else gets in or leave access behind, while the owner's token may", async () => {

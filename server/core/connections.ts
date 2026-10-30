@@ -25,6 +25,8 @@ export interface SocketData {
   /** how the upgrade request reached this server (shared/telemetry.ts TELEMETRY_INGRESS), for the daily active message; absent
    * where `surface` named no known kind, or another server reads */
   ingress?: TelemetryIngress;
+  /** a visitor Portal signed in: the socket is closed after this many ms, and the page's reconnect meets Portal's sign-in again (server/portal.ts `recheckMs`) */
+  recheckMs?: number;
   /** this connection's id, told to its page in the first snapshot: a create request names it as its first message's typist */
   connectionId: string;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
@@ -42,6 +44,7 @@ interface ConnectionState {
   roles: number;
   watches: Map<string, PaneWatch>;
   unwatchDevice?: () => void;
+  recheck?: ReturnType<typeof setTimeout>;
 }
 
 /** Keyed by the very `data` object the upgrade passed, which Bun hands to every handler of the connection. */
@@ -54,7 +57,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress }): SocketData {
+export function connectionData(fields: { relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneWatch>() });
   return data;
@@ -139,6 +142,8 @@ export function createConnections({ clients, present, pending, devices, detachCl
       state.unwatchDevice = devices.onRevoke(client.data.deviceId, () => end(client, "revoked"));
       if (state.revoked) return false;
     }
+    // a plain close: the page reconnects as after any other, and Portal decides whether it gets in
+    if (client.data.recheckMs !== undefined) state.recheck = setTimeout(() => client.close(1000, "Portal sign-in check"), client.data.recheckMs);
     return true;
   }
 
@@ -215,6 +220,7 @@ export function createConnections({ clients, present, pending, devices, detachCl
       }
       case "closed": {
         state.unwatchDevice?.();
+        clearTimeout(state.recheck);
         state.closing = true;
         present.delete(client);
         if (client.data.relay) { client.data.relay.close(); return; }

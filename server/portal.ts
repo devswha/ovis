@@ -58,6 +58,8 @@ const PIPE_GRACE_MS = 250;
 const OUTPUT_LINES = 30;
 /** `portal auth issue` reads the identity file and signs: a local call */
 const ISSUE_TIMEOUT_MS = 10_000;
+/** how long a stream of a visitor Portal signed in stays open before it must come through Portal's sign-in again (`recheckMs`) */
+const PORTAL_RECHECK_MS = 5 * 60_000;
 /** what Portal may keep of this server's environment: enough to run and to reach the relay */
 const PORTAL_ENV = ["PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 
@@ -105,6 +107,8 @@ export interface PortalServiceOptions {
   /** READY_TIMEOUT_MS and STOP_GRACE_MS; tests shorten them */
   readyTimeoutMs?: number;
   stopGraceMs?: number;
+  /** PORTAL_RECHECK_MS; tests shorten it */
+  recheckMs?: number;
 }
 
 /** "v2.6.1" → [2, 6, 1]; null for anything else. */
@@ -392,6 +396,17 @@ export class PortalService {
 
   constructor(private readonly options: PortalServiceOptions) {
     this.dir = join(options.stateDir, "portal");
+  }
+
+  /**
+   * How long a stream of a visitor this Portal signed in (the terminal's WebSocket, the PCs' event stream) stays
+   * open. Portal checks its sign-in on every request, so a link that expired, a sign-out or a list without the
+   * name ends a visitor's next request; a stream opened before that is one request, and would drive the
+   * terminals for as long as it stayed open. Closed after this, the page reconnects through Portal, which
+   * lets it in again only while the sign-in still holds.
+   */
+  get recheckMs(): number {
+    return this.options.recheckMs ?? PORTAL_RECHECK_MS;
   }
 
   private get identityPath(): string { return join(this.dir, "identity.json"); }
