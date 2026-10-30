@@ -22,6 +22,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
+import { startRuntime } from "./herdr-core/runtime.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
@@ -384,6 +385,8 @@ if (import.meta.main) {
   moveLegacyStateDir();
   // resolved once, for the same reason as in createServer
   const stateDir = defaultStateDir();
+  // herdr-core's adapter is HERDR_SOCKET: it listens before anything below asks herdr
+  const herdrCore = startRuntime(stateDir);
   const updates = connectUpdater();
   const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
   const telemetry = new Telemetry({ stateDir, version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version });
@@ -415,7 +418,11 @@ if (import.meta.main) {
     instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
-    void Promise.all([Bun.sleep(2000), portal.shutdown()]).then(() => process.exit(0));
+    // herdr-core's adapter answers what the stopping server still asks meanwhile
+    void Promise.all([Bun.sleep(2000), portal.shutdown()]).then(() => {
+      herdrCore?.stop();
+      process.exit(0);
+    });
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

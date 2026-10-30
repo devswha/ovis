@@ -6,6 +6,7 @@
 import type { HerdrPane, ServerMessage } from "../../shared/protocol.ts";
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
 import { HerdrError, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
+import { hcBin, runtime } from "../herdr-core/runtime.ts";
 import { MirrorSession } from "../mirror.ts";
 import { ReplayBuffer } from "../output-window.ts";
 import { PtySession } from "../pty/session.ts";
@@ -593,11 +594,15 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         if (firstRecovery) relookup();
         else retryLookup();
       };
-      const command = process.env["OVIS_HERDR_BIN"] || "herdr";
+      // herdr-core shares a terminal among its viewers: `hc attach` has no slot to take over
+      const onCore = runtime() === "herdr-core";
+      const command = onCore ? hcBin() : process.env["OVIS_HERDR_BIN"] || "herdr";
       // node-pty reports a command it cannot exec only as a silent exit 1, which reads as an
       // ended attach (#925): look it up on the PATH and from the home directory the sidecar uses.
       if (!Bun.which(command, { PATH: process.env["PATH"] ?? "", cwd: process.env["HOME"] ?? "/" })) {
-        throw new HerdrError("attach_failed", `herdr could not be started: ${command} is not an executable on the server's PATH (set OVIS_HERDR_BIN to herdr's full path)`);
+        throw new HerdrError("attach_failed", onCore
+          ? `hc could not be started: ${command} is not an executable on the server's PATH (set OVIS_HC_BIN to hc's full path)`
+          : `herdr could not be started: ${command} is not an executable on the server's PATH (set OVIS_HERDR_BIN to herdr's full path)`);
       }
       // A resize since this attach started, even one back to its first grid, makes herdr's screens
       // until its redraw for the pty's current grid the wrong size (#2289). Only an update that began
@@ -661,7 +666,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       const session = new PtySession({
         command,
         // --takeover goes after the id: before it, herdr reads the id as an unknown option
-        args: ["terminal", "attach", attachedTerminal, ...(takingOver ? ["--takeover"] : [])],
+        args: onCore ? ["attach", attachedTerminal] : ["terminal", "attach", attachedTerminal, ...(takingOver ? ["--takeover"] : [])],
         // herdr's CLI reads HERDR_SOCKET_PATH, not HERDR_SOCKET: the stream must reach
         // the same session the RPCs talk to, or a named session's terminals are
         // looked up on the default socket and the attach dies.
