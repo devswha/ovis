@@ -10,7 +10,7 @@ const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedS
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
 // the device's stored settings: the chip is off until Settings → Chat → Composer turns it on
-let stored: string | null = JSON.stringify({ composerArtifacts: true });
+let stored: string | null = "true";
 
 beforeEach(() => {
   const listen = { addEventListener() {}, removeEventListener() {} };
@@ -19,7 +19,7 @@ beforeEach(() => {
     IS_REACT_ACT_ENVIRONMENT: true,
     window: {
       ...listen,
-      localStorage: { getItem: (key: string) => (key === "ovis:settings" ? stored : null), setItem() {} },
+      localStorage: { getItem: (key: string) => (key === "ovis:composer-artifacts" ? stored : null), setItem() {} },
       matchMedia: () => ({ ...listen, matches: false }),
     },
     document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
@@ -36,7 +36,7 @@ afterEach(async () => {
   renderer = undefined;
   jest.useRealTimers();
   jest.restoreAllMocks();
-  stored = JSON.stringify({ composerArtifacts: true });
+  stored = "true";
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);

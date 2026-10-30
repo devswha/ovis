@@ -30,7 +30,7 @@ try {
   for (const width of [390, 1440]) for (const theme of ["light", "dark"]) {
     const context = await browser.newContext({ viewport: { width, height: 500 }, isMobile: width === 390, hasTouch: width === 390, reducedMotion: "reduce" });
     try {
-      await context.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, composerArtifacts: true })), theme);
+      await context.addInitScript((theme) => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); localStorage.setItem("ovis:composer-artifacts", "true"); }, theme);
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
       await page.goto(`http://127.0.0.1:${server.port}/`);

@@ -4,4 +4,5 @@
   the title and time of its latest publish, newest first, and opens the page on claude.ai in a new
   tab. It is off until turned on in **Settings → Chat → Composer → Artifacts chip**, so the
   message box stays minimal. Ovis reads the pages from the session's transcript; a remote PC needs
-  this version to list them. by @jpcarranza94
+  this version to list them.
+  ([#2405](https://github.com/devswha/ovis/pull/2405) by @jpcarranza94)

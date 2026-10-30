@@ -615,12 +615,25 @@ function readHistoryPrompts(): number {
   }
 }
 
+/** Settings > Chat > Composer > Artifacts chip, kept in a key of its own for the same reason: off until chosen. */
+export const COMPOSER_ARTIFACTS_STORAGE_KEY = "ovis:composer-artifacts";
+
+function readComposerArtifacts(): boolean {
+  try {
+    const raw = window.localStorage.getItem(COMPOSER_ARTIFACTS_STORAGE_KEY);
+    const value: unknown = raw === null ? null : JSON.parse(raw);
+    return typeof value === "boolean" ? value : DEFAULT_SETTINGS.composerArtifacts;
+  } catch {
+    return DEFAULT_SETTINGS.composerArtifacts;
+  }
+}
+
 export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts() };
+  return { ...merged, uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts() };
 }
 
 export function saveSettings(settings: Settings): void {
@@ -630,11 +643,12 @@ export function saveSettings(settings: Settings): void {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, historyPrompts, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, historyPrompts, composerArtifacts, ...main } = mirrored;
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
     window.localStorage.setItem(SIDEBAR_FILTER_STORAGE_KEY, JSON.stringify(sidebarFilter));
     window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
+    window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
   } catch {
     /* private mode: preferences last for the session */

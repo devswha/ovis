@@ -124,6 +124,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().composerArtifacts).toBe(false);
+    saveSettings(sanitizeSettings({ composerArtifacts: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerArtifacts");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerArtifacts).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), composerArtifacts: false });
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "\"true\"");
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "not json");
+    expect(loadSettings().composerArtifacts).toBe(false);
+  });
+
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
     putOld({ theme: "dark", palette: "charcoal" });
     const stale = readOld();
