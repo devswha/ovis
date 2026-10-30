@@ -920,42 +920,36 @@ const normalizeDisplay = (text: string): string => text.normalize("NFKC").replac
 const promptKey = (text: string): string => text.normalize("NFKC").replace(/^\s*\u203a/, "").replace(/\s+/g, "");
 
 /**
- * A text as its letters and digits and the symbols that change what it says (`a < b`, `feature-one`),
- * as a screen shows an answer: without the markers markdown starts a line with (a list's, a quote's,
- * a heading's) and the runs of a symbol it draws rules or emphasis with (`---`, `__`), which Codex
- * renders its own way.
+ * A text as its letters, digits and punctuation, as a screen shows an answer: without what markdown
+ * marks it with and Codex renders its own way, so only what changes what it says is left (`a < b` is
+ * not `a > b`, `a != b` not `a = b`, `feature-one` not `feature_one`). Gone are the markers a line
+ * starts with (a list's, a quote's, a heading's), a table's rule rows, runs of a symbol drawing rules
+ * or emphasis (`---`, `__`), an underscore that opens or closes emphasis (`_word_`), and the symbols
+ * of code, emphasis, links, tables, escapes and entities.
  */
 const markedDisplay = (text: string): string => text.normalize("NFKC")
+  .replace(/^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/gm, "")
   .replace(/^[ \t]*(?:[-*+]|>+|#{1,6}|\d+[.)])[ \t]+/gm, "")
   .replace(/([-=_])\1+/g, "")
-  .replace(/[^\p{L}\p{N}<>=+\-_/]/gu, "");
+  .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, "$1")
+  .replace(/[\s`*[\]|~\\&\u2022\u2502\u2514\u251c\u2500]/gu, "");
 
 /**
  * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
  * "›", a prompt sent or the input box, or an indented "↳", a message queued to be sent), each tool
- * call (an indented "└" and the lines below it, its output, with the "•" line above it and the lines
- * that line wraps onto, its call; or a "• Running"/"• Calling" line of one still running), with the
- * indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor a
- * tool call is evidence of the conversation shown: either may quote any conversation's answer.
+ * call Codex shows (a "•" line it starts with what it did, "Ran", "Called", "Explored", "Searched",
+ * "Waited", or what it is doing, "Running" and so on) and each tool's output (an indented "└"), with
+ * the indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor
+ * a tool's call or output is evidence of the conversation shown: any may quote any conversation's answer.
  */
 function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text: string }[] {
   const parts: { prompt: boolean; tool?: true; text: string }[] = [];
   for (const line of screen.split("\n")) {
     const last = parts.at(-1);
     const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
-    const output = !prompt && /^\s+\u2514(?:\s|$)/.test(line);
-    const running = !prompt && /^\u2022 (?:Running|Calling) /.test(line);
-    if (output && last !== undefined && !last.prompt && !last.tool) {
-      // the call's "•" line and what it wraps onto, above its output
-      const call = last.text.lastIndexOf("\n\u2022");
-      const at = call >= 0 ? call + 1 : last.text.startsWith("\u2022") ? 0 : -1;
-      if (at >= 0) {
-        const head = last.text.slice(0, at > 0 ? at - 1 : 0);
-        parts.splice(parts.length - 1, 1, ...(at > 0 ? [{ prompt: false, text: head }] : []), { prompt: false, tool: true, text: `${last.text.slice(at)}\n${line}` });
-        continue;
-      }
-    }
-    if (prompt || output || running) parts.push({ prompt, ...(output || running ? { tool: true as const } : {}), text: line });
+    const tool = !prompt && (/^\s+\u2514(?:\s|$)/.test(line)
+      || /^\u2022 (?:Ran|Running|Called|Calling|Explored|Exploring|Searched|Searching|Waited|Waiting)(?:\s|$)/.test(line));
+    if (prompt || tool) parts.push({ prompt, ...(tool ? { tool } : {}), text: line });
     else if (last !== undefined && (last.prompt || last.tool) && /^(?:\s|$)/.test(line)) last.text += `\n${line}`;
     else if (last !== undefined && !last.prompt && !last.tool) last.text += `\n${line}`;
     else parts.push({ prompt: false, text: line });

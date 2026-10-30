@@ -1787,6 +1787,8 @@ describe("another session's conversation is never shown for a plain Codex pane",
     const answers = [
       ["After carefully reviewing the requested configuration, the decisive result is a < b and all remaining verification steps completed successfully.",
         "After carefully reviewing the requested configuration, the decisive result is a > b and all remaining verification steps completed successfully."],
+      ["After carefully reviewing the requested configuration, the decisive result is a != b and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the decisive result is a = b and all remaining verification steps completed successfully."],
       ["After carefully reviewing the requested configuration, the branch to release is feature-one and all remaining verification steps completed successfully.",
         "After carefully reviewing the requested configuration, the branch to release is feature_one and all remaining verification steps completed successfully."],
     ] as const;
@@ -1807,11 +1809,25 @@ describe("another session's conversation is never shown for a plain Codex pane",
     }
   });
 
+  it("still reads a long answer Codex renders without its markdown: emphasis, code, links, lists", async () => {
+    const raw = "The **migration** now rewrites `legacy_records` in place, as _the important result_ shows; see [the plan](docs/plan.md) and:\n- every check passes, including a < b";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Summarize the migration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: raw } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    foreground = live;
+    screen = "OpenAI Codex (v0.165.0)\n\n› Summarize the migration\n\n• The migration now rewrites legacy_records in place, as the important result shows; see the plan\n  (docs/plan.md) and:\n  - every check passes, including a < b\n\n› ";
+    expect(await resolve()).toBe(path);
+  });
+
   it("takes no long answer a tool call's command quotes", async () => {
     foreground = live;
     for (const shown of [
       `• Ran printf "${answer}"\n  └ command is still running`,
       `• Running printf "${answer}"`,
+      // a heredoc Codex shows with "│" lines, and no output yet
+      `• Ran cat <<'EOF'\n  │ ${answer}\n  │ EOF`,
     ]) {
       screen = `OpenAI Codex (v0.165.0)\n\n› Execute the diagnostic\n\n${shown}\n\n• Working (3s • esc to interrupt)\n\n› `;
       expect(await resolve()).toBeNull();

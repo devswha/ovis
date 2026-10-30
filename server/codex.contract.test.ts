@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { herdrRpc, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, paneRead, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 
 // Real herdr metadata + HTTP + native files, all under an owned workspace/store.
@@ -34,7 +34,27 @@ beforeAll(async () => {
   workspaceId = created.workspace.workspace_id;
   paneId = created.root_pane.pane_id;
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
-  await herdrRpc("pane.send_text", { pane_id: paneId, text: `printf '%s\\n' '${answerPrefix}Answer one' '${answerPrefix}Answer two'\n` });
+  // a stand-in Codex that shows both answers and keeps running: the chat reads a screen only while
+  // a Codex process runs in the pane
+  mkdirSync(join(root, "bin"));
+  const codex = join(root, "bin", "codex");
+  writeFileSync(codex, `#!/bin/sh\nprintf '%s\\n' '${answerPrefix}Answer one' '${answerPrefix}Answer two'\nsleep 600\n`);
+  chmodSync(codex, 0o755);
+  await herdrRpc("pane.send_text", { pane_id: paneId, text: `${codex}\n` });
+  for (let attempt = 0; ; attempt++) {
+    const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid: number; argv?: string[] }[] } }>("pane.process_info", { pane_id: paneId });
+    const running = (info.process_info?.foreground_processes ?? []).some(({ pid, argv }) => {
+      let args = argv ?? [];
+      if (args.length === 0 && process.platform === "linux") {
+        try { args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { return false; }
+      }
+      return args.includes(codex);
+    });
+    const shown = (await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text.includes("Answer two");
+    if (running && shown) break;
+    if (attempt >= 100) throw new Error("the stand-in codex never ran with its answers on screen");
+    await Bun.sleep(100);
+  }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "push"), codexHome });
 });
 
