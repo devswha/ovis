@@ -73,9 +73,6 @@ function runsAgentProgram(entry: { name?: string | null; argv0?: string | null; 
   if (agent === "claude") return isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined });
   return agent === "pi" && isPiProcess(entry.argv ?? []);
 }
-const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh", "powershell", "cmd"]);
-const isShellProgram = (entry: { name?: string | null; argv?: readonly string[] | null }): boolean =>
-  SHELLS.has((entry.argv?.[0] ?? entry.name ?? "").split(/[\\/]/).pop()!.replace(/\.exe$/i, "").replace(/^-/, "").toLowerCase());
 const agentRuns = (identity: PendingIdentity, recognized: boolean): boolean => identity.agent !== null && identity.processPid !== null && recognized;
 /** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
@@ -390,7 +387,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * the old process's birth. While the foreground keeps changing, the latest process with no birth.
    */
   async function currentIdentity(paneId: string, bound: number | null = null): Promise<{ pane: HerdrPane; identity: PendingIdentity; shellPid: number | null; processes: ProcessInfo | undefined;
-    /** the process, as the last read shows it, is the agent's own program (agentProcesses) or the OmO holding its session */
+    /** the process, as the last read shows it, is the agent's own program (runsAgentProgram); a holder record alone is no proof */
     recognized: boolean;
     /** the process is the OmO holding a session, under the start its holder record was checked against */
     held: { pid: number; started: number | null } | null }> {
@@ -423,9 +420,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         // Windows names only the pane's shell in front, whatever runs in it, and has no foreground process group
         // (windows-processes.ts): which program takes the pane's input cannot be told there, so no agent is recognized
         // and a message for an agent alone is refused (#511, a known limit)
-        const recognized = process.platform !== "win32" && entry !== undefined && (runsAgentProgram(entry, base.agent)
-          // an OmO known only by the holder record checked for this PID, unless what runs there now is a shell
-          || processHeld !== null && !isShellProgram(entry));
+        // only positive evidence of the agent's own program counts: a session holder record outlives an exec at its PID,
+        // so an argv-silent OmO known by that record alone is refused (fail closed)
+        const recognized = process.platform !== "win32" && entry !== undefined && runsAgentProgram(entry, base.agent);
         return { pane, shellPid: after?.shell_pid ?? null, processes: after, held: processHeld, recognized, identity: {
           ...base, processPid, processBirth: settled ? processBirth : null,
           omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
