@@ -68,12 +68,11 @@ export class CompletionTracker {
 
   /**
    * `file` keeps the state across restarts (none: memory only); `herdr` names the herdr
-   * the panes live in, the identity of its socket file by default.
-   */
-  /**
-   * `reportedOnly`: every word comes from the program's own report (herdr-core's OSC 7501), none
-   * from a detector. Only its own working then idle is a finish; a pause it reports as blocked, or
-   * a report it clears, is none, and no badge is kept or invented without a report.
+   * the panes live in, the identity of its socket file by default. `reportedOnly` (herdr-core):
+   * a status is the program's own report (OSC 7501) or one its own session files give (OmO, GJC,
+   * a resting Claude), never a guess from the screen. Only the same program's working then idle is
+   * a finish; a pause it reports as blocked, a cleared report, or another program's idle is none,
+   * and no badge is kept without a report.
    */
   constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId, private readonly reportedOnly: () => boolean = () => false) {
     if (file === null) return;
