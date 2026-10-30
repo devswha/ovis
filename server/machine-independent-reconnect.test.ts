@@ -109,6 +109,24 @@ describe("independent bridge successor ownership", () => {
     await expect(internals.prepare(runtime)).rejects.toThrow("This PC's own Ovis is not running");
   });
 
+  it("retains the independent owner when a compatible successor reports a different PID", async () => {
+    const { internals, runtime, remote, verify, commands } = fixture();
+    await internals.prepare(runtime);
+    remote.managed = true;
+    verify.mockImplementationOnce(async () => ({
+      endpoint: { url: "http://127.0.0.1:1", token: "fixture" },
+      identity: {
+        pid: remote.pid + 1, managed_remote: true, bridge_protocol: BRIDGE_PROTOCOL,
+        bundle_version: REMOTE_BUNDLE_VERSION, socket_path: remote.socket,
+        socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 },
+      },
+    }));
+    await expect(internals.prepare(runtime)).rejects.toThrow("Bridge process verification failed");
+    remote.present = false; remote.bundle = "bundle-ready";
+    await expect(internals.prepare(runtime)).rejects.toThrow("This PC's own Ovis is not running");
+    expect(commands.some(script => script.includes("nohup") || script.includes("mkdir"))).toBe(false);
+  });
+
   it("clears the observation after verifying a managed successor", async () => {
     const { internals, runtime, remote } = fixture();
     await internals.prepare(runtime);

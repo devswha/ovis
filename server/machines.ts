@@ -1027,6 +1027,7 @@ export class MachineManager {
       throw error;
     }
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+    if (verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; ownership was not changed");
     learnServer(verified.identity, true);
     runtime.endpoint = verified.endpoint;
     if (moving) runtime.move!.herdr = verified.identity.herdr; else runtime.machine.herdr = verified.identity.herdr;

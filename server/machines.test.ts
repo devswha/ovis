@@ -1477,7 +1477,7 @@ describe("a Windows startup retried after a scheduler failure", () => {
     const mocks = [
       spyOn(windowsHost, "inspect").mockResolvedValue({ platform: "win32-x64", home: "C:\\Users\\u", herdrPath: "C:\\herdr.exe", expectedSocket: socket, bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: "C:\\registry" }),
       spyOn(windowsHost, "herdrVersion").mockResolvedValue("herdr 0.9.5"),
-      spyOn(manager as never, "verify").mockResolvedValue({ endpoint: { url: "http://fixture", token: "fixture" }, identity: { herdr: { version: "0.9.5", protocol: 22 } } } as never),
+      spyOn(manager as never, "verify").mockResolvedValue({ endpoint: { url: "http://fixture", token: "fixture" }, identity: { ...descriptor, socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } } as never),
       // The new bridge loads, clears any status itself and registers after the first poll.
       spyOn(Bun, "sleep").mockImplementation(async () => { if (launched) { status = null; registered = true; } }),
     ];
