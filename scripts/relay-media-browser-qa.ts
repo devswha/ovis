@@ -242,11 +242,11 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   async function closePage(page: Page): Promise<void> {
     if (page.isClosed()) return;
     const closed = page.waitForEvent("close");
-    await Promise.all([closed, page.close()]);
+    await bounded(Promise.all([closed, page.close()]), "page close");
   }
   async function closeContext(context: BrowserContext): Promise<void> {
     const closed = [context.waitForEvent("close"), ...context.pages().map((page) => page.waitForEvent("close"))];
-    await Promise.all([...closed, context.close()]);
+    await bounded(Promise.all([...closed, context.close()]), "context close");
     contexts.splice(contexts.indexOf(context), 1);
   }
   async function navigate(page: Page, url: string): Promise<void> {
@@ -567,12 +567,12 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       await navigate(page, `${origin}/s/${first.id}/?${new URLSearchParams({ pane: first.pane, file: join(first.dir, "page.html") })}`);
       const copy = page.getByRole("button", { name: "Copy link", exact: true });
       await copy.waitFor();
-      await copy.click({ force: true });
-      const href = await page.evaluate(async () => {
+      const copied = page.evaluate(async () => {
         const copied = () => (window as Window & { copiedLink?: string }).copiedLink;
         if (!copied()) await new Promise<void>((resolve) => addEventListener("copied-link", () => resolve(), { once: true }));
         return copied();
       });
+      const [href] = await bounded(Promise.all([copied, copy.click({ force: true })]), "copied-link clipboard event");
       assert.equal(href, origin + readerHref("local", join(first.dir, "page.html"), `/s/${first.id}/`));
       await closePage(page);
       const opened = await mediaPage(ctx);
@@ -589,20 +589,20 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const page = await pair(ctx, first);
       await controlled(page);
       await read(page, first, "picture.png");
-      await page.evaluate(async () => {
+      await bounded(page.evaluate(async () => {
         if ((window as Window & { resourceProbed?: boolean }).resourceProbed) return;
         await new Promise<void>((resolve) => addEventListener("resource-probe", () => resolve(), { once: true }));
-      });
+      }), "old worker resource probe");
       await page.clock.runFor(1500);
       await image(page);
       assert.ok((await page.locator("img.file-viewer-media").getAttribute("src"))?.startsWith("blob:"));
       workerMode = "current";
-      await page.evaluate(async () => {
+      await bounded(page.evaluate(async () => {
         const registration = await navigator.serviceWorker.ready;
         const changed = new Promise<void>((resolve) => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
         await registration.update();
         await changed;
-      });
+      }), "worker controller update");
       await read(page, first, "picture.png");
       await image(page);
       assert.ok((await page.locator("img.file-viewer-media").getAttribute("src"))?.startsWith(`/s/${first.id}/~/`));
@@ -648,19 +648,21 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     note("PASS relay media browser QA");
   } catch (error) {
     keep("failure", `${String(error)}\n${log.join("\n")}\n${JSON.stringify(requests, null, 2)}`);
-    for (const [index, ctx] of contexts.entries()) for (const [tab, page] of ctx.pages().entries()) await shot(page, `failure-${index}-${tab}`);
+    for (const [index, ctx] of contexts.entries()) for (const [tab, page] of ctx.pages().entries()) {
+      if (!page.isClosed()) await bounded(shot(page, `failure-${index}-${tab}`), "failure screenshot").catch(() => undefined);
+    }
     throw error;
   } finally {
     for (const ctx of [...contexts]) await closeContext(ctx);
     const disconnected = new Promise<void>((resolve) => browser.once("disconnected", () => resolve()));
-    await Promise.all([disconnected, browser.close()]);
+    await bounded(Promise.all([disconnected, browser.close()]), "browser close");
     assert.equal(browser.isConnected(), false);
     const ports = [shell.port, remote?.port, relay.port, ...pcs.map((p) => p.app.port)];
     shell.stop(true);
     remote?.stop(true);
-    for (const p of pcs) { await p.service.shutdown(); p.app.stop(); }
-    await relay.stop();
-    for (const workspace of workspaces) await workspaceClose(workspace);
+    for (const p of pcs) { await bounded(p.service.shutdown(), `${p.name} relay service shutdown`); p.app.stop(); }
+    await bounded(relay.stop(), "relay stop");
+    for (const workspace of workspaces) await bounded(workspaceClose(workspace), `workspace ${workspace} close`);
     for (const port of ports) if (port !== undefined) {
       await assert.rejects(fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) }), `port ${port} is still listening`);
     }
