@@ -694,6 +694,26 @@ visible to them even without a GitHub release. Existing tags cannot be reused; f
 published version with a new patch release. If publishing fails after a tag was created,
 verify that tag's commit and repair its GitHub release rather than moving the tag.
 
+The `shell-deploy` job then builds the hosted shell (`bun run build:shell`) from the release tag,
+deploys it with `bunx wrangler pages deploy dist-shell --project-name ovis-app --branch main`, waits
+until `https://app.ovis.sh/build.json` answers 2xx with the tag's commit as its `revision`, and
+attaches `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256` to the release, so anyone can compare
+what app.ovis.sh serves with what the tag builds. Nothing else deploys the shell: never from a
+branch or a developer machine. Until the owner setup below is done the job passes with a notice
+naming the missing secrets, still attaches the tarball, and app.ovis.sh stays as it was.
+
+One-time owner setup for the shell deploy:
+
+1. In Cloudflare, create the Pages project `ovis-app` (direct upload, production branch `main`) and
+   give it the custom domain `app.ovis.sh`.
+2. Create an API token that may edit Cloudflare Pages for that account, and add it with the account
+   ID as the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` of the GitHub environment
+   `production` (not repository secrets).
+3. Give the `production` environment the maintainer as a required reviewer: every deploy waits for
+   an approval on the Release run.
+4. Keep the account on the Workers Paid plan (the relay needs it) and set a billing alert at
+   $20 a month.
+
 Remote-PC runtime bundles are published by a `remote-vN` tag, and an app release requires the bundle
 that matches its server (step 3). See [remote PCs](remote-pcs.md).
 

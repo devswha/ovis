@@ -80,6 +80,88 @@ jobs:
           # shellcheck disable=SC2016 # JavaScript, not shell
           test "$(bun -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$RUNNER_TEMP/pty-sidecar/ovis-pty-sidecar.json")" = "$RELEASE_VERSION"
           gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP"/pty-sidecar/* --target "$GITHUB_SHA" --title "Ovis v$RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
+  # The hosted shell (https://app.ovis.sh/) is built from the release tag and nothing else. The job
+  # waits for the `production` environment's reviewer, and passes with a notice while the Cloudflare
+  # secrets are unset (docs/development.md#releasing); the tarball and its SHA-256 are attached either way.
+  shell-deploy:
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Require the release tag's commit
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$RELEASE_TAG' is not a release tag (vX.Y.Z)." >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || { echo "::error::$RELEASE_TAG is not a tag in this checkout." >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA" || { echo "::error::$RELEASE_TAG is not the commit this release published." >&2; exit 1; }
+      - run: bun install --frozen-lockfile
+      - name: Build the shell
+        run: bun run build:shell
+      - name: Pack the shell
+        run: |
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C dist-shell . | gzip -n > "$RUNNER_TEMP/dist-shell.tar.gz"
+          (cd "$RUNNER_TEMP" && sha256sum dist-shell.tar.gz > dist-shell.tar.gz.sha256 && cat dist-shell.tar.gz.sha256)
+      - name: Check the Cloudflare secrets
+        id: cloudflare
+        env:
+          HAS_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::notice title=Hosted shell not deployed::$RELEASE_TAG did not update https://app.ovis.sh/: these secrets are not set in the production environment:$missing. Set them (docs/development.md#releasing), then deploy the attached dist-shell.tar.gz or run a new release."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Deploy the shell to Cloudflare Pages
+        if: steps.cloudflare.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler pages deploy dist-shell --project-name ovis-app --branch main
+      - name: Verify app.ovis.sh serves this revision
+        if: steps.cloudflare.outputs.ready == 'true'
+        env:
+          SHELL_BUILD_URL: https://app.ovis.sh/build.json
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          # a redirect or an error page is not the shell: only a 2xx whose build.json names this commit passes
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code=$(curl -sS -o "$RUNNER_TEMP/build.json" -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$SHELL_BUILD_URL?rev=$EXPECTED_REVISION") || code=000
+            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && grep -qF "\"revision\":\"$EXPECTED_REVISION\"" "$RUNNER_TEMP/build.json"; then
+              echo "app.ovis.sh serves $EXPECTED_REVISION"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code, not revision $EXPECTED_REVISION yet" >&2
+            sleep 5
+          done
+          echo "::error::$SHELL_BUILD_URL did not serve revision $EXPECTED_REVISION (last HTTP $code)." >&2
+          exit 1
+      - name: Attach the shell tarball and its SHA-256 to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/dist-shell.tar.gz" "$RUNNER_TEMP/dist-shell.tar.gz.sha256" --clobber
   windows-app:
     needs: publish
     uses: ./.github/workflows/windows-app.yml
