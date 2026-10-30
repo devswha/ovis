@@ -54,6 +54,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新しいワークスペース",
   "Previous pane": "前のペイン",
   "Next pane": "次のペイン",
+  "Previous tab": "前のタブ",
+  "Next tab": "次のタブ",
+  "Previous workspace": "前のワークスペース",
+  "Next workspace": "次のワークスペース",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "待機",

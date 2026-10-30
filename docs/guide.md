@@ -367,6 +367,21 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
 - **Add an account.** The single **Add account** button lists Claude, Codex, Cursor, GitHub Copilot, Grok, Antigravity and OpenCode, then Hub. Installed CLIs sign in in a new terminal tab; missing ones show an installation hint. Only Claude and Codex offer hub sign-in and a separate `~/.claude-<name>` or `~/.codex-<name>` credential home. Other providers keep their existing home and require **Continue** before replacing a discovered sign-in. Account names use lowercase letters, numbers and hyphens. Codex and Grok use a device code only if their installed help lists it; Cursor prints its URL without opening a server browser. Claude may need a localhost callback. Antigravity gives interactive sign-in guidance rather than guessing a login command. OpenCode plan limits require OpenCode Go/Zen, not an arbitrary provider selected in its CLI. Hub sign-in provides a waiting state and a redirect-paste field.
 - **Connect a hub.** Choose **Hub** (**Import accounts from CLIProxyAPI**) in the same picker to enter its URL and server-saved management key. The connected hub appears as one compact row after the accounts, with **Edit** and **Remove**. Account rows show their source, plan and sign-in status inline.
 - **The server's PC only.** Remote PCs are not included.
+- **Claude's limits from its own status line.** Where Anthropic's usage endpoint is refused (it
+  answers 403 from some networks, which shows as a sign-in that expired when it has not), Claude Code's
+  status line is still handed the five-hour and weekly limits. Turn on **Read Claude's limits from its
+  status line** in Settings → Subscription usage, or **Read from Claude's status line instead** under
+  such a refused Claude account in the usage popover; nothing turns it on for you. The server's PC then
+  adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
+  and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
+  when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
+  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  by you. A reading counts only for the account that drew it and only until its window resets, and an
+  answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
+  deletes what was added; a file there that it did not write is never replaced or deleted. If you have
+  since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
+  and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
+  Windows.
 - On macOS, a server started outside the logged-in desktop session (over SSH, or by a multiplexer started there) reads the keychain item through a one-shot job in that desktop session. A keychain that still cannot be opened shows as such instead of the numbers.
 
 ## Voice input
@@ -563,7 +578,7 @@ The `map` block goes in the `http` section. `proxy_read_timeout` keeps an idle t
 
 Both examples drop a `Tailscale-User-Login` header a visitor sends. That header is how `tailscale serve` names your own login, and on a PC that runs Tailscale the server trusts it from any proxy on this PC, so a public proxy must not pass a visitor's copy on. With a token set the server asks for the token whatever that header says, so a proxy that does pass it on gives a visitor nothing.
 
-**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy, Cloudflare Access and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
+**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
 
 ```caddyfile
 		header_up Authorization "Bearer {env.OVIS_TOKEN}"
@@ -580,6 +595,25 @@ The proxy's own sign-in is then the only one: anyone it lets through gets in, an
 To check the app's gate, request its `/api/session` directly without a token: it must answer 401.
 If the proxy signs people in, also check that a signed-out visitor cannot reach the app through
 the public address.
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) gives this PC a public HTTPS address on a domain in your Cloudflare account, with no port open on this PC. `cloudflared` does all four things with no settings: Cloudflare keeps the public `Host`, sends `X-Forwarded-For` and `X-Forwarded-Proto: https`, and passes the `/ws` upgrade. Keep `HOST=127.0.0.1` and set `OVIS_TOKEN` first, then [create the tunnel and route its hostname](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/) (`cloudflared tunnel login`, `cloudflared tunnel create ovis`, `cloudflared tunnel route dns ovis herdr.example.com`) and point that hostname at the app in `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <tunnel ID>
+credentials-file: /home/<you>/.cloudflared/<tunnel ID>.json
+ingress:
+  - hostname: herdr.example.com
+    service: http://127.0.0.1:7317
+  - service: http_status:404
+```
+
+`cloudflared tunnel run ovis` then starts it. A tunnel made in the Cloudflare dashboard ignores this file: set its public hostname's service to `http://127.0.0.1:7317` there.
+
+To try it without an account, `cloudflared tunnel --url http://127.0.0.1:7317` prints a random `https://<words>.trycloudflare.com` address. It changes on every run, and cookies and the installed app are tied to the address, so it suits a test, not a phone you keep using. A quick tunnel also carries no [Server-Sent Events](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/), which the sidebar and the PC list update by, so the terminal works through it but those may not update by themselves.
+
+Unlike the Caddy and nginx examples, Cloudflare passes on a `Tailscale-User-Login` header a visitor sends. On a PC that runs Tailscale, the server still does not take it for your login, because Cloudflare adds the visitor's own address to `X-Forwarded-For`, but do not rely on that: with a token set the header gives a visitor nothing. To drop it as well, add a [Request Header Transform Rule](https://developers.cloudflare.com/rules/transform/request-header-modification/) for that hostname that removes it. Do not set `OVIS_TAILSCALE_SERVE_ONLY=1` on a PC a tunnel reaches.
+
+Cloudflare Access can put its sign-in in front of that hostname, but it cannot hand the app the token as Caddy or nginx can: Access adds no `Authorization` header to the requests it lets through. Keep the app's own gate on behind it. Each device signs in to Access, then enters the token once or is paired from **Settings → Phone & devices**, and stays signed in to the app; Access still asks it to sign in again when its own session runs out. A script reaches the app through Access with an Access [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), allowed by a **Service Auth** policy on that application, in its `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, plus `Authorization: Bearer <your token>` for the app. The Android app cannot get past the Access sign-in yet ([#2008](https://github.com/devswha/ovis/issues/2008)): open the address in the phone's browser instead.
 
 [Portal](https://github.com/gosuda/portal-tunnel) gives this PC a public HTTPS address with no account and no domain of your own. From v2.6.1, its `--http-route` does all four things and can drop a header a visitor sends; the plain `portal expose 7317` sends no `X-Forwarded-Proto`, so the app's own requests are refused (`invalid_origin`).
 
@@ -808,7 +842,7 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 
 - **An SSH tunnel from the phone** (Termux, Blink): `ssh -L 7317:127.0.0.1:7317 <pc>`, then open `http://localhost:7317` on the phone. Browsers treat localhost as secure, so installing and alerts should work while the tunnel is up (not verified on iOS yet). The phone still has to reach the PC over SSH.
 - **A VPN into your home** (WireGuard, ZeroTier, a router VPN): the LAN address works in the browser, but a plain `http://` address can neither install the app nor receive alerts.
-- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy and nginx examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
+- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy, nginx and Cloudflare Tunnel examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
 - **A public address with Portal**, a tunnel with no account and no domain of your own, with a long random token set: [Behind a reverse proxy](#behind-a-reverse-proxy) has the command, and **Settings → Phone & devices → Portal** runs it for you. This exposes the server to the internet too.
 </details>
 

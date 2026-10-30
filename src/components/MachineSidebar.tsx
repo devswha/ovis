@@ -189,7 +189,7 @@ export function MachineSidebar(props: Props) {
           showing in every tab. Settings → Phone & devices → Install offers it (SettingsDialog). */}
       <div className="sidebar-footer-row">
         <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={props.actions.openSettings}><Settings aria-hidden="true" /></button>
-        <UsageMeters onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
+        <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
       </div>
     </footer>
   </div></SidebarFilterProvider></SidebarActivityProvider>;

@@ -56,6 +56,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新建工作区",
   "Previous pane": "上一个窗格",
   "Next pane": "下一个窗格",
+  "Previous tab": "上一个标签页",
+  "Next tab": "下一个标签页",
+  "Previous workspace": "上一个工作区",
+  "Next workspace": "下一个工作区",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "就绪",

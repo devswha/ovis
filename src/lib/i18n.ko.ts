@@ -52,6 +52,10 @@ const BASE: Record<string, string> = {
   "New workspace": "새 워크스페이스",
   "Previous pane": "이전 패널",
   "Next pane": "다음 패널",
+  "Previous tab": "이전 탭",
+  "Next tab": "다음 탭",
+  "Previous workspace": "이전 워크스페이스",
+  "Next workspace": "다음 워크스페이스",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "대기",
