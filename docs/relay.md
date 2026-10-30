@@ -147,11 +147,13 @@ it, and the identity reset is refused.
    `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1`, with its public key. Before the
    relay lets that socket, or any data socket below, take the PC's place, it sends a fresh
    challenge, and the PC answers with a code only its secret key can make (X25519 and
-   HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). An answer that's
-   wrong or missing closes the socket with `4401`; one later than 10 seconds closes it with `1013`.
-   An expired proof or a challenge out of order is a hiccup, and the PC keeps reconnecting with its
-   usual backoff. Only a `4401` on the control socket, meaning the key doesn't match the
-   `server_id`, stops the PC retrying, and its relay status shows an error with the reason. A refused data
+   HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). The relay closes
+   the socket with `4401` when the PC didn't offer the proof at all, when its key doesn't match the
+   `server_id`, or when the answer is wrong. A challenge left unanswered for 10 seconds, or answered
+   after that, closes it with `1013`. The PC closes the socket itself with `4000` when the challenge
+   it got is invalid or out of order. Both `1013` and `4000` are hiccups, and the PC keeps
+   reconnecting with its usual backoff. Only a `4401` on the control socket stops the PC retrying,
+   and its relay status shows an error with the reason. A refused data
    socket only ends that phone's connection: the status stays online and gives no reason (`shared/relay-server-proof.ts`,
    [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
@@ -303,7 +305,8 @@ A phone has one connection to the PC, so the mux shares it out:
   ordinary share is bulk, so 24 KiB always stays free for interactive frames. Bulk can still sit up
   to 384 KiB ahead of a terminal frame on the one ordered connection. That's about 31 ms at
   100 Mbit/s, and longer on a slow link, though the scheduler still puts interactive frames first.
-- **Memory reserved.** Before it admits a stream, a session reserves 12 MiB of receive windows.
+- **Memory reserved.** Before it admits a stream, a session reserves that stream's receive window
+  against one cap of 12 MiB for all its streams together, not 12 MiB per stream.
   The measurements behind these values are in `docs/relay-mux-limits.md`
   ([`shared/relay-mux.ts`](../shared/relay-mux.ts),
   [`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts)).
@@ -312,6 +315,11 @@ A phone has one connection to the PC, so the mux shares it out:
   (everything else) then take turns, four interactive frames to one bulk, round robin within each.
 - **Queues.** A sender queues at most 4 MiB, and at most 3 MiB of that for streams other than
   terminals, so terminal output always has room.
+- **Waiting requests.** When every stream slot is taken, the app's HTTP requests wait their turn in
+  order, at most 64 of them, each for up to 30 seconds. A request past either limit fails with an
+  error rather than hanging, and so does one cancelled while it waits. When the connection drops,
+  every waiting request fails; none is sent again over the next connection, so a `POST` never runs
+  twice ([`src/lib/relay/transport.ts`](../src/lib/relay/transport.ts)).
 
 One limit can't be designed away: all of a phone's streams share its one connection. When that
 connection stalls (a slow mobile network, an app sent to the background), all of that phone's
@@ -373,8 +381,11 @@ WebSocket close codes the app can see through the relay:
 | `1009` | a message over 1 MiB |
 | `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
 
-The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing or wrong,
-and with `1013` when it comes late, which the PC retries ([step 1](#how-a-connection-is-made)). A phone never sees it: it finds the PC offline.
+The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing, its key
+doesn't match the `server_id` or the answer is wrong, and with `1013` when the challenge goes
+unanswered for 10 seconds. The PC closes a socket itself with `4000` when the challenge is invalid or
+out of order. It retries after `1013` and `4000`, and stops only after a `4401` on its control socket
+([step 1](#how-a-connection-is-made)). A phone never sees these codes: it finds the PC offline.
 
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
