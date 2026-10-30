@@ -407,6 +407,12 @@ export function openCodexStore(home: string): { db: Database; immutable: boolean
   };
 }
 
+/** Whether a store read that failed may be taken as failed, not torn: a Codex wrote no immutable read under it. */
+const storeUnchanged = (opened: ReturnType<typeof openCodexStore> | undefined): boolean => {
+  if (opened?.immutable !== true) return true;
+  try { opened.settled(); return true; } catch { return false; }
+};
+
 export const defaultCodexHome = (): string => process.env["CODEX_HOME"] || join(homedir(), ".codex");
 
 /** What processCodexHome found, by pid and argv, and when (PROCESS_HOME_TTL_MS). */
@@ -2662,9 +2668,9 @@ export async function codexOpenRollout(paneId: string, cwd: string | null | unde
     if (titledAway) return null;
     return newer.length === 0 ? bound.path : null;
   } catch (error) {
-    // a store that changed while it was read, or an immutable read that failed (a Codex writing under it),
-    // tells nothing, and keeps no binding
-    if (error instanceof CodexStoreChanged || opened?.immutable === true) return null;
+    // a store that changed while it was read tells nothing, and keeps no binding. An immutable read that
+    // failed on a store that did not change failed as any read would (an older store's tables)
+    if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
     // no store to ask, as codexTranscriptPath then keeps its binding too; one the title made cannot be checked
     return bound.titled === true ? null : bound.path;
   } finally { db?.close(); }
@@ -2754,9 +2760,10 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (titled !== null && !paths.includes(titled)) { titledElsewhere = titled; paths.push(titled); }
     opened.settled();
   } catch (error) {
-    // a store that changed while it was read, or an immutable read that failed (a Codex writing under it),
-    // tells nothing, and what was read of it is dropped: the terminal stands in until the next read
-    if (error instanceof CodexStoreChanged || opened?.immutable === true) return null;
+    // a store that changed while it was read tells nothing, and what was read of it is dropped: the terminal
+    // stands in until the next read. An immutable read that failed on a store that did not change failed as
+    // any read would (an older store's tables), and the open descriptors still tell below
+    if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
     /* Older installations can still resolve their open descriptors. */
   }
   finally { db?.close(); }
