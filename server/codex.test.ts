@@ -757,6 +757,49 @@ describe("Codex rollout resolution", () => {
     expect(matchCodexTranscript("• The report (output/test/REPORT.md)", candidates)).toBeNull();
   });
 
+  it("matches rendered local file links containing spaces without selecting an ambiguous conversation", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "C:/Users/User/My Project/report.md",
+      "C:\\Users\\User\\My Project\\report.md", "</home/user/My Project/Daily notes/report.md>",
+      "<C:/Users/User/My Project/report.md>", "<C:\\Users\\User\\My Project\\report.md>"]) {
+      const linked = `${answer} [Daily report](${target})`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+      const screen = `• ${answer} Daily report (Daily notes/report.md)`;
+      expect(matchCodexTranscript(screen, candidates)).toBe("own");
+      expect(matchCodexTranscript(screen, [...candidates, { ...candidates[0]!, path: "copy" }])).toBeNull();
+      expect(matchCodexTranscript("• Daily report (Daily notes/report.md)", candidates)).toBeNull();
+    }
+  });
+
+  it("does not select a conversation from only an angle-wrapped file link containing parentheses", () => {
+    const filename = "report (old) with detailed quarterly analysis and supporting documentation for project milestones.md";
+    const linked = `${answer} [Daily report](</home/user/My Project/${filename}>)`;
+    const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+    expect(matchCodexTranscript(`• Daily report (${filename})`, candidates)).toBeNull();
+    expect(matchCodexTranscript(`• ${answer} Daily report (${filename})`, candidates)).toBe("own");
+  });
+
+  it("keeps local link destinations containing a line break as literal answer text", () => {
+    for (const newline of ["\n", "\r", "\r\n"]) {
+      for (const target of [`/home/user/My Project${newline}Daily notes/report.md`,
+        `</home/user/My Project${newline}Daily notes/report (old).md>`]) {
+        const literal = `${answer} [Daily report](${target})`;
+        const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+        expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+        expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+      }
+    }
+  });
+
+  it("keeps unclosed local file links as literal answer text", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "</home/user/My Project/Daily notes/report.md>",
+      "</home/user/My Project/Daily notes/report (old).md)"]) {
+      const literal = `${answer} [Daily report](${target}`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+      expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+      expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+    }
+  });
+
   // issue #283: no answer of this session reaches 64 letters and digits (40, 29 and 38)
   const short = [
     "세 사진을 확인하고 한 장으로 합칠게요. 이미지 편집을 위해 imagegen 스킬을 사용할게요.",

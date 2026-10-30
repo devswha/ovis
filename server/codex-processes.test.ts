@@ -129,6 +129,19 @@ it("selects the resumed rollout for the observed native executable alias", async
   expect(await resolve()).toBe(path);
 });
 
+it("binds a conversation with a spaced local file link and keeps it when its screen no longer tells", async () => {
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const linked = `${answer} [Daily report](</home/user/My Project/Daily notes/report.md>)`;
+  writeFileSync(path, [
+    { type: "session_meta", payload: { id: thread, cwd: root } },
+    { type: "event_msg", payload: { type: "agent_message", message: linked } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  screen = `• ${answer} Daily report (Daily notes/report.md)`;
+  expect(await resolve()).toBe(path);
+  screen = "";
+  expect(await resolve()).toBe(path);
+});
+
 it.skipIf(process.platform !== "linux")("keeps the screen binding with recovered argv while the same process runs", async () => {
   const child = await runningCodex();
   foreground = [{ pid: child.pid, name: "codex" }];

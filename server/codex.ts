@@ -921,7 +921,7 @@ const normalizeDisplay = (text: string): string => text.normalize("NFKC").replac
  * it is made of, for what another conversation's screen may show of it (mayShowWords).
  */
 function answerAnchor(text: string): Anchor | null {
-  const pieces = text.split(/\]\([^)\s]*\)/);
+  const pieces = cutAtLinkTargets(text).map((piece) => piece.text);
   for (let index = pieces.length - 1; index >= 0; index--) {
     const anchor = normalizeDisplay(pieces[index]!).slice(-160);
     if (anchor.length >= 64 && new Set(anchor).size >= 12) return { anchor, words: wordsEnding(pieces[index]!, anchor.length) };
@@ -978,11 +978,8 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
 
 /** Text as an answer's anchor is looked for in it (answerAnchor): cut at link targets, each piece letters and digits. */
 function saidText(text: string): string[] {
-  return text.split(LINK_TARGET).map(normalizeDisplay);
+  return cutAtLinkTargets(text).map((piece) => normalizeDisplay(piece.text));
 }
-
-/** A markdown link's target, as answerAnchor cuts a text at it. */
-const LINK_TARGET = /\]\([^)\s]*\)/;
 
 /**
  * What a conversation said, as saidText reads it, joined, and where each of its records ends in it
@@ -1101,7 +1098,18 @@ function cutAtLinkTargets(text: string): { text: string; target: string }[] {
   let search = 0;
   for (let at = text.indexOf("](", search); at >= 0; at = text.indexOf("](", search)) {
     let end = at + 2;
-    while (end < text.length && text[end] !== ")" && !/\s/.test(text[end]!)) end++;
+    // Codex renders absolute local paths with spaces as file links, shortening the target
+    // relative to cwd. Those spaces are part of the path, not the end of its destination.
+    // Keep ordinary whitespace/malformed prose unchanged, and never cross a line boundary.
+    const local = /^<?(?:\/|[A-Za-z]:[\\/])/.test(text.slice(end, end + 4));
+    if (text[end] === "<") {
+      while (end < text.length && text[end] !== ">" && !/[\r\n]/.test(text[end]!)) end++;
+      if (text[end] !== ">") { search = end; continue; }
+      end++;
+    } else {
+      while (end < text.length && text[end] !== ")" && !/[\r\n]/.test(text[end]!)
+        && (local || !/\s/.test(text[end]!))) end++;
+    }
     // unclosed: no "](" before `end` is closed either, so all of it stays text
     if (text[end] !== ")") { search = end; continue; }
     pieces.push({ text: text.slice(start, at), target: text.slice(at + 2, end) });
