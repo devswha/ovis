@@ -50,13 +50,32 @@ it("streams local and remote resource targets with Range, status and all securit
   for (const target of ["/api/fs/file?path=%2fA+%20", "/api/machines/pc%2F1/fs/file?path=x", "/api/pane/conversation/image?ref=a%3A0"]) {
     const response = await serve(relayResourcePath(id, target), { headers: { range: "bytes=2-4", "if-none-match": '"one"', authorization: "never-forward" } });
     expect(response?.status).toBe(206);
-    expect(response?.headers.get("content-security-policy")).toBe(headers["content-security-policy"]);
+    expect(response?.headers.get("content-security-policy")).toStartWith(headers["content-security-policy"] + ", sandbox;");
     expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response?.headers.get("set-cookie")).toBeNull();
     expect(await response?.text()).toBe("234");
     expect(asked.at(-1)).toMatchObject({ target, headers: [["if-none-match", '"one"'], ["range", "bytes=2-4"]], serverId: id });
   }
 });
+
+for (const mime of ["text/html", "image/svg+xml", " APPLICATION/PDF ; version=1.7 ", "application/pdf", "application/pdfx"]) {
+  for (const policy of [null, "sandbox allow-scripts allow-same-origin; script-src * 'unsafe-inline'"]) {
+    it(`enforces shell isolation for ${mime} with PC policy ${policy}`, async () => {
+      const received = new Headers({ "content-type": mime, "x-content-type-options": "unsafe" });
+      if (policy) received.set("content-security-policy", policy);
+      const serve = worker(true, [{ url: origin + scope, postMessage(_data, ports) {
+        ports[0]?.postMessage({ available: true, status: 200, headers: [...received], body: new Response("file").body });
+      } }]);
+      const response = await serve(`${scope}~/api/fs/file`);
+      const enforced = response?.headers.get("content-security-policy")?.split(", ").at(-1);
+      expect(enforced).toContain("script-src 'none'");
+      expect(enforced?.startsWith("sandbox;")).toBe(mime.trim().toLowerCase().split(";")[0]?.trim() !== "application/pdf");
+      if (policy) expect(response?.headers.get("content-security-policy")).toStartWith(policy + ", ");
+      expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(await response?.text()).toBe("file");
+    });
+  }
+}
 
 it("leaves non-GET, other API routes and the render host untouched, and leaves the server build unchanged", () => {
   const shell = worker(true, []);

@@ -174,7 +174,14 @@ async function relayResourceResponse(request, target) {
         const data = event.data;
         if (!data?.available) { finish(); resolve(null); return; }
         if (data.status === undefined) return; // selected; headers arrive when the PC answers
-        const headers = data.headers.filter(([name]) => RELAY_RESOURCES.headers.includes(name));
+        const headers = new Headers(data.headers.filter(([name]) => RELAY_RESOURCES.headers.includes(name.toLowerCase())));
+        // A paired PC is not trusted with the shell origin shared by every other PC.
+        // PDF uses Chrome's isolated viewer, which refuses sandboxed documents. nosniff
+        // keeps HTML disguised as PDF out of the HTML parser; script-src also forbids
+        // shell-origin script. Rendered HTML runs separately at ~render, not this route.
+        const pdf = headers.get("content-type")?.split(";")[0].trim().toLowerCase() === "application/pdf";
+        headers.append("content-security-policy", `${pdf ? "" : "sandbox; "}default-src 'none'; script-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'`);
+        headers.set("x-content-type-options", "nosniff");
         reader = data.body?.getReader();
         const body = reader ? new ReadableStream({
           async pull(controller) {
