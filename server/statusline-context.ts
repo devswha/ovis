@@ -66,7 +66,14 @@ export function removeContextFile(path: string, profile: string, olderThan = Inf
     contextFs.linkSync(quarantine, path);
   } catch {
     // Includes EEXIST, and directories (which cannot be hard linked). Never replace the original.
-    contextFs.renameSync(quarantine, contextJoin(directory, `statusline-context-recovery-${id}`));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const recovery = contextJoin(directory, `statusline-context-recovery-${attempt === 0 ? id : contextUUID()}`);
+      try {
+        contextFs.linkSync(quarantine, recovery);
+      } catch { continue; /* Keep quarantine if no recovery name can be published. */ }
+      contextFs.unlinkSync(quarantine);
+      break;
+    }
     return false;
   }
   contextFs.unlinkSync(quarantine);
@@ -77,19 +84,24 @@ export function removeContextFile(path: string, profile: string, olderThan = Inf
 export function pruneContextFiles(directory: string, profile: string, now: number): void {
   if (!contextDirectorySafe(directory)) return;
   const entries = contextFs.opendirSync(directory);
+  const candidates: { path: string; mtimeMs: number }[] = [];
+  const pattern = new RegExp(`^${profile.slice(0, 16)}-[a-zA-Z0-9-]{1,128}\\.json$`);
   try {
-    for (let scanned = 0; scanned < 128; scanned++) {
-      const entry = entries.readSync();
-      if (entry === null) break;
-      if (!entry.name.startsWith(profile.slice(0, 16) + "-") || !entry.name.endsWith(".json")) continue;
+    for (let entry = entries.readSync(); entry !== null; entry = entries.readSync()) {
+      if (!pattern.test(entry.name)) continue;
       const path = contextJoin(directory, entry.name);
-      // This check only saves work. Deletion validates the quarantined inode again.
       try {
-        if (contextFs.lstatSync(path).mtimeMs < now - CONTEXT_STALE_MS) removeContextFile(path, profile, now - CONTEXT_STALE_MS);
+        const { mtimeMs } = contextFs.lstatSync(path);
+        if (mtimeMs < now - CONTEXT_STALE_MS) candidates.push({ path, mtimeMs });
       } catch { /* Another render/removal may have moved it. */ }
     }
   } finally {
     entries.closeSync();
+  }
+  // Inspect at most 128 own captures, oldest first; foreign names cannot consume the budget.
+  for (const { path } of candidates.sort((a, b) => a.mtimeMs - b.mtimeMs).slice(0, 128)) {
+    try { removeContextFile(path, profile, now - CONTEXT_STALE_MS); }
+    catch { /* Another render/removal may have moved it. */ }
   }
 }
 

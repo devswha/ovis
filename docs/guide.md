@@ -387,6 +387,7 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
   `statusline-context-recovery-*` entries if restoration is blocked. Publication uses a hard link
   and never overwrites an existing target. These pathname-only POSIX operations cannot prevent a
   concurrent process running as your uid from replacing a parent directory between operations.
+  A concurrent same-user process replacing the quarantine name or directory itself during the few microseconds of an operation is also outside what pathname APIs can exclude.
   The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and

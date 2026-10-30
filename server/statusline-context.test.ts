@@ -92,6 +92,58 @@ describe("session context publication and quarantine", () => {
     expect(fs.readFileSync(target(), "utf8")).toBe("newcomer");
   });
 
+  it("preserves an occupied recovery name and retries with a fresh name", () => {
+    fs.writeFileSync(target(), "original user file");
+    const rename = fs.renameSync;
+    let occupied = "";
+    const hook = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      rename(from, to);
+      if (String(from) !== target()) return;
+      fs.writeFileSync(target(), "new user file");
+      occupied = String(to).replace(".statusline-context-", "statusline-context-recovery-").replace(/\.quarantine$/, "");
+      fs.writeFileSync(occupied, "existing recovery");
+    });
+    try {
+      expect(removeContextFile(target(), profile)).toBe(false);
+    } finally {
+      hook.mockRestore();
+    }
+    expect(fs.readFileSync(occupied, "utf8")).toBe("existing recovery");
+    expect(fs.readFileSync(target(), "utf8")).toBe("new user file");
+    const recovered = fs.readdirSync(directory).filter(name => name.startsWith("statusline-context-recovery-"))
+      .map(name => fs.readFileSync(join(directory, name), "utf8"));
+    expect(recovered.sort()).toEqual(["existing recovery", "original user file"]);
+    expect(fs.readdirSync(directory).some(name => name.endsWith(".quarantine"))).toBe(false);
+  });
+
+  it("keeps quarantine when every bounded recovery attempt collides", () => {
+    fs.writeFileSync(target(), "original user file");
+    const link = fs.linkSync;
+    let attempts = 0;
+    const hook = spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      if (String(to) === target()) fs.writeFileSync(target(), "new user file");
+      else {
+        attempts++;
+        fs.writeFileSync(to, "existing recovery", { flag: "wx" });
+      }
+      link(from, to);
+    });
+    try {
+      expect(removeContextFile(target(), profile)).toBe(false);
+    } finally {
+      hook.mockRestore();
+    }
+    expect(attempts).toBe(4);
+    const quarantine = fs.readdirSync(directory).find(name => name.endsWith(".quarantine"));
+    expect(quarantine).toBeDefined();
+    if (quarantine === undefined) return;
+    expect(fs.readFileSync(join(directory, quarantine), "utf8")).toBe("original user file");
+    expect(fs.readFileSync(target(), "utf8")).toBe("new user file");
+    for (const name of fs.readdirSync(directory).filter(name => name.startsWith("statusline-context-recovery-"))) {
+      expect(fs.readFileSync(join(directory, name), "utf8")).toBe("existing recovery");
+    }
+  });
+
   it("does not chmod or follow an unsafe directory and still preserves its contents", () => {
     const outside = join(home, "outside");
     fs.mkdirSync(outside, { mode: 0o755 });
@@ -117,5 +169,36 @@ describe("session context publication and quarantine", () => {
     }
     pruneContextFiles(directory, profile, now);
     expect(fs.readdirSync(directory)).toHaveLength(12);
+  });
+
+  it("prunes oldest own captures despite 200 foreign entries ahead of them", () => {
+    const now = 1_800_000_000_000;
+    const foreign = "f".repeat(64) === profile ? "e".repeat(64) : "f".repeat(64);
+    for (let index = 0; index < 200; index++) {
+      const name = index % 2 === 0 ? contextFilename(foreign, "foreign-" + index) : `unrecognized-${index}`;
+      fs.writeFileSync(join(directory, name), "foreign");
+    }
+    for (let index = 0; index < 130; index++) {
+      const path = join(directory, contextFilename(profile, "session-" + index));
+      fs.writeFileSync(path, saved());
+      const old = new Date(now - CONTEXT_STALE_MS - (index + 1) * 1000);
+      fs.utimesSync(path, old, old);
+    }
+    // Fix the listing order so foreign names consume the old implementation's entire budget.
+    const entries = fs.readdirSync(directory, { withFileTypes: true })
+      .sort((a, b) => Number(a.name.startsWith(profile.slice(0, 16))) - Number(b.name.startsWith(profile.slice(0, 16))));
+    const listing = fs.opendirSync(directory);
+    const read = spyOn(listing, "readSync").mockImplementation(() => entries.shift() ?? null);
+    const open = spyOn(fs, "opendirSync").mockReturnValue(listing);
+    try {
+      pruneContextFiles(directory, profile, now);
+    } finally {
+      open.mockRestore();
+      read.mockRestore();
+    }
+    expect(fs.readdirSync(directory)).toHaveLength(202);
+    expect(fs.existsSync(join(directory, contextFilename(profile, "session-0")))).toBe(true);
+    expect(fs.existsSync(join(directory, contextFilename(profile, "session-1")))).toBe(true);
+    expect(fs.existsSync(join(directory, contextFilename(profile, "session-129")))).toBe(false);
   });
 });

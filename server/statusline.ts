@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile, readContextFile } from "./statusline-context.ts";
 
@@ -106,7 +106,8 @@ export function readStatuslineContext(home: string, sessionId: string, model: st
   try {
     const directory = join(home, ".herdr", "statusline-context");
     if (!contextDirectorySafe(directory)) return null;
-    const profile = contextProfile(dirname(dirname(dirname(realpathSync(transcriptPath)))));
+    // Discovery keeps the config-dir spelling; only that directory is canonicalized, not projects.
+    const profile = contextProfile(dirname(dirname(dirname(transcriptPath))));
     const capture = readContextFile(join(directory, contextFilename(profile, sessionId)), profile);
     if (capture === null || now - capture.mtimeMs > STALE_MS || capture.mtimeMs - now > 60_000) return null;
     const body = record(capture.body);

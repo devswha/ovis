@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CONTEXT_GENERATED, contextFilename, contextProfile } from "./statusline-context.ts";
+import { claudeTranscriptFile } from "./claude-store.ts";
 import { STALE_MS, parseStatusline, readStatusline, readStatuslineContext as readContext } from "./statusline.ts";
 
 const readStatuslineContext = (home: string, session: string, model: string | null, now?: number) =>
@@ -106,6 +107,25 @@ describe("Claude session context", () => {
     expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
     write({ ...captured, window: 200_000 });
     expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(200_000);
+  });
+
+  it("keeps each profile's window when their projects share a symlink target", async () => {
+    const configA = join(home, ".claude");
+    const configB = join(home, ".claude-work");
+    mkdirSync(configB);
+    symlinkSync(join(configA, "projects"), join(configB, "projects"));
+    for (const [config, window] of [[configA, 200_000], [configB, 1_000_000]] as const) {
+      const ownProfile = contextProfile(config);
+      writeFileSync(join(directory, contextFilename(ownProfile, "session-a")), JSON.stringify({
+        generatedBy: CONTEXT_GENERATED, ...captured, window, _herdr: { profile: ownProfile },
+      }));
+    }
+    for (const [config, expected] of [[configA, 200_000], [configB, 1_000_000]] as const) {
+      const transcript = await claudeTranscriptFile(home, "session-a", [], config);
+      expect(transcript).not.toBeNull();
+      if (transcript === null) continue;
+      expect(readContext(home, "session-a", "claude-test", transcript)).toBe(expected);
+    }
   });
 
   it("does not borrow another session's or model's window", () => {
