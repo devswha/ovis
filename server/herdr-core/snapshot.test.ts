@@ -158,6 +158,12 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect([snapshot.workspaces[0]!.label, snapshot.tabs[0]!.label]).toEqual(["Web", "Logs"]);
   });
 
+  it("names an unnamed space and tab of the app's from the app's own `where` label first", () => {
+    const layout = { spaces: [{ id: "S", name: "", tabs: [{ id: "T", name: "", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T", where: "Work / Logs", "ovis.workspace": "Web", "ovis.tab": "Tail" } })], layout, "0.1.14");
+    expect([snapshot.workspaces[0]!.label, snapshot.tabs[0]!.label]).toEqual(["Work", "Logs"]);
+  });
+
   it("shows no space or tab of the app's with nothing live in it", () => {
     const layout = { spaces: [{ id: "S", name: "work", tabs: [{ id: "T", name: "main", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
     const snapshot = buildSnapshot([], layout, "0.1.14");

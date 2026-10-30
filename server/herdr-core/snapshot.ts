@@ -173,28 +173,30 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
   const rest: HcTerminal[] = [];
   for (const terminal of [...live.values()].filter((candidate) => !placed.has(candidate.address))) {
+    // named as a placed terminal is: `where` (`<space> / <tab>`), then Ovis's own labels
+    const where = terminal.labels?.["where"]?.split(" / ").map((part) => part.trim());
     const spaceId = terminal.labels?.[SPACE_LABEL];
     let group = spaceId ? result.find((candidate) => candidate.id === spaceId) : undefined;
     // a label naming no space but an id the app's document uses for something else is no space
     if (!spaceId || (!group && ids.has(spaceId))) { rest.push(terminal); continue; }
     if (!group) {
-      group = { id: spaceId, label: terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd), tabs: [] };
+      group = { id: spaceId, label: where?.[0] || terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd), tabs: [] };
       ids.add(spaceId);
       result.push(group);
     }
-    if (!group.label) group.label = terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(group.folder ?? terminal.foreground?.cwd ?? terminal.cwd);
+    if (!group.label) group.label = where?.[0] || terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(group.folder ?? terminal.foreground?.cwd ?? terminal.cwd);
     const labeled = terminal.labels?.[TAB_LABEL];
     // a tab id the app uses in another space would make one tab of two: this terminal gets its own
     // (an id of its own taken by a space or tab of the app's gets a number after it)
     let tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
-    if (tab && !tab.label) tab.label = terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.indexOf(tab) + 1);
+    if (tab && !tab.label) tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.indexOf(tab) + 1);
     // beside what the tab already shows, never over it: the app places it when it adopts it
     if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
     else {
       ids.add(tabId);
-      group.tabs.push({ id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+      group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
     }
   }
   // a space or tab of the app's with nothing live in it shows nothing

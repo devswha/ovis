@@ -497,6 +497,16 @@ describe("herdr-core adapter, agents", () => {
     expect(cores[0]!.typed).toEqual([]);
   });
 
+  it("types into no shell that exec'd a non-plain shell, and checks fish's quoting on the shell in front", async () => {
+    const { socket, cores } = await setup([
+      terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "bash", argv: ["bash", "-c", "read line"] } }),
+      terminal("t2", { pid: 20, argv: ["/bin/bash"], foreground: { pid: 20, name: "fish", argv: ["fish"] } }),
+    ]);
+    await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", timeoutMs: 300 }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
+    await expect(agentStart({ name: "y", kind: "claude", paneId: "t2", args: ["C:\\dir"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
   it("refuses a backslash fish would read differently", async () => {
     const fish = { pid: 20, name: "fish", argv: ["/usr/bin/fish"] };
     const { socket, cores } = await setup([terminal("t2", { pid: 20, argv: ["/usr/bin/fish"], foreground: fish })]);
