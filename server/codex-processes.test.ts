@@ -1809,7 +1809,7 @@ describe("another session's conversation is never shown for a plain Codex pane",
     }
   });
 
-  it("still reads a long answer Codex renders without its markdown: emphasis, code, links, lists", async () => {
+  it("reads no long answer whose markdown Codex renders its own way: the terminal stands in rather than a guess", async () => {
     const raw = "The **migration** now rewrites `legacy_records` in place, as _the important result_ shows; see [the plan](docs/plan.md) and:\n- every check passes, including a < b";
     writeFileSync(path, [
       { type: "session_meta", payload: { id: thread, cwd: root } },
@@ -1818,20 +1818,15 @@ describe("another session's conversation is never shown for a plain Codex pane",
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
     foreground = live;
     screen = "OpenAI Codex (v0.165.0)\n\n› Summarize the migration\n\n• The migration now rewrites legacy_records in place, as the important result shows; see the plan\n  (docs/plan.md) and:\n  - every check passes, including a < b\n\n› ";
-    expect(await resolve()).toBe(path);
+    expect(await resolve()).toBeNull();
   });
 
-  it("still reads a long answer however the screen wraps it, or whatever word it starts with", async () => {
+  it("still reads a long answer however the screen wraps it, and no answer starting like a tool call or with markdown", async () => {
     const cases = [
       // a wrap before a spaced dash, a year, a plus
       ["The release notes list every change since the last tag - including the migration of the legacy records and the new reports.", "The release notes list every change since the last tag\n  - including the migration of the legacy records and the new reports."],
       ["The migration of the legacy records finished early in 2026. After that every report used the new schema and passed its checks.", "The migration of the legacy records finished early in\n  2026. After that every report used the new schema and passed its checks."],
       ["The two configurations differ in one setting + the timeout, which the new release raises for every slow report it builds.", "The two configurations differ in one setting\n  + the timeout, which the new release raises for every slow report it builds."],
-      // an answer that starts with a word a tool call also starts with
-      ["Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe.", "Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe."],
-      ["Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports.", "Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports."],
-      // an autolink, which Codex shows without its brackets
-      ["The migration guide is published at <https://example.com/migration> and covers every legacy record the reports still read.", "The migration guide is published at https://example.com/migration and covers every legacy record the reports still read."],
     ] as const;
     for (const [index, [said, shown]] of cases.entries()) {
       foreground = [{ pid: 2147483630 - index, argv: ["/usr/bin/codex"] }];
@@ -1843,6 +1838,39 @@ describe("another session's conversation is never shown for a plain Codex pane",
       screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
       expect([index, await resolve()]).toEqual([index, path]);
     }
+    // an answer that starts like a tool call, or ends in markdown Codex renders its own way: the terminal stands in
+    const fallbacks = [
+      // an answer that starts with a word a tool call also starts with
+      ["Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe.", "Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe."],
+      ["Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports.", "Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports."],
+      // an autolink, which Codex shows without its brackets
+      ["The migration guide is published at <https://example.com/migration> and covers every legacy record the reports still read.", "The migration guide is published at https://example.com/migration and covers every legacy record the reports still read."],
+    ] as const;
+    for (const [index, [said, shown]] of fallbacks.entries()) {
+      foreground = [{ pid: 2147483600 - index, argv: ["/usr/bin/codex"] }];
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Summarize the release" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
+      expect([index, await resolve()]).toEqual([index, null]);
+    }
+  });
+
+  it("takes no answer differing in a number or an operator, nor one quoted by consecutive running calls (#2430's review)", async () => {
+    const said = "After carefully reviewing the requested configuration, the decisive offset is base + 1 and all remaining verification steps completed.";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: said } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    foreground = [{ pid: 2147483590, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Check the configuration\n\n• ${said.replace("base + 1", "base - 1")}\n\n› `;
+    expect(await resolve()).toBeNull();
+    foreground = [{ pid: 2147483591, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Run both\n\n• Running printf "${said}"\n\n• Running sleep 5\n\n• Working (3s • esc to interrupt)\n\n› `;
+    expect(await resolve()).toBeNull();
   });
 
   it("knows Codex by its release binary's name and a Windows file name in any case", async () => {
