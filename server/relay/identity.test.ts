@@ -27,6 +27,7 @@ describe("relay identity", () => {
     });
     try {
       const first = loadRelayIdentity(dir);
+      if (!competing) throw new Error("Competing creator did not run");
       expect(first).toEqual(competing);
       expect(loadRelayIdentity(dir)).toEqual(competing);
     } finally {
