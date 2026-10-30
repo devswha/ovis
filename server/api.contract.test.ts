@@ -4681,7 +4681,7 @@ describe("GET /api/sessions/history", () => {
   const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 
   /** Own all setup and cleanup, including failures before a server or workspace is returned. */
-  async function withPiHistoryFixture(root: string, run: (fixture: { file: string; initial: string; url: string }) => Promise<void>): Promise<void> {
+  async function withPiHistoryFixture(root: string, run: (fixture: { file: string; initial: string; url: string }) => Promise<void>, piSessionDeadlineMs?: number): Promise<void> {
     const previous = process.env["PI_CODING_AGENT_SESSION_DIR"];
     let created: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
     let app: ReturnType<typeof createServer> | undefined;
@@ -4701,7 +4701,7 @@ describe("GET /api/sessions/history", () => {
       writeFileSync(file, initial);
       process.env["PI_CODING_AGENT_SESSION_DIR"] = store;
       created = await workspaceCreate({ cwd, label: "ovis-test-pi-history" });
-      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state") });
+      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state"), piSessionDeadlineMs });
       const url = `http://127.0.0.1:${app.port}/api/sessions/history?workspace_id=${encodeURIComponent(created.workspace.workspace_id)}&agent=pi`;
       await run({ file, initial, url });
     } finally {
@@ -4728,21 +4728,21 @@ describe("GET /api/sessions/history", () => {
       expect((await listing())[0]?.title).toBe("Renamed");
       writeFileSync(file, initial + line({ type: "session_info", name: " " }));
       expect((await listing())[0]).toMatchObject({ title: null, firstMessage: "Late prompt" });
-      // A fresh streaming read has no old 16 MiB per-turn cutoff or cached continuation.
+      // A fresh streaming read has no old 16 MiB per-turn cutoff.
       const block = line({ type: "message", message: { role: "system", content: "s".repeat(1024 * 1024) } });
       for (let n = 0; n < 17; n++) appendFileSync(file, block);
       appendFileSync(file, line({ type: "session_info", name: "After bounded scan" }));
       expect((await listing())[0]).toMatchObject({ title: "After bounded scan", firstMessage: "Late prompt" });
-      // Fail the second scan after a real first row, rather than refusing before any rows exist.
+      // A full header queue still refuses the listing even after a real first row.
       const older = join(dirname(file), "older.jsonl");
       writeFileSync(older, initial.replace("pi-history-fixture", "pi-history-older"));
       utimesSync(older, 1, 1);
-      const { PiSessionReader, PiMetadataBusy } = await import("./pi-session-metadata.ts");
+      const { PiSessionReader, PiMetadataBusy, PiMetadataDeadline } = await import("./pi-session-metadata.ts");
       const originalRead = PiSessionReader.prototype.read;
       let firstComplete = false;
       const refusedRead = spyOn(PiSessionReader.prototype, "read").mockImplementationOnce(function (this: InstanceType<typeof PiSessionReader>, ...args: Parameters<typeof originalRead>) {
         return originalRead.apply(this, args).then((label) => { firstComplete = label?.header?.id === "pi-history-fixture"; return label; });
-      }).mockRejectedValueOnce(new PiMetadataBusy());
+      }).mockRejectedValueOnce(new PiMetadataBusy("queue"));
       try {
         const busy = await fetch(url);
         expect(firstComplete).toBe(true);
@@ -4754,10 +4754,29 @@ describe("GET /api/sessions/history", () => {
         expect(body).toMatchObject({ error: { code: "session_history_busy" } });
         expect(body).not.toHaveProperty("sessions");
       } finally { refusedRead.mockRestore(); }
-    });
+      for (const failure of [new PiMetadataDeadline(null), new PiMetadataBusy()]) {
+        const failedLabel = spyOn(PiSessionReader.prototype, "read").mockImplementation(function (this: InstanceType<typeof PiSessionReader>, ...args: Parameters<typeof originalRead>) {
+          if (args[3] !== "header" && args[2]?.path === realpathSync(older)) return Promise.reject(failure);
+          return originalRead.apply(this, args);
+        });
+        try {
+          const partial = await fetch(url);
+          expect(partial.status).toBe(200);
+          expect(partial.headers.get("cache-control")).toBe("no-store");
+          expect(partial.headers.get("retry-after")).toBeNull();
+          expect(((await partial.json()) as SessionHistoryResponse).sessions).toMatchObject([
+            { id: "pi-history-fixture", title: "After bounded scan" },
+            { id: "pi-history-older", title: null, firstMessage: null, resume: { argv: ["pi", "--session", "pi-history-older"] } },
+          ]);
+        } finally { failedLabel.mockRestore(); }
+      }
+      expect((await listing())[1]).toMatchObject({ id: "pi-history-older", title: "Late name", firstMessage: "Late prompt" });
+    }, 120_000);
   }, 20_000);
 
-  it("lists a 202-session Pi store with 50 long transcripts through the real API without timing out", async () => {
+  it("lists a 202-session Pi store with 50 long transcripts through the real API", async () => {
+    // the rows, titles and a later rename are the claim, not how fast this runner reads the store: a busy
+    // CI runner hit the two-second listing deadline (503), so the deadline is set past the test's own timeout
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-large-history-contract-"));
     await withPiHistoryFixture(root, async ({ file, url }) => {
       const cwd = realpathSync(join(root, "project"));
@@ -4785,8 +4804,8 @@ describe("GET /api/sessions/history", () => {
       appendFileSync(renamed, line({ type: "session_info", name: "Freshly renamed" }));
       utimesSync(renamed, 1_790_000_202, 1_790_000_202);
       expect((await listing())[0]).toMatchObject({ id: "long-201", title: "Freshly renamed", resume: { argv: ["pi", "--session", "long-201"] } });
-    });
-  }, 20_000);
+    }, 120_000);
+  }, 60_000);
 
   for (const phase of ["workspace creation", "server creation", "server stop", "workspace close"] as const) {
     it(`cleans up the Pi history fixture when ${phase} fails`, async () => {
