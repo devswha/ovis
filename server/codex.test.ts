@@ -1318,6 +1318,28 @@ describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("refuses what it read once the link to the store was pointed at another store", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const first = mkdtempSync(join(tmpdir(), "ovis-codex-store-a-"));
+    const second = mkdtempSync(join(tmpdir(), "ovis-codex-store-b-"));
+    try {
+      made(first).close();
+      made(second).close();
+      const link = join(home, "state_5.sqlite");
+      symlinkSync(join(first, "state_5.sqlite"), link);
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // another store now stands where the pane's Codex keeps its own
+        rmSync(link);
+        symlinkSync(join(second, "state_5.sqlite"), link);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally {
+      for (const dir of [home, first, second]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads a store a Codex holds open, rows not yet checkpointed included", () => {
     const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
     const writer = made(home);

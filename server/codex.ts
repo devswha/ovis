@@ -375,20 +375,33 @@ export class CodexStoreChanged extends Error {}
  */
 export function openCodexStore(home: string): { db: Database; immutable: boolean; settled: () => void } {
   const named = join(home, "state_5.sqlite");
-  // the store itself, links resolved: its side files lie beside it, not beside a link to it. One that
-  // will not resolve is opened read-only by its name, as before (never immutable)
+  // the store itself, links resolved: its side files lie beside it, not beside a link to it, and it is
+  // opened by that path. One that will not resolve is opened read-only by its name, as before (never immutable)
   let store: string;
   try { store = realpathSync(named); } catch { return { db: new Database(named, { readonly: true, create: false }), immutable: false, settled: () => {} }; }
-  const held = () => ["-wal", "-shm", "-journal"].some((suffix) => existsSync(store + suffix));
-  if (held()) return { db: new Database(store, { readonly: true, create: false }), immutable: false, settled: () => {} };
   const before = statSync(store, { bigint: true });
+  // still the store read: a link re-pointed since it was resolved names another store now
+  const same = () => {
+    let now: string;
+    try { now = realpathSync(named); } catch { return false; }
+    const stat = statSync(now, { bigint: true, throwIfNoEntry: false });
+    return now === store && stat !== undefined && stat.dev === before.dev && stat.ino === before.ino;
+  };
+  const held = () => ["-wal", "-shm", "-journal"].some((suffix) => existsSync(store + suffix));
+  if (held()) {
+    return {
+      db: new Database(store, { readonly: true, create: false }),
+      immutable: false,
+      settled: () => { if (!same()) throw new CodexStoreChanged("Codex's store was moved while it was read"); },
+    };
+  }
   const db = new Database(`${pathToFileURL(store).href}?immutable=1`, sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI);
   return {
     db,
     immutable: true,
     settled: () => {
       const now = statSync(store, { bigint: true, throwIfNoEntry: false });
-      if (now === undefined || held() || now.dev !== before.dev || now.ino !== before.ino || now.size !== before.size
+      if (now === undefined || !same() || held() || now.size !== before.size
         || now.mtimeNs !== before.mtimeNs || now.ctimeNs !== before.ctimeNs) throw new CodexStoreChanged("Codex's store changed while it was read");
     },
   };
