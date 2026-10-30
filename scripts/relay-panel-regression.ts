@@ -18,7 +18,7 @@ import { startBunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { UsageService } from "../server/usage.ts";
-import type { PairedDevice, RelayStatus } from "../shared/protocol.ts";
+import type { PairedDevice, PairingCode, RelayStatus } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
@@ -114,40 +114,47 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(offered.relay, `wss://127.0.0.1:${fixture.relayPort}`, "the offer names the relay the server uses");
     assert.match(offered.code ?? "", /^\d{6}$/, "the offer carries a one-time pairing code");
     await group.getByText(/Expires in \d+:\d\d\./).waitFor();
-    const firstDrawing = await qr.locator("path").getAttribute("d");
 
-    // New code: a new pairing code first, then its offer, drawn differently
+    // New code: a new pairing code first (one POST pair/start), then an offer carrying that very code. Codes
+    // are six random digits, so two of them are never asserted different: the offer is matched to the code
+    // the server just answered, which is deterministic.
     const pairStart = () => page.waitForResponse((response) => response.url().endsWith("/api/devices/pair/start") && response.request().method() === "POST");
+    const offerCode = async (answer: Promise<Response>) => {
+      const offer = decodeOffer(((await (await answer).json()) as { url: string }).url);
+      assert.ok(offer !== null && offer.code !== undefined, "the offer carries a pairing code");
+      return offer.code;
+    };
+    const startedCode = async (answer: Promise<Response>) => {
+      const response = await answer;
+      assert.equal(response.status(), 200, "the pairing code was started");
+      return ((await response.json()) as PairingCode).code;
+    };
     const renewedCode = pairStart();
     const secondOffer = offerAnswer();
     await group.getByRole("button", { name: "New code", exact: true }).click();
-    assert.equal((await renewedCode).status(), 200, "New code starts a new pairing code");
-    const renewed = decodeOffer(((await (await secondOffer).json()) as { url: string }).url);
-    assert.ok(renewed !== null && renewed.code !== offered.code, "New code shows a fresh offer");
-    await page.waitForFunction(([selector, previous]) => document.querySelector(selector)?.getAttribute("d") !== previous, ['[data-section="relay"] svg.qr path', firstDrawing] as const);
+    assert.equal(await offerCode(secondOffer), await startedCode(renewedCode), "New code's offer carries the code it started");
 
     // the Devices group starts a code of its own: the server keeps one pending code and the offer reuses it, so
     // the offer is asked for again and carries the very code the Devices group shows
     const devicesGroup = dialog.locator('[data-section="devices"]');
     const devicesCode = async () => (await devicesGroup.locator(".devices-code").innerText()).replace(/\s+/g, "");
+    const devicesStart = pairStart();
     const resynced = offerAnswer();
     await devicesGroup.getByRole("button", { name: "Pair a device", exact: true }).click();
     await devicesGroup.locator(".devices-code").waitFor();
-    const resyncedOffer = decodeOffer(((await (await resynced).json()) as { url: string }).url);
-    assert.ok(resyncedOffer !== null && resyncedOffer.code !== renewed.code, "a code the Devices group started refreshes the relay offer");
-    assert.equal(resyncedOffer.code, await devicesCode(), "the relay QR carries the code the Devices group shows");
+    const devicesStarted = await startedCode(devicesStart);
+    assert.equal(await offerCode(resynced), devicesStarted, "a code the Devices group started refreshes the relay offer with that code");
+    assert.equal(await devicesCode(), devicesStarted, "the relay QR carries the code the Devices group shows");
     await qr.waitFor();
 
     // New code while both are shown: the Devices group follows the code the relay panel started, so they stay equal
-    const followedCode = pairStart();
+    const followedStart = pairStart();
     const followedOffer = offerAnswer();
     await group.getByRole("button", { name: "New code", exact: true }).click();
-    const followed = (await (await followedCode).json()) as { code: string };
-    const followedQr = decodeOffer(((await (await followedOffer).json()) as { url: string }).url);
-    assert.ok(followedQr !== null && followedQr.code === followed.code, "the relay QR carries the code New code started");
-    await page.waitForFunction(([selector, code]) => document.querySelector(selector)?.textContent?.replace(/\s+/g, "") === code, ['[data-section="devices"] .devices-code', followed.code] as const);
-    assert.equal(await devicesCode(), followedQr.code, "after New code the Devices group shows the same code as the relay QR");
-    assert.notEqual(followedQr.code, resyncedOffer.code, "New code replaced the code both showed");
+    const followed = await startedCode(followedStart);
+    assert.equal(await offerCode(followedOffer), followed, "the relay QR carries the code New code started");
+    await page.waitForFunction(([selector, code]) => document.querySelector(selector)?.textContent?.replace(/\s+/g, "") === code, ['[data-section="devices"] .devices-code', followed] as const);
+    assert.equal(await devicesCode(), followed, "after New code the Devices group shows the same code as the relay QR");
     await qr.waitFor();
 
     // the identity reset asks first; Cancel changes nothing, Reset gives the PC a new server id and a fresh offer
