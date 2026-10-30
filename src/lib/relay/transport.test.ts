@@ -46,7 +46,7 @@ async function fixture(options: Partial<RelaySessionOptions> = {}) {
       callbacks.push(notify);
       void connection.closed.then(() => notify(new TypeError("Carrier dropped")));
       return {
-        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16),
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1 },
         device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
           public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
         close: () => connection.stop(),

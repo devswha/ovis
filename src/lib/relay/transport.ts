@@ -4,7 +4,7 @@ import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
 import { openRelayChannel, UnsafeRelayDestinationError } from "./channel.ts";
-import type { RelayChannel, RelayChannelOptions } from "./channel.ts";
+import type { RelayChannel, RelayChannelOptions, RelayServerInfo } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { relayResourceUrl, serveRelayResources } from "./resources.ts";
 
@@ -69,6 +69,7 @@ export async function openRelayTransport(offer: RelayOffer, options: RelayTransp
 export class RelayTransport implements Transport {
   readonly kind = "relay";
   private channel: RelayChannel | undefined;
+  private known: RelayServerInfo | undefined;
   private generation = 0;
   private opening: Promise<void> | undefined;
   private stopped = false;
@@ -116,10 +117,14 @@ export class RelayTransport implements Transport {
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
+    this.known = channel.server;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
     this.delay = 1000;
   }
+
+  /** What the PC said of itself on the latest admission: a reconnect after its update names the new version. */
+  get server(): RelayServerInfo | undefined { return this.known; }
 
   /** A reconnect that failed: tried again later, unless no later attempt could succeed. */
   private failed(error: unknown): void {

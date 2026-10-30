@@ -31,4 +31,13 @@ export const RELAY_KO: Record<string, string> = {
   "This pairing link is damaged": "이 페어링 링크는 손상되었습니다",
   "Part of the link is missing or changed. Scan the QR code on the PC again, or copy its link whole.": "링크의 일부가 빠졌거나 바뀌었습니다. PC에서 QR 코드를 다시 스캔하거나 링크 전체를 복사하세요.",
   "Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.": "페어링을 유지하려면 홈 화면에 추가하세요. Safari는 일주일 동안 방문하지 않은 페이지의 저장 데이터를 지울 수 있습니다.",
+  "Update Ovis on {name}": "{name}의 Ovis를 업데이트하세요",
+  "{name} runs Ovis {version}; this app needs {min} or newer.": "{name}은(는) Ovis {version}을(를) 실행 중입니다. 이 앱에는 {min} 이상이 필요합니다.",
+  "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.": "여기서 업데이트할 수 있습니다. PC가 최신 릴리스를 설치하고 Ovis를 다시 시작하면 이 앱이 다시 연결됩니다.",
+  "Update now": "지금 업데이트",
+  "Its Ovis does not update itself. On the PC, run the installer:": "그 PC의 Ovis는 스스로 업데이트하지 않습니다. PC에서 설치 프로그램을 실행하세요:",
+  "Or, for the herdr plugin, reinstall it and restart Ovis:": "herdr 플러그인이라면 다시 설치한 뒤 Ovis를 다시 시작하세요:",
+  "Asking the PC to update…": "PC에 업데이트를 요청하는 중…",
+  "Waiting for {name} to restart…": "{name}이(가) 다시 시작되기를 기다리는 중…",
+  "The update did not finish.": "업데이트가 끝나지 않았습니다.",
 };

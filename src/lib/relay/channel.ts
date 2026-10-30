@@ -1,6 +1,6 @@
 import { openClientSecureChannel } from "../../../shared/relay-e2ee.ts";
 import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
-import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { SessionFrame } from "../../../shared/relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "../../../shared/relay-offer.ts";
@@ -70,7 +70,13 @@ export interface RelayChannel {
   readonly connectionId: string;
   readonly sessionId: string;
   readonly role: "drive" | "watch";
+  /** what the PC's WELCOME said of itself, for the version policy (skew.ts) */
+  readonly server: RelayServerInfo;
   close(): void;
+}
+export interface RelayServerInfo {
+  readonly version: string;
+  readonly relayProtocol: number;
 }
 
 /** Resolves only after protected Noise, WELCOME and device admission all succeeded. Never retries. */
@@ -94,6 +100,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let connectionId = "";
     const limits = { ...LIMITS_V1 };
     let welcome: Uint8Array | undefined;
+    let server: RelayServerInfo = { version: "", relayProtocol: RELAY_PROTOCOL };
     let receipt: Uint8Array | undefined;
     let incoming = Promise.resolve();
     const stop = (error: Error): void => {
@@ -143,6 +150,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       if (phase === "welcome" && frame.type === FrameType.WELCOME) {
+        // before any credential: a PC of another relay generation is an update, not a pairing
+        if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
+        server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol };
         if (frame.payload.features.length) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
@@ -180,7 +190,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       mux.authenticate(admitted.device_id ?? frame.payload.device_id);
       phase = "ready";
       clearTimeout(deadline);
-      resolve({ mux, device: admitted, connectionId, sessionId: frame.payload.session_id, role: frame.payload.role,
+      resolve({ mux, device: admitted, connectionId, sessionId: frame.payload.session_id, role: frame.payload.role, server,
         close: () => stop(new MuxProtocolError("internal_error", "Relay channel closed")) });
     };
     const failed = (error: unknown): void => stop(error instanceof Error ? error : new Error(String(error)));

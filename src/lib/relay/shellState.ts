@@ -6,6 +6,7 @@
  */
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
+import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
@@ -15,8 +16,22 @@ import type { RelayDevice } from "./device.ts";
 /** Why a connection did not come up; each is a screen with its own `data-relay-state`. */
 export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "bad-offer";
 
+/**
+ * Where a PC below MIN_SERVER_VERSION is in its update (skew.ts): its update status being read, an
+ * Update button for a managed install, the steps to update by hand for any other, an install
+ * under way, the wait for the restarted server, or an install that did not finish.
+ */
+export type PcUpdate =
+  | { phase: "reading" }
+  | { phase: "offer" }
+  | { phase: "manual" }
+  | { phase: "installing"; step: UpdateStep | null }
+  | { phase: "restarting" }
+  | { phase: "failed"; detail: string | null };
+
 export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[] }
+  | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
   | { kind: "empty" }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }

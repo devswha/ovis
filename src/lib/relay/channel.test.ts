@@ -40,7 +40,7 @@ class FakeSocket implements RelaySocket {
   }
 }
 
-async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence") {
+async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol") {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -125,7 +125,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       }
       const welcome = { protocol: "ovis-mux" as const, version: 1 as const, features: attack === "features" ? ["unoffered"] : [],
         limits: { ...LIMITS_V1, max_streams: 2 }, nonce: attack === "nonce" ? base64url(nonce.slice(1)) : base64url(nonce),
-        server_version: "test", relay_protocol: 1 as const, min_supported_client: "0.0.0" };
+        server_version: "test", relay_protocol: attack === "protocol" ? 2 : 1, min_supported_client: "0.0.0" };
       trace.push("server:WELCOME");
       if (attack === "welcome" || attack === "nonce") {
         await secure.send(raw(FrameType.WELCOME, attack === "welcome" ? { ...welcome, protocol: "wrong" } : welcome).slice().buffer);
@@ -173,6 +173,7 @@ for (const pairing of [false, true]) {
     expect(channel.device.device_id).toBe((await f.store.get(f.offer.server_id))?.device_id ?? null);
     expect(channel.connectionId).toBe("ef".repeat(16));
     expect(channel.mux.limits.max_streams).toBe(2);
+    expect(channel.server).toEqual({ version: "test", relayProtocol: 1 });
     expect(f.trace.slice(0, 4)).toEqual(["client:HELLO", "server:WELCOME", `client:${pairing ? "PAIR" : "AUTH"}`, "server:AUTH_OK"]);
     console.log(`ORDER: ${f.trace.slice(0, 4).join(" -> ")}; no other client frame before AUTH_OK`);
     channel.mux.openHttp({ method: "GET", target: "/api/test", headers: [], body: "none" });
@@ -300,6 +301,18 @@ it("names a stall after WELCOME in the auth phase, within the same admission bud
   expect(error).toBeInstanceOf(RelayAdmissionTimeoutError);
   expect(error).toMatchObject({ phase: "auth" });
   expect(failureOf(error, { code: false, paired: true })).toBe("pc-unresponsive");
+  expect(f.socket.closed).toBe(true);
+});
+
+it("stops at a PC of another relay protocol before any credential, as an update", async () => {
+  // Given a real daemon whose WELCOME names relay protocol 2.
+  const f = await fixture(false, "protocol");
+  // When the client reads it.
+  const error = await f.opening.catch((caught: unknown) => caught);
+  // Then the attempt ends on the update screen and no AUTH was sent.
+  expect(error).toMatchObject({ code: "unsupported_version" });
+  expect(failureOf(error, { code: false, paired: true })).toBe("needs-update");
+  expect(f.trace.filter((entry) => entry.startsWith("client:"))).toEqual(["client:HELLO"]);
   expect(f.socket.closed).toBe(true);
 });
 

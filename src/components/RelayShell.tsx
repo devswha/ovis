@@ -3,6 +3,7 @@ import "./RelayShell.css";
 import { ChevronRight } from "lucide-react";
 
 import { useT } from "../lib/i18n.ts";
+import { describeUpdate } from "../lib/updateProgress.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 
@@ -17,7 +18,13 @@ export interface RelayShellProps {
   onCancel: () => void;
   onBack: () => void;
   onForget: () => void;
+  /** a PC below the shell's minimum version with a managed install: install its latest release */
+  onUpdate: () => void;
 }
+
+/** How a PC whose Ovis does not update itself is brought up to date: the installer, or herdr's plugin. */
+export const INSTALLER_COMMAND = "curl -fsSL https://ovis.sh/install.sh | sh";
+export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin action invoke devswha.ovis.stop\nherdr plugin action invoke devswha.ovis.start";
 
 /**
  * The hosted shell's screens before the app: the saved PCs to pick from, the question before a
@@ -25,12 +32,13 @@ export interface RelayShellProps {
  * `data-relay-state` for scripts. One card in the token gate's frame (AccessGate.css), so a phone
  * that pairs through the relay and one that pairs with a code see the same room.
  */
-export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget }: RelayShellProps) {
+export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate }: RelayShellProps) {
   const t = useT();
   const name = state.kind === "confirm" ? state.offer.name ?? null : state.kind === "list" || state.kind === "empty" ? null : state.name;
   const pc = name ?? t("this PC");
-  const stateName = state.kind === "failed" ? state.failure : state.kind;
+  const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind;
   const back = scoped ? <button type="button" className="btn" onClick={onBack}>{t("Back")}</button> : null;
+  const progress = state.kind === "outdated" && state.update.phase === "installing" ? describeUpdate({ phase: "building", step: state.update.step }) : null;
   const retry = <button type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button>;
   return (
     <main className="relay-shell-screen" data-relay-state={stateName}>
@@ -102,6 +110,53 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             <h1 className="relay-shell-title">{t("Update needed")}</h1>
             <p className="relay-shell-copy">{t("{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.", { name: pc })}</p>
             <div className="relay-shell-actions">{retry}{back}</div>
+          </>
+        )}
+        {state.kind === "outdated" && (
+          <>
+            <h1 className="relay-shell-title">{t("Update Ovis on {name}", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("{name} runs Ovis {version}; this app needs {min} or newer.", { name: pc, version: state.serverVersion, min: state.minVersion })}</p>
+            {state.update.phase === "reading" && <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /></div>}
+            {state.update.phase === "offer" && (
+              <>
+                <p className="relay-shell-copy relay-shell-more">{t("Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.")}</p>
+                <div className="relay-shell-actions">
+                  <button type="button" className="btn btn-primary" onClick={onUpdate}>{t("Update now")}</button>
+                  {back}
+                </div>
+              </>
+            )}
+            {state.update.phase === "manual" && (
+              <>
+                <p className="relay-shell-copy relay-shell-more">{t("Its Ovis does not update itself. On the PC, run the installer:")}</p>
+                <pre className="relay-shell-command"><code>{INSTALLER_COMMAND}</code></pre>
+                <p className="relay-shell-copy relay-shell-more">{t("Or, for the herdr plugin, reinstall it and restart Ovis:")}</p>
+                <pre className="relay-shell-command"><code>{PLUGIN_COMMANDS}</code></pre>
+                <div className="relay-shell-actions">{retry}{back}</div>
+              </>
+            )}
+            {state.update.phase === "installing" && (
+              <div className="relay-shell-wait" role="status">
+                <div className="boot-spinner" aria-hidden="true" />
+                <p className="relay-shell-detail">{progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…")}</p>
+              </div>
+            )}
+            {state.update.phase === "restarting" && (
+              <div className="relay-shell-wait" role="status">
+                <div className="boot-spinner" aria-hidden="true" />
+                <p className="relay-shell-detail">{t("Waiting for {name} to restart…", { name: pc })}</p>
+              </div>
+            )}
+            {state.update.phase === "failed" && (
+              <>
+                <p className="relay-shell-copy relay-shell-more">{t("The update did not finish.")}</p>
+                {state.update.detail !== null && <p className="relay-shell-detail"><code>{state.update.detail}</code></p>}
+                <div className="relay-shell-actions">
+                  <button type="button" className="btn btn-primary" onClick={onUpdate}>{t("Update now")}</button>
+                  {back}
+                </div>
+              </>
+            )}
           </>
         )}
         {state.kind === "failed" && state.failure === "revoked" && (

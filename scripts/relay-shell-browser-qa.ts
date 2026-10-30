@@ -34,6 +34,11 @@ import { startFakePushService } from "../server/push.fake.ts";
 import type { FakePushService } from "../server/push.fake.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { shellContentSecurityPolicy } from "../server/static.ts";
+import type { UpdateService } from "../server/update-api.ts";
+import { MIN_SERVER_VERSION } from "../shared/relay-mux.ts";
+import { noInstalledNotes, noUpdateNotes } from "../shared/update.ts";
+import type { UpdateRequest, UpdateStatus } from "../shared/update.ts";
+import { version as shellVersion } from "../package.json";
 import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../shared/relay-e2ee.ts";
 import type { SecureChannel, Transport } from "../shared/relay-e2ee.ts";
 import { encodeFrame, FrameType } from "../shared/relay-mux.ts";
@@ -45,6 +50,7 @@ import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket } from "./relay-browser-bridge.ts";
+import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
 
 const repo = join(import.meta.dir, "..");
 const evidence = process.env["UI_EVIDENCE_DIR"] ?? null;
@@ -782,6 +788,114 @@ try {
     tell(`pending (permission cleared): second start registered nothing more; registrations A2 = ${countOf(fakeA2)}, A3 = ${countOf(fakeA3)}; a push to A3 reached its fake (VAPID valid ${fakeA3.received[0]!.vapidValid})`);
     keep("task-18-pending.txt", `# relay-shell-browser-qa (m): a subscription rotated with no window open, registered on the next start once\n${pending.join("\n")}\n`);
     await context.close();
+  }
+
+  // (l) version skew (todo 19): more PCs on the same relay whose WELCOME names another version
+  {
+    const shot19 = async (page: Page, name: string): Promise<void> => { if (evidence) await page.screenshot({ path: join(evidence, `task-19-${name}.png`) }); };
+    const skewPc = async (version: string, updates?: UpdateService) => {
+      const dir = mkdtempSync(join(tmpdir(), "ovis-relay-skew-qa-"));
+      const ready = deferred<void>();
+      const pcRelay = new RelayService({ stateDir: dir, relay: RELAY, serverVersion: version, connect: (url) => {
+        const socket = new WebSocket(relayUrl(url));
+        socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) ready.resolve(); });
+        return socket;
+      } });
+      const pc = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: pcRelay, ...(updates ? { updates } : {}) });
+      const at = `http://127.0.0.1:${pc.port}`;
+      const post = (path: string) => fetch(`${at}/api/relay${path}`, { method: "POST", headers: { origin: at, "x-herdr-update": "1" } });
+      assert.equal((await post("/start")).status, 200);
+      await bounded(ready.promise, `the PC reporting ${version} synced with the relay`);
+      const offer = decodeOffer((JSON.parse(await (await post("/offer")).text()) as { url: string }).url);
+      if (!offer) throw new Error("the skew PC gave no offer");
+      return { offer: { ...offer, name: `PC ${version}` }, stop: async () => { await pcRelay.shutdown(); pc.stop(); rmSync(dir, { recursive: true, force: true }); } };
+    };
+    const { below, newer } = relayShellQaVersions(shellVersion, MIN_SERVER_VERSION);
+    /** A managed install's update service as the supervisor reports it, recording what the bridge asks of it. */
+    const fakeUpdates = () => {
+      const requests: UpdateRequest[] = [];
+      let phase: UpdateStatus["phase"] = "idle";
+      const service: UpdateService = {
+        status: () => ({ managed: true, auto_update: false, phase, current_revision: "a".repeat(40), latest_revision: "b".repeat(40),
+          current_version: below, latest_version: MIN_SERVER_VERSION, available: true, checked_at: new Date().toISOString(),
+          blocked_reason: null, error: null, step: phase === "building" ? "build" : null, revision_bound_install: true }),
+        notes: () => noUpdateNotes(), installed: () => noInstalledNotes(),
+        request: (request) => { requests.push(request); if (request.command === "install") phase = "building"; },
+      };
+      return { service, requests };
+    };
+    const lines: string[] = [`# shell ${shellVersion} (package.json), MIN_SERVER_VERSION ${MIN_SERVER_VERSION}`];
+
+    // a managed PC below the minimum: the update screen, and Update now installs the release on offer
+    {
+      const updates = fakeUpdates();
+      const pc = await skewPc(below, updates.service);
+      try {
+        const { context, page } = await open();
+        await pairFrom(page, pc.offer);
+        await state(page, "pc-outdated").waitFor();
+        await page.getByRole("heading", { name: `Update Ovis on PC ${below}` }).waitFor();
+        assert.equal(await page.locator(".app").count(), 0, "no app for a PC below the minimum");
+        assert.equal(await page.locator(".relay-shell-command").count(), 0, "a managed PC shows no steps by hand");
+        assert.deepEqual(updates.requests, [], "nothing is installed before the tap");
+        await page.getByRole("button", { name: "Update now" }).click();
+        await until("the PC's update service received the install", () => updates.requests.some((request) => request.command === "install"));
+        assert.deepEqual(updates.requests, [{ command: "install", expected_revision: "b".repeat(40) }], "one install of the release on offer, no check first");
+        await page.getByText("Step 4 of 5: Building the app").waitFor();
+        await shot19(page, "update");
+        note(`pc-outdated (managed): WELCOME ${below} < ${MIN_SERVER_VERSION} -> update screen; Update now -> POST /api/updates/install over the relay -> fake service recorded ${JSON.stringify(updates.requests)}; progress from GET /api/updates`);
+        await context.close();
+      } finally { await pc.stop(); }
+    }
+
+    // an unmanaged PC below the minimum: the steps by hand, no Update button
+    {
+      const pc = await skewPc(below);
+      try {
+        const { context, page } = await open();
+        await pairFrom(page, pc.offer);
+        await state(page, "pc-outdated").waitFor();
+        await page.locator(".relay-shell-command").first().waitFor();
+        assert.equal(await page.getByRole("button", { name: "Update now" }).count(), 0, "no Update button for an unmanaged install");
+        assert.match(await page.locator(".relay-shell-command").first().innerText(), /curl -fsSL https:\/\/ovis\.sh\/install\.sh \| sh/);
+        assert.match(await page.locator(".relay-shell-command").nth(1).innerText(), /herdr plugin install devswha\/ovis/);
+        await shot19(page, "instructions");
+        note(`pc-outdated (unmanaged): WELCOME ${below}, GET /api/updates managed=false -> installer one-liner and plugin steps, no Update button`);
+        await context.close();
+      } finally { await pc.stop(); }
+    }
+
+    // a PC newer than this shell build, regardless of the release minimum: one reload, then the app; never a loop
+    {
+      const pc = await skewPc(newer);
+      try {
+        const { context, page } = await open();
+        const loads: string[] = [];
+        page.on("load", () => loads.push(page.url()));
+        await pairFrom(page, pc.offer);
+        await inApp(page);
+        assert.equal(loads.length, 2, `the pairing load and exactly one reload (loads: ${JSON.stringify(loads)})`);
+        await page.reload();
+        await inApp(page);
+        assert.equal(loads.length, 3, `a later visit on the same stale shell connects without reloading again (loads: ${JSON.stringify(loads)})`);
+        lines.push(`server ${newer} (newer than shell ${shellVersion}): paired, reloaded once (service worker update), then the app; page loads ${loads.length} = pairing + one automatic reload + one manual reload; no loop`);
+        note(`server-newer: ${newer} > shell ${shellVersion} -> one reload -> app; a manual reload connects without another`);
+        await context.close();
+      } finally { await pc.stop(); }
+    }
+    // the PC of this checkout reports the shell's own version
+    {
+      const { context, page } = await open();
+      const loads: string[] = [];
+      page.on("load", () => loads.push(page.url()));
+      await pairFrom(page, await serverOffer("Same PC"));
+      await inApp(page);
+      assert.equal(loads.length, 1, `no reload for a server at the shell's own version (loads: ${JSON.stringify(loads)})`);
+      lines.push(`server ${shellVersion} (the shell's own version): paired -> app, ${loads.length} page load, no reload, no update screen`);
+      note(`same version: ${shellVersion} -> app directly`);
+      await context.close();
+    }
+    keep("task-19-prev.txt", `${lines.join("\n")}\n`);
   }
 
   assertCspClean(csp, "the hosted shell under the enforced shell policy");

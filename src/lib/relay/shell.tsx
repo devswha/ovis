@@ -7,8 +7,11 @@
 import { createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
+import { MIN_SERVER_VERSION, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { UpdateStatus } from "../../../shared/update.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
+import { fetchUpdateStatus, requestUpdate } from "../api.ts";
 import { deviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import type { PendingPushStore } from "../push.ts";
@@ -19,7 +22,9 @@ import { RelayUnreachableError } from "./channel.ts";
 import { indexedDeviceStore, indexedPendingPush } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
-import type { RelayShellState } from "./shellState.ts";
+import type { PcUpdate, RelayShellState } from "./shellState.ts";
+import { relaySkew, reloadOnce } from "./skew.ts";
+import type { ReloadMemory } from "./skew.ts";
 import { openRelayTransport } from "./transport.ts";
 import type { RelayTransport } from "./transport.ts";
 
@@ -35,6 +40,32 @@ export interface RelayShellMount {
   navigate?: (path: string) => void;
   /** who this phone is, for a new pairing; the browser's user agent by default */
   label?: string;
+  /** this shell's package.json version; the build's by default */
+  shellVersion?: string;
+  /** brings in a newer shell: the worker checks for one, then the page reloads */
+  reload?: () => Promise<void>;
+}
+
+declare const __APP_VERSION__: string;
+
+/** How long a PC's update may take, from the install request to the restarted server: a build on a slow PC included. */
+const UPDATE_MS = 15 * 60_000;
+/** How often the shell reads the PC's update status while it installs. */
+const UPDATE_POLL_MS = 1000;
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+async function reloadPage(): Promise<void> {
+  try {
+    const registration = await navigator.serviceWorker?.getRegistration();
+    // a worker check that hangs must not keep the stale shell up: the reload goes on without it
+    await Promise.race([registration?.update(), wait(5000)]);
+  } catch (error) { console.warn("Ovis: the service worker did not check for a newer shell", error); }
+  window.location.reload();
+}
+
+function tabMemory(): ReloadMemory | null {
+  try { return window.sessionStorage; } catch { return null; }
 }
 
 /** What a connection attempt was, for the screen a failure lands on (shellState.ts failureOf). */
@@ -54,6 +85,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const open = mount.open ?? openRelayTransport;
   const navigate = mount.navigate ?? ((path: string) => { window.location.assign(path); });
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+  const shellVersion = mount.shellVersion ?? __APP_VERSION__;
+  const reload = mount.reload ?? reloadPage;
   let entry = shellEntry(mount.entryUrl);
   const scoped = entry.serverId !== null;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: (navigator as Navigator & { standalone?: boolean }).standalone });
@@ -62,6 +95,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let transport: RelayTransport | null = null;
   let last: Attempt | null = null;
   let opening: AbortController | null = null;
+  /** the PC the update screen is for, while it is up */
+  let outdated: { opened: RelayTransport; attempt: Attempt; name: string | null; version: string } | null = null;
+  let updating = false;
 
   // the push subscription this PC's worker kept while no window could hand it over (public/sw.js
   // pushsubscriptionchange): registered with the PC once it is connected, and when the worker says
@@ -85,7 +121,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const show = (state: RelayShellState): void => {
     shell ??= createRoot(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
-      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget }))));
+      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update }))));
   };
 
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
@@ -121,6 +157,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return;
     }
     if (controller.signal.aborted) { opened.close(); return; }
+    await admitted(opened, attempt);
+  };
+
+  const enterApp = (opened: RelayTransport): void => {
+    outdated = null;
     transport = opened;
     setTransport(opened);
     shell?.unmount();
@@ -129,13 +170,105 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     registerPending(attempt.offer.server_id);
   };
 
+  /** The PC let this phone in: the version policy (skew.ts) decides between the app, the update screen and a newer shell. */
+  const admitted = async (opened: RelayTransport, attempt: Attempt): Promise<void> => {
+    const server = opened.server ?? { version: "", relayProtocol: 0 };
+    const skew = relaySkew({ server, shellVersion });
+    if (skew === "protocol-mismatch") {
+      opened.close();
+      await failed(new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${server.relayProtocol}`), attempt);
+      return;
+    }
+    const memory = tabMemory();
+    if (skew === "server-newer" && memory !== null && reloadOnce(memory, shellVersion, server.version)) {
+      opened.close();
+      await reload();
+      return;
+    }
+    if (skew !== "pc-outdated") { enterApp(opened); return; }
+    transport = opened;
+    setTransport(opened);
+    outdated = { opened, attempt, name: attempt.offer.name ?? null, version: server.version };
+    await offerUpdate(outdated);
+  };
+
+  const showUpdate = (on: NonNullable<typeof outdated>, update: PcUpdate): void => {
+    if (outdated !== on || transport !== on.opened) return;
+    show({ kind: "outdated", name: on.name, serverVersion: on.version, minVersion: MIN_SERVER_VERSION, update });
+  };
+
+  /** The Update button only for an install the PC's supervisor manages (server/update-api.ts); the steps by hand otherwise. */
+  const offerUpdate = async (on: NonNullable<typeof outdated>): Promise<void> => {
+    showUpdate(on, { phase: "reading" });
+    let status: UpdateStatus | null = null;
+    try { status = await fetchUpdateStatus(); } catch (error) { console.warn("Ovis: the PC's update status could not be read", error); }
+    showUpdate(on, status?.managed === true ? { phase: "offer" } : { phase: "manual" });
+  };
+
+  /** The status once a check or install the PC runs has settled, or the deadline passed. */
+  const settled = async (deadline: number): Promise<UpdateStatus> => {
+    for (;;) {
+      const status = await fetchUpdateStatus();
+      if (status.phase !== "checking") return status;
+      if (Date.now() > deadline) throw new Error("The PC's update check did not finish");
+      await wait(UPDATE_POLL_MS);
+    }
+  };
+
+  /**
+   * Installs the release on offer on the PC (POST /api/updates/install, as Settings → Updates does),
+   * then follows GET /api/updates until the restarted server answers through the relay: the
+   * transport reconnects by itself, and its WELCOME names the new version.
+   */
+  const runUpdate = async (on: NonNullable<typeof outdated>): Promise<void> => {
+    const deadline = Date.now() + UPDATE_MS;
+    showUpdate(on, { phase: "installing", step: null });
+    let status = await fetchUpdateStatus();
+    if (!status.available || status.latest_revision === null) {
+      await requestUpdate({ command: "check" });
+      status = await settled(deadline);
+    }
+    if (!status.available || status.latest_revision === null) throw new Error(status.blocked_reason ?? status.error ?? "No update is on offer");
+    await requestUpdate({ command: "install", expected_revision: status.latest_revision });
+    for (;;) {
+      await wait(UPDATE_POLL_MS);
+      if (outdated !== on || transport !== on.opened) return;
+      if (Date.now() > deadline) throw new Error("The PC did not come back with the update");
+      if (on.opened.server !== undefined && on.opened.server.version !== on.version) break;
+      let now: UpdateStatus;
+      try { now = await fetchUpdateStatus(); } catch {
+        // the server is restarting: the relay carrier dropped, and the transport is reconnecting
+        showUpdate(on, { phase: "restarting" });
+        continue;
+      }
+      if (now.phase === "error") throw new Error(now.error ?? "The update failed");
+      showUpdate(on, now.phase === "restarting" ? { phase: "restarting" } : { phase: "installing", step: now.step ?? null });
+    }
+    // the pairing code, if the attempt had one, was spent on the admission before the update
+    await admitted(on.opened, { ...on.attempt, code: false, paired: true });
+  };
+
+  const update = (): void => {
+    const on = outdated;
+    if (on === null || updating) return;
+    updating = true;
+    void runUpdate(on).catch((error: unknown) => {
+      showUpdate(on, { phase: "failed", detail: error instanceof Error ? error.message : null });
+    }).finally(() => { updating = false; });
+  };
+
   const pair = (): void => {
     if (entry.offer === null) return;
     void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false });
   };
 
   const retry = (): void => {
-    if (last !== null) void connect(last);
+    if (last === null) return;
+    // the update screen holds the PC's connection open: a new attempt replaces it
+    outdated = null;
+    transport?.close();
+    transport = null;
+    void connect(last);
   };
 
   const cancel = (): void => {

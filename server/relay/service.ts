@@ -18,6 +18,8 @@ export interface RelayServiceOptions {
   readonly connect?: RelayLinkOptions["connect"];
   readonly clock?: RelayLinkOptions["clock"];
   readonly random?: RelayLinkOptions["random"];
+  /** The version WELCOME tells the shell; package.json's by default. The skew QA reports another. */
+  readonly serverVersion?: RelayLinkOptions["serverVersion"];
 }
 
 /** Only secure origins, without credentials, paths, query, fragments or host lists. */
@@ -93,7 +95,7 @@ export class RelayService {
       this.phase = "connecting";
       const link = new RelayLink({
         relay: this.relay, identity: this.identity, services, port: this.port,
-        connect: this.options.connect, clock: this.options.clock, random: this.options.random,
+        connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
         onState: (phase, error) => { if (this.link === link) { this.phase = phase; this.error = error; } },
       });
       this.link = link;

@@ -31,4 +31,13 @@ export const RELAY_JA: Record<string, string> = {
   "This pairing link is damaged": "このペアリングリンクは壊れています",
   "Part of the link is missing or changed. Scan the QR code on the PC again, or copy its link whole.": "リンクの一部が欠けているか変わっています。PCのQRコードをもう一度スキャンするか、リンク全体をコピーしてください。",
   "Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.": "ペアリングを保つにはホーム画面に追加してください。Safariは1週間アクセスのないページの保存データを消すことがあります。",
+  "Update Ovis on {name}": "{name}のOvisをアップデートしてください",
+  "{name} runs Ovis {version}; this app needs {min} or newer.": "{name}はOvis {version}を実行しています。このアプリには{min}以降が必要です。",
+  "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.": "ここからアップデートできます。PCが最新リリースをインストールしてOvisを再起動すると、このアプリが再接続します。",
+  "Update now": "今すぐアップデート",
+  "Its Ovis does not update itself. On the PC, run the installer:": "このPCのOvisは自動ではアップデートされません。PCでインストーラーを実行してください:",
+  "Or, for the herdr plugin, reinstall it and restart Ovis:": "herdrプラグインの場合は、再インストールしてOvisを再起動してください:",
+  "Asking the PC to update…": "PCにアップデートを依頼しています…",
+  "Waiting for {name} to restart…": "{name}の再起動を待っています…",
+  "The update did not finish.": "アップデートが完了しませんでした。",
 };

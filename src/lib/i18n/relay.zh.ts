@@ -31,4 +31,13 @@ export const RELAY_ZH: Record<string, string> = {
   "This pairing link is damaged": "此配对链接已损坏",
   "Part of the link is missing or changed. Scan the QR code on the PC again, or copy its link whole.": "链接有部分缺失或被改动。请重新扫描电脑上的二维码，或完整复制链接。",
   "Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.": "添加到主屏幕以保持配对：Safari 可能会清除一周未访问页面的存储数据。",
+  "Update Ovis on {name}": "请更新 {name} 上的 Ovis",
+  "{name} runs Ovis {version}; this app needs {min} or newer.": "{name} 运行的是 Ovis {version}；此应用需要 {min} 或更新版本。",
+  "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.": "可以在这里更新：电脑会安装最新版本并重启 Ovis，然后此应用重新连接。",
+  "Update now": "立即更新",
+  "Its Ovis does not update itself. On the PC, run the installer:": "这台电脑上的 Ovis 不会自动更新。请在电脑上运行安装程序：",
+  "Or, for the herdr plugin, reinstall it and restart Ovis:": "如果是 herdr 插件，请重新安装并重启 Ovis：",
+  "Asking the PC to update…": "正在请求电脑更新…",
+  "Waiting for {name} to restart…": "正在等待 {name} 重启…",
+  "The update did not finish.": "更新未完成。",
 };

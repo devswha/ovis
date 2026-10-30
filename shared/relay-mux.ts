@@ -1,6 +1,18 @@
 import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
 
+/** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
+/**
+ * The oldest Ovis server the hosted shell connects to: 0.4.21, the first release with server/relay/
+ * (package.json read 0.4.20 when the relay landed). Raise it only in a PR that makes the shell need
+ * a newer server API, with a changelog line. A server below it gets the update screen
+ * (src/lib/relay/skew.ts); `.github/workflows/ci.yml` job `relay-skew` runs the shell against
+ * the tag equal to it and against the latest `v*` tag.
+ *
+ * A branch the shell keeps for a server older than its own version is marked
+ * `// COMPAT(relay): added in <v>, remove after <v+2>`, so raising this constant finds it.
+ */
+export const MIN_SERVER_VERSION = "0.4.21";
 export const MAX_FRAME_BYTES = 16384;
 export const ENVELOPE_BYTES = 8;
 export const WS_START_CAPACITY = 16372;
@@ -83,7 +95,7 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: 1; readonly min_supported_client: string };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
   readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch" };
   readonly 0x05: { readonly code: SessionError; readonly message: string };
@@ -272,9 +284,10 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { protocol: "ovis-mux", versions, features, required_features } };
     }
     case FrameType.WELCOME:
-      requireProtocol(v.protocol === "ovis-mux" && v.version === 1 && v.relay_protocol === 1, "Invalid welcome protocol");
+      requireProtocol(v.protocol === "ovis-mux" && v.version === 1, "Invalid welcome protocol");
+      // another relay_protocol is read, not refused here: the shell names it an update (src/lib/relay/channel.ts)
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
-        nonce: base64url(v.nonce, 32), server_version: text(v.server_version), relay_protocol: 1, min_supported_client: text(v.min_supported_client) } };
+        nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };
