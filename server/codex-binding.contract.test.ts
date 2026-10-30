@@ -467,11 +467,18 @@ it("takes the thread herdr has for a Codex pane as a hint: the shared daemon rep
   } finally {
     remove();
   }
-  // and a thread nothing else owns is still read from the id alone, before any answer shows
+  // the id alone ties the pane to nothing, even when no other pane shows that thread: the report
+  // may be stale, or another pane's through the daemon, so the terminal stands in until it shows
   const db = new Database(join(codexHome, "state_5.sqlite"));
   db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(threads.hinted, rollout("hinted"), root, "question for hinted");
   db.close();
   const alone = await pane("hinted", codex);
   await reportThread(alone, threads.hinted);
-  expect(lastAnswer(await read(alone))).toBe(answers.hinted);
+  expect((await read(alone)).source).toBe("scrollback");
+  // and once the pane shows its answer, the reported thread is read
+  writeFileSync(join(root, "bin", "hinted.txt"), `${answers.hinted}\n`);
+  const shown = await pane("hinted-shown", `${codex} --say hinted`);
+  await reportThread(shown, threads.hinted);
+  await onScreen(shown, answers.hinted);
+  expect(lastAnswer(await read(shown))).toBe(answers.hinted);
 }, 40_000);
