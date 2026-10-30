@@ -108,9 +108,10 @@ try {
         // Output received while hidden must already be painted when this tab returns.
         await paneSendText(panes[1]!, "printf 'OVIS-HIDDEN-UPDATE\\n'\n");
         await frame(panes[1]!).locator(".xterm-rows", { hasText: "OVIS-HIDDEN-UPDATE" }).waitFor({ state: "attached" });
+        const evicting = frames.length;
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
-        assert.ok(frames.some((frame) => frame.type === "unwatch" && frame.pane_id === panes[1]), "eviction stops the tab's view");
+        assert.ok(frames.slice(evicting).some((frame) => frame.type === "unwatch" && frame.pane_id === panes[1]), "eviction stops the tab's view");
         // a phone keeps one recent tab beside the current one, a desktop three
         const bound = width === 390 ? 2 : 4;
         assert.equal(await page.locator("[data-layout-pane]").count(), bound, `the ${bound}-tab bound holds`);
@@ -134,6 +135,26 @@ try {
         } finally {
           clearTimeout(timeout);
           for (const socket of sockets) socket.off("framesent", observe);
+        }
+        // Coming back to the window watches the recent tabs again.
+        const watched = new Set(panes.slice(bound === 4 ? 2 : 3, 4));
+        const rewatched = Promise.withResolvers<void>();
+        const rewatchTimeout = setTimeout(() => rewatched.reject(new Error("cached views did not start again on focus")), 5000);
+        const onWatch = ({ payload }: { payload: string | Buffer }) => {
+          const message = JSON.parse(String(payload));
+          if (message.type === "watch") watched.delete(message.pane_id);
+          if (watched.size === 0) rewatched.resolve();
+        };
+        for (const socket of sockets) socket.on("framesent", onWatch);
+        try {
+          await page.evaluate(() => {
+            Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
+            window.dispatchEvent(new Event("focus"));
+          });
+          await rewatched.promise;
+        } finally {
+          clearTimeout(rewatchTimeout);
+          for (const socket of sockets) socket.off("framesent", onWatch);
         }
       }
       assert.deepEqual(errors, [], "no browser errors");

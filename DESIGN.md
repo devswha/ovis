@@ -1667,8 +1667,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   hidden tab lets go of its attach as before, and with it the pane's input and size: it watches the
   pane through herdr's read-only view (`watch`), drawn for this tab's own grid, so a return shows the
   pane as it is now while the new attach is made. It cannot take input, focus or the clipboard (OSC 52).
-  Leaving the window, eviction, or **Use alongside herdr's own window** stops the view.
-  A reconnect or replaced terminal never starts a hidden view. This follows Zed's multiple
+  Leaving the window or eviction stops the view, and coming back to the window starts it again;
+  **Use alongside herdr's own window** stops it at the next of those. A reconnect resumes the views
+  the connection had, never a hidden attach. This follows Zed's multiple
   terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather than
   retaining every terminal indefinitely. No attached screen is rebuilt from `pane.read`.
 - Switching tabs retains an outgoing terminal while its explicit submit awaits a receipt;

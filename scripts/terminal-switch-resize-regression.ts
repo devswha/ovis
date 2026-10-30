@@ -30,7 +30,7 @@ const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDi
 const browsers: Browser[] = [];
 let workspace: string | null = null;
 
-type Viewer = { page: Page; close: () => Promise<void> };
+type Viewer = { page: Page; sent: { type: string; pane_id?: string }[]; close: () => Promise<void> };
 async function viewer(width: number, pane: string, panes: string[]): Promise<Viewer> {
   // Separate browsers: each viewer keeps its own window focus, as two devices do.
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -42,11 +42,13 @@ async function viewer(width: number, pane: string, panes: string[]): Promise<Vie
     for (const id of panes) localStorage.setItem(`ovis:view:${id}`, "terminal");
   }, { panes });
   const page = await context.newPage();
+  const sent: { type: string; pane_id?: string }[] = [];
+  page.on("websocket", (ws) => ws.on("framesent", ({ payload }) => { sent.push(JSON.parse(String(payload))); }));
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await page.locator(`[data-layout-pane="${pane}"] [data-pane-content]`).waitFor();
-  return { page, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
+  return { page, sent, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
 }
 const rows = (page: Page, pane: string): Promise<string[]> => page.locator(`[data-layout-pane="${pane}"] .xterm-rows > div`)
   .evaluateAll((divs) => divs.map((div) => (div.textContent ?? "").replace(/\s+$/, "")));
@@ -116,10 +118,13 @@ try {
       return { matched: await Promise.race([state.matched.then(() => true), bound]), painted: state.frames };
     }, expected.join("\n"));
     const actual = await rows(cached.page, target);
+    if (!cached.sent.some((frame) => frame.type === "watch" && frame.pane_id === target)) failures.push(`${round}: the hidden tab never watched its pane`);
     if (!settled.matched) {
       failures.push(`${round}: the returned tab differs from a fresh attach\n--- returned\n${actual.join("\n")}\n--- fresh attach\n${expected.join("\n")}`);
     } else {
-      const torn = settled.painted.find((lines) => lines.some((line) => line.split("#").length > 2) || lines.join("\n").split("LONG0014").length > 2);
+      // the screen's six edge markers are all on it, each on a row of its own, and the long line once
+      const torn = settled.painted.find((lines) => lines.join("\n").includes("ROW1") && (lines.join("").split("#").length - 1 < 6
+        || lines.some((line) => line.split("#").length > 2) || lines.join("\n").split("LONG0014").length > 2));
       if (torn) failures.push(`${round}: a frame painted on return mixes two grids\n${torn.join("\n")}`);
     }
     if (evidence) {

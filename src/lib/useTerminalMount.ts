@@ -2085,7 +2085,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       reattachRef.current = reattach;
       const back = (): void => {
-        if (!presentedRef.current) return;
+        if (!presentedRef.current) {
+          // a recent tab whose view stopped when the window was left watches again on the way back
+          const current = paneRef.current;
+          if (current && cachedRef.current && releasedRef.current && !watchingRef.current && cachedReleaseRef.current
+            && inUse() && !releaseAwayRef.current && socket.canWatch()) watch(current);
+          return;
+        }
         // the key, click or paste that takes an idle pane back is held with what follows it until the attach
         // takes input; offline, typing is held for review as before (nothing goes by itself after a disconnect)
         const resumeFor = idleReleased && releasedRef.current && socket.connected ? paneRef.current : null;
