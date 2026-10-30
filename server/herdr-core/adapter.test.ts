@@ -368,6 +368,18 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(paneClose("t9", socket)).rejects.toMatchObject({ code: "pane_not_found" });
   });
 
+  it("closes only a tab's own terminal when labels name the same ids in other spaces", async () => {
+    // t1 is the app's own (the layout document places it); t5 to t7 are labeled only
+    const { socket, ends } = await living([
+      terminal("t1"),
+      terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T" } }),
+      terminal("t6", { labels: { "herdr.space": "T" } }),
+      terminal("t7", { labels: { "herdr.space": "Y", "herdr.tab": "T" } }),
+    ]);
+    await tabClose("T", socket);
+    expect(ends).toEqual(["kill t5", "rm t5"]);
+  });
+
   it("refuses to close Other terminals as a whole: its jobs and agents' workers are no workspace's", async () => {
     const { socket, ends } = await living([terminal("t1"), terminal("t5")]);
     await expect(workspaceClose("hc-other", socket)).rejects.toMatchObject({ code: "unsupported" });

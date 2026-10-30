@@ -134,11 +134,15 @@ describe("buildSnapshot, terminals the app has not placed", () => {
       terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }),
       terminal("t2", { labels: { "herdr.space": "X", "herdr.tab": "S" } }),
       terminal("t3", { labels: { "herdr.space": "T" } }),
+      terminal("t4", { labels: { "herdr.space": "Y", "herdr.tab": "T" } }),
     ], null, "0.1.14");
     const workspaceIds = snapshot.workspaces.map((w) => w.workspace_id);
     const tabIds = snapshot.tabs.map((t) => t.tab_id);
     expect(workspaceIds.filter((id) => tabIds.includes(id))).toEqual([]);
     expect(snapshot.panes.find((p) => p.pane_id === "t2")!.tab_id).toBe("X:t2");
+    // a tab label used in another space: a tab of its own, never one tab in two spaces
+    expect(snapshot.panes.find((p) => p.pane_id === "t4")!.tab_id).toBe("Y:t4");
+    expect(new Set(tabIds).size).toBe(tabIds.length);
   });
 
   it("puts a second unplaced terminal of a tab beside the first, not over it", () => {
