@@ -6,12 +6,12 @@
  * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { linkSync, readFileSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import nacl from "tweetnacl";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
-import { writePrivateState } from "../private-state.ts";
+import { preparePrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
 
 export interface RelayIdentity {
   v: 1;
@@ -45,10 +45,10 @@ export function loadRelayIdentity(stateDir: string): RelayIdentity {
 
 /** Replaces the identity with a new server_id and key pair, atomically. */
 export function rotateRelayIdentity(stateDir: string): RelayIdentity {
-  return createIdentity(relayIdentityPath(stateDir));
+  return createIdentity(relayIdentityPath(stateDir), true);
 }
 
-function createIdentity(path: string): RelayIdentity {
+function createIdentity(path: string, replace = false): RelayIdentity {
   const pair = generateKeyPair();
   const identity: RelayIdentity = {
     v: 1,
@@ -56,7 +56,22 @@ function createIdentity(path: string): RelayIdentity {
     public_key: exportPublicKey(pair.publicKey),
     secret_key: exportSecretKey(pair.secretKey),
   };
-  writePrivateState(path, identity);
+  if (replace) {
+    writePrivateState(path, identity);
+    return identity;
+  }
+  // Publish complete, flushed bytes without replacing another creator's identity.
+  const temporary = preparePrivateState(path, identity);
+  try {
+    try { linkSync(temporary, path); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+      return parseIdentity(readFileSync(path, "utf8"));
+    }
+  } finally {
+    unlinkSync(temporary);
+  }
+  syncDirectory(dirname(path), process.platform);
   return identity;
 }
 

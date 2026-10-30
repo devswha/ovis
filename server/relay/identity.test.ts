@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRelayIdentity, relayIdentityPath, rotateRelayIdentity } from "./identity.ts";
+import { privateStateFs } from "../private-state.ts";
 
 const dirs: string[] = [];
 const stateDir = (): string => { const dir = mkdtempSync(join(tmpdir(), "relay-identity-")); dirs.push(dir); return dir; };
@@ -11,6 +12,28 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 const mode = (path: string): number => statSync(path).mode & 0o777;
 
 describe("relay identity", () => {
+  it("loads the winning identity when another creator publishes first", () => {
+    const dir = stateDir();
+    const open = privateStateFs.openSync;
+    let competing: ReturnType<typeof loadRelayIdentity> | undefined;
+    let entered = false;
+    const spy = spyOn(privateStateFs, "openSync").mockImplementation((...args) => {
+      // Both callers have seen ENOENT before either can publish its prepared file.
+      if (!entered) {
+        entered = true;
+        competing = loadRelayIdentity(dir);
+      }
+      return open(...args);
+    });
+    try {
+      const first = loadRelayIdentity(dir);
+      expect(first).toEqual(competing);
+      expect(loadRelayIdentity(dir)).toEqual(competing);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("creates a private identity file and reuses it", () => {
     const dir = stateDir();
     const first = loadRelayIdentity(dir);
