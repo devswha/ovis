@@ -1,4 +1,4 @@
-import { MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
+import { useAppLayout, MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, X } from "lucide-react";
 
@@ -299,7 +299,11 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   // the mode the zoom item names, never a toggle (lib/layoutMap.ts): herdr focuses the pane and
   // then sets the tab's flag, so a toggle on a pane other than the one shown alone would unzoom the tab
   const zoom = tabLayout !== undefined && selectedPaneId !== null ? zoomMode(tabLayout, selectedPaneId) : null;
-  const { splitPane, zoomPane } = actions;
+  // on a PC the Herdr app's window lays out (lib/machineContext.tsx) the tab's name and workspace are the
+  // app's; App already gives no split or zoom there (lib/layoutActions.ts)
+  const appLayout = useAppLayout();
+  const splitPane = actions.splitPane;
+  const zoomPane = actions.zoomPane;
   // browsing starts in the selected pane's folder, home without one
   const selectedPane = snapshot?.panes.find((pane) => pane.pane_id === selectedPaneId);
   const browseStart = selectedPane && panePath(selectedPane) ? panePath(selectedPane) : null;
@@ -311,7 +315,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
     ...(selectedPaneId !== null ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
-    ...(selectedPaneId !== null && stripDrawn ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && stripDrawn && !appLayout ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },
@@ -331,7 +335,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ...(actions.openFiles ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: actions.openFiles }] : []),
     ...(online ? [{ id: "browse-folders", label: t("Browse folders"), icon: FolderSearch, keepOpen: true, run: () => browseTo(browseStart ?? home ?? "~") }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, stripDrawn, online, browseTo, browseStart, home]);
+  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, stripDrawn, appLayout, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts
@@ -350,12 +354,12 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const aliasesByAction = useMemo(() => actionAliases(t), [t]);
   // the selected one-pane tab to another workspace of its PC, one row each, found by a query only as Settings pages are
   const selectedWorkspace = selectedPane?.workspace_id ?? null;
-  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || tabPanes !== 1 ? [] : (snapshot?.workspaces ?? [])
+  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || tabPanes !== 1 || appLayout ? [] : (snapshot?.workspaces ?? [])
     .filter((entry) => entry.workspace_id !== selectedWorkspace)
     .map((entry) => ({ id: `move-tab-${entry.workspace_id}`, label: t("Move tab to {workspace}", { workspace: entry.label }), icon: FolderInput,
       // a refusal is said over the pane (App): the palette has closed by then
       run: () => { void actions.moveTabToWorkspace({ machineId, tabId: selectedTab, workspaceId: entry.workspace_id, notice: true }).catch(() => undefined); } })),
-  [actions, machineId, selectedTab, selectedWorkspace, snapshot?.workspaces, t, tabPanes]);
+  [actions, appLayout, machineId, selectedTab, selectedWorkspace, snapshot?.workspaces, t, tabPanes]);
 
   const allPanes = useMemo(() => machines.flatMap((machine) => machine.state === "connected" ? machine.snapshot?.panes ?? [] : []), [machines]);
   const multiMachine = machines.length > 1;

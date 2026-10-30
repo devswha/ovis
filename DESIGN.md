@@ -1027,6 +1027,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   navigation bar (and the Claude iOS app) keeps one overflow button in the bar and the content's
   controls below it. Wherever that ellipsis shows to a finger, the pane's banners (View only and the
   rest) start below it, so none covers it.
+- On a PC whose terminals are the Herdr app's (`HerdrIdentity.runtime` `herdr-core`), the app's
+  window owns the workspaces, tabs and splits, and herdr-core refuses to rename, reorder or move
+  them, to split, swap, zoom or resize a pane, and the worktree actions. The browser then leaves
+  those out wherever they are offered (the row, tab and pane menus, the touch tab menu, the
+  palette, Rename tab's field, the split shortcuts, F2, double-click, Alt+arrows, drags and the
+  dividers) rather than showing them disabled. It follows Zed, whose remote projects leave out
+  what the remote host cannot do (VS Code's `when` clauses work the same way); New workspace, New tab, New terminal, Close, Pin and Earlier
+  sessions stay. `AppLayoutContext` (lib/machineContext.tsx) carries it per PC: the selected PC,
+  each half of the split view and each PC's sidebar roster.
 
 ### Badge (`.badge`)
 - Agent states read **READY**, **RUN**, **INPUT**, **DONE**; unknown reads **—**. **BG** is a pane
