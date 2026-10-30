@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
 import type { HcTerminal } from "./snapshot.ts";
@@ -300,4 +300,90 @@ describe("herdr-core adapter", () => {
       expect(core.closed).toEqual([channel]);
     });
   }
+
+describe("herdr-core adapter, new and closed terminals", () => {
+  /** a core whose terminal list follows its own terminal.run, terminal.kill and terminal.rm */
+  async function living(start: HcTerminal[]) {
+    const terminals = [...start];
+    const runs: Record<string, unknown>[] = [];
+    const ends: string[] = [];
+    let next = terminals.length + 1;
+    const ready = await setup(terminals, {
+      "terminal.run": (params) => {
+        runs.push(params);
+        const record = terminal(`t${next++}`, { cwd: typeof params["cwd"] === "string" ? params["cwd"] : "/home/u", labels: params["labels"] as Record<string, string> });
+        terminals.push(record);
+        return record;
+      },
+      "terminal.kill": (params) => {
+        ends.push(`kill ${String(params["terminal"])}`);
+        const found = terminals.find((entry) => entry.address === params["terminal"]);
+        if (!found) throw new Error("no terminal");
+        found.state = "finished";
+        return found;
+      },
+      "terminal.rm": (params) => {
+        ends.push(`rm ${String(params["terminal"])}`);
+        terminals.splice(terminals.findIndex((entry) => entry.address === params["terminal"]), 1);
+        return { removed: params["terminal"] };
+      },
+    });
+    return { ...ready, runs, ends };
+  }
+
+  it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {
+    const { socket, runs } = await living([terminal("t1")]);
+    const created = await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
+    const labels = runs[0]!["labels"] as Record<string, string>;
+    expect(runs[0]).toMatchObject({ keep: true, cwd: "/work/web" });
+    expect(labels["herdr.space"]).toMatch(/^ovis-/);
+    expect(labels["herdr.tab"]).toMatch(/^ovis-/);
+    expect(labels["ovis.workspace"]).toBe("web");
+    expect(created.workspace).toMatchObject({ workspace_id: labels["herdr.space"], label: "web" });
+    expect(created.tab).toMatchObject({ tab_id: labels["herdr.tab"], workspace_id: labels["herdr.space"] });
+    expect(created.root_pane).toMatchObject({ pane_id: "t2", terminal_id: "t2", tab_id: labels["herdr.tab"] });
+  });
+
+  it("starts a new tab in the app's space, where that space's first pane works, and one in Other terminals on its own", async () => {
+    const { socket, runs } = await living([terminal("t1", { cwd: "/repo/api" })]);
+    const tab = await tabCreate({ workspaceId: "s1", label: "logs" }, socket);
+    expect(runs[0]).toMatchObject({ keep: true, cwd: "/repo/api" });
+    expect(runs[0]!["labels"]).toMatchObject({ "herdr.space": "s1", "ovis.tab": "logs" });
+    expect(tab.tab).toMatchObject({ workspace_id: "s1", label: "logs" });
+    expect(tab.root_pane.pane_id).toBe("t2");
+    await tabCreate({ workspaceId: "hc-other" }, socket);
+    expect(runs[1]!["labels"]).toEqual({});
+    await expect(tabCreate({ workspaceId: "nope" }, socket)).rejects.toMatchObject({ code: "workspace_not_found" });
+  });
+
+  it("closes a pane, a tab or a workspace by ending each of its terminals and removing its record", async () => {
+    const { socket, ends } = await living([terminal("t1"), terminal("t2", { labels: { "herdr.space": "s1", "herdr.tab": "s1t2" } }), terminal("t3")]);
+    await paneClose("t3", socket);
+    expect(ends).toEqual(["kill t3", "rm t3"]);
+    await tabClose("s1t2", socket);
+    expect(ends.slice(2)).toEqual(["kill t2", "rm t2"]);
+    await workspaceClose("s1", socket);
+    expect(ends.slice(4)).toEqual(["kill t1", "rm t1"]);
+    expect((await sessionSnapshot(socket)).panes).toEqual([]);
+    await expect(paneClose("t9", socket)).rejects.toMatchObject({ code: "pane_not_found" });
+  });
+
+  it("ends every terminal of a closed workspace at once, and answers a failure only after trying them all", async () => {
+    const kills: string[] = [];
+    const held = Promise.withResolvers<void>();
+    const terminals = [terminal("t1"), terminal("t2", { labels: { "herdr.space": "s1", "herdr.tab": "s1t2" } })];
+    const { socket } = await setup(terminals, {
+      "terminal.kill": (params) => {
+        kills.push(String(params["terminal"]));
+        if (kills.length === 2) held.resolve();
+        if (params["terminal"] === "t1") throw new Error("kill refused");
+        return {};
+      },
+      "terminal.rm": () => ({}),
+    });
+    await expect(workspaceClose("s1", socket)).rejects.toBeDefined();
+    await held.promise;
+    expect(kills.sort()).toEqual(["t1", "t2"]);
+  });
+});
 });

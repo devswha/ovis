@@ -3,7 +3,7 @@ import { createConnection } from "node:net";
 import type { Socket } from "bun";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
 import { type HcConnection, HcError } from "./connection.ts";
-import { agentInfoOf, agentStatusOf, buildSnapshot, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, processInfoOf } from "./snapshot.ts";
+import { agentInfoOf, agentStatusOf, buildSnapshot, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, OTHER_WORKSPACE_ID, processInfoOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import type { SessionSnapshot } from "../../shared/herdr-api.generated.ts";
 
 /**
@@ -230,6 +230,34 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
     return run;
   };
 
+  /**
+   * A shell hc keeps (a lost program comes back as a shell), labeled `labels`, answered as herdr
+   * answers a new one: the workspace, tab and pane it shows as in the snapshot right after.
+   */
+  const startShell = async (params: Record<string, unknown>, labels: Record<string, string>) => {
+    const env = isRecord(params["env"]) ? Object.fromEntries(Object.entries(params["env"]).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
+    const record = await hc.call<HcTerminal>("terminal.run", { keep: true, labels, ...(typeof params["cwd"] === "string" ? { cwd: params["cwd"] } : {}), ...(env ? { env } : {}) });
+    const shown = await snapshot();
+    const root_pane = shown.panes.find((pane) => pane.pane_id === record.address);
+    const tab = root_pane && shown.tabs.find((candidate) => candidate.tab_id === root_pane.tab_id);
+    const workspace = root_pane && shown.workspaces.find((candidate) => candidate.workspace_id === root_pane.workspace_id);
+    if (!root_pane || !tab || !workspace) throw new AdapterError("internal", `hc started ${record.address}, but it is not in the snapshot`);
+    return { workspace, tab, root_pane };
+  };
+
+  /**
+   * Ends each terminal and removes its record, as closing a herdr pane does: all at once (a program
+   * can take seconds to end), every one tried before the first failure is answered.
+   */
+  const end = async (addresses: string[]): Promise<void> => {
+    const ended = await Promise.allSettled(addresses.map(async (address) => {
+      await hc.call("terminal.kill", { terminal: address });
+      await hc.call("terminal.rm", { terminal: address });
+    }));
+    const failed = ended.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (failed) throw failed.reason;
+  };
+
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
       const hello = await hc.hello();
@@ -301,6 +329,47 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
       if (!(await paneOf(paneId, "agent_not_found")).agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
       await inTurn(paneId, () => hc.call("terminal.send", { terminal: paneId, text }, 30_000));
+      return { type: "ok" };
+    },
+    // A new workspace or tab is a shell hc starts, labeled with its space and tab as the Herdr app
+    // labels its own: the app adopts it there (herdr-app src/window.rs `reconcile`), and until
+    // then, or without the app, the snapshot groups it by those labels (snapshot.ts `groups`).
+    // Names live in the app's document, which Ovis never writes: a name given here is a label.
+    async "workspace.create"(params) {
+      const spaceId = `ovis-${crypto.randomUUID()}`;
+      const label: Record<string, string> = typeof params["label"] === "string" && params["label"] ? { [WORKSPACE_NAME_LABEL]: params["label"] } : {};
+      const pane = await startShell(params, { [SPACE_LABEL]: spaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, ...label });
+      return { type: "workspace_created", ...pane };
+    },
+    async "tab.create"(params) {
+      const workspaceId = paneIdOf(params, "workspace_id");
+      const shown = await snapshot();
+      const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+      if (!workspace && workspaceId !== OTHER_WORKSPACE_ID) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+      // a tab in a workspace starts where that workspace's first pane works, as herdr's does
+      const cwd = typeof params["cwd"] === "string" ? params["cwd"] : shown.panes.find((pane) => pane.workspace_id === workspaceId)?.cwd ?? undefined;
+      const label: Record<string, string> = typeof params["label"] === "string" && params["label"] ? { [TAB_NAME_LABEL]: params["label"] } : {};
+      // "Other terminals" is no space of the app's: a tab there is a terminal of its own
+      const space: Record<string, string> = workspaceId === OTHER_WORKSPACE_ID ? {} : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}` };
+      const { tab, root_pane } = await startShell({ ...params, ...(cwd ? { cwd } : {}) }, { ...space, ...label });
+      return { type: "tab_created", tab, root_pane };
+    },
+    async "pane.close"(params) {
+      await end([await paneOf(paneIdOf(params))].map((pane) => pane.pane_id));
+      return { type: "ok" };
+    },
+    async "tab.close"(params) {
+      const tabId = paneIdOf(params, "tab_id");
+      const panes = (await snapshot()).panes.filter((pane) => pane.tab_id === tabId);
+      if (panes.length === 0) throw new AdapterError("tab_not_found", `tab ${tabId} not found`);
+      await end(panes.map((pane) => pane.pane_id));
+      return { type: "ok" };
+    },
+    async "workspace.close"(params) {
+      const workspaceId = paneIdOf(params, "workspace_id");
+      const panes = (await snapshot()).panes.filter((pane) => pane.workspace_id === workspaceId);
+      if (panes.length === 0) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+      await end(panes.map((pane) => pane.pane_id));
       return { type: "ok" };
     },
   };

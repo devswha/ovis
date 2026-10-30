@@ -95,6 +95,56 @@ describe("buildSnapshot", () => {
   });
 });
 
+describe("buildSnapshot, terminals the app has not placed", () => {
+  it("groups a labeled terminal by its space and tab, as the app will adopt it, and leaves an unlabeled one under Other terminals", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: block("t1") }] }] };
+    const snapshot = buildSnapshot([
+      terminal("t1"),
+      terminal("t2", { labels: { "herdr.space": "s1", "herdr.tab": "ovis-tb", "ovis.tab": "logs" } }),
+      terminal("t3", { cwd: "/work/web", labels: { "herdr.space": "ovis-s9", "herdr.tab": "ovis-tc", "ovis.workspace": "web stuff" } }),
+      terminal("t4", { labels: { "herdr.space": "ovis-s9", "herdr.tab": "ovis-tc" } }),
+      terminal("t5", { cwd: "/srv/db", labels: { "herdr.space": "ovis-s7" } }),
+      terminal("t6"),
+    ], layout, "0.1.14");
+    expect(snapshot.workspaces.map((w) => [w.workspace_id, w.label])).toEqual([["s1", "api"], ["ovis-s9", "web stuff"], ["ovis-s7", "db"], [OTHER_WORKSPACE_ID, "Other terminals"]]);
+    expect(snapshot.tabs.map((t) => [t.tab_id, t.workspace_id, t.label])).toEqual([
+      ["s1t1", "s1", "1"], ["ovis-tb", "s1", "logs"], ["ovis-tc", "ovis-s9", "1"], ["ovis-s7:t5", "ovis-s7", "1"], [`${OTHER_WORKSPACE_ID}:t6`, OTHER_WORKSPACE_ID, "t6"],
+    ]);
+    expect(snapshot.panes.filter((p) => p.tab_id === "ovis-tc").map((p) => p.pane_id)).toEqual(["t3", "t4"]);
+  });
+
+  it("never makes one tab of two: a labeled id the app uses elsewhere gets an id of its own", () => {
+    const layout = { spaces: [
+      { id: "s1", name: "a", tabs: [{ id: "T", name: "", root: block("t1") }] },
+      { id: "s2", name: "b", tabs: [{ id: "s2t1", name: "", root: block("t2") }] },
+    ] };
+    const snapshot = buildSnapshot([
+      terminal("t1"), terminal("t2"),
+      terminal("t3", { labels: { "herdr.space": "s2", "herdr.tab": "T" } }),
+      terminal("t4", { labels: { "herdr.space": "s2t1" } }),
+    ], layout, "0.1.14");
+    expect(snapshot.panes.find((p) => p.pane_id === "t3")).toMatchObject({ workspace_id: "s2", tab_id: "s2:t3" });
+    expect(snapshot.panes.filter((p) => p.tab_id === "T").map((p) => p.pane_id)).toEqual(["t1"]);
+    // a space id that is the app's tab id is no space: the terminal is one of the others
+    expect(snapshot.panes.find((p) => p.pane_id === "t4")!.workspace_id).toBe(OTHER_WORKSPACE_ID);
+  });
+
+  it("puts a second unplaced terminal of a tab beside the first, not over it", () => {
+    const snapshot = buildSnapshot([
+      terminal("t1", { cols: 80, labels: { "herdr.space": "ovis-s", "herdr.tab": "ovis-t" } }),
+      terminal("t2", { cols: 60, labels: { "herdr.space": "ovis-s", "herdr.tab": "ovis-t" } }),
+    ], null, "0.1.14");
+    expect(snapshot.layouts[0]!.panes.map((p) => [p.pane_id, p.rect.x])).toEqual([["t1", 0], ["t2", 81]]);
+  });
+
+  it("keeps the name a person gave once the app adopts the terminal into an unnamed space and tab", () => {
+    const layout = { spaces: [{ id: "ovis-s", name: "", tabs: [{ id: "ovis-t", name: "", root: block("t1") }] }] };
+    const snapshot = buildSnapshot([terminal("t1", { labels: { "herdr.space": "ovis-s", "herdr.tab": "ovis-t", "ovis.workspace": "web", "ovis.tab": "logs" } }), terminal("t2", { labels: { "ovis.tab": "scratch" } })], layout, "0.1.14");
+    expect(snapshot.workspaces[0]!.label).toBe("web");
+    expect(snapshot.tabs.map((t) => t.label)).toEqual(["logs", "scratch"]);
+  });
+});
+
 describe("keyBytes", () => {
   it("types printable characters, Enter, Tab, Backspace, and Alt or Shift on a character hc has no key for; leaves the rest to hc's encoder", () => {
     expect(["x", "A", "한", " ", "Enter", "tab", "Backspace", "plus", "shift+plus", "alt+|", "alt+shift+plus"].map(keyBytes))

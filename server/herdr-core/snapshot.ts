@@ -18,6 +18,12 @@ import type { AgentInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessI
 export const HERDR_PROTOCOL = 22;
 export const OTHER_WORKSPACE_ID = "hc-other";
 export const LAYOUT_DOC = "herdr-app";
+/** The labels the Herdr app groups its terminals by (herdr-app src/window.rs): a terminal it has not placed is adopted there. */
+export const SPACE_LABEL = "herdr.space";
+export const TAB_LABEL = "herdr.tab";
+/** The names a person gave a workspace or tab Ovis made: names live in the app's document, which Ovis never writes. */
+export const WORKSPACE_NAME_LABEL = "ovis.workspace";
+export const TAB_NAME_LABEL = "ovis.tab";
 
 /** One OSC 7501 report (hc's `Status`): the program's own words. */
 export interface HcStatus { app?: string; state: string; title?: string; msg?: string }
@@ -149,22 +155,41 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       const first = held[0]!.terminal;
       const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
       const tabName = tab["name"];
-      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || String(index + 1), placed: held });
+      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || String(index + 1), placed: held });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];
         group.label = typeof spaceName === "string" && spaceName ? spaceName
-          : where?.[0] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
+          : where?.[0] || first.labels?.[WORKSPACE_NAME_LABEL] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
       }
     }
     if (group.tabs.length > 0) result.push(group);
   }
-  const rest = [...live.values()].filter((terminal) => !placed.has(terminal.address));
+  // a terminal the app has not placed yet, labeled with its space (and tab) the way the app labels
+  // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
+  const rest: HcTerminal[] = [];
+  for (const terminal of [...live.values()].filter((candidate) => !placed.has(candidate.address))) {
+    const spaceId = terminal.labels?.[SPACE_LABEL];
+    let group = spaceId ? result.find((candidate) => candidate.id === spaceId) : undefined;
+    // a label naming no space but an id the app's document uses for something else is no space
+    if (!spaceId || (!group && ids.has(spaceId))) { rest.push(terminal); continue; }
+    if (!group) {
+      group = { id: spaceId, label: terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd), tabs: [] };
+      result.push(group);
+    }
+    const labeled = terminal.labels?.[TAB_LABEL];
+    // a tab id the app uses in another space would make one tab of two: this terminal gets its own
+    const tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
+    const tab = group.tabs.find((candidate) => candidate.id === tabId);
+    // beside what the tab already shows, never over it: the app places it when it adopts it
+    if (tab) tab.placed.push({ terminal, x: Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)), y: 0 });
+    else group.tabs.push({ id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+  }
   if (rest.length > 0) {
     result.push({
       id: OTHER_WORKSPACE_ID,
       label: "Other terminals",
-      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
+      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.labels?.[TAB_NAME_LABEL] || terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
     });
   }
   return result;
