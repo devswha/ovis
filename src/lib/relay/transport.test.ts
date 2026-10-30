@@ -76,6 +76,67 @@ function message(source: EventTarget): Promise<MessageEvent> {
   return event(source, "message", (value) => { if (!(value instanceof MessageEvent)) throw new Error("Expected message"); return value; });
 }
 
+async function saturated() {
+  const requested: string[] = [];
+  const f = await fixture({
+    onWs: (stream) => stream.accept(),
+    dispatch: async (request) => {
+      requested.push(new URL(request.url).pathname);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new Uint8Array([1])); },
+      }));
+    },
+  });
+  const sockets = Array.from({ length: 8 }, () => f.transport.openSocket("/ws"));
+  await Promise.all(sockets.map(opened));
+  const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => f.transport.fetch(`/api/held/${i}`)));
+  return { ...f, requested, responses };
+}
+
+it("queues HTTP behind eight WS and twelve HTTP streams until a receive reservation is released", async () => {
+  const f = await saturated();
+  const waiting = f.transport.fetch("/api/waiting");
+  expect(f.requested).toHaveLength(12);
+  // A body cancellation frees a real mux reservation, not merely the response headers.
+  await f.responses[0]?.body?.cancel();
+  const response = await bounded(waiting);
+  expect(response.status).toBe(200);
+  expect(f.requested).toHaveLength(13);
+  expect(f.requested.at(-1)).toBe("/api/waiting");
+});
+
+it("fails queued HTTP at its deadline without sending the request", async () => {
+  const f = await saturated();
+  const waiting = f.transport.fetch("/api/timed-out").catch((error: unknown) => error);
+  f.clock.advance(30_000);
+  expect(await waiting).toBeInstanceOf(TypeError);
+  expect(f.requested).toHaveLength(12);
+});
+
+it("bounds queued HTTP and removes cancelled requests before admitting the next one", async () => {
+  const f = await saturated();
+  const abort = new AbortController();
+  const cancelled = f.transport.fetch("/api/cancelled", { signal: abort.signal }).catch((error: unknown) => error);
+  const waiting = Array.from({ length: 63 }, (_, i) => f.transport.fetch(`/api/queued/${i}`).catch((error: unknown) => error));
+  await expect(f.transport.fetch("/api/overflow")).rejects.toBeInstanceOf(TypeError);
+  abort.abort();
+  expect(await cancelled).toMatchObject({ name: "AbortError" });
+  await f.responses[0]?.body?.cancel();
+  expect(await bounded(waiting[0] ?? Promise.reject(new Error("Missing queued request")))).toBeInstanceOf(Response);
+  expect(f.requested.at(-1)).toBe("/api/queued/0");
+  f.transport.close();
+  expect((await Promise.all(waiting.slice(1))).every((error) => error instanceof TypeError)).toBe(true);
+});
+
+it("rejects queued HTTP on carrier loss rather than replaying it after reconnect", async () => {
+  const f = await saturated();
+  const waiting = f.transport.fetch("/api/do-not-replay", { method: "POST", body: "once" }).catch((error: unknown) => error);
+  await f.drop();
+  expect(await bounded(waiting)).toBeInstanceOf(TypeError);
+  await f.transport.connect();
+  expect(f.requested).toHaveLength(12);
+});
+
 it("fetches JSON and preserves Range, ETag and conditional responses through real Noise and RelaySession", async () => {
   // Given an admitted encrypted carrier and a real dispatcher.
   const f = await fixture({ dispatch: async (request) => {

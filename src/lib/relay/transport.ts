@@ -1,4 +1,5 @@
-import type { HttpStream, MuxClock, WsStream } from "../../../shared/relay-mux-engine.ts";
+import type { MuxClock, WsStream } from "../../../shared/relay-mux-engine.ts";
+import { MuxStreamError } from "../../../shared/relay-mux-engine.ts";
 import { REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
@@ -29,6 +30,9 @@ const clock: MuxClock = {
     return () => clearTimeout(timer);
   },
 };
+
+const HTTP_QUEUE_LIMIT = 64;
+const HTTP_QUEUE_TIMEOUT_MS = 30_000;
 
 function target(url: string): string {
   const parsed = new URL(url, "https://relay.ovis.invalid");
@@ -76,6 +80,7 @@ export class RelayTransport implements Transport {
   private delay = 1000;
   private cancelRetry: (() => void) | undefined;
   private readonly abort = new AbortController();
+  private readonly waitingHttp = new Set<{ run: () => boolean; fail: (error: unknown) => void }>();
   private readonly stopResources: () => void;
   private readonly wake = (): void => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
@@ -110,6 +115,7 @@ export class RelayTransport implements Transport {
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         this.channel = undefined;
+        this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
         this.options.onClose?.(error);
         this.failed(error);
       },
@@ -117,6 +123,9 @@ export class RelayTransport implements Transport {
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
+    channel.mux.onStreamAvailable = () => {
+      for (const pending of this.waitingHttp) if (!pending.run()) break;
+    };
     this.known = channel.server;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
@@ -148,52 +157,92 @@ export class RelayTransport implements Transport {
     return this.channel.mux;
   }
 
+  private failWaitingHttp(error: unknown): void {
+    for (const pending of this.waitingHttp) pending.fail(error);
+  }
+
+  private waitForHttp(open: () => Promise<Response>, signal: AbortSignal): Promise<Response> {
+    if (this.waitingHttp.size >= HTTP_QUEUE_LIMIT) throw new TypeError("Relay HTTP request queue is full");
+    return new Promise((resolve, reject) => {
+      const cleanup = (): void => {
+        this.waitingHttp.delete(pending);
+        cancelTimeout();
+        signal.removeEventListener("abort", aborted);
+      };
+      const pending = {
+        run: (): boolean => {
+          try {
+            const response = open();
+            cleanup();
+            resolve(response);
+          } catch (error) {
+            if (error instanceof MuxStreamError && error.code === "refused") return false;
+            pending.fail(new TypeError("Relay request failed", { cause: error }));
+          }
+          return true;
+        },
+        fail: (error: unknown): void => { cleanup(); reject(error); },
+      };
+      const aborted = (): void => pending.fail(signal.reason);
+      const cancelTimeout = (this.options.clock ?? clock).setTimeout(
+        () => pending.fail(new TypeError("Relay HTTP request timed out waiting for a stream slot")), HTTP_QUEUE_TIMEOUT_MS);
+      this.waitingHttp.add(pending);
+      signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
+    });
+  }
+
   async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const address = input instanceof Request ? input : new URL(String(input), "https://relay.ovis.invalid").href;
     // These are browser networking policies, not properties of an encrypted mux request.
     const request = new Request(address, { ...init, credentials: "omit", mode: "cors" });
     request.signal.throwIfAborted();
-    let stream: HttpStream;
-    try {
+    const open = (): Promise<Response> => {
       const allowed: readonly string[] = REQUEST_HEADERS;
-      stream = this.mux().openHttp({
+      const stream = this.mux().openHttp({
         target: target(request.url), method: method(request.method),
         headers: [...request.headers].filter(([name]) => allowed.includes(name)),
         body: request.body ? "stream" : "none",
       });
-    } catch (error) { throw new TypeError("Relay request failed", { cause: error }); }
-    return new Promise<Response>((resolve, reject) => {
-      const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
-      request.signal.addEventListener("abort", aborted, { once: true });
-      stream.onDispose = (error) => {
-        request.signal.removeEventListener("abort", aborted);
-        if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay request failed", { cause: error }));
-      };
-      stream.onHeaders = ({ status, headers }) => {
-        if (status < 200) return;
-        // Keep the body streaming; a failed carrier also errors an already returned body.
-        const reader = stream.body.getReader();
-        const body = stream.noBody ? null : new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              const next = await reader.read();
-              if (next.done) controller.close();
-              else controller.enqueue(next.value);
-            } catch (error) {
-              controller.error(request.signal.aborted ? request.signal.reason : new TypeError("Relay body failed", { cause: error }));
-            }
-          },
-          cancel: (reason) => reader.cancel(reason),
-        }, { highWaterMark: 0 });
-        resolve(new Response(body, { status, headers: headers.map(([name, value]) => [name, value]) }));
-      };
-      if (request.signal.aborted) { aborted(); return; }
-      if (request.body) void stream.sendBody(request.body).catch((error: unknown) => {
-        if (stream.stopped) return;
-        stream.reset("internal_error");
-        reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay upload failed", { cause: error }));
+      return new Promise<Response>((resolve, reject) => {
+        const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
+        request.signal.addEventListener("abort", aborted, { once: true });
+        stream.onDispose = (error) => {
+          request.signal.removeEventListener("abort", aborted);
+          if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay request failed", { cause: error }));
+        };
+        stream.onHeaders = ({ status, headers }) => {
+          if (status < 200) return;
+          // Keep the body streaming; a failed carrier also errors an already returned body.
+          const reader = stream.body.getReader();
+          const body = stream.noBody ? null : new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                const next = await reader.read();
+                if (next.done) controller.close();
+                else controller.enqueue(next.value);
+              } catch (error) {
+                controller.error(request.signal.aborted ? request.signal.reason : new TypeError("Relay body failed", { cause: error }));
+              }
+            },
+            cancel: (reason) => reader.cancel(reason),
+          }, { highWaterMark: 0 });
+          resolve(new Response(body, { status, headers: headers.map(([name, value]) => [name, value]) }));
+        };
+        if (request.signal.aborted) { aborted(); return; }
+        if (request.body) void stream.sendBody(request.body).catch((error: unknown) => {
+          if (stream.stopped) return;
+          stream.reset("internal_error");
+          reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay upload failed", { cause: error }));
+        });
       });
-    });
+    };
+    if (this.waitingHttp.size) return this.waitForHttp(open, request.signal);
+    try { return open(); }
+    catch (error) {
+      if (error instanceof MuxStreamError && error.code === "refused") return this.waitForHttp(open, request.signal);
+      throw new TypeError("Relay request failed", { cause: error });
+    }
   }
 
   openSocket(url: string): RelayWebSocket { return new RelayWebSocket(() => this.mux().openWs({ target: target(url), headers: [], protocols: [] })); }
@@ -203,6 +252,7 @@ export class RelayTransport implements Transport {
   close(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.failWaitingHttp(new TypeError("Relay transport is closed"));
     this.stopResources();
     ++this.generation;
     this.cancelRetry?.();
