@@ -7,6 +7,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const FILES_JA: Record<string, string> = {
+  "Too large to open on the phone - download on the PC": "スマートフォンで開くには大きすぎます。PCでダウンロードしてください。",
   "Show source": "ソースを表示",
   "Resize file panel": "ファイルパネルの幅を変更",
   "Show beside the pane": "ペインの横に表示",

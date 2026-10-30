@@ -96,6 +96,17 @@ export function shellHeaders(): string {
 /** The files the shell build writes beside Vite's output. */
 export function shellFiles(manifest: string): Record<string, string> {
   return {
+    "render.html": `<!doctype html><html><head><meta charset="utf-8"><title>Ovis</title></head><body><script>
+function render(event) {
+  if (event.source !== parent || event.data?.type !== "ovis-render" || typeof event.data.html !== "string") return;
+  removeEventListener("message", render);
+  document.open();
+  document.write(event.data.html);
+  document.close();
+}
+addEventListener("message", render);
+parent.postMessage({ type: "ovis-render-ready" }, "*");
+</script></body></html>`,
     "manifest.webmanifest": shellManifest(manifest),
     _redirects: shellRedirects(),
     _headers: shellHeaders(),

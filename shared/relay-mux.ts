@@ -58,6 +58,26 @@ export const RESPONSE_HEADERS = [
   "last-modified", "cache-control", "content-disposition", "retry-after", "x-request-id",
   "content-security-policy", "x-content-type-options", "cross-origin-resource-policy", "referrer-policy",
 ] as const;
+/** The only read-only routes a browser resource may load through a shell worker. */
+export const RELAY_RESOURCE_ROUTES = ["fs/file", "fs/favicon", "pane/conversation/image"] as const;
+/** Also stamped into the classic service worker, from this one allowlist. Never decode the query. */
+export const RELAY_RESOURCE_TARGET = `^/api/(?:machines/(?!(?:\\.|%2[eE]){1,2}/)(?:[A-Za-z0-9_!~*'().-]|%[0-9A-Fa-f]{2})+/)?(?:${RELAY_RESOURCE_ROUTES.join("|")})(?:\\?[^#\\r\\n]*)?$(?![\\s\\S])`;
+
+export function isRelayResourceTarget(target: string): boolean {
+  return new RegExp(RELAY_RESOURCE_TARGET).test(target);
+}
+
+export function relayResourcePath(serverId: string, target: string): string {
+  if (!/^[0-9a-f]{32}$/.test(serverId) || !isRelayResourceTarget(target)) throw new TypeError("Invalid relay resource target");
+  return `/s/${serverId}/~${target}`;
+}
+
+/** A path inside precisely this registration; no URL normalization or query reserialization. */
+export function relayResourceTarget(scope: string, path: string): string | null {
+  if (!/^\/s\/[0-9a-f]{32}\/$/.test(scope) || !path.startsWith(`${scope}~`)) return null;
+  const target = path.slice(scope.length + 1);
+  return isRelayResourceTarget(target) ? target : null;
+}
 export type HeaderList = readonly (readonly [string, string])[];
 type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };

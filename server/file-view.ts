@@ -988,7 +988,7 @@ const askCollection = () => {
   Bun.gc(false);
 };
 
-export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null): Promise<Response> {
+export async function fileResponse(info: FileInfo, download: boolean, render = false, media: PageMedia | null = null, request: Request | null = null, watched?: ReturnType<typeof watchPageMedia>, within: string | null = null, stream = false): Promise<Response> {
   const name = encodeURIComponent(info.name);
   const headers = new Headers({
     "content-disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${name}`,
@@ -1023,7 +1023,10 @@ export async function fileResponse(info: FileInfo, download: boolean, render = f
   const head = request?.method === "HEAD";
   // RFC 9110 defines a range for GET alone: a HEAD describes the whole file
   const get = head ? null : { range: request?.method === "GET" ? request.headers.get("range") : null, ifRange: request?.headers.has("if-range") ?? false };
-  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, within, fastDiskMs: pageFileHooks.fastDiskMs }, request?.signal);
+  // A Bun file body is sized/chunked by Bun.serve, which relay dispatch never enters. Its JS
+  // reader may return the entire file at once, overflowing the mux's per-session buffer.
+  // Keep the descriptor and use bounded reads for relay files, including their Content-Length.
+  const opened = await fileTask<OpenedFile | null>({ op: "open", path: info.path, get, within, fastDiskMs: stream ? 0 : pageFileHooks.fastDiskMs }, request?.signal);
   if (opened === null) return gone();
   headers.set("content-type", type);
   headers.set("accept-ranges", "bytes");

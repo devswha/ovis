@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pagePolicy } from "../server/file-view.ts";
 import { CONTENT_SECURITY_POLICY, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../server/static.ts";
-import { RENDER_PATH, SHELL_META, shellHeaders, shellIndexHtml, shellManifest, shellRedirects } from "./shell-build.ts";
+import { RENDER_PATH, SHELL_META, shellFiles, shellHeaders, shellIndexHtml, shellManifest, shellRedirects } from "./shell-build.ts";
 
 const root = join(import.meta.dir, "..");
 const indexHtml = readFileSync(join(root, "index.html"), "utf8");
@@ -23,6 +23,27 @@ function headerBlocks(text: string): Map<string, string[]> {
 }
 
 describe("the shell's page", () => {
+  it("renders exactly one parent message through document.open/write/close", () => {
+    const html = shellFiles(manifest)["render.html"] ?? "";
+    const script = /<script>([\s\S]*)<\/script>/.exec(html)?.[1];
+    expect(script).toBeDefined();
+    const listeners = new Set<(event: unknown) => void>();
+    const parent = { postMessage() {} };
+    const calls: string[] = [];
+    const document = { open: () => calls.push("open"), write: (html: string) => calls.push(html), close: () => calls.push("close") };
+    new Function("parent", "document", "addEventListener", "removeEventListener", script ?? "")(parent, document,
+      (_type: string, listener: (event: unknown) => void) => listeners.add(listener),
+      (_type: string, listener: (event: unknown) => void) => listeners.delete(listener));
+    const fire = (source: unknown, data: unknown) => { for (const listener of listeners) listener({ source, data }); };
+    fire({}, { type: "ovis-render", html: "foreign" });
+    fire(parent, { type: "ovis-render", html: 1 });
+    expect(calls).toEqual([]);
+    fire(parent, { type: "ovis-render", html: "<body>owned</body>" });
+    fire(parent, { type: "ovis-render", html: "second" });
+    expect(calls).toEqual(["open", "<body>owned</body>", "close"]);
+    expect(listeners.size).toBe(0);
+  });
+
   it("carries the shell meta, which the app's page does not", () => {
     const html = shellIndexHtml(indexHtml);
     expect(html).toContain(SHELL_META);

@@ -3597,6 +3597,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for the flow; the states and their words are this app's, in the token gate's own frame, so a
   phone that pairs through the relay and one that pairs with a code see the same room. Neither
   the Codex nor the Claude app has a hosted relay shell to follow.
+- Relay files keep the existing file viewer and its Paseo-style file bar, rather than adding a
+  separate remote-files screen. A client without a resource-capable service worker shows the
+  usual file note as an alert when the 64 MiB limit is exceeded. Copy link and new-tab actions
+  name the paired PC's reader, which opens its own channel; active file content is never a
+  navigated blob. Rendered HTML uses the opaque sandbox's own render host and policy, so its
+  inline scripts work without access to the shell's origin or device keys.
 
 ### Role (no control surface)
 - `interact` types and resizes; `observe` does neither. The server enforces both and the WS protocol

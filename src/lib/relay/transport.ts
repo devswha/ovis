@@ -6,6 +6,7 @@ import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts"
 import { openRelayChannel, UnsafeRelayDestinationError } from "./channel.ts";
 import type { RelayChannel, RelayChannelOptions } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
+import { relayResourceUrl, serveRelayResources } from "./resources.ts";
 
 export interface RelayTransportOptions extends RelayChannelOptions {
   readonly openChannel?: typeof openRelayChannel;
@@ -74,6 +75,7 @@ export class RelayTransport implements Transport {
   private delay = 1000;
   private cancelRetry: (() => void) | undefined;
   private readonly abort = new AbortController();
+  private readonly stopResources: () => void;
   private readonly wake = (): void => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     if (this.stopped || this.channel || this.opening) return;
@@ -85,6 +87,7 @@ export class RelayTransport implements Transport {
 
   constructor(private readonly offer: RelayOffer, private readonly options: RelayTransportOptions = {}) {
     options.signal?.throwIfAborted();
+    this.stopResources = serveRelayResources(this, offer.server_id, () => !this.stopped && this.channel?.mux.active === true);
     options.signal?.addEventListener("abort", this.aborted, { once: true });
     globalThis.addEventListener?.("online", this.wake);
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.wake);
@@ -190,15 +193,12 @@ export class RelayTransport implements Transport {
 
   openSocket(url: string): RelayWebSocket { return new RelayWebSocket(() => this.mux().openWs({ target: target(url), headers: [], protocols: [] })); }
   openEventSource(url: string): RelayEventSource { return new RelayEventSource(this, url); }
-  async resourceUrl(path: string): Promise<string> {
-    const response = await this.fetch(path);
-    if (!response.ok) throw new TypeError(`Relay resource refused: ${response.status}`);
-    return URL.createObjectURL(await response.blob());
-  }
+  resourceUrl(path: string, signal?: AbortSignal): Promise<string> { return relayResourceUrl(this, this.offer.server_id, path, signal); }
 
   close(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopResources();
     ++this.generation;
     this.cancelRetry?.();
     this.cancelRetry = undefined;

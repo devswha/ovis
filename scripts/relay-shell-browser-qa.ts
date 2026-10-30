@@ -37,6 +37,7 @@ import { chromePath } from "./chrome-path.ts";
 import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
+import { relayBrowserSocket } from "./relay-browser-bridge.ts";
 
 const repo = join(import.meta.dir, "..");
 const evidence = process.env["UI_EVIDENCE_DIR"] ?? null;
@@ -150,30 +151,11 @@ async function bridgeRelay(context: BrowserContext, bridge: Bridge): Promise<voi
     const pcAnswered = deferred<void>();
     bridge.opened({ url: ws.url(), assigned: assigned.promise, pcAnswered: pcAnswered.promise });
     if (bridge.mode === "silent") return;
-    const queue: (string | Buffer)[] = [];
-    let upstream: WebSocket | null = null;
     let frames = 0;
-    const start = (): void => {
-      const socket = new WebSocket(relayUrl(ws.url()));
-      socket.binaryType = "arraybuffer";
-      upstream = socket;
-      socket.onopen = () => { for (const frame of queue.splice(0)) socket.send(frame); };
-      socket.onmessage = (event) => {
-        frames += 1;
-        if (frames === 1) assigned.resolve(); else pcAnswered.resolve();
-        ws.send(typeof event.data === "string" ? event.data : Buffer.from(event.data as ArrayBuffer));
-      };
-      socket.onerror = () => {};
-      socket.onclose = (event) => {
-        // the browser could not be told 1006 by a server; the shell reads any close before assignment the same way
-        for (const code of [event.code, 1011]) {
-          try { ws.close({ code, reason: event.reason || "relay connection lost" }); return; } catch { /* the next code */ }
-        }
-      };
-    };
-    ws.onMessage((message) => { if (upstream?.readyState === WebSocket.OPEN) upstream.send(message); else queue.push(message); });
-    ws.onClose(() => upstream?.close());
-    if (bridge.mode === "hold") void bridge.release.promise.then(start); else start();
+    relayBrowserSocket(ws, () => relayUrl(ws.url()), () => {
+      frames += 1;
+      if (frames === 1) assigned.resolve(); else pcAnswered.resolve();
+    }, bridge.mode === "hold" ? bridge.release.promise : undefined);
   });
 }
 

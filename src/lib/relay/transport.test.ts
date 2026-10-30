@@ -11,6 +11,9 @@ import type { ResourceUrlState } from "../useResourceUrl.ts";
 import type { RelayChannelOptions } from "./channel.ts";
 import { isFatalRelayError, openRelayTransport, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { RelayResourceTooLargeError } from "./resources.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -501,16 +504,36 @@ it("fails streaming HTTP bodies and SSE together on carrier loss without reopeni
   expect(requests).toBe(2);
 });
 
+it("cancels a real mux response over the blob limit with the typed too-large error", async () => {
+  const aborted = deferred<void>();
+  const f = await fixture({ dispatch: async (request) => {
+    request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    return new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(16384)); } }),
+      { headers: { "content-length": String(70 * 1024 * 1024) } });
+  } });
+  await expect(f.transport.resourceUrl("/api/fs/file?path=large.pdf")).rejects.toBeInstanceOf(RelayResourceTooLargeError);
+  await bounded(aborted.promise);
+});
+
+it("loads a real file larger than the mux session buffer as a bounded blob", async () => {
+  const f = await fixture();
+  const path = join(f.app.stateDir, "large.bin");
+  writeFileSync(path, new Uint8Array(40 * 1024 * 1024));
+  const url = await bounded(f.transport.resourceUrl(`/api/fs/file?path=${encodeURIComponent(path)}`), 30_000);
+  try { expect((await (await fetch(url)).blob()).size).toBe(40 * 1024 * 1024); }
+  finally { URL.revokeObjectURL(url); }
+}, 30_000);
+
 it("returns a blob resource fetched over the relay and stops a closed SSE without an error event", async () => {
   // Given a resource route and an SSE route with no end.
   const aborted = deferred<void>();
   const f = await fixture({ dispatch: async (request) => {
-    if (request.url.endsWith("/resource")) return new Response("resource", { headers: { "content-type": "text/plain" } });
+    if (request.url.includes("/fs/file")) return new Response("resource", { headers: { "content-type": "text/plain" } });
     request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
     return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } });
   } });
   // When a browser resource is fetched and a caller closes its own event subscription.
-  const url = await f.transport.resourceUrl("/api/resource");
+  const url = await f.transport.resourceUrl("/api/fs/file?path=resource");
   cleanups.push(() => URL.revokeObjectURL(url));
   expect(url.startsWith("blob:")).toBe(true);
   expect(await (await fetch(url)).text()).toBe("resource");
@@ -537,7 +560,7 @@ it("exposes resource failures as hook state without an unhandled promise rejecti
   });
   const result = deferred<ResourceUrlState>();
   function Probe() {
-    const state = useResourceUrlState("/api/missing");
+    const state = useResourceUrlState("/api/fs/file?path=missing");
     if (state.error) result.resolve(state);
     return null;
   }
@@ -577,7 +600,7 @@ it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", 
   });
   const loaded = deferred<string>();
   function Probe() {
-    const state = useResourceUrlState("/api/image");
+    const state = useResourceUrlState("/api/fs/file?path=image");
     if (state.url) loaded.resolve(state.url);
     return null;
   }

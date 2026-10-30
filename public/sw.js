@@ -132,6 +132,77 @@ async function cachedShell() {
   return (await cache.match("/")) || (await caches.match("/"));
 }
 
+// Only the shell build stamps this contract. Server-served workers keep their fetch behavior.
+const RELAY_RESOURCES = null;
+
+if (RELAY_RESOURCES) self.addEventListener("message", (event) => {
+  if (event.data?.type === "ovis-relay-resources-v1") event.ports[0]?.postMessage({ type: "ovis-relay-resources-v1" });
+});
+
+/** No caching, including errors. Only controlled windows in this PC's registration are eligible. */
+async function relayResourceResponse(request, target) {
+  const scope = new URL(self.registration.scope).pathname;
+  const windows = await self.clients.matchAll({ type: "window" });
+  for (const client of windows) {
+    const address = new URL(client.url);
+    if (address.origin !== self.location.origin || !address.pathname.startsWith(scope)
+      || address.pathname.startsWith(`${scope}~`)) continue;
+    request.signal.throwIfAborted();
+    const answer = await new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const port = channel.port1;
+      let reader;
+      const finish = () => {
+        clearTimeout(timer);
+        request.signal.removeEventListener("abort", aborted);
+        port.close();
+      };
+      const aborted = () => {
+        port.postMessage({ type: "abort" });
+        if (reader) void reader.cancel(request.signal.reason);
+        finish();
+        reject(request.signal.reason);
+      };
+      const timer = setTimeout(() => {
+        port.postMessage({ type: "abort" });
+        finish();
+        resolve(null);
+      }, 5000);
+      request.signal.addEventListener("abort", aborted, { once: true });
+      port.onmessage = (event) => {
+        clearTimeout(timer);
+        const data = event.data;
+        if (!data?.available) { finish(); resolve(null); return; }
+        if (data.status === undefined) return; // selected; headers arrive when the PC answers
+        const headers = data.headers.filter(([name]) => RELAY_RESOURCES.headers.includes(name));
+        reader = data.body?.getReader();
+        const body = reader ? new ReadableStream({
+          async pull(controller) {
+            try {
+              const next = await reader.read();
+              if (next.done) { controller.close(); finish(); }
+              else controller.enqueue(next.value);
+            } catch (error) { controller.error(error); finish(); }
+          },
+          async cancel(reason) {
+            port.postMessage({ type: "abort" });
+            await reader.cancel(reason);
+            finish();
+          },
+        }, { highWaterMark: 0 }) : null;
+        resolve(new Response(body, { status: data.status, headers }));
+        if (!body) finish();
+      };
+      client.postMessage({
+        type: "ovis-relay-resource", id: crypto.randomUUID(), serverId: scope.split("/")[2],
+        target, headers: [...request.headers].filter(([name]) => RELAY_RESOURCES.requestHeaders.includes(name)),
+      }, [channel.port2]);
+    });
+    if (answer) return answer;
+  }
+  return new Response("Open this PC in Ovis to load its files.", { status: 503, headers: { "cache-control": "no-store" } });
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
@@ -139,6 +210,18 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/") || url.pathname === "/ws") return;
+
+  if (RELAY_RESOURCES) {
+    const scope = new URL(self.registration.scope).pathname;
+    if (url.pathname === `${scope}~render`) return;
+    if (url.pathname.startsWith(`${scope}~`)) {
+      const target = url.pathname.slice(scope.length + 1) + url.search;
+      if (/^\/s\/[0-9a-f]{32}\/$/.test(scope) && new RegExp(RELAY_RESOURCES.target).test(target)) {
+        event.respondWith(relayResourceResponse(request, target));
+      }
+      return;
+    }
+  }
 
   if (request.mode === "navigate") {
     event.respondWith(

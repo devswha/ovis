@@ -34,7 +34,7 @@ const buildRevision: Plugin = {
 // its plugin is loaded only then, so the server-served build stays as it is
 export default defineConfig(async ({ mode }) => ({
   // the theme boot script is emitted before compressedAssets and serviceWorkerBuild read the bundle
-  plugins: [react(), thirdPartyNotices, buildRevision, themeBootstrapBuild(), compressedAssets(), serviceWorkerBuild(),
+  plugins: [react(), thirdPartyNotices, buildRevision, themeBootstrapBuild(), compressedAssets(), serviceWorkerBuild(mode === "shell"),
     ...(mode === "shell" ? [(await import("./scripts/shell-build.ts")).shellBuild()] : [])],
   define: {
     __APP_REVISION__: JSON.stringify(revision),

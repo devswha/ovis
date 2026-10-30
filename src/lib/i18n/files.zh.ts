@@ -7,6 +7,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const FILES_ZH: Record<string, string> = {
+  "Too large to open on the phone - download on the PC": "文件太大，无法在手机上打开。请在电脑上下载。",
   "Show source": "显示源代码",
   "Resize file panel": "调整文件面板宽度",
   "Show beside the pane": "在窗格旁显示",
