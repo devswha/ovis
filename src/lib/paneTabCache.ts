@@ -1,9 +1,9 @@
 import type { LayoutCell } from "./layoutMap.ts";
 
-/** Newest first, including the current tab and at most three previous tabs. */
-export function visitPaneTab(previous: readonly string[], current: string | null, liveTabs: ReadonlySet<string>): readonly string[] {
+/** Newest first, including the current tab: `limit` tabs in all (three previous ones by default). */
+export function visitPaneTab(previous: readonly string[], current: string | null, liveTabs: ReadonlySet<string>, limit = 4): readonly string[] {
   const surviving = previous.filter((id) => liveTabs.has(id) && id !== current);
-  return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, 4) : surviving.slice(0, 4);
+  return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, limit) : surviving.slice(0, limit);
 }
 
 /** Only previously mounted panes survive: new hidden splits must not acquire an attach. */

@@ -236,8 +236,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   for (const cell of cells) lastCells.current.set(cell.paneId, alone === cell.paneId || stacked
     ? { ...cell, left: 0, top: 0, width: 100, height: 100 } : cell);
   const shownIds = new Set(cells.map((cell) => cell.paneId));
+  // a phone keeps one recent tab live beside the current one: each live one costs its battery
   visitedTabs.current = visitPaneTab(visitedTabs.current, presented?.tab_id ?? null,
-    new Set(snapshot?.panes.map((item) => item.tab_id) ?? []));
+    new Set(snapshot?.panes.map((item) => item.tab_id) ?? []), narrowScreen ? 2 : 4);
   const cachedCells = cachedPaneCells(visitedTabs.current, presented?.tab_id ?? null, snapshot?.panes ?? [], lastCells.current, shownIds);
   const cachedIds = new Set(cachedCells.map((cell) => cell.paneId));
   // Every frame stays under the same keyed array, including a frame returning before its ACK.

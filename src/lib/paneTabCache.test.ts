@@ -9,6 +9,10 @@ describe("pane tab cache", () => {
     expect(visitPaneTab(visits, "b", liveTabs)).toEqual(["b", "d", "c", "a"]);
     expect(visitPaneTab(visits, "d", liveTabs)).toEqual(visits);
   });
+  it("keeps one previous tab under a phone's limit of two", () => {
+    expect(visitPaneTab(["d", "c", "b", "a"], "e", liveTabs, 2)).toEqual(["e", "d"]);
+    expect(visitPaneTab(["d", "c"], "c", liveTabs, 2)).toEqual(["c", "d"]);
+  });
   it("drops closed tabs and leaves unvisited tabs cold", () => {
     expect(visitPaneTab(["c", "b", "a"], "b", new Set(["a", "b", "d"]))).toEqual(["b", "a"]);
     expect(visitPaneTab([], "a", liveTabs)).toEqual(["a"]);

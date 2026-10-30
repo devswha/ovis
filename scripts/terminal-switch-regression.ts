@@ -103,9 +103,11 @@ try {
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
         assert.ok(frames.some((frame) => frame.type === "detach" && frame.pane_id === panes[1]), "eviction releases the pane");
-        assert.equal(await page.locator("[data-layout-pane]").count(), 4, "the existing four-tab bound holds");
+        // a phone keeps one recent tab beside the current one, a desktop three
+        const bound = width === 390 ? 2 : 4;
+        assert.equal(await page.locator("[data-layout-pane]").count(), bound, `the ${bound}-tab bound holds`);
         // Leaving the window releases cached attachments even with releasePaneAway off.
-        const away = new Set(panes.slice(2, 4));
+        const away = new Set(panes.slice(bound === 4 ? 2 : 3, 4));
         const released = Promise.withResolvers<void>();
         const timeout = setTimeout(() => released.reject(new Error("cached attachments were not released")), 5000);
         const observe = ({ payload }: { payload: string | Buffer }) => {
