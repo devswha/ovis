@@ -70,9 +70,11 @@ What keeps that in check:
   GitHub release carries that build as `dist-shell.tar.gz` with its SHA-256, so anyone can compare
   what `app.ovis.sh` serves with what the tag builds ([Releasing](development.md#releasing)). Your
   browser doesn't make that comparison for you.
-- The app's pages run scripts from `app.ovis.sh` only. Their Content-Security-Policy is the one the
-  PC's own server sends, with only the relay's `wss:` connections and `blob:` media and frames added
-  (`shellContentSecurityPolicy()` in [`server/static.ts`](../server/static.ts)).
+- The app's own pages run scripts from `app.ovis.sh` only. Their Content-Security-Policy is the one
+  the PC's own server sends, with only the relay's `wss:` connections and `blob:` media and frames
+  added (`shellContentSecurityPolicy()` in [`server/static.ts`](../server/static.ts)). A rendered
+  HTML page from the PC runs apart from them, in a sandboxed render host with the PC's own policy
+  for rendered pages ([Files](#files)).
 - The host sees requests for static files: the phone's address, and the PC's relay ID in the path
   (`/s/<server_id>/`). It never gets the pairing link's `#offer=` part, which browsers don't send, or
   any of the traffic, which goes to the relay.
@@ -229,11 +231,45 @@ oversized frame ends the session before anything in it is parsed.
   has to be valid UTF-8 (or the socket closes with 1007). The terminal's own flow control works as
   on a direct connection: a terminal whose reader stops acknowledging output is closed with 4008, on
   its own socket only ([terminal flow control](terminal-flow-control.md)).
-- **Files.** Pictures, PDFs and videos come through the same requests, and the app shows them from
-  the downloaded copy (`resourceUrl` in [`src/lib/relay/transport.ts`](../src/lib/relay/transport.ts)),
-  so a file opens once all of it has arrived. A rendered HTML page's own large media gets no address
-  of its own for a request through the relay ([`server/file-routes.ts`](../server/file-routes.ts)),
-  so those videos and sounds don't play.
+
+### Files
+
+The browser fetches a picture, PDF or video on the page by itself, so the app can't send that
+request through the relay as it does its own. Instead, each one gets an address inside the PC's own
+scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
+([`public/sw.js`](../public/sw.js); only the hosted app's build switches its relay part on):
+
+- **With the service worker.** The worker hands the request, with its `Range` header, to a window
+  of the same PC whose relay connection is open. That window fetches the file through the mux and
+  streams the answer back with its status and the headers the mux keeps, security headers included,
+  so a video can skip ahead. Nothing is cached. The worker answers GET requests for three read-only
+  routes only, `fs/file`, `fs/favicon` and `pane/conversation/image`, on this PC or on a remote PC
+  behind it (`/api/machines/<id>/…`), from one list (`RELAY_RESOURCE_ROUTES` in
+  [`shared/relay-mux.ts`](../shared/relay-mux.ts)). With no window of that PC connected, it answers
+  503 ("Open this PC in Ovis to load its files."). It answers only this PC's own app window, as
+  the PC's own server does through its `SameSite=Strict` cookie: a navigation by its referrer, any
+  other request by the window that made it. Another site's frame or link, a typed address, another
+  PC's page and a rendered page get 403, and every file it serves carries `frame-ancestors 'self'`
+  and `X-Frame-Options: SAMEORIGIN`.
+- **Without it.** Where no service worker that speaks this protocol controls the page, the app
+  fetches the whole file through the relay and shows a `blob:` copy of at most 64 MiB
+  (`RELAY_BLOB_LIMIT` in `src/lib/relay/resources.ts`). For a larger file the viewer says "Too large
+  to open on the phone - download on the PC". A download is handed over as
+  `application/octet-stream`, so a web view that opens it in place doesn't run it.
+- **Rendered HTML pages.** The app fetches the rendered page through the relay, at most 64 MiB, and
+  posts it to a render host at `/s/<server_id>/~render` (`render.html` from
+  [`scripts/shell-build.ts`](../scripts/shell-build.ts)), in a frame sandboxed with `allow-scripts`
+  alone, which writes it into its own document. The host's Content-Security-Policy is the PC's
+  policy for rendered pages (`pagePolicy(null)`), so the page's inline scripts run, while the
+  sandbox's opaque origin keeps it away from the app, its device keys and the relay connection.
+  As on a direct connection, the PC puts the page's own pictures, scripts and media into it, up to
+  8 MiB each and 32 MiB in all (for a page of up to 8 MiB); a larger video or sound gets no address
+  through the relay ([`server/file-routes.ts`](../server/file-routes.ts)), so it doesn't play.
+- **Links.** In the hosted app, **Open in a new tab**, and **Copy link** in an installed app's
+  window, give an address that opens the file in the app's reader for that PC
+  (`/s/<server_id>/?read=…`), which connects through the relay by itself. **Open raw file** opens
+  that reader at the file's first line. The app never opens a `blob:` copy of a file as a page,
+  which would run with the app's own origin.
 
 ### Flow control and scheduling
 
@@ -288,7 +324,7 @@ The relay service has limits of its own (frame size, phones per PC, connections 
 | `protocol_error` | a malformed frame, or one out of order, such as a request before `AUTH_OK` |
 | `auth_failed` | a wrong, spent or expired pairing code, an unknown device or a bad signature, and every admission on a serve-only PC |
 | `auth_revoked` | the device was revoked |
-| `auth_changed` | the device's entry on the PC changed while it was connected |
+| `auth_changed` | the device's entry on the PC changed while it was connected, as renaming it under **Phone & devices** does |
 | `flow_control_error` | data past a stream's window |
 | `resource_exhausted` | too many new streams or frames a second, or a queue over its limit |
 | `timeout` | admission or a keepalive took too long |
@@ -326,7 +362,7 @@ What the app on the phone shows when a connection doesn't come up
 | … did not finish connecting | the PC answered, but admission didn't finish within 10 seconds |
 | That pairing code no longer works | the code was wrong, spent or expired |
 | This phone was removed from … | the device was revoked; the phone has deleted its key |
-| … has a new identity | the PC's key isn't the one the phone paired with |
+| … has a new identity | the PC's key isn't the one the phone paired with, or the PC changed this phone's entry while it was connected (`auth_changed`), as renaming it does |
 | Update needed | the PC speaks another relay protocol or mux version |
 | Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
 | This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
@@ -377,5 +413,6 @@ To run your own relay, or your own copy of the app, see
 | [`shared/relay-e2ee.ts`](../shared/relay-e2ee.ts) | the encryption, from paseo's code vendored in `shared/vendor/paseo-e2ee/` (never edited; `bun scripts/vendor-paseo.ts <commit>` updates it) |
 | [`shared/relay-mux.ts`](../shared/relay-mux.ts), [`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts) | Ovis Mux v1 |
 | [`shared/relay-offer.ts`](../shared/relay-offer.ts) | the pairing link |
-| [`src/lib/relay/`](../src/lib/relay) | the hosted app: channel, device key, transport and screens |
+| [`src/lib/relay/`](../src/lib/relay) | the hosted app: channel, device key, transport, file loading and screens |
+| [`public/sw.js`](../public/sw.js) | the service worker; in the hosted app it also answers file addresses through the relay |
 | [`scripts/shell-build.ts`](../scripts/shell-build.ts) | the hosted app's build (`bun run build:shell`, into `dist-shell/`) |

@@ -431,7 +431,7 @@ The phone pairs once. It makes a key of its own for this PC, which never leaves 
 
 **What the relay sees.** It sees which PC a phone connects to, from which address, when and for how long, and how much goes each way, down to the timing of the keys you type in a terminal. What you type, what the PC shows and your files stay hidden from it, and it can't change any of them. The app at `app.ovis.sh` is the part you have to trust: it's the code that runs on your phone and holds its key. [The relay's trust model](relay.md#trust-model) has the details.
 
-**Limits.** Over the relay, a picture, PDF or video opens once all of it has arrived, so a large video takes a while to start. A rendered HTML page's own large videos and sounds don't play. Up to 8 open apps or tabs can use the relay to one PC at a time.
+**Limits.** In a browser, the app's service worker streams files through the relay, so pictures, PDFs and videos load as they arrive and a video can skip ahead. Without that service worker, a file loads whole before it shows, and only up to 64 MiB: for a larger one the file viewer says it's too large to open on the phone, so download it on the PC. Rendered HTML pages open with their scripts running, but their own large videos and sounds don't play ([how files load](relay.md#files)). Up to 8 open apps or tabs can use the relay to one PC at a time.
 
 **It's a best effort.** The maintainer runs `relay.ovis.sh` with no promise that it's always up. A relay update drops every connection for a moment; the PC and the app reconnect by themselves, and nothing you typed is sent again: it waits as a draft, as after any disconnect. When that matters, [run your own relay](#running-your-own-relay).
 
