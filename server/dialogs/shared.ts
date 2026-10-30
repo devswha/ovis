@@ -87,6 +87,8 @@ type Responder =
   | "claude-model"
   | "claude-effort"
   | "codex-model"
+  | "letta-model"
+  | "letta-effort"
   | "omo-question"
   | "omo-review"
   | "omo-typing"

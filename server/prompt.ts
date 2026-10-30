@@ -1038,7 +1038,7 @@ async function readKnownPrompt(
     return { prompt: publicPrompt(parsed) };
   }
 
-  if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
+  if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", "letta", ""].includes(agent)) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
   if (piTranscript && "path" in piTranscript) {
@@ -1119,6 +1119,9 @@ async function readKnownPrompt(
     return parseInteractivePrompt(agent, drawn, omoAsks[0] ?? null, omoTrusted, omoAsks, held, pane.agent_status === "working");
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
+  // Letta's own pickers only (dialogs/letta.ts): any other Letta screen keeps the card it had, the
+  // generic one while herdr reports it blocked
+  if (agent === "letta" && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith("letta-")) prompt = null;
   let rebind = (card: InteractivePrompt): InteractivePrompt => card;
   if (prompt && agent === "omp") {
     const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown, ompBindings);
