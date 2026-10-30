@@ -940,7 +940,7 @@ const markedDisplay = (text: string): string => text.normalize("NFKC")
 /**
  * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
  * "›", a prompt sent or the input box, or an indented "↳", a message queued to be sent), each tool
- * call Codex shows (a "•" line it starts with what it did, "Ran", "Called", "Explored", "Searched",
+ * call Codex shows (a "•" line it starts with what it did, "Ran", "You ran", "Called", "Explored", "Searched",
  * "Waited", and draws what follows with "│" or "└"; or with what it is doing, "Running" and so on,
  * just above its working status) and each tool's output (an indented "└"), with the indented and
  * blank lines each wraps onto, and the stretches between them. Neither a prompt nor a tool's call or
@@ -951,7 +951,8 @@ function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text:
   const lines = screen.split("\n");
   const calls = new Set<number>();
   lines.forEach((line, at) => {
-    const verb = /^\u2022 (Ran|Called|Explored|Searched|Waited|Running|Calling|Exploring|Searching|Waiting)(?:\s|$)/.exec(line)?.[1];
+    // "You ran": a shell command the user ran from the composer, as Codex 0.163 titles it
+    const verb = /^\u2022 (Ran|You ran|Called|Explored|Searched|Waited|Running|Calling|Exploring|Searching|Waiting)(?:\s|$)/.exec(line)?.[1];
     if (verb === undefined) return;
     let end = at + 1;
     let drawn = false;

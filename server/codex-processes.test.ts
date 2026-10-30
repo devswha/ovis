@@ -1860,6 +1860,8 @@ describe("another session's conversation is never shown for a plain Codex pane",
       `• Running printf "${answer}"`,
       // a heredoc Codex shows with "│" lines, and no output yet
       `• Ran cat <<'EOF'\n  │ ${answer}\n  │ EOF`,
+      // a shell command the user ran from the composer
+      `• You ran printf "${answer}"\n  └ (no output)`,
     ]) {
       screen = `OpenAI Codex (v0.165.0)\n\n› Execute the diagnostic\n\n${shown}\n\n• Working (3s • esc to interrupt)\n\n› `;
       expect(await resolve()).toBeNull();
