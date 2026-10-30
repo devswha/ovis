@@ -7,9 +7,10 @@ import { PASEO_FILES } from "../scripts/vendor-paseo.ts";
 import {
   exportPublicKey, generateKeyPair, openClientSecureChannel, openDaemonSecureChannel,
   PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE, PROTECTED_RECORD_FAILED_CLOSE_CODE,
+  SecureChannelRejectedError, PROTECTED_MODE_REQUIRED_CLOSE_CODE,
   type KeyPair, type SecureChannel, type Transport, type TransportMessage,
 } from "./relay-e2ee.ts";
-import { createDaemonChannel } from "./vendor/paseo-e2ee/encrypted-channel.ts";
+import { createClientChannel, createDaemonChannel } from "./vendor/paseo-e2ee/encrypted-channel.ts";
 import {
   createNoiseInitiator, createNoiseResponder, NOISE_NK_PROTOCOL_NAME,
 } from "./vendor/paseo-e2ee/noise/index.ts";
@@ -142,13 +143,13 @@ async function connected(daemonKeyPair: KeyPair = generateKeyPair()) {
   const link = pair();
   const received = { client: [] as (string | ArrayBuffer)[], daemon: [] as (string | ArrayBuffer)[] };
   const daemonOpening = openDaemonSecureChannel(link.daemon, {
-    daemonKeyPair, minimumMode: "protected",
+    daemonKeyPair,
     events: { onmessage: (data) => received.daemon.push(data) },
   });
   let client: SecureChannel | undefined;
   try {
     client = await openClientSecureChannel(link.client, {
-      daemonPublicKeyB64: exportPublicKey(daemonKeyPair.publicKey), minimumMode: "protected",
+      daemonPublicKeyB64: exportPublicKey(daemonKeyPair.publicKey),
       events: { onmessage: (data) => received.client.push(data) },
     });
     const daemon = await daemonOpening;
@@ -178,7 +179,7 @@ it("negotiates protected mode and round-trips text and binary in both directions
   expect(received.daemon).toEqual(received.client);
 });
 
-it("refuses a legacy-only daemon when the client is pinned to protected", async () => {
+it("refuses a legacy-only daemon when the client omits minimumMode", async () => {
   // Given a real legacy daemon, not a fabricated ready response.
   const link = pair();
   const keys = generateKeyPair();
@@ -189,7 +190,7 @@ it("refuses a legacy-only daemon when the client is pinned to protected", async 
   );
   // When a pinned client receives its legacy ready.
   const client = await openClientSecureChannel(link.client, {
-    daemonPublicKeyB64: exportPublicKey(keys.publicKey), minimumMode: "protected",
+    daemonPublicKeyB64: exportPublicKey(keys.publicKey),
     events: { onmessage: (data) => received.push(data) },
   });
   const daemonResult = await daemonOpening;
@@ -199,6 +200,19 @@ it("refuses a legacy-only daemon when the client is pinned to protected", async 
   expect(link.client.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
   expect(received).toEqual([]);
   expect(link.client.sent).toHaveLength(1);
+});
+
+it("refuses a legacy-only client when the daemon omits minimumMode", async () => {
+  const link = pair();
+  const keys = generateKeyPair();
+  const opening = openDaemonSecureChannel(link.daemon, { daemonKeyPair: keys })
+    .catch((error: unknown) => error);
+  const client = await createClientChannel(link.client, exportPublicKey(keys.publicKey));
+  const result = await opening;
+  expect(result).toBeInstanceOf(SecureChannelRejectedError);
+  if (!(result instanceof SecureChannelRejectedError)) throw new Error("Expected rejection");
+  expect(result.closeCode).toBe(PROTECTED_MODE_REQUIRED_CLOSE_CODE);
+  expect(client.isOpen()).toBe(false);
 });
 
 function bytes(message: TransportMessage): Uint8Array {
