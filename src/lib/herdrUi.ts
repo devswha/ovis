@@ -6,6 +6,8 @@
  * on the first frame after a reconnect. Only an older server, which has no such route (404
  * not_found), stands for herdr's default (on).
  */
+import { apiFetch } from "./api-request-id.ts";
+
 let known: boolean | null = null;
 let loading: Promise<void> | null = null;
 
@@ -19,7 +21,7 @@ export function herdrUiKnown(): boolean {
 }
 
 /** Reads the preference again (a terminal mount picks up an edited config); one read at a time. */
-export function loadHerdrUi(read: typeof fetch = fetch): Promise<void> {
+export function loadHerdrUi(read: (url: string, init?: RequestInit) => Promise<Response> = apiFetch): Promise<void> {
   loading ??= (async () => {
     try {
       const response = await read("/api/herdr-ui", { cache: "no-store" });

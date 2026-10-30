@@ -1,10 +1,31 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { copyOnSelect, forgetHerdrUi, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
+import { nativeTransport, setTransport } from "./transport.ts";
 
 const answer = (status: number, body: unknown): typeof fetch => (async () => Response.json(body, { status })) as unknown as typeof fetch;
 
 describe("herdr's copy_on_select in the browser", () => {
-  afterEach(forgetHerdrUi);
+  afterEach(() => { forgetHerdrUi(); setTransport(nativeTransport); });
+
+  it("loads the PC preference through the selected relay transport, not the shell host", async () => {
+    // Given
+    const globalFetch = spyOn(globalThis, "fetch").mockRejectedValue(new Error("the static shell has no API"));
+    const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+    setTransport({
+      ...nativeTransport, kind: "relay",
+      fetch: async (input, init) => { calls.push({ input, init }); return Response.json({ copy_on_select: true }); },
+    });
+    try {
+      // When
+      await loadHerdrUi();
+      // Then
+      expect(globalFetch).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.input).toBe("/api/herdr-ui");
+      expect(calls[0]?.init?.cache).toBe("no-store");
+      expect([herdrUiKnown(), copyOnSelect()]).toEqual([true, true]);
+    } finally { globalFetch.mockRestore(); }
+  });
 
   it("copies nothing until the server answers, then follows its answer", async () => {
     expect(copyOnSelect()).toBe(false);
