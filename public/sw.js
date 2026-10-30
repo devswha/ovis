@@ -277,6 +277,23 @@ self.addEventListener("fetch", (event) => {
 // push shows a notification: Safari revokes a subscription whose pushes stay silent.
 // A window of the app that is visible right now already shows the change in its
 // sidebar, so the notification then arrives without sound or vibration.
+// In the hosted shell every PC has a worker of its own, scoped to `/s/<server_id>/`
+// (src/lib/shellMode.ts), with its own subscription: only that PC pushes to it, and
+// only that PC's windows are this worker's to tell or to open.
+
+/** The PC this worker is the hosted shell's worker for; null for the worker a PC's own server serves. */
+function shellServerId() {
+  const scope = self.registration && self.registration.scope;
+  const match = scope ? /^\/s\/([0-9a-f]{32})\/$/.exec(new URL(scope).pathname) : null;
+  return match ? match[1] : null;
+}
+
+/** A window of this worker's PC: in the hosted shell the origin's other windows are other PCs'. */
+function ofThisPc(url) {
+  if (shellServerId() === null) return true;
+  try { return new URL(url).pathname.startsWith(`/s/${shellServerId()}/`); } catch { return false; }
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -287,7 +304,7 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const watching = windows.some((client) => client.visibilityState === "visible");
+      const watching = windows.some((client) => client.visibilityState === "visible" && ofThisPc(client.url));
       await self.registration.showNotification(payload.title || "Ovis", {
         body: payload.body || "",
         tag: payload.tag || "herdr",
@@ -354,9 +371,11 @@ self.addEventListener("notificationclick", (event) => {
     (async () => {
       // only an app window handles the selection: focusing a reader tab would swallow the tap
       const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true }))
-        .filter((client) => isAppWindow(client.url));
+        .filter((client) => isAppWindow(client.url) && ofThisPc(client.url));
       if (click !== latestNotificationClick) return;
-      const url = paneId ? `/?machine=${encodeURIComponent(machineId)}${workspaceId ? `&ws=${encodeURIComponent(workspaceId)}` : ""}&pane=${encodeURIComponent(paneId)}&view=chat` : "/";
+      // the app's own path: the PC's scope in the hosted shell
+      const home = shellServerId() === null ? "/" : `/s/${shellServerId()}/`;
+      const url = paneId ? `${home}?machine=${encodeURIComponent(machineId)}${workspaceId ? `&ws=${encodeURIComponent(workspaceId)}` : ""}&pane=${encodeURIComponent(paneId)}&view=chat` : home;
       const selectLatest = (client) => { if (client && latestNotificationSelection) client.postMessage(latestNotificationSelection); };
       const open = async () => {
         // An opening can also finish after a newer tap. Repair that returned
@@ -388,9 +407,70 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
+/**
+ * The hosted shell's database (src/lib/relay/device.ts openDatabase: the same name, version and
+ * stores): `pending-push` holds, per PC, the subscription its worker could not hand over itself.
+ */
+function openRelayDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("ovis-relay", 2);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("devices")) db.createObjectStore("devices", { keyPath: "server_id" });
+      if (!db.objectStoreNames.contains("pending-push")) db.createObjectStore("pending-push", { keyPath: "server_id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** Keeps `subscription` for the PC to be told on the shell's next connection (src/lib/push.ts registerPendingPush). */
+async function keepPendingPush(serverId, subscription, oldEndpoint) {
+  const db = await openRelayDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("pending-push", "readwrite");
+      const store = tx.objectStore("pending-push");
+      const request = store.get(serverId);
+      request.onsuccess = () => {
+        const held = request.result;
+        // rotated again before the PC heard of the last one: the endpoint the PC knows is still that one's old
+        const old = held && held.subscription.endpoint === oldEndpoint ? held.old_endpoint : oldEndpoint;
+        store.put({ server_id: serverId, subscription, old_endpoint: old });
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
 // The browser rotated the subscription (Firefox does; Chrome rarely): hand the server
 // the new endpoint and drop the old one, or pushes stop until the app is next opened.
+// The hosted shell's worker cannot reach its PC (only a window holds the relay channel):
+// it keeps the subscription for the PC and tells this PC's open windows, whose shell
+// registers it over the relay; with none open the shell does on its next start.
 self.addEventListener("pushsubscriptionchange", (event) => {
+  const serverId = shellServerId();
+  if (serverId !== null) {
+    event.waitUntil(
+      (async () => {
+        const previous = event.oldSubscription;
+        let fresh = event.newSubscription;
+        if (!fresh && previous && previous.options.applicationServerKey) {
+          fresh = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: previous.options.applicationServerKey });
+        }
+        // no key to subscribe with here: the app subscribes again on its next start (src/lib/push.ts)
+        if (!fresh) return;
+        await keepPendingPush(serverId, fresh.toJSON(), previous ? previous.endpoint : null);
+        const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true }))
+          .filter((client) => isAppWindow(client.url) && ofThisPc(client.url));
+        for (const client of windows) client.postMessage({ type: "push-subscription-change" });
+      })(),
+    );
+    return;
+  }
   const post = (method, body) =>
     fetch("/api/push/subscribe", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   event.waitUntil(

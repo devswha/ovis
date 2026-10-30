@@ -1,4 +1,5 @@
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { PendingPush, PendingPushStore } from "../push.ts";
 
 export class ServerIdentityChangedError extends Error {
   readonly code = "server_identity_changed";
@@ -25,7 +26,7 @@ export interface RelayDeviceStore {
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice): Promise<RelayDevice>;
   /** Every saved PC, in the order they were first saved. */
   list(): Promise<RelayDevice[]>;
-  /** Forgets a PC: its key is gone for good, and the PC's next pairing makes a new one. */
+  /** Forgets a PC: its key is gone for good, and the PC's next pairing makes a new one; a push subscription kept for it goes too. */
   remove(serverId: string): Promise<void>;
 }
 
@@ -56,8 +57,9 @@ export const indexedDeviceStore: RelayDeviceStore = {
     const db = await openDatabase();
     try {
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction("devices", "readwrite");
+        const tx = db.transaction(["devices", "pending-push"], "readwrite");
         tx.objectStore("devices").delete(serverId);
+        tx.objectStore("pending-push").delete(serverId);
         tx.oncomplete = () => resolve();
         tx.onabort = () => reject(tx.error);
       });
@@ -87,10 +89,46 @@ export const indexedDeviceStore: RelayDeviceStore = {
   },
 };
 
+/** The subscriptions each PC's worker kept for the shell to register (lib/push.ts registerPendingPush). */
+export const indexedPendingPush: PendingPushStore = {
+  async get(serverId) {
+    const db = await openDatabase();
+    try {
+      return await new Promise<PendingPush | undefined>((resolve, reject) => {
+        const tx = db.transaction("pending-push", "readonly");
+        const request: IDBRequest<PendingPush | undefined> = tx.objectStore("pending-push").get(serverId);
+        tx.oncomplete = () => resolve(request.result);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
+  async clear(serverId, endpoint) {
+    const db = await openDatabase();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("pending-push", "readwrite");
+        const store = tx.objectStore("pending-push");
+        const request: IDBRequest<PendingPush | undefined> = store.get(serverId);
+        request.onsuccess = () => { if (request.result?.subscription.endpoint === endpoint) store.delete(serverId); };
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
+};
+
+/**
+ * The shell's database. Version 2 added `pending-push`, which the worker writes too: public/sw.js
+ * openRelayDatabase opens the same name and version with the same stores.
+ */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("ovis-relay", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("devices", { keyPath: "server_id" });
+    const request = indexedDB.open("ovis-relay", 2);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("devices")) db.createObjectStore("devices", { keyPath: "server_id" });
+      if (!db.objectStoreNames.contains("pending-push")) db.createObjectStore("pending-push", { keyPath: "server_id" });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

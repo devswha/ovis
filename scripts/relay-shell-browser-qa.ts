@@ -12,7 +12,12 @@
  *
  *   UI_EVIDENCE_DIR=<dir> bun scripts/relay-shell-browser-qa.ts
  *
- * writes the screenshots and logs there (task-16-*); without it the checks still run.
+ * writes the screenshots and logs there (task-16-*, and task-18-* for push alerts); without it the checks still run.
+ *
+ * Headless Chrome has no push service: each PC's server pushes to a fake one (server/push.fake.ts,
+ * which decrypts what it gets as a browser would), and the page's PushManager hands over that
+ * fake's subscription for its PC's scope. Everything between them is real: the VAPID key and the
+ * registration go over the relay, and the worker's pushsubscriptionchange runs in the real worker.
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -25,6 +30,8 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import type { BunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
+import { startFakePushService } from "../server/push.fake.ts";
+import type { FakePushService } from "../server/push.fake.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { shellContentSecurityPolicy } from "../server/static.ts";
 import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../shared/relay-e2ee.ts";
@@ -82,7 +89,7 @@ const service = new RelayService({ stateDir, relay: RELAY, connect: (url) => {
   });
   return socket;
 } });
-const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
+const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, pushLoopbackHttp: true });
 const base = `http://127.0.0.1:${app.port}`;
 const devices = app.context.services.devices;
 const relayApi = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
@@ -206,6 +213,49 @@ async function scriptedPc(behaviour: "refuse" | "stall", name: string) {
   return { offer, serverId, stop: () => { for (const socket of sockets) socket.close(); } };
 }
 
+// ---- a second PC, for push alerts: each PC's scope has its own subscription ----
+
+const stateDir2 = mkdtempSync(join(tmpdir(), "ovis-relay-shell-qa-2-"));
+let synced2 = deferred<void>();
+const service2 = new RelayService({ stateDir: stateDir2, relay: RELAY, connect: (url) => {
+  const socket = new WebSocket(relayUrl(url));
+  socket.addEventListener("message", (event) => {
+    if (typeof event.data === "string" && event.data.includes('"sync"')) synced2.resolve();
+  });
+  return socket;
+} });
+const app2 = createServer({ port: 0, hostname: "127.0.0.1", stateDir: stateDir2, token: "", tailscaleOwner: null, sidecar: false, relay: service2, pushLoopbackHttp: true });
+const base2 = `http://127.0.0.1:${app2.port}`;
+const fakes: FakePushService[] = [];
+
+/** The page's PushManager for a PC's scope: the fake push service's subscription for that PC, kept per scope across loads. */
+const fakePushManager = async (context: BrowserContext, subscriptions: Record<string, FakePushService["subscription"]>): Promise<void> => {
+  await context.addInitScript((subscriptions) => {
+    const id = /^\/s\/([0-9a-f]{32})\//.exec(location.pathname)?.[1];
+    const json = id === undefined ? undefined : subscriptions[id];
+    if (id === undefined || json === undefined) return;
+    const held = `qa-push:${id}`;
+    const bytes = (key: BufferSource): number[] => [...new Uint8Array(ArrayBuffer.isView(key) ? key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) : key)];
+    const made = (key: number[]) => ({
+      endpoint: json.endpoint, expirationTime: null,
+      options: { userVisibleOnly: true, applicationServerKey: new Uint8Array(key).buffer },
+      toJSON: () => ({ endpoint: json.endpoint, expirationTime: null, keys: json.keys }),
+      unsubscribe: async () => { localStorage.removeItem(held); return true; },
+    });
+    PushManager.prototype.getSubscription = async function () {
+      const key = localStorage.getItem(held);
+      return (key === null ? null : made(JSON.parse(key) as number[])) as unknown as PushSubscription;
+    };
+    PushManager.prototype.subscribe = async function (options?: PushSubscriptionOptionsInit) {
+      const key = bytes(options!.applicationServerKey as BufferSource);
+      localStorage.setItem(held, JSON.stringify(key));
+      return made(key) as unknown as PushSubscription;
+    };
+    const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
+    localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, alertsOn: true }));
+  }, subscriptions);
+};
+
 // ---- pages ----
 
 let browser: Browser | undefined;
@@ -220,8 +270,10 @@ const seed = async (page: Page, entries: Seeded[]): Promise<void> => {
   await page.evaluate(async (entries) => {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("ovis-relay", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("devices", { keyPath: "server_id" });
+      const request = indexedDB.open("ovis-relay", 2);
+      request.onupgradeneeded = () => {
+        for (const name of ["devices", "pending-push"]) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, { keyPath: "server_id" });
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -239,8 +291,10 @@ const seed = async (page: Page, entries: Seeded[]): Promise<void> => {
 /** The saved record for a PC in this page's storage, or null. */
 const saved = (page: Page, serverId: string): Promise<{ device_id: string | null } | null> => page.evaluate(async (serverId) => {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("ovis-relay", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("devices", { keyPath: "server_id" });
+    const request = indexedDB.open("ovis-relay", 2);
+    request.onupgradeneeded = () => {
+      for (const name of ["devices", "pending-push"]) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, { keyPath: "server_id" });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -545,6 +599,148 @@ try {
     await context.close();
   }
 
+  // (l) push alerts: two PCs paired in one shell origin, each subscribed in its own scope, each
+  // PC's test push reaching only its own device's (fake) push service
+  const push: string[] = [];
+  const say = (line: string): void => { push.push(line); note(line); };
+  const pushOf = (server: typeof app) => server.context.services.core.push;
+  const pushA = pushOf(app);
+  const pushB = pushOf(app2);
+  {
+    synced2 = deferred<void>();
+    const started2 = await fetch(`${base2}/api/relay/start`, { method: "POST", headers: { origin: base2, "x-herdr-update": "1" } });
+    assert.equal(started2.status, 200, `second PC relay start: ${await started2.text()}`);
+    await bounded(synced2.promise, "the second PC's control socket synced with the relay");
+    const offerB2 = await fetch(`${base2}/api/relay/offer`, { method: "POST", headers: { origin: base2, "x-herdr-update": "1" } });
+    const offerB = { ...decodeOffer((JSON.parse(await offerB2.text()) as { url: string }).url)!, name: "Laptop" };
+    const offerA = await serverOffer();
+    const A = offerA.server_id;
+    const B = offerB.server_id;
+    assert.notEqual(A, B);
+    const fakeA = await startFakePushService();
+    const fakeB = await startFakePushService();
+    fakes.push(fakeA, fakeB);
+    const { context, page: pageA } = await open({ width: 1440, height: 900 });
+    await context.grantPermissions(["notifications"], { origin });
+    await fakePushManager(context, { [A]: fakeA.subscription, [B]: fakeB.subscription });
+    const requests: string[] = [];
+    context.on("request", (request) => requests.push(`${request.method()} ${request.url()}`));
+    const registered = (server: ReturnType<typeof pushOf>, fake: FakePushService, owner: string | null) =>
+      server.status({ endpoint: fake.subscription.endpoint, keys: fake.subscription.keys }, owner);
+
+    await pairFrom(pageA, offerA);
+    await inApp(pageA);
+    const pageB = await context.newPage();
+    csp.push(await watchCsp(pageB));
+    await pairFrom(pageB, offerB);
+    await inApp(pageB);
+    const deviceA = (await saved(pageA, A))!.device_id!;
+    const deviceB = (await saved(pageB, B))!.device_id!;
+    assert.ok(devices.list(null).some((device) => device.id === deviceA && device.via_relay), "PC A enrolled the phone via the relay");
+    assert.ok(app2.context.services.devices.list(null).some((device) => device.id === deviceB && device.via_relay), "PC B enrolled the phone via the relay");
+    // the app registers its scope's subscription on load (lib/useNotifications.ts), over the relay
+    await until("PC A holds the phone's subscription for its relay device", () => registered(pushA, fakeA, deviceA) !== null);
+    await until("PC B holds the phone's subscription for its relay device", () => registered(pushB, fakeB, deviceB) !== null);
+    assert.equal(registered(pushA, fakeB, deviceA), null, "PC A never got PC B's subscription");
+    assert.equal(registered(pushB, fakeA, deviceB), null, "PC B never got PC A's subscription");
+    const scopes = await pageA.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map((registration) => new URL(registration.scope).pathname).sort());
+    assert.deepEqual(scopes, [`/s/${A}/`, `/s/${B}/`].sort(), "one worker per PC scope");
+    say(`push: two PCs paired in one shell origin ${origin}; workers ${scopes.join(", ")}`);
+    say(`push: PC A ${A} holds ${fakeA.subscription.endpoint} for relay device ${deviceA}; PC B ${B} holds ${fakeB.subscription.endpoint} for relay device ${deviceB}; neither holds the other's`);
+
+    // Send test in each PC's Settings: POST /api/push/test over the relay
+    for (const [page, scope, fake, other, server, name] of [[pageA, scopeOf(A), fakeA, fakeB, pushA, "A"], [pageB, scopeOf(B), fakeB, fakeA, pushB, "B"]] as const) {
+      const before = other.received.length;
+      await page.goto(`${scope}?settings=alerts`);
+      await page.locator(".app").waitFor();
+      await page.getByRole("button", { name: "Send test", exact: true }).click();
+      const received = await fake.waitFor((push) => push.payload.body === "Alerts are on for this device", `PC ${name}'s test push`, 20_000);
+      await page.getByTestId("push-health-hint").getByText("Test notification sent.", { exact: false }).waitFor();
+      assert.ok(received.vapidValid, `PC ${name}'s push carries a valid VAPID signature`);
+      assert.equal(received.vapidKey, server.publicKey(), `PC ${name}'s push is signed with PC ${name}'s own VAPID key`);
+      assert.equal(other.received.length, before, `PC ${name}'s test push reached no other device`);
+      say(`push: PC ${name} Send test -> its fake push service decrypted (RFC 8291 aes128gcm) ${JSON.stringify(received.payload)}; urgency ${received.urgency}; VAPID valid, k = PC ${name}'s key ${received.vapidKey.slice(0, 16)}…`);
+    }
+    assert.equal(fakeA.received.length, 1);
+    assert.equal(fakeB.received.length, 1);
+    assert.notEqual(pushA.publicKey(), pushB.publicKey(), "each PC its own VAPID key");
+    const direct = requests.filter((line) => line.includes(`127.0.0.1:${app.port}`) || line.includes(`127.0.0.1:${app2.port}`));
+    assert.deepEqual(direct, [], "the page never reached either PC except through the relay");
+    say(`push: fake A received ${fakeA.received.length}, fake B received ${fakeB.received.length}; ${requests.length} page requests, none to either PC's own address (${base}, ${base2})`);
+    keep("task-18-push.txt", `# relay-shell-browser-qa (l): push alerts over the relay, two PCs in one shell origin\n${push.join("\n")}\n`);
+
+    // (m) the browser rotates PC A's subscription with no window open: the worker keeps it, the next start registers it once
+    const pending: string[] = [];
+    const tell = (line: string): void => { pending.push(line); note(line); };
+    const worker = context.serviceWorkers().find((candidate) => candidate.url() === `${scopeOf(A)}sw.js`);
+    assert.ok(worker, "PC A's worker is running");
+    const fakeA2 = await startFakePushService();
+    fakes.push(fakeA2);
+    await pageA.close();
+    await pageB.close();
+    assert.equal(context.pages().length, 0);
+    let registrations = 0;
+    const firstRegistration = deferred<void>();
+    const removed = deferred<string>();
+    const subscribe = pushA.subscribe.bind(pushA);
+    const unsubscribe = pushA.unsubscribe.bind(pushA);
+    pushA.subscribe = (subscription, ...rest) => {
+      if (subscription.endpoint === fakeA2.subscription.endpoint) { registrations += 1; firstRegistration.resolve(); }
+      subscribe(subscription, ...rest);
+    };
+    pushA.unsubscribe = (endpoint) => { removed.resolve(endpoint); unsubscribe(endpoint); };
+    const fired = await worker.evaluate(async ({ fresh, old }) => {
+      const as = (json: { endpoint: string }) => ({ endpoint: json.endpoint, options: { applicationServerKey: null }, toJSON: () => json });
+      const event = new ExtendableEvent("pushsubscriptionchange");
+      const waits: Promise<unknown>[] = [];
+      Object.defineProperties(event, {
+        newSubscription: { value: as(fresh) }, oldSubscription: { value: as({ endpoint: old }) },
+        waitUntil: { value: (work: Promise<unknown>) => { waits.push(work); } },
+      });
+      const windows = (await (self as unknown as ServiceWorkerGlobalScope).clients.matchAll({ type: "window", includeUncontrolled: true })).length;
+      self.dispatchEvent(event);
+      await Promise.all(waits);
+      const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("ovis-relay", 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      const record = await new Promise<unknown>((resolve) => { const request = db.transaction("pending-push").objectStore("pending-push").getAll(); request.onsuccess = () => resolve(request.result); });
+      db.close();
+      return { windows, record };
+    }, { fresh: { endpoint: fakeA2.subscription.endpoint, expirationTime: null, keys: fakeA2.subscription.keys }, old: fakeA.subscription.endpoint });
+    assert.equal(fired.windows, 0, "no window client was open");
+    assert.deepEqual(fired.record, [{ server_id: A, subscription: { endpoint: fakeA2.subscription.endpoint, expirationTime: null, keys: fakeA2.subscription.keys }, old_endpoint: fakeA.subscription.endpoint }]);
+    assert.equal(registrations, 0, "the worker could not and did not reach the PC");
+    tell(`pending: pushsubscriptionchange in PC A's worker (${scopeOf(A)}sw.js) with ${fired.windows} window clients -> IndexedDB ovis-relay/pending-push = ${JSON.stringify(fired.record)}`);
+    // the next start: notification permission taken back, so the load-time registration stays out and only the pending one runs
+    await context.clearPermissions();
+    const boot = await context.newPage();
+    csp.push(await watchCsp(boot));
+    await boot.goto(scopeOf(A));
+    await inApp(boot);
+    await bounded(firstRegistration.promise, "the next start registered the kept subscription");
+    assert.equal(await bounded(removed.promise, "the next start dropped the old endpoint"), fakeA.subscription.endpoint);
+    await boot.waitForFunction(async () => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("ovis-relay", 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      const count = await new Promise<number>((resolve) => { const request = db.transaction("pending-push").objectStore("pending-push").count(); request.onsuccess = () => resolve(request.result); });
+      db.close();
+      return count === 0;
+    }, undefined, { polling: 100, timeout: 20_000 });
+    assert.notEqual(registered(pushA, fakeA2, deviceA), null, "PC A holds the new subscription for the relay device");
+    assert.equal(registered(pushA, fakeA, deviceA), null, "PC A dropped the old one");
+    assert.equal(registered(pushB, fakeA2, deviceB), null, "PC B never heard of PC A's new subscription");
+    assert.notEqual(registered(pushB, fakeB, deviceB), null, "PC B keeps its own subscription");
+    tell(`pending: next start of ${scopeOf(A)} -> POST /api/push/subscribe ${fakeA2.subscription.endpoint} and DELETE ${fakeA.subscription.endpoint} over the relay, owner ${deviceA}; record cleared; PC B untouched`);
+    // a start after that: the record is gone, nothing is registered again (a round trip over the relay first)
+    await boot.reload();
+    await inApp(boot);
+    await until("the PC counts the reloaded relay session", () => service.status().sessions >= 1);
+    const answered = await pushA.sendTest(fakeA2.subscription.endpoint);
+    assert.ok(answered?.ok, "the new subscription receives PC A's pushes");
+    await fakeA2.waitFor((push) => push.payload.body === "Alerts are on for this device", "a push to the new subscription", 20_000);
+    assert.equal(registrations, 1, "registered exactly once across two starts");
+    tell(`pending: second start registered nothing more; registrations of the kept subscription = ${registrations}; a push to it reached fake A2 (VAPID valid ${fakeA2.received[0]!.vapidValid})`);
+    keep("task-18-pending.txt", `# relay-shell-browser-qa (m): a subscription rotated with no window open, registered on the next start once\n${pending.join("\n")}\n`);
+    await context.close();
+  }
+
   assertCspClean(csp, "the hosted shell under the enforced shell policy");
   note(`csp: ${csp.length} watched pages, every one served the policy, no violation`);
   keep("task-16-states.txt", `# relay-shell-browser-qa: dist-shell at ${origin} (scripts/pages-static.ts), PC ${base} (createServer, relay ${RELAY} bridged to the Bun relay)\n${report.join("\n")}\n`);
@@ -553,7 +749,11 @@ try {
   await browser?.close();
   site.stop(true);
   await service.shutdown();
+  await service2.shutdown();
   app.stop();
+  app2.stop();
+  for (const fake of fakes) fake.stop();
   await relay?.stop();
   rmSync(stateDir, { recursive: true, force: true });
+  rmSync(stateDir2, { recursive: true, force: true });
 }

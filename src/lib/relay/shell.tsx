@@ -10,11 +10,13 @@ import type { Root } from "react-dom/client";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { deviceLabel } from "../phone.ts";
+import { registerPendingPush } from "../push.ts";
+import type { PendingPushStore } from "../push.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
-import { indexedDeviceStore } from "./device.ts";
+import { indexedDeviceStore, indexedPendingPush } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
 import type { RelayShellState } from "./shellState.ts";
@@ -28,6 +30,7 @@ export interface RelayShellMount {
   /** mounts the app on the container once the transport is set; what it returns is unmounted should the PC turn this phone away later */
   renderApp: () => Root;
   store?: RelayDeviceStore;
+  pendingPush?: PendingPushStore;
   open?: typeof openRelayTransport;
   navigate?: (path: string) => void;
   /** who this phone is, for a new pairing; the browser's user agent by default */
@@ -59,6 +62,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let transport: RelayTransport | null = null;
   let last: Attempt | null = null;
   let opening: AbortController | null = null;
+
+  // the push subscription this PC's worker kept while no window could hand it over (public/sw.js
+  // pushsubscriptionchange): registered with the PC once it is connected, and when the worker says
+  // it kept one while this window is in the app
+  const pendingPush = mount.pendingPush ?? indexedPendingPush;
+  const registerPending = (serverId: string): void => {
+    registerPendingPush(serverId, pendingPush).catch((error: unknown) => {
+      console.warn("Ovis: the PC did not take this device's new push subscription", error);
+    });
+  };
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event: MessageEvent) => {
+      if (transport === null || last === null || (event.data as { type?: unknown } | null)?.type !== "push-subscription-change") return;
+      registerPending(last.offer.server_id);
+    });
+  }
 
   const toFront = (): void => navigate("/");
 
@@ -106,6 +125,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell?.unmount();
     shell = null;
     app = mount.renderApp();
+    registerPending(attempt.offer.server_id);
   };
 
   const pair = (): void => {
