@@ -48,6 +48,15 @@ describe("herdr's copy_on_select in the browser", () => {
     expect([copyOnSelect(), herdrUiKnown()]).toEqual([false, false]);
   });
 
+  it("reads again after a transport that throws at once or refuses later", async () => {
+    await loadHerdrUi((() => { throw new TypeError("no transport yet"); }) as unknown as typeof fetch);
+    await loadHerdrUi(answer(200, { copy_on_select: true }));
+    expect([herdrUiKnown(), copyOnSelect()]).toEqual([true, true]);
+    await loadHerdrUi((() => Promise.reject(new TypeError("offline"))) as unknown as typeof fetch);
+    await loadHerdrUi(answer(200, { copy_on_select: false }));
+    expect([herdrUiKnown(), copyOnSelect()]).toEqual([true, false]);
+  });
+
   it("keeps what it read when a later read fails", async () => {
     await loadHerdrUi(answer(200, { copy_on_select: true }));
     await loadHerdrUi(answer(500, {}));
