@@ -309,8 +309,8 @@ export class CompletionTracker {
         this.finished.delete(paneId);
         return status;
       case "idle":
-        // reported only: another program's idle is not the finish of the work this one reported
-        if (this.reportedOnly() && this.worked.has(paneId) && this.worked.get(paneId) !== agent) this.worked.delete(paneId);
+        // reported only: another program's idle, or one naming no program, is not the finish of the work
+        if (this.reportedOnly() && this.worked.has(paneId) && (agent === null || this.worked.get(paneId) !== agent)) this.worked.delete(paneId);
         if (this.worked.delete(paneId)) this.finished.set(paneId, agent);
         return this.finished.has(paneId) ? "done" : status;
       default:

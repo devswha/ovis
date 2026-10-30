@@ -154,6 +154,10 @@ describe("CompletionTracker", () => {
     tracker.observe("resumed", "working", "claude");
     expect(tracker.observe("resumed", "idle", "claude")).toBe("done");
 
+    // a report naming no program: nobody can say the idle is the same program's
+    tracker.observe("anonymous", "working", null);
+    expect(tracker.observe("anonymous", "idle", null)).toBe("idle");
+
     // straight from one program's work to another's idle: not a finish of either
     tracker.observe("direct", "working", "codex");
     expect(tracker.observe("direct", "idle", "claude")).toBe("idle");
