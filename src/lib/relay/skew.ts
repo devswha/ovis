@@ -16,9 +16,16 @@ export type RelaySkew = "ok" | "protocol-mismatch" | "pc-outdated" | "server-new
 
 type Version = readonly [number, number, number];
 
-/** `major.minor.patch`, with an optional pre-release or build suffix that is not compared; null for anything else. */
+/**
+ * SemVer 2.0.0: `major.minor.patch`, then an optional `-pre.release` and `+build.meta`, each a
+ * dot-separated list of non-empty [0-9A-Za-z-] identifiers (numeric pre-release ones without a
+ * leading zero). The suffixes are validated, not compared. Anything else is null.
+ */
+const SEMVER = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
 export function parseVersion(text: string): Version | null {
-  const match = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:[-+][0-9A-Za-z.+-]{1,64})?$/.exec(text.trim());
+  if (text.length > 64) return null;
+  const match = SEMVER.exec(text);
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
@@ -52,7 +59,19 @@ export interface ReloadMemory {
   setItem(key: string, value: string): void;
 }
 
-const RELOAD_KEY = "ovis:relay-skew-reload";
+const RELOAD_KEY = "ovis:relay-skew-reloads";
+/** Pairs remembered per tab; past this the oldest is forgotten, so the receipt stays small. */
+const RELOAD_PAIRS = 16;
+
+function reloaded(memory: ReloadMemory): string[] {
+  try {
+    const value: unknown = JSON.parse(memory.getItem(RELOAD_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((pair): pair is string => typeof pair === "string") : [];
+  } catch (error) {
+    if (error instanceof SyntaxError) return [];
+    throw error;
+  }
+}
 
 /**
  * Whether a newer PC should reload this page onto a newer shell: once per (shell, server)
@@ -63,8 +82,9 @@ const RELOAD_KEY = "ovis:relay-skew-reload";
 export function reloadOnce(memory: ReloadMemory, shellVersion: string, serverVersion: string): boolean {
   const pair = `${shellVersion}->${serverVersion}`;
   try {
-    if (memory.getItem(RELOAD_KEY) === pair) return false;
-    memory.setItem(RELOAD_KEY, pair);
-    return memory.getItem(RELOAD_KEY) === pair;
+    const pairs = reloaded(memory);
+    if (pairs.includes(pair)) return false;
+    memory.setItem(RELOAD_KEY, JSON.stringify([...pairs, pair].slice(-RELOAD_PAIRS)));
+    return reloaded(memory).includes(pair);
   } catch { return false; }
 }

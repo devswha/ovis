@@ -808,21 +808,22 @@ try {
       await bounded(ready.promise, `the PC reporting ${version} synced with the relay`);
       const offer = decodeOffer((JSON.parse(await (await post("/offer")).text()) as { url: string }).url);
       if (!offer) throw new Error("the skew PC gave no offer");
-      return { offer: { ...offer, name: `PC ${version}` }, stop: async () => { await pcRelay.shutdown(); pc.stop(); rmSync(dir, { recursive: true, force: true }); } };
+      return { offer: { ...offer, name: `PC ${version}` }, devices: pc.context.services.devices, stop: async () => { await pcRelay.shutdown(); pc.stop(); rmSync(dir, { recursive: true, force: true }); } };
     };
     const { below, newer } = relayShellQaVersions(shellVersion, MIN_SERVER_VERSION);
     /** A managed install's update service as the supervisor reports it, recording what the bridge asks of it. */
     const fakeUpdates = () => {
       const requests: UpdateRequest[] = [];
+      const installed = deferred<void>();
       let phase: UpdateStatus["phase"] = "idle";
       const service: UpdateService = {
         status: () => ({ managed: true, auto_update: false, phase, current_revision: "a".repeat(40), latest_revision: "b".repeat(40),
           current_version: below, latest_version: MIN_SERVER_VERSION, available: true, checked_at: new Date().toISOString(),
           blocked_reason: null, error: null, step: phase === "building" ? "build" : null, revision_bound_install: true }),
         notes: () => noUpdateNotes(), installed: () => noInstalledNotes(),
-        request: (request) => { requests.push(request); if (request.command === "install") phase = "building"; },
+        request: (request) => { requests.push(request); if (request.command === "install") { phase = "building"; installed.resolve(); } },
       };
-      return { service, requests };
+      return { service, requests, installed: installed.promise };
     };
     const lines: string[] = [`# shell ${shellVersion} (package.json), MIN_SERVER_VERSION ${MIN_SERVER_VERSION}`];
 
@@ -839,7 +840,7 @@ try {
         assert.equal(await page.locator(".relay-shell-command").count(), 0, "a managed PC shows no steps by hand");
         assert.deepEqual(updates.requests, [], "nothing is installed before the tap");
         await page.getByRole("button", { name: "Update now" }).click();
-        await until("the PC's update service received the install", () => updates.requests.some((request) => request.command === "install"));
+        await bounded(updates.installed, "the PC's update service received the install");
         assert.deepEqual(updates.requests, [{ command: "install", expected_revision: "b".repeat(40) }], "one install of the release on offer, no check first");
         await page.getByText("Step 4 of 5: Building the app").waitFor();
         await shot19(page, "update");
@@ -848,11 +849,11 @@ try {
       } finally { await pc.stop(); }
     }
 
-    // an unmanaged PC below the minimum: the steps by hand, no Update button
+    // an unmanaged PC below the minimum: the steps by hand, no Update button; Try again checks the PC with the saved key
     {
       const pc = await skewPc(below);
       try {
-        const { context, page } = await open();
+        const { context, page, bridge } = await open();
         await pairFrom(page, pc.offer);
         await state(page, "pc-outdated").waitFor();
         await page.locator(".relay-shell-command").first().waitFor();
@@ -861,6 +862,20 @@ try {
         assert.match(await page.locator(".relay-shell-command").nth(1).innerText(), /herdr plugin install devswha\/ovis/);
         await shot19(page, "instructions");
         note(`pc-outdated (unmanaged): WELCOME ${below}, GET /api/updates managed=false -> installer one-liner and plugin steps, no Update button`);
+        const enrolled = pc.devices.list(null).map((device) => device.id);
+        assert.equal(enrolled.length, 1, "the pairing enrolled one device");
+        await bounded(bridge.next(), "the pairing socket");
+        await page.getByRole("button", { name: "Try again" }).click();
+        await bounded(bridge.next(), "Try again opened a new relay socket");
+        await page.locator('main[data-relay-state="pc-outdated"] .relay-shell-command, main[data-relay-state="code-expired"]').first().waitFor();
+        assert.equal(await state(page, "code-expired").count(), 0, "Try again never re-sends the spent pairing code");
+        assert.equal(await state(page, "pc-outdated").count(), 1, "Try again lands on the instructions again while the PC is still old");
+        assert.deepEqual(pc.devices.list(null).map((device) => device.id), enrolled, "the same device, still enrolled, signed in again");
+        const retried = (await saved(page, pc.offer.server_id))?.device_id;
+        assert.equal(retried, enrolled[0], "the phone kept the device id it was given");
+        await shot19(page, "retry");
+        keep("task-19-retry.txt", `# unmanaged PC at ${below}: instructions -> Try again\nsockets: ${bridge.sockets.length}\nstate after retry: pc-outdated (code-expired count 0)\nenrolled devices before: ${JSON.stringify(enrolled)}\nenrolled devices after: ${JSON.stringify(pc.devices.list(null).map((device) => device.id))}\nphone's saved device_id: ${retried}\n`);
+        note(`pc-outdated retry: Try again -> AUTH with the saved key -> instructions again; device ${enrolled[0]} still enrolled, no code-expired`);
         await context.close();
       } finally { await pc.stop(); }
     }

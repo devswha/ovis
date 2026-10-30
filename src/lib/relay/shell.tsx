@@ -157,7 +157,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return;
     }
     if (controller.signal.aborted) { opened.close(); return; }
-    await admitted(opened, attempt);
+    // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
+    // the update screen included) signs with the saved device key instead of pairing again
+    const { code, ...saved } = attempt.offer;
+    const enrolled: Attempt = { offer: saved, code: false, paired: true };
+    last = enrolled;
+    if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
+    await admitted(opened, enrolled);
   };
 
   const enterApp = (opened: RelayTransport): void => {

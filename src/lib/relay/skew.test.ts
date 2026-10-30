@@ -49,6 +49,20 @@ describe("relaySkew", () => {
     }
   });
 
+  it("treats a malformed pre-release or build suffix as outdated, never as newer", () => {
+    for (const garbage of ["9.0.0-+", "9.0.0-.", "9.0.0+..", "9.0.0-rc..1", "9.0.0-", "9.0.0+", "9.0.0-rc.", "9.0.0-.rc",
+      "9.0.0+build.", "9.0.0-rc_1", "9.0.0-rc+", "9.0.0+a+b", "9.0.0-01", "09.0.0", "9.00.0", "9.0.0 ", " 9.0.0", `9.0.0-${"a".repeat(64)}`]) {
+      expect(parseVersion(garbage)).toBeNull();
+      expect(relaySkew({ server: { version: garbage, relayProtocol: RELAY_PROTOCOL }, shellVersion: "0.4.20" })).toBe("pc-outdated");
+    }
+  });
+
+  it("reads every well-formed SemVer suffix", () => {
+    for (const valid of ["9.0.0-rc.1", "9.0.0-0", "9.0.0-x-y.7", "9.0.0-0a", "9.0.0+001", "9.0.0-alpha.1+build.5-x", "9.0.0+exp.sha.5114f85"]) {
+      expect(parseVersion(valid)).toEqual([9, 0, 0]);
+    }
+  });
+
   it("compares the release, not its suffix", () => {
     expect(skew("0.5.3-rc.1")).toBe("ok");
     expect(skew("0.5.4+build.7")).toBe("server-newer");
@@ -77,6 +91,26 @@ describe("reloadOnce", () => {
     const memory = new Memory();
     expect(reloadOnce(memory, "0.5.3", "0.5.4")).toBe(true);
     expect(reloadOnce(memory, "0.5.3", "0.5.4")).toBe(false);
+    expect(reloadOnce(memory, "0.5.3", "0.5.4")).toBe(false);
+  });
+
+  it("keeps a receipt per pair, so going back to an earlier PC does not reload again", () => {
+    const memory = new Memory();
+    expect(["0.5.4", "0.5.5", "0.5.4", "0.5.5"].map((server) => reloadOnce(memory, "0.5.3", server))).toEqual([true, true, false, false]);
+  });
+
+  it("bounds the receipts, forgetting the oldest pair first", () => {
+    const memory = new Memory();
+    for (let patch = 0; patch < 17; patch++) expect(reloadOnce(memory, "0.5.3", `0.6.${patch}`)).toBe(true);
+    expect(JSON.parse(memory.getItem("ovis:relay-skew-reloads")!)).toHaveLength(16);
+    expect(reloadOnce(memory, "0.5.3", "0.6.16")).toBe(false);
+    expect(reloadOnce(memory, "0.5.3", "0.6.0")).toBe(true);
+  });
+
+  it("starts over from a damaged receipt instead of failing", () => {
+    const memory = new Memory();
+    memory.setItem("ovis:relay-skew-reloads", "{not json");
+    expect(reloadOnce(memory, "0.5.3", "0.5.4")).toBe(true);
     expect(reloadOnce(memory, "0.5.3", "0.5.4")).toBe(false);
   });
 
