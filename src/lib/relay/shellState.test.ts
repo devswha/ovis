@@ -91,6 +91,22 @@ describe("the iPhone browser tab", () => {
     expect(iosBrowserTab({ userAgent: ipad, maxTouchPoints: 0, standalone: undefined })).toBe(false);
     expect(iosBrowserTab({ userAgent: "Mozilla/5.0 (Linux; Android 14) Chrome/120", maxTouchPoints: 5, standalone: undefined })).toBe(false);
   });
+
+  for (const platform of ["ios", "android"]) {
+    it(`does not show the home-screen hint inside the ${platform} app`, () => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => platform,
+      } });
+      try {
+        expect(iosBrowserTab({ userAgent: iphone, maxTouchPoints: 5, standalone: undefined })).toBe(false);
+        expect(iosBrowserTab({ userAgent: ipad, maxTouchPoints: 5, standalone: false })).toBe(false);
+      } finally {
+        if (original) Object.defineProperty(globalThis, "Capacitor", original);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+  }
 });
 
 describe("shell mode", () => {

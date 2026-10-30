@@ -8,6 +8,7 @@ import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
@@ -90,5 +91,5 @@ export function forgetsDevice(failure: RelayFailure): boolean {
 /** An iPhone or iPad browser tab, where the page's storage may be cleared after a week unvisited; the installed app's is kept. */
 export function iosBrowserTab(env: { userAgent: string; maxTouchPoints: number; standalone: boolean | undefined }): boolean {
   const ios = /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
-  return ios && env.standalone !== true;
+  return ios && env.standalone !== true && !inNativeApp();
 }
