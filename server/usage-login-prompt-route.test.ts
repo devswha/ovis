@@ -58,14 +58,16 @@ describe("a first sign-in, in the agent's own home", () => {
     expect((await prompt(service, "w1:p9")).status).toBe(200);
   });
 
-  it("asks nothing for a sign-in in another account's home, which it does not replace", async () => {
+  it("asks too when the PC's only sign-in is in another account's home: discovery may stop before the default one (a keychain)", async () => {
     stubHerdr();
     const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "other@example.test" } })).toString("base64url");
     mkdirSync(join(root, ".codex-other"), { recursive: true });
     writeFileSync(join(root, ".codex-other", "auth.json"), JSON.stringify({ tokens: { access_token: `header.${claims}.signature` } }));
     try {
       const service = new UsageLoginService(root, { PATH: bin });
-      expect((await service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "codex", default: true }) }))).status).toBe(200);
+      const asked = await service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "codex", default: true }) }));
+      expect(((await asked.json()) as { error: { code: string } }).error.code).toBe("account_confirmation_required");
+      expect(typed).toEqual([]);
     } finally {
       rmSync(join(root, ".codex-other"), { recursive: true, force: true });
     }

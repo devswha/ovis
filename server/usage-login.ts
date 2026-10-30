@@ -338,11 +338,12 @@ export class UsageLoginService {
         return conflictResponse("account_ambiguous", "This account is signed in in more than one credential folder on this PC, so Ovis cannot tell which one to renew. Sign in again from a terminal in the folder you want.");
       }
       const place = found;
-      // a default home holding the CLI's credential file has a sign-in, even one this server cannot read;
-      // only a sign-in in that home is replaced, so another account's home (~/.codex-work) asks nothing
+      // a default home holding the CLI's credential file has a sign-in, even one this server cannot read; and
+      // any sign-in found asks too: discovery can stop at another account's home before the default one's
+      // keychain item (Codex on macOS), so a found one never proves the default home empty
       const defaultDir = resolve(this.home, id === "claude" ? ".claude" : ".codex");
       const replacesDefault = asDefault && (existsSync(join(defaultDir, id === "claude" ? ".credentials.json" : "auth.json"))
-        || (await provider.signIns(this.context)).some((signIn) => signIn.home === undefined || signIn.home.kind === "default" || resolve(signIn.home.dir) === defaultDir));
+        || (await provider.signIns(this.context)).length > 0);
       if (!asDefault && !separate && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0
         || replacesDefault && body["replace"] !== true) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");

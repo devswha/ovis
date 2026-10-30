@@ -98,7 +98,6 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
       try {
         const next = await fetchUsageLoginPrompt(pane, controller.signal);
         if (controller.signal.aborted) return;
-        failures = 0;
         // a sent code the CLI moved on from; a prompt that comes back after that asks for the code again
         if (!next.wants_code) answered.current = true;
         else if (answered.current && sentRef.current) { sentRef.current = false; setSent(false); setCodeError(t("The sign-in asked for the code again. Paste it once more.")); }
@@ -111,6 +110,8 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
           if (outcome.kind === "signed-in") signedInRef.current?.();
           return;
         }
+        // a whole round read: only that clears the failures, so failed account reads after the end still count
+        failures = 0;
       } catch (cause) {
         if (controller.signal.aborted) return;
         failures += 1;
