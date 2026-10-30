@@ -23,6 +23,10 @@ export interface RelayDevice {
 export interface RelayDeviceStore {
   get(serverId: string): Promise<RelayDevice | undefined>;
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice): Promise<RelayDevice>;
+  /** Every saved PC, in the order they were first saved. */
+  list(): Promise<RelayDevice[]>;
+  /** Forgets a PC: its key is gone for good, and the PC's next pairing makes a new one. */
+  remove(serverId: string): Promise<void>;
 }
 
 export const indexedDeviceStore: RelayDeviceStore = {
@@ -33,6 +37,28 @@ export const indexedDeviceStore: RelayDeviceStore = {
         const tx = db.transaction("devices", "readonly");
         const request: IDBRequest<RelayDevice | undefined> = tx.objectStore("devices").get(serverId);
         tx.oncomplete = () => resolve(request.result);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
+  async list() {
+    const db = await openDatabase();
+    try {
+      return await new Promise<RelayDevice[]>((resolve, reject) => {
+        const tx = db.transaction("devices", "readonly");
+        const request: IDBRequest<RelayDevice[]> = tx.objectStore("devices").getAll();
+        tx.oncomplete = () => resolve(request.result);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
+  async remove(serverId) {
+    const db = await openDatabase();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("devices", "readwrite");
+        tx.objectStore("devices").delete(serverId);
+        tx.oncomplete = () => resolve();
         tx.onabort = () => reject(tx.error);
       });
     } finally { db.close(); }

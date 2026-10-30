@@ -6,6 +6,9 @@
  * The browser imports this file, so it reads no environment.
  */
 import { importPublicKey } from "./relay-e2ee.ts";
+import { SERVER_ID_PATTERN } from "./relay-id.ts";
+
+export { SERVER_ID_PATTERN };
 
 export interface RelayOffer {
   v: 1;
@@ -21,7 +24,6 @@ export interface RelayOffer {
   name?: string;
 }
 
-export const SERVER_ID_PATTERN = /^[0-9a-f]{32}$/;
 const MAX_PAYLOAD_CHARS = 2048;
 const MAX_NAME_CHARS = 64;
 const MAX_RELAY_CHARS = 255;

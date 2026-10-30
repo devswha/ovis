@@ -1,13 +1,24 @@
 import type { HttpStream, MuxClock, WsStream } from "../../../shared/relay-mux-engine.ts";
 import { REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
+import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
-import { openRelayChannel } from "./channel.ts";
+import { openRelayChannel, UnsafeRelayDestinationError } from "./channel.ts";
 import type { RelayChannel, RelayChannelOptions } from "./channel.ts";
+import { ServerIdentityChangedError } from "./device.ts";
 
 export interface RelayTransportOptions extends RelayChannelOptions {
   readonly openChannel?: typeof openRelayChannel;
   readonly clock?: MuxClock;
+  /** A reconnect the PC refused for good (`isFatalRelayError`): the transport has closed itself, and the shell shows why. */
+  readonly onFatal?: (error: Error) => void;
+}
+
+/** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
+export function isFatalRelayError(error: unknown): error is Error {
+  if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
+  return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed" || error.code === "auth_changed"
+    || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
 }
 
 const clock: MuxClock = {
@@ -68,7 +79,7 @@ export class RelayTransport implements Transport {
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
-    void this.connect().catch(() => this.retry());
+    void this.connect().catch((error: unknown) => this.failed(error));
   };
   private readonly aborted = (): void => this.close();
 
@@ -96,7 +107,7 @@ export class RelayTransport implements Transport {
         if (generation !== this.generation || this.stopped) return;
         this.channel = undefined;
         this.options.onClose?.(error);
-        this.retry();
+        this.failed(error);
       },
     });
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
@@ -107,11 +118,19 @@ export class RelayTransport implements Transport {
     this.delay = 1000;
   }
 
+  /** A reconnect that failed: tried again later, unless no later attempt could succeed. */
+  private failed(error: unknown): void {
+    if (this.stopped) return;
+    if (!isFatalRelayError(error)) { this.retry(); return; }
+    this.close();
+    this.options.onFatal?.(error);
+  }
+
   private retry(): void {
     if (this.stopped || this.cancelRetry) return;
     this.cancelRetry = (this.options.clock ?? clock).setTimeout(() => {
       this.cancelRetry = undefined;
-      void this.connect().catch(() => this.retry());
+      void this.connect().catch((error: unknown) => this.failed(error));
     }, this.delay);
     this.delay = Math.min(30_000, this.delay * 2);
   }

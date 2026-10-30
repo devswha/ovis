@@ -16,6 +16,8 @@ export class MemoryDeviceStore implements RelayDeviceStore {
     this.devices.set(id, next);
     return next;
   }
+  async list(): Promise<RelayDevice[]> { return [...this.devices.values()]; }
+  async remove(id: string): Promise<void> { this.devices.delete(id); }
 }
 
 export function testOffer(): RelayOffer {

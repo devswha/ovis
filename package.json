@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "bun --bun vite",
     "build": "bun --bun vite build",
+    "build:shell": "bun --bun vite build --mode shell",
     "server": "bun run server/index.ts",
     "start": "bun run build && bun run server/managed.ts",
     "typecheck": "bun scripts/typecheck.ts",

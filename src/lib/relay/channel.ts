@@ -16,6 +16,15 @@ export class UnsafeRelayDestinationError extends Error {
   }
 }
 
+/** The relay never answered: the socket failed or closed before it assigned this connection. The PC's state is unknown. */
+export class RelayUnreachableError extends Error {
+  readonly code = "relay_unreachable";
+  constructor(readonly closeCode: number | null) {
+    super(closeCode === null ? "The relay could not be reached" : `The relay closed the connection (${closeCode})`);
+    this.name = "RelayUnreachableError";
+  }
+}
+
 export interface RelaySocket {
   binaryType: BinaryType;
   send(data: string | ArrayBuffer): void;
@@ -144,10 +153,10 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const failed = (error: unknown): void => stop(error instanceof Error ? error : new Error(String(error)));
     socket.onclose = (event) => {
       transport.onclose?.(event.code, event.reason);
-      stop(new MuxProtocolError("internal_error", "Relay socket closed"));
+      stop(phase === "assigned" ? new RelayUnreachableError(event.code) : new MuxProtocolError("internal_error", "Relay socket closed"));
     };
     socket.onerror = () => {
-      const error = new MuxProtocolError("internal_error", "Relay socket failed");
+      const error = phase === "assigned" ? new RelayUnreachableError(null) : new MuxProtocolError("internal_error", "Relay socket failed");
       transport.onerror?.(error);
       stop(error);
     };

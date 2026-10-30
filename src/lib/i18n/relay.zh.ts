@@ -1,0 +1,32 @@
+/**
+ * Simplified Chinese for the keys only the hosted relay shell uses: components/RelayShell.tsx.
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
+export const RELAY_ZH: Record<string, string> = {
+  "this PC": "这台电脑",
+  "Your PCs": "我的电脑",
+  "Unnamed PC": "未命名的电脑",
+  "To add another PC, scan the QR code it shows under Phone & devices.": "要添加另一台电脑，请扫描它在“手机与设备”中显示的二维码。",
+  "Scan the QR code on your PC": "请扫描电脑上的二维码",
+  "On the PC, open Settings → Phone & devices and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.": "在电脑上打开设置 → 手机与设备，开启通过 Ovis 中继的远程访问。那里显示的二维码会以与该电脑配对的状态打开此应用。",
+  "Pair with {name}?": "与 {name} 配对？",
+  "This phone gets a key of its own for {name}. The PC lists it under Phone & devices, where it can be removed.": "此手机将获得一把专用于 {name} 的密钥。电脑会在“手机与设备”中列出它，并可在那里移除。",
+  "Pair": "配对",
+  "Not now": "暂不",
+  "Connecting to {name}…": "正在连接 {name}…",
+  "{name} is offline": "{name} 已离线",
+  "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "该电脑的 Ovis 当前未连接到中继。请在电脑上启动 Ovis 或检查其网络连接，然后重试。",
+  "The relay could not be reached": "无法连接到中继",
+  "Check this phone's connection, then try again.": "请检查此手机的网络连接，然后重试。",
+  "Update needed": "需要更新",
+  "{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.": "{name} 与此应用使用的中继协议版本不同。请更新电脑上的 Ovis，然后重试。",
+  "This phone was removed from {name}": "此手机已从 {name} 移除",
+  "Its pairing was revoked on the PC, so this phone's key for it is gone. To pair again, scan a new QR code on the PC.": "电脑上已撤销配对，此手机对应的密钥也已删除。要重新配对，请在电脑上扫描新的二维码。",
+  "{name} has a new identity": "{name} 的身份已更改",
+  "The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.": "电脑的中继密钥与此手机配对时的不同，已保存的配对不再可信。请忘记这台电脑，然后用电脑上新的二维码重新配对。",
+  "That pairing code no longer works": "该配对码已失效",
+  "The code was wrong, used up or expired. Scan a new QR code on the PC.": "配对码错误、已使用或已过期。请在电脑上扫描新的二维码。",
+  "This pairing link is damaged": "此配对链接已损坏",
+  "Part of the link is missing or changed. Scan the QR code on the PC again, or copy its link whole.": "链接有部分缺失或被改动。请重新扫描电脑上的二维码，或完整复制链接。",
+  "Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.": "添加到主屏幕以保持配对：Safari 可能会清除一周未访问页面的存储数据。",
+};

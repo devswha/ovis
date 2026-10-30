@@ -29,6 +29,8 @@ for (const { field, value } of unsafeDestinations) {
     const store = {
       get: mock(async () => undefined),
       update: mock(async () => { throw new Error("Unexpected device-store update"); }),
+      list: mock(async () => { throw new Error("Unexpected device-store list"); }),
+      remove: mock(async () => { throw new Error("Unexpected device-store removal"); }),
     };
     const socket = mock(() => { throw new Error("Unexpected socket creation"); });
     // When the destination is validated.

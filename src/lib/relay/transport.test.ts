@@ -9,7 +9,8 @@ import type { WebSocketLike } from "../transport.ts";
 import { useResourceUrlState } from "../useResourceUrl.ts";
 import type { ResourceUrlState } from "../useResourceUrl.ts";
 import type { RelayChannelOptions } from "./channel.ts";
-import { openRelayTransport, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+import { isFatalRelayError, openRelayTransport, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -24,13 +25,16 @@ async function fixture(options: Partial<RelaySessionOptions> = {}) {
   const clock = new TestClock();
   const connections: Awaited<ReturnType<typeof relayConnection>>[] = [];
   const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
-  const attempts = { count: 0, failures: 0 };
+  const attempts = { count: 0, failures: 0, refusal: null as Error | null };
+  const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
     server_public_key: "", relay: "wss://relay.example" };
   const transport = await openRelayTransport(offer, {
     clock,
+    onFatal: (error) => fatal.push(error),
     openChannel: async (_offer, config = {}) => {
       attempts.count++;
+      if (attempts.refusal !== null) { const refusal = attempts.refusal; attempts.refusal = null; throw refusal; }
       if (attempts.failures > 0) { attempts.failures--; throw new TypeError("Network offline"); }
       const connection = await relayConnection(app, options);
       connections.push(connection);
@@ -48,7 +52,7 @@ async function fixture(options: Partial<RelaySessionOptions> = {}) {
   });
   cleanups.push(() => transport.close());
   return {
-    transport, app, clock, connections, callbacks, attempts,
+    transport, app, clock, connections, callbacks, attempts, fatal,
     async drop() {
       const current = connections.at(-1);
       if (!current) throw new Error("No connection");
@@ -336,6 +340,35 @@ it("reconnects only the carrier with backoff from one second capped at thirty se
   expect(f.clock.tasks.size).toBe(0);
   await f.drop();
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+});
+
+it("stops reconnecting once the PC refuses the device for good, and tells the shell", async () => {
+  // Given an established carrier whose next reconnect the PC answers with auth_revoked.
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  const revoked = new MuxProtocolError("auth_revoked", "Device revoked");
+  f.attempts.refusal = revoked;
+  await f.drop();
+  // When the retry deadline fires.
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await expect(f.transport.connect()).rejects.toBe(revoked);
+  // Then no further attempt is scheduled, the transport is closed and the failure reached onFatal once.
+  expect(f.fatal).toEqual([revoked]);
+  expect(f.clock.tasks.size).toBe(0);
+  expect(f.attempts.count).toBe(2);
+  await expect(f.transport.fetch("/api/after")).rejects.toBeInstanceOf(TypeError);
+  f.clock.advance(60_000);
+  expect(f.attempts.count).toBe(2);
+});
+
+it("tells a refusal that cannot change from a carrier that may come back", () => {
+  for (const code of ["auth_revoked", "auth_failed", "auth_changed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
+    expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(true);
+  }
+  for (const code of ["timeout", "internal_error", "protocol_error", "resource_exhausted", "flow_control_error"] as const) {
+    expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(false);
+  }
+  expect(isFatalRelayError(new TypeError("Network offline"))).toBe(false);
 });
 
 it("reconnects on online and visible-page events and removes wake listeners on close", async () => {

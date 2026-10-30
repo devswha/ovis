@@ -228,8 +228,12 @@ export function fileInfo(path: string): FileInfo | null {
  * The one exception is a video or sound too large to put into it, which plays from
  * `mediaSource` (`PAGE_MEDIA_PATH`): that path answers only the addresses this render gave out,
  * and only to the client that rendered it.
+ * The hosted shell's render host (`/s/<id>/~render`, scripts/shell-build.ts) carries this same
+ * policy with no media source, as its Pages `_headers`; no hash or nonce is ever added to it,
+ * since a hash in `script-src` would make browsers ignore `'unsafe-inline'` and block the page's
+ * own inline scripts.
  */
-const pagePolicy = (mediaSource: string | null): string => [
+export const pagePolicy = (mediaSource: string | null): string => [
   "sandbox allow-scripts",
   "default-src 'none'",
   // nothing from the web either: the page holds its own folder's files (below), and a script that

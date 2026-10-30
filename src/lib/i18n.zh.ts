@@ -12,6 +12,7 @@ import { SETUP_ZH } from "./i18n/setup.zh.ts";
 import { GUIDE_ZH } from "./i18n/guide.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
+import { RELAY_ZH } from "./i18n/relay.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -305,6 +306,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "切换电脑",
+  "Forget this PC": "忘记这台电脑",
   "Selected": "已选择",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "未发送的文本",
@@ -349,6 +351,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   guide: GUIDE_ZH,
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
+  relay: RELAY_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

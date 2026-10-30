@@ -1,0 +1,161 @@
+/**
+ * Drives the hosted shell's screens (components/RelayShell.tsx) from the page's address to a
+ * connected PC, then hands the page to the app with the relay as its transport. Loaded only in
+ * shell mode and only after the offer has left the address (boot.ts), since it brings the
+ * cryptography and the mux with it.
+ */
+import { createElement, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import type { Root } from "react-dom/client";
+import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import { RelayShell } from "../../components/RelayShell.tsx";
+import { deviceLabel } from "../phone.ts";
+import { SettingsProvider } from "../settings.ts";
+import { setTransport } from "../transport.ts";
+import { takeEntryUrl } from "./boot.ts";
+import { RelayUnreachableError } from "./channel.ts";
+import { indexedDeviceStore } from "./device.ts";
+import type { RelayDeviceStore } from "./device.ts";
+import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
+import type { RelayShellState } from "./shellState.ts";
+import { openRelayTransport } from "./transport.ts";
+import type { RelayTransport } from "./transport.ts";
+
+export interface RelayShellMount {
+  container: HTMLElement;
+  /** the address the page loaded with, offer fragment included (boot.ts took it off the address bar) */
+  entryUrl: string;
+  /** mounts the app on the container once the transport is set; what it returns is unmounted should the PC turn this phone away later */
+  renderApp: () => Root;
+  store?: RelayDeviceStore;
+  open?: typeof openRelayTransport;
+  navigate?: (path: string) => void;
+  /** who this phone is, for a new pairing; the browser's user agent by default */
+  label?: string;
+}
+
+/** What a connection attempt was, for the screen a failure lands on (shellState.ts failureOf). */
+interface Attempt {
+  offer: RelayOffer;
+  code: boolean;
+  paired: boolean;
+}
+
+/** Settings' Forget this PC: the phone's key for the PC is gone; the PC lists the device until it is revoked there. */
+export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
+  await store.remove(serverId);
+}
+
+export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
+  const store = mount.store ?? indexedDeviceStore;
+  const open = mount.open ?? openRelayTransport;
+  const navigate = mount.navigate ?? ((path: string) => { window.location.assign(path); });
+  const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+  let entry = shellEntry(mount.entryUrl);
+  const scoped = entry.serverId !== null;
+  const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: (navigator as Navigator & { standalone?: boolean }).standalone });
+  let shell: Root | null = null;
+  let app: Root | null = null;
+  let transport: RelayTransport | null = null;
+  let last: Attempt | null = null;
+  let opening: AbortController | null = null;
+
+  const toFront = (): void => navigate("/");
+
+  const show = (state: RelayShellState): void => {
+    shell ??= createRoot(mount.container);
+    shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
+      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget }))));
+  };
+
+  const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
+    const failure = failureOf(error, { code: attempt.code, paired: attempt.paired });
+    if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
+    // the relay's close code is the one fact the sentence does not carry; a plain refusal adds nothing
+    const detail = error instanceof RelayUnreachableError && error.closeCode !== null ? error.message : null;
+    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail });
+  };
+
+  const connect = async (attempt: Attempt): Promise<void> => {
+    last = attempt;
+    opening?.abort();
+    const controller = new AbortController();
+    opening = controller;
+    show({ kind: "connecting", name: attempt.offer.name ?? null });
+    let opened: RelayTransport;
+    try {
+      opened = await open(attempt.offer, {
+        store, label, signal: controller.signal,
+        // the PC turned this phone away after it was in: the app goes, and the reason takes its place
+        onFatal: (error) => {
+          if (transport !== opened) return;
+          transport = null;
+          app?.unmount();
+          app = null;
+          void failed(error, { offer: attempt.offer, code: false, paired: true });
+        },
+      });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      await failed(error, attempt);
+      return;
+    }
+    if (controller.signal.aborted) { opened.close(); return; }
+    transport = opened;
+    setTransport(opened);
+    shell?.unmount();
+    shell = null;
+    app = mount.renderApp();
+  };
+
+  const pair = (): void => {
+    if (entry.offer === null) return;
+    void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false });
+  };
+
+  const retry = (): void => {
+    if (last !== null) void connect(last);
+  };
+
+  const cancel = (): void => {
+    opening?.abort();
+    opening = null;
+    toFront();
+  };
+
+  const forget = (): void => {
+    void (async () => {
+      if (entry.serverId !== null) await store.remove(entry.serverId);
+      if (entry.offer !== null) pair();
+      else show({ kind: "empty" });
+    })();
+  };
+
+  const arrived = (): boolean => {
+    if (entry.damaged) { show({ kind: "failed", failure: "bad-offer", name: null, detail: null }); return true; }
+    if (entry.offer !== null) { show({ kind: "confirm", offer: entry.offer }); return true; }
+    return false;
+  };
+
+  // a pairing link pasted into this tab while a screen is up changes only the fragment, which
+  // loads nothing: it is taken off the address and asked about like one the page loaded with
+  window.addEventListener("hashchange", () => {
+    if (app !== null || window.location.hash === "") return;
+    const next = shellEntry(takeEntryUrl(window));
+    if (next.offer === null && !next.damaged) return;
+    opening?.abort();
+    opening = null;
+    entry = next;
+    arrived();
+  });
+
+  if (arrived()) return;
+  if (entry.serverId !== null) {
+    const saved = await store.get(entry.serverId);
+    if (saved === undefined) show({ kind: "empty" });
+    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null });
+    return;
+  }
+  const devices = await store.list();
+  show(devices.length === 0 ? { kind: "empty" } : { kind: "list", devices });
+}
