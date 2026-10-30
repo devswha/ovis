@@ -463,7 +463,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if ((await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
     await inFront();
   }
-  async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
+  async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
     authorizePending(owner, paneId, lease);
     let { pane, identity: current, processes, held: holder, recognized } = await currentIdentity(paneId, identity?.processPid ?? null);
     // a Claude session known before and unknown now (its PID record or its job's state cannot be read) may be
@@ -507,7 +507,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
     }
     // the screen and card reads above awaited: what they were read for must still be in front
-    await stillInFront(paneId, current.processPid, identity ?? null);
+    await stillInFront(paneId, current.processPid, identity ?? null, agentOnly);
     authorizePending(owner, paneId, lease);
     const agentInFront = agentRuns(current, recognized);
     return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen, processes, held: holder, collapsed, agentInFront };
@@ -602,7 +602,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       }
       // fixed wait: the TUI takes the paste before its Enter, which arriving with it could read as a newline
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
-      let beforeEnter = await pendingContext(owner, paneId, lease, identity, true);
+      // a message for an agent alone whose agent is no longer in front by any check before its Enter (#511): the Enter is
+      // never sent, and the message stays as it was, refused like one that met a blocked agent
+      const enterRefused = (error: unknown): never => {
+        if (agentOnly && error instanceof HerdrError && [TARGET_CHANGED.code, AGENT_NOT_READY.code, "agent_blocked"].includes(error.code)) {
+          wrote = false;
+          throw new HerdrError("agent_blocked", "The agent this message was pasted for is no longer in front; its Enter was not sent");
+        }
+        throw error;
+      };
+      let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
       if (automatic && (beforeEnter.working || queueHeld(paneId))) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
       authorizePending(owner, paneId, lease);
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
@@ -610,13 +619,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const beforeCapturePid = beforeEnter.identity.processPid;
       const piAnchor = await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null);
       if (piAnchor !== undefined) {
-        beforeEnter = await pendingContext(owner, paneId, lease, identity, true);
+        beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
         if (automatic && (beforeEnter.working || queueHeld(paneId))) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
-        await stillInFront(paneId, beforeCapturePid, null, agentOnly);
+        await stillInFront(paneId, beforeCapturePid, null, agentOnly).catch(enterRefused);
       }
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
-      if (agentOnly && !beforeEnter.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
-      if (agentOnly && beforeEnter.collapsed) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+      if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
+      if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
       const steering = !automatic && beforeEnter.working;
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr

@@ -20,7 +20,7 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   let screen = "› Ask Codex to do anything\n";
   // `front`: what each later read of the pane's processes finds, as a process can exec another program in place
   const front = { now: foreground, next: [] as typeof foreground[] };
-  const count = { reads: 0, atPaste: -1 };
+  const count = { reads: 0, atPaste: -1, atEnter: -1 };
   spyOn(herdr, "paneProcessInfo").mockImplementation(async () => {
     count.reads++;
     const shown = front.next.shift() ?? front.now;
@@ -29,7 +29,7 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
   spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); if (afterPaste !== undefined) screen = afterPaste; });
-  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { writes.push(keys.join(",")); });
+  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
   owner.data.attached.set("p", { keepSize: false });
   const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: status, focused: false, revision: 0 };
@@ -153,4 +153,46 @@ it("types nothing when the last read before the paste finds a shell exec'd at Co
   await d.sendNow(2, held.pending.id);
   expect(d.writes).toEqual([]);
   expect(d.result("pending-result", 2)).toMatchObject({ ok: false });
+});
+
+/** A held agent-only message whose PID shows `after` from the `from`-th last process read before its Enter on: its result and writes. */
+async function replacedBeforeEnter(after: { pid: number; name: string }, from: number) {
+  const control = delivery({ pid: 41001, name: "codex" }, "idle");
+  await control.submit(1, "hold");
+  const start = control.count.reads;
+  await control.sendNow(2, (control.result("submit-result", 1) as unknown as { pending: { id: string } }).pending.id);
+  const reads = control.count.atEnter - start;
+  mock.restore();
+  const d = delivery({ pid: 41001, name: "codex" }, "idle");
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  d.front.next = Array.from({ length: reads - from }, () => ({ pid: 41001, name: "codex" }));
+  d.front.now = after;
+  await d.sendNow(2, held.pending.id);
+  return { writes: d.writes, answer: d.result("pending-result", 2) };
+}
+
+// the very last read before the Enter sees a shell at Codex's PID: no Enter, and the held message stays
+it("holds back the Enter when the last read before it finds a shell exec'd at Codex's PID", async () => {
+  const { writes, answer } = await replacedBeforeEnter({ pid: 41001, name: "bash" }, 1);
+  expect(writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~"]);
+  expect(answer).toMatchObject({ ok: false, code: "agent_blocked" });
+});
+
+// after the paste, Codex's PID runs another program that is no shell: only the agent check before Enter refuses it
+it("holds back the Enter when Codex's PID runs another program after the paste", async () => {
+  const { writes, answer } = await replacedBeforeEnter({ pid: 41001, name: "python3" }, 3);
+  expect(writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~"]);
+  expect(answer).toMatchObject({ ok: false, code: "agent_blocked" });
+});
+
+// at Send now another program that is no shell runs at Codex's PID: nothing at all is typed
+it("types nothing at Send now when Codex's PID already runs another program", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "idle");
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  d.front.now = { pid: 41001, name: "python3" };
+  await d.sendNow(2, held.pending.id);
+  expect(d.writes).toEqual([]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "agent_not_ready" });
 });
