@@ -151,7 +151,6 @@ export class RelayLink {
         publicKey: importPublicKey(this.options.identity.public_key),
         secretKey: importSecretKey(this.options.identity.secret_key),
       },
-      minimumMode: "protected",
       events: { onmessage: (data) => { if (!this.stopped) entry.session?.receive(data); } },
     }).then((channel) => {
       entry.cancelTimeout();

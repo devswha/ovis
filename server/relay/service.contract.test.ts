@@ -132,7 +132,7 @@ async function client(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer,
   const goaway = deferred<{ code: string; last_open_id: number; drain_ms: number }>();
   let mux: MuxEngine | undefined;
   const channel = await bounded(openClientSecureChannel(transport, {
-    daemonPublicKeyB64: offer.server_public_key, minimumMode: "protected",
+    daemonPublicKeyB64: offer.server_public_key,
     events: {
       onmessage: (data) => {
         if (typeof data === "string") throw new Error("Unencrypted application message");
