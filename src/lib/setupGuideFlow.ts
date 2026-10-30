@@ -19,7 +19,7 @@ export interface GuideState {
 export type GuideEvent = { type: "begin" };
 
 export const WELCOME: GuideState = { step: "welcome" };
-/** Settings → Agent integrations' Open setup guide opens the setup screen itself */
+/** Settings → Agents' Open setup guide opens the setup screen itself */
 export const REOPENED: GuideState = { step: "setup", reopened: true };
 
 export function guideStep(state: GuideState, event: GuideEvent): GuideState {

@@ -26,6 +26,10 @@ let socketBefore: string | undefined;
 let title: string | null;
 /** The pane's folders herdr reports. */
 let agentFolders: { cwd?: string; foreground_cwd?: string };
+/** The session herdr reports for the pane (agent.get), null for none. */
+let reportedSession: { source: string; agent: string; kind: string; value: string } | null;
+/** The answers to the pane's next process reads, in order (null: herdr gives no process_info); [foreground] once used up. */
+let processReads: ({ pid: number; name?: string; argv?: string[] }[] | null)[];
 const children: ReturnType<typeof Bun.spawn>[] = [];
 
 beforeEach(() => {
@@ -44,6 +48,8 @@ beforeEach(() => {
   screen = "";
   title = null;
   agentFolders = {};
+  reportedSession = null;
+  processReads = [];
   peerScreens = new Map();
   foreground = [];
   foregrounds = new Map();
@@ -63,9 +69,12 @@ beforeEach(() => {
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: peerScreen.message } })}\n`);
           return;
         }
-        const result = request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }) } }
-          : request.method === "pane.process_info" ? { process_info: { foreground_processes: foregrounds.get(request.params?.pane_id ?? "") ?? foreground } }
+        const own = request.method === "pane.process_info" && request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
+        const result = request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
+          : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
           : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
+          // the session as a background reader asks for it: this pane alone
+          : request.method === "session.snapshot" ? { snapshot: { panes: [{ pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0 }], workspaces: [], tabs: [], layouts: [], agents: [] } }
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
         socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -1623,4 +1632,154 @@ shortIt("finds a profile's short conversation after native completion footers", 
     + "› hi\n\n• Hi! What would you like to work on?\n\n  Worked for 1s • 11:11 AM\n\n"
     + "› hi\n\n• Hi again! How can I help?\n\n  Worked for 2s • 11:11 AM\n\n› Ask Codex to do anything";
   expect(await resolve()).toBe(path);
+});
+
+// --- what is not this pane's conversation: another conversation's prompts, a herdr report alone, a quote ---
+
+describe("another session's conversation is never shown for a plain Codex pane", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const shortReplies = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
+  /** This folder's thread (another pane's, A) and one of another folder this pane shows (B): the same short answers to other prompts. */
+  function sameAnswersOtherPrompts(): string {
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Build the release for the first fixture" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shortReplies[0] } },
+      { type: "event_msg", payload: { type: "user_message", message: "Now check the first fixture's branch" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shortReplies[1] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    otherFolderThread([
+      { type: "user_message", message: "Build the second fixture elsewhere" },
+      { type: "agent_message", message: shortReplies[0]! },
+      { type: "user_message", message: "And check that second fixture's branch" },
+      { type: "agent_message", message: shortReplies[1]! },
+    ]);
+    return `OpenAI Codex (v0.165.0)\n\n› Build the second fixture elsewhere\n\n• ${shortReplies[0]}\n\n› And check that second fixture's branch\n\n• ${shortReplies[1]}\n\n› `;
+  }
+
+  // the pane's process read live, absent, or absent between two live reads (#2420's review, H1)
+  for (const [name, reads] of [["live", [live]], ["absent", [null]], ["live, absent, live", [live, null, live]]] as const) {
+    it(`takes no short answers another conversation gave to the prompts the screen shows (process reads: ${name})`, async () => {
+      screen = sameAnswersOtherPrompts();
+      foreground = live;
+      processReads = [...reads];
+      expect(await resolve()).toBeNull();
+    });
+  }
+
+  it("takes no short answers given to prompts that differ from the shown ones only in punctuation", async () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check whether a < b for these inputs" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[0] } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check the branch named feature-one" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[1] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    otherFolderThread([
+      { type: "user_message", message: "Check whether a > b for these inputs" },
+      { type: "agent_message", message: replies[0]! },
+      { type: "user_message", message: "Check the branch named feature_one" },
+      { type: "agent_message", message: replies[1]! },
+    ]);
+    foreground = live;
+    screen = `OpenAI Codex (v0.165.0)\n\n› Check whether a > b for these inputs\n\n• ${replies[0]}\n\n› Check the branch named feature_one\n\n• ${replies[1]}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("still takes short answers below the prompts they answered", async () => {
+    foreground = live;
+    sameAnswersOtherPrompts();
+    screen = `OpenAI Codex (v0.165.0)\n\n› Build the release for the first fixture\n\n• ${shortReplies[0]}\n\n› Now check the first fixture's branch\n\n• ${shortReplies[1]}\n\n› `;
+    // B, of another folder, is no candidate here: only this folder's threads are weighed
+    expect(await resolve()).toBe(path);
+  });
+
+  // a herdr report may be stale or the shared daemon's (#2420's review, H2)
+  for (const kind of ["path", "id"] as const) {
+    it(`binds nothing by a reported ${kind} alone that began before this pane's Codex, while another Codex pane here may run it`, async () => {
+      // this pane's Codex started long after the reported thread began: a report an earlier Codex left, or another pane's
+      const started = spyOn(processStart, "processStartLowerBound").mockReturnValue(1_000_000);
+      const upper = spyOn(processStart, "processStartUpperBound").mockReturnValue(1_000_000);
+      try { await reportedAlone(kind); } finally { started.mockRestore(); upper.mockRestore(); }
+    });
+  }
+
+  async function reportedAlone(kind: "path" | "id"): Promise<void> {
+    {
+      foreground = live;
+      reportedSession = { source: "herdr:codex", agent: "codex", kind, value: kind === "path" ? path : thread };
+      peerScreens.set("peer", "");
+      const panes = [fixturePane(root), fixturePane("peer")];
+      expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+      expect(await codexOpenRollout(root, root, home)).toBeNull();
+      // its answer on this pane's screen tells, as for any pane
+      screen = `• ${answer}`;
+      expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+    }
+  }
+
+  it("takes the reported thread as the pane's fresh conversation only when nothing else could have begun it", async () => {
+    // this pane's Codex started at 1000 s; a peer's at 990 s or 1005 s
+    const starts = new Map([[900001, 1_000_000], [900002, 990_000], [900003, 1_005_000]]);
+    // the start read from below (peers) and from above (this pane) alike: the same instant here
+    const bound = spyOn(processStart, "processStartLowerBound").mockImplementation((pid) => starts.get(pid) ?? null);
+    const upper = spyOn(processStart, "processStartUpperBound").mockImplementation((pid) => starts.get(pid) ?? null);
+    const setCreated = (seconds: number) => {
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("UPDATE threads SET created_at = ?").run(seconds);
+      db.close();
+    };
+    try {
+      foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+      reportedSession = { source: "herdr:codex", agent: "codex", kind: "id", value: thread };
+      // begun as this Codex started, its first answer not on screen yet: the chat and the background reader take it
+      setCreated(1001);
+      expect(await resolve()).toBe(path);
+      expect(await codexOpenRollout(root, root, home)).toBe(path);
+      // begun before this Codex started: a report an earlier one left
+      setCreated(999);
+      expect(await resolve()).toBeNull();
+      expect(await codexOpenRollout(root, root, home)).toBeNull();
+      setCreated(1001);
+      // another Codex of this cwd was running when it began: it may be that pane's, reported here by the daemon
+      foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+      peerScreens.set("peer", "");
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+      // nor one started in the very second it began, which a store of whole seconds cannot tell apart
+      starts.set(900005, 1_001_290);
+      foregrounds.set("peer", [{ pid: 900005, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+      // one started after it began did not
+      foregrounds.set("peer", [{ pid: 900003, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+      // another Codex pane in another folder, running when it began: `codex -C` or a resume opens a thread of this one
+      foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))])).toBeNull();
+      // begun after the earliest this Codex may have started, but maybe before it did: an earlier Codex's
+      starts.set(900004, 1_000_500);
+      foreground = [{ pid: 900004, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => pid === 900004 ? 1_001_500 : starts.get(pid) ?? null);
+      expect(await resolve()).toBeNull();
+      foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => starts.get(pid) ?? null);
+      // nor after a newer thread of the cwd began (a /new)
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1002, 1002, 'cli')").run("01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root);
+      db.close();
+      expect(await resolve()).toBeNull();
+    } finally { bound.mockRestore(); upper.mockRestore(); }
+  });
+
+  it("takes no long answer the pane only quotes in a prompt (#2420's review, H3)", async () => {
+    foreground = live;
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain this quoted answer: ${answer}\n\n• Working (2s • esc to interrupt)\n\n› `;
+    expect(await resolve()).toBeNull();
+    // nor one typed into the input box
+    screen = `OpenAI Codex (v0.165.0)\n\n› ${answer}`;
+    expect(await resolve()).toBeNull();
+    // nor one in a message queued to be sent
+    screen = `OpenAI Codex (v0.165.0)\n\n• Working (2s • esc to interrupt)\n  ↳ Explain this quoted answer: ${answer}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
 });

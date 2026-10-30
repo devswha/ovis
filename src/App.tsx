@@ -234,7 +234,7 @@ export function App() {
   const handleServerMessage = useServerMessageHandler(setOutputStopped);
 
   const { enableNotifications, disableNotifications, repairNotifications } = useNotificationSwitch({ updateSettings, locked, notifications, setNotifications, alerts, alertsRef, alertsOn, setPushOn });
-  // the first-run setup guide: by itself once on a fresh install, again from Settings → Setup guide
+  // the first-run setup guide: by itself once on a fresh install, again from Settings → Agents' Setup guide
   const localSnapshot = machines.find((machine) => machine.id === "local")?.snapshot ?? null;
   const setupGuide = useSetupGuide({
     enabled: locked === false,

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Browser, BrowserContext } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions } from "playwright-core";
 import type { UsageReport } from "../shared/protocol.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
@@ -31,6 +31,16 @@ const report = (): UsageReport => ({
   ],
 });
 
+/**
+ * A context whose PC lists no agents: Settings → Agents then shows every account under Other accounts,
+ * as the staged report has them, whatever this machine has installed.
+ */
+async function usageContext(browser: Browser, options: BrowserContextOptions): Promise<BrowserContext> {
+  const context = await browser.newContext(options);
+  await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
+  return context;
+}
+
 /** a header the check puts on every request of the page it reloads: what that page asked for, whenever it is counted */
 const RELOADED = "x-usage-qa-reloaded";
 
@@ -48,7 +58,7 @@ async function staged(context: BrowserContext): Promise<{ asked: string[]; after
 }
 
 export async function checkUsageMeters(browser: Browser, origin: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  const context = await usageContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
     const { asked, afterReload } = await staged(context);
     const page = await context.newPage();
@@ -64,7 +74,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.equal(await strip.count(), 0);
     assert.deepEqual(asked, [], "no usage request before the user turns it on");
     await settingsButton.click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
     await toggle.click();
     await page.keyboard.press("Escape");
@@ -108,16 +118,16 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     // hidden from the strip, another moved up
     const names = () => page.locator(".usage-popover .usage-provider").evaluateAll((sections) => sections.map((section) => section.getAttribute("aria-label")));
     await settingsButton.click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     if (process.env.UI_EVIDENCE_DIR) {
-      await page.getByRole("tabpanel", { name: "Subscription usage", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-settings.png") });
+      await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-settings.png") });
     }
     await page.locator('.segmented[aria-label="Limit shown"]').getByRole("button", { name: "Weekly", exact: true }).click();
     await page.keyboard.press("Escape");
     assert.match(await strip.getAttribute("aria-label") ?? "", /^Subscription usage: Claude · me@example\.com 37% left, Codex · me@work\.example 9% left, Codex · me@example\.com 70% left,/);
     assert.equal(await page.locator(".usage-chip").nth(1).evaluate((chip) => chip.classList.contains("is-high")), true);
     await settingsButton.click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     // the moved order is shared: the page saves it to the server once the settings rest, and a check
     // run after this one on the same server must not have that save land in the middle of it
     const orderSaved = page.waitForResponse((response) => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/preferences"
@@ -141,7 +151,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
 
     // turned off in Settings: gone, and no longer asked for
     await settingsButton.click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     // The strip disappears before the shared preference's debounced save. Reload only once
     // the server has taken OFF, or its older ON value will turn usage back on during hydration.
     const usageOffSaved = page.waitForResponse((response) => response.request().method() === "PUT"
@@ -149,7 +159,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
       && response.request().postDataJSON()?.settings?.showUsage === false, { timeout: 10_000 });
     await toggle.click();
     await strip.waitFor({ state: "detached" });
-    assert.equal(await page.locator(".usage-accounts-intro .settings-note").count(), 1);
+    assert.equal(await page.locator("[data-section='other-accounts'] .settings-note").count(), 1);
     assert.equal(await page.locator(".usage-provider").count(), 0, "disabled meters leave no provider placeholders");
     await usageOffSaved;
     // a request Settings made before the switch can still be on its way here, so the count is of
@@ -182,7 +192,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
   // this phone's local ON value before its strip can be opened.
   const usageOn = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { showUsage: true } }) });
   assert.equal(usageOn.status, 200, "the phone's shared usage preference is enabled");
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "en-US" });
+  const phone = await usageContext(browser, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "en-US" });
   try {
     await staged(phone);
     await phone.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
@@ -200,13 +210,13 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     // Settings on the phone: every account row fits its card, controls included
     await page.keyboard.press("Escape");
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     const accounts = page.locator(".usage-accounts");
     await accounts.first().scrollIntoViewIfNeeded();
     assert.equal(await accounts.locator(".usage-accounts-row").count(), 7);
     assert.equal(await accounts.evaluateAll((cards) => cards.every((card) => [...card.querySelectorAll(".usage-accounts-row")].every((row) => row.scrollWidth <= row.clientWidth))), true, "each account row fits the phone");
     if (process.env.UI_EVIDENCE_DIR) {
-      await page.getByRole("tabpanel", { name: "Subscription usage", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-settings-phone.png") });
+      await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-settings-phone.png") });
     }
   } finally {
     await phone.close();
@@ -221,7 +231,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
  * is sent, and nothing reaches the test server's own home.
  */
 async function checkStatuslineSwitch(browser: Browser, origin: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  const context = await usageContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
     let installed = false;
     const posted: unknown[] = [];
@@ -248,7 +258,7 @@ async function checkStatuslineSwitch(browser: Browser, origin: string): Promise<
 
     await page.keyboard.press("Escape");
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     const statusline = page.getByRole("switch", { name: "Read Claude's limits from its status line", exact: true });
     await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Read Claude\'s limits from its status line"]')?.getAttribute("aria-checked") === "true");
     await statusline.click();
@@ -280,7 +290,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
   const reset = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { usageOrder: [] } }) });
   assert.equal(reset.status, 200, "the shared account order is cleared");
   for (const phone of [false, true]) {
-    const context = await browser.newContext({ viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, locale: "en-US", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
+    const context = await usageContext(browser, { viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, locale: "en-US", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
     try {
       const posted: unknown[] = [];
       const answers = [
@@ -322,7 +332,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
 
       await openDrawer();
       await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
-      await openSettingsPage(page, "Subscription usage");
+      await openSettingsPage(page, "Agents");
       const rows = page.locator(".usage-accounts-row");
       // the rows come with the usage report, loaded once the page is shown: count them once they are
       await rows.nth(3).waitFor();
@@ -342,7 +352,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
     }
   }
   // a watching device signs in to nothing: no button in either place, and the popover says how instead
-  const watching = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  const watching = await usageContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
     await watching.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
     await watching.route("**/api/health*", async (route) => {
@@ -360,7 +370,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
     assert.equal(await popover.locator(".usage-note.is-problem").first().textContent(), "Sign-in expired. Open Claude to renew it.");
     await page.keyboard.press("Escape");
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
-    await openSettingsPage(page, "Subscription usage");
+    await openSettingsPage(page, "Agents");
     await page.locator(".usage-accounts-row").nth(3).waitFor();
     assert.equal(await page.locator(".usage-accounts-row").count(), 4);
     assert.equal(await page.locator(".settings-dialog").getByRole("button", { name: /^Sign in again/ }).count(), 0, "no Sign in again in a watching device's Settings");

@@ -162,7 +162,7 @@ function Welcome({ dispatch, onClose, hidden }: Pick<SetupGuideProps, "dispatch"
             <ChevronRight aria-hidden="true" />
           </button>
         </div>
-        <p className="setup-note"><Info aria-hidden="true" />{t("You can open this again any time from Settings → Setup guide.")}</p>
+        <p className="setup-note"><Info aria-hidden="true" />{t("You can open this again any time from Settings → Agents.")}</p>
       </div>
     </div>
   );
