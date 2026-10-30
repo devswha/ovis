@@ -153,6 +153,27 @@ describe("CompletionTracker", () => {
     tracker.observe("resumed", "blocked", "claude");
     tracker.observe("resumed", "working", "claude");
     expect(tracker.observe("resumed", "idle", "claude")).toBe("done");
+
+    // straight from one program's work to another's idle: not a finish of either
+    tracker.observe("direct", "working", "codex");
+    expect(tracker.observe("direct", "idle", "claude")).toBe("idle");
+
+    // a report cleared while subscriptions moved is news on replay, and clears the finish
+    tracker.observe("replay", "working", "claude");
+    expect(tracker.observe("replay", "idle", "claude")).toBe("done");
+    expect(tracker.replayed("replay", "unknown", { before: "idle", agent: "claude" })).toBe(true);
+    expect(tracker.observe("replay", "unknown", "claude")).toBe("unknown");
+  });
+
+  it("on herdr-core, a resync after lost events finishes only the program that reported the work", () => {
+    const tracker = new CompletionTracker(null, () => null, () => true);
+    tracker.observe("same", "working", "claude");
+    tracker.observe("other", "working", "codex");
+    tracker.observe("cleared", "working", "claude");
+    tracker.resync([{ pane_id: "same", agent_status: "idle", agent: "claude" }, { pane_id: "other", agent_status: "idle", agent: "claude" }, { pane_id: "cleared", agent_status: "unknown", agent: "claude" }], new Set());
+    expect(tracker.observe("same", "idle", "claude")).toBe("done");
+    expect(tracker.observe("other", "idle", "claude")).toBe("idle");
+    expect(tracker.observe("cleared", "unknown", "claude")).toBe("unknown");
   });
 
   it("drops a derived finish when its agent leaves or another agent replaces it", () => {

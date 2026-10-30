@@ -163,6 +163,8 @@ export class CompletionTracker {
       this.observe(paneId, before.before, before.agent);
       return true;
     }
+    // reported only: every change is the program's own word, and a cleared report must clear its finish
+    if (this.reportedOnly() && status !== shown) return true;
     // a finish a browser's snapshot settled first is still one nobody was alerted of: it goes on, and stays DONE
     return busy(shown) || busy(status) || busy(before.before);
   }
@@ -181,8 +183,11 @@ export class CompletionTracker {
       const agent = pane.agent ?? null;
       // at rest now: the work known from before the loss is over, whoever is in the pane. `unknown`
       // under another agent's name would otherwise read as that work still going on
-      if (pane.agent_status !== "working" && pane.agent_status !== "blocked" && this.worked.delete(pane.pane_id) && agent !== null) {
-        this.finished.set(pane.pane_id, agent);
+      if (pane.agent_status !== "working" && pane.agent_status !== "blocked" && this.worked.has(pane.pane_id)) {
+        const worker = this.worked.get(pane.pane_id);
+        this.worked.delete(pane.pane_id);
+        // reported only: a finish is the same program's own working then idle
+        if (agent !== null && (!this.reportedOnly() || (pane.agent_status === "idle" && worker === agent))) this.finished.set(pane.pane_id, agent);
       }
       this.record(pane.pane_id, this.settle(pane.pane_id, pane.agent_status, agent), ++this.order);
     }
@@ -305,6 +310,8 @@ export class CompletionTracker {
         this.finished.delete(paneId);
         return status;
       case "idle":
+        // reported only: another program's idle is not the finish of the work this one reported
+        if (this.reportedOnly() && this.worked.has(paneId) && this.worked.get(paneId) !== agent) this.worked.delete(paneId);
         if (this.worked.delete(paneId)) this.finished.set(paneId, agent);
         return this.finished.has(paneId) ? "done" : status;
       default:
