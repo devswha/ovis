@@ -510,8 +510,8 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     expect(await resolve()).toBeNull();
     await loaded(other);
     expect(await resolve()).toBe(rollout);
-    // an answer with a time in parentheses is no status row
-    screen = `• ${otherAnswer} All tests passed (38s).`;
+    // a line with a time in parentheses below it is no status row (and the answer counts only whole)
+    screen = `• ${otherAnswer}\n• All tests passed (38s).`;
     expect(await resolve()).toBe(rollout);
     // nothing binds: a background reader is not told, and the screen is asked again each time,
     // as after /resume of another, older conversation in the same TUI (the old one stays loaded)
@@ -1856,6 +1856,23 @@ describe("another session's conversation is never shown for a plain Codex pane",
       screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
       expect([index, await resolve()]).toEqual([index, null]);
     }
+  });
+
+  it("takes no answer the screen shows with more at either end (#2430's review, H3)", async () => {
+    const said = "After carefully reviewing the requested configuration, the decisive offset is base and all remaining verification steps completed";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: said } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    for (const [index, shown] of [`${said}.`, `Briefly: ${said}`].entries()) {
+      foreground = [{ pid: 2147483580 - index, argv: ["/usr/bin/codex"] }];
+      screen = `OpenAI Codex (v0.165.0)\n\n› Check the configuration\n\n• ${shown}\n\n› `;
+      expect([shown, await resolve()]).toEqual([shown, null]);
+    }
+    foreground = [{ pid: 2147483578, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Review the configuration\n\n• ${said}\n\n› `;
+    expect(await resolve()).toBe(path);
   });
 
   it("takes no answer differing in a number or an operator, nor one quoted by consecutive running calls (#2430's review)", async () => {

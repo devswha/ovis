@@ -967,13 +967,33 @@ function answerAnchor(text: string): Anchor | null {
   });
   for (let index = pieces.length - 1; index >= 0; index--) {
     const anchor = normalizeDisplay(pieces[index]!).slice(-160);
-    if (anchor.length >= 64 && new Set(anchor).size >= 12) return { anchor, words: wordsEnding(pieces[index]!, anchor.length), marked: markedEnding(pieces[index]!, anchor.length) };
+    if (anchor.length >= 64 && new Set(anchor).size >= 12) {
+      // the whole answer, both ends: each piece exactly, a link's target in the parentheses Codex shows it in
+      const whole = new RegExp(`^${pieces.map((piece) => markedDisplay(piece).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\(.*\\)")}$`, "u");
+      return { anchor, words: wordsEnding(pieces[index]!, anchor.length), marked: markedEnding(pieces[index]!, anchor.length), whole };
+    }
   }
   return null;
 }
 
+/**
+ * A screen's answers, each as it would be compared whole: from a "•" (or "◦") line to the next one, or to
+ * a "─" rule Codex draws below a finished turn, without the bullet. An answer counts only as one such block.
+ */
+function shownBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  let open = false;
+  for (const line of text.split("\n")) {
+    if (/^[\u2022\u25e6]/.test(line)) { blocks.push(line.replace(/^[\u2022\u25e6]\s?/, "")); open = true; }
+    else if (/^\u2500/.test(line)) open = false;
+    else if (open) blocks[blocks.length - 1] += `\n${line}`;
+    else if (line.trim() !== "") { blocks.push(line); open = true; }
+  }
+  return blocks.map(markedDisplay);
+}
+
 /** `marked`: the anchor as markedDisplay reads it, symbols included, for a screen to show as well. */
-interface Anchor { anchor: string; words: string[]; marked: string }
+interface Anchor { anchor: string; words: string[]; marked: string; whole: RegExp }
 
 /** The end of a text as markedDisplay reads it that holds its last `letters` letters and digits. */
 function markedEnding(text: string, letters: number): string {
@@ -1010,8 +1030,8 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   const texts = blocks ? screen.split(/\n(?=\u2022)/)
     : [codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen).filter((part) => !part.prompt && !part.tool).map((part) => part.text).join("\n")];
   const displays = texts.map(normalizeDisplay);
-  // an answer differing from the one shown in a symbol that changes what it says is another's
-  const markedDisplays = texts.map(markedDisplay);
+  // an answer counts only shown whole, both ends, in one block: one more character either side is another answer
+  const shownAnswersWhole = texts.map(shownBlocks);
   const answersOf = (turns: ConversationTurn[]) => turns.filter((turn) => turn.role === "assistant")
     .flatMap((turn) => turn.parts).filter((part) => part.kind === "text").map((part) => part.text);
   const parsed = candidates.map((candidate) => parseCodexTranscript(candidate.text, Infinity));
@@ -1025,7 +1045,7 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   for (const [index, candidate] of candidates.entries()) {
     const anchors = answersOf(parsed[index]!.slice(-100)).slice(-8).map(answerAnchor)
       .filter((found): found is Anchor => found !== null
-        && displays.some((display, at) => display.includes(found.anchor) && markedDisplays[at]!.includes(found.marked)));
+        && displays.some((display, at) => display.includes(found.anchor) && shownAnswersWhole[at]!.some((block) => found.whole.test(block))));
     if (anchors.length === 0) continue;
     if (!scrutinized.has(candidate.path) || anchors.some((anchor) => !givenElsewhere(index, anchor))) matching.add(candidate.path);
     else open = true;
