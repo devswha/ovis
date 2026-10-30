@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -6,6 +6,7 @@ import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
+import { isSecureRequest, parseCookies } from "./auth.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
 import { withOwnerGuard } from "./owner-guard.ts";
@@ -75,6 +76,13 @@ type Holder = LoginHolder | Launch | PrivateHolder;
 interface PrivateLogin {
   readonly provider: PromptProvider;
   readonly owner: string;
+  /**
+   * The secret of the browser that started it, sent back only in its HttpOnly cookie: two browsers can share an
+   * owner (every browser signed in with the server's token is one), and an id alone reaches nothing.
+   */
+  readonly secret: string;
+  /** the browser stopped it: a home it made stays for that account's terminal sign-in, whatever the CLI wrote */
+  cancelled: boolean;
   /** its lock id in the shared file (PrivateHolder.launch) */
   readonly lock: string;
   /** settles once the CLI has exited and its home is free */
@@ -105,6 +113,9 @@ const PRIVATE_MAX_MS = 30 * 60_000;
 const PRIVATE_LEASE_MS = 30_000;
 /** the private logins running in this process, by lock id: every service in it (two servers) sees them */
 const liveLocks = new Set<string>();
+
+/** the cookie that carries one followed sign-in's secret; one per sign-in, so two dialogs never overwrite each other's */
+const signInCookie = (loginId: string): string => `ovis-sign-in-${loginId}`;
 
 /**
  * A pasted sign-in code: Claude's is `code#state`, both base64url. Nothing else is typed, so a code that
@@ -141,6 +152,17 @@ export class UsageLoginService {
    * holds its sign-in address or the code typed into it. Kept a while after the CLI exits, as ended.
    */
   private readonly privates = new Map<string, PrivateLogin>();
+  /** homes a cancelled followed sign-in made and left written: the terminal sign-in of that account takes them over */
+  private readonly handedOff = new Set<string>();
+
+  /** the login under this id, if this owner's browser holds its cookie */
+  private owned(id: string, request: Request, owner: string | null): PrivateLogin | undefined {
+    const login = this.privates.get(id);
+    if (login === undefined || login.owner !== owner) return undefined;
+    const sent = Buffer.from(parseCookies(request.headers.get("cookie")).get(signInCookie(id)) ?? "");
+    const secret = Buffer.from(login.secret);
+    return sent.length === secret.length && timingSafeEqual(sent, secret) ? login : undefined;
+  }
   private readonly endedListeners: (() => void)[] = [];
   private stopped = false;
 
@@ -198,8 +220,8 @@ export class UsageLoginService {
       if (readOnly) return jsonResponse({ error: { code: "forbidden", message: "A device that only watches cannot follow a sign-in" } }, 403);
       if (pathname.endsWith("/prompt")) {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
-        const login = this.privates.get(searchParams.get("login") ?? "");
-        if (login === undefined || login.owner !== owner) return gone();
+        const login = this.owned(searchParams.get("login") ?? "", request, owner);
+        if (login === undefined) return gone();
         if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
@@ -208,10 +230,11 @@ export class UsageLoginService {
       let body: unknown;
       try { body = await request.json(); } catch { return badRequest("invalid_json", "Request body must be JSON"); }
       const id = isJsonObject(body) && typeof body["login"] === "string" ? body["login"] : "";
-      const login = this.privates.get(id);
-      if (login === undefined || login.owner !== owner) return gone();
+      const login = this.owned(id, request, owner);
+      if (login === undefined) return gone();
       if (pathname.endsWith("/cancel")) {
         if (!login.ended) {
+          login.cancelled = true;
           login.proc.kill();
           // ended once it has exited: a second sign-in may take its home right after this answer
           await login.done;
@@ -250,7 +273,10 @@ export class UsageLoginService {
       if (login.madeHome !== null) {
         try { rmdirSync(login.madeHome); }
         catch (error) {
-          if (!(error instanceof Error && "code" in error && ["ENOTEMPTY", "EEXIST", "ENOENT"].includes(String(error.code)))) console.warn("Could not remove an unused sign-in credential home", error);
+          const written = error instanceof Error && "code" in error && ["ENOTEMPTY", "EEXIST"].includes(String(error.code));
+          // Claude sets its home up as it starts: stopped by the browser, that home is still the same new account's
+          if (written && login.cancelled) this.handedOff.add(login.madeHome);
+          else if (!(written || error instanceof Error && "code" in error && error.code === "ENOENT")) console.warn("Could not remove an unused sign-in credential home", error);
         }
       }
       for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
@@ -493,8 +519,9 @@ export class UsageLoginService {
         const credentialHome = join(this.home, `.${id}-${body["name"]}`);
         try { mkdirSync(credentialHome, { mode: 0o700 }); }
         catch (error) {
-          if (error instanceof Error && "code" in error && error.code === "EEXIST") return conflictResponse("account_exists", "That account name already has a credential home. Choose another name.");
-          throw error;
+          // a home only a cancelled sign-in of this name wrote is that account's still, not another's
+          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+          if (!this.handedOff.delete(credentialHome)) return conflictResponse("account_exists", "That account name already has a credential home. Choose another name.");
         }
         unusedCredentialHome = credentialHome;
         env[id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = credentialHome;
@@ -553,7 +580,8 @@ export class UsageLoginService {
           return conflictResponse("follow_unsupported", "This server cannot run a sign-in here. Use a terminal instead.");
         }
         const done = proc.exited.then(() => this.settle(loginId));
-        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", owner, lock, done, changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false });
+        const secret = randomUUID();
+        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", owner, secret, cancelled: false, lock, done, changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false });
         unusedCredentialHome = null;
         reserved = null;
         // a start whose answer never reached its browser (the dialog closed meanwhile) leaves no one to end it
@@ -562,7 +590,9 @@ export class UsageLoginService {
         void done.then(() => { clearTimeout(lease); clearTimeout(deadline); });
         // the browser that asked has gone: it would never see or end this sign-in
         if (request.signal.aborted) { proc.kill(); return conflictResponse("request_cancelled", "The sign-in request was cancelled"); }
-        return jsonResponse({ login_id: loginId, device_auth: device } satisfies UsageLoginFollowed);
+        const answer = jsonResponse({ login_id: loginId, device_auth: device } satisfies UsageLoginFollowed);
+        answer.headers.append("set-cookie", `${signInCookie(loginId)}=${secret}; Path=/api/usage/login; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(this.timing.maxMs / 1000)}${isSecureRequest(request) ? "; Secure" : ""}`);
+        return answer;
       }
       const snapshot = await sessionSnapshot();
       if (request.signal.aborted) return conflictResponse("request_cancelled", "The sign-in request was cancelled");

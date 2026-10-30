@@ -184,7 +184,9 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   const started = await response.json() as Record<string, unknown>;
   expect(started).not.toHaveProperty("pane_id");
   const login = started["login_id"] as string;
-  const prompt = async (): Promise<Record<string, unknown>> => await (await fetch(`http://127.0.0.1:${server.port}/api/usage/login/prompt?login=${login}`)).json() as Record<string, unknown>;
+  // the browser that started it sends back the cookie it was given
+  const signIn = { cookie: (response.headers.get("set-cookie") ?? "").split(";")[0]! };
+  const prompt = async (): Promise<Record<string, unknown>> => await (await fetch(`http://127.0.0.1:${server.port}/api/usage/login/prompt?login=${login}`, { headers: signIn })).json() as Record<string, unknown>;
   let shown: Record<string, unknown>;
   for (;;) {
     const changed = usageLogin.changed(login);
@@ -200,7 +202,7 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   const screens = await Promise.all(panes.map((pane) => herdr.paneRead({ paneId: pane.pane_id, source: "recent_unwrapped", lines: 500 }).then((read) => read.text, () => "")));
   expect(screens.filter((text) => text.includes(state!))).toEqual([]);
   // the code goes to the CLI itself, which signs in and ends
-  const sent = await fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ login, code: "fixture-code#fixture-state" }) });
+  const sent = await fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json", ...signIn }, body: JSON.stringify({ login, code: "fixture-code#fixture-state" }) });
   expect(sent.status).toBe(204);
   await loginEvent(usageLogin.settled(login));
   expect((await prompt())["ended"]).toBe(true);
@@ -231,6 +233,7 @@ it("binds prompt, code and cancel to the paired device even after another driver
     const response = await post("", owner, { provider: "claude", name: "owner-private", follow: true });
     expect(response.status).toBe(200);
     const { login_id: login } = await response.json() as { login_id: string };
+    const ownerBrowser = `${owner}; ${(response.headers.get("set-cookie") ?? "").split(";")[0]}`;
     const file = await fetch(`${base}/api/fs/file?path=${encodeURIComponent(join(stateDir, "usage-logins.json"))}`, { headers: headers(other) });
     expect(file.status).toBe(200);
     const saved = await file.text();
@@ -247,8 +250,33 @@ it("binds prompt, code and cancel to the paired device even after another driver
       expect((await post(endpoint, watcher, { login, code: "never-typed" })).status).toBe(403);
     }
     expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(watcher) })).status).toBe(403);
-    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(owner) })).status).toBe(200);
-    expect((await post("/cancel", owner, { login })).status).toBe(204);
+    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(ownerBrowser) })).status).toBe(200);
+    expect((await post("/cancel", ownerBrowser, { login })).status).toBe(204);
+  } finally {
+    await service.stopAll();
+    app.stop();
+  }
+});
+
+it("lets no other browser signed in with the server's token reach a sign-in, even with its id", async () => {
+  const stateDir = mkdtempSync(join(root, "token-state-"));
+  const service = new UsageLoginService(root, { PATH: bin }, ctx);
+  const app = createServer({ port: 0, stateDir, token: "fixture-only", machines: false, registerBridge: false,
+    sidecar: false, terminalAttach: false, usageLogin: service });
+  const base = `http://127.0.0.1:${app.port}`;
+  // two browsers, each with the server's token: to the server they are the same owner
+  const headers = (extra: Record<string, string> = {}) => ({ authorization: "Bearer fixture-only", origin: base, "content-type": "application/json", ...extra });
+  try {
+    const response = await fetch(`${base}/api/usage/login`, { method: "POST", headers: headers(), body: JSON.stringify({ provider: "claude", name: "token-private", follow: true }) });
+    expect(response.status).toBe(200);
+    const { login_id: login } = await response.json() as { login_id: string };
+    const starter = { cookie: (response.headers.get("set-cookie") ?? "").split(";")[0]! };
+    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers() })).status).toBe(404);
+    for (const endpoint of ["/code", "/cancel"]) {
+      expect((await fetch(`${base}/api/usage/login${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ login, code: "never-typed" }) })).status).toBe(404);
+    }
+    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(starter) })).status).toBe(200);
+    expect((await fetch(`${base}/api/usage/login/cancel`, { method: "POST", headers: headers(starter), body: JSON.stringify({ login }) })).status).toBe(204);
   } finally {
     await service.stopAll();
     app.stop();

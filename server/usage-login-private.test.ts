@@ -56,14 +56,26 @@ function noHerdr(): string[] {
   return asked;
 }
 
-const post = (service: UsageLoginService, path: string, body: unknown, owner = "device:a") =>
-  service.handlePrompt(new Request(`http://x/api/usage/login/${path}`, { method: "POST", body: JSON.stringify(body) }), false, owner);
-const read = (service: UsageLoginService, login: string, readOnly = false, owner = "device:a") =>
-  service.handlePrompt(new Request(`http://x/api/usage/login/prompt?login=${encodeURIComponent(login)}`), readOnly, owner);
+/** the cookie each started login set, sent back as the browser that started it does (undefined: that cookie; null: none) */
+const jar = new Map<string, string>();
+const cookieOf = (login: unknown, cookie: string | null | undefined): Record<string, string> => {
+  const sent = cookie === undefined ? jar.get(String(login)) : cookie;
+  return sent ? { cookie: sent } : {};
+};
+const post = (service: UsageLoginService, path: string, body: unknown, owner = "device:a", cookie?: string | null) =>
+  service.handlePrompt(new Request(`http://x/api/usage/login/${path}`, { method: "POST", headers: cookieOf((body as { login?: unknown }).login, cookie), body: JSON.stringify(body) }), false, owner);
+const read = (service: UsageLoginService, login: string, readOnly = false, owner = "device:a", cookie?: string | null) =>
+  service.handlePrompt(new Request(`http://x/api/usage/login/prompt?login=${encodeURIComponent(login)}`, { headers: cookieOf(login, cookie) }), readOnly, owner);
 
 async function start(service: UsageLoginService, body: Record<string, unknown>): Promise<Response> {
   services.add(service);
-  return service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ follow: true, ...body }) }), undefined, "device:a");
+  const response = await service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ follow: true, ...body }) }), undefined, "device:a");
+  const set = response.headers.get("set-cookie");
+  if (response.ok && set !== null) {
+    const { login_id: login } = (await response.clone().json()) as { login_id: string };
+    jar.set(login, set.split(";")[0]!);
+  }
+  return response;
 }
 
 async function within<T>(promise: Promise<T>): Promise<T> {
@@ -346,6 +358,40 @@ exec sleep 600
     const again = await start(service, { provider: "codex", name });
     expect(again.status).toBe(200);
     await post(service, "cancel", { login: ((await again.json()) as { login_id: string }).login_id });
+  });
+
+  it("reaches a sign-in only from the browser that started it, by a cookie no page script reads", async () => {
+    noHerdr();
+    const service = new UsageLoginService(root, { PATH: `${bin}:/usr/bin:/bin` });
+    const started = await start(service, { provider: "codex", name: `work-${++names}` });
+    const set = started.headers.get("set-cookie") ?? "";
+    expect(set).toMatch(/HttpOnly/);
+    expect(set).toMatch(/SameSite=Strict/);
+    expect(set).toMatch(/Path=\/api\/usage\/login/);
+    const { login_id: login } = (await started.json()) as { login_id: string };
+    // another browser signed in the same way (the server's token: the same owner) that knows the id
+    expect((await read(service, login, false, "device:a", null)).status).toBe(404);
+    expect((await read(service, login, false, "device:a", `${jar.get(login)!.split("=")[0]}=forged`)).status).toBe(404);
+    expect((await post(service, "code", { login, code: "abc" }, "device:a", null)).status).toBe(404);
+    expect((await post(service, "cancel", { login }, "device:a", null)).status).toBe(404);
+    expect((await read(service, login)).status).toBe(200);
+    expect((await post(service, "cancel", { login })).status).toBe(204);
+  });
+
+  it("hands the home a cancelled Claude sign-in set up to the terminal sign-in of the same account", async () => {
+    noHerdr();
+    const claudeBin = join(root, "claude-init-bin");
+    mkdirSync(claudeBin, { recursive: true });
+    // Claude writes its config into the new home as soon as it starts, before any sign-in
+    writeFileSync(join(claudeBin, "claude"), `#!/bin/sh\ncase "$*" in *--help*) echo "auth login"; exit 0;; esac\necho '{}' > "$CLAUDE_CONFIG_DIR/.claude.json"\ncat "${join(fixtures, "claude.pty")}"\nexec sleep 600\n`, { mode: 0o755 });
+    const service = new UsageLoginService(root, { PATH: `${claudeBin}:/usr/bin:/bin` });
+    const name = `init-${++names}`;
+    const { login_id: login } = (await (await start(service, { provider: "claude", name })).json()) as { login_id: string };
+    await promptWhen(service, login, (shown) => shown["url"] !== null);
+    expect((await post(service, "cancel", { login })).status).toBe(204);
+    const tab = await service.handle(new Request("http://x/api/usage/login", { method: "POST", body: JSON.stringify({ provider: "claude", name }) }), undefined, "device:a");
+    const answer = (await tab.json()) as { error?: { code?: string } };
+    expect(answer.error?.code).not.toBe("account_exists");
   });
 
   it("follows only Claude Code and Codex", async () => {
