@@ -44,6 +44,8 @@ class AdapterError extends Error {
 /** Ovis's subscription types that are status, not structure. */
 const STATUS_EVENT = "pane.agent_status_changed";
 const NOT_STRUCTURE = new Set([STATUS_EVENT, "pane.focused", "pane.output_matched"]);
+/** A status or layout notification must fit in 4 MiB, even across hc frames. */
+const EVENT_LINE_BYTES = 4 * 1024 * 1024;
 
 interface ConnectionState {
   read: (chunk: Uint8Array) => void;
@@ -335,31 +337,27 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         return;
     }
   };
-  let buffered = "";
-  const decoder = new TextDecoder();
   const end = () => {
     if (!socket.data.closed) socket.end();
   };
+  const read = makeLineReader(EVENT_LINE_BYTES, (line) => {
+    let message: unknown;
+    try { message = JSON.parse(line); } catch { end(); return; }
+    if (!isRecord(message)) return;
+    if (message["method"] === "missed") { end(); return; }
+    const params = message["params"];
+    if (message["method"] !== "event" || !isRecord(params) || typeof params["type"] !== "string") return;
+    onEvent({ type: params["type"], ...(typeof params["terminal"] === "string" ? { terminal: params["terminal"] } : {}), ...(isRecord(params["data"]) ? { data: params["data"] } : {}) });
+  }, () => {
+    socket.data.unsubscribe?.();
+    send(socket, `${JSON.stringify({ id: request.id, error: { code: "bad_frame", message: `hc event line exceeds ${EVENT_LINE_BYTES} bytes` } })}\n`, true);
+  });
   try {
     const { channel } = await hc.open("events.subscribe", {}, {
-      onData: (payload) => {
-        buffered += decoder.decode(payload, { stream: true });
-        for (let at = buffered.indexOf("\n"); at !== -1; at = buffered.indexOf("\n")) {
-          const line = buffered.slice(0, at).trim();
-          buffered = buffered.slice(at + 1);
-          if (!line) continue;
-          let message: unknown;
-          try { message = JSON.parse(line); } catch { end(); return; }
-          if (!isRecord(message)) continue;
-          if (message["method"] === "missed") { end(); return; }
-          const params = message["params"];
-          if (message["method"] !== "event" || !isRecord(params) || typeof params["type"] !== "string") continue;
-          onEvent({ type: params["type"], ...(typeof params["terminal"] === "string" ? { terminal: params["terminal"] } : {}), ...(isRecord(params["data"]) ? { data: params["data"] } : {}) });
-        }
-      },
+      onData: read,
       onClose: end,
     });
-    if (socket.data.closed) { channel.close(); return; }
+    if (socket.data.closed || socket.data.ending) { channel.close(); return; }
     socket.data.unsubscribe = () => channel.close();
     ack();
   } catch (error) {

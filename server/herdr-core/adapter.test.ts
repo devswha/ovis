@@ -46,7 +46,11 @@ class FakeCore implements HcTransport {
 
   /** A notification on a stream channel, as hc sends events. */
   notify(channel: number, method: string, params: Record<string, unknown>): void {
-    this.controller.enqueue(encodeFrame(channel, FRAME_DATA, `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`));
+    this.data(channel, `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  }
+
+  data(channel: number, text: string): void {
+    this.controller.enqueue(encodeFrame(channel, FRAME_DATA, text));
   }
 
   channel(): number {
@@ -184,4 +188,35 @@ describe("herdr-core adapter", () => {
     expect(snapshot.panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
     expect(cores.length).toBe(2);
   });
+
+  for (const newline of ["", "\n"]) {
+    it(`closes an oversized event line across frames ${newline ? "with" : "without"} a newline with an error`, async () => {
+      let channel = 0;
+      const { socket, cores } = setup([terminal("t1")], {
+        "events.subscribe": () => {
+          channel = cores.at(-1)!.channel();
+          return { channel, seq: 1, terminals: [] };
+        },
+      });
+      const started = Promise.withResolvers<void>();
+      const ended = Promise.withResolvers<void>();
+      const errors: Error[] = [];
+      const frames: EventFrame[] = [];
+      const subscription = subscribeEvents([{ type: "pane.created" }], {
+        onStarted: () => started.resolve(),
+        onClose: () => ended.resolve(),
+        onError: (error) => errors.push(error),
+        onEvent: (event) => frames.push(event),
+      }, socket);
+      cleanups.push(() => subscription.close());
+      await started.promise;
+      const core = cores[0]!;
+      core.data(channel, " ".repeat(3 * 1024 * 1024));
+      core.data(channel, " ".repeat(1024 * 1024 + 1) + newline);
+      await ended.promise;
+      expect(errors.map((error) => error instanceof HerdrError ? error.code : error.name)).toEqual(["bad_frame"]);
+      expect(frames).toEqual([]);
+      expect(core.closed).toEqual([channel]);
+    });
+  }
 });
