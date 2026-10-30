@@ -5,7 +5,8 @@
  * its own `readDeviceRegistry` reads the relay-device registry this commit's DeviceStore writes
  * (a phone paired by a newer PC survives a downgrade), then the relay end-to-end run
  * (scripts/relay-e2e-regression.ts) drives this shell against that tree's server, named in
- * RELAY_E2E_SERVER_DIR. A tag that does not exist or predates the relay is skipped with a notice.
+ * RELAY_E2E_SERVER_DIR. A tag that does not exist or predates the relay is skipped with a notice,
+ * and so is every tag while this commit has no relay end-to-end run to drive. Anything else fails.
  *
  *   bun scripts/relay-skew.ts
  */
@@ -17,7 +18,7 @@ import { DeviceStore, readDeviceRegistry } from "../server/devices.ts";
 import { MIN_SERVER_VERSION } from "../shared/relay-mux.ts";
 import { compareVersions, parseVersion } from "../src/lib/relay/skew.ts";
 
-const repo = join(import.meta.dir, "..");
+const checkout = join(import.meta.dir, "..");
 const E2E = "scripts/relay-e2e-regression.ts";
 
 /** The tags to run against: the minimum's, then the latest release, each once. Only `vX.Y.Z` tags are releases. */
@@ -42,12 +43,12 @@ export async function registryFixture(dir: string): Promise<string> {
   return path;
 }
 
-async function hasRelay(tag: string): Promise<boolean | null> {
+async function hasRelay(repo: string, tag: string): Promise<boolean | null> {
   if ((await $`git rev-parse -q --verify ${`refs/tags/${tag}`}`.cwd(repo).quiet().nothrow()).exitCode !== 0) return null;
   return (await $`git cat-file -e ${`${tag}:server/relay`}`.cwd(repo).quiet().nothrow()).exitCode === 0;
 }
 
-export async function against(tag: string, registry: string, root: string): Promise<void> {
+export async function against(tag: string, registry: string, root: string, repo = checkout): Promise<void> {
   const tree = join(root, tag);
   await $`git worktree add --detach ${tree} ${tag}`.cwd(repo).quiet();
   try {
@@ -57,14 +58,14 @@ export async function against(tag: string, registry: string, root: string): Prom
       if (registry.kind !== "ok" || !registry.devices.some((device) => device.relay_public_key)) { console.error(JSON.stringify(registry)); process.exit(1); }
       console.log("${tag} reads the relay-device registry: " + registry.devices.length + " device(s)");`;
     await $`bun -e ${read}`.cwd(tree);
-    if (!existsSync(join(repo, E2E))) throw new Error(`${tag} holds server/relay/, but ${E2E} is missing: the skew run has nothing to drive`);
     await $`bun ${E2E}`.cwd(repo).env({ ...process.env, RELAY_E2E_SERVER_DIR: tree });
   } finally {
     await $`git worktree remove --force ${tree}`.cwd(repo).quiet().nothrow();
   }
 }
 
-async function main(): Promise<void> {
+/** `repo`: the checkout whose shell is driven; tests point it at a scratch repository. */
+export async function main(repo = checkout): Promise<void> {
   // the pattern goes as an argument: unquoted, Bun's shell would glob it against the checkout's files
   const tags = (await $`git tag -l ${"v*"}`.cwd(repo).text()).split("\n").filter(Boolean);
   if (tags.length === 0) throw new Error("no v* tags: check out with fetch-depth 0 so the release tags come along");
@@ -74,11 +75,13 @@ async function main(): Promise<void> {
     const registry = await registryFixture(root);
     let built = false;
     for (const tag of targets) {
-      const relay = await hasRelay(tag);
+      const relay = await hasRelay(repo, tag);
       if (relay === null) { notice(`${tag} does not exist yet: skipped`); continue; }
       if (!relay) { notice(`${tag} has no server/relay/: skipped`); continue; }
+      // a release can hold server/relay/ before this branch has the e2e run: nothing to drive yet
+      if (!existsSync(join(repo, E2E))) { notice(`${tag} holds server/relay/, but ${E2E} does not exist yet: skipped`); continue; }
       if (!built) { await $`bun run build && bun run build:shell`.cwd(repo); built = true; }
-      await against(tag, registry, root);
+      await against(tag, registry, root, repo);
       console.log(`relay-skew: ${tag} passed`);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
