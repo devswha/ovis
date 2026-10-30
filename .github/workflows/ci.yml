@@ -428,7 +428,10 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - name: Pinned ffmpeg for the relay media run
         if: needs.changes.outputs.draft != 'true'
-        run: echo "FFMPEG=$(bash scripts/ci-ffmpeg.sh)" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          ffmpeg="$(bash scripts/ci-ffmpeg.sh)"
+          echo "FFMPEG=$ffmpeg" >> "$GITHUB_ENV"
       - name: Browser regression (parallel)
         if: needs.changes.outputs.draft != 'true'
         env:

@@ -111,6 +111,30 @@ const rows = (text: string) => [...text.matchAll(/^(scripts\/\S+)\s+(\d+)\s+(\d+
 }));
 
 describe("browser lane", () => {
+  it("fails each workflow ffmpeg step when the pinned binary cannot be fetched", async () => {
+    const workflow = Bun.YAML.parse(readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8")) as {
+      jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+    };
+    const steps = Object.values(workflow.jobs).flatMap((job) => job.steps)
+      .filter((step) => step.name === "Pinned ffmpeg for the relay media run");
+    // the browser lane's; the relay-skew job, which had the other, returns once a release holds server/relay/
+    expect(steps).toHaveLength(1);
+    for (const step of steps) {
+      const dir = mkdtempSync(join(tmpdir(), "hwc-ffmpeg-step-"));
+      try {
+        const githubEnv = join(dir, "env");
+        const child = Bun.spawn(["bash", "-e", "-c", `bash() { return 1; }\n${step.run}`], {
+          cwd: dir, env: { ...inheritedEnv(), GITHUB_ENV: githubEnv },
+          stdout: "ignore", stderr: "ignore",
+        });
+        expect(await child.exited).toBe(1);
+        expect(existsSync(githubEnv)).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("summarizes passing and failing scripts and stops at the original exit code", async () => {
     const { text, code } = await lane("scripts/sticky-modifiers-regression.ts");
     expect(code).toBe(7);
@@ -145,19 +169,6 @@ describe("browser lane", () => {
     expect(text).toMatch(/^\[\d{4}-\d\d-\d\dT[^\]]+\] SERVER listening on http:\/\/127\.0\.0\.1:3000$/m);
     expect(text).toMatch(/^PASS stubbed browser step$/m);
     expect(text).toMatch(/^FAIL stubbed browser marker$/m);
-  }, LANE_TEST_MS);
-
-  it("ignores FFMPEG set in the parent environment", async () => {
-    const previous = process.env.FFMPEG;
-    process.env.FFMPEG = "/bin/false";
-    try {
-      const { text, code } = await lane();
-      expect(code).toBe(0);
-      expect(rows(text).every((row) => row.code === 0)).toBe(true);
-    } finally {
-      if (previous === undefined) delete process.env.FFMPEG;
-      else process.env.FFMPEG = previous;
-    }
   }, LANE_TEST_MS);
 
   it("keeps only cheap existing screenshots when CHECK_DIR is set", async () => {
