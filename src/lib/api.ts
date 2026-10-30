@@ -28,6 +28,7 @@ import type {
   TabMoved,
   TabMovedToWorkspace,
   OmoActivity,
+  ClaudeArtifact,
   PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
   PairedDevice,
@@ -71,7 +72,7 @@ import type {
   SwapPaneRequest,
   TabCreated,
   UpdateInstallRequest,
-  UsageReport,
+  StatuslineState, UsageReport,
   WorkspaceCreated,
   PluginActionRequest,
   PluginActionResult,
@@ -92,7 +93,7 @@ import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
 import { movingHerdrFocus } from "./followFocus.ts";
-import type { UsageLoginAccounts, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
+import type { UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
   return getJson("/api/usage/login", { signal });
@@ -102,9 +103,39 @@ export function fetchUsageLoginAccounts(provider: string, signal: AbortSignal): 
   return getJson(`/api/usage/login?provider=${encodeURIComponent(provider)}`, { signal });
 }
 
-export function startUsageLogin(request: UsageLoginRequest): Promise<UsageLoginStarted> {
+/** Starts a Claude Code or Codex sign-in the browser follows: it runs in the server's own PTY, reached by its id. */
+export function followUsageLogin(request: Extract<UsageLoginRequest, { provider: "claude" | "codex" }>, signal: AbortSignal): Promise<UsageLoginFollowed> {
+  return getJson<UsageLoginFollowed>("/api/usage/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...request, follow: true }),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+  });
+}
+
+/** What a followed sign-in asks of its user now: the page to open, the code to enter, a code box. */
+export function fetchUsageLoginPrompt(login: string, signal: AbortSignal): Promise<UsageLoginPrompt> {
+  return getJson(`/api/usage/login/prompt?login=${encodeURIComponent(login)}`, { signal, cache: "no-store" });
+}
+
+/** Types the code a sign-in page showed into that sign-in's CLI, then Enter. */
+export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void> {
+  await sendJson("/api/usage/login/code", "POST", request);
+}
+
+/**
+ * Stops a followed sign-in's CLI; settles once the server has stopped it and freed its home. Sent as the page
+ * may be leaving, so it outlives the page. A handoff must see a failure rather than start beside it.
+ */
+export async function cancelUsageLogin(login: string): Promise<void> {
+  const url = "/api/usage/login/cancel";
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ login }), keepalive: true });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+export function startUsageLogin(request: UsageLoginRequest, signal?: AbortSignal): Promise<UsageLoginStarted> {
+  // a request the asker gave up on opens no tab (the server checks before it does)
+  const timeout = AbortSignal.timeout(30_000);
   return getJson<UsageLoginStarted>("/api/usage/login", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), signal: AbortSignal.timeout(30_000),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
 }
 
@@ -116,6 +147,16 @@ export function fetchRemoteAccess(): Promise<RemoteAccess> {
 /** The sidebar's plan meters; `refresh` asks the providers again instead of the server's recent answer. */
 export function fetchUsage(refresh = false): Promise<UsageReport> {
   return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
+}
+
+/** Settings → Agents' plan limits: whether Claude's limits are read from its status line on the server's PC. */
+export function fetchStatusline(): Promise<StatuslineState> {
+  return getJson<StatuslineState>("/api/usage/statusline", { cache: "no-store" });
+}
+
+/** Turns that on or off; the server decides what it installs and where, so only the switch is sent. */
+export async function setStatusline(enabled: boolean): Promise<StatuslineState> {
+  return await (await sendJson("/api/usage/statusline", "POST", { enabled })).json() as StatuslineState;
 }
 
 /** Local server's CLIProxyAPI controls; secrets are only ever sent, never read back. */
@@ -866,6 +907,10 @@ export async function openWorktree(request: OpenWorktreeRequest, machineId = "lo
 /**
  * GET /api/sessions/history: the earlier sessions of `agent` in the workspace's folder, newest first;
  * never cached. `paneId` is the pane the list was asked for from: Claude's are that pane's store's.
+ * Pi reads refused by their deadline, reader limit or a changed transcript throw ApiError 503
+ * `session_history_busy` (with retryAfterMs). The dialog retries while keeping its loading state,
+ * then offers Retry, never incomplete rows. The server reuses only stat-keyed completed labels,
+ * never an unfinished scan.
  */
 export function fetchSessionHistory(workspaceId: string, agent: SessionHistoryAgent, machineId = "local", paneId: string | null = null): Promise<SessionHistoryResponse> {
   const query = new URLSearchParams({ workspace_id: workspaceId, agent, ...(paneId === null ? {} : { pane_id: paneId }) });
@@ -975,6 +1020,11 @@ export async function fetchPaneOmoActivity(paneId: string, machineId = "local"):
 export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
   const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
   return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
+}
+
+/** GET /api/pane/artifacts: the pages the pane's Claude Code session published, newest first. */
+export async function fetchPaneArtifacts(paneId: string, machineId = "local"): Promise<ClaudeArtifact[]> {
+  return (await getJson<{ artifacts: ClaudeArtifact[] }>(machinePath(machineId, `pane/artifacts?pane_id=${encodeURIComponent(paneId)}`))).artifacts;
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */

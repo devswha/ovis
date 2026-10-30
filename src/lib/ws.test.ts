@@ -2161,3 +2161,27 @@ it("an observing connection and a liveness probe never carry an insert", async (
     expect(await result).toEqual({ ok: true });
   } finally { client.close(); }
 });
+
+// #511: a message for an agent alone goes only to a bridge that refuses it where no agent runs
+it("refuses an agent-only message on a bridge without agent-only, and names it where the bridge has it", async () => {
+  for (const features of [["submit"], ["submit", "agent-only"]]) {
+    const client = new HerdrSocket("ws://test/ws");
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    socket.receive(snapshot(features));
+    try {
+      if (!features.includes("agent-only")) {
+        expect(await client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true))
+          .toMatchObject({ ok: false, code: "agent_only_unsupported" });
+        expect(submissions(socket)).toEqual([]);
+      } else {
+        const next = socket.nextSubmission();
+        void client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true);
+        expect(await next).toMatchObject({ type: "submit", agent_only: true });
+      }
+    } finally {
+      client.close();
+    }
+  }
+});
