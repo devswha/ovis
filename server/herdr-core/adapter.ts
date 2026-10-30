@@ -169,6 +169,8 @@ const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent
  * agent's name and plain arguments (nu does not).
  */
 const SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+/** The flags a plain interactive shell may be started with; anything else (`-c`) runs a program in it. */
+const SHELL_FLAGS = new Set(["-l", "--login", "-i"]);
 
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
@@ -331,10 +333,16 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       // pane's input turn is held for the typing only, so nothing typed after waits on the start.
       await inTurn(paneId, async () => {
         const ready = await terminal(paneId);
-        // the terminal's own program must be a shell, and still one in front: one the app started as a
-        // program (`claude`) is in front of itself too, and `exec claude` keeps the shell's pid
+        // the terminal's own program must be a plain shell: one the app started as a program (`claude`)
+        // is in front of itself too, and `sh -c claude` (a template, a line) runs it under dash's pid.
+        // Such a pane never takes a start: no retry
+        const own = ready.argv ?? [];
+        if (!SHELL.test(own[0] ?? "") || !own.slice(1).every((arg) => SHELL_FLAGS.has(arg))) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} runs no shell of its own to start an agent in`);
+        // fish reads a backslash inside single quotes as an escape: the argument would change
+        if (/(?:^|\/)-?fish$/u.test(own[0]!) && args.some((arg) => arg.includes("\\"))) throw new AdapterError("invalid_params", "fish would read a backslash in an argument differently");
+        // and that shell in front now: a program it runs, or one it `exec`ed (same pid), would take the line
         const front = ready.foreground;
-        if (!ready.pid || front?.pid !== ready.pid || !SHELL.test(ready.argv?.[0] ?? "") || !SHELL.test(front.argv?.[0] ?? front.name)) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+        if (!ready.pid || front?.pid !== ready.pid || !SHELL.test(front.argv?.[0] ?? front.name)) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
         // Ctrl-U first: a line someone left half typed is cleared, not run with the command after it
         await type(paneId, `\u0015${shellCommandLine("posix", command, args)}\r`);
       });

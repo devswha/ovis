@@ -125,7 +125,8 @@ interface Group { id: string; label: string; folder?: string; tabs: { id: string
 /**
  * The app's spaces and tabs over the live terminals. A name the user gave wins; an unnamed space
  * or tab reads as the app labels its terminals (`where`: `<space> / <tab>`), and failing that as
- * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped.
+ * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped; one
+ * with no live terminal stays a place for a labeled terminal and shows only once it holds one.
  */
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   const live = new Map(terminals.filter((terminal) => terminal.state === "live").map((terminal) => [terminal.address, terminal]));
