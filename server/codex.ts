@@ -922,14 +922,17 @@ const promptKey = (text: string): string => text.normalize("NFKC").replace(/^\s*
 /**
  * A text as its letters, digits and punctuation, as a screen shows an answer: without what markdown
  * marks it with and Codex renders its own way, so only what changes what it says is left (`a < b` is
- * not `a > b`, `a != b` not `a = b`, `feature-one` not `feature_one`). Gone are the markers a line
- * starts with (a list's, a quote's, a heading's), a table's rule rows, runs of a symbol drawing rules
- * or emphasis (`---`, `__`), an underscore that opens or closes emphasis (`_word_`), and the symbols
- * of code, emphasis, links, tables, escapes and entities.
+ * not `a > b`, `a != b` not `a = b`, `feature-one` not `feature_one`). Gone are a table's rule rows,
+ * the brackets of an autolink, a run of `-`, `+`, `*`, `>` or `#` standing alone between spaces (a
+ * list's, a quote's or a heading's marker, or a spaced dash: Codex may wrap a line before one, so a
+ * line's start tells nothing), runs of a symbol drawing rules or emphasis (`---`, `__`), an underscore
+ * that opens or closes emphasis (`_word_`), and the symbols of code, emphasis, links, tables, escapes
+ * and entities.
  */
 const markedDisplay = (text: string): string => text.normalize("NFKC")
   .replace(/^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/gm, "")
-  .replace(/^[ \t]*(?:[-*+]|>+|#{1,6}|\d+[.)])[ \t]+/gm, "")
+  .replace(/<((?:https?|mailto):[^\s<>]+)>/g, "$1")
+  .replace(/(^|\s)[-+*>#]+(?=\s|$)/g, "$1")
   .replace(/([-=_])\1+/g, "")
   .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, "$1")
   .replace(/[\s\x60*[\]|~\\&\u2022\u2502\u2514\u251c\u2500]/gu, "");
@@ -938,22 +941,34 @@ const markedDisplay = (text: string): string => text.normalize("NFKC")
  * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
  * "›", a prompt sent or the input box, or an indented "↳", a message queued to be sent), each tool
  * call Codex shows (a "•" line it starts with what it did, "Ran", "Called", "Explored", "Searched",
- * "Waited", or what it is doing, "Running" and so on) and each tool's output (an indented "└"), with
- * the indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor
- * a tool's call or output is evidence of the conversation shown: any may quote any conversation's answer.
+ * "Waited", and draws what follows with "│" or "└"; or with what it is doing, "Running" and so on,
+ * just above its working status) and each tool's output (an indented "└"), with the indented and
+ * blank lines each wraps onto, and the stretches between them. Neither a prompt nor a tool's call or
+ * output is evidence of the conversation shown: any may quote any conversation's answer. An answer
+ * that only starts with such a word is not drawn that way, and stays an answer.
  */
 function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text: string }[] {
+  const lines = screen.split("\n");
+  const calls = new Set<number>();
+  lines.forEach((line, at) => {
+    const verb = /^\u2022 (Ran|Called|Explored|Searched|Waited|Running|Calling|Exploring|Searching|Waiting)(?:\s|$)/.exec(line)?.[1];
+    if (verb === undefined) return;
+    let end = at + 1;
+    let drawn = false;
+    for (; end < lines.length && /^(?:\s|$)/.test(lines[end]!); end++) drawn ||= /^\s+[\u2502\u2514](?:\s|$)/.test(lines[end]!);
+    const next = lines.slice(end).find((after) => after.trim() !== "");
+    if (drawn || (verb.endsWith("ing") && next !== undefined && STATUS_ROW.test(next.trimEnd()))) calls.add(at);
+  });
   const parts: { prompt: boolean; tool?: true; text: string }[] = [];
-  for (const line of screen.split("\n")) {
+  lines.forEach((line, at) => {
     const last = parts.at(-1);
     const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
-    const tool = !prompt && (/^\s+\u2514(?:\s|$)/.test(line)
-      || /^\u2022 (?:Ran|Running|Called|Calling|Explored|Exploring|Searched|Searching|Waited|Waiting)(?:\s|$)/.test(line));
+    const tool = !prompt && (calls.has(at) || /^\s+\u2514(?:\s|$)/.test(line));
     if (prompt || tool) parts.push({ prompt, ...(tool ? { tool } : {}), text: line });
     else if (last !== undefined && (last.prompt || last.tool) && /^(?:\s|$)/.test(line)) last.text += `\n${line}`;
     else if (last !== undefined && !last.prompt && !last.tool) last.text += `\n${line}`;
     else parts.push({ prompt: false, text: line });
-  }
+  });
   return parts;
 }
 
@@ -2134,7 +2149,8 @@ async function codexProcessesOf(paneId: string): Promise<{ list: { pid: number; 
     })
     .filter(({ argv = [] }) => {
       const executable = argv[0] ?? "";
-      const codex = /(?:^|[\\/])codex(?:\.js|\.exe|\.opencodex-real)?$/;
+      // also a release binary named for its target, and any letter case of Windows' file names
+      const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
       if (codex.test(executable)) return true;
       // `node codex.js` and shell shebangs name the script after the interpreter and its
       // `--flag` options (`node --no-warnings codex.js`). Only options known to take no

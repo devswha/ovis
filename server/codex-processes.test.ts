@@ -1821,6 +1821,38 @@ describe("another session's conversation is never shown for a plain Codex pane",
     expect(await resolve()).toBe(path);
   });
 
+  it("still reads a long answer however the screen wraps it, or whatever word it starts with", async () => {
+    const cases = [
+      // a wrap before a spaced dash, a year, a plus
+      ["The release notes list every change since the last tag - including the migration of the legacy records and the new reports.", "The release notes list every change since the last tag\n  - including the migration of the legacy records and the new reports."],
+      ["The migration of the legacy records finished early in 2026. After that every report used the new schema and passed its checks.", "The migration of the legacy records finished early in\n  2026. After that every report used the new schema and passed its checks."],
+      ["The two configurations differ in one setting + the timeout, which the new release raises for every slow report it builds.", "The two configurations differ in one setting\n  + the timeout, which the new release raises for every slow report it builds."],
+      // an answer that starts with a word a tool call also starts with
+      ["Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe.", "Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe."],
+      ["Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports.", "Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports."],
+      // an autolink, which Codex shows without its brackets
+      ["The migration guide is published at <https://example.com/migration> and covers every legacy record the reports still read.", "The migration guide is published at https://example.com/migration and covers every legacy record the reports still read."],
+    ] as const;
+    for (const [index, [said, shown]] of cases.entries()) {
+      foreground = [{ pid: 2147483630 - index, argv: ["/usr/bin/codex"] }];
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Summarize the release" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
+      expect([index, await resolve()]).toEqual([index, path]);
+    }
+  });
+
+  it("knows Codex by its release binary's name and a Windows file name in any case", async () => {
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain the selection\n\n• ${answer}\n\n› `;
+    for (const [index, executable] of ["/opt/codex/codex-x86_64-unknown-linux-musl", "C:\\Tools\\Codex.exe"].entries()) {
+      foreground = [{ pid: 2147483620 - index, argv: [executable] }];
+      expect([executable, await resolve()]).toEqual([executable, path]);
+    }
+  });
+
   it("takes no long answer a tool call's command quotes", async () => {
     foreground = live;
     for (const shown of [
