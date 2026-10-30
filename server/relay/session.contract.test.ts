@@ -6,7 +6,7 @@ import { encodeFrame, FrameType, LIMITS_V1 } from "../../shared/relay-mux.ts";
 import { MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { MachineEvent } from "../../shared/machines.ts";
 import { handleRequest } from "../dispatch.ts";
-import { readDeviceRegistry } from "../devices.ts";
+import { PairingRateLimitedError, readDeviceRegistry } from "../devices.ts";
 import { machineEventsClock, machineEventsQueuedBytes } from "../machine-api.ts";
 import { relayHeaders, RELAY_ORIGIN } from "./session.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
@@ -299,6 +299,44 @@ it("pairs with a valid code and stores the relay public key before AUTH_OK", asy
   if (registry.kind !== "ok") throw new Error("Missing registry");
   expect(registry.devices.find((device) => device.id === admitted.device_id)?.relay_public_key).toBe(publicKey);
   expect((await link.open("/api/health").response).status).toBe(200);
+});
+
+it("reports pairing rate limits during PAIR instead of an internal error", async () => {
+  const f = fixture();
+  const store = f.app.context.services.devices;
+  const device = await relayDevice(f);
+  for (let attempt = 0; attempt < 20; attempt++) expect(store.pairRelay("000000", "Phone", device.publicKey)).toBeNull();
+  let limited: PairingRateLimitedError | undefined;
+  try { store.pairRelay("000000", "Phone", device.publicKey); }
+  catch (error) {
+    if (!(error instanceof PairingRateLimitedError)) throw error;
+    limited = error;
+  }
+  if (!limited) throw new Error("Expected pairing limit");
+  const link = await relayConnection(f);
+  const failure = deferred<{ code: string; message: string }>();
+  link.onFrame = (frame) => {
+    if (frame.type === FrameType.SESSION_ERROR) failure.resolve(frame.payload);
+  };
+  const admission = link.pair("000000", device.publicKey).catch((error: unknown) => error);
+  expect(await bounded(failure.promise)).toEqual({ code: "auth_failed", message: limited.message });
+  expect(await admission).toBeInstanceOf(Error);
+  expect(link.frames.some((frame) => frame.type === FrameType.AUTH_OK)).toBe(false);
+});
+
+it("keeps the native pairing rate-limit status and retry header over relay HTTP", async () => {
+  const f = fixture();
+  const device = await relayDevice(f);
+  const store = f.app.context.services.devices;
+  // Enrollment already spent the first of ten code issues.
+  for (let issue = 1; issue < 10; issue++) store.startPairing();
+  const link = await relayConnection(f);
+  await link.auth(device);
+  const response = await link.open("/api/devices/pair/start", { method: "POST", headers: guard }).response;
+  expect(response.status).toBe(429);
+  expect(await response.json()).toMatchObject({ error: { code: "pairing_rate_limited" } });
+  expect(Number(response.headers.get("retry-after"))).toBeGreaterThan(0);
+  expect(link.channel.isOpen()).toBe(true);
 });
 
 it("refuses WS_OPEN without an adapter hook and keeps HTTP available", async () => {

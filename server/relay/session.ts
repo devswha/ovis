@@ -4,7 +4,7 @@ import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
 import { FrameType, LIMITS_V1, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
-import type { DeviceMatch } from "../devices.ts";
+import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
@@ -95,7 +95,12 @@ export class RelaySession {
         this.unwatch = undefined;
         options.onClose?.(error.code);
       },
-      onSession: (frame) => { void this.admit(frame).catch(() => this.close("internal_error")); },
+      onSession: (frame) => {
+        void this.admit(frame).catch((error: unknown) => {
+          if (error instanceof PairingRateLimitedError) this.mux.fail("auth_failed", error.message);
+          else this.close("internal_error");
+        });
+      },
       onHttp: (stream) => { void this.http(stream); },
       onWs: (stream) => {
         const device = this.principal();
