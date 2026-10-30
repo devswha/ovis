@@ -481,6 +481,21 @@ Still open on Android:
 
 - QR scanning and IME were not tried in the emulator; a physical phone should check them.
 
+## Through the Ovis relay
+
+A PC can also be reached through the [Ovis relay](relay.md), which is off by default and end-to-end
+encrypted ([how to use it](guide.md#through-the-ovis-relay)). Its pairing QR code holds a link to
+the hosted app, `https://app.ovis.sh/s/<server_id>/#offer=…`, not the PC's own address, and the
+connect screen has no support for those links yet (`app/web/shell.js`). Scanned with the phone's
+camera, the code opens the hosted app in the phone's browser, which pairs and installs from there
+and gets its alerts through the browser's own push service.
+
+When the app does open relay links, one limit follows from its web view having no service worker
+([Spike results](#spike-results-2026-10-19)): the client fetches each picture, PDF or video through
+the relay in full before showing it (`resourceUrl` in `src/lib/relay/transport.ts`). Files load
+whole, and a video starts only once all of it has arrived, so there is no skipping ahead while it
+loads.
+
 ## Risks and open questions
 
 - App Review guideline 4.2 (a web wrapper): the native connect flow, push and the demo mode are

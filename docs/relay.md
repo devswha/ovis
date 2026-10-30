@@ -1,0 +1,381 @@
+# The Ovis relay
+
+[← User guide](guide.md#through-the-ovis-relay) · [Trust model](#trust-model) · [Connecting](#how-a-connection-is-made) · [Ovis Mux v1](#ovis-mux-v1) · [Errors](#errors-and-close-codes) · [Versions](#versions) · [Operations](#operations) · [Code](#code)
+
+The Ovis relay lets a phone use Ovis on a PC from anywhere, with no Tailscale, port forwarding or
+account. It's off until it's turned on in **Settings → Phone & devices** on the PC. Then the PC and
+the phone each open a connection out to the relay, which joins the two. Everything they say to each
+other is end-to-end encrypted: the relay passes it on, but it can't read it, change it or add to it.
+The phone runs the same Ovis app a browser on the PC does, loaded from `app.ovis.sh` instead of from
+the PC.
+
+This page is the detail behind [Through the Ovis relay](guide.md#through-the-ovis-relay) in the
+guide: what the relay and `app.ovis.sh` can see, who gets in, and the protocol the phone and the PC
+speak. There are three parts:
+
+- **The relay service**, [`relay/`](../relay/README.md), pairs a PC's WebSockets with a phone's and
+  passes frames on as they came. `relay.ovis.sh` runs it on Cloudflare; anyone can run it with Bun.
+- **The PC's side**, [`server/relay/`](../server/relay), keeps a connection to the relay while the
+  relay is on, admits paired phones and runs their requests through the same code as a direct
+  connection's.
+- **The hosted app**, the client built with `bun run build:shell` and served at `app.ovis.sh`, holds
+  the phone's key and reaches the PC through the relay.
+
+## Trust model
+
+### What the relay sees
+
+For every connection, the relay sees the PC's relay ID (`server_id`: 32 random hex characters, made
+the first time the relay is turned on), whether the PC or a phone is connecting, the connecting
+address, and when each frame passes and how big it is. From that it can tell which PC a phone uses,
+when and for how long, and how much goes each way. The rhythm of the traffic shows too: a key typed
+in a terminal goes out at once as a small frame, so the timing of keystrokes is visible, and so is
+the size of what the PC sends back. Nothing is padded, and no cover traffic hides any of this.
+
+`relay.ovis.sh` keeps none of it: it writes no logs, stores nothing, and uses the address only to
+rate-limit connections ([what it keeps](../relay/README.md#what-it-sees-and-keeps)). That is how
+it's run, not something you can check from outside, so assume that whoever runs a relay, and the
+network in front of it (Cloudflare, for `relay.ovis.sh`), can record everything above.
+
+### What the relay can't do
+
+- **Read the traffic.** The phone and the PC encrypt everything with the Noise protocol's NK pattern
+  (`Noise_NK_25519_ChaChaPoly_SHA256`) in paseo's implementation
+  ([`shared/vendor/paseo-e2ee/`](../shared/vendor/paseo-e2ee/README.md)), and both ends accept only
+  its protected mode. The phone has the PC's public key from the QR code before it connects, so
+  only the PC can complete the handshake.
+- **Change, replay or slip in a message.** Every record is authenticated. A record the relay
+  replays, reorders, truncates, duplicates or makes up closes the connection, and none of it reaches
+  the app on either end ([`shared/relay-e2ee.spike.test.ts`](../shared/relay-e2ee.spike.test.ts)
+  checks each case in both directions).
+- **Pose as the PC.** A phone keeps the PC's public key from when it paired and refuses a PC that
+  answers with another one.
+- **Get in as a phone.** The PC admits a phone only with a pairing code, which travels inside the
+  encrypted connection, or a signature made with that phone's own key ([Who gets in](#who-gets-in)).
+
+What the relay can do is hold the traffic up: refuse connections, cut them or delay frames. The app
+then reconnects by itself or says the relay can't be reached, and nothing you typed is sent again on
+its own.
+
+### The hosted app is a trust root
+
+The encryption ends in the app on the phone, and that app comes from `app.ovis.sh`. It holds the
+phone's key for each PC and shows everything the PC sends, so whoever controls what `app.ovis.sh`
+serves (the maintainer, and Cloudflare Pages, which hosts it) could serve a version that copies both
+somewhere else. No protocol protects against the end it runs in.
+
+What keeps that in check:
+
+- Only the Release workflow deploys it, from a release tag, never from a branch or a laptop. Each
+  GitHub release carries that build as `dist-shell.tar.gz` with its SHA-256, so anyone can compare
+  what `app.ovis.sh` serves with what the tag builds ([Releasing](development.md#releasing)). Your
+  browser doesn't make that comparison for you.
+- The app's pages run scripts from `app.ovis.sh` only. Their Content-Security-Policy is the one the
+  PC's own server sends, with only the relay's `wss:` connections and `blob:` media and frames added
+  (`shellContentSecurityPolicy()` in [`server/static.ts`](../server/static.ts)).
+- The host sees requests for static files: the phone's address, and the PC's relay ID in the path
+  (`/s/<server_id>/`). It never gets the pairing link's `#offer=` part, which browsers don't send, or
+  any of the traffic, which goes to the relay.
+
+To take `app.ovis.sh` out of the picture, [host the app yourself](guide.md#running-your-own-relay).
+
+### Who gets in
+
+**Pairing.** While the relay is online, **Settings → Phone & devices** on the PC shows a QR code
+holding a link of the form `https://app.ovis.sh/s/<server_id>/#offer=<data>`. The data names the PC
+(`server_id`), its public key, the relay's address and a pairing code
+([`shared/relay-offer.ts`](../shared/relay-offer.ts)). It sits in the link's fragment, which
+browsers never send to a server, and the app takes it off the address bar before anything else runs
+([`src/lib/relay/boot.ts`](../src/lib/relay/boot.ts)). The code is the same kind the Devices group
+shows: six digits, good for ten minutes, spent after five wrong tries. The PC makes at most 10
+pairing codes in 10 minutes, and after 20 failed relay pairings in 10 minutes it takes none for the
+next 10.
+
+**Device keys.** Pairing makes a key pair on the phone for that one PC: ECDSA P-256, made by
+WebCrypto as non-extractable, so no script, the app's own included, can read the private half out.
+The phone keeps it in IndexedDB (`ovis-relay`), never in `localStorage`. The PC keeps only the public
+half, as `relay_public_key` in its device list (`devices.json`). On every later connection the PC
+sends 32 fresh random bytes, and the phone signs `ovis-relay-auth/1`, those bytes and the PC's
+`server_id` with its key (`matchRelay` in [`server/devices.ts`](../server/devices.ts)). A signature
+the relay saw is therefore no use later, or with another PC.
+
+**What doesn't count through the relay.** The token, device cookies, a Tailscale login and being
+"this computer": only the phone's key does. A request through the relay keeps only a short list of
+headers ([below](#requests-through-the-mux)), never `Cookie`, `Authorization`, `Host`, `Origin` or
+forwarding headers, and signing in with the token answers 403 `device_key_required`. A phone on the
+relay can't show a relay QR code or reset the relay identity (403 `local_required`); like any paired
+device that can type, it can still start a pairing code under Devices.
+
+**What it may do.** A phone paired through the relay gets the same access as a device paired with a
+code: it can type into terminals and change settings. A device marked watch-only stays read-only
+through the relay too.
+
+**The device gate.** Turning the relay on in an install with no token and no paired device closes
+the device gate first, so from then on a new browser on the LAN or behind a proxy needs a pairing
+code as well ([Access and safety](guide.md#access-and-safety)).
+
+### Ending access
+
+- **Revoke**, under **Phone & devices** on the PC, closes that phone's relay connections at once:
+  its terminal sockets close with code 1008, its requests are cancelled and the session ends with
+  `auth_revoked`. The phone deletes its key for that PC and says it was removed.
+- Turning the relay off closes every relay connection (terminal sockets with code 1001) and the PC's
+  link to the relay. While it's off, the PC makes no connection to the relay at all.
+- **Reset relay identity**, below the switch, gives the PC a new `server_id` and key pair and
+  removes every phone paired through the relay. Use it when a QR code or pairing link may have been
+  seen by someone else: with the PC's public key from it, they could try pairing codes, though they'd
+  still need a valid one.
+- A relay identity file that can't be read is never replaced silently, since a new identity cuts
+  off every paired phone: the relay stays off (`identity_unreadable`) until **Reset relay identity**
+  makes a new one. The identity lives in `relay/identity.json` under `OVIS_STATE_DIR`, readable by
+  your user only.
+
+**Serve-only installs.** `OVIS_TAILSCALE_SERVE_ONLY=1` says `tailscale serve` is the only way into
+the PC. The relay would be another, so it can't be turned on there, no phone is admitted through
+it, and the identity reset is refused.
+
+## How a connection is made
+
+1. **The PC connects.** With the relay on, the PC opens a control WebSocket to
+   `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1`, sends a keepalive every 10 seconds
+   and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
+   1 second longer each time up to 30 seconds, each wait varied by up to 20%
+   ([`server/relay/link.ts`](../server/relay/link.ts)).
+2. **The phone connects.** The app opens the same address with `role=client`. The relay gives the
+   connection a random ID and tells the PC, which opens a data WebSocket for it, and from then on the
+   relay passes frames between the two sockets byte for byte
+   ([what it answers](../relay/README.md#what-it-answers)).
+3. **Handshake.** The phone and the PC run the Noise NK handshake over those sockets, with the PC's
+   public key from the QR code.
+4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the
+   PC answers `WELCOME` with 32 fresh random bytes, its version and its limits, the phone sends `PAIR`
+   (the first time, with the code) or `AUTH` (later, with its signature), and the PC answers
+   `AUTH_OK`. Nothing else is accepted before that.
+5. **Requests.** Every request, event stream and WebSocket the app opens becomes a stream of the
+   mux. The PC runs it through the same handler as a browser's request (`handleRequest` in
+   [`server/dispatch.ts`](../server/dispatch.ts)), with the paired device as the one asking, so every
+   permission check applies as before.
+
+The phone gives up on a step after 10 seconds without an answer from the relay ("The relay could not
+be reached"), 15 seconds without one from the PC ("… is offline"), or 10 seconds for the PC to
+finish admitting it ("… did not finish connecting"). A connection that drops later comes back by
+itself, after 1 second and then twice as long each time up to 30 seconds, and at once when the phone
+is back online or the app back in front. Nothing is sent again: a request that was under way fails,
+and text you typed waits as a draft, as after any disconnect.
+
+## Ovis Mux v1
+
+Ovis Mux v1 carries HTTP requests, event streams and WebSockets over the one encrypted channel:
+[`shared/relay-mux.ts`](../shared/relay-mux.ts) has the frames,
+[`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts) the streams, flow control and
+scheduling. Each mux frame is one encrypted message.
+
+### Envelope
+
+Every frame starts with 8 bytes, big-endian:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 1 | version, always `1` (`RELAY_PROTOCOL`) |
+| 1 | 1 | frame type |
+| 2 | 2 | flags |
+| 4 | 4 | stream ID: 0 for the session, odd numbers for the streams the phone opens |
+
+A frame is at most 16,384 bytes, envelope included. Metadata is UTF-8 JSON with no duplicate keys;
+bodies and WebSocket messages are raw bytes, never base64. An unknown type, an unknown flag or an
+oversized frame ends the session before anything in it is parsed.
+
+### Frames
+
+| Type | Name | From | Carries |
+| --- | --- | --- | --- |
+| `0x01` | `HELLO` | phone | `protocol: "ovis-mux"`, the versions and features it offers |
+| `0x02` | `WELCOME` | PC | version 1, the limits, `nonce` (32 random bytes), `server_version`, `relay_protocol`, `min_supported_client` |
+| `0x03` | `AUTH` | phone | `scheme: "device-key"`, `device_id`, `signature` (64 bytes, P-256 `r` and `s`, base64url) |
+| `0x0A` | `PAIR` | phone | the six-digit `code`, a `label` of up to 64 characters, `public_key` (P-256 SPKI, base64url) |
+| `0x04` | `AUTH_OK` | PC | `session_id`, `device_id`, `role` (`drive` or `watch`) |
+| `0x05` | `SESSION_ERROR` | either | a `code` from [Errors](#errors-and-close-codes) and a short `message` |
+| `0x06` | `GOAWAY` | either | `shutdown` or `id_exhausted`, the last stream ID taken, how long to drain (up to 5 seconds) |
+| `0x07`, `0x08` | `PING`, `PONG` | either | a 64-bit number, echoed |
+| `0x09` | `RECEIVED` | either | how many bytes have arrived so far (the receipt budget) |
+| `0x10` | `HTTP_OPEN` | phone | method, path and query, headers, whether a body follows |
+| `0x11` | `HTTP_ACCEPT` | PC | nothing: the PC takes the request body |
+| `0x12` | `HTTP_HEADERS` | PC | status and headers |
+| `0x13` | `HTTP_DATA` | either | body bytes |
+| `0x14` | `HTTP_END` | either | the end of a body, with trailers; flag `STOPPED` ends one cut short after `HTTP_STOP_REQUEST` |
+| `0x15` | `HTTP_STOP_REQUEST` | PC | stop sending the request body |
+| `0x20` | `WS_OPEN` | phone | path and query, headers, subprotocols |
+| `0x21` | `WS_ACCEPT` | PC | the subprotocol and headers |
+| `0x22` | `WS_DATA` | either | a message or a piece of one; flags `START`, `END`, `TEXT` |
+| `0x23` | `WS_CLOSE` | either | close code, reason, and `abort` for a close that doesn't wait |
+| `0x30` | `CREDIT` | either | how many bytes of a stream have been read, which opens its window again |
+| `0x31` | `RESET` | either | ends one stream with a code from [Errors](#errors-and-close-codes) |
+
+### Requests through the mux
+
+- **Headers.** A request keeps only `content-type`, `accept`, `range`, `if-none-match`,
+  `if-modified-since`, `content-length`, `x-request-id`, `x-herdr-machine`, `x-herdr-update` and
+  `last-event-id`; the PC drops any other. It gives every request the origin
+  `https://relay.ovis.invalid`, marks it same-origin and asks for an unencoded body. A response keeps
+  only `content-type`, `content-length`, `content-range`, `accept-ranges`, `etag`, `last-modified`,
+  `cache-control`, `content-disposition`, `retry-after`, `x-request-id` and the security headers
+  `content-security-policy`, `x-content-type-options`, `cross-origin-resource-policy` and
+  `referrer-policy`, exactly as the handler set them. No cookie is ever set.
+- **Bodies and event streams.** A request body may be up to 64 MiB. Responses stream as they're
+  read, and an event stream such as the PC list's (`/api/machines/events`) is a response that stays
+  open. A request gets the same time budget as on a direct connection: 60 seconds unless its route
+  sets another, and none for the PC list's event stream.
+- **WebSockets.** A message may be up to 1 MiB (a larger one closes the socket with 1009), and text
+  has to be valid UTF-8 (or the socket closes with 1007). The terminal's own flow control works as
+  on a direct connection: a terminal whose reader stops acknowledging output is closed with 4008, on
+  its own socket only ([terminal flow control](terminal-flow-control.md)).
+- **Files.** Pictures, PDFs and videos come through the same requests, and the app shows them from
+  the downloaded copy (`resourceUrl` in [`src/lib/relay/transport.ts`](../src/lib/relay/transport.ts)),
+  so a file opens once all of it has arrived. A rendered HTML page's own large media gets no address
+  of its own for a request through the relay ([`server/file-routes.ts`](../server/file-routes.ts)),
+  so those videos and sounds don't play.
+
+### Flow control and scheduling
+
+A phone has one connection to the PC, so the mux shares it out:
+
+- **Credit per stream.** A side sends a stream's data only within its window: 64 KiB for an HTTP
+  stream, 1 MiB for a WebSocket. The receiver opens the window again with `CREDIT` as the app reads,
+  so a slow reader slows only its own stream.
+- **Receipt budget.** A sender has at most 64 KiB of frames sent but not yet confirmed by `RECEIVED`:
+  48 KiB of ordinary traffic, at most 24 KiB of it bulk, and 16 KiB of control frames, so a download
+  never has more than 24 KiB on the way ahead of terminal output.
+- **Scheduling.** Control frames go first, at most 8 in a row while data waits. Interactive streams
+  (WebSockets such as the terminal's `/ws`, and the PC list's event stream) and bulk streams
+  (everything else) then take turns, four interactive frames to one bulk, round robin within each.
+- **Queues.** A sender queues at most 4 MiB, and at most 3 MiB of that for streams other than
+  terminals, so terminal output always has room.
+
+One limit can't be designed away: all of a phone's streams share its one connection. When that
+connection stalls (a slow mobile network, an app sent to the background), all of that phone's
+streams wait together. Other phones and the PC itself don't.
+
+### Limits
+
+| What | Limit | Past it |
+| --- | --- | --- |
+| Frame | 16,384 bytes | the session ends (`protocol_error`) |
+| Streams open at once, per phone | 32, at most 8 of them WebSockets and 4 event streams | the new stream is refused (`refused`) |
+| New streams | 32 a second, bursts of up to 64 | the session ends (`resource_exhausted`) |
+| Frames | 4,096 a second, bursts of up to 8,192 | the session ends (`resource_exhausted`) |
+| Sending past a stream's window | none allowed | the session ends (`flow_control_error`) |
+| Request body | 64 MiB | `413` |
+| WebSocket message | 1 MiB | the socket closes with `1009` |
+| Queued to send | 4 MiB, at most 3 MiB of it outside terminals | that stream is reset (`resource_exhausted`) |
+| Admission | `AUTH_OK` within 10 seconds | the session ends (`timeout`) |
+| Keepalive | the PC sends `PING` after 20 seconds without traffic and waits 60 seconds for `PONG` | the session ends (`timeout`) |
+| Request time | 60 seconds unless the route sets another, none for the PC list's event stream | the stream is reset (`upstream_lost`) |
+| A reader that takes nothing | 30 seconds | the stream is reset (`slow_consumer`) |
+| Closing a WebSocket | 5 seconds to finish | the socket is torn down |
+
+The relay service has limits of its own (frame size, phones per PC, connections per address):
+[relay/README.md](../relay/README.md#limits-and-close-codes).
+
+## Errors and close codes
+
+`SESSION_ERROR` ends the whole session:
+
+| Code | When |
+| --- | --- |
+| `unsupported_version` | no mux version in common, or another envelope version |
+| `unsupported_extension` | one side requires a feature the other lacks |
+| `unsupported_transport` | the connection can't carry a full-size frame |
+| `protocol_error` | a malformed frame, or one out of order, such as a request before `AUTH_OK` |
+| `auth_failed` | a wrong, spent or expired pairing code, an unknown device or a bad signature, and every admission on a serve-only PC |
+| `auth_revoked` | the device was revoked |
+| `auth_changed` | the device's entry on the PC changed while it was connected |
+| `flow_control_error` | data past a stream's window |
+| `resource_exhausted` | too many new streams or frames a second, or a queue over its limit |
+| `timeout` | admission or a keepalive took too long |
+| `internal_error` | something failed on the other side |
+
+`RESET` ends one stream and leaves the others: `cancelled`, `refused` (over a stream limit, or the
+session is closing), `bad_request`, `body_too_large`, `message_too_large`, `stream_protocol_error`,
+`upstream_lost` (its time ran out or the PC's side went away), `slow_consumer`, `resource_exhausted`
+and `internal_error`. `GOAWAY` takes no new streams: `shutdown` when the relay is turned off on the
+PC, `id_exhausted` when a connection has used up its stream IDs.
+
+WebSocket close codes the app can see through the relay:
+
+| Code | Meaning |
+| --- | --- |
+| `1001` | the relay was turned off on the PC ("Relay stopped") |
+| `1006` | the connection to the PC was lost; the app makes this code itself, as a browser does |
+| `1007` | a text message that isn't valid UTF-8 |
+| `1008` | the device was revoked ("Device access revoked") |
+| `1009` | a message over 1 MiB |
+| `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
+
+The encryption closes its connection with `1008` when the other end won't use protected mode, `4002`
+when the handshake fails and `4003` when a record fails its check (in
+[`shared/vendor/paseo-e2ee/secure-channel.ts`](../shared/vendor/paseo-e2ee/secure-channel.ts)). The
+relay service's own close codes are in [relay/README.md](../relay/README.md#limits-and-close-codes).
+
+What the app on the phone shows when a connection doesn't come up
+([`src/lib/relay/shellState.ts`](../src/lib/relay/shellState.ts)):
+
+| Screen | When |
+| --- | --- |
+| The relay could not be reached | no answer from the relay within 10 seconds, or the connection to it failed |
+| … is offline | the relay answered, but the PC didn't within 15 seconds: its Ovis is stopped or not connected to the relay |
+| … did not finish connecting | the PC answered, but admission didn't finish within 10 seconds |
+| That pairing code no longer works | the code was wrong, spent or expired |
+| This phone was removed from … | the device was revoked; the phone has deleted its key |
+| … has a new identity | the PC's key isn't the one the phone paired with |
+| Update needed | the PC speaks another relay protocol or mux version |
+| Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
+| This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
+
+## Versions
+
+The hosted app updates with every release, while each PC updates on its own schedule, so the two
+can be apart.
+
+- **Relay protocol.** `RELAY_PROTOCOL` in [`shared/relay-mux.ts`](../shared/relay-mux.ts), now 1, is
+  the envelope's first byte and `WELCOME`'s `relay_protocol`. An app and a PC on different ones can't
+  talk, and the app stops at **Update needed**. The relay service has a wire version of its own in
+  its address (`v=1`) and closes a socket that asks for another with 1008.
+- **Oldest PC.** The app connects to any PC from `MIN_SERVER_VERSION` in `shared/relay-mux.ts` on:
+  0.4.21, the first release with the relay. An older PC gets **Update Ovis on …**: with
+  **Update now**, which asks the PC to install the latest release through the relay, when the PC's
+  install updates itself, and with the installer and plugin steps otherwise. Raise it only in a PR
+  that makes the app need a newer PC, with a changelog line, and mark code kept for older PCs
+  `// COMPAT(relay): added in <v>, remove after <v+2>`. CI's `relay-skew` job runs the app against
+  the release tagged `MIN_SERVER_VERSION` and against the latest release.
+- **Newer PC.** A PC newer than the app means the app's cached copy is out of date: the app checks
+  for a newer version of itself and reloads, once.
+
+## Operations
+
+The maintainer runs `relay.ovis.sh` and `app.ovis.sh` as a best effort, with no promise that either
+is always up.
+
+- **`relay.ovis.sh`** is a Cloudflare Worker with one Durable Object per PC. Only the Relay deploy
+  workflow (`.github/workflows/relay-deploy.yml`) deploys it, after a change to `relay/` reaches main
+  and passes CI or when run by hand from main, and always with the maintainer's approval. A deploy
+  drops every connection; PCs and phones reconnect by themselves, and nothing is sent again. Workers
+  Logs are off and the relay stores nothing ([relay/README.md](../relay/README.md#deploy)).
+- **`app.ovis.sh`** is a Cloudflare Pages project. The Release workflow deploys it from each release
+  tag, and [Releasing](development.md#releasing) has its one-time setup.
+- To report abuse that goes through `relay.ovis.sh`, see [SECURITY.md](../SECURITY.md#the-ovis-relay).
+
+To run your own relay, or your own copy of the app, see
+[Running your own relay](guide.md#running-your-own-relay) and
+[relay/README.md](../relay/README.md#running-your-own).
+
+## Code
+
+| Path | What it does |
+| --- | --- |
+| [`relay/`](../relay/README.md) | the relay service: routing core, Cloudflare Worker, Bun server |
+| [`server/relay/`](../server/relay) | the PC's side: identity, link to the relay, sessions, WebSockets over the mux, the switch and its routes |
+| [`shared/relay-e2ee.ts`](../shared/relay-e2ee.ts) | the encryption, from paseo's code vendored in `shared/vendor/paseo-e2ee/` (never edited; `bun scripts/vendor-paseo.ts <commit>` updates it) |
+| [`shared/relay-mux.ts`](../shared/relay-mux.ts), [`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts) | Ovis Mux v1 |
+| [`shared/relay-offer.ts`](../shared/relay-offer.ts) | the pairing link |
+| [`src/lib/relay/`](../src/lib/relay) | the hosted app: channel, device key, transport and screens |
+| [`scripts/shell-build.ts`](../scripts/shell-build.ts) | the hosted app's build (`bun run build:shell`, into `dist-shell/`) |
