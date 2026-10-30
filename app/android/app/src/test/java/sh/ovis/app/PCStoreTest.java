@@ -221,6 +221,40 @@ public class PCStoreTest {
     }
 
     @Test
+    public void aRelayPcIsKeyedByItsScopeAndAnOldOriginKeyStillWorks() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String offer = scope + "#offer=eyJ2IjoxfQ";
+        assertEquals(scope, PCStore.scopeKey(scope, offer));
+        assertEquals(scope, PCStore.scopeKey(scope, scope));
+        // another origin, a scope without its slash or with more than a path, or a page outside the scope
+        assertNull(PCStore.scopeKey(scope, "https://evil.example/s/0123456789abcdef0123456789abcdef/#offer=x"));
+        assertNull(PCStore.scopeKey("https://app.ovis.sh/s/0123456789abcdef0123456789abcdef", offer));
+        assertNull(PCStore.scopeKey(scope + "?x=1", offer));
+        assertNull(PCStore.scopeKey("https://app.ovis.sh/", offer));
+        assertNull(PCStore.scopeKey(scope, "https://app.ovis.sh/s/fedcba9876543210fedcba9876543210/"));
+
+        assertTrue(PCStore.belongs(offer, scope));
+        assertTrue(PCStore.belongs("https://app.ovis.sh/s/0123456789abcdef0123456789abcdef", scope));
+        assertFalse(PCStore.belongs("https://app.ovis.sh/s/fedcba9876543210fedcba9876543210/", scope));
+        assertFalse(PCStore.belongs("https://app.ovis.sh/", scope));
+        // a PC saved by its origin before relay PCs: any page of that origin, as before
+        assertTrue(PCStore.belongs("https://pc.tail1234.ts.net/settings?x=1", "https://pc.tail1234.ts.net"));
+        assertFalse(PCStore.belongs("https://pc.tail1234.ts.net:8443/", "https://pc.tail1234.ts.net"));
+        assertEquals("https://pc.tail1234.ts.net", PCStore.origin("https://pc.tail1234.ts.net"));
+        assertEquals("https://app.ovis.sh", PCStore.origin(scope));
+    }
+
+    @Test
+    public void theStartPathKeepsAPairingLinkOrOfferAndElseOpensThePcsScopeOrRoot() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath(scope + "#offer=eyJ2IjoxfQ", scope));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/", PCStore.startPath(null, scope));
+        assertEquals("/", PCStore.startPath(null, "https://pc.tail1234.ts.net"));
+        assertEquals("/?pair=123456", PCStore.startPath("https://pc.tail1234.ts.net/?pair=123456", "https://pc.tail1234.ts.net"));
+        assertEquals("/", PCStore.startPath("https://other.example/?pair=123456", "https://pc.tail1234.ts.net"));
+    }
+
+    @Test
     public void theStartKeepsAPairingLinksCodeOnTheOvisOrigin() {
         assertEquals("https://pc.example.com/?pair=123456", PCStore.startOn("https://pc.example.com", "http://100.64.0.1/?pair=123456"));
         assertEquals("https://pc.example.com/", PCStore.startOn("https://pc.example.com", "http://100.64.0.1"));

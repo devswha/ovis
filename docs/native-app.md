@@ -185,6 +185,19 @@ What is there:
   to every page, the client included.
 - A PC joins the list of PCs only once a page of it has loaded, so an address that never
   answered, or answered with an HTTP error, is not kept.
+- A PC paired over the Ovis relay opens from its pairing link, scanned or pasted:
+  `https://app.ovis.sh/s/<server_id>/#offer=...` (`relayLink()` in `shell.js`). Only the hosted
+  shell's origin may carry an offer: one on any other origin is refused on the connect screen,
+  as is an offer that names another PC than its path. The app opens the link as the WebView's
+  first page, like any PC (the offer stays in the fragment through
+  `instanceDescriptor().serverURL` on iOS, a 2026-10-30 Simulator spike, and through the start
+  path on Android), and the hosted shell pairs from there. Every relay PC shares that origin, so
+  the app saves it by its scope (`https://app.ovis.sh/s/<server_id>/`) and labels it with the
+  offer's `name`; a PC opened at its own address is still saved by its origin, and lists saved
+  before keep their entries as they are. The allowed host (iOS) and the bridge's origin
+  (Android) follow the PC opened, so a relay PC gets the shell's origin and nothing else.
+  `error.html` says when the relay could not be reached. A test build points at another shell
+  with `OVIS_APP_URL=https://<host> bun run build:web`.
 - Both apps allow plain http to any host, as Android cannot limit cleartext to address ranges.
   Before opening plain http to an address outside a tailnet, a home network and the phone (one not
   in the list of PCs yet), the connect screen warns that the pairing code and everything typed

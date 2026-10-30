@@ -26,6 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * The PCs this app knows, kept in SharedPreferences, as PCStore in the iOS app keeps them in
@@ -75,7 +77,12 @@ final class PCStore {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /** Origins opened before, the latest first. */
+    /**
+     * PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
+     * address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`),
+     * as every relay PC shares the hosted shell's origin. Entries saved before relay PCs are origins
+     * and stay as they are.
+     */
     static List<String> saved(Context context) {
         List<String> list = new ArrayList<>();
         try {
@@ -91,7 +98,27 @@ final class PCStore {
         prefs(context).edit().putString("saved", new JSONArray(list).toString()).apply();
     }
 
-    /** The PC the app opens at launch, an origin; null shows the connect screen. */
+    /** Labels of saved PCs by key, from a relay pairing offer's name. */
+    static JSONObject names(Context context) {
+        try {
+            return new JSONObject(prefs(context).getString("names", "{}"));
+        } catch (JSONException damaged) {
+            return new JSONObject();
+        }
+    }
+
+    static void setName(Context context, String key, String name) {
+        JSONObject names = names(context);
+        try {
+            if (name == null) names.remove(key);
+            else names.put(key, name);
+        } catch (JSONException notStored) {
+            return;
+        }
+        prefs(context).edit().putString("names", names.toString()).apply();
+    }
+
+    /** The PC the app opens at launch, a key (see saved); null shows the connect screen. */
     static String current(Context context) {
         return prefs(context).getString("current", null);
     }
@@ -105,28 +132,68 @@ final class PCStore {
         return prefs(context).getString("last", null);
     }
 
-    /** Makes origin the PC to open; it joins the saved PCs only once a page of it loads (remember). */
-    static void open(Context context, String origin, String start) {
-        prefs(context).edit().putString("current", origin).putString("last", origin).apply();
+    /** Makes the PC `key` the one to open; it joins the saved PCs only once a page of it loads (remember). */
+    static void open(Context context, String key, String start) {
+        prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }
 
-    /** Puts origin first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
-    static void remember(Context context, String origin) {
+    /** Puts the PC `key` first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
+    static void remember(Context context, String key) {
         List<String> list = saved(context);
-        list.remove(origin);
-        list.add(0, origin);
+        list.remove(key);
+        list.add(0, key);
         setSaved(context, list);
     }
 
-    static void forget(Context context, String origin) {
+    static void forget(Context context, String key) {
         List<String> list = saved(context);
-        list.remove(origin);
+        list.remove(key);
         setSaved(context, list);
+        setName(context, key, null);
         SharedPreferences.Editor edit = prefs(context).edit();
-        if (origin.equals(current(context))) edit.remove("current");
-        if (origin.equals(last(context))) edit.remove("last");
+        if (key.equals(current(context))) edit.remove("current");
+        if (key.equals(last(context))) edit.remove("last");
         edit.apply();
+    }
+
+    /**
+     * The key of a PC opened through the Ovis relay: `scope`, when it is an http or https origin with a
+     * path ending in `/` and `url` is on that origin within that path; null otherwise.
+     */
+    static String scopeKey(String scope, String url) {
+        String origin = origin(scope);
+        String path = rawPath(scope);
+        if (origin == null || !origin.equals(origin(url)) || path.length() < 2 || !path.endsWith("/")) return null;
+        return scope.equals(origin + path) && belongs(url, scope) ? scope : null;
+    }
+
+    /** Whether `url` is a page of the PC `key`: on its origin, and within its scope for a relay PC. */
+    static boolean belongs(String url, String key) {
+        String origin = origin(url);
+        if (origin == null || !origin.equals(origin(key))) return false;
+        String scope = rawPath(key);
+        String path = rawPath(url);
+        return scope.isEmpty() || scope.equals("/") || (path.endsWith("/") ? path : path + "/").startsWith(scope);
+    }
+
+    /** The path, query and fragment the PC `key` opens at: a pairing link's on the PC's origin, else the PC's scope or root. */
+    static String startPath(String start, String key) {
+        String origin = origin(key);
+        if (start == null || origin == null || !origin.equals(origin(start))) {
+            String scope = rawPath(key);
+            return scope.isEmpty() ? "/" : scope;
+        }
+        return startOn(origin, start).substring(origin.length());
+    }
+
+    private static String rawPath(String text) {
+        try {
+            String path = new URI(text).getRawPath();
+            return path == null ? "" : path;
+        } catch (URISyntaxException e) {
+            return "";
+        }
     }
 
     /**
