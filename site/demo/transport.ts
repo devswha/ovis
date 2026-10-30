@@ -71,7 +71,7 @@ const CHAT_ANSWER_MS = 2400;
 const OUTCOME_PREVIEW_MS = 600;
 /** the recording's gaps, capped so the replay stays brisk */
 const MAX_FRAME_GAP_MS = 500;
-/** Settings → Agent integrations: one of each state, in herdr's order */
+/** Settings → Agents' session resume: one of each state, in herdr's order */
 const integrationsFixture: AgentIntegration[] = [
   ["pi", "pi", true, "not_installed"], ["omp", "omp", false, "not_installed"], ["claude", "claude", true, "current"],
   ["codex", "codex", true, "outdated"], ["copilot", "copilot", false, "not_installed"], ["opencode", "opencode", true, "not_installed"],
@@ -1006,14 +1006,14 @@ const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
 ].sort((left, right) => (left.file.path < right.file.path ? -1 : 1));
 
 /**
- * Settings → Subscription usage's "Read Claude's limits from its status line" on the demo: off until
+ * Settings → Agents' "Read Claude's limits from its status line" on the demo: off until
  * turned on. `?demo_usage=refused` starts Claude refused as a blocked network refuses it (a 403 to a
  * token that has not expired), offering the status line until it is turned on.
  */
 let demoStatusline = false;
 const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
 
-/** Settings → Subscription usage on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
+/** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
 function usageReport(): UsageReport {
   const now = Date.now();
   const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();

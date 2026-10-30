@@ -6,9 +6,9 @@
  *   the demo PC lacks, as the setup guide's tiles; a tap on Install asks the PC (the demo refuses, and
  *   the tile says so), and Back returns the focus to the picker. New worktree's picker ends with the
  *   same row.
- * - Settings → Agent integrations starts with the setup guide's row, then lists Installed (with
- *   versions) and Can be installed (the tiles), with herdr's integrations still below; there is no
- *   Sign in. Open setup guide closes Settings and opens the guide again (lib/setupGuide.ts).
+ * - Settings → Agents starts with the setup guide's row, then lists the agents on this PC (with
+ *   versions; herdr's session resume inside each row) and Install another agent (the tiles); there
+ *   is no Sign in. Open setup guide closes Settings and opens the guide again (lib/setupGuide.ts).
  * - A device that only watches (`?demo_devices=watch`) gets no Add another agent…, no Install and no
  *   Open setup guide: an install types into a terminal on the PC, which it may not do.
  *
@@ -99,16 +99,18 @@ try {
         await dialog.waitFor({ state: "detached" });
         console.log(`PASS Add another agent… shows ${names.length} agents the PC lacks as tiles, Install asks the PC, and Back returns to the picker (${at})`);
 
-        // Settings → Agent integrations
-        await page.goto(`${base}&settings=integrations`);
+        // Settings → Agents
+        await page.goto(`${base}&settings=agents`);
         const body = page.locator(".settings-body:not([hidden])");
-        await body.locator(".settings-agent-row").first().waitFor();
-        const installed = await body.locator("[data-section='agents-installed'] .settings-agent-row").evaluateAll((rows) => rows.map((row) => ({ name: row.querySelector(".settings-label")?.textContent ?? "", version: row.querySelector(".settings-agent-version")?.textContent ?? "" })));
+        await body.locator(".agents-item").first().waitFor();
+        const installed = await body.locator("[data-section='agents-installed'] .agents-item").evaluateAll((rows) => rows.map((row) => ({ name: row.querySelector(".settings-label")?.textContent ?? "", version: row.querySelector(".agents-version")?.textContent ?? "" })));
         assert.deepEqual(installed.map((row) => row.name), INSTALLED, `Installed ${at}`);
         assert.ok(installed.every((row) => /^\d+\.\d+/.test(row.version)), `each installed agent has its version ${at}: ${JSON.stringify(installed)}`);
-        assert.ok(await body.locator(".settings-agent-tiles .setup-tile-install").count() > 0, `Can be installed has its tiles with Install ${at}`);
+        await press(body.locator("[data-section='install'] > summary"));
+        assert.ok(await body.locator(".settings-agent-tiles .setup-tile-install").count() > 0, `Install another agent has its tiles with Install ${at}`);
         assert.equal(await body.getByRole("button", { name: /^Sign in/ }).count(), 0, `no Sign in ${at}`);
-        assert.ok(await body.locator(".settings-row:not(.settings-agent-row) code").count() > 0, `herdr's integrations are still below ${at}`);
+        await press(body.locator(".agents-item[data-agent='codex'] .agents-toggle"));
+        assert.ok(await body.locator(".agents-item[data-agent='codex'] code").count() > 0, `herdr's session resume is in the agent's row ${at}`);
         await shot("4-settings-agents");
         await page.evaluate(() => {
           const counted = window as unknown as { asked: number };
@@ -150,7 +152,8 @@ try {
         const becomeWatching = () => page.evaluate(() => { sessionStorage.setItem("ovis:demo-security", "watch"); document.dispatchEvent(new Event("visibilitychange")); });
         const driveAgain = () => page.evaluate(() => sessionStorage.removeItem("ovis:demo-security"));
         // Settings: the tiles to install and the guide's row go
-        await page.goto(`${base}&settings=integrations`);
+        await page.goto(`${base}&settings=agents`);
+        await press(body.locator("[data-section='install'] > summary"));
         await body.locator(".settings-agent-tiles .setup-tile-install").first().waitFor();
         await becomeWatching();
         await body.locator(".settings-agent-tiles").waitFor({ state: "detached" });
@@ -199,8 +202,8 @@ try {
         assert.ok(offered.length > 1, `a watching device still sees the agents ${at}`);
         assert.ok(!offered.includes(ADD_ROW), `a watching device gets no ${ADD_ROW} ${at}: ${offered.join(", ")}`);
         await page.keyboard.press("Escape");
-        await page.goto(`${root}&demo_devices=watch&settings=integrations`);
-        await body.locator(".settings-agent-row").first().waitFor();
+        await page.goto(`${root}&demo_devices=watch&settings=agents`);
+        await body.locator(".agents-item").first().waitFor();
         assert.equal(await body.locator(".setup-tile-install").count(), 0, `a watching device gets no Install ${at}`);
         assert.equal(await body.getByRole("button", { name: "Open setup guide", exact: true }).count(), 0, `a watching device gets no Open setup guide ${at}`);
         console.log(`PASS a watching device lists the agents but gets no ${ADD_ROW}, Install or Open setup guide (${at})`);

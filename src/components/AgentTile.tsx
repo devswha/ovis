@@ -1,6 +1,6 @@
 /**
  * One coding agent as a tile, shared by the setup guide, a creation dialog's Add another agent and
- * Settings → Agent integrations: installed (with its version), or missing with its Install, which runs
+ * Settings → Agents: installed (with its version), or missing with its Install, which runs
  * the official installer in a terminal tab while a ring turns on the tile, until the PC lists it.
  */
 import { useEffect, useRef, useState } from "react";

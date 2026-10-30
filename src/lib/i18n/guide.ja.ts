@@ -8,7 +8,7 @@ export const GUIDE_JA: Record<string, string> = {
   "I'm new to Ovis": "初めてです",
   "I've used Ovis before": "使ったことがあります",
   "Skip the setup and go straight in": "セットアップを飛ばしてすぐに始める",
-  "You can open this again any time from Settings → Setup guide.": "設定 → セットアップガイド からいつでも開き直せます。",
+  "You can open this again any time from Settings → Agents.": "設定 → エージェント からいつでも開き直せます。",
   "Skip setup": "セットアップをスキップ",
   "Already installed one?": "もうインストールしましたか?",
   "Look again": "もう一度確認",

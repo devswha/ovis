@@ -311,6 +311,19 @@ const BASE: Record<string, string> = {
   "Terminal line": "터미널 입력 줄",
   "Held message": "보관한 메시지",
   "Held input": "보관한 입력",
+  "Other accounts": "다른 계정",
+  "Plan limits": "요금제 한도",
+  "Auto": "자동",
+  "Hub request failed": "허브 요청에 실패했어요",
+  "On this PC": "이 PC",
+  "Hub": "허브",
+  "Add account": "계정 추가",
+  "Check the hub connection": "허브 연결을 확인하세요",
+  "Meters show": "미터 표시",
+  "Limit shown": "표시할 한도",
+  "Show plan limits": "요금제 한도 표시",
+  "Session": "세션",
+  "Weekly": "주간",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

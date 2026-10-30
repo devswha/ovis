@@ -315,6 +315,19 @@ const BASE: Record<string, string> = {
   "Terminal line": "终端输入行",
   "Held message": "保留的消息",
   "Held input": "保留的输入",
+  "Other accounts": "其他账号",
+  "Plan limits": "套餐限额",
+  "Auto": "自动",
+  "Hub request failed": "中心请求失败",
+  "On this PC": "本机",
+  "Hub": "中心",
+  "Add account": "添加账号",
+  "Check the hub connection": "请检查中心连接",
+  "Meters show": "计量显示",
+  "Limit shown": "显示的限额",
+  "Show plan limits": "显示套餐限额",
+  "Session": "会话",
+  "Weekly": "每周",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

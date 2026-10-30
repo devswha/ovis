@@ -117,7 +117,7 @@ export function fetchUsage(refresh = false): Promise<UsageReport> {
   return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
 }
 
-/** Settings → Subscription usage: whether Claude's limits are read from its status line on the server's PC. */
+/** Settings → Agents' plan limits: whether Claude's limits are read from its status line on the server's PC. */
 export function fetchStatusline(): Promise<StatuslineState> {
   return getJson<StatuslineState>("/api/usage/statusline", { cache: "no-store" });
 }

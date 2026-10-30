@@ -2934,7 +2934,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerArtifacts`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
   speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
-  herdr's focus), **Alerts**, **Voice input**, **Subscription usage**,
+  herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (the phone address,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices; then
   Access),
@@ -3023,11 +3023,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for update consent is established here: this keeps Ovis's existing controls and their places and
   applies Agent of Empires' rule that consent covers one immutable offer, not a coding-agent-app
   pattern.
-- Subscription usage keeps its meter preferences first, then an **Accounts** header with a dim total
-  count and one **Add account** button (Plus + label). With meters off, one note follows it without
-  provider placeholders; the configured hub connection remains available. With meters on, provider cards are ordered Claude,
-  Codex, then the remaining reported providers; headings show mark, name and dim account count.
-  Each row has email/name, then dim source (**This PC** or **Hub**), known plan and written
+- Agents (`AgentsSettings`) took the place of Subscription usage and Agent integrations, after the
+  owner-approved mockup (Codex app's settings list one row per connected thing, shut until opened,
+  as Zed's agent settings list each agent): **Open setup guide** (this PC, not a watching device),
+  then **On this PC**, one row per installed catalog agent in the catalog's order (mark, name, dim
+  version, one state line: a status dot and Signed in · account, N accounts · M need attention, Not
+  signed in, or Installed where Ovis reads no sign-in for it), with one action while shut (Sign in
+  again for its one expired account, or Sign in when it has none) and a chevron; opened, its accounts
+  (Add account, then the rows below, each with its glance limit), its launch mode (Claude Code,
+  Codex) and Session resume (herdr's integration, with its command and Copy when off). An account
+  goes under the one agent whose `sign_in.provider` it is; the rest (Cursor, an agent not here, every
+  account on a remote PC) and the hub are under **Other accounts** with its **Add account**. **Install
+  another agent (N)** is shut until opened (the setup guide's tiles), and **Plan limits** closes the
+  page: Show plan limits, then Meters show and Limit shown side by side on one row, then Claude's
+  status-line switch. Old `?settings=usage` and `?settings=integrations` links open Agents.
+- An account row (Agents) has email/name, then dim source (**This PC** or **Hub**), known plan and written
   sign-in status with an existing status-token dot, without badge pills. Within-provider reorder
   and visibility controls stay in fixed columns; hidden rows remain listed but fade. Empty lists
   show one dim sentence.
@@ -3428,8 +3438,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   check this PC" with its error and Look again. On a phone Start and Connect your phone take the full
   width.
 - The tile is `AgentTile` (`AgentTile.css`), shared with a creation dialog's Add another agent… and
-  Settings → Agent integrations, where the PC's agents that can be installed are the same tiles (an
-  installed one there is only shown, never picked). Settings → Agent integrations starts with **Open
+  Settings → Agents, where the PC's agents that can be installed are the same tiles (an
+  installed one there is only shown, never picked). Settings → Agents starts with **Open
   setup guide**, which opens this guide again (`lib/setupGuide.ts`); a watching device gets neither
   the row nor the Install buttons.
 

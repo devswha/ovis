@@ -8,7 +8,7 @@ export const GUIDE_ZH: Record<string, string> = {
   "I'm new to Ovis": "我是新用户",
   "I've used Ovis before": "我用过 Ovis",
   "Skip the setup and go straight in": "跳过设置,直接开始",
-  "You can open this again any time from Settings → Setup guide.": "随时可以从 设置 → 设置向导 再次打开。",
+  "You can open this again any time from Settings → Agents.": "随时可以从 设置 → 代理 再次打开。",
   "Skip setup": "跳过设置",
   "Already installed one?": "已经装好了一个?",
   "Look again": "重新检查",
