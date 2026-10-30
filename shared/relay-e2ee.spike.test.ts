@@ -215,6 +215,50 @@ it("refuses a legacy-only client when the daemon omits minimumMode", async () =>
   expect(client.isOpen()).toBe(false);
 });
 
+for (const submit of ["onopen", "microtask"] as const) {
+  it(`preserves pre-open send order when a new send arrives in ${submit}`, async () => {
+    // Given a real protected handshake with its ready envelope held by the relay.
+    const link = pair();
+    link.daemon.held = true;
+    const keys = generateKeyPair();
+    const received: (string | ArrayBuffer)[] = [];
+    const daemonOpening = openDaemonSecureChannel(link.daemon, {
+      daemonKeyPair: keys, events: { onmessage: (data) => received.push(data) },
+    });
+    let latest: Promise<void> | undefined;
+    const client = await openClientSecureChannel(link.client, {
+      daemonPublicKeyB64: exportPublicKey(keys.publicKey),
+      events: { onopen: () => {
+        if (submit === "onopen") latest = client.send("B");
+      } },
+    });
+    await daemonOpening;
+    const first = client.send("A");
+    const second = client.send("C");
+    // When ready opens the channel, a later submission must not overtake either send.
+    const ready = link.daemon.sent[0];
+    if (!ready) throw new Error("No ready captured");
+    await link.client.deliver(ready);
+    if (submit === "microtask") latest = client.send("B");
+    await Promise.all([first, second, latest]);
+    // Then submission order, not handshake completion order, determines delivery.
+    expect(received).toEqual(["A", "C", "B"]);
+  });
+}
+
+it("bounds pre-open sends and rejects them when the handshake closes", async () => {
+  const link = pair();
+  link.client.held = true;
+  const client = await openClientSecureChannel(link.client, {
+    daemonPublicKeyB64: exportPublicKey(generateKeyPair().publicKey),
+  });
+  const pending = Array.from({ length: 200 }, () => client.send("queued")
+    .catch((error: unknown) => error));
+  await expect(client.send("overflow")).rejects.toBeInstanceOf(RangeError);
+  client.close();
+  for (const result of await Promise.all(pending)) expect(result).toBeInstanceOf(Error);
+});
+
 function bytes(message: TransportMessage): Uint8Array {
   return typeof message.data === "string"
     ? new Uint8Array(Buffer.from(message.data, "base64"))

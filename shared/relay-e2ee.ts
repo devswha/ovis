@@ -8,8 +8,37 @@ import type {
 export type ClientSecureChannelOptions = Omit<ClientOptions, "minimumMode">;
 export type DaemonSecureChannelOptions = Omit<DaemonOptions, "minimumMode">;
 
-export const openClientSecureChannel = (transport: Transport, options: ClientSecureChannelOptions) =>
-  openClient(transport, { ...options, minimumMode: "protected" });
+export async function openClientSecureChannel(transport: Transport, options: ClientSecureChannelOptions) {
+  // Never put application sends into the vendor's separate pre-open queue: it can
+  // be overtaken by onopen sends. One chain waits for the handshake, then sends all.
+  const ready = Promise.withResolvers<void>();
+  let handshaking = true;
+  let pending = 0;
+  const channel = await openClient(transport, {
+    ...options, minimumMode: "protected",
+    events: {
+      ...options.events,
+      onopen: () => {
+        handshaking = false;
+        ready.resolve();
+        options.events?.onopen?.();
+      },
+      onclose: (code, reason) => {
+        handshaking = false;
+        ready.resolve(); // Queued sends reject through the closed channel.
+        options.events?.onclose?.(code, reason);
+      },
+    },
+  });
+  const send = channel.send.bind(channel);
+  let chain = ready.promise;
+  channel.send = (data) => {
+    if (handshaking && ++pending > 200) return Promise.reject(new RangeError("Too many pre-open sends"));
+    chain = chain.then(() => send(data));
+    return chain;
+  };
+  return channel;
+}
 export const openDaemonSecureChannel = (transport: Transport, options: DaemonSecureChannelOptions) =>
   openDaemon(transport, { ...options, minimumMode: "protected" });
 
