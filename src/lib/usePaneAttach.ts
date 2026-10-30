@@ -5,7 +5,7 @@ import type { HerdrSocket } from "./ws.ts";
 import { EMPTY_DRAFT, restoreDraft, type InputDraft } from "./draft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
-import { inUse } from "./paneTerminalShared.ts";
+import { holdViews, inUse } from "./paneTerminalShared.ts";
 import { modalOpen } from "./focus.ts";
 import type { PendingMessageView } from "./pendingMessages.ts";
 import { FONT_LOAD_TIMEOUT_MS, type FontSettled } from "./fontFamily.ts";
@@ -127,6 +127,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       return leavePane;
     }
     if (deferAttachRef.current(paneId)) return leavePane;
+    // the hidden tabs' views start or stop once this pane drew: herdr serves its attach first (paneTerminalShared.ts)
+    if (presented) holdViews();
     const attach = (): void => {
       // under the keyboard (a pane picked while typing) the fit waits for it to go, and the attach adopts
       // the pane's size meanwhile

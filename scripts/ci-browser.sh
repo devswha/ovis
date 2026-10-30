@@ -63,6 +63,7 @@ run_script scripts/herdr-restart-regression.ts
 run_script scripts/sticky-modifiers-regression.ts
 run_script scripts/terminal-switch-regression.ts
 run_script scripts/terminal-switch-resize-regression.ts
+run_script scripts/terminal-view-replay-demo-regression.ts
 run_script scripts/pane-lifetime-regression.ts
 run_script scripts/terminal-arrows-clicks-regression.ts
 run_script scripts/terminal-viewport-regression.ts

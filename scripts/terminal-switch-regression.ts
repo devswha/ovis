@@ -60,7 +60,25 @@ try {
         await ready(id);
       };
       await ready(panes[0]!);
-      await select(panes[1]!);
+      // A cold switch: the tab left behind starts its view only after the selected pane's attach
+      const cold = frames.length;
+      const viewStarted = Promise.withResolvers<void>();
+      const viewTimeout = setTimeout(() => viewStarted.reject(new Error("the tab left behind never watched its pane")), 10_000);
+      const onViewStart = ({ payload }: { payload: string | Buffer }) => {
+        const message = JSON.parse(String(payload));
+        if (message.type === "watch" && message.pane_id === panes[0]) viewStarted.resolve();
+      };
+      for (const socket of sockets) socket.on("framesent", onViewStart);
+      try {
+        await select(panes[1]!);
+        await viewStarted.promise;
+      } finally {
+        clearTimeout(viewTimeout);
+        for (const socket of sockets) socket.off("framesent", onViewStart);
+      }
+      const order = frames.slice(cold).map((sent) => `${sent.type}:${sent.pane_id}`);
+      assert.ok(order.indexOf(`attach:${panes[1]}`) !== -1 && order.indexOf(`attach:${panes[1]}`) < order.indexOf(`watch:${panes[0]}`),
+        `a cold switch attaches the selected pane before the left tab watches: ${order.join(", ")}`);
       await select(panes[0]!);
       const start = frames.length;
       const samples: { contentMs: number; readyMs: number }[] = [];

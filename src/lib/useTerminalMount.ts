@@ -862,9 +862,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // bridge marked `replay` (the screen from before this attach) is presentation history, and a
       // copy request in it was answered when it was new. The flag holds from the frame's write
       // until its callback; xterm's own parser state says whether a replayed OSC is still open.
-      const outputFrames: { data: string; replay: boolean; done?: () => void }[] = [];
+      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void }[] = [];
       let writingOutput = false;
       let parsingReplay = false;
+      // a hidden tab's view parsed on its return (resume): what it drew is history, and a query in it
+      // was answered when it was new, so xterm's replies to it never reach the pane (queryReplies below)
+      let parsingView = false;
       // Which output the frames belong to: a pane switch or reconnect starts new output, and the
       // frame xterm is parsing then is the old output's (`parsingOwner`), which copies nothing.
       let outputOwner = 0;
@@ -884,9 +887,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         writingOutput = true;
         parsingReplay = frame.replay;
+        parsingView = frame.view === true;
         const owner = parsingOwner = outputOwner;
         term.write(frame.data, () => {
           parsingReplay = false;
+          parsingView = false;
           if (!disposed) {
             // retired output is history to the new output, as a replayed frame is
             if (frame.replay || owner !== outputOwner) replayOscOpen = oscMayCopy();
@@ -900,8 +905,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
         });
       };
-      const writeOutput = (data: string, replay = false, done?: () => void): void => {
-        outputFrames.push({ data, replay, done });
+      const writeOutput = (data: string, replay = false, done?: () => void, view = false): void => {
+        outputFrames.push({ data, replay, view, done });
         if (!writingOutput) writeNextOutput();
       };
       // A pane switch resets the parser, and a reconnect replays afresh: frames still queued from
@@ -964,6 +969,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         return true;
       });
+      // Every query xterm answers while parsing (device attributes and status, DECRQM, window reports,
+      // DECRQSS, color reports) is taken here while a view is parsed, so its answer is never typed into the pane.
+      const queryReplies = [
+        ...([{ final: "c" }, { prefix: ">", final: "c" }, { prefix: "=", final: "c" }, { final: "n" }, { prefix: "?", final: "n" },
+          { intermediates: "$", final: "p" }, { prefix: "?", intermediates: "$", final: "p" }, { final: "t" }] as const)
+          .map((id) => term.parser.registerCsiHandler(id, () => parsingView)),
+        term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, () => parsingView),
+        ...[4, 10, 11, 12, 13, 14, 15, 16, 17, 19].map((id) => term.parser.registerOscHandler(id, (payload) => parsingView && payload.includes("?"))),
+      ];
       // OSC 8: a hyperlink this app cannot open (OmO's `omo-panel:` rows) is not drawn as one (#739)
       const osc8 = term.parser.registerOscHandler(8, (payload) => hyperlinksRef.current.handler(payload));
       // modifyOtherKeys (CSI > 4 ; level m): xterm.js has no handler for it, so this one only
@@ -2062,9 +2076,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         frameGateRef.current.reset();
         // what the view drew while this tab was hidden, parsed now in one go, before the attach's own screen
         if (viewBuffer !== null && viewBuffer.length > 1) {
-          writeOutput(viewBuffer.join(""), false, () => {
+          // marked replay: a copy request in it was answered when it was new (OSC 52 above)
+          writeOutput(viewBuffer.join(""), true, () => {
             if (!disposed && paneRef.current === current) modifyOtherKeysRef.current = 0;
-          });
+          }, true);
         }
         viewBuffer = null;
         viewBytes = 0;
@@ -2300,6 +2315,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         replayOscOpen = false;
         retireOutputRef.current = () => {};
         osc52.dispose();
+        for (const handler of queryReplies) handler.dispose();
         osc8.dispose();
         modifyOtherKeysSet.dispose();
         modifyOtherKeysOff.dispose();
