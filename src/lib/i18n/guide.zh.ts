@@ -13,6 +13,7 @@ export const GUIDE_ZH: Record<string, string> = {
   "Skip setup": "跳过设置",
   "Already installed one?": "已经装好了一个?",
   "Look again": "重新检查",
+  "This browser is paired first: other browsers now need pairing too.": "已先配对此浏览器：其他浏览器现在也需要配对。",
   "Installing {agent}… Open terminal": "正在安装 {agent}… 打开终端",
   "Try installing {agent} again": "重新安装 {agent}",
   "It took too long. Try again.": "时间太长了。请重试。",

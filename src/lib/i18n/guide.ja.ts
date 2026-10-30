@@ -13,6 +13,7 @@ export const GUIDE_JA: Record<string, string> = {
   "Skip setup": "セットアップをスキップ",
   "Already installed one?": "もうインストールしましたか?",
   "Look again": "もう一度確認",
+  "This browser is paired first: other browsers now need pairing too.": "このブラウザーを先にペアリングしました。ほかのブラウザーもペアリングが必要になります。",
   "Installing {agent}… Open terminal": "{agent} をインストール中… ターミナルを開く",
   "Try installing {agent} again": "{agent} をもう一度インストール",
   "It took too long. Try again.": "時間がかかりすぎています。もう一度お試しください。",

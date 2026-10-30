@@ -5,6 +5,7 @@
  * says it was closed, or that it was left open.
  */
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import type { HealthAuth } from "../../shared/protocol.ts";
 import type { SetupStep } from "./agentSetup.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 
@@ -70,6 +71,18 @@ export function agentRows(catalog: readonly AgentCatalogRow[] | null, ready: rea
   const first = FIRST.flatMap((id) => harness.filter((row) => row.id === id));
   const rest = harness.filter((row) => !FIRST.includes(row.id));
   return [...first, ...rest.filter((row) => installedHere(row, ready)), ...rest.filter((row) => !installedHere(row, ready))];
+}
+
+/**
+ * What the guide's Connect your phone box does: wait until the address a phone can open and this
+ * browser's access are known; leave it to Settings → Phone where there is no such address (the PC's
+ * loopback) or the server does not say how this browser got in; pair this browser first where it is
+ * in only because nothing is paired yet (a paired phone turns sign-in on); else show the QR.
+ */
+export function phoneBoxMode(address: string | null | undefined, auth: HealthAuth | null): "wait" | "settings" | "pair-self" | "qr" {
+  if (address === undefined || auth === null) return "wait";
+  if (address === null || auth.via === undefined) return "settings";
+  return auth.via === "open" ? "pair-self" : "qr";
 }
 
 /** How long a tile's install may run without the PC listing the agent before it stops spinning (a prompt, a closed tab). */

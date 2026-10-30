@@ -32,7 +32,6 @@ export const DEVICES_KO: Record<string, string> = {
   "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.": "아직 페어링된 기기가 없어 로그인 없이 접속된 상태입니다. 이 주소로 접속할 수 있는 사람은 누구나 똑같이 들어올 수 있습니다.",
   "Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.": "기기를 페어링하면 프록시 로그인과 별도로 앱 자체 로그인이 켜집니다. 그 뒤 다른 브라우저는 페어링이나 액세스 토큰이 필요합니다. 프록시가 이미 로그인을 받고 있다면 OVIS_TOKEN을 설정하고 프록시가 대신 보내게 하세요.",
   "Pair this device now": "지금 이 기기 페어링",
-  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
   "A paired device gets in on its own until you revoke it here.": "페어링된 기기는 여기서 폐기하기 전까지 스스로 들어옵니다.",
   "It gets in from anywhere it can reach this server. A code comes from this screen on the PC or on a device already paired, or from the pair command in the PC's terminal.": "이 서버에 닿는 어디서든 들어옵니다. 코드는 PC나 이미 페어링된 기기의 이 화면에서, 또는 PC 터미널의 pair 명령으로 받습니다.",
   "Or send this link to it:": "또는 이 링크를 그 기기로 보내세요:",

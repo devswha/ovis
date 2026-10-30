@@ -13,6 +13,7 @@ export const GUIDE_KO: Record<string, string> = {
   "Skip setup": "안내 건너뛰기",
   "Already installed one?": "이미 설치하셨나요?",
   "Look again": "다시 확인",
+  "This browser is paired first: other browsers now need pairing too.": "이 브라우저를 먼저 연결했어요. 이제 다른 브라우저도 연결이 필요해요.",
   "Installing {agent}… Open terminal": "{agent} 설치 중… 터미널 열기",
   "Try installing {agent} again": "{agent} 다시 설치하기",
   "It took too long. Try again.": "너무 오래 걸려요. 다시 시도해 주세요.",

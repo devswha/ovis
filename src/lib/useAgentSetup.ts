@@ -38,7 +38,8 @@ export function useAgentSetup({ agent, machineId = "local", initial = { kind: "i
     if (step.kind !== "installing") return;
     const abort = new AbortController();
     const read = () => void fetchAgentCatalog(machineId, abort.signal)
-      .then((catalog) => { const row = catalog.agents.find((candidate) => candidate.id === agent.id); if (row) { onRowRef.current?.(row); dispatch({ type: "detected", row }); } })
+      // an answer already on its way when the watch ended (the tile gone, the install over) tells nothing
+      .then((catalog) => { if (abort.signal.aborted) return; const row = catalog.agents.find((candidate) => candidate.id === agent.id); if (row) { onRowRef.current?.(row); dispatch({ type: "detected", row }); } })
       .catch(() => { /* the next read tries again */ });
     const timer = setInterval(read, DETECT_EVERY_MS);
     read();

@@ -32,7 +32,6 @@ export const DEVICES_JA: Record<string, string> = {
   "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.": "まだ何もペアリングされていないため、このブラウザーはアクセスできています。このアドレスに到達できる場所からなら、誰でも同様にアクセスできます。",
   "Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.": "デバイスをペアリングすると、プロキシのサインインとは別にアプリ自身のサインインが有効になり、他のブラウザーではペアリングかアクセストークンが必要になります。プロキシですでにサインインさせている場合は、OVIS_TOKEN を設定してプロキシに代わりに送らせてください。",
   "Pair this device now": "今すぐこのデバイスをペアリング",
-  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
   "A paired device gets in on its own until you revoke it here.": "ペアリングされたデバイスは、ここで取り消すまで自動的にアクセスできます。",
   "It gets in from anywhere it can reach this server. A code comes from this screen on the PC or on a device already paired, or from the pair command in the PC's terminal.": "このサーバーに到達できる場所ならどこからでもアクセスできます。コードは PC やペアリング済みデバイスのこの画面、または PC のターミナルの pair コマンドで取得できます。",
   "Or send this link to it:": "またはこのリンクをそのデバイスに送信してください:",

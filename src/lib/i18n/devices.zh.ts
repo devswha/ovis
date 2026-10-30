@@ -32,7 +32,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.": "此浏览器能够访问，仅因为尚未配对任何设备：任何能访问此地址的人都同样可以进入。",
   "Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.": "配对设备后，除了代理登录之外，应用自身的登录也会开启：之后其他浏览器需要配对或使用访问令牌。如果代理已经负责登录，请设置 OVIS_TOKEN，并让代理代为发送。",
   "Pair this device now": "立即配对此设备",
-  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
   "A paired device gets in on its own until you revoke it here.": "已配对的设备可自动进入，直到你在此处撤销。",
   "It gets in from anywhere it can reach this server. A code comes from this screen on the PC or on a device already paired, or from the pair command in the PC's terminal.": "它可从任何能访问此服务器的地方进入。代码可从 PC 或已配对设备上的此界面获取，也可在 PC 终端中运行 pair 命令获取。",
   "Or send this link to it:": "或将此链接发送到该设备：",

@@ -174,6 +174,7 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "提交",
   "Recommended": "推荐",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
   "New code": "新代码",
   "Paired: {name}.": "已配对：{name}。",
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",

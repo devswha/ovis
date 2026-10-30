@@ -172,6 +172,7 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "送信",
   "Recommended": "推奨",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
   "New code": "新しいコード",
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",

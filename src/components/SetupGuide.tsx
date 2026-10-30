@@ -5,8 +5,9 @@
  * a terminal tab while a ring turns on the tile), and Start opens the first workspace with the one
  * picked; the agent asks for its own sign-in when it first starts. Plan usage is turned on for
  * accounts already signed in; Connect your phone beside Start shows a QR code and the address right
- * there (Settings → Phone where the page has no phone-reachable address or this browser is in only
- * because nothing is paired yet). It adds no server route. Its layout follows the Claude and Codex apps' first runs: one screen in the main
+ * there (a browser in only because nothing is paired yet pairs itself first, as Settings → Phone's
+ * Pair this device now does; Settings → Phone where the page has no phone-reachable address). It
+ * adds no server route. Its layout follows the Claude and Codex apps' first runs: one screen in the main
  * area, the app's sidebar left in place.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -18,10 +19,11 @@ import { ApiError, createWorkspace, fetchAgentCatalog, fetchDevices, fetchRemote
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
 import { createRequest, newSessionLaunch } from "../lib/newSession.ts";
+import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 import { useSettings } from "../lib/settings.ts";
-import { agentRows, checkList, foundAgents, INSTALL_GIVE_UP_MS, installedHere, openInFolder, preferredAgent, settleDelay, setupView, signedInAgents, tileState, type CheckStatus, type GuideEvent, type GuideState, type PcCheck } from "../lib/setupGuideFlow.ts";
+import { agentRows, checkList, foundAgents, INSTALL_GIVE_UP_MS, installedHere, phoneBoxMode, openInFolder, preferredAgent, settleDelay, setupView, signedInAgents, tileState, type CheckStatus, type GuideEvent, type GuideState, type PcCheck } from "../lib/setupGuideFlow.ts";
 import { useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { useAgentSetup } from "../lib/useAgentSetup.ts";
 import { userErrorMessage } from "../lib/userError.ts";
@@ -45,8 +47,10 @@ export interface SetupGuideProps {
   onOpenTerminal: (paneId: string) => void;
   /** Connect your phone where the guide cannot show its QR code: the Settings page that pairs it */
   onOpenSettings: (page: "devices") => void;
-  /** how this browser got in: one in only because nothing is paired yet pairs itself first, in Settings */
+  /** how this browser got in: one in only because nothing is paired yet pairs itself first (Connect your phone) */
   auth: HealthAuth | null;
+  /** this browser paired itself (Connect your phone): the app reads its access again */
+  onPaired: () => void;
   /** Start pressed: a tab the guide asked to show before it is not shown over what Start opens */
   onStarting?: () => void;
   /** the first workspace opened: its pane, and whether the agent started in it */
@@ -131,7 +135,7 @@ export function SetupGuide(props: SetupGuideProps) {
         </div>
         <p className="visually-hidden" role="status">{announced}</p>
         {view === "checking" && <Checking known={known} catalog={catalog} />}
-        {view === "agents" && catalog !== null && <AgentsScreen catalog={catalog} ready={ready} machineId={machineId} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} onStarting={props.onStarting} />}
+        {view === "agents" && catalog !== null && <AgentsScreen catalog={catalog} ready={ready} machineId={machineId} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} onStarting={props.onStarting} onPaired={props.onPaired} />}
         {view === "failed" && <CheckFailed error={catalogError} onLookAgain={loadCatalog} />}
       </div>
     </div>
@@ -208,7 +212,7 @@ function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain
   );
 }
 
-interface AgentsScreenProps extends Pick<SetupGuideProps, "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "onStarting"> {
+interface AgentsScreenProps extends Pick<SetupGuideProps, "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "onStarting" | "onPaired"> {
   catalog: readonly AgentCatalogRow[];
   ready: readonly string[];
   machineId: string;
@@ -217,7 +221,7 @@ interface AgentsScreenProps extends Pick<SetupGuideProps, "onOpenTerminal" | "on
   onLookAgain: () => void;
 }
 
-function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, onStarting }: AgentsScreenProps) {
+function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, onStarting, onPaired }: AgentsScreenProps) {
   const t = useT();
   const { settings, update } = useSettings();
   const agents = agentRows(catalog, ready);
@@ -309,7 +313,7 @@ function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onO
         </button>
         <button type="button" className="btn" disabled={opening} aria-expanded={phone} onClick={() => setPhone((show) => !show)}><Smartphone aria-hidden="true" />{t("Connect your phone")}</button>
       </div>
-      {phone && <PhoneQr auth={auth} onOpenSettings={() => { setPhone(false); onOpenSettings("devices"); }} />}
+      {phone && <PhoneQr auth={auth} onOpenSettings={() => { setPhone(false); onOpenSettings("devices"); }} onPaired={onPaired} />}
       {!busy && !locked && (
         <p className="setup-muted setup-again">{t("Already installed one?")} <button type="button" className="setup-link" onClick={onLookAgain}>{t("Look again")}</button></p>
       )}
@@ -425,6 +429,10 @@ function AgentTile({ agent, has, picked, locked, machineId, onPick, onOpenTermin
 
 /** how often the guide looks for a phone that paired with the code it shows */
 const PAIRING_POLL_MS = 3000;
+// this browser paired itself from the guide on this page: a box opened again shows the QR (and says
+// so) even before the app's access facts catch up
+let pairedHere = false;
+
 // the guide's code request, while it is out: a box closed and opened again joins it instead of
 // sending a second one (each new code replaces the server's pending one)
 let pairingOut: Promise<PairingCode> | null = null;
@@ -432,12 +440,12 @@ const guidePairingCode = (): Promise<PairingCode> => pairingOut ??= startPairing
 
 /**
  * Connect your phone, right in the guide: a QR code that opens this app on the phone with a fresh
- * pairing code filled in, and the address beside it. Settings → Phone takes over where the guide
- * cannot do it safely: this page has no address a phone can open (the PC's own loopback), or this
- * browser is in only because nothing is paired yet (a paired phone would turn sign-in on and shut
- * it out: Settings pairs this browser first).
+ * pairing code filled in, and the address beside it (phoneBoxMode). A browser in only because nothing
+ * is paired yet pairs itself first, as Settings → Phone's Pair this device now does, so the phone
+ * paired next does not shut it out. Settings → Phone takes over where this page has no address a
+ * phone can open (the PC's own loopback) or the server does not say how this browser got in.
  */
-function PhoneQr({ auth, onOpenSettings }: { auth: HealthAuth | null; onOpenSettings: () => void }) {
+function PhoneQr({ auth, onOpenSettings, onPaired }: { auth: HealthAuth | null; onOpenSettings: () => void; onPaired: () => void }) {
   const t = useT();
   const [access, setAccess] = useState<RemoteAccess | null | undefined>(undefined);
   useEffect(() => {
@@ -448,28 +456,36 @@ function PhoneQr({ auth, onOpenSettings }: { auth: HealthAuth | null; onOpenSett
   const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext }, access ?? null);
   // where a phone can open this app now, as Settings → Phone works it out
   const address = access === undefined ? undefined : plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
-  // an access the server does not name is treated as open: Settings pairs this browser first
-  const inSettings = address === null || (auth !== null && (auth.via === undefined || auth.via === "open"));
-  useEffect(() => { if (inSettings) onOpenSettings(); }, [inSettings]); // eslint-disable-line react-hooks/exhaustive-deps
-  // a pairing code for the QR once there is an address for it, asked for by the user each time
-  // (opening the box, New code): never renewed behind their back, where it would replace a code
-  // Settings → Phone shows. Used by a phone (a device paired since) or run out, it is gone.
+  // the QR, this browser paired first, or Settings → Phone (phoneBoxMode); once paired here, the QR
+  // even before the app reads its access again
+  const mode = phoneBoxMode(address, pairedHere && auth?.via === "open" ? { ...auth, via: "device" } : auth);
+  useEffect(() => { if (mode === "settings") onOpenSettings(); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a pairing code for the QR, asked for by the user each time (opening the box, New code): never
+  // renewed behind their back, where it would replace a code Settings → Phone shows. Used by a phone
+  // (a device paired since) or run out, it is gone.
   const [code, setCode] = useState<PairingCode | null>(null);
   const [paired, setPaired] = useState<string | null>(null);
   const [asking, setAsking] = useState(0);
   // a code request out: New code waits for it (a second one could replace the code the first shows)
   const [requesting, setRequesting] = useState(false);
-  // no code before it is known how this browser got in (open access goes to Settings instead)
-  const ready = typeof address === "string" && auth !== null && !inSettings;
+  const [failure, setFailure] = useState<string | null>(null);
+  // this browser paired itself first (it was in only because nothing was paired yet)
+  const ready = mode === "qr" || mode === "pair-self";
   // the devices paired before this code: a new id among them later is the phone that used it
   const before = useRef<ReadonlySet<string> | null>(null);
   useEffect(() => {
     if (!ready) return;
     let live = true;
+    setRequesting(true);
+    setFailure(null);
     // read before the code and right after it: a device that paired in between used an older code
     // (one Settings showed); one missed this way only goes unconfirmed, never claimed wrongly
-    setRequesting(true);
     void (async () => {
+      if (mode === "pair-self" && !pairedHere) {
+        await pairThisBrowser();
+        pairedHere = true;
+        onPaired();
+      }
       const first = await fetchDevices();
       // closed or asked again meanwhile: no code requested for a box nobody sees
       if (!live) return;
@@ -478,7 +494,7 @@ function PhoneQr({ auth, onOpenSettings }: { auth: HealthAuth | null; onOpenSett
       if (!live) return;
       before.current = new Set([...first, ...after].map((device) => device.id));
       setCode(fresh);
-    })().catch(() => { if (live) setCode(null); }).finally(() => { if (live) setRequesting(false); });
+    })().catch((error: unknown) => { if (live) { setCode(null); setFailure(error instanceof UnconfirmedPairing ? t("Could not confirm this browser is paired. Check that cookies are enabled, then try again.") : userErrorMessage(error).message); } }).finally(() => { if (live) setRequesting(false); });
     return () => { live = false; };
   }, [ready, asking]);
   useEffect(() => {
@@ -501,12 +517,15 @@ function PhoneQr({ auth, onOpenSettings }: { auth: HealthAuth | null; onOpenSett
     return () => { live = false; window.clearTimeout(expiry); window.clearInterval(poll); };
   }, [code]);
   if (!ready || typeof address !== "string") return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
+  // the line under the address: the paired phone, this browser paired first, or what failed
   const value = code === null ? address : `${address.replace(/\/$/, "")}/?pair=${code.code}`;
   return (
     <div className="setup-phone-qr">
       <QrCode value={value} label={code === null ? t("Open this address on your phone") : t("QR code that pairs a phone with code {code}", { code: code.code })} size={136} />
       <div className="setup-phone-qr-text">
         {paired !== null && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("Paired: {name}.", { name: paired })}</span>}
+        {pairedHere && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is paired first: other browsers now need pairing too.")}</span>}
+        {failure !== null && <span className="setup-error" role="alert">{failure}</span>}
         <span>{t("Open this address on your phone")}</span>
         <code>{address}</code>
         {code !== null ? <span>{t("Pairing code")} <strong>{code.code}</strong></span>

@@ -3369,9 +3369,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them:
   a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
   code. The code is asked for when the box opens and never renewed behind the user's back (it would
-  replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again. Where the page has no address a phone can open (the PC's loopback), or this browser is in only
-  because nothing is paired yet (pairing a phone would shut it out), it opens Settings → Phone
-  instead. Start opens the folder this browser used last, else the server's home, without asking.
+  replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again.
+  A browser in only because nothing is paired yet pairs itself first, as Settings → Phone's Pair this
+  device now does (a paired phone turns the app's sign-in on), and a line says other browsers now need
+  pairing too; one such pairing runs at a time across the guide and Settings, and none runs for a
+  browser the server already lists. Where the page has no address a phone can open (the PC's
+  loopback), or the server does not say how this browser got in, it opens Settings → Phone instead. Start opens the folder this browser used last, else the server's home, without asking.
   Alerts are not offered here: they hang on the browser's permission and, on an iPhone, on the app
   being on the home screen first, so they stay in Settings → Alerts. A failed check says "Couldn't
   check this PC" with its error and Look again. On a phone Start and Connect your phone take the full
