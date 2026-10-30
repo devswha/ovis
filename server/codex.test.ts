@@ -1296,6 +1296,28 @@ describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  it.skipIf(process.platform === "win32")("reads a store behind a link as the store a Codex holds, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const target = mkdtempSync(join(tmpdir(), "ovis-codex-store-target-"));
+    const writer = made(target);
+    try {
+      symlinkSync(join(target, "state_5.sqlite"), join(home, "state_5.sqlite"));
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      // the live -wal lies beside the store, not beside the link to it
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
   it("reads a store a Codex holds open, rows not yet checkpointed included", () => {
     const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
     const writer = made(home);

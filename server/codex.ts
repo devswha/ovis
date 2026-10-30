@@ -374,7 +374,11 @@ export class CodexStoreChanged extends Error {}
  * limit, as for the session stores (server/session-history.ts).
  */
 export function openCodexStore(home: string): { db: Database; immutable: boolean; settled: () => void } {
-  const store = join(home, "state_5.sqlite");
+  const named = join(home, "state_5.sqlite");
+  // the store itself, links resolved: its side files lie beside it, not beside a link to it. One that
+  // will not resolve is opened read-only by its name, as before (never immutable)
+  let store: string;
+  try { store = realpathSync(named); } catch { return { db: new Database(named, { readonly: true, create: false }), immutable: false, settled: () => {} }; }
   const held = () => ["-wal", "-shm", "-journal"].some((suffix) => existsSync(store + suffix));
   if (held()) return { db: new Database(store, { readonly: true, create: false }), immutable: false, settled: () => {} };
   const before = statSync(store, { bigint: true });
