@@ -667,9 +667,13 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
   agent that reports none shows no status. `error` counts as finished.
 - **Terminal:** the live view is `hc attach`, input and the key bar work as on herdr, and the
-  terminal takes the size of whoever typed in it last, the app's window or your phone.
-- **Not on herdr-core:** making or rearranging workspaces, tabs and splits, which belong to the
-  app's window. Remote PCs keep running herdr's TUI server.
+  terminal takes the size of the viewer that last typed in it or resized it: the app's window, or
+  your phone once you type or open it there.
+- **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
+  empty input box reads as typed text, and a send waits for you to confirm it.
+- **Not on herdr-core:** making, rearranging, renaming or closing workspaces, tabs, splits and
+  panes, which belong to the app's window; search and scrollback selection in a pane; plugins and
+  worktrees. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 

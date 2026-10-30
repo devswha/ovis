@@ -25,7 +25,7 @@ export function hcBin(): string {
 /**
  * On herdr-core, the adapter that answers herdr's API from hc (server/herdr-core/adapter.ts),
  * listening in the state folder, and HERDR_SOCKET pointed at it before anything reads it; on
- * herdr, nothing.
+ * herdr, nothing. Another Ovis still serving the same state folder is an error: nothing is started.
  */
 export async function startRuntime(stateDir: string): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame } from "../herdr/client.ts";
@@ -65,7 +65,11 @@ class FakeCore implements HcTransport {
   private onFrame(channel: number, kind: number, payload: Uint8Array): void {
     if (channel !== 0) {
       if (kind === FRAME_DATA) this.typed.push({ channel, text: new TextDecoder().decode(payload) });
-      if (kind === FRAME_CLOSE) this.closed.push(channel);
+      if (kind === FRAME_CLOSE) {
+        this.closed.push(channel);
+        // hc answers a viewer's CLOSE with its own
+        this.controller.enqueue(encodeFrame(channel, FRAME_CLOSE, new Uint8Array(0)));
+      }
       return;
     }
     const message = JSON.parse(new TextDecoder().decode(payload)) as { id: number; method: string; params: Record<string, unknown> };
@@ -115,7 +119,6 @@ for (const method of ["call", "open"] as const) {
     }
   });
 }
-
 async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
   const socket = join(dir, "herdr.sock");
@@ -160,24 +163,41 @@ describe("herdr-core adapter", () => {
     expect(snapshot.panes.map((p) => [p.pane_id, p.agent, p.agent_status])).toEqual([["t1", "claude", "blocked"], ["t2", null, "unknown"]]);
   });
 
-  it("types send_text into an attach at the terminal's own grid, then lets the attach go", async () => {
+  it("types send_text into an attach at the terminal's own grid, and answers once hc took the attach's close", async () => {
     const { socket, cores } = await setup([terminal("t1", { cols: 90, rows: 20 })]);
     await paneSendText("t1", "héllo 한글", socket);
     const core = cores[0]!;
     expect(core.calls.find((call) => call.method === "terminal.attach")?.params).toEqual({ terminal: "t1", cols: 90, rows: 20 });
     expect(core.typed).toEqual([{ channel: 1, text: "héllo 한글" }]);
-    // the CLOSE frame goes out before the adapter answers
     expect(core.closed).toEqual([1]);
   });
 
-  it("presses keys in order: plain ones typed together, the others through hc's encoder", async () => {
+  it("presses keys in order: typed runs together, runs of mode-dependent keys through hc's encoder", async () => {
     const { socket, cores } = await setup([terminal("t1")]);
-    await paneSendKeys("t1", ["Escape", "Enter", "ctrl+shift+left", "x"], socket);
+    await paneSendKeys("t1", ["Escape", "ctrl+shift+left", "x", "alt+|", "Enter", "c-c", "alt+x"], socket);
     const core = cores[0]!;
-    expect(core.typed.map((write) => write.text)).toEqual(["\x1b\r", "x"]);
-    expect(core.calls.filter((call) => call.method === "terminal.keys").map((call) => call.params["keys"])).toEqual([["ctrl+shift+left"]]);
+    expect(core.typed.map((write) => write.text)).toEqual(["x\x1b|\r"]);
+    expect(core.calls.filter((call) => call.method === "terminal.keys").map((call) => call.params["keys"])).toEqual([
+      ["escape", "ctrl+shift+left"],
+      ["ctrl+c", "alt+x"],
+    ]);
     const order = core.calls.map((call) => call.method).filter((method) => method === "terminal.attach" || method === "terminal.keys");
-    expect(order).toEqual(["terminal.attach", "terminal.keys", "terminal.attach"]);
+    expect(order).toEqual(["terminal.keys", "terminal.attach", "terminal.keys"]);
+  });
+
+  it("replaces a socket file a killed server left behind", async () => {
+    const { hc } = await setup([terminal("t1")]);
+    const dir = mkdtempSync(join(tmpdir(), "ovis-hc-dead-"));
+    const dead = join(dir, "herdr.sock");
+    // a server that was killed and left its socket file behind
+    const gone = Bun.spawn([process.execPath, "-e", `Bun.listen({ unix: ${JSON.stringify(dead)}, socket: { data() {} } }); console.log("up")`], { stdout: "pipe" });
+    await gone.stdout.getReader().read();
+    gone.kill("SIGKILL");
+    await gone.exited;
+    expect(existsSync(dead)).toBe(true);
+    const adapter = await startHerdrCoreAdapter(hc, dead);
+    cleanups.push(() => { adapter.stop(); rmSync(dir, { recursive: true, force: true }); });
+    expect((await sessionSnapshot(dead)).panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
   });
 
   it("refuses what only the Herdr app does, and a pane hc does not have, in herdr's codes", async () => {
@@ -218,6 +238,8 @@ describe("herdr-core adapter", () => {
       { event: "pane.exited", data: { type: "pane_exited", pane_id: "t1" } },
       { event: "pane.closed", data: { type: "pane_closed", pane_id: "t1" } },
     ]);
+    // the subscription that ended lets go of hc's stream too
+    expect(core.closed).toContain(channel);
   });
 
   it("acknowledges before an event bundled with the hc subscribe response", async () => {

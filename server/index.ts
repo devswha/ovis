@@ -22,7 +22,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { startRuntime } from "./herdr-core/runtime.ts";
+import { hcBin, startRuntime } from "./herdr-core/runtime.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
@@ -386,7 +386,13 @@ if (import.meta.main) {
   // resolved once, for the same reason as in createServer
   const stateDir = defaultStateDir();
   // herdr-core's adapter is HERDR_SOCKET: it listens before anything below asks herdr
-  const herdrCore = await startRuntime(stateDir);
+  let herdrCore: Awaited<ReturnType<typeof startRuntime>>;
+  try {
+    herdrCore = await startRuntime(stateDir);
+  } catch (err) {
+    console.error(`Ovis cannot start: ${err instanceof Error ? err.message : String(err)}.`);
+    process.exit(1);
+  }
   const updates = connectUpdater();
   const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
   const telemetry = new Telemetry({ stateDir, version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version });
@@ -407,6 +413,7 @@ if (import.meta.main) {
         ? "this PC has no such address; try HOST=127.0.0.1"
         : "the port needs permission; try a PORT above 1024";
     console.error(`Ovis cannot listen on ${host}:${port}: ${reason}.`);
+    herdrCore?.stop();
     process.exit(1);
   }
   telemetry.start();
@@ -430,7 +437,9 @@ if (import.meta.main) {
   console.log(`Ovis listening on http://${instance.hostname}:${instance.port}`);
   const socket = herdrSocketPath();
   void ping(socket).catch(() => {
-    console.error(`herdr is not reachable at ${socket}: start herdr, or set HERDR_SOCKET to its socket (named sessions: ~/.config/herdr/sessions/<name>/herdr.sock).`);
+    console.error(herdrCore
+      ? `herdr-core is not reachable through ${socket}: start it with \`${hcBin()} server start\`, or set OVIS_HC_BIN to hc's full path.`
+      : `herdr is not reachable at ${socket}: start herdr, or set HERDR_SOCKET to its socket (named sessions: ~/.config/herdr/sessions/<name>/herdr.sock).`);
   });
   // the state folder is created on first write, so test the nearest folder that exists
   let probe = stateDir;

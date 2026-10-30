@@ -70,16 +70,35 @@ describe("buildSnapshot", () => {
     expect(snapshot.agents.map((a) => a.pane_id)).toEqual(["t1", "t2", "t3"]);
   });
 
-  it("gives each pane its terminal's own grid", () => {
-    const snapshot = buildSnapshot([terminal("t1", { cols: 80, rows: 24 })], null, "0.1.14");
-    expect(snapshot.layouts[0]!.panes[0]!.rect).toEqual({ x: 0, y: 0, width: 80, height: 24 });
+  it("gives each pane its terminal's own grid at its place in the tab's splits, so no two panes overlap", () => {
+    const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), { type: "column", id: "c", children: [block("t2"), block("t3")] }] } }] }] };
+    const snapshot = buildSnapshot([terminal("t1", { cols: 80, rows: 49 }), terminal("t2", { cols: 60, rows: 24 }), terminal("t3", { cols: 60, rows: 24 })], layout, "0.1.14");
+    const tab = snapshot.layouts[0]!;
+    expect(tab.panes.map((pane) => [pane.pane_id, pane.rect])).toEqual([
+      ["t1", { x: 0, y: 0, width: 80, height: 49 }],
+      ["t2", { x: 81, y: 0, width: 60, height: 24 }],
+      ["t3", { x: 81, y: 25, width: 60, height: 24 }],
+    ]);
+    expect(tab.area).toEqual({ x: 0, y: 0, width: 141, height: 49 });
+  });
+
+  it("places a terminal the document names twice once, and skips a space or tab whose id was seen or is empty", () => {
+    const layout = { spaces: [
+      { id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), block("t1")] } }, { id: "s1t1", name: "", root: block("t2") }] },
+      { id: "s1", name: "b", tabs: [{ id: "x", name: "", root: block("t3") }] },
+      { id: OTHER_WORKSPACE_ID, name: "c", tabs: [{ id: "y", name: "", root: block("t3") }] },
+      { id: "", name: "d", tabs: [{ id: "z", name: "", root: block("t3") }] },
+    ] };
+    const snapshot = buildSnapshot([terminal("t1"), terminal("t2"), terminal("t3")], layout, "0.1.14");
+    expect(snapshot.panes.map((p) => [p.pane_id, p.workspace_id])).toEqual([["t1", "s1"], ["t2", OTHER_WORKSPACE_ID], ["t3", OTHER_WORKSPACE_ID]]);
+    expect(new Set(snapshot.workspaces.map((w) => w.workspace_id)).size).toBe(snapshot.workspaces.length);
   });
 });
 
 describe("keyBytes", () => {
-  it("types herdr's key names as a plain terminal sends them, and leaves the rest to hc", () => {
-    expect(["Enter", "Escape", "esc", "Backspace", "Tab", "Up", "ctrl+c", "C-d", "x"].map(keyBytes)).toEqual(["\r", "\x1b", "\x1b", "\x7f", "\t", "\x1b[A", "\x03", "\x04", "x"]);
-    expect(keyBytes("ctrl+enter")).toBeNull();
-    expect(keyBytes("ctrl+alt+shift+left")).toBeNull();
+  it("types printable characters, Enter, Tab, Backspace, and Alt or Shift on a character hc has no key for; leaves the rest to hc's encoder", () => {
+    expect(["x", "A", "한", " ", "Enter", "tab", "Backspace", "plus", "shift+plus", "alt+|", "alt+shift+plus"].map(keyBytes))
+      .toEqual(["x", "A", "한", " ", "\r", "\t", "\x7f", "+", "+", "\x1b|", "\x1b+"]);
+    for (const key of ["\x7f", "\x1b", "esc", "Up", "ctrl+enter", "shift+tab", "ctrl+c", "C-d", "alt+x", "ctrl+|", "constructor", "ctrl+alt+shift+left"]) expect(keyBytes(key)).toBeNull();
   });
 });

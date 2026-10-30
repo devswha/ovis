@@ -78,14 +78,37 @@ function rollUp(statuses: readonly AgentStatus[]): AgentStatus {
   return best;
 }
 
-/** The terminals a tab's split tree (the app's document: never trusted to have a shape) holds, in reading order. */
-function terminalsIn(node: unknown, into: string[] = []): string[] {
-  if (!isRecord(node)) return into;
+/** A terminal in a tab, at its place in the tab's split tree (cells from the tab's top left). */
+interface Placed { terminal: HcTerminal; x: number; y: number }
+
+/**
+ * Lays a tab's split tree (the app's document: never trusted to have a shape) out in reading order:
+ * a `column` stacks its children, anything else sets them side by side, one cell apart as a
+ * divider; each terminal takes its own grid. `take` hands over a live terminal not placed yet,
+ * so one named twice is placed once.
+ */
+function tile(node: unknown, x: number, y: number, take: (address: string) => HcTerminal | null, into: Placed[]): { width: number; height: number } {
+  if (!isRecord(node)) return { width: 0, height: 0 };
   const content = node["content"];
-  if (isRecord(content) && typeof content["terminal"] === "string") into.push(content["terminal"]);
+  if (isRecord(content) && typeof content["terminal"] === "string") {
+    const terminal = take(content["terminal"]);
+    if (!terminal) return { width: 0, height: 0 };
+    into.push({ terminal, x, y });
+    return { width: terminal.cols, height: terminal.rows };
+  }
   const children = node["children"];
-  if (Array.isArray(children)) for (const child of children) terminalsIn(child, into);
-  return into;
+  if (!Array.isArray(children)) return { width: 0, height: 0 };
+  const stacked = node["type"] === "column";
+  let along = 0;
+  let across = 0;
+  for (const child of children) {
+    const size = stacked ? tile(child, x, y + along, take, into) : tile(child, x + along, y, take, into);
+    if (size.width === 0 && size.height === 0) continue;
+    along += (stacked ? size.height : size.width) + 1;
+    across = Math.max(across, stacked ? size.width : size.height);
+  }
+  const length = Math.max(0, along - 1);
+  return stacked ? { width: across, height: length } : { width: length, height: across };
 }
 
 function basename(path: string): string {
@@ -93,34 +116,45 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-interface Group { id: string; label: string; tabs: { id: string; label: string; terminals: HcTerminal[] }[] }
+interface Group { id: string; label: string; tabs: { id: string; label: string; placed: Placed[] }[] }
 
 /**
  * The app's spaces and tabs over the live terminals. A name the user gave wins; an unnamed space
  * or tab reads as the app labels its terminals (`where`: `<space> / <tab>`), and failing that as
- * its first terminal's folder, or its number.
+ * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped.
  */
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   const live = new Map(terminals.filter((terminal) => terminal.state === "live").map((terminal) => [terminal.address, terminal]));
   const placed = new Set<string>();
+  const take = (address: string): HcTerminal | null => {
+    const terminal = live.get(address);
+    if (!terminal || placed.has(address)) return null;
+    placed.add(address);
+    return terminal;
+  };
+  const ids = new Set<string>([OTHER_WORKSPACE_ID]);
+  const fresh = (id: unknown): id is string => typeof id === "string" && id !== "" && !ids.has(id);
   const result: Group[] = [];
   const spaces = isRecord(layout) && Array.isArray(layout["spaces"]) ? layout["spaces"] : [];
   for (const space of spaces) {
-    if (!isRecord(space) || typeof space["id"] !== "string" || !Array.isArray(space["tabs"])) continue;
+    if (!isRecord(space) || !fresh(space["id"]) || !Array.isArray(space["tabs"])) continue;
+    ids.add(space["id"]);
     const group: Group = { id: space["id"], label: "", tabs: [] };
     for (const [index, tab] of space["tabs"].entries()) {
-      if (!isRecord(tab) || typeof tab["id"] !== "string") continue;
-      const held = terminalsIn(tab["root"]).map((address) => live.get(address)).filter((terminal): terminal is HcTerminal => terminal !== undefined && !placed.has(terminal.address));
+      if (!isRecord(tab) || !fresh(tab["id"])) continue;
+      ids.add(tab["id"]);
+      const held: Placed[] = [];
+      tile(tab["root"], 0, 0, take, held);
       if (held.length === 0) continue;
-      for (const terminal of held) placed.add(terminal.address);
-      const where = held[0]!.labels?.["where"]?.split(" / ");
+      const first = held[0]!.terminal;
+      const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
       const tabName = tab["name"];
-      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] ?? String(index + 1), terminals: held });
+      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || String(index + 1), placed: held });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];
         group.label = typeof spaceName === "string" && spaceName ? spaceName
-          : where?.[0] ?? (typeof folder === "string" && folder ? basename(folder) : basename(held[0]!.foreground?.cwd ?? held[0]!.cwd));
+          : where?.[0] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
       }
     }
     if (group.tabs.length > 0) result.push(group);
@@ -130,7 +164,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     result.push({
       id: OTHER_WORKSPACE_ID,
       label: "Other terminals",
-      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.name || terminal.address, terminals: [terminal] })),
+      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
     });
   }
   return result;
@@ -175,7 +209,7 @@ export function agentInfoOf(pane: PaneInfo): AgentInfo {
 /**
  * herdr's session snapshot of the core. Nothing has herdr's focus: the app keeps its own focus per
  * window, and no pane is in front of anyone the way a herdr TUI's is. Each pane's layout rect is
- * its terminal's own grid, the size an observer attaches at.
+ * its terminal's own grid, the size an observer attaches at, at its place in the tab's splits.
  */
 export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string): SessionSnapshot {
   const workspaces: WorkspaceInfo[] = [];
@@ -185,15 +219,20 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
   for (const [index, group] of groups(terminals, layout).entries()) {
     const groupPanes: PaneInfo[] = [];
     for (const [tabIndex, tab] of group.tabs.entries()) {
-      const tabPanes = tab.terminals.map((terminal) => paneOf(terminal, group.id, tab.id));
+      const tabPanes = tab.placed.map(({ terminal }) => paneOf(terminal, group.id, tab.id));
       groupPanes.push(...tabPanes);
       tabs.push({ tab_id: tab.id, workspace_id: group.id, label: tab.label, number: tabIndex + 1, agent_status: rollUp(tabPanes.map((pane) => pane.agent_status)), focused: false, pane_count: tabPanes.length });
       layouts.push({
         workspace_id: group.id,
         tab_id: tab.id,
-        area: { x: 0, y: 0, width: Math.max(...tab.terminals.map((terminal) => terminal.cols)), height: Math.max(...tab.terminals.map((terminal) => terminal.rows)) },
+        area: {
+          x: 0,
+          y: 0,
+          width: Math.max(...tab.placed.map(({ terminal, x }) => x + terminal.cols)),
+          height: Math.max(...tab.placed.map(({ terminal, y }) => y + terminal.rows)),
+        },
         focused_pane_id: tabPanes[0]!.pane_id,
-        panes: tab.terminals.map((terminal, at) => ({ pane_id: terminal.address, focused: at === 0, rect: { x: 0, y: 0, width: terminal.cols, height: terminal.rows } })),
+        panes: tab.placed.map(({ terminal, x, y }, at) => ({ pane_id: terminal.address, focused: at === 0, rect: { x, y, width: terminal.cols, height: terminal.rows } })),
         splits: [],
         zoomed: false,
       });
@@ -237,30 +276,41 @@ export function processInfoOf(terminal: HcTerminal): PaneProcessInfo {
   };
 }
 
-/**
- * herdr's key names (`Enter`, `Escape`, `ctrl+alt+shift+left`) as bytes typed into the terminal,
- * the way a terminal without extended keyboard modes sends them, or null for a key that has no
- * such encoding (hc's `terminal.keys` encodes those for the program's current modes).
- */
-export function keyBytes(key: string): string | null {
-  const name = key.toLowerCase();
-  const plain: Record<string, string> = {
-    enter: "\r", return: "\r", escape: "\x1b", esc: "\x1b", tab: "\t", backspace: "\x7f", space: " ",
-    up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D",
-    home: "\x1b[H", end: "\x1b[F", pageup: "\x1b[5~", pagedown: "\x1b[6~", delete: "\x1b[3~", insert: "\x1b[2~",
-  };
-  if (name in plain) return plain[name]!;
-  const ctrl = /^(?:ctrl|c)[+-]([a-z])$/.exec(name);
-  if (ctrl) return String.fromCharCode(ctrl[1]!.charCodeAt(0) - 96);
-  // one printable character types itself
-  if ([...key].length === 1 && key >= " ") return key;
-  return null;
+/** The characters hc's `terminal.keys` has a key for (herdr-core crates/herdr-core/src/keys.rs). */
+const HC_KEY_CHARACTER = /^[a-z0-9`\\[\],=\-.';/]$/;
+
+function printable(text: string): boolean {
+  return [...text].length === 1 && text >= " " && text !== "\x7f";
 }
 
-/** herdr's key name as hc's `terminal.keys` names it (lowercase, `esc` for Escape). */
-export function hcKeyName(key: string): string {
+/**
+ * Unmodified keys whose bytes no keyboard mode a program sets changes (kitty's disambiguate mode,
+ * which agents enable, keeps them too). Typed directly: hc's `terminal.keys` holds a key until
+ * nobody has typed for ~3 s, which would hold every Enter after a paste.
+ */
+const STABLE_KEYS: Record<string, string> = { enter: "\r", return: "\r", tab: "\t", backspace: "\x7f" };
+
+/**
+ * What a herdr key types, for keys hc's `terminal.keys` is not needed for: one printable
+ * character (`x`, `한`, `A`) as itself, Enter, Tab and Backspace, and Alt or Shift on a character
+ * hc has no key for (`alt+|`, `shift+plus`) as a terminal sends it, ESC before the character for
+ * Alt. null for a key or chord hc encodes in the program's current keyboard modes (`esc`,
+ * `ctrl+c`, `alt+x`, `up`).
+ */
+export function keyBytes(key: string): string | null {
+  if (printable(key)) return key;
   const name = key.toLowerCase();
-  if (name === "escape") return "esc";
-  if (name === "return") return "enter";
-  return name.replace(/^c-/, "ctrl+");
+  if (Object.hasOwn(STABLE_KEYS, name)) return STABLE_KEYS[name]!;
+  const parts = key.split("+");
+  const last = parts.at(-1)!;
+  const character = last === "plus" ? "+" : last;
+  const mods = parts.slice(0, -1).map((mod) => mod.toLowerCase());
+  if (!printable(character) || HC_KEY_CHARACTER.test(character.toLowerCase())) return null;
+  if (!mods.every((mod) => mod === "alt" || mod === "shift")) return null;
+  return `${mods.includes("alt") ? "\x1b" : ""}${character}`;
+}
+
+/** herdr's key name as hc's `terminal.keys` names it: lowercase, and `ctrl+` for herdr's `c-`. */
+export function hcKeyName(key: string): string {
+  return key.toLowerCase().replace(/^c-/, "ctrl+");
 }

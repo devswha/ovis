@@ -170,8 +170,12 @@ function herdrCode(error: HcError, missing: string): string {
     case "not_found": return missing;
     case "blocked": return "agent_blocked";
     case "unavailable": return "server_unavailable";
-    case "closed": return "connect_failed";
     case "timeout": return "timeout";
+    // the line to hc ended or never spoke its protocol: hc cannot be reached, as a herdr socket nobody answers
+    case "closed":
+    case "bad_hello":
+    case "bad_frame":
+      return "connect_failed";
     default: return error.kind;
   }
 }
@@ -201,12 +205,29 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
     return found;
   };
 
-  /** Bytes typed into the terminal, as a person at it would. */
+  /**
+   * Bytes typed into the terminal, as a person at it would: over an attach at the grid hc says the
+   * terminal has (a viewer that typed sets the size, so it must set this one), answered once hc
+   * took the close that follows them, so what the caller does next comes after the bytes.
+   */
   const type = async (paneId: string, bytes: string): Promise<void> => {
     const record = await terminal(paneId);
-    const { channel } = await hc.open("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows }, { onData: () => {}, onClose: () => {} });
+    const { result, channel } = await hc.open<{ channel: number; terminal?: HcTerminal }>("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows }, { onData: () => {}, onClose: () => {} });
+    // resized since it was looked up: type at the size it has now
+    const now = result.terminal;
+    if (now && (now.cols !== record.cols || now.rows !== record.rows)) channel.resize(now.cols, now.rows);
     channel.write(bytes);
-    channel.close();
+    await channel.close();
+  };
+
+  /** Input to one pane in the order it was asked for: each attach and its bytes finish before the next. */
+  const turns = new Map<string, Promise<unknown>>();
+  const inTurn = <T>(paneId: string, work: () => Promise<T>): Promise<T> => {
+    const run = (turns.get(paneId) ?? Promise.resolve()).then(work, work);
+    const settled = run.then(() => {}, () => {});
+    turns.set(paneId, settled);
+    void settled.then(() => { if (turns.get(paneId) === settled) turns.delete(paneId); });
+    return run;
   };
 
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
@@ -248,21 +269,30 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
     async "pane.send_text"(params) {
       const text = params["text"];
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
-      await type(paneIdOf(params), text);
+      const paneId = paneIdOf(params);
+      await inTurn(paneId, () => type(paneId, text));
       return { type: "ok" };
     },
     async "pane.send_keys"(params) {
       const paneId = paneIdOf(params);
       const keys = Array.isArray(params["keys"]) ? params["keys"].filter((key): key is string => typeof key === "string") : [];
-      // in order, a run of plain keys typed at once and an encoded key on its own
-      let typed = "";
-      for (const key of keys) {
-        const bytes = keyBytes(key);
-        if (bytes !== null) { typed += bytes; continue; }
-        if (typed) { await type(paneId, typed); typed = ""; }
-        await hc.call("terminal.keys", { terminal: paneId, keys: [hcKeyName(key)] });
-      }
-      if (typed) await type(paneId, typed);
+      await inTurn(paneId, async () => {
+        // in order: a run of printable characters typed at once, a run of named keys and chords
+        // through hc, which encodes them for the program's current keyboard modes
+        let typed = "";
+        let named: string[] = [];
+        const sendRun = async () => {
+          if (typed) { await type(paneId, typed); typed = ""; }
+          if (named.length > 0) { await hc.call("terminal.keys", { terminal: paneId, keys: named }); named = []; }
+        };
+        for (const key of keys) {
+          const bytes = keyBytes(key);
+          if (bytes !== null ? named.length > 0 : typed !== "") await sendRun();
+          if (bytes !== null) typed += bytes;
+          else named.push(hcKeyName(key));
+        }
+        await sendRun();
+      });
       return { type: "ok" };
     },
     async "agent.prompt"(params) {
@@ -270,7 +300,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       const text = params["text"];
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
       if (!(await paneOf(paneId, "agent_not_found")).agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
-      await hc.call("terminal.send", { terminal: paneId, text }, 30_000);
+      await inTurn(paneId, () => hc.call("terminal.send", { terminal: paneId, text }, 30_000));
       return { type: "ok" };
     },
   };
@@ -283,7 +313,9 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
     } catch (error) {
       if (error instanceof AdapterError) return { error: { code: error.code, message: error.message } };
       if (error instanceof HcError) return { error: { code: herdrCode(error, "pane_not_found"), message: error.message } };
-      return { error: { code: "internal", message: error instanceof Error ? error.message : String(error) } };
+      // what failed is the server's own business: its log has it, the caller a plain reason
+      console.error(`herdr-core adapter: ${request.method} failed:`, error);
+      return { error: { code: "internal", message: `herdr-core could not answer ${request.method}` } };
     }
   };
 }
@@ -309,10 +341,22 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
   }
   let acknowledged = false;
   const queued: string[] = [];
+  let ended = false;
   const emit = (event: string, data: Record<string, unknown>) => {
     const frame = `${JSON.stringify({ event, data })}\n`;
     if (acknowledged) send(socket, frame);
     else queued.push(frame);
+  };
+  /** Ends the subscription on both sides: hc's stream goes, and what was already written still reaches the reader. */
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    socket.data.unsubscribe?.();
+    socket.data.unsubscribe = null;
+    if (!socket.data.closed) {
+      socket.data.ending = true;
+      flush(socket);
+    }
   };
   const lifecycle = (event: string, type: string, paneId?: string) => {
     if (structure) emit(event, { type, ...(paneId ? { pane_id: paneId } : {}) });
@@ -354,10 +398,8 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         return;
     }
   };
-  const end = () => {
-    if (!socket.data.closed) socket.end();
-  };
   const read = makeLineReader(EVENT_LINE_BYTES, (line) => {
+    if (ended) return;
     let message: unknown;
     try { message = JSON.parse(line); } catch { end(); return; }
     if (!isRecord(message)) return;
@@ -370,18 +412,23 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     send(socket, `${JSON.stringify({ id: request.id, error: { code: "bad_frame", message: `hc event line exceeds ${EVENT_LINE_BYTES} bytes` } })}\n`, true);
   });
   try {
-    const { channel } = await hc.open("events.subscribe", {}, {
-      onData: read,
-      onClose: end,
-    });
-    if (socket.data.closed || socket.data.ending) { channel.close(); return; }
-    socket.data.unsubscribe = () => channel.close();
+    const { channel } = await hc.open("events.subscribe", {}, { onData: read, onClose: end });
+    // the herdr side went, or hc's stream did (`missed` can come with the answer), before the
+    // acknowledgement: nothing is started, and hc's stream goes too
+    if (ended || socket.data.closed || socket.data.ending) {
+      void channel.close();
+      end();
+      return;
+    }
+    socket.data.unsubscribe = () => { void channel.close(); };
     ack();
     acknowledged = true;
     for (const frame of queued) send(socket, frame);
     queued.length = 0;
   } catch (error) {
-    const reply = error instanceof HcError ? { code: herdrCode(error, "not_found"), message: error.message } : { code: "internal", message: String(error) };
-    send(socket, `${JSON.stringify({ id: request.id, error: reply })}\n`, true);
+    // whatever kept hc's stream from opening, the collector retries as it does for a herdr it cannot reach
+    const message = error instanceof HcError ? error.message : "herdr-core could not open its event stream";
+    if (!(error instanceof HcError)) console.error("herdr-core adapter: events.subscribe failed:", error);
+    send(socket, `${JSON.stringify({ id: request.id, error: { code: "connect_failed", message } })}\n`, true);
   }
 }

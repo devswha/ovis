@@ -13,13 +13,16 @@
 
 export const HC_GENERATION = 1;
 const DEFAULT_TIMEOUT_MS = 10_000;
+/** a `hc connect` that has not answered hello by then is not going to: the next call starts another */
+const HELLO_TIMEOUT_MS = 10_000;
 const HEADER_BYTES = 9;
-/** hc's own ceiling for one frame's payload */
+/** hc's own ceiling for one frame's payload, and for the plain hello line before framing */
 const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 export const FRAME_DATA = 0;
 export const FRAME_CREDIT = 1;
 export const FRAME_CLOSE = 2;
+export const FRAME_RESIZE = 3;
 
 export class HcError extends Error {
   /** hc's stable `data.kind` (`not_found`, `blocked`, `unavailable`, …), or this side's own */
@@ -89,7 +92,10 @@ export interface ChannelHandlers {
 export interface Channel {
   readonly id: number;
   write: (payload: Uint8Array | string) => void;
-  close: () => void;
+  /** the viewer's grid; hc takes it as the terminal's size, this being the last active viewer */
+  resize: (cols: number, rows: number) => void;
+  /** Detaches; settles once hc answered with its own CLOSE (what was written before has gone in) or the line ended. */
+  close: () => Promise<void>;
 }
 
 interface PendingCall {
@@ -100,6 +106,12 @@ interface PendingCall {
   channel?: ChannelHandlers;
 }
 
+interface OpenChannel {
+  handlers: ChannelHandlers;
+  /** this side sent CLOSE: hc's answering CLOSE settles it, and the stream's last bytes go unheard */
+  closing?: () => void;
+}
+
 /** What spawns `hc connect`: tests hand in a fake core. */
 export interface HcTransport {
   readable: ReadableStream<Uint8Array>;
@@ -108,13 +120,24 @@ export interface HcTransport {
   kill: () => void;
 }
 
+/** `hc connect` as a child process; a program that cannot be started is an HcError (`closed`). */
 export function spawnHcConnect(bin: string): HcTransport {
-  const child = Bun.spawn([bin, "connect"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  let child: Bun.Subprocess<"pipe", "pipe", "ignore">;
+  try {
+    child = Bun.spawn([bin, "connect"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  } catch (error) {
+    throw new HcError("closed", `hc could not be started (${bin}): ${error instanceof Error ? error.message : String(error)}`);
+  }
   return {
     readable: child.stdout,
     write: (bytes) => {
-      child.stdin.write(bytes);
-      void child.stdin.flush();
+      // a child that just exited takes no more: its end is reported through `exited`
+      try {
+        child.stdin.write(bytes);
+        Promise.resolve(child.stdin.flush()).catch(() => {});
+      } catch {
+        /* the line ends on `exited` */
+      }
     },
     exited: child.exited,
     kill: () => child.kill(),
@@ -126,7 +149,9 @@ interface Line {
   /** the hello answer: version and features of the core behind it */
   hello: Promise<HelloInfo>;
   pending: Map<number, PendingCall>;
-  channels: Map<number, ChannelHandlers>;
+  channels: Map<number, OpenChannel>;
+  /** when hc last sent anything: a call that times out on a line silent since it was sent ends the line */
+  heardAt: number;
   dead: boolean;
 }
 
@@ -163,16 +188,41 @@ export class HcConnection {
     const line = this.current();
     const result = await this.request<T>(method, params, timeoutMs, handlers, line);
     const id = result.channel;
+    const live = () => !line.dead && line.channels.get(id)?.closing === undefined;
     return {
       result,
       channel: {
         id,
         write: (payload) => {
-          if (!line.dead && line.channels.has(id)) line.transport.write(encodeFrame(id, FRAME_DATA, payload));
+          if (live()) line.transport.write(encodeFrame(id, FRAME_DATA, payload));
+        },
+        resize: (cols, rows) => {
+          if (!live()) return;
+          const grid = new Uint8Array(4);
+          const view = new DataView(grid.buffer);
+          view.setUint16(0, cols, true);
+          view.setUint16(2, rows, true);
+          line.transport.write(encodeFrame(id, FRAME_RESIZE, grid));
         },
         close: () => {
-          if (line.dead || !line.channels.delete(id)) return;
+          const open = line.channels.get(id);
+          if (line.dead || !open) return Promise.resolve();
+          if (open.closing) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            const before = open.closing;
+            open.closing = () => { before(); resolve(); };
+            return promise;
+          }
+          const { promise, resolve } = Promise.withResolvers<void>();
+          // a CLOSE hc never answers still lets the caller go: the channel is forgotten, as if answered
+          const timer = setTimeout(() => {
+            if (line.channels.get(id) !== open) return;
+            line.channels.delete(id);
+            open.closing?.();
+          }, DEFAULT_TIMEOUT_MS);
+          open.closing = () => { clearTimeout(timer); resolve(); };
           line.transport.write(encodeFrame(id, FRAME_CLOSE, new Uint8Array(0)));
+          return promise;
         },
       },
     };
@@ -187,6 +237,8 @@ export class HcConnection {
   private async request<T>(method: string, params: Record<string, unknown>, timeoutMs: number, channel?: ChannelHandlers, given?: Line): Promise<T> {
     const line = given ?? this.current();
     const id = this.nextId++;
+    // when the request went out: a line silent since then is wedged
+    let sentAt = Number.POSITIVE_INFINITY;
     const { promise, resolve, reject } = Promise.withResolvers<T>();
     let waitingHello = true;
     const timer = setTimeout(() => {
@@ -196,11 +248,14 @@ export class HcConnection {
       }
       line.pending.delete(id);
       reject(new HcError("timeout", `hc ${method} timed out after ${timeoutMs}ms`));
+      // a slow answer (a send waiting for quiet) is no fault of the line; a line that said nothing since is wedged
+      if (line.heardAt < sentAt) this.end(line, "timeout", "hc stopped answering");
     }, timeoutMs);
     line.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer, ...(channel ? { channel } : {}) });
     void line.hello.then(() => {
       waitingHello = false;
       if (line.dead || !line.pending.has(id)) return;
+      sentAt = performance.now();
       line.transport.write(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id, method, params })));
     }).catch((error: unknown) => {
       line.pending.delete(id);
@@ -216,8 +271,14 @@ export class HcConnection {
     const { promise: hello, resolve: helloDone, reject: helloFailed } = Promise.withResolvers<HelloInfo>();
     // a hello nobody awaited yet must not surface as an unhandled rejection
     hello.catch(() => {});
-    const line: Line = { transport, hello, pending: new Map(), channels: new Map(), dead: false };
+    const line: Line = { transport, hello, pending: new Map(), channels: new Map(), heardAt: performance.now(), dead: false };
     this.line = line;
+    const fail = (kind: string, message: string) => {
+      helloFailed(new HcError(kind, message));
+      this.end(line, kind, message);
+    };
+    const helloTimer = setTimeout(() => fail("timeout", `hc connect did not answer hello within ${HELLO_TIMEOUT_MS}ms`), HELLO_TIMEOUT_MS);
+    void hello.then(() => clearTimeout(helloTimer), () => clearTimeout(helloTimer));
     const readFrame = makeFrameReader((frame) => this.onFrame(line, frame), (reason) => this.end(line, "bad_frame", `hc sent an invalid frame (${reason})`));
     void (async () => {
       const reader = transport.readable.getReader();
@@ -228,27 +289,25 @@ export class HcConnection {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
+          line.heardAt = performance.now();
           if (framed) { readFrame(value); continue; }
           // the hello's answer is the one plain line; every byte after its newline is framed
           const end = value.indexOf(0x0a);
-          if (end === -1) { plain += decoder.decode(value, { stream: true }); continue; }
-          plain += decoder.decode(value.subarray(0, end));
+          plain += decoder.decode(end === -1 ? value : value.subarray(0, end), { stream: end === -1 });
+          if (plain.length > MAX_PAYLOAD_BYTES) { fail("bad_hello", "hc's hello answer is over its size limit"); return; }
+          if (end === -1) continue;
           framed = true;
           const info = parseHello(plain);
-          if (typeof info === "string") { helloFailed(new HcError("bad_hello", info)); this.end(line, "bad_hello", info); return; }
+          if (typeof info === "string") { fail("bad_hello", info); return; }
           helloDone(info);
           if (end + 1 < value.length) readFrame(value.subarray(end + 1));
         }
       } catch {
         /* the pipe broke: the line ends below */
       }
-      helloFailed(new HcError("closed", "hc connect ended before it answered hello"));
-      this.end(line, "closed", "hc connect ended");
+      fail("closed", "hc connect ended");
     })();
-    void transport.exited.then(() => {
-      helloFailed(new HcError("closed", "hc connect ended before it answered hello"));
-      this.end(line, "closed", "hc connect ended");
-    }, () => {});
+    void transport.exited.then(() => fail("closed", "hc connect ended"), () => {});
     transport.write(new TextEncoder().encode(`${JSON.stringify({ jsonrpc: "2.0", id: 0, method: "hello", params: { generation: HC_GENERATION, framed: true } })}\n`));
     return line;
   }
@@ -259,38 +318,44 @@ export class HcConnection {
       if (frame.kind === FRAME_DATA) this.onMessage(line, frame.payload);
       return;
     }
-    const handlers = line.channels.get(frame.channel);
+    const open = line.channels.get(frame.channel);
     if (frame.kind === FRAME_DATA) {
       // credit back what was taken: hc holds a stream at 256 KiB unacknowledged
-      line.transport.write(encodeFrame(frame.channel, FRAME_CREDIT, credit(frame.payload.length)));
-      handlers?.onData(frame.payload);
+      if (open && !open.closing) {
+        line.transport.write(encodeFrame(frame.channel, FRAME_CREDIT, credit(frame.payload.length)));
+        open.handlers.onData(frame.payload);
+      }
     } else if (frame.kind === FRAME_CLOSE) {
       line.channels.delete(frame.channel);
-      handlers?.onClose(parseReason(frame.payload));
+      open?.closing?.();
+      open?.handlers.onClose(parseReason(frame.payload));
     }
   }
 
   private onMessage(line: Line, payload: Uint8Array): void {
-    let message: { id?: unknown; result?: unknown; error?: { message?: unknown; data?: { kind?: unknown } } };
+    let message: unknown;
     try {
       message = JSON.parse(new TextDecoder().decode(payload));
     } catch {
       this.end(line, "bad_frame", "hc sent a message that is not JSON");
       return;
     }
-    if (typeof message.id !== "number") return;
+    if (typeof message !== "object" || message === null || !("id" in message) || typeof message.id !== "number") return;
     const call = line.pending.get(message.id);
     if (!call) return;
     line.pending.delete(message.id);
     clearTimeout(call.timer);
-    if (message.error) {
-      const kind = typeof message.error.data?.kind === "string" ? message.error.data.kind : "error";
-      call.reject(new HcError(kind, typeof message.error.message === "string" ? message.error.message : "hc refused the call"));
+    if ("error" in message && typeof message.error === "object" && message.error !== null) {
+      const error = message.error;
+      const data = "data" in error && typeof error.data === "object" && error.data !== null ? error.data : null;
+      const kind = data && "kind" in data && typeof data.kind === "string" ? data.kind : "error";
+      call.reject(new HcError(kind, "message" in error && typeof error.message === "string" ? error.message : "hc refused the call"));
       return;
     }
-    const channel = (message.result as { channel?: unknown } | null)?.channel;
-    if (call.channel && typeof channel === "number") line.channels.set(channel, call.channel);
-    call.resolve(message.result);
+    const result = "result" in message ? message.result : null;
+    const channel = typeof result === "object" && result !== null && "channel" in result ? result.channel : undefined;
+    if (call.channel && typeof channel === "number") line.channels.set(channel, { handlers: call.channel });
+    call.resolve(result);
   }
 
   private end(line: Line, kind: string, message: string): void {
@@ -304,7 +369,10 @@ export class HcConnection {
     line.pending.clear();
     const channels = [...line.channels.values()];
     line.channels.clear();
-    for (const handlers of channels) handlers.onClose({ reason: "connection_lost" });
+    for (const open of channels) {
+      open.closing?.();
+      open.handlers.onClose({ reason: "connection_lost" });
+    }
     try { line.transport.kill(); } catch { /* already gone */ }
   }
 }
