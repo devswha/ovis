@@ -423,13 +423,15 @@ is always up.
   tag, and [Releasing](development.md#releasing) has its one-time setup.
 - To report abuse that goes through `relay.ovis.sh`, see [SECURITY.md](../SECURITY.md#the-ovis-relay).
 
-A relay you run with Bun limits connections by default: 30 a minute from one address, 600 a minute
+A relay you run with Bun limits connections by default: 120 a minute from one address, 600 a minute
 in all, 1024 sockets, 256 PCs and 4096 addresses tracked at once. Raise them with
 `--per-address-per-minute`, `--global-per-minute`, `--max-sockets`, `--max-rooms` and
 `--max-addresses`, or `RELAY_PER_ADDRESS_PER_MINUTE`, `RELAY_GLOBAL_PER_MINUTE`, `RELAY_MAX_SOCKETS`,
 `RELAY_MAX_ROOMS` and `RELAY_MAX_ADDRESSES`. Behind a TLS proxy on the same machine every
 connection comes from the proxy's address, so raise the per-address limit and limit addresses at
 the proxy instead.
+Behind a TLS proxy, all clients share the proxy's address, so size the per-address budget for the
+whole deployment.
 
 To run your own relay, or your own copy of the app, see
 [Running your own relay](guide.md#running-your-own-relay) and
