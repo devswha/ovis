@@ -166,7 +166,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await admitted(opened, enrolled);
   };
 
-  const enterApp = (opened: RelayTransport): void => {
+  const enterApp = (opened: RelayTransport, attempt: Attempt): void => {
     outdated = null;
     transport = opened;
     setTransport(opened);
@@ -191,7 +191,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       await reload();
       return;
     }
-    if (skew !== "pc-outdated") { enterApp(opened); return; }
+    if (skew !== "pc-outdated") { enterApp(opened, attempt); return; }
     transport = opened;
     setTransport(opened);
     outdated = { opened, attempt, name: attempt.offer.name ?? null, version: server.version };
