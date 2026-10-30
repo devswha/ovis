@@ -83,6 +83,13 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             <div className="relay-shell-actions">{retry}{back}</div>
           </>
         )}
+        {state.kind === "failed" && state.failure === "pc-unresponsive" && (
+          <>
+            <h1 className="relay-shell-title">{t("{name} did not finish connecting", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.")}</p>
+            <div className="relay-shell-actions">{retry}{back}</div>
+          </>
+        )}
         {state.kind === "failed" && state.failure === "relay-unreachable" && (
           <>
             <h1 className="relay-shell-title">{t("The relay could not be reached")}</h1>

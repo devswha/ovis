@@ -16,14 +16,38 @@ export class UnsafeRelayDestinationError extends Error {
   }
 }
 
-/** The relay never answered: the socket failed or closed before it assigned this connection. The PC's state is unknown. */
+/**
+ * The relay never answered: the socket failed, closed, or stayed silent past ASSIGNMENT_MS before
+ * the relay assigned this connection. The PC's state is unknown.
+ */
 export class RelayUnreachableError extends Error {
   readonly code = "relay_unreachable";
-  constructor(readonly closeCode: number | null) {
-    super(closeCode === null ? "The relay could not be reached" : `The relay closed the connection (${closeCode})`);
+  constructor(readonly closeCode: number | null, readonly silent = false) {
+    super(silent ? "The relay did not answer" : closeCode === null ? "The relay could not be reached"
+      // 1006 is the browser's word for a connection that failed or dropped without a close frame
+      : closeCode === 1006 ? "The relay connection failed (1006)" : `The relay closed the connection (${closeCode})`);
     this.name = "RelayUnreachableError";
   }
 }
+
+/**
+ * The PC answered the relay (its handshake began) but did not finish admitting this device within
+ * ADMISSION_MS: it is online, and something on it stalled. Neither the relay nor an offline PC.
+ */
+export class RelayAdmissionTimeoutError extends Error {
+  readonly code = "admission_timeout";
+  constructor(readonly phase: "handshake" | "welcome" | "auth") {
+    super(`The PC did not finish the connection (${phase})`);
+    this.name = "RelayAdmissionTimeoutError";
+  }
+}
+
+/** How long the relay may take to assign the connection: past it the relay is unreachable. */
+export const ASSIGNMENT_MS = 10_000;
+/** How long the PC may take to answer once the relay has assigned the connection: past it the PC is offline. */
+export const PC_ANSWER_MS = 15_000;
+/** How long the PC may take to finish admission once it has answered; the mux's own setup timer (relay-mux-engine.ts) agrees. */
+export const ADMISSION_MS = 10_000;
 
 export interface RelaySocket {
   binaryType: BinaryType;
@@ -85,7 +109,16 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       else reject(error);
     };
     const aborted = (): void => stop(new DOMException("Relay connection aborted", "AbortError"));
-    const deadline = setTimeout(() => stop(new MuxProtocolError("timeout", "Relay setup timed out")), 10_000);
+    // One deadline at a time, re-armed as the setup moves on, so a stall names the side that stalled:
+    // the relay before it assigns the connection, the PC before its first frame, and the PC's
+    // admission after that. The PC's handshake answer (its first frame, which may be text or
+    // bytes) is what tells it apart from an offline one; frames before admission all come from it.
+    let deadline = setTimeout(() => stop(new RelayUnreachableError(null, true)), ASSIGNMENT_MS);
+    let heardPc = false;
+    const expect = (ms: number, failure: () => Error): void => {
+      clearTimeout(deadline);
+      deadline = setTimeout(() => stop(failure()), ms);
+    };
     options.signal?.addEventListener("abort", aborted, { once: true });
     const transport: Transport = {
       send: (data) => socket.send(data),
@@ -167,6 +200,10 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           stop(new MuxProtocolError("protocol_error", "Invalid relay carrier frame"));
           return;
         }
+        if (!heardPc) {
+          heardPc = true;
+          expect(ADMISSION_MS, () => new RelayAdmissionTimeoutError(phase === "auth" ? "auth" : phase === "welcome" ? "welcome" : "handshake"));
+        }
         transport.onmessage?.({ data: event.data, isBinary: typeof event.data !== "string" });
         return;
       }
@@ -181,6 +218,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         }
         connectionId = assigned.connection_id;
         phase = "welcome";
+        if (!heardPc) expect(PC_ANSWER_MS, () => new MuxProtocolError("timeout", "The PC did not answer through the relay"));
         const opened = Promise.withResolvers<void>();
         secure = await openClientSecureChannel(transport, {
           daemonPublicKeyB64: offer.server_public_key, minimumMode: "protected",
@@ -200,7 +238,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           clock: { now: () => performance.now(), setTimeout: (callback, ms) => {
             const timer = setTimeout(() => {
               if (phase === "ready") callback();
-              else stop(new MuxProtocolError("timeout", "Relay setup timed out"));
+              // the mux exists only once the PC answered: its setup timer firing is the PC's admission stalling
+              else stop(new RelayAdmissionTimeoutError(phase === "auth" ? "auth" : "welcome"));
             }, ms);
             return () => clearTimeout(timer);
           } },

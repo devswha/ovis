@@ -5,7 +5,7 @@ import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { serverIdOfPath, serverScopePath, shellModeOf, shellServiceWorker } from "../shellMode.ts";
 import { takeEntryUrl } from "./boot.ts";
-import { RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
+import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { testOffer } from "./device.test.ts";
 import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
@@ -46,12 +46,15 @@ describe("the screen a failure lands on", () => {
   const pairing = { code: true, paired: false };
   const mux = (code: ConstructorParameters<typeof MuxProtocolError>[0]) => new MuxProtocolError(code, code);
 
-  it("tells the relay from the PC by whether the relay ever answered", () => {
+  it("tells the relay from the PC by who stalled: the relay before assigning, the PC before answering, the PC's admission after", () => {
     expect(failureOf(new RelayUnreachableError(null), paired)).toBe("relay-unreachable");
+    expect(failureOf(new RelayUnreachableError(null, true), paired)).toBe("relay-unreachable");
     expect(failureOf(new RelayUnreachableError(1013), pairing)).toBe("relay-unreachable");
     expect(failureOf(new TypeError("Failed to fetch"), paired)).toBe("relay-unreachable");
     expect(failureOf(mux("timeout"), paired)).toBe("pc-offline");
     expect(failureOf(mux("internal_error"), paired)).toBe("pc-offline");
+    expect(failureOf(new RelayAdmissionTimeoutError("welcome"), paired)).toBe("pc-unresponsive");
+    expect(failureOf(new RelayAdmissionTimeoutError("auth"), pairing)).toBe("pc-unresponsive");
   });
 
   it("names a used code, a revoked phone and a changed identity", () => {
@@ -72,7 +75,7 @@ describe("the screen a failure lands on", () => {
 
   it("forgets the saved key only when the PC removed the phone", () => {
     expect(forgetsDevice("revoked")).toBe(true);
-    for (const failure of ["pc-offline", "relay-unreachable", "needs-update", "identity-changed", "code-expired", "bad-offer"] as const) expect(forgetsDevice(failure)).toBe(false);
+    for (const failure of ["pc-offline", "pc-unresponsive", "relay-unreachable", "needs-update", "identity-changed", "code-expired", "bad-offer"] as const) expect(forgetsDevice(failure)).toBe(false);
   });
 });
 

@@ -16,6 +16,8 @@ export const RELAY_ZH: Record<string, string> = {
   "Connecting to {name}…": "正在连接 {name}…",
   "{name} is offline": "{name} 已离线",
   "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "该电脑的 Ovis 当前未连接到中继。请在电脑上启动 Ovis 或检查其网络连接，然后重试。",
+  "{name} did not finish connecting": "{name} 未能完成连接",
+  "The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.": "电脑已通过中继作出应答，但未完成连接。请重试；如果持续出现，请在电脑上重新启动 Ovis。",
   "The relay could not be reached": "无法连接到中继",
   "Check this phone's connection, then try again.": "请检查此手机的网络连接，然后重试。",
   "Update needed": "需要更新",

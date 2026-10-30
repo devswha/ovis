@@ -16,6 +16,8 @@ export const RELAY_JA: Record<string, string> = {
   "Connecting to {name}…": "{name}に接続中…",
   "{name} is offline": "{name}はオフラインです",
   "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "そのPCのOvisは今リレーに接続していません。PCでOvisを起動するか接続を確認してから、もう一度お試しください。",
+  "{name} did not finish connecting": "{name}は接続を完了できませんでした",
+  "The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.": "PCはリレー経由で応答しましたが、接続を完了できませんでした。もう一度お試しください。繰り返す場合はPCでOvisを再起動してください。",
   "The relay could not be reached": "リレーに接続できません",
   "Check this phone's connection, then try again.": "このスマホのネットワーク接続を確認してから、もう一度お試しください。",
   "Update needed": "アップデートが必要です",

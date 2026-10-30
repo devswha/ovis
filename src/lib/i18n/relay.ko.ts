@@ -16,6 +16,8 @@ export const RELAY_KO: Record<string, string> = {
   "Connecting to {name}…": "{name}에 연결하는 중…",
   "{name} is offline": "{name}이(가) 오프라인입니다",
   "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "그 PC의 Ovis가 지금 릴레이에 연결되어 있지 않습니다. PC에서 Ovis를 시작하거나 연결 상태를 확인한 뒤 다시 시도하세요.",
+  "{name} did not finish connecting": "{name}이(가) 연결을 끝내지 못했습니다",
+  "The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.": "PC가 릴레이를 통해 응답했지만 연결을 완료하지 못했습니다. 다시 시도하고, 계속 그러면 PC에서 Ovis를 다시 시작하세요.",
   "The relay could not be reached": "릴레이에 연결할 수 없습니다",
   "Check this phone's connection, then try again.": "이 폰의 네트워크 연결을 확인한 뒤 다시 시도하세요.",
   "Update needed": "업데이트가 필요합니다",

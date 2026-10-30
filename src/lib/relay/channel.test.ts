@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, jest } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,13 +8,14 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
-import { openRelayChannel } from "./channel.ts";
+import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayUnreachableError } from "./channel.ts";
 import type { RelaySocket } from "./channel.ts";
+import { failureOf } from "./shellState.ts";
 import { base64url, getDevice } from "./device.ts";
 import { MemoryDeviceStore } from "./device.test.ts";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
+afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); jest.useRealTimers(); });
 
 class FakeSocket implements RelaySocket {
   binaryType: BinaryType = "arraybuffer";
@@ -39,7 +40,7 @@ class FakeSocket implements RelaySocket {
   }
 }
 
-async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt") {
+async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence") {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -107,6 +108,8 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
   };
   const handle = async (frame: MuxFrame): Promise<void> => {
     if (frame.type === FrameType.HELLO) {
+      // a PC that finished the handshake and then hung: nothing answers HELLO
+      if (attack === "silence") return;
       if (attack === "receipt") {
         await secure.send(encodeFrame({ type: FrameType.RECEIVED, flags: 0, stream_id: 0, payload: 99n }).slice().buffer);
         return;
@@ -177,6 +180,128 @@ for (const pairing of [false, true]) {
     channel.close();
   });
 }
+
+/**
+ * A relay-shaped socket that delivers nothing on its own: the test says what arrives and when.
+ * `sent` resolves at the client's first frame, the start of its handshake.
+ */
+class SilentSocket implements RelaySocket {
+  binaryType: BinaryType = "arraybuffer";
+  onmessage: RelaySocket["onmessage"] = null;
+  onclose: RelaySocket["onclose"] = null;
+  onerror: RelaySocket["onerror"] = null;
+  closed: number | null = null;
+  readonly sent = Promise.withResolvers<void>();
+  send(): void { this.sent.resolve(); }
+  deliver(data: string | ArrayBuffer): void { if (this.closed === null) this.onmessage?.(new MessageEvent("message", { data })); }
+  close(code = 1000): void { if (this.closed === null) this.closed = code; }
+}
+
+/** The fixture's rejection as a settled value, so a fake clock can be advanced while it is pending. */
+function settled(promise: Promise<unknown>): { get(): { error: unknown } | null } {
+  let result: { error: unknown } | null = null;
+  promise.then(() => { result = { error: null }; }, (error: unknown) => { result = { error }; });
+  return { get: () => result };
+}
+
+/** Enough microtask turns for an async function's adopted rejection to reach its handlers. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
+it("calls a relay that never assigns the connection unreachable, after ASSIGNMENT_MS", async () => {
+  // Given a socket the relay accepted but never spoke on.
+  jest.useFakeTimers();
+  const socket = new SilentSocket();
+  const created = Promise.withResolvers<void>();
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
+  await created.promise;
+  // When the assignment deadline passes with nothing from the relay.
+  jest.advanceTimersByTime(ASSIGNMENT_MS - 1);
+  await flush();
+  expect(outcome.get()).toBeNull();
+  jest.advanceTimersByTime(1);
+  await flush();
+  // Then the failure names the relay, not the PC, and the socket is closed.
+  const error = outcome.get()?.error;
+  expect(error).toBeInstanceOf(RelayUnreachableError);
+  expect(error).toMatchObject({ closeCode: null, silent: true });
+  expect(failureOf(error, { code: true, paired: false })).toBe("relay-unreachable");
+  expect(socket.closed).toBe(4000);
+});
+
+it("calls the PC offline when the relay assigned the connection but nothing answered within PC_ANSWER_MS", async () => {
+  // Given a relay that assigns the connection and a PC that never attaches.
+  jest.useFakeTimers();
+  const socket = new SilentSocket();
+  const created = Promise.withResolvers<void>();
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
+  await created.promise;
+  socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+  // the client's handshake went out: the relay has answered, the PC's deadline is running
+  await socket.sent.promise;
+  // When the relay's old deadline would have passed, then the PC's.
+  jest.advanceTimersByTime(ASSIGNMENT_MS);
+  await flush();
+  expect(outcome.get()).toBeNull();
+  jest.advanceTimersByTime(PC_ANSWER_MS - ASSIGNMENT_MS - 1);
+  await flush();
+  expect(outcome.get()).toBeNull();
+  jest.advanceTimersByTime(1);
+  await flush();
+  // Then the failure is the PC's silence, the screen is pc-offline, and the socket is closed.
+  const error = outcome.get()?.error;
+  expect(error).toBeInstanceOf(MuxProtocolError);
+  expect(error).toMatchObject({ code: "timeout" });
+  expect(failureOf(error, { code: false, paired: true })).toBe("pc-offline");
+  expect(socket.closed).toBe(4000);
+});
+
+it("calls a PC that answered the handshake but never finished admission unresponsive, not offline", async () => {
+  // Given a real daemon that completes Noise and then never answers HELLO.
+  jest.useFakeTimers();
+  const f = await fixture(false, "silence");
+  const outcome = settled(f.opening);
+  // the PC's first frame reached the client (the trace sees the client's HELLO go out only after it did)
+  for (let i = 0; i < 200 && !f.trace.includes("client:HELLO"); i++) await Promise.resolve();
+  expect(f.trace).toEqual(["client:HELLO"]);
+  // When the admission deadline passes.
+  jest.advanceTimersByTime(ADMISSION_MS - 1);
+  await flush();
+  expect(outcome.get()).toBeNull();
+  jest.advanceTimersByTime(1);
+  await flush();
+  // Then it is the PC's admission that stalled, in the welcome phase, and no credential was sent.
+  const error = outcome.get()?.error;
+  expect(error).toBeInstanceOf(RelayAdmissionTimeoutError);
+  expect(error).toMatchObject({ phase: "welcome" });
+  expect(failureOf(error, { code: false, paired: true })).toBe("pc-unresponsive");
+  expect(f.trace.filter((entry) => entry.startsWith("client:"))).toEqual(["client:HELLO"]);
+  expect(f.socket.closed).toBe(true);
+});
+
+it("names a stall after WELCOME in the auth phase, within the same admission budget", async () => {
+  // Given a real daemon that welcomes and then holds AUTH_OK.
+  jest.useFakeTimers();
+  const f = await fixture(false);
+  const outcome = settled(f.opening);
+  await f.authSeen.promise;
+  expect(f.trace).toEqual(["client:HELLO", "server:WELCOME", "client:AUTH"]);
+  // When the admission budget, counted from the PC's first frame, runs out without AUTH_OK.
+  jest.advanceTimersByTime(ADMISSION_MS - 1);
+  await flush();
+  expect(outcome.get()).toBeNull();
+  jest.advanceTimersByTime(1);
+  await flush();
+  // Then the stall is the PC's admission in the auth phase, never an offline PC, and the attempt is over.
+  const error = outcome.get()?.error;
+  expect(error).toBeInstanceOf(RelayAdmissionTimeoutError);
+  expect(error).toMatchObject({ phase: "auth" });
+  expect(failureOf(error, { code: false, paired: true })).toBe("pc-unresponsive");
+  expect(f.socket.closed).toBe(true);
+});
 
 for (const attack of ["welcome", "nonce", "ping", "auth-ok", "features", "assigned", "receipt"] as const) {
   it(`refuses malformed or unexpected ${attack} without sending credentials`, async () => {

@@ -8,12 +8,12 @@ import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { serverIdOfPath } from "../shellMode.ts";
-import { RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
+import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import type { RelayDevice } from "./device.ts";
 
 /** Why a connection did not come up; each is a screen with its own `data-relay-state`. */
-export type RelayFailure = "pc-offline" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "bad-offer";
+export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "bad-offer";
 
 export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[] }
@@ -48,14 +48,15 @@ export function offerOf(device: RelayDevice): RelayOffer {
 /**
  * The screen a failed connection lands on. `code`: the attempt carried a pairing code; `paired`:
  * it signed with a key the PC had admitted before. The channel's own codes (shared/relay-mux.ts)
- * say what the PC refused; the carrier's say whether the relay or the PC was silent: a relay that
- * never assigned the connection could not be reached, one that did but brought no WELCOME in time
- * has no PC behind it.
+ * say what the PC refused; the channel's deadlines (channel.ts) say who stalled: a relay that
+ * never assigned the connection could not be reached, a PC that never answered once it had is
+ * offline, and a PC that answered but never finished admitting the device is unresponsive.
  */
 export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean }): RelayFailure {
   if (error instanceof UnsafeRelayDestinationError) return "bad-offer";
   if (error instanceof ServerIdentityChangedError) return "identity-changed";
   if (error instanceof RelayUnreachableError) return "relay-unreachable";
+  if (error instanceof RelayAdmissionTimeoutError) return "pc-unresponsive";
   if (!(error instanceof MuxProtocolError)) return "relay-unreachable";
   switch (error.code) {
     case "timeout": case "internal_error": return "pc-offline";
