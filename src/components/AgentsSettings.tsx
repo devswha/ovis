@@ -27,6 +27,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Toggle } from "./SettingsControls.tsx";
 import { UsageAccountDialog } from "./UsageAccountDialog.tsx";
 import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
+import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
 import "./UsageSettings.css";
 import "./AgentsSettings.css";
 
@@ -163,7 +164,7 @@ function stateLine(entry: AgentsPageRow, read: boolean, t: Translate): { text: s
   }
 }
 
-function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local, watching, integrationsRead, onLocalLogin, onAddAccount }: {
+function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local, watching, integrationsRead, onLocalLogin, onAddAccount, onSignIn }: {
   entry: AgentsPageRow;
   open: boolean;
   onToggle: () => void;
@@ -180,6 +181,8 @@ function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local,
   integrationsRead: boolean;
   onLocalLogin: (paneId: string) => void;
   onAddAccount: (provider: UsageProviderId) => void;
+  /** Claude Code's or Codex's first sign-in, in its own home, followed in the browser */
+  onSignIn: (provider: "claude" | "codex") => void;
 }) {
   const t = useT();
   const { agent, provider, accounts } = entry;
@@ -189,7 +192,7 @@ function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local,
   // the one sign-in it lacks is a tap away while the row is shut; open, the list below has its own
   const action = open || watching || !read || provider === null ? null
     : again.length === 1 ? <UsageSignInAgain usage={again[0]!} onStarted={onLocalLogin} />
-      : accounts.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
+      : accounts.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onSignIn(provider) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
         : null;
   const signIn = agent.sign_in;
   return (
@@ -307,6 +310,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
   const [hubError, setHubError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ kind: "add"; provider: UsageProviderId | null } | { kind: "hub" } | null>(null);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
+  const [signingIn, setSigningIn] = useState<{ provider: "claude" | "codex"; default: true } | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -352,7 +356,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
               : <ul className="settings-card agents-card">
                 {page.rows.map((entry) => <AgentItem key={entry.agent.id} entry={entry} open={open.has(entry.agent.id)} onToggle={() => toggle(entry.agent.id)}
                   allProviders={providers} read={settings.showUsage && usage.report !== null} limitsOn={settings.showUsage} local={local} watching={watching} integrationsRead={integrationOutcome?.kind === "list"}
-                  onLocalLogin={onLocalLogin} onAddAccount={(provider) => setDialog({ kind: "add", provider })} />)}
+                  onLocalLogin={onLocalLogin} onAddAccount={(provider) => setDialog({ kind: "add", provider })} onSignIn={(provider) => setSigningIn({ provider, default: true })} />)}
               </ul>}
         {integrationNote}
       </section>
@@ -420,6 +424,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
           setHub(status); setConfirmRemoval(false); usage.refresh();
           requestAnimationFrame(() => addButton.current?.focus());
         }} />}
+      {signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onLocalLogin(paneId); }} onSignedIn={usage.refresh} onClose={() => setSigningIn(null)} />}
       {dialog && <UsageAccountDialog editHub={dialog.kind === "hub"} provider={dialog.kind === "add" ? dialog.provider : null} hub={hub} onHubChanged={setHub} onAccountsChanged={usage.refresh} onLocalLogin={onLocalLogin} onClose={() => setDialog(null)} />}
     </>
   );

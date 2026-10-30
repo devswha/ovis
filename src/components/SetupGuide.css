@@ -372,3 +372,6 @@
   width: 14px;
   height: 14px;
 }
+
+/* Sign in to an installed Claude Code or Codex, under the tiles */
+.setup-sign-in .setup-link { margin-inline-start: var(--space-1); }

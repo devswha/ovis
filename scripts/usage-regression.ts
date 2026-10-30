@@ -282,7 +282,8 @@ const expiredReport = (): UsageReport => ({
 
 /**
  * Sign in again: offered for the expired account on this PC, in the popover and in its Settings row,
- * never for the hub's or Antigravity's; it asks the server by the account's key and hands the tab over.
+ * never for the hub's or Antigravity's; it asks the server by the account's key and follows the login in
+ * a dialog (UsageSignInDialog), whose Open terminal hands the tab over.
  */
 export async function checkUsageSignInAgain(browser: Browser, origin: string): Promise<void> {
   // the account order is shared through the server: whatever an earlier check on it saved (checkUsageMeters
@@ -298,6 +299,9 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
         { status: 200, json: { pane_id: "w9:p9", workspace_id: "w9", manual: false, device_auth: false } },
       ];
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
+      // the dialog reads the provider's sign-ins and the login's screen: a login still starting
+      await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
+      await context.route("**/api/usage/login/prompt*", (route) => route.fulfill({ json: { provider: "claude", url: null, user_code: null, wants_code: false, ended: false } }));
       await context.route("**/api/usage/login", (route) => {
         if (route.request().method() !== "POST") return route.continue();
         posted.push(route.request().postDataJSON());
@@ -323,12 +327,20 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
         const box = await popover.boundingBox();
         assert.ok(box && box.x >= 0 && box.x + box.width <= 390, "the popover stays inside the phone's screen");
       }
-      // a refusal is said where the button is, and the popover stays
-      await again.click();
-      await popover.getByRole("alert").filter({ hasText: "Install the official CLI on this PC before signing in" }).waitFor();
-      // started: the popover gives way to the sign-in tab
+      // the sign-in is followed in its own dialog, the popover giving way to it; a refusal is said there
+      const following = page.getByRole("dialog", { name: "Sign in to Claude Code", exact: true });
       await again.click();
       await popover.waitFor({ state: "detached" });
+      await following.getByRole("alert").filter({ hasText: "Install the official CLI on this PC before signing in" }).waitFor();
+      await following.getByRole("button", { name: "Done", exact: true }).click();
+      await following.waitFor({ state: "detached" });
+      // started: its Open terminal hands the tab over
+      await openDrawer();
+      await page.locator(".usage-strip").click();
+      await popover.getByRole("button", { name: /^Sign in again/ }).click();
+      await following.getByText("Waiting for Claude to show its sign-in page…", { exact: true }).waitFor();
+      await following.getByRole("button", { name: "Open terminal", exact: true }).click();
+      await following.waitFor({ state: "detached" });
 
       await openDrawer();
       await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
@@ -342,8 +354,11 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       assert.equal(await rows.nth(1).getByRole("button", { name: "Sign in again to Claude · me@team.example", exact: true }).count(), 1);
       assert.equal(await rows.evaluateAll((all) => all.every((row) => row.scrollWidth <= row.clientWidth)), true, "each account row fits, the button included");
       await rowAgain.click();
-      await page.locator(".settings-dialog").getByRole("alert").filter({ hasText: "Install the official CLI" }).waitFor();
+      await following.getByRole("alert").filter({ hasText: "Install the official CLI" }).waitFor();
+      await following.getByRole("button", { name: "Done", exact: true }).click();
+      await following.waitFor({ state: "detached" });
       await rowAgain.click();
+      await following.getByRole("button", { name: "Open terminal", exact: true }).click();
       await page.locator(".settings-dialog").waitFor({ state: "detached" });
       assert.deepEqual(posted, Array(4).fill({ provider: "claude", account: "claude:team" }), "the server is asked by the account's key, never a path");
       assert.deepEqual(errors, []);

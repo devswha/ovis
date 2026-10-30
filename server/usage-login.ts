@@ -3,8 +3,9 @@ import { mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
-import type { UsageLoginStarted } from "../shared/usage-login.ts";
-import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
+import type { UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
+import { paneClose, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
+import { loginPrompt, type PromptProvider } from "./usage-login-prompt.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
 import { withOwnerGuard } from "./owner-guard.ts";
@@ -64,6 +65,11 @@ type Holder = LoginHolder | Launch;
 /** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
 const LAUNCH_MS = 60_000;
 
+/** The logins whose prompt the browser may follow, newest last: older ones are forgotten past this many. */
+const PROMPT_PANES_MAX = 32;
+/** A pasted sign-in code: printable ASCII without spaces (Claude's is `code#state`), and short. */
+const SIGN_IN_CODE = /^[\x21-\x7e]{1,2048}$/;
+
 const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
 const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch : !isLaunch(b) && a.terminal === b.terminal;
 
@@ -85,6 +91,11 @@ function processAlive(pid: number): boolean {
 export class UsageLoginService {
   private readonly panes = new Set<string>();
   /**
+   * The Claude and Codex logins this server launched, by pane: only their screens are read for the
+   * browser's sign-in dialog, and only their panes take a pasted code. Kept after the CLI exits, as ended.
+   */
+  private readonly prompts = new Map<string, { provider: PromptProvider; ended: boolean }>();
+  /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
    * one home race each other's tokens. By home, the login or launch of this server holding it.
    */
@@ -101,11 +112,55 @@ export class UsageLoginService {
     private readonly context: UsageContext = { ...systemUsageContext(), home, env }) {}
 
   ended(paneId: string): boolean {
+    const prompt = this.prompts.get(paneId);
+    if (prompt !== undefined) prompt.ended = true;
     for (const [home, holder] of this.logins) if (!isLaunch(holder) && holder.pane === paneId) this.release(home, holder);
     return this.panes.delete(paneId);
   }
 
   persistTo(stateDir: string): void { this.file = join(stateDir, "usage-logins.json"); }
+
+  /**
+   * GET /api/usage/login/prompt?pane= and POST /api/usage/login/code: the browser's view of a login
+   * this server launched. It reads the CLI's screen for the page to open and the code to enter, and
+   * types a code the page showed into that pane, then Enter: the CLI signs in and writes its own
+   * credentials. Nothing here keeps or logs a code. A watching device reads no prompt (it could
+   * approve a device code with its own account) and, as for every change, sends no code.
+   */
+  async handlePrompt(request: Request, readOnly: boolean): Promise<Response> {
+    const { pathname, searchParams } = new URL(request.url);
+    try {
+      if (pathname.endsWith("/prompt")) {
+        if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
+        if (readOnly) return jsonResponse({ error: { code: "forbidden", message: "A device that only watches cannot follow a sign-in" } }, 403);
+        const pane = searchParams.get("pane") ?? "";
+        const login = this.prompts.get(pane);
+        if (login === undefined) return jsonResponse({ error: { code: "login_not_found", message: "No sign-in this server started runs in that pane" } }, 404);
+        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
+        const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
+        return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screen.text), ended: false } satisfies UsageLoginPrompt);
+      }
+      if (pathname.endsWith("/code")) {
+        if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST");
+        let body: unknown;
+        try { body = await request.json(); } catch { return badRequest("invalid_json", "Request body must be JSON"); }
+        const pane = isJsonObject(body) && typeof body["pane"] === "string" ? body["pane"] : null;
+        const code = isJsonObject(body) && typeof body["code"] === "string" ? body["code"].trim() : null;
+        if (pane === null || code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
+        const login = this.prompts.get(pane);
+        if (login === undefined || login.ended) return jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
+        // typed only where the CLI asks for it now: a code sent to a shell would run as a command
+        const screen = await paneRead({ paneId: pane, source: "recent_unwrapped", lines: 200 });
+        if (!loginPrompt(login.provider, screen.text).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now. Open its terminal to see where it is.");
+        await paneSendText(pane, code);
+        await paneSendKeys(pane, ["Enter"]);
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
 
   /**
    * The homes the file names as taken; none when there is no file yet. A file that will not read or parse
@@ -234,7 +289,13 @@ export class UsageLoginService {
     const separate = id === "claude" || id === "codex";
     // Signing in again names a listed account by its key; its credential home is the server's to find.
     const again = body["account"] !== undefined;
-    if (again) {
+    // a first sign-in in the CLI's own home (no CLAUDE_CONFIG_DIR or CODEX_HOME), the one its plain command reads
+    const asDefault = body["default"] !== undefined;
+    if (asDefault) {
+      if (!separate || again || body["default"] !== true || body["name"] !== undefined || (body["replace"] !== undefined && body["replace"] !== true)) {
+        return badRequest("invalid_account", "Only Claude and Codex sign in to their own home this way, without a name");
+      }
+    } else if (again) {
       // only Claude's and Codex's CLIs sign in to a credential home the server can name
       if (!separate || typeof body["account"] !== "string" || body["account"].length > 256 || body["name"] !== undefined || body["replace"] !== undefined) {
         return badRequest("invalid_account", "Name one account this PC lists to sign in to it again");
@@ -262,13 +323,13 @@ export class UsageLoginService {
         return conflictResponse("account_ambiguous", "This account is signed in in more than one credential folder on this PC, so Ovis cannot tell which one to renew. Sign in again from a terminal in the folder you want.");
       }
       const place = found;
-      if (!separate && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
+      if ((!separate || asDefault) && !again && body["replace"] !== true && (await provider.signIns(this.context)).length > 0) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
       // the home the CLI will write: the account's own, a new named one, or the provider's only one
       let loginHome: string;
       try {
-        loginHome = place ? `${id}:${canonicalPath(place.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
+        loginHome = place || asDefault ? `${id}:${canonicalPath(place?.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
           : separate ? `${id}:${canonicalPath(join(this.home, `.${id}-${body["name"]}`))}` : id;
       } catch (error) {
         console.warn("Could not tell which credential home a sign-in would write", error);
@@ -301,7 +362,7 @@ export class UsageLoginService {
       const againHome = place?.home.kind === "dir" ? place.home.dir : null;
       if (place) {
         if (againHome !== null) env[homeVariable] = againHome;
-      } else if (separate) {
+      } else if (separate && !asDefault) {
         const credentialHome = join(this.home, `.${id}-${body["name"]}`);
         try { mkdirSync(credentialHome, { mode: 0o700 }); }
         catch (error) {
@@ -320,11 +381,15 @@ export class UsageLoginService {
       const workspace = snapshot.workspaces[0];
       const options = {
         // a home given as a relative path was found from this server's directory, and means it there
-        cwd: againHome !== null && !isAbsolute(againHome) ? process.cwd() : this.home, label: again ? `${id} sign-in again` : `${id} sign-in${separate ? ` · ${body["name"]}` : ""}`, env,
+        cwd: againHome !== null && !isAbsolute(againHome) ? process.cwd() : this.home, label: again ? `${id} sign-in again` : `${id} sign-in${separate && !asDefault ? ` · ${body["name"]}` : ""}`, env,
       };
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;
       this.panes.add(paneId);
+      if (id === "claude" || id === "codex") {
+        this.prompts.set(paneId, { provider: id, ended: false });
+        for (const old of this.prompts.keys()) { if (this.prompts.size <= PROMPT_PANES_MAX) break; this.prompts.delete(old); }
+      }
       trackPane?.(paneId);
       // the tab is open: from here on its terminal holds the home, also for a server started again. The
       // login is sent only once the file says so: run under a launch entry that expires, or one another
@@ -356,12 +421,12 @@ export class UsageLoginService {
       if (process.platform === "win32") {
         const info = await paneProcessInfo(paneId);
         const shell = paneShell(info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-        const command = `${place ? credentialHomePrefix(shell, homeVariable, againHome) : ""}${shellCommandLine(shell, executable, args)}`;
+        const command = `${place || asDefault ? credentialHomePrefix(shell, homeVariable, againHome) : ""}${shellCommandLine(shell, executable, args)}`;
         await paneSendText(paneId, `${command}${shell === "cmd" ? " & exit" : "; exit $LASTEXITCODE"}`);
         unusedCredentialHome = null;
         await paneSendKeys(paneId, ["Enter"]);
       } else {
-        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place ? credentialHomePrefix("posix", homeVariable, againHome) : ""}${shellCommandLine("posix", executable, args)}\n`);
+        await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place || asDefault ? credentialHomePrefix("posix", homeVariable, againHome) : ""}${shellCommandLine("posix", executable, args)}\n`);
         unusedCredentialHome = null;
       }
       // the login runs: the home is its until it exits; a launch that failed before here frees it below

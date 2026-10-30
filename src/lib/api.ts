@@ -91,7 +91,7 @@ import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
 import { movingHerdrFocus } from "./followFocus.ts";
-import type { UsageLoginAccounts, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
+import type { UsageLoginAccounts, UsageLoginCode, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
   return getJson("/api/usage/login", { signal });
@@ -99,6 +99,16 @@ export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ provide
 
 export function fetchUsageLoginAccounts(provider: string, signal: AbortSignal): Promise<UsageLoginAccounts> {
   return getJson(`/api/usage/login?provider=${encodeURIComponent(provider)}`, { signal });
+}
+
+/** What a sign-in this server launched asks of its user now: the page to open, the code to enter, a code box. */
+export function fetchUsageLoginPrompt(pane: string, signal: AbortSignal): Promise<UsageLoginPrompt> {
+  return getJson(`/api/usage/login/prompt?pane=${encodeURIComponent(pane)}`, { signal, cache: "no-store" });
+}
+
+/** Types the code a sign-in page showed into that login's pane, then Enter. */
+export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void> {
+  await sendJson("/api/usage/login/code", "POST", request);
 }
 
 export function startUsageLogin(request: UsageLoginRequest): Promise<UsageLoginStarted> {

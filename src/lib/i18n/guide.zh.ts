@@ -34,4 +34,5 @@ export const GUIDE_ZH: Record<string, string> = {
   "Back to setup": "返回设置向导",
   "The workspace opened, but {agent} did not start. Open it to see why in its terminal.": "工作区已打开,但 {agent} 没有启动。打开它,在终端里查看原因。",
   "Open the workspace": "打开工作区",
+  "{agent} is not signed in yet.": "{agent} 尚未登录。",
 };

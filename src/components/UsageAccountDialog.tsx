@@ -88,7 +88,7 @@ export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHu
           break;
         case "local":
           title = t("Sign in to {provider}", { provider: PROVIDER_NAME[step.provider.id] }); current = 2;
-          local = <UsageLocalLogin provider={step.provider} onStarted={onLocalLogin} />; showHub = false;
+          local = <UsageLocalLogin provider={step.provider} onStarted={onLocalLogin} onFollowed={done} />; showHub = false;
           back = () => setStep({ ...step, method: "choose" });
           break;
         case "hub":

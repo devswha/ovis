@@ -545,6 +545,8 @@ export function createServer(
       // on or off only: the server decides what is installed and where (server/statusline-install.ts)
       if (pathname === "/api/usage/statusline") { setRequestRoute(pathname); return handleStatuslineRequest(request, usage); }
       if (pathname === "/api/usage/login") { setRequestRoute(pathname); bunServer.timeout(request, 30); return usageLogin.handle(request, collector.trackPane); }
+      // the browser's sign-in dialog: a launched login's prompt, and the code its page showed (a watching device: neither)
+      if (pathname === "/api/usage/login/prompt" || pathname === "/api/usage/login/code") { setRequestRoute(pathname); return usageLogin.handlePrompt(request, readOnly); }
       if (pathname === "/api/cliproxy" || pathname.startsWith("/api/cliproxy/")) { bunServer.timeout(request, 60); return cliProxyRoutes.handle(request); }
       // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
       if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { bunServer.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }

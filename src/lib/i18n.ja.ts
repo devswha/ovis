@@ -326,6 +326,8 @@ const BASE: Record<string, string> = {
   "Show plan limits": "プランの上限を表示",
   "Session": "セッション",
   "Weekly": "週次",
+  "Open terminal": "ターミナルを開く",
+  "Sign in to {agent}": "{agent} にサインイン",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

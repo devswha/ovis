@@ -1014,6 +1014,16 @@ let demoStatusline = false;
 const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
 
 /** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
+/**
+ * `?demo_sign_in=1`: the in-browser sign-in plays the flows recorded from Claude Code 2.1.312 and
+ * codex-cli 0.163.0 (server/fixtures/usage-login): Claude starts with no account, so its row offers
+ * Sign in; its page wants a code pasted back, and a sent code signs it in. Codex shows its device page
+ * and code, and signs in after a few reads. Without the switch the demo runs no login.
+ */
+const SIGN_IN_DEMO = new URLSearchParams(location.search).get("demo_sign_in") === "1";
+const signInDemo = { panes: new Map<string, { provider: "claude" | "codex"; reads: number; code: boolean }>(), signedIn: new Set<string>(), next: 1 };
+const CLAUDE_SIGN_IN_URL = "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=demo&code_challenge_method=S256&state=demo";
+
 function usageReport(): UsageReport {
   const now = Date.now();
   const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
@@ -1021,7 +1031,7 @@ function usageReport(): UsageReport {
   const session = (hours: number) => ({ resets_at: at(hours), starts_at: at(hours - 5) });
   const week = (hours: number) => ({ resets_at: at(hours), starts_at: at(hours - 168) });
   const checked = new Date(now).toISOString();
-  return { providers: [
+  const report: UsageReport = { providers: [
     USAGE_STATE === "refused" && !demoStatusline
       ? { id: "claude", key: "claude:demo-claude", account: "sam@example.com", plan: "max", problem: "expired", checked_at: null, windows: [], statusline_offer: true }
       : { id: "claude", key: "claude:demo-claude", account: "sam@example.com", plan: "max", problem: null, checked_at: checked, windows: [
@@ -1048,6 +1058,7 @@ function usageReport(): UsageReport {
       { kind: "month", scope: null, used_percent: 15, resets_at: at(520), starts_at: null },
     ] },
   ] };
+  return SIGN_IN_DEMO && !signInDemo.signedIn.has("claude") ? { providers: report.providers.filter((usage) => usage.id !== "claude") } : report;
 }
 
 // ---- paired devices (Settings → Phone & devices) ----------------------------------------------
@@ -1225,8 +1236,39 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     }
     return json({ installed: demoStatusline, supported: true }, 200, { "cache-control": "no-store" });
   }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/prompt") {
+    const login = signInDemo.panes.get(url.searchParams.get("pane") ?? "");
+    if (login === undefined) return error("login_not_found", "No sign-in this server started runs in that pane", 404);
+    login.reads += 1;
+    const ended = login.provider === "claude" ? login.code : login.reads > 3;
+    if (ended) signInDemo.signedIn.add(login.provider);
+    if (ended) return json({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true }, 200, { "cache-control": "no-store" });
+    return json(login.provider === "claude"
+      ? { provider: "claude", url: CLAUDE_SIGN_IN_URL, user_code: null, wants_code: true, ended: false }
+      : { provider: "codex", url: "https://auth.openai.com/codex/device", user_code: "PDLB-SLDUA", wants_code: false, ended: false }, 200, { "cache-control": "no-store" });
+  }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/code" && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { pane?: string; code?: string };
+    const login = signInDemo.panes.get(body.pane ?? "");
+    if (login === undefined) return error("login_not_found", "This sign-in has ended. Start it again.", 404);
+    if (!/^[\x21-\x7e]{1,2048}$/.test((body.code ?? "").trim())) return error("invalid_code", "Paste the code the sign-in page showed, as it is", 400);
+    login.code = true;
+    return new Response(null, { status: 204 });
+  }
   if (path === "/api/usage/login") {
+    if (SIGN_IN_DEMO && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string };
+      if (body.provider !== "claude" && body.provider !== "codex") return error("demo", "This demo follows Claude Code and Codex only.", 409);
+      const pane = `w9:p${signInDemo.next++}`;
+      signInDemo.panes.set(pane, { provider: body.provider, reads: 0, code: false });
+      return json({ pane_id: pane, workspace_id: "w9", manual: false, device_auth: body.provider === "codex" });
+    }
     if (method === "GET") {
+      const asked = url.searchParams.get("provider");
+      if (SIGN_IN_DEMO && (asked === "claude" || asked === "codex")) {
+        const had = asked === "codex" ? ["sam@work.example", "sam@example.com"] : [];
+        return json({ accounts: signInDemo.signedIn.has(asked) ? [...had, asked === "claude" ? "me@example.test" : "codex@example.test"] : had });
+      }
       if (url.searchParams.has("provider")) return json({ accounts: url.searchParams.get("provider") === "cursor" ? ["cursor@example.test"] : [] });
       return json({ providers: [
         { id: "claude", cli: "claude", installed: true, local: true, separate_home: true },

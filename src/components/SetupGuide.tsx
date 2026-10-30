@@ -11,7 +11,7 @@
  * area, the app's sidebar left in place.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Check, ChevronRight, Gauge, Info, LoaderCircle, Play, RotateCw, Smartphone, Sparkles } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, Gauge, Info, KeyRound, LoaderCircle, Play, RotateCw, Smartphone, Sparkles } from "lucide-react";
 
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, PairingCode, RemoteAccess } from "../../shared/protocol.ts";
@@ -28,6 +28,7 @@ import { useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { userErrorMessage } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentTile } from "./AgentTile.tsx";
+import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
 import "./SetupGuide.css";
 
@@ -232,6 +233,12 @@ function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onO
   const chosen = installed.find((agent) => agent.id === picked) ?? preferredAgent(installed, ready.at(-1) ?? null);
   // the agents already signed in here: their plan usage is turned on as soon as they are seen, without a question
   const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }));
+  // Claude Code and Codex, installed here and not signed in yet: signed in from the guide, in the browser
+  // (UsageSignInDialog). Accounts are read on the server's PC, so only its own guide offers it
+  // signed in from here: the usage read that would say so may not come again while the guide is open
+  const [signedHere, setSignedHere] = useState<readonly string[]>([]);
+  const unsigned = machineId === "local" ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
+  const [signingIn, setSigningIn] = useState<{ provider: "claude" | "codex"; default: true } | null>(null);
   // the tiles whose install runs: Look again waits for them (a fresh read would end their watch);
   // Start does not: an install runs on in its tab whatever the guide does
   const [installing, setInstalling] = useState<readonly string[]>([]);
@@ -307,6 +314,11 @@ function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onO
         ))}
       </ul>
       {Object.values(installErrors).map((message) => <p key={message} className="setup-error" role="alert">{message}</p>)}
+      {unsigned.map((agent) => (
+        <p key={agent.id} className="setup-note setup-sign-in"><KeyRound aria-hidden="true" />{t("{agent} is not signed in yet.", { agent: agent.name })}{" "}
+          <button type="button" className="setup-link" disabled={locked} onClick={() => setSigningIn({ provider: agent.id as "claude" | "codex", default: true })}>{t("Sign in to {agent}", { agent: agent.name })}</button></p>
+      ))}
+      {signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />}
       {/* said only where usage shows: a reopened guide leaves a switched-off setting off */}
       {signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>}
       {error !== null && <p className="setup-error" role="alert">{error}</p>}
