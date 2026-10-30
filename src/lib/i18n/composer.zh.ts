@@ -239,5 +239,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Remove comment": "删除评论",
   "Too long with the comments: remove a comment or shorten the message.": "加上评论后太长：请删除一条评论或缩短消息。",
   "Update this PC to send comments on a reply. Your message and comments stayed here.": "请更新这台电脑以发送对回复的评论。消息和评论仍保留在这里。",
+  "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.": "未发送：消息在终端的输入行中。请在那里清除它，或在那里按 Enter 发送。",
   "Not sent: no agent is running in this pane. Your message stayed here.": "未发送：此窗格中没有运行的代理。消息仍保留在这里。",
 };

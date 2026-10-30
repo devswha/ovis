@@ -239,5 +239,6 @@ export const COMPOSER_JA: Record<string, string> = {
   "Remove comment": "コメントを削除",
   "Too long with the comments: remove a comment or shorten the message.": "コメントを含めると長すぎます。コメントを削除するか、メッセージを短くしてください。",
   "Update this PC to send comments on a reply. Your message and comments stayed here.": "返答へのコメントを送るには、このPCを更新してください。メッセージとコメントはここに残っています。",
+  "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.": "未送信: メッセージはターミナルの入力行に入っています。そこで消すか、そこでEnterを押して送ってください。",
   "Not sent: no agent is running in this pane. Your message stayed here.": "未送信: このペインではエージェントが動いていません。メッセージはここに残っています。",
 };

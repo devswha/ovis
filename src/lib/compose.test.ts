@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneCommands } from "../../server/commands.ts";
-import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 
 describe("menu rows", () => {
@@ -144,6 +144,9 @@ describe("composerMessage and submitNote", () => {
     // #511: the no-agent sentence is for the bridge's no-agent refusal alone; an unknown input state keeps its own words
     expect(submitNote("agent_not_ready", NO_AGENT_MESSAGE)).toBe("Not sent: no agent is running in this pane. Your message stayed here.");
     expect(submitNote("agent_not_ready", "The agent's current input state is not known")).toBe("Not sent: The agent's current input state is not known");
+    // a paste left in the input line says so, and is never taken for a refusal that typed nothing
+    expect(submitNote("pasted_not_sent", PASTED_NOT_SENT_MESSAGE)).toBe("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
+    expect(submitNotTyped("pasted_not_sent")).toBe(false);
   });
 
   it("knows a refusal that typed nothing from a message that may have reached the pane", () => {

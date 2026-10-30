@@ -51,6 +51,9 @@ export class PendingInputError extends Error {
 }
 
 /** One authoritative record per message. Both automatic sends and explicit steering claim it here. */
+/** A message held behind one whose paste was left in the terminal's input line (#511): nothing of it was typed. */
+const BEHIND_PASTE = { code: "pending_held", message: "An earlier message is in the terminal's input line; send this one after it is cleared or sent" };
+
 export class PendingInputs<Owner, Lease> {
   private readonly records = new Map<string, PendingRecord<Owner, Lease>>();
   private readonly statuses = new Map<string, AgentStatus>();
@@ -229,7 +232,8 @@ export class PendingInputs<Owner, Lease> {
     if (retryWhenReady && !uncertain) delete item.message.error; else item.message.error = fault;
     const gate = this.gates.get(item.paneId);
     if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
-    if (uncertain) this.holdPane(item.paneId, fault);
+    // the pane's other messages wait behind it, each for its own reason: a paste left in the input line is that message's alone (#511)
+    if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
     this.publish(item.owner, item.paneId);
   }
 
