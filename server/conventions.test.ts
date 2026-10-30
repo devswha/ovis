@@ -162,6 +162,7 @@ describe("herdr socket", () => {
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
+    "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
   };
 
   it("opens herdr's socket only in server/herdr/client.ts", () => {
