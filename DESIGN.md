@@ -1654,6 +1654,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   release flushes the final ratio. A tab/topology change cancels the drag.
 - Every pane keeps its own xterm, attachment, input ownership, lens, chat state and file-path
   context. Only the active pane may take keyboard focus after an asynchronous operation.
+- The four most recently visited tabs keep their already-mounted terminal screens live while
+  the browser is in use. Hidden clients give up size ownership and cannot take input or focus;
+  leaving the window, eviction, or **Use alongside herdr's own window** releases their attach.
+  A reconnect or replaced terminal never acquires a fresh hidden attach. This follows Zed's
+  multiple terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather
+  than retaining every terminal indefinitely. No attached screen is rebuilt from `pane.read`.
 - Switching tabs retains an outgoing terminal while its explicit submit awaits a receipt;
   its chat/input UI is unmounted and its grid is not resized. The receipt settles the original
   draft before the pane attachment is released. No input is replayed. A canvas that already released

@@ -1915,6 +1915,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         cancelLeave();
         const current = paneRef.current;
         if (!current || embedded || mirroredRef.current || fixedGridRef.current) return;
+        // The bounded recent-tab cache still owns a client. Keep its live screen while this
+        // window is in use, but give up size ownership; the alongside-herdr setting still releases.
+        if (cachedRef.current && !releasedRef.current && inUse() && !releaseAwayRef.current) {
+          socket.keepSize(current, true);
+          return;
+        }
         if (cachedRef.current && releasedRef.current) {
           if (watchingRef.current) { socket.unwatch(current); setWatching(false); }
           // Caching stops the watch, but does not turn an away release into a cache-only release.
@@ -1982,7 +1988,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // The client cannot distinguish those cases atomically, so both watch until the user returns.
       const deferAttach = (pane: string): boolean => {
         deferredAttach = false;
-        if (inUse() || embedded || mirroredRef.current || fixedGridRef.current || queueWaits(pane) || !socket.canWatch()) return false;
+        if (inUse() && !cachedRef.current || embedded || mirroredRef.current || fixedGridRef.current || queueWaits(pane) || !socket.canWatch()) return false;
         cancelLeave();
         deferredAttach = true;
         setReleased(true);
@@ -2103,6 +2109,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!deferAttach(paneRef.current)) back();
           }
           else if (paneRef.current && !watchingRef.current) watch(paneRef.current);
+        } else if (presentedRef.current && inUse() && paneRef.current && !observeRef.current) {
+          socket.keepSize(paneRef.current, !shownRef.current);
+          refit();
         }
       };
       // A phone or tablet put away lets go of the pane at once, whatever the setting: its page can
