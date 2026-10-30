@@ -365,13 +365,28 @@ it("stops reconnecting once the PC refuses the device for good, and tells the sh
 });
 
 it("tells a refusal that cannot change from a carrier that may come back", () => {
-  for (const code of ["auth_revoked", "auth_failed", "auth_changed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
+  for (const code of ["auth_revoked", "auth_failed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(true);
   }
-  for (const code of ["timeout", "internal_error", "protocol_error", "resource_exhausted", "flow_control_error"] as const) {
+  for (const code of ["auth_changed", "timeout", "internal_error", "protocol_error", "resource_exhausted", "flow_control_error"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(false);
   }
   expect(isFatalRelayError(new TypeError("Network offline"))).toBe(false);
+});
+
+it("reconnects after an authorization change without telling the shell to forget the PC", async () => {
+  const f = await fixture();
+  const connection = f.connections.at(-1);
+  if (!connection) throw new Error("Missing relay connection");
+  f.callbacks.at(-1)?.(new MuxProtocolError("auth_changed", "Role changed"));
+  connection.stop();
+  expect(f.fatal).toEqual([]);
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(f.attempts.count).toBe(2);
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+  expect(f.fatal).toEqual([]);
 });
 
 it("reconnects on online and visible-page events and removes wake listeners on close", async () => {

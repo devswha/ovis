@@ -74,10 +74,9 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
   if (error instanceof RelayAdmissionTimeoutError) return "pc-unresponsive";
   if (!(error instanceof MuxProtocolError)) return "relay-unreachable";
   switch (error.code) {
-    case "timeout": case "internal_error": return "pc-offline";
+    case "timeout": case "internal_error": case "auth_changed": return "pc-offline";
     case "auth_revoked": return "revoked";
     case "auth_failed": return attempt.code || !attempt.paired ? "code-expired" : "revoked";
-    case "auth_changed": return "identity-changed";
     case "unsupported_version": case "unsupported_extension": case "unsupported_transport": return "needs-update";
     default: return "relay-unreachable";
   }

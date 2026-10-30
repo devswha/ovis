@@ -51,6 +51,7 @@ import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket } from "./relay-browser-bridge.ts";
 import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 const repo = join(import.meta.dir, "..");
 const evidence = process.env["UI_EVIDENCE_DIR"] ?? null;
@@ -415,6 +416,23 @@ try {
     assert.equal((await saved(page, ID))?.device_id, paired[0]!.id, "the phone saved the device id the PC gave it");
     await shot(page, "paired");
     note(`connecting -> paired: real Noise + mux through the relay; PC sessions=${service.status().sessions}; device ${paired[0]!.id} enrolled via relay`);
+    const socketsBeforeRename = bridge.sockets.length;
+    const renamed = await fetch(`${base}/api/devices/${paired[0]!.id}`, {
+      method: "PATCH", headers: { origin: base, "content-type": "application/json", "x-herdr-machine": "1" },
+      body: JSON.stringify({ label: "Renamed QA phone" }),
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json() as { label: string }).label, "Renamed QA phone");
+    // A same-carrier relay API round trip is a barrier after the rename, not a timed absence check.
+    await page.keyboard.press("ControlOrMeta+Shift+Comma");
+    await openSettingsPage(page, "Phone & devices");
+    await page.getByRole("button", { name: "Rename Renamed QA phone", exact: true }).waitFor();
+    await inApp(page);
+    assert.equal(service.status().sessions, 1, "renaming keeps the admitted PC session");
+    assert.equal(bridge.sockets.length, socketsBeforeRename, "renaming never reconnects the carrier");
+    assert.equal((await saved(page, ID))?.device_id, paired[0]!.id, "renaming keeps the paired identity");
+    await shot(page, "renamed");
+    note("rename: real PATCH /api/devices/:id -> app stays mounted, one admitted session, same carrier and saved device; no identity-changed");
     // revoked on the PC: the session ends with auth_revoked, the app gives way to the screen, the key is gone
     devices.revoke(paired[0]!.id);
     await state(page, "revoked").waitFor();

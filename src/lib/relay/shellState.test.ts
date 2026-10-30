@@ -63,7 +63,8 @@ describe("the screen a failure lands on", () => {
     expect(failureOf(mux("auth_failed"), paired)).toBe("revoked");
     expect(failureOf(mux("auth_revoked"), paired)).toBe("revoked");
     expect(failureOf(new ServerIdentityChangedError("12".repeat(16)), paired)).toBe("identity-changed");
-    expect(failureOf(mux("auth_changed"), paired)).toBe("identity-changed");
+    expect(failureOf(mux("auth_changed"), paired)).toBe("pc-offline");
+    expect(forgetsDevice(failureOf(mux("auth_changed"), paired))).toBe(false);
   });
 
   it("asks for an update on a protocol the two sides do not share, and calls an unsafe offer damaged", () => {

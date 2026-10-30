@@ -18,7 +18,7 @@ export interface RelayTransportOptions extends RelayChannelOptions {
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
   if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
-  return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed" || error.code === "auth_changed"
+  return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed"
     || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
 }
 
