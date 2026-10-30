@@ -2,8 +2,9 @@
  * Settings → Phone & devices → Remote access through Ovis relay, against a local Bun relay
  * (relay/bun.ts): the switch turns the relay on and the row says Online, the QR code of a fresh
  * offer comes with its countdown, New code starts another code, a code the Devices group starts
- * refreshes the offer, the identity reset gives the PC a new server id, the switch turns the
- * relay off and the row says Off; a
+ * refreshes the offer, and the offer's code and the Devices group's code are one and the same
+ * both ways (the server keeps one pending code and the offer reuses it), the identity reset
+ * gives the PC a new server id, the switch turns the relay off and the row says Off; a
  * serve-only install disables the switch with the reason; the hosted shell shows no group; a
  * device paired through the relay wears the via relay pill. Imported by ui-regression.ts;
  * `startRelayFixture` also serves the manual QA script.
@@ -125,14 +126,28 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.ok(renewed !== null && renewed.code !== offered.code, "New code shows a fresh offer");
     await page.waitForFunction(([selector, previous]) => document.querySelector(selector)?.getAttribute("d") !== previous, ['[data-section="relay"] svg.qr path', firstDrawing] as const);
 
-    // the Devices group starts a code of its own: the server keeps one pending code, so the offer is asked for
-    // again (and carries that same code once the server's offer reuses the pending code instead of replacing it)
+    // the Devices group starts a code of its own: the server keeps one pending code and the offer reuses it, so
+    // the offer is asked for again and carries the very code the Devices group shows
     const devicesGroup = dialog.locator('[data-section="devices"]');
+    const devicesCode = async () => (await devicesGroup.locator(".devices-code").innerText()).replace(/\s+/g, "");
     const resynced = offerAnswer();
     await devicesGroup.getByRole("button", { name: "Pair a device", exact: true }).click();
     await devicesGroup.locator(".devices-code").waitFor();
     const resyncedOffer = decodeOffer(((await (await resynced).json()) as { url: string }).url);
     assert.ok(resyncedOffer !== null && resyncedOffer.code !== renewed.code, "a code the Devices group started refreshes the relay offer");
+    assert.equal(resyncedOffer.code, await devicesCode(), "the relay QR carries the code the Devices group shows");
+    await qr.waitFor();
+
+    // New code while both are shown: the Devices group follows the code the relay panel started, so they stay equal
+    const followedCode = pairStart();
+    const followedOffer = offerAnswer();
+    await group.getByRole("button", { name: "New code", exact: true }).click();
+    const followed = (await (await followedCode).json()) as { code: string };
+    const followedQr = decodeOffer(((await (await followedOffer).json()) as { url: string }).url);
+    assert.ok(followedQr !== null && followedQr.code === followed.code, "the relay QR carries the code New code started");
+    await page.waitForFunction(([selector, code]) => document.querySelector(selector)?.textContent?.replace(/\s+/g, "") === code, ['[data-section="devices"] .devices-code', followed.code] as const);
+    assert.equal(await devicesCode(), followedQr.code, "after New code the Devices group shows the same code as the relay QR");
+    assert.notEqual(followedQr.code, resyncedOffer.code, "New code replaced the code both showed");
     await qr.waitFor();
 
     // the identity reset asks first; Cancel changes nothing, Reset gives the PC a new server id and a fresh offer
