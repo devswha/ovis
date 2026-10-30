@@ -133,12 +133,15 @@ enum PCStore {
         key.hasSuffix("/") ? key : key + "/"
     }
 
-    /// Whether `url` is a page of the PC `key`: on its origin, and within its scope for a relay PC.
+    /// Whether `url` is a page of the PC `key`: on its origin, and for a relay PC within its scope, path
+    /// segment by path segment and only as a browser would load it (ScopePath): `<scope>../<other>/`
+    /// resolves to another PC. A PC saved by its origin takes any page of it.
     static func belongs(_ url: URL, to key: String) -> Bool {
         guard let pageOrigin = origin(of: url), pageOrigin == origin(ofKey: key) else { return false }
         let scope = URLComponents(string: key)?.percentEncodedPath ?? ""
-        let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath ?? ""
-        return scope.isEmpty || scope == "/" || (path.hasSuffix("/") ? path : path + "/").hasPrefix(scope)
+        if scope.isEmpty || scope == "/" { return true }
+        guard let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return false }
+        return ScopePath.within(path, scope: scope)
     }
 
     /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it, or nil.

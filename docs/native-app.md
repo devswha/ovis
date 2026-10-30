@@ -196,6 +196,11 @@ What is there:
   offer's `name`; a PC opened at its own address is still saved by its origin, and lists saved
   before keep their entries as they are. The allowed host (iOS) and the bridge's origin
   (Android) follow the PC opened, so a relay PC gets the shell's origin and nothing else.
+  A page belongs to a relay PC only within its scope as a browser would load it: a path with a
+  `.` or `..` segment (plain or percent-encoded), an encoded `/` or a `\` is refused, so
+  `<scope>../<other server_id>/` cannot pass for this PC (`PCStore.cleanPath` on Android,
+  `ScopePath.swift` on iOS; on a Mac, `swiftc app/ios/App/App/ScopePath.swift
+  app/ios/ScopePathCheck/main.swift -o /tmp/check && /tmp/check` runs its checks).
   `error.html` says when the relay could not be reached. A test build points at another shell
   with `OVIS_APP_URL=https://<host> bun run build:web`.
 - Both apps allow plain http to any host, as Android cannot limit cleartext to address ranges.

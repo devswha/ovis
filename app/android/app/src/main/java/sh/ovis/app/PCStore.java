@@ -168,13 +168,64 @@ final class PCStore {
         return scope.equals(origin + path) && belongs(url, scope) ? scope : null;
     }
 
-    /** Whether `url` is a page of the PC `key`: on its origin, and within its scope for a relay PC. */
+    /**
+     * Whether `url` is a page of the PC `key`: on its origin, and for a relay PC within its scope, path
+     * segment by path segment (`/s/A/` is not within `/s/AB/`) and only as a browser would load it
+     * (cleanPath): `<scope>../<other>/` resolves to another PC. A PC saved by its origin takes any page of it.
+     */
     static boolean belongs(String url, String key) {
         String origin = origin(url);
         if (origin == null || !origin.equals(origin(key))) return false;
         String scope = rawPath(key);
-        String path = rawPath(url);
-        return scope.isEmpty() || scope.equals("/") || (path.endsWith("/") ? path : path + "/").startsWith(scope);
+        if (scope.isEmpty() || scope.equals("/")) return true;
+        String path = cleanPath(rawPath(url));
+        return path != null && cleanPath(scope) != null && scope.endsWith("/") && (path.endsWith("/") ? path : path + "/").startsWith(scope);
+    }
+
+    /**
+     * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
+     * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
+     * browser reads as `/`. A page within a scope never needs any of them.
+     */
+    static String cleanPath(String path) {
+        if (path == null || path.indexOf('\\') >= 0) return null;
+        String lower = path.toLowerCase(Locale.ROOT);
+        if (lower.contains("%2f") || lower.contains("%5c")) return null;
+        String decoded = percentDecoded(path);
+        if (decoded == null || decoded.indexOf('\\') >= 0) return null;
+        String twice = decoded.toLowerCase(Locale.ROOT);
+        if (twice.contains("%2e") || twice.contains("%2f") || twice.contains("%5c")) return null;
+        for (String segment : decoded.split("/", -1)) {
+            if (segment.equals(".") || segment.equals("..")) return null;
+        }
+        return path;
+    }
+
+    /** `text` with its percent escapes read as UTF-8, or null for a malformed escape or malformed UTF-8. */
+    private static String percentDecoded(String text) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != '%') {
+                byte[] bytes = String.valueOf(c).getBytes(StandardCharsets.UTF_8);
+                out.write(bytes, 0, bytes.length);
+                continue;
+            }
+            if (i + 2 >= text.length()) return null;
+            int high = Character.digit(text.charAt(i + 1), 16), low = Character.digit(text.charAt(i + 2), 16);
+            if (high < 0 || low < 0 || text.charAt(i + 1) > 'f' || text.charAt(i + 2) > 'f') return null;
+            out.write(high * 16 + low);
+            i += 2;
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(out.toByteArray()))
+                .toString();
+        } catch (java.nio.charset.CharacterCodingException malformed) {
+            return null;
+        }
     }
 
     /** The path, query and fragment the PC `key` opens at: a pairing link's on the PC's origin, else the PC's scope or root. */
