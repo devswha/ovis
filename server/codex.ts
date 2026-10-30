@@ -932,7 +932,7 @@ const markedDisplay = (text: string): string => text.normalize("NFKC")
   .replace(/^[ \t]*(?:[-*+]|>+|#{1,6}|\d+[.)])[ \t]+/gm, "")
   .replace(/([-=_])\1+/g, "")
   .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, "$1")
-  .replace(/[\s`*[\]|~\\&\u2022\u2502\u2514\u251c\u2500]/gu, "");
+  .replace(/[\s\x60*[\]|~\\&\u2022\u2502\u2514\u251c\u2500]/gu, "");
 
 /**
  * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
