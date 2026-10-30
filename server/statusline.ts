@@ -1,5 +1,6 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile, readContextFile } from "./statusline-context.ts";
 
 /**
  * The limits Claude Code hands its status line, kept by the wrapper that
@@ -33,7 +34,7 @@ export interface StatuslineWindow {
  * A payload older than this is not a reading: the five-hour window has turned over, so its number
  * describes a window that is gone. The file survives a sleeping laptop, so its age is checked.
  */
-export const STALE_MS = 6 * 60 * 60_000;
+export const STALE_MS = CONTEXT_STALE_MS;
 
 export const statuslinePath = (home: string): string => join(home, ".herdr", "statusline-last.json");
 
@@ -100,15 +101,15 @@ export function readStatusline(home: string, now: number = Date.now()): Statusli
 
 /** The exact context limit for one Claude session and model, even below 200k tokens.
  * Usage remains the transcript's input/cache total. No subscription or account is required. */
-export function readStatuslineContext(home: string, sessionId: string, model: string | null, now = Date.now()): number | null {
+export function readStatuslineContext(home: string, sessionId: string, model: string | null, transcriptPath: string, now = Date.now()): number | null {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId) || model === null) return null;
-  const path = join(home, ".herdr", "statusline-context", sessionId + ".json");
   try {
-    const stat = statSync(path);
-    if (stat.size > 4096 || now - stat.mtimeMs > STALE_MS || stat.mtimeMs - now > 60_000) return null;
-    const text = readCapture(path, 4096);
-    if (text === null) return null;
-    const body = record(JSON.parse(text));
+    const directory = join(home, ".herdr", "statusline-context");
+    if (!contextDirectorySafe(directory)) return null;
+    const profile = contextProfile(dirname(dirname(dirname(realpathSync(transcriptPath)))));
+    const capture = readContextFile(join(directory, contextFilename(profile, sessionId)), profile);
+    if (capture === null || now - capture.mtimeMs > STALE_MS || capture.mtimeMs - now > 60_000) return null;
+    const body = record(capture.body);
     const capacity = body["window"];
     return body["session_id"] === sessionId && body["model"] === model
       && typeof capacity === "number" && Number.isSafeInteger(capacity) && capacity > 0 ? capacity : null;

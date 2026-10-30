@@ -8,6 +8,7 @@ import { claudeProjectDir } from "./claude-store.ts";
 import { forgetPaneTranscriptState, forgetTranscriptState, transcriptPage } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
+import { CONTEXT_GENERATED, contextFilename, contextProfile } from "./statusline-context.ts";
 
 it("uses the matching Claude window in HTTP responses and invalidates a 304 without a transcript append", async () => {
   const home = mkdtempSync(join(tmpdir(), "ovis-claude-context-"));
@@ -24,8 +25,9 @@ it("uses the matching Claude window in HTTP responses and invalidates a 304 with
       message: { role: "assistant", model: "claude-test", content: [{ type: "text", text: "Hi" }], usage: { input_tokens: 702, cache_read_input_tokens: 40_000 } } },
   ].map(row => JSON.stringify(row)).join("\n") + "\n");
   const captureDir = join(home, ".herdr", "statusline-context");
-  mkdirSync(captureDir, { recursive: true });
-  const capture = join(captureDir, session + ".json");
+  mkdirSync(captureDir, { recursive: true, mode: 0o700 });
+  const profile = contextProfile(configDir);
+  const capture = join(captureDir, contextFilename(profile, session));
   const pane = { pane_id: "claude-context-fixture", cwd, agent: "claude" as const };
   const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [] } as unknown as SessionSnapshot);
   const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "agent.get"
@@ -35,7 +37,8 @@ it("uses the matching Claude window in HTTP responses and invalidates a 304 with
   process.env["CLAUDE_CONFIG_DIR"] = configDir;
   const url = new URL("http://x/api/pane/conversation?pane_id=" + pane.pane_id);
   const ask = async (etag?: string) => (await handlePaneRequest(new Request(url, { headers: etag ? { "if-none-match": etag } : {} }), url, "/api/pane/conversation", {}))!;
-  const save = (window: number, model = "claude-test", session_id = session) => writeFileSync(capture, JSON.stringify({ session_id, model, window }));
+  const save = (window: number, model = "claude-test", session_id = session) =>
+    writeFileSync(capture, JSON.stringify({ generatedBy: CONTEXT_GENERATED, session_id, model, window, _herdr: { profile } }));
   try {
     const initial = await ask();
     expect(initial.status).toBe(200);

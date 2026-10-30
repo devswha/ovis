@@ -1,9 +1,13 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { STALE_MS, parseStatusline, readStatusline, readStatuslineContext } from "./statusline.ts";
+import { CONTEXT_GENERATED, contextFilename, contextProfile } from "./statusline-context.ts";
+import { STALE_MS, parseStatusline, readStatusline, readStatuslineContext as readContext } from "./statusline.ts";
+
+const readStatuslineContext = (home: string, session: string, model: string | null, now?: number) =>
+  readContext(home, session, model, join(home, ".claude", "projects", "project", session + ".jsonl"), now);
 
 /** Claude Code 2.1.308's payload, cut to the fields this reader shows */
 const payload = {
@@ -85,11 +89,17 @@ describe("readStatusline", () => {
 describe("Claude session context", () => {
   const home = mkdtempSync(join(tmpdir(), "herdr-session-context-"));
   const directory = join(home, ".herdr", "statusline-context");
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  mkdirSync(join(home, ".claude", "projects", "project"), { recursive: true });
+  for (const session of ["session-a", "session-b"]) writeFileSync(join(home, ".claude", "projects", "project", session + ".jsonl"), "");
   afterAll(() => rmSync(home, { recursive: true, force: true }));
-  const path = join(directory, "session-a.json");
+  const profile = contextProfile(join(home, ".claude"));
+  const path = join(directory, contextFilename(profile, "session-a"));
   const captured = { session_id: "session-a", model: "claude-test", window: 1_000_000 };
-  const write = (value: unknown) => writeFileSync(path, JSON.stringify(value));
+  const write = (value: unknown) => writeFileSync(path, JSON.stringify(
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? { generatedBy: CONTEXT_GENERATED, ...value, _herdr: { profile } } : value,
+  ));
 
   it("reads the exact window for this session and model, without quota or usage", () => {
     write(captured);
@@ -106,6 +116,29 @@ describe("Claude session context", () => {
     write({ ...captured, session_id: "session-b" });
     expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
     expect(readStatuslineContext(home, "../session-a", "claude-test")).toBeNull();
+  });
+
+  it("rejects unmarked files, foreign profiles, file symlinks and directory symlinks", () => {
+    writeFileSync(path, JSON.stringify({ ...captured, _herdr: { profile } }));
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    writeFileSync(path, JSON.stringify({ generatedBy: CONTEXT_GENERATED, ...captured, _herdr: { profile: "other-profile" } }));
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    write(captured);
+    const elsewhere = join(home, "saved.json");
+    renameSync(path, elsewhere);
+    symlinkSync(elsewhere, path);
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    rmSync(path);
+    renameSync(elsewhere, path);
+    const moved = directory + "-moved";
+    renameSync(directory, moved);
+    symlinkSync(moved, directory);
+    try {
+      expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    } finally {
+      rmSync(directory);
+      renameSync(moved, directory);
+    }
   });
 
   it("ignores malformed, oversized, invalid, and stale captures", () => {

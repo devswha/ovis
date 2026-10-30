@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { contextProfile, publishContext } from "./statusline-context.ts";
 
 /**
  * Keeps only what usage reads from the payload Claude Code hands its status line: the five-hour and
@@ -47,20 +48,12 @@ function captureContext(body: Record<string, unknown>): void {
     || typeof model !== "string" || model.trim() === "" || model.length > 256
     || typeof capacity !== "number" || !Number.isSafeInteger(capacity) || capacity <= 0) return;
   const contexts = join(dir, "statusline-context");
-  const pending = join(contexts, "." + session + "." + randomUUID() + ".tmp");
   try {
     mkdirSync(contexts, { recursive: true, mode: 0o700 });
-    if (!lstatSync(contexts).isDirectory()) return;
-    chmodSync(contexts, 0o700);
-    // The profile fingerprint lets uninstall remove only this installation's captures.
-    const profile = createHash("sha256").update(realpathSync(process.env["CLAUDE_CONFIG_DIR"] || join(home, ".claude"))).digest("hex");
-    writeFileSync(pending, `${MARK}${JSON.stringify({ session_id: session, model, window: capacity, _herdr: { profile } }).slice(1)}`, { mode: 0o600, flag: "wx" });
-    const target = join(contexts, session + ".json");
     if (!startsWith(import.meta.path, `// ${GENERATED}\n`)) return;
-    if (lstatSync(target, { throwIfNoEntry: false }) === undefined) linkSync(pending, target);
-    else if (startsWith(target, MARK)) renameSync(pending, target);
+    const profile = contextProfile(process.env["CLAUDE_CONFIG_DIR"] || join(home, ".claude"));
+    publishContext(contexts, profile, { session_id: session, model, window: capacity });
   } catch { /* A missing context must not prevent quota capture or the original status line. */ }
-  finally { try { rmSync(pending, { force: true }); } catch { /* A blocked directory leaves no temp file. */ } }
 }
 /** Claude's payload is a few kilobytes; one past this is not read whole, and the last reading stays. */
 const MAX_PAYLOAD_BYTES = 256 * 1024;

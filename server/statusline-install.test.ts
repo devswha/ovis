@@ -3,7 +3,16 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installStatusline, removeStatusline, statuslineInstallState } from "./statusline-install.ts";
-import { readStatusline, readStatuslineContext } from "./statusline.ts";
+import { CONTEXT_STALE_MS, contextFilename, contextProfile } from "./statusline-context.ts";
+import { readStatusline, readStatuslineContext as readContext } from "./statusline.ts";
+
+const readStatuslineContext = (home: string, session: string, model: string | null, configDir = join(home, ".claude")) => {
+  const project = join(configDir, "projects", "project");
+  mkdirSync(project, { recursive: true });
+  const transcript = join(project, session + ".jsonl");
+  writeFileSync(transcript, "");
+  return readContext(home, session, model, transcript);
+};
 
 let home: string;
 const settings = (configDir = join(home, ".claude")) => join(configDir, "settings.json");
@@ -611,7 +620,8 @@ describe("session context through the installed wrapper", () => {
     context_window: { context_window_size: capacity, used_percentage: 4 },
     cwd: "/private/project", transcript_path: "/private/transcript", cost: { total_cost_usd: 3 },
   });
-  const contextPath = (session = "session-a") => join(home, ".herdr", "statusline-context", session + ".json");
+  const contextPath = (session = "session-a", configDir = join(home, ".claude")) =>
+    join(home, ".herdr", "statusline-context", contextFilename(contextProfile(configDir), session));
 
   it("captures context without subscription limits, preserving the original status line", () => {
     install();
@@ -626,6 +636,8 @@ describe("session context through the installed wrapper", () => {
     draw(payload("session-b", 200_000));
     expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
     expect(readStatuslineContext(home, "session-b", "claude-test")).toBe(200_000);
+    draw(payload("session-a", 200_000));
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(200_000);
   });
 
   it("cleans its own session captures and preserves captures from other profiles", () => {
@@ -635,12 +647,24 @@ describe("session context through the installed wrapper", () => {
     mkdirSync(configDir);
     writeFileSync(settings(configDir), JSON.stringify({}));
     expect(run([], configDir).exitCode).toBe(0);
-    draw(payload("session-work"), configDir);
+    draw(payload("session-a", 200_000), configDir);
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
+    expect(readStatuslineContext(home, "session-a", "claude-test", configDir)).toBe(200_000);
     install("--remove");
     expect(existsSync(contextPath())).toBe(false);
-    expect(readStatuslineContext(home, "session-work", "claude-test")).toBe(1_000_000);
+    expect(readStatuslineContext(home, "session-a", "claude-test", configDir)).toBe(200_000);
     expect(run(["--remove"], configDir).exitCode).toBe(0);
     expect(existsSync(join(home, ".herdr", "statusline-context"))).toBe(false);
+  });
+
+  it("prunes stale own captures when a new session publishes", () => {
+    install();
+    draw(payload("session-stale"));
+    const stale = new Date(Date.now() - CONTEXT_STALE_MS - 60_000);
+    utimesSync(contextPath("session-stale"), stale, stale);
+    draw(payload("session-new"));
+    expect(existsSync(contextPath("session-stale"))).toBe(false);
+    expect(readStatuslineContext(home, "session-new", "claude-test")).toBe(1_000_000);
   });
 
 

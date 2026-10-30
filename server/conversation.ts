@@ -1666,7 +1666,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
-    const window = readStatuslineContext(userHome(), identity, answer.metadata.model);
+    const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
     if (window !== null) return {
       ...answer,
       metadata: { ...answer.metadata, context: { ...answer.metadata.context, window } },
