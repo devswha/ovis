@@ -88,14 +88,19 @@ try {
     // screen drawn for another grid parsed into its own.
     await cached.page.evaluate((pane) => {
       const frames: string[][] = [];
-      Object.assign(window, { switchFrames: frames });
+      const matched = Promise.withResolvers<void>();
+      const state: { frames: string[][]; expected?: string; matched: Promise<void> } = { frames, matched: matched.promise };
+      Object.assign(window, { switchState: state });
+      // armed before the switch: every frame painted from the press on, until one is the fresh attach's screen
       document.addEventListener("pointerdown", () => {
         const grab = () => {
           const frame = document.querySelector(`[data-layout-pane="${pane}"]`);
           if (frame && getComputedStyle(frame).visibility === "visible") {
-            frames.push([...frame.querySelectorAll(".xterm-rows > div")].map((div) => (div.textContent ?? "").replace(/\s+$/, "")));
+            const lines = [...frame.querySelectorAll(".xterm-rows > div")].map((div) => (div.textContent ?? "").replace(/\s+$/, ""));
+            frames.push(lines);
+            if (state.expected !== undefined && lines.join("\n") === state.expected) { matched.resolve(); return; }
           }
-          if (!(window as unknown as { switchDone?: boolean }).switchDone) requestAnimationFrame(grab);
+          requestAnimationFrame(grab);
         };
         requestAnimationFrame(grab);
       }, { once: true, capture: true });
@@ -103,28 +108,25 @@ try {
     await select(cached.page, target);
     const truth = await viewer(cachedWidth, target, panes);
     const expected = await rows(truth.page, target);
-    let actual: string[] = [];
-    try {
-      await cached.page.waitForFunction(({ pane, expected }) => {
-        const divs = [...document.querySelectorAll(`[data-layout-pane="${pane}"] .xterm-rows > div`)];
-        return divs.map((div) => (div.textContent ?? "").replace(/\s+$/, "")).join("\n") === expected;
-      }, { pane: target, expected: expected.join("\n") }, { timeout: 5000 });
-      actual = await rows(cached.page, target);
-      const painted = await cached.page.evaluate(() => {
-        Object.assign(window, { switchDone: true });
-        return (window as unknown as { switchFrames: string[][] }).switchFrames;
-      });
-      const torn = painted.find((lines) => lines.join("\n") !== left.join("\n") && lines.join("\n") !== expected.join("\n"));
-      if (torn) failures.push(`${round}: a frame painted on return is neither the screen it left nor the pane at its size\n${torn.join("\n")}`);
-    } catch {
-      actual = await rows(cached.page, target);
+    const settled = await cached.page.evaluate(async (expected) => {
+      const state = (window as unknown as { switchState: { frames: string[][]; expected?: string; matched: Promise<void> } }).switchState;
+      state.expected = expected;
+      // the screen may already match from an earlier frame; the next frame resolves it
+      const bound = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000));
+      return { matched: await Promise.race([state.matched.then(() => true), bound]), painted: state.frames };
+    }, expected.join("\n"));
+    const actual = await rows(cached.page, target);
+    if (!settled.matched) {
       failures.push(`${round}: the returned tab differs from a fresh attach\n--- returned\n${actual.join("\n")}\n--- fresh attach\n${expected.join("\n")}`);
+    } else {
+      const torn = settled.painted.find((lines) => lines.join("\n") !== left.join("\n") && lines.join("\n") !== expected.join("\n"));
+      if (torn) failures.push(`${round}: a frame painted on return is neither the screen it left nor the pane at its size\n${torn.join("\n")}`);
     }
     if (evidence) {
       await cached.page.screenshot({ path: join(evidence, `returned-${round}.png`) });
       await truth.page.screenshot({ path: join(evidence, `fresh-${round}.png`) });
     }
-    console.log(JSON.stringify({ round, match: actual.join("\n") === expected.join("\n") }));
+    console.log(JSON.stringify({ round, match: settled.matched }));
     await truth.close();
     await cached.close();
   }
