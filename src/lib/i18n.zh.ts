@@ -27,6 +27,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Save": "保存",
   "Goal": "目标",
   "Waiting for your answer": "等待你的回答",
   "Back": "返回",
@@ -56,6 +57,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新建工作区",
   "Previous pane": "上一个窗格",
   "Next pane": "下一个窗格",
+  "Previous tab": "上一个标签页",
+  "Next tab": "下一个标签页",
+  "Previous workspace": "上一个工作区",
+  "Next workspace": "下一个工作区",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "就绪",

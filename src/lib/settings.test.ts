@@ -124,6 +124,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().composerArtifacts).toBe(false);
+    saveSettings(sanitizeSettings({ composerArtifacts: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerArtifacts");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerArtifacts).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), composerArtifacts: false });
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "\"true\"");
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "not json");
+    expect(loadSettings().composerArtifacts).toBe(false);
+  });
+
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
     putOld({ theme: "dark", palette: "charcoal" });
     const stale = readOld();
@@ -220,6 +235,13 @@ it("keeps the composer's New tab button off until this device turns it on, and k
   expect(sanitizeSettings({ composerNewTabButton: true }).composerNewTabButton).toBe(true);
   expect(sanitizeSettings({ composerNewTabButton: "true" }).composerNewTabButton).toBe(false);
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
+});
+
+it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).composerArtifacts).toBe(false);
+  expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
+  expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
+  expect(SETTING_SCOPE.composerArtifacts).toBe("device");
 });
 
 it("keeps the screen wake lock off until this device explicitly enables it", () => {

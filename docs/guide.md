@@ -578,7 +578,7 @@ The `map` block goes in the `http` section. `proxy_read_timeout` keeps an idle t
 
 Both examples drop a `Tailscale-User-Login` header a visitor sends. That header is how `tailscale serve` names your own login, and on a PC that runs Tailscale the server trusts it from any proxy on this PC, so a public proxy must not pass a visitor's copy on. With a token set the server asks for the token whatever that header says, so a proxy that does pass it on gives a visitor nothing.
 
-**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy, Cloudflare Access and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
+**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
 
 ```caddyfile
 		header_up Authorization "Bearer {env.OVIS_TOKEN}"
@@ -595,6 +595,25 @@ The proxy's own sign-in is then the only one: anyone it lets through gets in, an
 To check the app's gate, request its `/api/session` directly without a token: it must answer 401.
 If the proxy signs people in, also check that a signed-out visitor cannot reach the app through
 the public address.
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) gives this PC a public HTTPS address on a domain in your Cloudflare account, with no port open on this PC. `cloudflared` does all four things with no settings: Cloudflare keeps the public `Host`, sends `X-Forwarded-For` and `X-Forwarded-Proto: https`, and passes the `/ws` upgrade. Keep `HOST=127.0.0.1` and set `OVIS_TOKEN` first, then [create the tunnel and route its hostname](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/) (`cloudflared tunnel login`, `cloudflared tunnel create ovis`, `cloudflared tunnel route dns ovis herdr.example.com`) and point that hostname at the app in `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <tunnel ID>
+credentials-file: /home/<you>/.cloudflared/<tunnel ID>.json
+ingress:
+  - hostname: herdr.example.com
+    service: http://127.0.0.1:7317
+  - service: http_status:404
+```
+
+`cloudflared tunnel run ovis` then starts it. A tunnel made in the Cloudflare dashboard ignores this file: set its public hostname's service to `http://127.0.0.1:7317` there.
+
+To try it without an account, `cloudflared tunnel --url http://127.0.0.1:7317` prints a random `https://<words>.trycloudflare.com` address. It changes on every run, and cookies and the installed app are tied to the address, so it suits a test, not a phone you keep using. A quick tunnel also carries no [Server-Sent Events](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/), which the sidebar and the PC list update by, so the terminal works through it but those may not update by themselves.
+
+Unlike the Caddy and nginx examples, Cloudflare passes on a `Tailscale-User-Login` header a visitor sends. On a PC that runs Tailscale, the server still does not take it for your login, because Cloudflare adds the visitor's own address to `X-Forwarded-For`, but do not rely on that: with a token set the header gives a visitor nothing. To drop it as well, add a [Request Header Transform Rule](https://developers.cloudflare.com/rules/transform/request-header-modification/) for that hostname that removes it. Do not set `OVIS_TAILSCALE_SERVE_ONLY=1` on a PC a tunnel reaches.
+
+Cloudflare Access can put its sign-in in front of that hostname, but it cannot hand the app the token as Caddy or nginx can: Access adds no `Authorization` header to the requests it lets through. Keep the app's own gate on behind it. Each device signs in to Access, then enters the token once or is paired from **Settings → Phone & devices**, and stays signed in to the app; Access still asks it to sign in again when its own session runs out. A script reaches the app through Access with an Access [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), allowed by a **Service Auth** policy on that application, in its `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, plus `Authorization: Bearer <your token>` for the app. The Android app cannot get past the Access sign-in yet ([#2008](https://github.com/devswha/ovis/issues/2008)): open the address in the phone's browser instead.
 
 [Portal](https://github.com/gosuda/portal-tunnel) gives this PC a public HTTPS address with no account and no domain of your own. From v2.6.1, its `--http-route` does all four things and can drop a header a visitor sends; the plain `portal expose 7317` sends no `X-Forwarded-Proto`, so the app's own requests are refused (`invalid_origin`).
 
@@ -823,7 +842,7 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 
 - **An SSH tunnel from the phone** (Termux, Blink): `ssh -L 7317:127.0.0.1:7317 <pc>`, then open `http://localhost:7317` on the phone. Browsers treat localhost as secure, so installing and alerts should work while the tunnel is up (not verified on iOS yet). The phone still has to reach the PC over SSH.
 - **A VPN into your home** (WireGuard, ZeroTier, a router VPN): the LAN address works in the browser, but a plain `http://` address can neither install the app nor receive alerts.
-- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy and nginx examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
+- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy, nginx and Cloudflare Tunnel examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
 - **A public address with Portal**, a tunnel with no account and no domain of your own, with a long random token set: [Behind a reverse proxy](#behind-a-reverse-proxy) has the command, and **Settings → Phone & devices → Portal** runs it for you. This exposes the server to the internet too.
 </details>
 

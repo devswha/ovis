@@ -24,6 +24,7 @@ import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
 import { handlePlanRequest } from "./plan-routes.ts";
+import { handleArtifactsRequest } from "./claude-artifacts.ts";
 import { SHELL_AGENTS, ShellAgentLocator } from "./shell-agent.ts";
 import { handleAgentsRequest } from "./agents-routes.ts";
 import { AgentDetector, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
@@ -660,6 +661,9 @@ export function createServer(
 
       const planResponse = await handlePlanRequest(request, url, pathname, { omo, claudeAgents, plans });
       if (planResponse) return planResponse;
+
+      const artifactsResponse = await handleArtifactsRequest(request, url, pathname, { claudeAgents });
+      if (artifactsResponse) return artifactsResponse;
 
       if (pathname === SESSION_HISTORY_PATH) {
         setRequestRoute(SESSION_HISTORY_PATH);

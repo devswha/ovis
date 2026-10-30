@@ -128,6 +128,7 @@ run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts
 run_script scripts/chat-local-send-follow-demo-regression.ts
+run_script scripts/reply-comments-demo-regression.ts
 run_script scripts/chat-tool-paths-demo-regression.ts
 run_script scripts/chat-list-markers-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
@@ -143,6 +144,7 @@ run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/sidebar-spacing-demo-regression.ts
 run_script scripts/sidebar-machine-layout-demo-regression.ts
 run_script scripts/sidebar-machine-removal-demo-regression.ts
+run_script scripts/sidebar-selection-contrast-demo-regression.ts
 run_script scripts/hide-pc-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
@@ -154,6 +156,7 @@ run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts
 run_script scripts/background-agent-detail-demo-regression.ts
+run_script scripts/artifacts-browser-regression.ts
 run_script scripts/palette-machines-demo-regression.ts
 run_script scripts/health-flap-demo-regression.ts
 run_script scripts/narrow-pane-demo-regression.ts
