@@ -399,6 +399,46 @@ describe("HTTP lifecycle", () => {
     await p.flush();
     expect(p.errors).toEqual([]);
   });
+  it("keeps queued response CREDIT when STOP interrupts an upload", async () => {
+    const p = pair();
+    const local = p.client.openHttp({ method: "POST", target: "/early", headers: [], body: "stream" });
+    await p.flush();
+    const remote = required(p.http[0]);
+    remote.headers(200);
+    await remote.write(new Uint8Array(10));
+    await p.flush();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    p.intercept((side, frame) => {
+      if (side === "client" && frame.type === FrameType.PING) {
+        entered.resolve();
+        return release.promise;
+      }
+    });
+    p.client.ping();
+    await entered.promise;
+    try {
+      const reader = local.body.getReader();
+      expect((await reader.read()).value?.length).toBe(10);
+      expect(local.granted).toBe(0n);
+      remote.stopRequest();
+      await p.server.flush();
+      expect(local.stopped).toBe(true);
+      release.resolve();
+      await p.flush();
+      expect(remote.peerConsumed).toBe(10n);
+      expect(local.granted).toBe(10n);
+      const reading = reader.read();
+      await remote.write(new Uint8Array(1));
+      expect((await reading).value?.length).toBe(1);
+      remote.end();
+      await p.flush();
+      expect((await reader.read()).done).toBe(true);
+      expect(p.errors).toEqual([]);
+    } finally {
+      release.resolve();
+    }
+  });
   for (const order of ["before", "during", "after"] as const) {
     it(`accepts STOP ${order} normal END without double completion`, async () => {
       const p = pair();

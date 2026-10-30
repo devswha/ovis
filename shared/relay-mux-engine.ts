@@ -282,7 +282,8 @@ export class HttpStream extends MuxStream {
   }
   stopUpload(): void {
     this.stopped = true;
-    this.engine.dropQueue(this, new MuxStreamError("cancelled"));
+    // The response body is still being read, so its CREDIT must survive.
+    this.engine.dropQueue(this, new MuxStreamError("cancelled"), false);
     this.cancelSource();
     this.onUploadStopped?.();
     if (this.endedOut) return; // A normal END already committed may cross STOP.
@@ -876,13 +877,14 @@ export class MuxEngine {
     if (!stream.terminal) this.nonterminalQueued -= entry.payloadBytes;
     this.releaseMetadata(stream, entry.bytes.length - entry.payloadBytes);
   }
-  dropQueue(stream: MuxStream, error: MuxStreamError): void {
+  dropQueue(stream: MuxStream, error: MuxStreamError, dropControl = true): void {
     for (const entry of stream.queue.splice(0)) {
       this.releaseEntry(entry);
       entry.failed?.(error);
     }
     stream.blockedTimer?.();
     stream.blockedTimer = undefined;
+    if (!dropControl) return;
     for (let i = this.urgent.length - 1; i >= 0; i--) {
       const entry = this.urgent[i];
       if (entry?.owner === stream) {
