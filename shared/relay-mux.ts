@@ -40,7 +40,7 @@ export class MuxProtocolError extends Error {
 
 export const LIMITS_V1 = {
   max_streams: 32, max_ws_streams: 8, max_sse_streams: 4,
-  max_frame_bytes: 16384, http_window_bytes: 65536, ws_window_bytes: 1048576,
+  max_frame_bytes: 16384, http_window_bytes: 327680, ws_window_bytes: 1048576,
   max_ws_message_bytes: 1048576, max_request_body_bytes: 67108864,
 } as const;
 export type LimitsV1 = Omit<typeof LIMITS_V1, "max_streams" | "max_ws_streams" | "max_sse_streams"> & {

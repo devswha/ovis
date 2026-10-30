@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS } from "../server/output-window.ts";
-import { HttpStream, MuxEngine, MuxStreamError, WsStream } from "./relay-mux-engine.ts";
+import { HttpStream, MuxEngine, MuxStreamError, MUX_FLIGHT, MUX_RECEIVE_RESERVATION_BYTES, WsStream } from "./relay-mux-engine.ts";
 import type { MuxClock, MuxOptions, WsClose } from "./relay-mux-engine.ts";
-import { decodeFrame, encodeFrame, FrameType, MuxProtocolError, WS_START_CAPACITY } from "./relay-mux.ts";
+import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_START_CAPACITY } from "./relay-mux.ts";
 import type { HeaderList, MuxFrame } from "./relay-mux.ts";
 
 const KiB = 1024;
@@ -325,10 +325,10 @@ describe("HTTP lifecycle", () => {
     const result = await reading;
     await p.flush();
     expect(result).toEqual({ bytes: 200 * MiB, digest: generated.digest() });
-    expect(p.peaks.inbound).toBeLessThanOrEqual(64 * KiB);
+    expect(p.peaks.inbound).toBeLessThanOrEqual(LIMITS_V1.http_window_bytes);
     expect(p.peaks.queued).toBeLessThanOrEqual(64 * KiB);
     expect(p.peaks.buffered).toBeLessThan(32 * MiB);
-    expect(p.peaks.bulk).toBeLessThanOrEqual(24 * KiB);
+    expect(p.peaks.bulk).toBeLessThanOrEqual(MUX_FLIGHT.bulk);
     expect(p.errors).toEqual([]);
     console.log(`streaming: bytes=${result.bytes} sha256=${result.digest} peak_buffered=${p.peaks.buffered} peak_inbound=${p.peaks.inbound}`);
   }, 120_000);
@@ -727,7 +727,7 @@ describe("WebSockets", () => {
     await p.flush();
     expect(p.errors).toEqual([]);
   });
-  it("maps rejected upgrades to a streaming HTTP body and a 64 KiB window", async () => {
+  it("maps rejected upgrades to a streaming HTTP body and the HTTP window", async () => {
     const p = pair();
     const local = p.client.openWs({ target: "/not-a-websocket", headers: [], protocols: [] });
     await p.flush();
@@ -737,19 +737,32 @@ describe("WebSockets", () => {
     await rejected.write(new TextEncoder().encode("no upgrade"));
     rejected.end();
     expect(await reading).toBe("no upgrade");
-    expect(local.rejection?.receiveWindow).toBe(64 * KiB);
+    expect(local.rejection?.receiveWindow).toBe(LIMITS_V1.http_window_bytes);
     expect(() => local.send("forbidden")).toThrow();
   });
 });
 
 describe("credit and receipts", () => {
-  it("over-credit DATA closes the session", async () => {
-    const e = endpoint();
-    const stream = await download(e);
-    e.engine.receive(headers(1));
-    for (let i = 0; i < 4; i++) e.engine.receive(data(1, 16376));
-    e.engine.receive(data(1, 32));
-    expect(stream.received).toBe(65536n);
+  for (const role of ["client", "server"] as const) it(`over-credit DATA closes the ${role} session`, async () => {
+    const e = endpoint(role);
+    let stream: HttpStream;
+    if (role === "client") {
+      stream = await download(e);
+      e.engine.receive(headers(1));
+    } else {
+      e.engine.receive(frame({ type: FrameType.HTTP_OPEN, flags: 0, stream_id: 1, payload: {
+        device_id: device, method: "POST", target: "/upload", headers: [], body: "stream",
+      } }));
+      stream = required(e.http[0]);
+      stream.accept();
+      await e.engine.flush();
+    }
+    for (let remaining = LIMITS_V1.http_window_bytes; remaining > 0;) {
+      const size = Math.min(remaining, WS_CONTINUATION_CAPACITY);
+      e.engine.receive(data(1, size));
+      remaining -= size;
+    }
+    expect(stream.received).toBe(BigInt(LIMITS_V1.http_window_bytes));
     expect(e.engine.active).toBe(true);
     e.engine.receive(data(1, 1));
     await e.engine.flush();
@@ -757,7 +770,7 @@ describe("credit and receipts", () => {
     expect(error?.type === FrameType.SESSION_ERROR && error.payload.code).toBe("flow_control_error");
     expect(e.closes).toEqual([4000]);
     expect(e.engine.stats.inboundBytes).toBe(0);
-    console.log(`over-credit DATA: received=65536 attempted=65537 SESSION_ERROR=${error?.type === FrameType.SESSION_ERROR ? error.payload.code : "MISSING"} close=${e.closes.join(",")}`);
+    console.log(`over-credit DATA: role=${role} received=${LIMITS_V1.http_window_bytes} attempted=${LIMITS_V1.http_window_bytes + 1} SESSION_ERROR=${error?.type === FrameType.SESSION_ERROR ? error.payload.code : "MISSING"} close=${e.closes.join(",")}`);
   });
   it("accounts CREDIT only on read and only once for stale or duplicate values", async () => {
     const p = pair();
@@ -848,21 +861,30 @@ describe("credit and receipts", () => {
   for (const mode of ["binary", "base64"] as const) {
     it(`slow-relay counterexample bounds ${mode} flight even when sends resolve immediately`, async () => {
       const p = pair({ wireMode: mode });
-      p.client.openHttp({ method: "GET", target: "/download", headers: [], body: "none" });
+      const terminal = await socket(p);
+      for (let i = 0; i < 2; i++) p.client.openHttp({ method: "GET", target: `/download/${i}`, headers: [], body: "none" });
       await p.flush();
       const remote = required(p.http[0]);
-      remote.headers(200);
+      for (const stream of p.http) stream.headers(200);
       await p.flush();
       p.hold.server = true;
-      const writing = outcome(remote.write(new Uint8Array(512 * KiB)));
+      const writing = Promise.all(p.http.map((stream) => outcome(stream.write(new Uint8Array(512 * KiB)))));
       await p.flush();
-      expect(p.held).toHaveLength(1);
-      expect(p.server.stats.bulkFlightBytes).toBeLessThanOrEqual(24 * KiB);
-      expect(p.server.stats.bulkFlightBytes).toBeGreaterThan(16 * KiB);
+      const wire = (mode === "base64" ? Math.ceil((16384 + 24) / 3) * 4 : 16384 + 24) + 12;
+      expect(p.held).toHaveLength(Math.floor(MUX_FLIGHT.bulk / wire));
+      expect(p.server.stats.bulkFlightBytes).toBeLessThanOrEqual(MUX_FLIGHT.bulk);
+      expect(p.server.stats.bulkFlightBytes).toBeGreaterThan(MUX_FLIGHT.bulk - wire);
       expect(remote.queuedBytes).toBeGreaterThan(0);
       const calls = p.calls.server;
       await p.server.flush();
       expect(p.calls.server).toBe(calls);
+      terminal.remote.send(new Uint8Array(WS_START_CAPACITY));
+      p.server.ping();
+      await p.flush();
+      expect(p.held.some((entry) => decodeFrame(entry.bytes).type === FrameType.WS_DATA)).toBe(true);
+      expect(p.held.some((entry) => decodeFrame(entry.bytes).type === FrameType.PING)).toBe(true);
+      expect(p.server.stats.ordinaryFlightBytes).toBeLessThanOrEqual(MUX_FLIGHT.ordinary);
+      expect(p.server.stats.bulkFlightBytes).toBeLessThanOrEqual(MUX_FLIGHT.bulk);
       p.server.carrierLost();
       await writing;
     });
@@ -885,7 +907,7 @@ describe("credit and receipts", () => {
     await e.engine.flush();
     expect(e.sent.at(-1)?.type).toBe(FrameType.RECEIVED);
     expect(e.engine.stats.controlFlightBytes).toBe(control);
-    expect(e.engine.stats.controlFlightBytes + e.engine.stats.ordinaryFlightBytes).toBeLessThanOrEqual(64 * KiB);
+    expect(e.engine.stats.controlFlightBytes + e.engine.stats.ordinaryFlightBytes).toBeLessThanOrEqual(MUX_FLIGHT.total);
   });
 });
 
@@ -933,7 +955,7 @@ describe("scheduling and isolation", () => {
     for (let i = 1; i < interactive.length; i++) expect(interactive[i]?.id).not.toBe(interactive[i - 1]?.id);
     const bulk = scheduled.filter((f) => !interactiveIds.includes(f.id)).slice(0, 10);
     for (let i = 1; i < bulk.length; i++) expect(bulk[i]?.id).not.toBe(bulk[i - 1]?.id);
-    expect(p.peaks.bulk).toBeLessThanOrEqual(24 * KiB);
+    expect(p.peaks.bulk).toBeLessThanOrEqual(MUX_FLIGHT.bulk);
     expect(terminalAcks).toBe(128);
     console.log("fairness: terminal and SSE frames during saturated downloads");
     console.log(scheduled.slice(0, 35).map((f, i) => `${i}: stream=${f.id} ${interactiveIds.includes(f.id) ? f.id === terminal.remote.id ? "terminal" : "SSE" : "download"} bytes=${f.bytes}`).join("\n"));
@@ -992,7 +1014,7 @@ describe("scheduling and isolation", () => {
     terminal.remote.send("terminal keeps flowing");
     await p.flush();
     expect(remoteFile.queuedBytes).toBeGreaterThan(0);
-    expect(file.inboundBytes).toBeLessThanOrEqual(64 * KiB);
+    expect(file.inboundBytes).toBeLessThanOrEqual(LIMITS_V1.http_window_bytes);
     expect(terminal.remote.getBufferedAmount()).toBe(0);
     const output = new OutputWindow();
     expect([OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_HARD_BYTES, OUTPUT_STALL_MS]).toEqual([256 * KiB, 64 * KiB, MiB, 2000]);
@@ -1032,9 +1054,35 @@ describe("limits and liveness", () => {
       await e.engine.flush();
       expect(e.engine.stats.streams).toBe(count - 1);
       expect(e.sent.some((f) => f.type === FrameType.RESET && f.stream_id === 2 * count - 1 && f.payload.code === "refused")).toBe(true);
-      expect(e.engine.stats.reservedBytes).toBe((count - 1) * (kind === "ws" ? MiB : 64 * KiB));
+      expect(e.engine.stats.reservedBytes).toBe((count - 1) * (kind === "ws" ? MiB : LIMITS_V1.http_window_bytes));
       expect(e.engine.stats.lastOpenId).toBe(2 * count - 1);
       expect(dispatched).toBe(count - 1);
+    });
+  }
+  for (const role of ["client", "server"] as const) {
+    it(`reserves bounded mixed receive windows before dispatch on the ${role}`, async () => {
+      const e = endpoint(role);
+      const openStream = (index: number, kind: "http" | "ws") => {
+        if (role === "server") e.engine.receive(open(index * 2 + 1, kind));
+        else if (kind === "ws") e.engine.openWs({ target: "/ws", headers: [], protocols: [] });
+        else e.engine.openHttp({ method: "GET", target: "/file", headers: [], body: "none" });
+      };
+      for (let i = 0; i < 8; i++) openStream(i, "ws");
+      const httpCount = Math.floor((MUX_RECEIVE_RESERVATION_BYTES - 8 * MiB) / LIMITS_V1.http_window_bytes);
+      for (let i = 0; i < httpCount; i++) openStream(i + 8, "http");
+      const before = e.engine.stats;
+      if (role === "server") openStream(8 + httpCount, "http");
+      else expect(() => openStream(8 + httpCount, "http")).toThrow(MuxStreamError);
+      await e.engine.flush();
+      expect(e.engine.stats.streams).toBe(8 + httpCount);
+      expect(e.engine.stats.reservedBytes).toBe(before.reservedBytes);
+      expect(e.engine.stats.reservedBytes).toBeLessThanOrEqual(MUX_RECEIVE_RESERVATION_BYTES);
+      if (role === "server") {
+        expect(e.http).toHaveLength(httpCount);
+        expect(e.sent.some((f) => f.type === FrameType.RESET && f.payload.code === "refused")).toBe(true);
+      }
+      expect(2 * MUX_RECEIVE_RESERVATION_BYTES + 4 * MiB + MiB + 64 * KiB + MUX_FLIGHT.total).toBeLessThan(32 * MiB);
+      expect(e.errors).toEqual([]);
     });
   }
   it("reserves one terminal message beyond the nonterminal outgoing cap", async () => {

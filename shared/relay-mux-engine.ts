@@ -14,8 +14,13 @@ type CancelTimer = () => void;
 const U64_MAX = 0xffffffffffffffffn;
 const KiB = 1024;
 const MiB = 1024 * KiB;
-const FLIGHT = { ordinary: 48 * KiB, bulk: 24 * KiB, control: 16 * KiB, total: 64 * KiB } as const;
-const QUEUE = { outgoing: 4 * MiB, nonterminal: 3 * MiB, metadata: MiB, control: 64 * KiB, total: 32 * MiB } as const;
+// See docs/relay-mux-limits.md: >= 5 MB/s at 50 ms RTT, with 24 KiB kept for
+// interactive records and an independent control reserve. Only RECEIVED releases flight.
+export const MUX_FLIGHT = { ordinary: 408 * KiB, bulk: 384 * KiB, control: 16 * KiB, total: 424 * KiB } as const;
+// Reserve before admitting streams; even counting reservations AND their payloads, the worst
+// accounted total is 2 * 12 MiB + 4 MiB + 1 MiB + 64 KiB + 424 KiB < 32 MiB.
+export const MUX_RECEIVE_RESERVATION_BYTES = 12 * MiB;
+const QUEUE = { outgoing: 4 * MiB, nonterminal: 3 * MiB, metadata: MiB, control: 64 * KiB } as const;
 
 export interface MuxClock {
   now(): number;
@@ -564,7 +569,7 @@ export class MuxEngine {
       check(Number.isInteger(this.limits[key]) && this.limits[key] > 0 && this.limits[key] <= LIMITS_V1[key], "Invalid concurrency limit");
     }
     const largest = options.outboundWireByteLength(new Uint8Array(MAX_FRAME_BYTES)) + options.routingOverhead;
-    check(Number.isSafeInteger(largest) && largest >= MAX_FRAME_BYTES && largest <= FLIGHT.bulk
+    check(Number.isSafeInteger(largest) && largest >= MAX_FRAME_BYTES && largest <= MUX_FLIGHT.ordinary - MUX_FLIGHT.bulk
       && largest <= options.maxWireMessageBytes, "Transport cannot carry a maximum frame", "unsupported_transport");
     this.openBucket = new Bucket(32, 64, options.clock);
     this.frameBucket = new Bucket(4096, 8192, options.clock);
@@ -659,7 +664,7 @@ export class MuxEngine {
     if (this.streams.size >= this.limits.max_streams
       || ws && [...this.streams].filter((s) => s instanceof WsStream).length >= this.limits.max_ws_streams
       || sse && [...this.streams].filter((s) => s instanceof HttpStream && s.sse).length >= this.limits.max_sse_streams
-      || this.metadata + metadata > QUEUE.metadata || this.reserved + reservation > QUEUE.total) return false;
+      || this.metadata + metadata > QUEUE.metadata || this.reserved + reservation > MUX_RECEIVE_RESERVATION_BYTES) return false;
     this.streams.add(stream);
     stream.reservation = reservation;
     this.reserved += reservation;
@@ -743,9 +748,9 @@ export class MuxEngine {
     Promise.resolve().then(() => { this.scheduled = false; return this.pump(); });
   }
   private fits(entry: Entry): boolean {
-    if (entry.traffic === "control") return this.controlFlight + entry.wire <= FLIGHT.control;
-    return this.ordinaryFlight + entry.wire <= FLIGHT.ordinary
-      && (entry.traffic !== "bulk" || this.bulkFlight + entry.wire <= FLIGHT.bulk);
+    if (entry.traffic === "control") return this.controlFlight + entry.wire <= MUX_FLIGHT.control;
+    return this.ordinaryFlight + entry.wire <= MUX_FLIGHT.ordinary
+      && (entry.traffic !== "bulk" || this.bulkFlight + entry.wire <= MUX_FLIGHT.bulk);
   }
   private eligible(stream: MuxStream, entry: Entry): boolean {
     if (stream instanceof HttpStream && this.options.role === "client"
