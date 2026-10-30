@@ -269,7 +269,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
       const hello = await hc.hello();
-      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true } };
+      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core" } };
     },
     async "session.snapshot"() {
       return { snapshot: await snapshot() };
