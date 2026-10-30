@@ -25,7 +25,6 @@ export const USAGE_KO: Record<string, string> = {
   "Provider": "제공업체",
   "Connection": "연결",
   "Method": "방식",
-  "Sign in": "로그인",
   "Account setup": "계정 설정",
   "On this PC": "이 PC",
   "Official CLI in a new tab": "새 탭에서 공식 CLI로 로그인",
@@ -36,7 +35,6 @@ export const USAGE_KO: Record<string, string> = {
   "Import accounts from CLIProxyAPI": "CLIProxyAPI 계정 가져오기",
   "The key stays on this PC.": "키는 이 PC에만 저장돼요.",
   "Connected · {count} accounts": "연결됨 · 계정 {count}개",
-  "Signed in": "로그인됨",
   "Expired": "만료됨",
   "Edit": "수정",
   "Remove hub?": "허브를 제거할까요?",
@@ -86,4 +84,5 @@ export const USAGE_KO: Record<string, string> = {
   "{name} asked to slow down. These are the last numbers.": "{name}에서 요청 속도 제한을 걸었습니다. 마지막으로 읽은 값입니다.",
   "{name} could not be reached.": "{name}에 연결하지 못했습니다.",
   "The server cannot open the keychain holding this sign-in.": "서버가 이 로그인 정보가 든 키체인을 열 수 없습니다.",
+  "Signed in": "로그인됨",
 };

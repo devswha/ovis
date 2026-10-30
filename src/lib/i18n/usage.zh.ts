@@ -25,7 +25,6 @@ export const USAGE_ZH: Record<string, string> = {
   "Provider": "提供商",
   "Connection": "连接",
   "Method": "方式",
-  "Sign in": "登录",
   "Account setup": "账号设置",
   "On this PC": "本机",
   "Official CLI in a new tab": "在新标签页中使用官方 CLI",
@@ -36,7 +35,6 @@ export const USAGE_ZH: Record<string, string> = {
   "Import accounts from CLIProxyAPI": "从 CLIProxyAPI 导入账号",
   "The key stays on this PC.": "密钥仅保存在本机。",
   "Connected · {count} accounts": "已连接 · {count} 个账号",
-  "Signed in": "已登录",
   "Expired": "已过期",
   "Edit": "编辑",
   "Remove hub?": "移除中心？",
@@ -86,4 +84,5 @@ export const USAGE_ZH: Record<string, string> = {
   "{name} asked to slow down. These are the last numbers.": "{name} 要求降低请求频率。显示的是上次读取的数值。",
   "{name} could not be reached.": "无法连接 {name}。",
   "The server cannot open the keychain holding this sign-in.": "服务器无法打开保存此登录信息的钥匙串。",
+  "Signed in": "已登录",
 };
