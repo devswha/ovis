@@ -39,7 +39,9 @@ beforeAll(async () => {
   mkdirSync(join(root, "bin"));
   const codex = join(root, "bin", "codex");
   const ready = join(root, "bin", "ready");
-  writeFileSync(codex, `#!/bin/sh\nprintf '%s\\n' '${answerPrefix}Answer one' '${answerPrefix}Answer two'\n: > '${ready}'\nsleep 600\n`);
+  // each answer as Codex shows one: a bullet, wrapped below the pane's width, what it wraps onto indented
+  const show = (text: string) => `printf '%s\\n' '${text}' | fold -s -w 60 | sed '1s/^/• /;2,$s/^/  /'`;
+  writeFileSync(codex, `#!/bin/sh\n${show(`${answerPrefix}Answer one`)}\n${show(`${answerPrefix}Answer two`)}\n: > '${ready}'\nsleep 600\n`);
   chmodSync(codex, 0o755);
   // watched before the command is sent, so its creation cannot be missed
   const watcher = watch(join(root, "bin"));
