@@ -79,17 +79,12 @@ async function bounded<T>(promise: Promise<T>, what: string, ms = 20_000): Promi
   const timer = setTimeout(() => late.reject(new Error(`${what}: not within ${ms} ms`)), ms);
   try { return await Promise.race([promise, late.promise]); } finally { clearTimeout(timer); }
 }
-async function until(what: string, condition: () => boolean, ms = 20_000): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error(`${what}: not within ${ms} ms`);
-    await Bun.sleep(25);
-  }
-}
 
 // ---- the relay, the PC and its shell host ----
 
-let relay: BunRelay | null = startBunRelay({ port: 0 });
+// Many reconnect scenarios share one loopback address and deliberately exceed production's minute budget.
+const relayOptions = { port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } };
+let relay: BunRelay | null = startBunRelay(relayOptions);
 let relayPort = relay.port;
 const relayUrl = (url: string): string => { const target = new URL(url); return `ws://127.0.0.1:${relayPort}${target.pathname}${target.search}`; };
 let synced = deferred<void>();
@@ -121,7 +116,7 @@ const stopPcRelay = async (): Promise<void> => {
 };
 const restartRelay = async (): Promise<void> => {
   synced = deferred<void>();
-  relay = startBunRelay({ port: 0 });
+  relay = startBunRelay(relayOptions);
   relayPort = relay.port;
   // the PC's link reconnects by itself, with its own backoff
   await bounded(synced.promise, "the PC reconnected to the restarted relay", 45_000);
@@ -503,7 +498,8 @@ try {
     await bounded(socket.assigned, "the relay assigned the connection");
     await bounded(socket.pcAnswered, "the PC answered through the relay");
     await inApp(page);
-    await until("the PC counts one relay session", () => service.status().sessions === 1);
+    // inApp follows AUTH_OK, whose server commit already made this session active.
+    assert.equal(service.status().sessions, 1, "the PC counts one relay session");
     const paired = devices.list(null).filter((device) => device.via_relay);
     assert.equal(paired.length, 1, "the PC enrolled one relay device");
     assert.equal((await saved(page, ID))?.device_id, paired[0]!.id, "the phone saved the device id the PC gave it");
@@ -804,6 +800,12 @@ try {
     context.on("request", (request) => requests.push(`${request.method()} ${request.url()}`));
     const registered = (server: ReturnType<typeof pushOf>, fake: FakePushService, owner: string | null) =>
       server.status({ endpoint: fake.subscription.endpoint, keys: fake.subscription.keys }, owner);
+    const subscriptions = [pushA, pushB].map((server) => {
+      const committed = deferred<void>();
+      const original = server.subscribe;
+      server.subscribe = (...args) => { original(...args); committed.resolve(); };
+      return { committed, restore: () => { server.subscribe = original; } };
+    });
 
     await pairFrom(pageA, offerA);
     await inApp(pageA);
@@ -816,8 +818,10 @@ try {
     assert.ok(devices.list(null).some((device) => device.id === deviceA && device.via_relay), "PC A enrolled the phone via the relay");
     assert.ok(app2.context.services.devices.list(null).some((device) => device.id === deviceB && device.via_relay), "PC B enrolled the phone via the relay");
     // the app registers its scope's subscription on load (lib/useNotifications.ts), over the relay
-    await until("PC A holds the phone's subscription for its relay device", () => registered(pushA, fakeA, deviceA) !== null);
-    await until("PC B holds the phone's subscription for its relay device", () => registered(pushB, fakeB, deviceB) !== null);
+    await bounded(Promise.all(subscriptions.map(({ committed }) => committed.promise)), "both PCs committed their push subscriptions");
+    for (const subscription of subscriptions) subscription.restore();
+    assert.notEqual(registered(pushA, fakeA, deviceA), null);
+    assert.notEqual(registered(pushB, fakeB, deviceB), null);
     assert.equal(registered(pushA, fakeB, deviceA), null, "PC A never got PC B's subscription");
     assert.equal(registered(pushB, fakeA, deviceB), null, "PC B never got PC A's subscription");
     const scopes = await pageA.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map((registration) => new URL(registration.scope).pathname).sort());
@@ -946,7 +950,7 @@ try {
     // a start after that: the record is gone, nothing is registered again (a round trip over the relay first)
     await boot.reload();
     await inApp(boot);
-    await until("the PC counts the reloaded relay session", () => service.status().sessions >= 1);
+    assert.ok(service.status().sessions >= 1, "the PC counts the reloaded relay session after AUTH_OK");
     const answered = await pushA.sendTest(fakeA3.subscription.endpoint);
     assert.ok(answered?.ok, "the new subscription receives PC A's pushes");
     await fakeA3.waitFor((push) => push.payload.body === "Alerts are on for this device", "a push to the new subscription", 20_000);

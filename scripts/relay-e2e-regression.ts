@@ -94,7 +94,8 @@ async function main(): Promise<void> {
   }
 
   const root = mkdtempSync(join(tmpdir(), "ovis-relay-e2e-"));
-  let relay: BunRelay | null = startBunRelay({ port: 0 });
+  const relayOptions = { port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } };
+  let relay: BunRelay | null = startBunRelay(relayOptions);
   let relayPort = relay.port;
   const relayAddress = (url: string): string => { const target = new URL(url); return `ws://127.0.0.1:${relayPort}${target.pathname}${target.search}`; };
 
@@ -353,7 +354,7 @@ async function main(): Promise<void> {
     await fresh.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
     if (evidence) await fresh.screenshot({ path: join(evidence, "task-23-relay-down.png"), animations: "disabled" });
     note(`relay down: relay stopped mid-session -> "Reconnecting to Ovis…" with "${marker}" held; a second tab opening the paired PC shows relay-unreachable`);
-    relay = startBunRelay({ port: 0 });
+    relay = startBunRelay(relayOptions);
     relayPort = relay.port;
     await bounded(back, "Desk PC reconnected to the restarted relay by itself", 45_000);
     await bounded(laptopBack, "Laptop reconnected to the restarted relay by itself", 45_000);
