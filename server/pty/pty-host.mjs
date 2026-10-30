@@ -69,10 +69,11 @@ process.stdout.on("drain", () => {
 
 let exited = false;
 // node-pty creates a session leader on POSIX. A launcher exiting is not proof its helpers ended.
-// Windows' ConPTY close owns the console tree; negative process IDs do not exist there.
+// Windows' ConPTY close owns the console tree; negative process IDs do not exist there, and node-pty's
+// Windows kill takes no signal (it throws on one, later, where this catch cannot see it).
 function killGroup(signal) {
   try {
-    if (process.platform === "win32") term.kill(signal);
+    if (process.platform === "win32") term.kill();
     else process.kill(-term.pid, signal);
   } catch (error) {
     if (error.code !== "ESRCH") throw error;
