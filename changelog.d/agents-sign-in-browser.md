@@ -4,4 +4,6 @@
   the agent's own login on the PC as before, and a small dialog follows it: the sign-in page to open
   (on the provider's own address), Codex's one-time code to enter there, and a box for the code
   Claude's page shows, typed into the login for you. It says how the sign-in ended; **Open terminal**
-  shows the login's tab at any point. The agent writes its own credentials; Ovis keeps no code.
+  stops the private login before starting a visible terminal tab. The private prompt belongs to the
+  device that started it, and closing it frees an unused account name. The agent writes its own
+  credentials; Ovis keeps no code after the login ends.

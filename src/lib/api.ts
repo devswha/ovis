@@ -119,9 +119,14 @@ export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void>
   await sendJson("/api/usage/login/code", "POST", request);
 }
 
-/** Stops a followed sign-in's CLI. Sent as the page may be leaving, so it outlives the page. */
-export function cancelUsageLogin(login: string): void {
-  void fetch("/api/usage/login/cancel", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ login }), keepalive: true }).catch(() => {});
+/**
+ * Stops a followed sign-in's CLI; settles once the server has stopped it and freed its home. Sent as the page
+ * may be leaving, so it outlives the page. A handoff must see a failure rather than start beside it.
+ */
+export async function cancelUsageLogin(login: string): Promise<void> {
+  const url = "/api/usage/login/cancel";
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ login }), keepalive: true });
+  if (!response.ok) throw await errorFrom(url, response);
 }
 
 export function startUsageLogin(request: UsageLoginRequest, signal?: AbortSignal): Promise<UsageLoginStarted> {

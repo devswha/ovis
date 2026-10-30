@@ -301,7 +301,27 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       ];
       const tab = { status: 200, json: { pane_id: "w9:p9", workspace_id: "w9", manual: false, device_auth: false } };
       const cancelled: unknown[] = [];
-      await context.route("**/api/usage/login/cancel", (route) => { cancelled.push(route.request().postDataJSON()); return route.fulfill({ status: 204 }); });
+      // what reached the server, in order: Open terminal's tab starts only once the cancel has been answered
+      const events: string[] = [];
+      // Record the browser's awaited response, not merely arrival at the mock server.
+      await context.addInitScript(() => {
+        const events: string[] = [];
+        Object.assign(window, { usageLoginEvents: events });
+        const original = window.fetch;
+        window.fetch = async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("/api/usage/login") && init?.method === "POST"
+            && typeof init.body === "string" && !JSON.parse(init.body).follow) events.push("tab");
+          const response = await original(input, init);
+          if (url.endsWith("/api/usage/login/cancel")) events.push("cancel");
+          return response;
+        };
+      });
+      await context.route("**/api/usage/login/cancel", async (route) => {
+        cancelled.push(route.request().postDataJSON());
+        events.push("cancel");
+        return route.fulfill({ status: 204 });
+      });
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
       // the dialog reads the provider's sign-ins and the login's screen: a login still starting
       await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
@@ -310,6 +330,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
         if (route.request().method() !== "POST") return route.continue();
         const body = route.request().postDataJSON() as { follow?: boolean };
         posted.push(body);
+        events.push(body.follow ? "follow" : "tab");
         if (!body.follow) return route.fulfill(tab);
         return route.fulfill(answers[(posted.filter((sent) => (sent as { follow?: boolean }).follow).length - 1) % answers.length]!);
       });
@@ -370,6 +391,9 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       const inTab = { provider: "claude", account: "claude:team" };
       assert.deepEqual(posted, [followed, followed, inTab, followed, followed, inTab], "the server is asked by the account's key, never a path: followed, and in a tab once Open terminal is chosen");
       assert.deepEqual(cancelled, Array(2).fill({ login: "00000000-0000-4000-8000-000000000009" }), "Open terminal stops the followed sign-in before the tab starts");
+      assert.deepEqual(events, ["follow", "follow", "cancel", "tab", "follow", "follow", "cancel", "tab"], "each tab starts after its followed sign-in was cancelled");
+      assert.deepEqual(await page.evaluate(() => (window as Window & { usageLoginEvents: string[] }).usageLoginEvents),
+        ["cancel", "tab", "cancel", "tab"], "the browser awaits each cancel response before issuing a tab start");
       assert.deepEqual(errors, []);
     } finally {
       await context.close();

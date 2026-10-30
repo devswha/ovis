@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import type { UsageLoginStarted } from "../shared/usage-login.ts";
 import { createServer } from "./index.ts";
+import { DEVICE_COOKIE } from "./auth.ts";
+import { DeviceStore } from "./devices.ts";
 import { paneClose, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import * as herdr from "./herdr/client.ts";
 import * as collector from "./collector.ts";
@@ -18,6 +20,7 @@ const bin = join(root, "bin");
 let workspaceId: string;
 let server: ReturnType<typeof createServer>;
 let usage: UsageService;
+let usageLogin: UsageLoginService;
 const openedPanes: string[] = [];
 const missedExit = Promise.withResolvers<string>();
 const ctx: UsageContext = {
@@ -93,7 +96,7 @@ if (process.env.TEST_LOGIN_HOLD) { await new Promise((resolve) => process.stdin.
   try {
     server = createServer({
       port: 0, stateDir: mkdtempSync(join(root, "state-")), machines: false, registerBridge: false,
-      sidecar: false, terminalAttach: false, usageLogin: new UsageLoginService(root, {
+      sidecar: false, terminalAttach: false, usageLogin: usageLogin = new UsageLoginService(root, {
         ...process.env, PATH: bin, XDG_CONFIG_HOME: join(root, "xdg-config"), XDG_DATA_HOME: join(root, "xdg-data"),
       }, ctx),
       usage: usage = new UsageService(ctx, USAGE_PROVIDERS.filter((provider) => provider.id === "claude" || provider.id === "codex")),
@@ -110,6 +113,15 @@ afterAll(async () => {
 const start = (body: unknown) => fetch(`http://127.0.0.1:${server.port}/api/usage/login`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
 });
+
+async function loginEvent<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("private login event did not arrive")), 10_000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 for (const provider of ["claude", "codex"] as const) {
   it(`starts ${provider} in an isolated credential home when the account name is valid`, async () => {
@@ -173,12 +185,13 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   expect(started).not.toHaveProperty("pane_id");
   const login = started["login_id"] as string;
   const prompt = async (): Promise<Record<string, unknown>> => await (await fetch(`http://127.0.0.1:${server.port}/api/usage/login/prompt?login=${login}`)).json() as Record<string, unknown>;
-  const deadline = Date.now() + 10_000;
-  let shown = await prompt();
-  while (shown["wants_code"] !== true) {
-    if (Date.now() > deadline) throw new Error(`the sign-in never asked for its code: ${JSON.stringify(shown)}`);
-    await Bun.sleep(25);
+  let shown: Record<string, unknown>;
+  for (;;) {
+    const changed = usageLogin.changed(login);
     shown = await prompt();
+    if (shown["wants_code"] === true) break;
+    if (shown["ended"]) throw new Error("private login ended before asking for its code");
+    await loginEvent(changed);
   }
   const state = /state=([\w-]+)/.exec(String(shown["url"]))?.[1];
   expect(state).toBeString();
@@ -189,11 +202,57 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   // the code goes to the CLI itself, which signs in and ends
   const sent = await fetch(`http://127.0.0.1:${server.port}/api/usage/login/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ login, code: "fixture-code#fixture-state" }) });
   expect(sent.status).toBe(204);
-  while ((await prompt())["ended"] !== true) {
-    if (Date.now() > deadline + 10_000) throw new Error("the sign-in never ended");
-    await Bun.sleep(25);
-  }
+  await loginEvent(usageLogin.settled(login));
+  expect((await prompt())["ended"]).toBe(true);
   expect(readFileSync(join(root, ".claude-private", "pasted-code"), "utf8")).toBe("fixture-code#fixture-state");
+});
+
+it("binds prompt, code and cancel to the paired device even after another driver reads the lock file", async () => {
+  const stateDir = mkdtempSync(join(root, "owner-state-"));
+  const devices = new DeviceStore(stateDir);
+  const pair = (label: string, role: "drive" | "watch") => {
+    const paired = devices.pair(devices.startPairing().code, label, role);
+    if (!paired) throw new Error("fixture pairing failed");
+    devices.match(paired.token);
+    return `${DEVICE_COOKIE}=${paired.token}`;
+  };
+  const owner = pair("Owner", "drive");
+  const other = pair("Other driver", "drive");
+  const watcher = pair("Watcher", "watch");
+  const service = new UsageLoginService(root, { PATH: bin }, ctx);
+  const app = createServer({ port: 0, stateDir, token: "fixture-only", machines: false, registerBridge: false,
+    sidecar: false, terminalAttach: false, usageLogin: service });
+  const base = `http://127.0.0.1:${app.port}`;
+  const headers = (cookie: string) => ({ cookie, origin: base, "content-type": "application/json" });
+  const post = (path: string, cookie: string, body: unknown) => fetch(`${base}/api/usage/login${path}`, {
+    method: "POST", headers: headers(cookie), body: JSON.stringify(body),
+  });
+  try {
+    const response = await post("", owner, { provider: "claude", name: "owner-private", follow: true });
+    expect(response.status).toBe(200);
+    const { login_id: login } = await response.json() as { login_id: string };
+    const file = await fetch(`${base}/api/fs/file?path=${encodeURIComponent(join(stateDir, "usage-logins.json"))}`, { headers: headers(other) });
+    expect(file.status).toBe(200);
+    const saved = await file.text();
+    expect(saved).not.toContain(login);
+    const record = JSON.parse(saved) as { logins: { launch: string }[] };
+    const lock = record.logins[0]?.launch;
+    expect(lock).toBeString();
+    for (const id of [lock, login]) {
+      const denied = await fetch(`${base}/api/usage/login/prompt?login=${id}`, { headers: headers(other) });
+      expect(denied.status).toBe(404);
+    }
+    for (const endpoint of ["/code", "/cancel"]) {
+      expect((await post(endpoint, other, { login, code: "never-typed" })).status).toBe(404);
+      expect((await post(endpoint, watcher, { login, code: "never-typed" })).status).toBe(403);
+    }
+    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(watcher) })).status).toBe(403);
+    expect((await fetch(`${base}/api/usage/login/prompt?login=${login}`, { headers: headers(owner) })).status).toBe(200);
+    expect((await post("/cancel", owner, { login })).status).toBe(204);
+  } finally {
+    await service.stopAll();
+    app.stop();
+  }
 });
 
 it("rejects shell syntax and traversal when an account name is not a short slug", async () => {

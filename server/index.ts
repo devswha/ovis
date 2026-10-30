@@ -381,6 +381,7 @@ export function createServer(
       }
 
       const readOnly = access.level === "full" && access.role === "watch";
+      const loginOwner = access.level === "full" ? (access.device ? `device:${access.device.id}` : `${access.via}:${access.login ?? ""}`) : null;
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       if (pathname.startsWith("/api/") && mutating && !sameOrigin(request)) {
         setRequestRoute("origin-refusal");
@@ -546,9 +547,9 @@ export function createServer(
       if (pathname === "/api/usage") { setRequestRoute(pathname); return handleUsageRequest(request, url, usage); }
       // on or off only: the server decides what is installed and where (server/statusline-install.ts)
       if (pathname === "/api/usage/statusline") { setRequestRoute(pathname); return handleStatuslineRequest(request, usage); }
-      if (pathname === "/api/usage/login") { setRequestRoute(pathname); bunServer.timeout(request, 30); return usageLogin.handle(request, collector.trackPane); }
+      if (pathname === "/api/usage/login") { setRequestRoute(pathname); bunServer.timeout(request, 30); return usageLogin.handle(request, collector.trackPane, loginOwner); }
       // the browser's sign-in dialog: a followed login's prompt, the code its page showed, and stopping it (a watching device: none)
-      if (pathname === "/api/usage/login/prompt" || pathname === "/api/usage/login/code" || pathname === "/api/usage/login/cancel") { setRequestRoute(pathname); return usageLogin.handlePrompt(request, readOnly); }
+      if (pathname === "/api/usage/login/prompt" || pathname === "/api/usage/login/code" || pathname === "/api/usage/login/cancel") { setRequestRoute(pathname); return usageLogin.handlePrompt(request, readOnly, loginOwner); }
       if (pathname === "/api/cliproxy" || pathname.startsWith("/api/cliproxy/")) { bunServer.timeout(request, 60); return cliProxyRoutes.handle(request); }
       // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
       if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { bunServer.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
@@ -759,6 +760,8 @@ export function createServer(
         releaseOpenCodeNative();
       });
       piReader.close();
+      // the followed sign-ins run in this server's own terminals: no dialog could reach them once it stops
+      void usageLogin.stopAll();
       void shellAgents.stop();
       agentDetector.close();
       server.stop(true);

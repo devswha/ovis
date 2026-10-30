@@ -55,6 +55,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   const [copied, setCopied] = useState(false);
   const before = useRef<readonly (string | null)[] | null>(null);
   const following = useRef<string | null>(null);
+  const cancelling = useRef<Promise<void> | null>(null);
   const signedInRef = useRef(onSignedIn);
   signedInRef.current = onSignedIn;
   const codeInput = useRef<HTMLInputElement>(null);
@@ -72,7 +73,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
       try {
         before.current ??= (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
         const started = await followUsageLogin(replace && "default" in request ? { ...request, replace: true } : request, controller.signal);
-        if (controller.signal.aborted) { cancelUsageLogin(started.login_id); return; }
+        if (controller.signal.aborted) { void cancelUsageLogin(started.login_id).catch(() => undefined); return; }
         following.current = started.login_id;
         setPhase({ kind: "following", login: started.login_id });
       } catch (cause) {
@@ -117,11 +118,11 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
         if (controller.signal.aborted) return;
         failures += 1;
         if (failures >= READ_FAILURES_MAX || (cause instanceof ApiError && cause.status === 404)) {
-          setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Open its terminal.") });
+          setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not follow the sign-in. Choose Open terminal to try there.") });
           return;
         }
       }
-      if (Date.now() > until) { setPhase({ kind: "failed", message: t("The sign-in is still open. Finish it in its terminal.") }); return; }
+      if (Date.now() > until) { setPhase({ kind: "failed", message: t("The sign-in is taking too long. Choose Open terminal to try there.") }); return; }
       timer = window.setTimeout(() => void look(), PROMPT_POLL_MS);
     };
     void look();
@@ -148,19 +149,28 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     if (await copyText(code, null)) setCopied(true);
   };
   // the private sign-in still running, if any: closing the dialog in any way stops it
-  const stopFollowing = (): void => {
+  const stopFollowing = (): Promise<void> => {
+    if (cancelling.current !== null) return cancelling.current;
     const running = following.current;
-    following.current = null;
-    if (running !== null) cancelUsageLogin(running);
+    if (running === null) return Promise.resolve();
+    cancelling.current = cancelUsageLogin(running).then(() => {
+      if (following.current === running) following.current = null;
+    }).finally(() => { cancelling.current = null; });
+    return cancelling.current;
   };
-  useEffect(() => stopFollowing, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const close = (): void => { stopFollowing(); onClose(); };
+  useEffect(() => {
+    // the page itself going (a closed tab, a reload) stops it too: no dialog could reach it after
+    const leaving = (): void => { void stopFollowing().catch(() => undefined); };
+    window.addEventListener("pagehide", leaving);
+    return () => { window.removeEventListener("pagehide", leaving); leaving(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const close = (): void => { void stopFollowing().catch(() => undefined); onClose(); };
   // Open terminal: the private sign-in stops and the same one starts in a terminal tab, which any device that
   // reads this PC's terminals can see; the user chose it
   const toTerminal = (): void => {
-    stopFollowing();
     setPhase({ kind: "handing-over" });
-    void startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request)
+    // the tab takes the same home: it starts once the private sign-in has let go of it
+    void stopFollowing().then(() => startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request))
       .then((started) => onOpenTerminal(started.pane_id))
       .catch((cause: unknown) => setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in") }));
   };

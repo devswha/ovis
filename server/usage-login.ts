@@ -10,6 +10,8 @@ import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse
 import { psQuote } from "./powershell.ts";
 import { withOwnerGuard } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
+import { PtySession } from "./pty/session.ts";
+import { newOwnerRecord, ownerGone, parseBirth, type ProcessBirth } from "./process-owner.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
 import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
@@ -60,18 +62,32 @@ function canonicalPath(path: string): string {
 interface LoginHolder { readonly pane: string; readonly terminal: string }
 /** A home taken for a launch whose tab has not opened yet: by which server process, since when, and the launch's own id. */
 interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
-/** A login the browser follows, run by the server process `pid` in a terminal of its own: it ends with that process. */
-interface PrivateHolder { readonly private: string; readonly pid: number }
+/**
+ * A login the browser follows, run by the server process `pid` in a terminal of its own since `at`. Saved in
+ * a launch's shape, so an older server reads it (as a launch that soon expires) instead of refusing the file.
+ * `launch` is a lock id of its own: the file can be read by any device that reads files, and the id that
+ * reaches the login's prompt is never written there.
+ */
+interface PrivateHolder { readonly launch: string; readonly pid: number; readonly at: number; readonly private: true; readonly birth?: ProcessBirth }
 type Holder = LoginHolder | Launch | PrivateHolder;
 
 /** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
-  readonly proc: Bun.Subprocess;
+  readonly owner: string;
+  /** its lock id in the shared file (PrivateHolder.launch) */
+  readonly lock: string;
+  /** settles once the CLI has exited and its home is free */
+  readonly done: Promise<void>;
+  /** the browser has read its prompt: a sign-in nobody comes back to is stopped */
+  read: boolean;
+  /** the new account's home it made, removed if the CLI ended leaving it empty, so the name can be used again */
+  readonly madeHome: string | null;
+  readonly proc: PtySession;
+  changed: ReturnType<typeof Promise.withResolvers<void>>;
   /** the CLI's recent output, in memory only, for its prompt; emptied when it ends */
   output: string;
   ended: boolean;
-  sending: boolean;
 }
 
 /** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
@@ -83,17 +99,24 @@ const PRIVATE_LOGINS_MAX = 32;
 const PRIVATE_OUTPUT_MAX = 65_536;
 /** wide enough that a CLI laying its sign-in address out by width keeps it on one line */
 const PRIVATE_COLUMNS = 400;
+/** The longest a followed sign-in runs (a device code lives 15 minutes): its host is stopped then. */
+const PRIVATE_MAX_MS = 30 * 60_000;
+/** how long a started sign-in waits for its browser to read it before it is stopped (a start whose answer was lost) */
+const PRIVATE_LEASE_MS = 30_000;
+/** the private logins running in this process, by lock id: every service in it (two servers) sees them */
+const liveLocks = new Set<string>();
+
 /**
  * A pasted sign-in code: Claude's is `code#state`, both base64url. Nothing else is typed, so a code that
  * reached a shell after all would be one word it cannot run: no `$`, quotes, separators or spaces.
  */
 const SIGN_IN_CODE = /^[A-Za-z0-9._~#-]{1,2048}$/;
 
-const isLaunch = (holder: Holder): holder is Launch => "launch" in holder;
 const isPrivate = (holder: Holder): holder is PrivateHolder => "private" in holder;
-const isTab = (holder: Holder): holder is LoginHolder => !isLaunch(holder) && !isPrivate(holder);
+const isLaunch = (holder: Holder): holder is Launch => "launch" in holder && !isPrivate(holder);
+const isTab = (holder: Holder): holder is LoginHolder => !("launch" in holder);
 const sameHolder = (a: Holder, b: Holder): boolean => isLaunch(a) ? isLaunch(b) && a.launch === b.launch
-  : isPrivate(a) ? isPrivate(b) && a.private === b.private : isTab(b) && a.terminal === b.terminal;
+  : isPrivate(a) ? isPrivate(b) && a.launch === b.launch : isTab(b) && a.terminal === b.terminal;
 
 /** The file of running sign-ins exists but cannot be read or understood: it may name one still running. */
 class LoginStateUnreadable extends Error {
@@ -119,6 +142,7 @@ export class UsageLoginService {
    */
   private readonly privates = new Map<string, PrivateLogin>();
   private readonly endedListeners: (() => void)[] = [];
+  private stopped = false;
 
   /** Called once a followed sign-in's CLI exits: the usage it may have changed is read again. */
   onLoginEnded(listener: () => void): void { this.endedListeners.push(listener); }
@@ -136,7 +160,22 @@ export class UsageLoginService {
   private file: string | null = null;
 
   constructor(private readonly home = homedir(), private readonly env = process.env,
-    private readonly context: UsageContext = { ...systemUsageContext(), home, env }) {}
+    private readonly context: UsageContext = { ...systemUsageContext(), home, env },
+    private readonly timing: { readonly leaseMs: number; readonly maxMs: number } = { leaseMs: PRIVATE_LEASE_MS, maxMs: PRIVATE_MAX_MS }) {}
+
+  /** Settles once that followed sign-in has ended and its home is free (now, for one unknown or ended). */
+  settled(id: string): Promise<void> { return this.privates.get(id)?.done ?? Promise.resolve(); }
+
+  /** Subscribe before reading a prompt: the next output chunk or settlement wakes the reader. */
+  changed(id: string): Promise<void> { return this.privates.get(id)?.changed.promise ?? Promise.resolve(); }
+
+  /** Stops every followed sign-in this server runs: the server is stopping, and no dialog could reach them after. */
+  async stopAll(): Promise<void> {
+    this.stopped = true;
+    const running = [...this.privates.values()].filter((login) => !login.ended);
+    for (const login of running) login.proc.kill();
+    await Promise.all(running.map((login) => login.done));
+  }
 
   ended(paneId: string): boolean {
     for (const [home, holder] of this.logins) if (isTab(holder) && holder.pane === paneId) this.release(home, holder);
@@ -152,49 +191,42 @@ export class UsageLoginService {
    * writes its own credentials; nothing here keeps or logs a code. A watching device reads no prompt (it
    * could approve a device code with its own account) and, as for every change, sends nothing.
    */
-  async handlePrompt(request: Request, readOnly: boolean): Promise<Response> {
+  async handlePrompt(request: Request, readOnly: boolean, owner: string | null): Promise<Response> {
     const { pathname, searchParams } = new URL(request.url);
     const gone = () => jsonResponse({ error: { code: "login_not_found", message: "This sign-in has ended. Start it again." } }, 404);
     try {
+      if (readOnly) return jsonResponse({ error: { code: "forbidden", message: "A device that only watches cannot follow a sign-in" } }, 403);
       if (pathname.endsWith("/prompt")) {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
-        if (readOnly) return jsonResponse({ error: { code: "forbidden", message: "A device that only watches cannot follow a sign-in" } }, 403);
         const login = this.privates.get(searchParams.get("login") ?? "");
-        if (login === undefined) return gone();
+        if (login === undefined || login.owner !== owner) return gone();
         if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
+        login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
       }
       if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST");
       let body: unknown;
       try { body = await request.json(); } catch { return badRequest("invalid_json", "Request body must be JSON"); }
       const id = isJsonObject(body) && typeof body["login"] === "string" ? body["login"] : "";
+      const login = this.privates.get(id);
+      if (login === undefined || login.owner !== owner) return gone();
       if (pathname.endsWith("/cancel")) {
-        const login = this.privates.get(id);
-        if (login !== undefined && !login.ended) {
+        if (!login.ended) {
           login.proc.kill();
           // ended once it has exited: a second sign-in may take its home right after this answer
-          const exited = await Promise.race([login.proc.exited.then(() => true), Bun.sleep(3000).then(() => false)]);
-          if (!exited) { login.proc.kill("SIGKILL"); await login.proc.exited; }
-          await this.settle(id);
+          await login.done;
         }
         return new Response(null, { status: 204 });
       }
       if (pathname.endsWith("/code")) {
         const code = isJsonObject(body) && typeof body["code"] === "string" ? body["code"].trim() : null;
         if (code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
-        const login = this.privates.get(id);
-        if (login === undefined || login.ended) return gone();
-        // one code at a time: two sends could both find the prompt and type twice
-        if (login.sending) return conflictResponse("code_in_progress", "A code is being sent to this sign-in already.");
-        login.sending = true;
-        try {
-          // typed only while the CLI asks for it
-          if (!loginPrompt(login.provider, screenText(login.output)).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
-          login.proc.terminal?.write(`${code}\r`);
-          return new Response(null, { status: 204 });
-        } finally {
-          login.sending = false;
-        }
+        if (login.ended) return gone();
+        // typed only while the CLI asks for it; nothing is awaited from this check to the write, so two codes
+        // arriving at once are typed one after the other only if the CLI asks again in between
+        if (!loginPrompt(login.provider, screenText(login.output)).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
+        if (!login.proc.write(`${code}\r`)) return gone();
+        return new Response(null, { status: 204 });
       }
       return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
     } catch (error) {
@@ -212,7 +244,16 @@ export class UsageLoginService {
       if (login === undefined || login.ended) return;
       login.ended = true;
       login.output = "";
-      for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.private === id) this.release(home, holder);
+      liveLocks.delete(login.lock);
+      login.changed.resolve();
+      // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
+      if (login.madeHome !== null) {
+        try { rmdirSync(login.madeHome); }
+        catch (error) {
+          if (!(error instanceof Error && "code" in error && ["ENOTEMPTY", "EEXIST", "ENOENT"].includes(String(error.code)))) console.warn("Could not remove an unused sign-in credential home", error);
+        }
+      }
+      for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
       for (const listener of this.endedListeners) listener();
       const ended = [...this.privates].filter(([, entry]) => entry.ended);
       for (const [old] of ended.slice(0, Math.max(0, ended.length - PRIVATE_LOGINS_MAX))) { this.privates.delete(old); this.settling.delete(old); }
@@ -240,7 +281,11 @@ export class UsageLoginService {
       if (!isJsonObject(entry) || typeof entry["home"] !== "string") throw new LoginStateUnreadable(file, "a sign-in without its home");
       const { home, pane, terminal, launch, pid, at } = entry;
       if (typeof pane === "string" && typeof terminal === "string") found.set(home, { pane, terminal });
-      else if (typeof entry["private"] === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0) found.set(home, { private: entry["private"], pid });
+      else if (entry["private"] === true && typeof launch === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && typeof at === "number" && Number.isFinite(at)) {
+        const birth = parseBirth(entry["birth"]);
+        if (entry["birth"] !== undefined && birth === null) throw new LoginStateUnreadable(file, "a sign-in with an unreadable process identity");
+        found.set(home, { launch, pid, at, private: true, ...(birth ? { birth } : {}) });
+      }
       else if (typeof launch === "string" && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && typeof at === "number" && Number.isFinite(at)) found.set(home, { launch, pid, at });
       else throw new LoginStateUnreadable(file, "a sign-in it cannot tell");
     }
@@ -283,8 +328,12 @@ export class UsageLoginService {
    */
   private async holds(holder: Holder): Promise<boolean> {
     if (isLaunch(holder)) return Date.now() - holder.at <= LAUNCH_MS && processAlive(holder.pid);
-    // this server's own: while its CLI runs; another server's: while that server runs (its PTY dies with it)
-    if (isPrivate(holder)) return holder.pid === process.pid ? this.privates.get(holder.private)?.ended === false : processAlive(holder.pid);
+    // A deadline requests teardown, not proof it ended. Keep a foreign owner's claim until it releases
+    // it or its process identity is proved gone, including when another process reused its PID.
+    if (isPrivate(holder)) {
+      if (liveLocks.has(holder.launch)) return true;
+      return holder.pid !== process.pid && !ownerGone(holder);
+    }
     try { return (await sessionSnapshot()).panes.some((pane) => pane.terminal_id === holder.terminal); }
     catch { return true; }
   }
@@ -325,7 +374,7 @@ export class UsageLoginService {
     }
   }
 
-  async handle(request: Request, trackPane?: (paneId: string) => void): Promise<Response> {
+  async handle(request: Request, trackPane?: (paneId: string) => void, owner: string | null = null): Promise<Response> {
     const executableFor = (id: UsageProviderId) => LOGIN[id].binaries.map((cli) => Bun.which(cli, { PATH: this.env["PATH"] ?? "" })).find(Boolean);
     if (request.method === "GET") {
       const id = new URL(request.url).searchParams.get("provider");
@@ -356,6 +405,8 @@ export class UsageLoginService {
     // followed in the browser: the CLI runs in this server's own PTY, not a herdr tab (Claude Code and Codex)
     const follow = body["follow"] !== undefined;
     if (follow && (body["follow"] !== true || !separate)) return badRequest("invalid_provider", "Only Claude Code and Codex sign in from the browser");
+    if (follow && owner === null) return jsonResponse({ error: { code: "forbidden", message: "Sign in from an authenticated device" } }, 403);
+    if (follow && this.stopped) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
     if (asDefault) {
       if (!separate || again || body["default"] !== true || body["name"] !== undefined || (body["replace"] !== undefined && body["replace"] !== true)) {
         return badRequest("invalid_account", "Only Claude and Codex sign in to their own home this way, without a name");
@@ -414,11 +465,15 @@ export class UsageLoginService {
         return conflictResponse("login_state_unreadable", "Ovis cannot read its record of the sign-ins running on this PC (usage-logins.json in its state folder), so it cannot tell whether one is already open for this account. Close any sign-in tab still open, then repair or remove that file on the server PC.");
       }
       if (holding === null) {
-        return conflictResponse("login_in_progress", "A sign-in to this account is already open in a terminal tab. Finish or close it first.");
+        return conflictResponse("login_in_progress", "A sign-in to this account is already open. Finish or close it first.");
       }
       reserved = loginHome;
+      const cliEnv: Record<string, string> = { HOME: this.home, ...(process.platform === "win32" ? { USERPROFILE: this.home } : {}) };
+      for (const [name, value] of Object.entries(this.env)) {
+        if (value !== undefined && /^(PATH|PATHEXT|SystemRoot|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|TMPDIR|LANG|LC_.*|TERM|COLORTERM|TZ|HTTPS?_PROXY|ALL_PROXY|NO_PROXY|https?_proxy|all_proxy|no_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|XDG_CONFIG_HOME|XDG_DATA_HOME|XDG_CACHE_HOME|XDG_STATE_HOME)$/.test(name)) cliEnv[name] = value;
+      }
       const help = Bun.spawn([executable, ...(id === "claude" ? ["auth"] : login.args), "--help"], {
-        env: this.env, stdout: "pipe", stderr: "ignore", signal: AbortSignal.timeout(10_000),
+        env: follow ? cliEnv : this.env, stdout: "pipe", stderr: "ignore", signal: AbortSignal.timeout(10_000),
       });
       const text = await new Response(help.stdout).text();
       const success = await help.exited === 0;
@@ -426,7 +481,7 @@ export class UsageLoginService {
       const device = (id === "codex" || id === "grok") && success && text.includes("--device-auth");
       const args = manual ? [] : [...login.args, ...(device ? ["--device-auth"] : [])];
       // the browser that asked has gone (it gives up after 30 s): open no tab it would not see
-      if (request.signal.aborted) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
+      if (request.signal.aborted || (follow && this.stopped)) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
       const env: Record<string, string> = { HOME: this.home };
       if (process.platform === "win32") env["USERPROFILE"] = this.home;
       const homeVariable = id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
@@ -448,15 +503,19 @@ export class UsageLoginService {
       if (id === "cursor") env["NO_OPEN_BROWSER"] = "1";
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
       if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
-      if (follow) {
+      if (follow && owner !== null) {
         // a CLI the browser cannot follow: an old Claude Code without `auth login` signs in inside the agent, and
         // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
         if (manual || (id === "codex" && !device)) return conflictResponse("follow_unsupported", "This version signs in only in a terminal.");
-        const procEnv: Record<string, string | undefined> = { ...this.env, ...env, BROWSER: "true" };
+        // Only CLI runtime settings, never the bridge's tokens, agent hooks or provider API keys.
+        const procEnv: Record<string, string> = { ...cliEnv, ...env, BROWSER: "true" };
+        if (againHome !== null) procEnv[homeVariable] = resolve(againHome);
         // the CLI's own home: the variable a parent shell may have set is removed, as the tab's `env -u` does
         if ((place || asDefault) && againHome === null) delete procEnv[homeVariable];
         const loginId = randomUUID();
-        const privateHolder: PrivateHolder = { private: loginId, pid: process.pid };
+        const lock = randomUUID();
+        const { birth } = newOwnerRecord();
+        const privateHolder: PrivateHolder = { launch: lock, pid: process.pid, at: Date.now(), private: true, ...(birth ? { birth } : {}) };
         const home = reserved;
         const launch = holding;
         const recorded = this.edit((saved) => {
@@ -468,25 +527,39 @@ export class UsageLoginService {
         if (!recorded) return conflictResponse("login_in_progress", "A sign-in to this account is already open. Finish or close it first.");
         holding = privateHolder;
         this.logins.set(home, privateHolder);
-        const decoder = new TextDecoder();
-        let proc: Bun.Subprocess;
+        liveLocks.add(lock);
+        let proc: PtySession;
         try {
-          proc = Bun.spawn([executable, ...args], {
-            env: procEnv,
-            cwd: againHome !== null && !isAbsolute(againHome) ? process.cwd() : this.home,
-            terminal: { cols: PRIVATE_COLUMNS, rows: 50, data: (_terminal, data) => {
+          proc = new PtySession({
+            command: executable, args, env: procEnv, inheritEnv: false,
+            cols: PRIVATE_COLUMNS, rows: 50,
+            onData: (data) => {
               const login = this.privates.get(loginId);
-              if (login !== undefined && !login.ended) login.output = (login.output + decoder.decode(data, { stream: true })).slice(-PRIVATE_OUTPUT_MAX);
-            } },
+              if (login !== undefined && !login.ended) {
+                const bytes = Buffer.from(login.output + data);
+                let start = Math.max(0, bytes.length - PRIVATE_OUTPUT_MAX);
+                // Keep whole UTF-8 characters while bounding bytes, not JavaScript code units.
+                while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+                login.output = bytes.subarray(start).toString("utf8");
+                login.changed.resolve();
+                login.changed = Promise.withResolvers<void>();
+              }
+            },
+            onExit: () => {},
           });
         } catch (error) {
+          liveLocks.delete(lock);
           console.warn("Could not start a sign-in in a private terminal", error instanceof Error ? error.message : String(error));
           return conflictResponse("follow_unsupported", "This server cannot run a sign-in here. Use a terminal instead.");
         }
-        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", proc, output: "", ended: false, sending: false });
+        const done = proc.exited.then(() => this.settle(loginId));
+        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", owner, lock, done, changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false });
         unusedCredentialHome = null;
         reserved = null;
-        void proc.exited.then(() => this.settle(loginId));
+        // a start whose answer never reached its browser (the dialog closed meanwhile) leaves no one to end it
+        const lease = setTimeout(() => { const login = this.privates.get(loginId); if (login !== undefined && !login.read && !login.ended) proc.kill(); }, this.timing.leaseMs);
+        const deadline = setTimeout(() => proc.kill(), this.timing.maxMs);
+        void done.then(() => { clearTimeout(lease); clearTimeout(deadline); });
         // the browser that asked has gone: it would never see or end this sign-in
         if (request.signal.aborted) { proc.kill(); return conflictResponse("request_cancelled", "The sign-in request was cancelled"); }
         return jsonResponse({ login_id: loginId, device_auth: device } satisfies UsageLoginFollowed);
