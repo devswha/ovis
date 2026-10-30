@@ -1288,7 +1288,9 @@ describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
         expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
         // Codex opens the store, writes, checkpoints and closes it: no side file is left, the file itself moved
         const writer = new Database(join(home, "state_5.sqlite"));
-        writer.exec("INSERT INTO threads VALUES ('t2', 'a longer row that grows the file'); PRAGMA wal_checkpoint(TRUNCATE);");
+        // a row larger than a page, so the file surely grows: timestamps alone may not move within one tick
+        writer.query("INSERT INTO threads VALUES ('t2', ?)").run("x".repeat(64 * 1024));
+        writer.exec("PRAGMA wal_checkpoint(TRUNCATE);");
         writer.close();
         expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
         expect(opened.settled).toThrow(CodexStoreChanged);
