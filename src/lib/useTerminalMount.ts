@@ -951,7 +951,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const replayed = parsingReplay || replayOscOpen;
         // OSCs do not nest: the replayed one the flag waited for ends here
         replayOscOpen = false;
-        if (!replayed && parsingOwner === outputOwner && osc52AllowedRef.current) {
+        // a recent tab kept live off-screen draws its output but does not set the clipboard unseen
+        if (!replayed && parsingOwner === outputOwner && osc52AllowedRef.current && presentedRef.current && shownRef.current) {
           const text = parseOsc52(payload);
           if (text !== null) {
             void navigator.clipboard?.writeText(text).then(
@@ -1270,6 +1271,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           sharedGridRef.current = { cols: message.cols, rows: message.rows };
           // the pty took a new size: herdr may draw the old screen reflowed before the agent redraws (lib/inputRow.ts FrameGate)
           if (!message.fixed && before !== null && (before.cols !== message.cols || before.rows !== message.rows)) frameGateRef.current.reflowed();
+          // A recent tab kept live off-screen would parse what the pane now draws for another grid into
+          // its own, and show it torn on return: it lets go of the pane, as a cached tab did before, and
+          // its return attaches again for a whole screen at its own size.
+          if (cachedRef.current && !releasedRef.current && !message.fixed && !observeRef.current
+            && (term.cols !== message.cols || term.rows !== message.rows)) {
+            release();
+            return;
+          }
           // the chat lens adopts the shared grid too: the screen it reads (a masked prompt) is drawn for it
           if (!observeRef.current && !fixedGridRef.current && !followRef.current && !chatViewRef.current) {
             if (!keyboardHeld) return;
@@ -1917,7 +1926,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!current || embedded || mirroredRef.current || fixedGridRef.current) return;
         // The bounded recent-tab cache still owns a client. Keep its live screen while this
         // window is in use, but give up size ownership; the alongside-herdr setting still releases.
-        if (cachedRef.current && !releasedRef.current && inUse() && !releaseAwayRef.current) {
+        const shared = sharedGridRef.current;
+        const ownGrid = shared === null || (shared.cols === term.cols && shared.rows === term.rows);
+        if (cachedRef.current && !releasedRef.current && inUse() && !releaseAwayRef.current && ownGrid) {
           socket.keepSize(current, true);
           return;
         }

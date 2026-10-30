@@ -1655,7 +1655,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Every pane keeps its own xterm, attachment, input ownership, lens, chat state and file-path
   context. Only the active pane may take keyboard focus after an asynchronous operation.
 - The four most recently visited tabs keep their already-mounted terminal screens live while
-  the browser is in use. Hidden clients give up size ownership and cannot take input or focus;
+  the browser is in use. Hidden clients give up size ownership and cannot take input, focus or
+  the clipboard (OSC 52). When another client sizes the pane to another grid, a hidden client lets go
+  of its attach, as before, and its return attaches again for a whole screen at its own size;
   leaving the window, eviction, or **Use alongside herdr's own window** releases their attach.
   A reconnect or replaced terminal never acquires a fresh hidden attach. This follows Zed's
   multiple terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather
