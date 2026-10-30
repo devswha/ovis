@@ -259,6 +259,59 @@ it("bounds pre-open sends and rejects them when the handshake closes", async () 
   for (const result of await Promise.all(pending)) expect(result).toBeInstanceOf(Error);
 });
 
+for (const failure of ["malformed record", "explicit close"] as const) {
+  it(`rejects queued sends on ${failure} while an earlier transport send is unresolved`, async () => {
+    // Given a real protected channel with A blocked inside its transport.
+    const { link, client, received } = await connected();
+    const entered = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const exited = Promise.withResolvers<void>();
+    const submitted: (string | ArrayBuffer)[] = [];
+    let transportSettled = false;
+    link.client.send = async (data) => {
+      submitted.push(data);
+      entered.resolve();
+      await held.promise;
+      transportSettled = true;
+      exited.resolve();
+    };
+    const first = client.send("A").catch((error: unknown) => error);
+    await entered.promise;
+    const queued = [client.send("B"), client.send("C")].map((send) =>
+      send.catch((error: unknown) => error));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // When closure occurs, settlement cannot depend on releasing A.
+      if (failure === "malformed record") {
+        await link.client.deliver({ data: new Uint8Array([1]).buffer, isBinary: true });
+        expect(link.client.closes).toEqual([PROTECTED_RECORD_FAILED_CLOSE_CODE]);
+      } else client.close();
+      expect(client.isOpen()).toBe(false);
+      const later = client.send("after close").catch((error: unknown) => error);
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Send rejection did not follow channel closure")), 1000);
+      });
+      const results = await Promise.race([Promise.all([...queued, later, first]), deadline]);
+      // Then every caller rejects while A's transport promise is still unresolved.
+      for (const result of results) {
+        expect(result).toBeInstanceOf(Error);
+        if (!(result instanceof Error)) throw new Error("Expected send rejection");
+        expect(result.message).toMatch(/channel.*closed/i);
+      }
+      expect(transportSettled).toBe(false);
+      expect(submitted).toHaveLength(1);
+      expect(received.daemon).toEqual([]);
+    } finally {
+      clearTimeout(timer);
+      held.resolve();
+      await exited.promise;
+      await Promise.all([first, ...queued]);
+    }
+    await expect(client.send("still closed")).rejects.toThrow(/channel.*closed/i);
+    expect(submitted).toHaveLength(1);
+  });
+}
+
 function bytes(message: TransportMessage): Uint8Array {
   return typeof message.data === "string"
     ? new Uint8Array(Buffer.from(message.data, "base64"))

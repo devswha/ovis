@@ -14,6 +14,14 @@ export async function openClientSecureChannel(transport: Transport, options: Cli
   const ready = Promise.withResolvers<void>();
   let handshaking = true;
   let pending = 0;
+  let closeError: Error | undefined;
+  const outstanding = new Set<(error: Error) => void>();
+  const rejectSends = () => {
+    closeError ??= new Error("Secure channel closed");
+    ready.resolve();
+    for (const reject of outstanding) reject(closeError);
+    outstanding.clear();
+  };
   const channel = await openClient(transport, {
     ...options, minimumMode: "protected",
     events: {
@@ -25,17 +33,33 @@ export async function openClientSecureChannel(transport: Transport, options: Cli
       },
       onclose: (code, reason) => {
         handshaking = false;
-        ready.resolve(); // Queued sends reject through the closed channel.
+        rejectSends();
         options.events?.onclose?.(code, reason);
       },
     },
   });
+  channel.onClose(rejectSends);
   const send = channel.send.bind(channel);
   let chain = ready.promise;
   channel.send = (data) => {
+    if (closeError) return Promise.reject(closeError);
     if (handshaking && ++pending > 200) return Promise.reject(new RangeError("Too many pre-open sends"));
-    chain = chain.then(() => send(data));
-    return chain;
+    const result = Promise.withResolvers<void>();
+    outstanding.add(result.reject);
+    chain = chain.then(() => {
+      if (closeError) throw closeError;
+      return send(data);
+    });
+    // Caller settlement must not wait for an in-flight transport promise on close.
+    // Remove settled callers rather than retaining one close listener per send.
+    void chain.then(() => {
+      outstanding.delete(result.reject);
+      result.resolve();
+    }, (error: unknown) => {
+      outstanding.delete(result.reject);
+      result.reject(error);
+    });
+    return result.promise;
   };
   return channel;
 }
