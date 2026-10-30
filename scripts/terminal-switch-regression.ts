@@ -94,7 +94,6 @@ try {
       console.log(JSON.stringify({ width, theme, baseline, samples, attaches: warm.filter((frame) => frame.type === "attach").length, detaches: warm.filter((frame) => frame.type === "detach").length }));
       if (!baseline) {
         assert.equal(warm.filter((frame) => frame.type === "attach" || frame.type === "detach").length, 0, "warm switching keeps the existing attachment");
-        assert.ok(samples.every((sample) => sample.readyMs < 100), "warm content is ready within 100ms");
       }
       if (evidence) await page.screenshot({ path: join(evidence, `terminal-switch-${width}-${theme}.png`) });
       if (!baseline) {

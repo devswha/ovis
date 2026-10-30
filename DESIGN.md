@@ -1672,7 +1672,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   than retaining every terminal indefinitely. No attached screen is rebuilt from `pane.read`.
 - Switching tabs retains an outgoing terminal while its explicit submit awaits a receipt;
   its chat/input UI is unmounted and its grid is not resized. The receipt settles the original
-  draft before the pane attachment is released. No input is replayed. A canvas that already released
+  draft; the attachment then follows the recent-tab rule above. No input is replayed. A canvas that already released
   its panes while away opens a replacement as view-only until the user returns.
   An automatic queue also retains its original pane lease until sent, discarded or held.
 - The unlocked app owns one connection per visited PC, shared by its pane mounts. A pane leaving
