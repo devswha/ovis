@@ -1677,7 +1677,16 @@ describe("another session's conversation is never shown for a plain Codex pane",
 
   // a herdr report may be stale or the shared daemon's (#2420's review, H2)
   for (const kind of ["path", "id"] as const) {
-    it(`binds nothing by a reported ${kind} alone, while another Codex pane here may run that thread`, async () => {
+    it(`binds nothing by a reported ${kind} alone that began before this pane's Codex, while another Codex pane here may run it`, async () => {
+      // this pane's Codex started long after the reported thread began: a report an earlier Codex left, or another pane's
+      const started = spyOn(processStart, "processStartLowerBound").mockReturnValue(1_000_000);
+      const upper = spyOn(processStart, "processStartUpperBound").mockReturnValue(1_000_000);
+      try { await reportedAlone(kind); } finally { started.mockRestore(); upper.mockRestore(); }
+    });
+  }
+
+  async function reportedAlone(kind: "path" | "id"): Promise<void> {
+    {
       foreground = live;
       reportedSession = { source: "herdr:codex", agent: "codex", kind, value: kind === "path" ? path : thread };
       peerScreens.set("peer", "");
@@ -1687,13 +1696,15 @@ describe("another session's conversation is never shown for a plain Codex pane",
       // its answer on this pane's screen tells, as for any pane
       screen = `• ${answer}`;
       expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
-    });
+    }
   }
 
   it("takes the reported thread as the pane's fresh conversation only when nothing else could have begun it", async () => {
     // this pane's Codex started at 1000 s; a peer's at 990 s or 1005 s
     const starts = new Map([[900001, 1_000_000], [900002, 990_000], [900003, 1_005_000]]);
+    // the start read from below (peers) and from above (this pane) alike: the same instant here
     const bound = spyOn(processStart, "processStartLowerBound").mockImplementation((pid) => starts.get(pid) ?? null);
+    const upper = spyOn(processStart, "processStartUpperBound").mockImplementation((pid) => starts.get(pid) ?? null);
     const setCreated = (seconds: number) => {
       const db = new Database(join(home, "state_5.sqlite"));
       db.query("UPDATE threads SET created_at = ?").run(seconds);
@@ -1715,15 +1726,29 @@ describe("another session's conversation is never shown for a plain Codex pane",
       foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
       peerScreens.set("peer", "");
       expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+      // nor one started in the very second it began, which a store of whole seconds cannot tell apart
+      starts.set(900005, 1_001_290);
+      foregrounds.set("peer", [{ pid: 900005, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
       // one started after it began did not
       foregrounds.set("peer", [{ pid: 900003, argv: ["/usr/bin/codex"] }]);
       expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+      // another Codex pane in another folder, running when it began: `codex -C` or a resume opens a thread of this one
+      foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))])).toBeNull();
+      // begun after the earliest this Codex may have started, but maybe before it did: an earlier Codex's
+      starts.set(900004, 1_000_500);
+      foreground = [{ pid: 900004, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => pid === 900004 ? 1_001_500 : starts.get(pid) ?? null);
+      expect(await resolve()).toBeNull();
+      foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => starts.get(pid) ?? null);
       // nor after a newer thread of the cwd began (a /new)
       const db = new Database(join(home, "state_5.sqlite"));
       db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1002, 1002, 'cli')").run("01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root);
       db.close();
       expect(await resolve()).toBeNull();
-    } finally { bound.mockRestore(); }
+    } finally { bound.mockRestore(); upper.mockRestore(); }
   });
 
   it("takes no long answer the pane only quotes in a prompt (#2420's review, H3)", async () => {
@@ -1732,6 +1757,9 @@ describe("another session's conversation is never shown for a plain Codex pane",
     expect(await resolve()).toBeNull();
     // nor one typed into the input box
     screen = `OpenAI Codex (v0.165.0)\n\n› ${answer}`;
+    expect(await resolve()).toBeNull();
+    // nor one in a message queued to be sent
+    screen = `OpenAI Codex (v0.165.0)\n\n• Working (2s • esc to interrupt)\n  ↳ Explain this quoted answer: ${answer}\n\n› `;
     expect(await resolve()).toBeNull();
   });
 });

@@ -298,7 +298,8 @@ it("reads a thread whose answers are all short by its newest answers on screen, 
   db.close();
   const owned: string[] = [];
   try {
-    const shortPane = await pane("short", `${join(root, "bin", "codex")} --quote short`, root, owned);
+    // the question typed and its short answers below it, as Codex shows them: answers alone (pasted) are no one's
+    const shortPane = await pane("short", `${join(root, "bin", "codex")} --say short`, root, owned);
     await onScreen(shortPane, shortAnswers[1]!);
     // both answers are one turn's
     expect(lastAnswer(await read(shortPane))).toBe(shortAnswers.join(""));

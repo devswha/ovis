@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import nodePath, { isAbsolute, join, type PlatformPath } from "node:path";
 import type { ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
 import { patchFiles, patchText } from "../shared/patch.ts";
-import { processStartedAt, processStartLowerBound } from "./process-start.ts";
+import { processStartedAt, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
 import { CODEX_TOOL_IMAGE_REF, codexImageParts, codexOutputPictures } from "./codex-images.ts";
 import { codexReadCall, codexReadSkills, selectedSkill } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -915,15 +915,17 @@ const normalizeDisplay = (text: string): string => text.normalize("NFKC").replac
 
 /**
  * A Codex screen cut at what was typed: each prompt (a line Codex starts with "›", a prompt sent or
- * the input box, with the indented and blank lines it wraps onto) and the stretches between them.
- * A prompt is no evidence of the conversation shown: it may quote any conversation's answer.
+ * the input box, or an indented "↳", a message queued to be sent; with the indented and blank lines
+ * it wraps onto) and the stretches between them. A prompt is no evidence of the conversation shown:
+ * it may quote any conversation's answer.
  */
 function codexScreenParts(screen: string): { prompt: boolean; text: string }[] {
   const parts: { prompt: boolean; text: string }[] = [];
   for (const line of screen.split("\n")) {
     const last = parts.at(-1);
-    const prompt = line.startsWith("\u203a") || (last?.prompt === true && /^(?:\s|$)/.test(line));
-    if (last !== undefined && last.prompt === prompt && !line.startsWith("\u203a")) last.text += `\n${line}`;
+    const begins = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
+    const prompt = begins || (last?.prompt === true && /^(?:\s|$)/.test(line));
+    if (last !== undefined && last.prompt === prompt && !begins) last.text += `\n${line}`;
     else parts.push({ prompt, text: line });
   }
   return parts;
@@ -1176,9 +1178,9 @@ function newestAnswersShown(display: string, answers: string[]): { text: string;
  * answers on screen together say as much as one long one (#283). Weaker evidence, so it gives
  * up readily: every candidate must have been read whole (none `cut`: past the read budget, or
  * continuing another rollout, whose answers it shares), only one may show that way, no other
- * may have said any of the answers it showed, alone or inside a longer one, and a prompt the
- * screen shows above one of them must be the one it answered: the same short answers to other
- * prompts are another conversation's. Prompts on screen are never taken for answers.
+ * may have said any of the answers it showed, alone or inside a longer one, and each must show below
+ * the prompt it answered: the same short answers to other prompts, or below a prompt the read does not
+ * reach, may be another conversation's. Prompts on screen are never taken for answers.
  */
 export function matchShortCodexAnswers(screen: string, candidates: { path: string; text: string; cut?: boolean }[]): string | null {
   if (candidates.some((candidate) => candidate.cut)) return null;
@@ -1187,7 +1189,8 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
   let display = "";
   const prompts: { at: number; text: string }[] = [];
   for (const part of codexScreenParts(lastHeader >= 0 ? screen.slice(lastHeader) : screen)) {
-    if (part.prompt) prompts.push({ at: display.length, text: normalizeDisplay(part.text) });
+    // only one typed and sent is what an answer below it answered; a queued one is not sent yet
+    if (part.prompt && part.text.startsWith("\u203a")) prompts.push({ at: display.length, text: normalizeDisplay(part.text) });
     display += part.prompt ? "\0" : normalizeDisplay(part.text);
   }
   // every turn of what was read, not the newest 100: an answer said long ago is said; with the prompt it answered
@@ -1209,12 +1212,11 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
   }
   if (found === null) return null;
   const only = found.index;
-  // top down, the nearest prompt shown above each answer, below the one before it
-  let after = 0;
-  for (const answer of [...found.answers].sort((one, other) => one.at - other.at)) {
-    const above = prompts.filter((prompt) => prompt.at >= after && prompt.at < answer.at).at(-1);
-    if (above !== undefined && above.text !== exchanges[only]![answer.index]!.prompt) return null;
-    after = answer.at + answer.text.length;
+  // the nearest prompt shown above each answer is the one it answered; one with none shown above (its
+  // prompt past the top of the read) may be another conversation's same answer to another prompt
+  for (const answer of found.answers) {
+    const above = prompts.filter((prompt) => prompt.at < answer.at).at(-1);
+    if (above === undefined || above.text !== exchanges[only]![answer.index]!.prompt) return null;
   }
   const shown = found.answers.map((answer) => answer.text);
   for (const [index, other] of answers.entries()) {
@@ -2423,16 +2425,18 @@ function reportedRollout(session: AgentInfo["agent_session"], home: string): str
  * Whether the thread herdr reports for this pane (`reported`, its rollout) is the pane's own new
  * conversation by what the store and the processes say, before its screen shows an answer: a first
  * message sent as the pane starts is answered only later. It is when the store has it as an
- * interactive thread of this cwd begun no earlier than this pane's Codex started, no thread of the
- * cwd began since, no other pane is bound to it, and no other Codex pane of the cwd (or one whose
- * folder herdr does not say) was running when it began: none of them could have reported it here
- * (Codex's shared daemon reports every TUI's thread to the pane that started it). A report left from
- * an earlier Codex, or naming another pane's thread, fails one of these, and then nothing is guessed.
+ * interactive thread of this cwd begun after this pane's Codex certainly started (a bound from above:
+ * one from below lets in a thread an earlier Codex of the pane began just before), no thread of the
+ * cwd began since, no other pane is bound to it, and no other Codex pane, of any folder (`codex -C`
+ * and a resume open a thread of another), was running when it began: none of them could have
+ * reported it here (Codex's shared daemon reports every TUI's thread to the pane that started it). A
+ * report left from an earlier Codex, or naming another pane's thread, fails one of these, and then
+ * nothing is guessed.
  */
 async function freshReportedThread(
   paneId: string, cwd: string, home: string, reported: string, processes: readonly { pid: number }[], panes?: HerdrPane[],
 ): Promise<boolean> {
-  const starts = processes.map(({ pid }) => processStartLowerBound(pid));
+  const starts = processes.map(({ pid }) => processStartUpperBound(pid));
   if (starts.length === 0 || starts.some((start) => start === null || !Number.isFinite(start))) return false;
   const notBefore = Math.min(...starts as number[]);
   if (theirs([reported], paneId).length !== 1) return false;
@@ -2440,23 +2444,25 @@ async function freshReportedThread(
   try {
     db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
-    // a time in whole seconds as its first millisecond: a thread must be begun since, for certain
-    const created = columns.has("created_at_ms") ? "COALESCE(created_at_ms, created_at * 1000)" : "created_at * 1000";
+    // a time in whole seconds as its first millisecond to be begun since this pane's start for certain,
+    // and as its last to be begun before another pane's start for certain
+    const ms = columns.has("created_at_ms");
+    const earliest = ms ? "COALESCE(created_at_ms, created_at * 1000)" : "created_at * 1000";
+    const latest = ms ? "COALESCE(created_at_ms, created_at * 1000 + 999)" : "created_at * 1000 + 999";
     const { where, params } = storedCwdCondition(cwd);
-    const rows = db.query<{ id: string; rolloutPath: string; createdAtMs: number }, string[]>(
-      `SELECT id, rollout_path AS rolloutPath, ${created} AS createdAtMs FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)}`,
+    const rows = db.query<{ id: string; rolloutPath: string; createdAtMs: number; createdLatestMs: number }, string[]>(
+      `SELECT id, rollout_path AS rolloutPath, ${earliest} AS createdAtMs, ${latest} AS createdLatestMs FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)}`,
     ).all(...params);
     const row = rows.find((candidate) => (codexRolloutPath(candidate.rolloutPath, home) ?? candidate.rolloutPath) === reported);
     if (row === undefined || !Number.isFinite(row.createdAtMs) || row.createdAtMs < notBefore) return false;
     // another thread of the cwd begun since (a /new) may be what the pane shows now
     if (rows.some((other) => other !== row && !(other.createdAtMs < row.createdAtMs))) return false;
     const peers = (panes ?? (await sessionSnapshot()).panes).filter((pane) => pane.pane_id !== paneId && resolveAgent(pane).agent === "codex");
-    if (peers.some((pane) => pane.cwd == null)) return false;
-    for (const peer of codexPeersIn(peers, paneId, cwd)) {
+    for (const peer of peers) {
       const { list } = await codexProcessesOf(peer.pane_id);
       const bounds = list.map(({ pid }) => processStartLowerBound(pid));
       // one whose start cannot be told may have been running then
-      if (bounds.length === 0 || bounds.some((bound) => bound === null || bound <= row.createdAtMs)) return false;
+      if (bounds.length === 0 || bounds.some((bound) => bound === null || bound <= row.createdLatestMs)) return false;
     }
     return true;
   } catch { return false; }
