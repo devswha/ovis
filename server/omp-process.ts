@@ -5,10 +5,10 @@ export interface ProcessMemory { argv: string[]; environ: string[] }
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_CACHED = 64;
 /**
- * The variables omp's store and terminal lookups read (omp.ts ompStoreLayout, gjcTerminal): the
+ * The variables the agent store and terminal lookups read (omp.ts, gjcTerminal, dsh.ts): the
  * rest of the environment may hold secrets, so nothing else leaves the read.
  */
-const ROUTING = /^(?:HOME|OMP_PROFILE|PI_PROFILE|PI_CONFIG_DIR|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|XDG_DATA_HOME|XDG_STATE_HOME|TMUX|TMUX_PANE)=/;
+const ROUTING = /^(?:HOME|OMP_PROFILE|PI_PROFILE|PI_CONFIG_DIR|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|DSH_HOME|XDG_DATA_HOME|XDG_STATE_HOME|TMUX|TMUX_PANE)=/;
 
 /**
  * The routing words of a process's environment, or null when it could not be read. An environment

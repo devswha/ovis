@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSnapshot } from "../shared/protocol.ts";
-import { forgetPaneTranscriptState, forgetTranscriptState } from "./conversation.ts";
+import { toolOutput, forgetPaneTranscriptState, forgetTranscriptState } from "./conversation.ts";
+import * as processProbe from "./omp-process.ts";
+import { forgetDshProcesses } from "./dsh.ts";
 import * as herdr from "./herdr/client.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
 
@@ -24,10 +26,10 @@ linuxTest("serves a bound dsh conversation over HTTP and invalidates its ETag af
   const pane = { pane_id: "dsh-http-fixture", agent: "dsh", agent_status: "idle", cwd: root };
   const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [] } as unknown as SessionSnapshot);
   const processInfo = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  const rpc = spyOn(herdr, "herdrRpc").mockRejectedValue(new Error("herdr RPC must not run in this test"));
+  const memory = spyOn(processProbe, "ompProcessMemory").mockResolvedValue({ argv: [], environ: [`HOME=${root}`, `DSH_HOME=${root}`] });
   const url = new URL("http://x/api/pane/conversation?pane_id=" + pane.pane_id);
   const ask = async (etag?: string) => (await handlePaneRequest(new Request(url, { headers: etag ? { "if-none-match": etag } : {} }), url, url.pathname, {}))!;
-  const previousHome = process.env.DSH_HOME;
-  process.env.DSH_HOME = root;
   try {
     const initial = await ask();
     expect(initial.status).toBe(200);
@@ -42,9 +44,19 @@ linuxTest("serves a bound dsh conversation over HTTP and invalidates its ETag af
     expect(appended.status).toBe(200);
     expect((await appended.json()).turns).toHaveLength(2);
     expect(appended.headers.get("etag")).not.toBe(etag);
+    memory.mockResolvedValue({ argv: [], environ: [`HOME=${root}`, `DSH_HOME=${join(root, "another-home")}`] });
+    expect((await (await ask()).json()).source).toBe("scrollback");
+    expect(await toolOutput(pane.pane_id, "missing-output")).toBeNull();
+    memory.mockResolvedValue({ argv: [], environ: [`HOME=${root}`, `DSH_HOME=${root}`] });
+    processInfo.mockRejectedValue(new Error("process lookup failed"));
+    const unavailable = await ask();
+    expect(unavailable.status).toBe(200);
+    expect((await unavailable.json()).source).toBe("scrollback");
+    expect(await toolOutput(pane.pane_id, "missing-output")).toBeNull();
   } finally {
-    if (previousHome === undefined) delete process.env.DSH_HOME;
-    else process.env.DSH_HOME = previousHome;
+    rpc.mockRestore();
+    memory.mockRestore();
+    forgetDshProcesses();
     snapshot.mockRestore();
     processInfo.mockRestore();
     forgetPaneTranscriptState(pane.pane_id);

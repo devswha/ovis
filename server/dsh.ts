@@ -1,10 +1,10 @@
+import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { readdir, readlink, realpath, open, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
-import { processStartTicks } from "./omp-process.ts";
+import { ompProcessMemory, processStartTicks } from "./omp-process.ts";
 import { trimOutput } from "./tool-output.ts";
 
 type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
@@ -13,15 +13,44 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 
 const boundProcesses = new Set<string>();
 
+export type DshTranscript = { path: string; root: string; identity: string };
+
+/** dsh-home-paths resolves DSH_HOME before ~/.dsh. Relative homes cannot be pinned after chdir. */
+export function dshSessionsDirectory(environ: readonly string[]): string | null {
+  const home = environ.find(word => word.startsWith("HOME="))?.slice(5);
+  const override = environ.find(word => word.startsWith("DSH_HOME="))?.slice(9);
+  let base = override !== undefined && override.trim() !== "" ? override : undefined;
+  if (base === undefined || base === "~" || base.startsWith("~/") || base.startsWith("~\\")) {
+    if (!home || !isAbsolute(home)) return null;
+    base = base === undefined ? join(home, ".dsh") : join(home, base.slice(2));
+  }
+  return isAbsolute(base) ? join(resolve(base), "sessions") : null;
+}
+
+/** Authorize both physical encodings inside the canonical store before opening their bytes. */
+export async function authorizeDshTranscript(path: string, sessions: string): Promise<DshTranscript | null> {
+  try {
+    const root = await realpath(sessions);
+    const canonical = await realpath(path);
+    const inside = relative(root, canonical);
+    if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)
+      || !/^session\.v4\.jsonl(?:\.zstd)?$/.test(basename(canonical))) return null;
+    const file = await open(canonical, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await file.stat({ bigint: true });
+      if (!stat.isFile() || (process.getuid !== undefined && stat.uid !== BigInt(process.getuid()))) return null;
+      return { path: canonical, root, identity: `${stat.dev}:${stat.ino}` };
+    } finally { await file.close(); }
+  } catch { return null; }
+}
+
+/** Reset process history between independent fixture sessions. */
+export function forgetDshProcesses(): void { boundProcesses.clear(); }
+
 /** A held lock binds the foreground process to its session; modification times do not. */
-export async function resolveDshTranscript(info: Processes | null | undefined): Promise<string> {
+export async function resolveDshTranscript(info: Processes | null | undefined): Promise<DshTranscript> {
   if (process.platform !== "linux") return unavailable();
-  // Match @deepseek-ai/dsh-home-paths: blank overrides are unset; expand only ~, ~/ and ~\.
-  const configured = process.env.DSH_HOME;
-  const home = configured !== undefined && configured.trim().length > 0 ? configured : join(homedir(), ".dsh");
-  const expanded = home === "~" ? homedir() : home.startsWith("~/") || home.startsWith("~\\") ? join(homedir(), home.slice(2)) : home;
-  const sessions = join(resolve(expanded), "sessions");
-  const found = new Set<string>();
+  const found = new Map<string, DshTranscript>();
   const fresh: string[] = [];
   let inspected = 0;
   for (const proc of info?.foreground_processes ?? []) {
@@ -30,7 +59,11 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
     if (!start) continue;
     try {
       if ((await stat(`/proc/${proc.pid}`)).uid !== process.getuid?.()) continue;
-      const candidates: string[] = [];
+      const memory = await ompProcessMemory(proc.pid, false);
+      if (memory === null) continue;
+      const sessions = dshSessionsDirectory(memory.environ);
+      if (sessions === null) continue;
+      const candidates: DshTranscript[] = [];
       let held = false;
       const descriptors = await readdir(`/proc/${proc.pid}/fd`);
       if (descriptors.length > 4096) return unavailable();
@@ -41,14 +74,8 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
         const folder = dirname(await realpath(target));
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
-          const s = await stat(path).catch(() => null);
-          if (s?.isFile() && s.uid === process.getuid?.()) {
-            // As in authorizedTranscript, compare canonical paths, not a lexical prefix.
-            const canonical = await realpath(path);
-            const inside = relative(await realpath(sessions), canonical);
-            if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return unavailable();
-            candidates.push(canonical); break;
-          }
+          const authorized = await authorizeDshTranscript(path, sessions);
+          if (authorized !== null) { candidates.push(authorized); break; }
         }
       }
       if (processStartTicks(proc.pid) === start) {
@@ -58,14 +85,14 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
           if (boundProcesses.size >= 256) boundProcesses.delete(boundProcesses.values().next().value!);
           boundProcesses.add(identity);
         }
-        for (const path of candidates) found.add(path);
+        for (const transcript of candidates) found.set(transcript.path, transcript);
         if (!held && !boundProcesses.has(identity) && !proc.argv.some((word) => typeof word === "string" && /^(?:--resume|--fork|--session|-r)(?:=|$)/.test(word))) fresh.push(identity);
       }
     } catch { /* a process can exit during inspection */ }
   }
   if (found.size === 0 && inspected === 1 && fresh.length === 1) throw new ConversationNotStarted(fresh[0]!, "dsh-transcript", fresh[0]!);
   if (found.size !== 1) return unavailable();
-  return [...found][0]!;
+  return [...found.values()][0]!;
 }
 
 /** Ignore an unfinished final append, but reject malformed complete frames. */
@@ -97,9 +124,14 @@ export function completeDshFrames(bytes: Buffer): number {
   return end;
 }
 
-async function readDsh(path: string): Promise<{ text: string; identity: string }> {
-  const file = await open(path, "r").catch(() => unavailable());
+async function readDsh(binding: DshTranscript): Promise<{ text: string; identity: string }> {
+  const authorized = await authorizeDshTranscript(binding.path, binding.root);
+  if (authorized === null || authorized.path !== binding.path || authorized.identity !== binding.identity) return unavailable();
+  const path = authorized.path;
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)).catch(() => unavailable());
   try {
+    const identity = await file.stat({ bigint: true });
+    if (`${identity.dev}:${identity.ino}` !== binding.identity) return unavailable();
     const s = await file.stat();
     if (!s.isFile() || (process.getuid !== undefined && s.uid !== process.getuid()) || s.size > TRANSCRIPT_WINDOW_BYTES) return unavailable();
     const bytes = Buffer.alloc(s.size);
@@ -126,7 +158,7 @@ async function readDsh(path: string): Promise<{ text: string; identity: string }
       } finally { reader.releaseLock(); }
       text = Buffer.concat(chunks).toString("utf8");
     } else text = bytes.toString("utf8");
-    return { text: text.slice(0, text.lastIndexOf("\n") + 1), identity: `${s.dev}:${s.ino}` };
+    return { text: text.slice(0, text.lastIndexOf("\n") + 1), identity: binding.identity };
   } catch { return unavailable(); } finally { await file.close(); }
 }
 
@@ -202,9 +234,9 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
   return { turns, history, outputs, metadata: { model, reasoning_effort: reasoning } };
 }
 
-export async function dshConversation(path: string, page: ConversationPage = {}): Promise<RecognizedConversation> {
-  const { text, identity } = await readDsh(path);
-  const projection = projectDsh(text, identity, basename(dirname(path)));
+export async function dshConversation(binding: DshTranscript, page: ConversationPage = {}): Promise<RecognizedConversation> {
+  const { text, identity } = await readDsh(binding);
+  const projection = projectDsh(text, identity, basename(dirname(binding.path)));
   const { turns, history } = projection;
   const cursor = (index: number) => `${history}:${index}:${digest(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
   const parse = (value: string | undefined, fallback: number) => {
@@ -220,7 +252,7 @@ export async function dshConversation(path: string, page: ConversationPage = {})
   return { source: "dsh-transcript", turns: turns.slice(start, end), metadata: projection.metadata, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
 }
 
-export async function dshToolOutput(path: string, ref: string): Promise<string | null> {
-  const { text, identity } = await readDsh(path);
-  return projectDsh(text, identity, basename(dirname(path))).outputs.get(ref)?.slice(0, 1_000_000) ?? null;
+export async function dshToolOutput(binding: DshTranscript, ref: string): Promise<string | null> {
+  const { text, identity } = await readDsh(binding);
+  return projectDsh(text, identity, basename(dirname(binding.path))).outputs.get(ref)?.slice(0, 1_000_000) ?? null;
 }

@@ -39,10 +39,10 @@ it.skipIf(process.platform !== "linux")("reads a live process's arguments and on
 it.skipIf(process.platform !== "linux")("keeps only the variables omp's store lookup reads, through the helper and the direct read", async () => {
   const routing = {
     HOME: "/r", OMP_PROFILE: "work", PI_PROFILE: "pi", PI_CONFIG_DIR: ".alt", PI_CODING_AGENT_DIR: "/r/agent", PI_CODING_AGENT_SESSION_DIR: "/r/sessions",
-    XDG_DATA_HOME: "/r/data", XDG_STATE_HOME: "/r/state", TMUX: "/tmp/tmux-1/default,1,0", TMUX_PANE: "%3",
+    DSH_HOME: "/r/dsh", XDG_DATA_HOME: "/r/data", XDG_STATE_HOME: "/r/state", TMUX: "/tmp/tmux-1/default,1,0", TMUX_PANE: "%3",
   };
   // secrets, look-alike names and the XDG roots omp's store lookup never reads
-  const env = { ...routing, PATH: process.env["PATH"] ?? "", SECRET_TOKEN: "SECRET_TOKEN_value", OPENAI_API_KEY: "SECRET_TOKEN_key", PI_CODING_AGENT_DIR_EXTRA: "SECRET_TOKEN_x", HOMEDIR: "SECRET_TOKEN_h", XDG_CONFIG_HOME: "/r/config" };
+  const env = { ...routing, PATH: process.env["PATH"] ?? "", SECRET_TOKEN: "SECRET_TOKEN_value", OPENAI_API_KEY: "SECRET_TOKEN_key", PI_CODING_AGENT_DIR_EXTRA: "SECRET_TOKEN_x", HOMEDIR: "SECRET_TOKEN_h", DSH_HOME_EXTRA: "SECRET_TOKEN_dsh", XDG_CONFIG_HOME: "/r/config" };
   const { target } = await startedShell([], env);
   try {
     const expected = Object.entries(routing).map(([key, value]) => `${key}=${value}`).sort();

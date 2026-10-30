@@ -1,18 +1,39 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, rm, open, symlink } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtemp, mkdir, writeFile, rm, open, symlink, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { completeDshFrames, dshConversation, dshToolOutput, projectDsh, resolveDshTranscript } from "./dsh.ts";
+import { join } from "node:path";
+import { authorizeDshTranscript, completeDshFrames, dshConversation as boundConversation, dshToolOutput as boundToolOutput, dshSessionsDirectory, forgetDshProcesses, projectDsh, resolveDshTranscript } from "./dsh.ts";
 import { ConversationNotStarted, ConversationUnavailable, HistoryChanged } from "./conversation-shared.ts";
+import * as processProbe from "./omp-process.ts";
+import type { ConversationPage } from "./conversation-shared.ts";
+let home: string;
+let memory: ReturnType<typeof spyOn<typeof processProbe, "ompProcessMemory">>;
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "ovis-dsh-home-"));
+  await mkdir(join(home, "sessions"));
+  memory = spyOn(processProbe, "ompProcessMemory").mockResolvedValue({ argv: [], environ: [`HOME=${home}`, `DSH_HOME=${home}`] });
+  forgetDshProcesses();
+});
+afterEach(async () => {
+  memory.mockRestore();
+  forgetDshProcesses();
+  await rm(home, { recursive: true, force: true });
+});
+async function binding(path: string) {
+  const value = await authorizeDshTranscript(path, join(home, "sessions"));
+  if (value === null) throw new ConversationUnavailable("fixture not authorized");
+  return value;
+}
+async function dshConversation(path: string, page?: ConversationPage) { return boundConversation(await binding(path), page); }
+async function dshToolOutput(path: string, ref: string) { return boundToolOutput(await binding(path), ref); }
 const id = "12345678-1234-1234-1234-123456789abc";
 const header = {type:"session",version:4,id,delegationDepth:0};
 const event = (type: string, data: unknown, seq: number) => ({type,data,seq,time:1700000000000+seq});
 const message = (text: string) => ({role:"user",source:{kind:"user"},content:[{type:"text",text}]});
 const log = (...rows: unknown[]) => [header,...rows].map(r=>JSON.stringify(r)).join("\n")+"\n";
 async function fixture(run: (path:string)=>Promise<void>) {
- const root=await mkdtemp(join(tmpdir(),"ovis-dsh-")); const dir=join(root,"sessions",id); await mkdir(dir,{recursive:true});
- const previous=process.env.DSH_HOME;process.env.DSH_HOME=root;
- try {await run(join(dir,"session.v4.jsonl.zstd"));} finally {if(previous===undefined)delete process.env.DSH_HOME;else process.env.DSH_HOME=previous;await rm(root,{recursive:true,force:true});}
+ const root=await mkdtemp(join(home,"sessions","project-")); const dir=join(root,id); await mkdir(dir);
+ try {await run(join(dir,"session.v4.jsonl.zstd"));} finally {await rm(root,{recursive:true,force:true});}
 }
 const linuxTest = process.platform === "linux" ? test : test.skip;
 describe("native dsh conversation",()=>{
@@ -65,24 +86,11 @@ describe("native dsh conversation",()=>{
  const p=projectDsh(log(event("user/message",message("original"),0),event("user/message",{...message("summary"),source:{kind:"compact-checkpoint"}},1),event("assistant/message",{message:{role:"assistant",content:[{type:"text",text:"partial"}]}},2),event("turn/end",{reason:{kind:"cancelled"}},3)),"inode");
  expect(p.turns[0]!.role).toBe("user");expect(p.turns[1]!.parts[0]!.kind).toBe("compact");expect(p.turns[1]!.parts.at(-1)).toMatchObject({kind:"notice",text:"Turn ended: cancelled"});
  });
- linuxTest("rejects two held session locks instead of choosing one",async()=>fixture(async first=>{
- const second=join(dirname(dirname(first)),"abcdefab-1234-1234-1234-123456789abc","session.v4.jsonl.zstd");await mkdir(dirname(second));
+ linuxTest("rejects two held session locks instead of choosing one",async()=>fixture(async first=>fixture(async second=>{
  await writeFile(first,Bun.zstdCompressSync(log()));await writeFile(second,Bun.zstdCompressSync(log()));
  const locks=await Promise.all([open(join(first,"..","session.lock"),"w"),open(join(second,"..","session.lock"),"w")]);
  try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["/bin/dsh"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);} finally {await Promise.all(locks.map(lock=>lock.close()));}
- }));
- for(const compressed of [false,true])linuxTest(`rejects a held ${compressed?"compressed":"plain"} log outside the sessions root`,async()=>fixture(async inside=>{
- const outside=join(dirname(dirname(dirname(inside))),id);await mkdir(outside);
- const path=join(outside,compressed?"session.v4.jsonl.zstd":"session.v4.jsonl");
- await writeFile(path,compressed?Bun.zstdCompressSync(log()):log());
- const lock=await open(join(outside,"session.lock"),"w");
- try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["/bin/dsh"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
- }));
- linuxTest("rejects a log symlink escaping the sessions root",async()=>fixture(async path=>{
- const outside=join(dirname(dirname(dirname(path))),"outside.jsonl.zstd");await writeFile(outside,Bun.zstdCompressSync(log()));
- await symlink(outside,path);const lock=await open(join(dirname(path),"session.lock"),"w");
- try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["/bin/dsh"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
- }));
+ })));
  test("fetches long tool output by opaque reference",async()=>fixture(async path=>{
  await writeFile(path,Bun.zstdCompressSync(log(event("tool/call",{callId:"a",name:"shell",arguments:"{}"},0),event("tool/result",{message:{toolCallId:"a",content:[{type:"text",text:"x".repeat(5000)}]}},1))));
  const part=(await dshConversation(path)).turns[0]!.parts[0]!;expect(part.kind).toBe("tool");if(part.kind!=="tool")throw Error();expect(await dshToolOutput(path,part.output_ref!)).toHaveLength(5000);
@@ -90,7 +98,100 @@ describe("native dsh conversation",()=>{
  linuxTest("binds only an exact held lock",async()=>fixture(async path=>{
  await writeFile(path,Bun.zstdCompressSync(log()));const lock=await open(join(path,"..","session.lock"),"w");
  const info={foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh"]}]};
- try {expect(await resolveDshTranscript(info)).toBe(path);expect((await dshConversation(await resolveDshTranscript(info))).turns).toHaveLength(0);await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["unrelated"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
+ try {expect((await resolveDshTranscript(info)).path).toBe(path);expect((await boundConversation(await resolveDshTranscript(info))).turns).toHaveLength(0);await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["unrelated"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
  await expect(resolveDshTranscript(info)).rejects.toBeInstanceOf(ConversationUnavailable);
  }));
 });
+
+
+linuxTest("resolves DSH_HOME like dsh-home-paths and refuses an unprovable relative home", () => {
+  expect(dshSessionsDirectory(["HOME=/user"])).toBe("/user/.dsh/sessions");
+  expect(dshSessionsDirectory(["HOME=/user", "DSH_HOME=   "])).toBe("/user/.dsh/sessions");
+  expect(dshSessionsDirectory(["HOME=/user", "DSH_HOME=/work/dsh"])).toBe("/work/dsh/sessions");
+  expect(dshSessionsDirectory(["HOME=/user", "DSH_HOME=~/work"])).toBe("/user/work/sessions");
+  expect(dshSessionsDirectory(["HOME=/user", "DSH_HOME=~"])).toBe("/user/sessions");
+  expect(dshSessionsDirectory(["HOME=/user", "DSH_HOME=relative"])).toBeNull();
+  expect(dshSessionsDirectory([])).toBeNull();
+});
+
+linuxTest("rejects a held lock outside the configured store, including sibling-prefix paths", async () => {
+  const outside = join(home, "sessions-outside", id);
+  await mkdir(outside, { recursive: true });
+  const path = join(outside, "session.v4.jsonl");
+  await writeFile(path, log());
+  const lock = await open(join(outside, "session.lock"), "w");
+  try {
+    expect(await authorizeDshTranscript(path, join(home, "sessions"))).toBeNull();
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await lock.close(); }
+});
+
+linuxTest("rejects file and session-directory links out of the store, but accepts a linked store root", async () => fixture(async path => {
+  const outside = join(home, "outside", id);
+  await mkdir(outside, { recursive: true });
+  const logPath = join(outside, "session.v4.jsonl.zstd");
+  await writeFile(logPath, Bun.zstdCompressSync(log()));
+  await symlink(logPath, path);
+  expect(await authorizeDshTranscript(path, join(home, "sessions"))).toBeNull();
+  const link = join(home, "sessions", "linked-session");
+  await symlink(outside, link);
+  expect(await authorizeDshTranscript(join(link, "session.v4.jsonl.zstd"), join(home, "sessions"))).toBeNull();
+  await rm(path);
+  await writeFile(path, Bun.zstdCompressSync(log()));
+  const store = join(home, "store-link");
+  await symlink(join(home, "sessions"), store);
+  expect((await authorizeDshTranscript(path, store))?.path).toBe(path);
+}));
+
+test("rejects file replacement between binding and conversation or tool-output reads", async () => fixture(async path => {
+  await writeFile(path, Bun.zstdCompressSync(log()));
+  const original = await binding(path);
+  await rename(path, path + ".old");
+  await writeFile(path, Bun.zstdCompressSync(log()));
+  await expect(boundConversation(original)).rejects.toBeInstanceOf(ConversationUnavailable);
+  await expect(boundToolOutput(original, "ref")).rejects.toBeInstanceOf(ConversationUnavailable);
+}));
+
+
+linuxTest("uses the foreground process DSH_HOME instead of the bridge environment", async () => fixture(async path => {
+  await writeFile(path, Bun.zstdCompressSync(log()));
+  const lockPath = join(path, "..", "session.lock");
+  await writeFile(lockPath, "");
+  memory.mockRestore();
+  const child = Bun.spawn([process.execPath, "-e", 'require("node:fs").openSync(process.argv[1], "r"); process.stdout.write("ready\\n"); setInterval(() => {}, 60000);', lockPath], {
+    env: { ...process.env, HOME: join(home, "another-home"), DSH_HOME: home },
+    stdin: "ignore", stdout: "pipe", stderr: "ignore",
+  });
+  const reader = child.stdout.getReader();
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n");
+    expect((await resolveDshTranscript({ foreground_processes: [{ pid: child.pid, argv: ["/bin/dsh"] }] })).path).toBe(path);
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+    child.kill();
+    await child.exited;
+  }
+}));
+
+
+for (const compressed of [false, true]) linuxTest(`rejects a held ${compressed ? "compressed" : "plain"} log outside the sessions root`, async () => {
+  const outside = join(home, "outside", id);
+  await mkdir(outside, { recursive: true });
+  const path = join(outside, compressed ? "session.v4.jsonl.zstd" : "session.v4.jsonl");
+  await writeFile(path, compressed ? Bun.zstdCompressSync(log()) : log());
+  const lock = await open(join(outside, "session.lock"), "w");
+  try {
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await lock.close(); }
+});
+
+linuxTest("rejects a held log symlink escaping the sessions root", async () => fixture(async path => {
+  const outside = join(home, "outside.jsonl.zstd");
+  await writeFile(outside, Bun.zstdCompressSync(log()));
+  await symlink(outside, path);
+  const lock = await open(join(path, "..", "session.lock"), "w");
+  try {
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await lock.close(); }
+}));
