@@ -1,7 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { FileInfo } from "../../shared/protocol.ts";
 
 import { MAX_INLINE_IMAGE_BYTES, markdownImagePath, markdownImagePreview } from "./markdownImages.ts";
+import { nativeTransport, setTransport } from "./transport.ts";
+
+afterEach(() => { setTransport(nativeTransport); });
 
 describe("markdownImagePath", () => {
   it("reads a relative path from the markdown file's folder", () => {
@@ -48,4 +51,17 @@ it("stats markdown images before loading them and offers oversized ones as downl
   ]);
   expect(await markdownImagePreview("https://example.com/a.png", "/tmp/doc/README.md", fetchInfo, fileUrl)).toBeNull();
   expect(statPaths).toHaveLength(2);
+});
+
+it("leaves the inline address for ReservedImage to resolve once and resolves only the download link", async () => {
+  setTransport({ ...nativeTransport, kind: "relay", resourceUrl: async (path) => `mapped:${path}` });
+  let size = 1;
+  const fetchInfo = async (path: string): Promise<FileInfo> => ({ path, name: "a.png", size, modified: "2026-10-11T00:00:00Z", mime: "image/png", kind: "image" });
+  const fileUrl = (path: string, download: boolean): string => `/api/fs/file?path=${path}${download ? "&download=1" : ""}`;
+
+  expect(await markdownImagePreview("a.png", "/tmp/README.md", fetchInfo, fileUrl)).toEqual({ kind: "inline", url: "/api/fs/file?path=/tmp/a.png" });
+  size = MAX_INLINE_IMAGE_BYTES + 1;
+  expect(await markdownImagePreview("a.png", "/tmp/README.md", fetchInfo, fileUrl)).toEqual({
+    kind: "too-large", size, downloadUrl: "mapped:/api/fs/file?path=/tmp/a.png&download=1",
+  });
 });
