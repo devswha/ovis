@@ -111,6 +111,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "이 브라우저의 로그인을 지웁니다. 다시 들어오려면 액세스 토큰이나 페어링 코드가 필요합니다.",
   "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "이 브라우저의 로그인을 지웁니다. 다시 들어오려면 Portal로 다시 로그인해야 합니다.",
   "Getting back in means signing in through Portal again.": "다시 들어오려면 Portal로 다시 로그인해야 합니다.",
+  "Getting back in means signing in through Portal again. While this browser is still signed in to Google or your company's login, that sign-in lets it straight back in: sign out there too.": "다시 들어오려면 Portal로 다시 로그인해야 합니다. 이 브라우저가 아직 Google이나 회사 로그인에 로그인되어 있으면 그 로그인으로 바로 다시 들어옵니다. 그쪽에서도 로그아웃하세요.",
   "Sidebar rows": "사이드바 행",
   "One line": "한 줄",
   "Two lines": "두 줄",

@@ -111,6 +111,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "このブラウザーのサインインを消去します。再び入るにはアクセストークンかペアリングコードが必要です。",
   "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "このブラウザーのサインインを消去します。再び入るには Portal で再度サインインする必要があります。",
   "Getting back in means signing in through Portal again.": "再び入るには Portal で再度サインインする必要があります。",
+  "Getting back in means signing in through Portal again. While this browser is still signed in to Google or your company's login, that sign-in lets it straight back in: sign out there too.": "再び入るには Portal で再度サインインする必要があります。このブラウザーが Google や会社のログインにまだサインインしていると、そのサインインですぐにまた入れてしまいます。そちらでもサインアウトしてください。",
   "Sidebar rows": "サイドバーの行",
   "One line": "1 行",
   "Two lines": "2 行",

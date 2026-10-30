@@ -887,7 +887,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
 
       <SettingsGroup title={t("Devices")} section="devices">
         <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} onRevokedAll={onRevokedAll} /></div>
-        {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} onSignOut={onSignOut} />}
+        {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} />}
       </SettingsGroup>
 
       <AccessFacts facts={security} />

@@ -111,6 +111,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "清除此浏览器的登录。再次进入需要访问令牌或配对码。",
   "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "清除此浏览器的登录。再次进入需要重新通过 Portal 登录。",
   "Getting back in means signing in through Portal again.": "再次进入需要重新通过 Portal 登录。",
+  "Getting back in means signing in through Portal again. While this browser is still signed in to Google or your company's login, that sign-in lets it straight back in: sign out there too.": "再次进入需要重新通过 Portal 登录。如果此浏览器仍登录着 Google 或公司的登录账号，就会凭该登录直接再次进入：请在那里也退出登录。",
   "Sidebar rows": "侧边栏行",
   "One line": "单行",
   "Two lines": "双行",

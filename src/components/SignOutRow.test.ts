@@ -36,6 +36,10 @@ describe("Sign out in Settings → Devices", () => {
   it("tells the way back in its confirmation too: Portal's sign-in, or the token and a pairing code", () => {
     const english = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
     expect(wayBackIn(english, true).confirm).toBe("Getting back in means signing in through Portal again.");
+    // a Google or company login lets a browser still signed in there straight back in, so it says to sign out there too
+    expect(wayBackIn(english, true, true).confirm).toContain("sign out there too");
+    expect(wayBackIn(english, true, true).row).toBe(wayBackIn(english, true).row);
+    expect(wayBackIn(english, false, true).confirm).not.toContain("Portal");
     expect(wayBackIn(english, false).confirm).toContain("access token, or a pairing code from the PC");
     expect(wayBackIn(english, false).confirm).not.toContain("Portal");
   });
