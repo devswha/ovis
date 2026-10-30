@@ -40,32 +40,66 @@ tunnel=""
 
 say() { printf '[relay-ios-sim] %s\n' "$*" >&2; }
 
+# How long a stopped child gets after TERM before KILL; how long eamac's own cleanup may take.
+stop_seconds="${RELAY_IOS_SIM_STOP_SECONDS:-10}"
+remote_cleanup_seconds="${RELAY_IOS_SIM_REMOTE_CLEANUP_SECONDS:-180}"
+
+# Stops child $1: TERM, and KILL once $2 seconds pass without it exiting. The deadline is a timer
+# that fires once; the wait returns as soon as the child exits. Never fails.
+stop_child() {
+  local pid="$1" grace="$2" timer
+  kill -TERM "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null; return 0; }
+  ( trap 'kill "$nap" 2>/dev/null; exit 0' TERM; sleep "$grace" & nap=$!; wait "$nap"; kill -KILL "$pid" 2>/dev/null ) &
+  timer=$!
+  wait "$pid" 2>/dev/null
+  kill -TERM "$timer" 2>/dev/null; wait "$timer" 2>/dev/null
+  return 0
+}
+
+# Runs on every exit, failure or not. Each step is bounded and does not depend on the one before:
+# the run's own processes are stopped before anything waits on them, so a remote half that is
+# blocked anywhere (on the build, on WebDriverAgent's readiness) cannot hold the rest up.
 cleanup() {
   local code=$?
+  trap - EXIT INT TERM
   set +e
-  [ -n "$tunnel" ] && ssh -S "$run/tunnel" -O exit eamac >/dev/null 2>&1
-  if [ -n "$remote_pid" ]; then echo done >&5; wait "$remote_pid"; fi
+  say "cleanup (exit $code)"
+  [ -n "$tunnel" ] && { timeout 30 ssh -S "$run/tunnel" -O exit eamac >/dev/null 2>&1 || true; }
+  # the ssh carrying eamac's half: stopped, not asked, as that half may not be reading its stdin
+  [ -n "$remote_pid" ] && stop_child "$remote_pid" "$stop_seconds"
   if [ -n "$remote" ]; then
-    ssh -o BatchMode=yes eamac "bash -s -- $(printf '%q' "$remote")" <<'EOF'
+    if ! timeout "$remote_cleanup_seconds" ssh -o BatchMode=yes eamac "bash -s -- $(printf '%q' "$remote")" <<'EOF'
 r="$1"
-pkill -f "$r/wdadd" 2>/dev/null
-[ -f "$r/udid" ] && { xcrun simctl shutdown "$(cat "$r/udid")" 2>/dev/null; xcrun simctl delete "$(cat "$r/udid")"; }
+udid="$(cat "$r/udid" 2>/dev/null || true)"
+pkill -f "$r/remote.sh" 2>/dev/null || true
+pkill -f "$r/wdadd" 2>/dev/null || true
+[ -n "$udid" ] && { pkill -f "simctl launch --console-pty --terminate-running-process $udid" 2>/dev/null || true; }
 rm -rf "$r"
-test ! -e "$r" && echo "eamac: $r removed"
+if test ! -e "$r"; then echo "eamac: $r removed"; else echo "eamac: $r is still there"; fi
+if [ -n "$udid" ]; then
+  xcrun simctl shutdown "$udid" 2>/dev/null || true
+  if xcrun simctl delete "$udid"; then echo "eamac: Simulator $udid deleted"; else echo "eamac: Simulator $udid not deleted"; fi
+fi
 EOF
+    then say "eamac's cleanup did not finish within $remote_cleanup_seconds s"; code=1; fi
   fi
-  if [ -n "$stack_pid" ]; then kill "$stack_pid" 2>/dev/null; wait "$stack_pid" 2>/dev/null; say "local stack stopped"; fi
-  for port in "${serve_ports[@]}"; do tailscale serve --https="$port" off >/dev/null 2>&1; done
-  local left
-  left="$(tailscale serve status --json | jq -r '.TCP // {} | keys[]')"
-  for port in "${serve_ports[@]}"; do
-    if grep -qx "$port" <<<"$left"; then say "serve port $port is still on"; code=1; else say "tailscale serve :$port off"; fi
-  done
-  [ -n "$evidence" ] && [ -f "$run/stack.log" ] && cp "$run/stack.log" "$evidence/task-23-ios-stack.log"
+  [ -n "$stack_pid" ] && { stop_child "$stack_pid" "$stop_seconds"; say "local stack stopped"; }
+  for port in "${serve_ports[@]}"; do timeout 30 tailscale serve --https="$port" off >/dev/null 2>&1 || true; done
+  if [ "${#serve_ports[@]}" -gt 0 ]; then
+    local left
+    left="$(timeout 30 tailscale serve status --json | jq -r '.TCP // {} | keys[]')"
+    for port in "${serve_ports[@]}"; do
+      if grep -qx "$port" <<<"$left"; then say "serve port $port is still on"; code=1; else say "tailscale serve :$port off"; fi
+    done
+  fi
+  [ -n "$evidence" ] && [ -f "$run/stack.log" ] && { cp "$run/stack.log" "$evidence/task-23-ios-stack.log" || true; }
   rm -rf "$run"
+  say "cleanup complete (exit $code)"
   exit "$code"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Reads lines from fd $1 until one starts with $2, for at most $3 seconds; prints that line.
 # `read -t` blocks on the FIFO until a line arrives or the time is up: nothing is polled.
@@ -241,9 +275,9 @@ say "eamac: fresh clone in $remote"
 ssh -o BatchMode=yes eamac "bash $(printf '%q ' "$remote/remote.sh" "$remote" "$app_url")" <&5 >&4 &
 remote_pid=$!
 
-udid="$(await_event 4 BUILT 1800 | cut -d' ' -f2)"
+udid="$(await_event 4 BUILT "${RELAY_IOS_SIM_BUILD_SECONDS:-1800}" | cut -d' ' -f2)"
 say "eamac: app built signed to run locally and installed on Simulator $udid"
-wda_port="$(await_event 4 WDA 1200 | cut -d' ' -f2)"
+wda_port="$(await_event 4 WDA "${RELAY_IOS_SIM_WDA_SECONDS:-1200}" | cut -d' ' -f2)"
 # -f returns once the forward listens
 ssh -f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -M -S "$run/tunnel" -L "$wda_local:127.0.0.1:$wda_port" eamac
 tunnel=1
