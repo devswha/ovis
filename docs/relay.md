@@ -148,8 +148,10 @@ it, and the identity reset is refused.
    relay lets that socket, or any data socket below, take the PC's place, it sends a fresh
    challenge, and the PC answers with a code only its secret key can make (X25519 and
    HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). An answer that's
-   wrong, missing or later than 10 seconds closes the socket with `4401`. When the control socket is
-   refused, the PC stops retrying and its relay status shows an error with the reason. A refused data
+   wrong or missing closes the socket with `4401`; one later than 10 seconds closes it with `1013`.
+   An expired proof or a challenge out of order is a hiccup, and the PC keeps reconnecting with its
+   usual backoff. Only a `4401` on the control socket, meaning the key doesn't match the
+   `server_id`, stops the PC retrying, and its relay status shows an error with the reason. A refused data
    socket only ends that phone's connection: the status stays online and gives no reason (`shared/relay-server-proof.ts`,
    [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
@@ -293,12 +295,18 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
 
 A phone has one connection to the PC, so the mux shares it out:
 
-- **Credit per stream.** A side sends a stream's data only within its window: 64 KiB for an HTTP
+- **Credit per stream.** A side sends a stream's data only within its window: 320 KiB for an HTTP
   stream, 1 MiB for a WebSocket. The receiver opens the window again with `CREDIT` as the app reads,
   so a slow reader slows only its own stream.
-- **Receipt budget.** A sender has at most 64 KiB of frames sent but not yet confirmed by `RECEIVED`:
-  48 KiB of ordinary traffic, at most 24 KiB of it bulk, and 16 KiB of control frames, so a download
-  never has more than 24 KiB on the way ahead of terminal output.
+- **Receipt budget.** A sender has at most 424 KiB of frames sent but not yet confirmed by
+  `RECEIVED`: 408 KiB of ordinary traffic and 16 KiB of control frames. At most 384 KiB of the
+  ordinary share is bulk, so 24 KiB always stays free for interactive frames. Bulk can still sit up
+  to 384 KiB ahead of a terminal frame on the one ordered connection. That's about 31 ms at
+  100 Mbit/s, and longer on a slow link, though the scheduler still puts interactive frames first.
+- **Memory reserved.** Before it admits a stream, a session reserves 12 MiB of receive windows.
+  The measurements behind these values are in `docs/relay-mux-limits.md`
+  ([`shared/relay-mux.ts`](../shared/relay-mux.ts),
+  [`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts)).
 - **Scheduling.** Control frames go first, at most 8 in a row while data waits. Interactive streams
   (WebSockets such as the terminal's `/ws`, and the PC list's event stream) and bulk streams
   (everything else) then take turns, four interactive frames to one bulk, round robin within each.
@@ -365,8 +373,8 @@ WebSocket close codes the app can see through the relay:
 | `1009` | a message over 1 MiB |
 | `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
 
-The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing, wrong or
-late ([step 1](#how-a-connection-is-made)). A phone never sees it: it finds the PC offline.
+The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing or wrong,
+and with `1013` when it comes late, which the PC retries ([step 1](#how-a-connection-is-made)). A phone never sees it: it finds the PC offline.
 
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
