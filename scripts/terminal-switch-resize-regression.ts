@@ -95,14 +95,12 @@ try {
           if (frame && getComputedStyle(frame).visibility === "visible") {
             frames.push([...frame.querySelectorAll(".xterm-rows > div")].map((div) => (div.textContent ?? "").replace(/\s+$/, "")));
           }
-          if (frames.length < 40) requestAnimationFrame(grab);
+          if (!(window as unknown as { switchDone?: boolean }).switchDone) requestAnimationFrame(grab);
         };
         requestAnimationFrame(grab);
       }, { once: true, capture: true });
     }, target);
     await select(cached.page, target);
-    await cached.page.waitForFunction(() => (window as unknown as { switchFrames: string[][] }).switchFrames.length >= 40);
-    const painted = await cached.page.evaluate(() => (window as unknown as { switchFrames: string[][] }).switchFrames);
     const truth = await viewer(cachedWidth, target, panes);
     const expected = await rows(truth.page, target);
     let actual: string[] = [];
@@ -112,6 +110,10 @@ try {
         return divs.map((div) => (div.textContent ?? "").replace(/\s+$/, "")).join("\n") === expected;
       }, { pane: target, expected: expected.join("\n") }, { timeout: 5000 });
       actual = await rows(cached.page, target);
+      const painted = await cached.page.evaluate(() => {
+        Object.assign(window, { switchDone: true });
+        return (window as unknown as { switchFrames: string[][] }).switchFrames;
+      });
       const torn = painted.find((lines) => lines.join("\n") !== left.join("\n") && lines.join("\n") !== expected.join("\n"));
       if (torn) failures.push(`${round}: a frame painted on return is neither the screen it left nor the pane at its size\n${torn.join("\n")}`);
     } catch {
