@@ -132,6 +132,29 @@ describe("CompletionTracker", () => {
     expect(tracker.observe("p", "unknown", "claude")).toBe("done");
   });
 
+  it("on herdr-core, finishes only on the program's own working then idle, and keeps no badge without a report", () => {
+    const tracker = new CompletionTracker(null, () => null, () => true);
+    tracker.observe("reported", "working", "claude");
+    expect(tracker.observe("reported", "idle", "claude")).toBe("done");
+    // the program cleared its report: no badge kept from it
+    expect(tracker.observe("reported", "unknown", "claude")).toBe("unknown");
+
+    tracker.observe("cleared", "working", "claude");
+    expect(tracker.observe("cleared", "unknown", "claude")).toBe("unknown");
+    expect(tracker.observe("cleared", "idle", "claude")).toBe("idle");
+
+    // another identity's unknown right after work is not work invented for it
+    tracker.observe("handover", "working", "codex");
+    expect(tracker.observe("handover", "unknown", "claude")).toBe("unknown");
+
+    // a pause it reported, then idle: the user may have declined; no finish
+    tracker.observe("paused", "blocked", "claude");
+    expect(tracker.observe("paused", "idle", "claude")).toBe("idle");
+    tracker.observe("resumed", "blocked", "claude");
+    tracker.observe("resumed", "working", "claude");
+    expect(tracker.observe("resumed", "idle", "claude")).toBe("done");
+  });
+
   it("drops a derived finish when its agent leaves or another agent replaces it", () => {
     const tracker = new CompletionTracker();
     tracker.observe("left", "working", "codex");

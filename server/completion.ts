@@ -70,7 +70,12 @@ export class CompletionTracker {
    * `file` keeps the state across restarts (none: memory only); `herdr` names the herdr
    * the panes live in, the identity of its socket file by default.
    */
-  constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId) {
+  /**
+   * `reportedOnly`: every word comes from the program's own report (herdr-core's OSC 7501), none
+   * from a detector. Only its own working then idle is a finish; a pause it reports as blocked, or
+   * a report it clears, is none, and no badge is kept or invented without a report.
+   */
+  constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId, private readonly reportedOnly: () => boolean = () => false) {
     if (file === null) return;
     try {
       const state = JSON.parse(readFileSync(file, "utf8")) as { herdr?: unknown; finished?: unknown; finishedAgents?: unknown };
@@ -289,7 +294,8 @@ export class CompletionTracker {
     switch (status) {
       case "working":
       case "blocked":
-        this.worked.set(paneId, agent);
+        if (status === "blocked" && this.reportedOnly()) this.worked.delete(paneId);
+        else this.worked.set(paneId, agent);
         this.finished.delete(paneId);
         this.failedRest.delete(paneId);
         return status;
@@ -302,6 +308,12 @@ export class CompletionTracker {
         if (this.worked.delete(paneId)) this.finished.set(paneId, agent);
         return this.finished.has(paneId) ? "done" : status;
       default:
+        if (this.reportedOnly()) {
+          // no report: no finish, and no badge kept from an earlier one
+          this.worked.delete(paneId);
+          this.finished.delete(paneId);
+          return status;
+        }
         if (this.worked.has(paneId)) {
           // with no agent left, the pane is a shell again
           if (agent === null) {

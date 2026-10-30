@@ -239,7 +239,7 @@ describe("herdr-core adapter", () => {
     core.notify(channel, "missed", { seq: 9, terminals: [] });
     await ended.promise;
     expect(frames).toEqual([
-      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "done", agent: "omp" } },
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "unknown", agent: "omp" } },
       { event: "pane.exited", data: { type: "pane_exited", pane_id: "t1" } },
       { event: "pane.closed", data: { type: "pane_closed", pane_id: "t1" } },
     ]);

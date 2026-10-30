@@ -53,8 +53,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * hc stores the program's own status word (idle, working, done, blocked, error, …). herdr's
- * vocabulary is narrower: an error ends a turn the way done does, and a word neither knows says
- * nothing.
+ * vocabulary is narrower: an error says nothing about the turn having finished, so it shows as no
+ * status, like a word neither knows.
  */
 export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus {
   switch (status?.state) {
@@ -63,8 +63,6 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
     case "idle":
     case "done":
       return status.state;
-    case "error":
-      return "done";
     default:
       return "unknown";
   }
