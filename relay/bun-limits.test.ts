@@ -57,7 +57,7 @@ test("flags override environment values and invalid budgets fail startup", () =>
 });
 
 test("Bun starts with default rate limiting and ignores spoofed forwarding addresses", async () => {
-  const relay = startBunRelay({ port: 0 });
+  const relay = startBunRelay({ port: 0, limiters: memoryLimiters(relayLimits(), () => 0) });
   cleanup.push(() => relay.stop());
   const base = `http://127.0.0.1:${relay.port}`;
   // Invalid WebSocket keys make upgrade fail after admission without retaining sockets.

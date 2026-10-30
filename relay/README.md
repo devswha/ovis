@@ -71,7 +71,7 @@ out takes 16 arrivals within its one round trip.
 | a PC socket answering its challenge | 10 s, 16 at once per `server_id` | `4401`; past 16 the oldest closes `1013` |
 | frames held for a waiting client | 200 frames or 1 MiB, whichever comes first | the client closes `1013` |
 | idle | 120 s without a frame or keepalive | the socket closes `1001` |
-| connections per address | 120 a minute | `429`, `Retry-After: 60` |
+| connections per address | Cloudflare Worker: 30 a minute; Bun: 120 a minute | `429`, `Retry-After: 60` |
 | connections from all addresses | 600 a minute | `429`, `Retry-After: 60` |
 | total sockets (Bun, including pending upgrades/proofs) | 1024 | `503`, `Retry-After: 60` |
 | rooms (Bun, including pending upgrades) | 256 | `503`, `Retry-After: 60` |
