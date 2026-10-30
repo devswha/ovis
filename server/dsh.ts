@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readlink, realpath, open, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { processStartTicks } from "./omp-process.ts";
@@ -15,6 +16,11 @@ const boundProcesses = new Set<string>();
 /** A held lock binds the foreground process to its session; modification times do not. */
 export async function resolveDshTranscript(info: Processes | null | undefined): Promise<string> {
   if (process.platform !== "linux") return unavailable();
+  // Match @deepseek-ai/dsh-home-paths: blank overrides are unset; expand only ~, ~/ and ~\.
+  const configured = process.env.DSH_HOME;
+  const home = configured !== undefined && configured.trim().length > 0 ? configured : join(homedir(), ".dsh");
+  const expanded = home === "~" ? homedir() : home.startsWith("~/") || home.startsWith("~\\") ? join(homedir(), home.slice(2)) : home;
+  const sessions = join(resolve(expanded), "sessions");
   const found = new Set<string>();
   const fresh: string[] = [];
   let inspected = 0;
@@ -36,7 +42,13 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
           const s = await stat(path).catch(() => null);
-          if (s?.isFile() && s.uid === process.getuid?.()) { candidates.push(path); break; }
+          if (s?.isFile() && s.uid === process.getuid?.()) {
+            // As in authorizedTranscript, compare canonical paths, not a lexical prefix.
+            const canonical = await realpath(path);
+            const inside = relative(await realpath(sessions), canonical);
+            if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return unavailable();
+            candidates.push(canonical); break;
+          }
         }
       }
       if (processStartTicks(proc.pid) === start) {

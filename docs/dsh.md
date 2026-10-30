@@ -4,6 +4,8 @@ On Linux, the chat lens reads the native DeepSeek Harness v4 session log. It sup
 
 The reader shows human messages, assistant text and recorded reasoning, tool calls, tool results, and turn completion. System instructions and runtime user-message injections stay hidden. Compaction checkpoints appear as compaction markers; earlier chat remains available. Attachments appear as notices and can be viewed in the terminal.
 
+The chosen log's real path must stay inside the resolved sessions store (`~/.dsh/sessions`, or `sessions` under a nonblank `DSH_HOME` with tilde expansion); logs or symlinks outside that store use the terminal fallback.
+
 The newest page contains up to 50 turns. Cursors bind to the session, file identity, and preceding conversation content. Tool output is shortened in the page and can be expanded. Reads limit both compressed input and decompressed output to 16 MiB. Larger logs, unsupported versions, damaged complete frames, and unsupported surface events use the terminal fallback. An unfinished final frame is ignored until its append completes.
 
 This adapter requires Bun with Zstandard decompression support. Session binding currently requires Linux procfs and the same OS user as dsh. It does not add macOS or Windows binding. It reads committed native messages; it does not reconstruct unfinished model streams.

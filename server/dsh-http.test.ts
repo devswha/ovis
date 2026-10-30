@@ -11,8 +11,8 @@ const linuxTest = process.platform === "linux" ? test : test.skip;
 linuxTest("serves a bound dsh conversation over HTTP and invalidates its ETag after an append", async () => {
   const root = await mkdtemp(join(tmpdir(), "ovis-dsh-http-"));
   const session = "12345678-1234-1234-1234-123456789abc";
-  const folder = join(root, session);
-  await mkdir(folder);
+  const folder = join(root, "sessions", session);
+  await mkdir(folder, { recursive: true });
   const path = join(folder, "session.v4.jsonl");
   const rows = [
     { type: "session", version: 4, id: session, delegationDepth: 0 },
@@ -26,6 +26,8 @@ linuxTest("serves a bound dsh conversation over HTTP and invalidates its ETag af
   const processInfo = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
   const url = new URL("http://x/api/pane/conversation?pane_id=" + pane.pane_id);
   const ask = async (etag?: string) => (await handlePaneRequest(new Request(url, { headers: etag ? { "if-none-match": etag } : {} }), url, url.pathname, {}))!;
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = root;
   try {
     const initial = await ask();
     expect(initial.status).toBe(200);
@@ -41,6 +43,8 @@ linuxTest("serves a bound dsh conversation over HTTP and invalidates its ETag af
     expect((await appended.json()).turns).toHaveLength(2);
     expect(appended.headers.get("etag")).not.toBe(etag);
   } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
     snapshot.mockRestore();
     processInfo.mockRestore();
     forgetPaneTranscriptState(pane.pane_id);
