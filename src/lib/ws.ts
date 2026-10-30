@@ -57,6 +57,8 @@ const IDLE_CHECK_MS = 5_000;
  * the page works through the output it held back.
  */
 const SHOWN_GRACE_MS = 5_000;
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
 const SOCKET_CLOSING = 2;
 const SOCKET_CLOSED = 3;
 const DISCONNECTED: SubmitResult = { ok: false, code: "disconnected", message: "the connection dropped before the pane confirmed this message" };
@@ -245,7 +247,7 @@ export class HerdrSocket {
   }
 
   get connected(): boolean {
-    return this.socket?.readyState === WebSocket.OPEN;
+    return this.socket?.readyState === SOCKET_OPEN;
   }
 
   /**
@@ -282,7 +284,7 @@ export class HerdrSocket {
   connect(): void {
     if (this.disposed || this.left) return;
     this.listenForWake();
-    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+    if (this.socket && (this.socket.readyState === SOCKET_OPEN || this.socket.readyState === SOCKET_CONNECTING)) {
       return;
     }
     // A socket still CLOSING (or CLOSED before its close event ran) is replaced: end it first, so its
@@ -310,7 +312,7 @@ export class HerdrSocket {
     this.clearConnectTimer();
     this.connectTimer = window.setTimeout(() => {
       this.connectTimer = null;
-      if (this.socket !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+      if (this.socket !== socket || socket.readyState !== SOCKET_CONNECTING) return;
       this.trace.record("connect_timeout", { elapsed_ms: Date.now() - started, attempt: this.connectTimeouts }, true);
       this.connectTimeouts += 1;
       socket.close();
@@ -505,7 +507,7 @@ export class HerdrSocket {
    */
   private probe(): void {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !this.pingKnown || this.probeTimer !== null) return;
+    if (!socket || socket.readyState !== SOCKET_OPEN || !this.pingKnown || this.probeTimer !== null) return;
     this.connectionState = "probing";
     this.probeRefusalRecorded = false;
     // a paused probe goes on with a fresh ping: whoever waits on it keeps waiting
@@ -644,7 +646,7 @@ export class HerdrSocket {
     if (this.disposed || this.stopped) return;
     const socket = this.socket;
     // an open socket may be half-open after a sleep or a network change: ask it (a bridge without "ping" is trusted)
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (socket?.readyState === SOCKET_OPEN) {
       this.probe();
       return;
     }
@@ -652,7 +654,7 @@ export class HerdrSocket {
       this.retries = 0;
       return;
     }
-    if (socket?.readyState === WebSocket.CONNECTING && this.connectTimeouts > 0) {
+    if (socket?.readyState === SOCKET_CONNECTING && this.connectTimeouts > 0) {
       // never opened, so its close event can carry no output-stalled code: end it like its deadline would
       socket.close();
       this.closed(socket, 1006);
