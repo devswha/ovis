@@ -1024,6 +1024,12 @@ describe("a Claude process's store source", () => {
     expect(await processLaunchSource(42, "linux", proc, { CLAUDE_CONFIG_DIR: store })).toEqual({ state: "absent" });
     // the core gone: no proof
     expect(await processLaunchSource(43, "linux", proc, {})).toEqual({ state: "unreadable" });
+    // macOS reads the core's own environment too, not this server's
+    const environment = spyOn(darwinProcess, "environment").mockImplementation((pid: number) => pid === 41 ? `CLAUDE_CONFIG_DIR=${store}\0` : null);
+    try {
+      expect(await processLaunchSource(41, "darwin", proc, {})).toEqual({ state: "override", dir: store });
+      expect(await processLaunchSource(43, "darwin", proc, { CLAUDE_CONFIG_DIR: store })).toEqual({ state: "unreadable" });
+    } finally { environment.mockRestore(); }
   });
 
   it("macOS and Windows take the bridge server's own environment for the one a new tab inherits", async () => {

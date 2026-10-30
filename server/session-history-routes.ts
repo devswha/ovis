@@ -63,8 +63,9 @@ const launchKeepsAbsence = async (options: StoreOptions): Promise<boolean> =>
 /** herdr's server hands a new tab its environment; on herdr-core the core process does, not this server. */
 async function defaultLaunchSource(): Promise<ClaudeSource> {
   if (!servingCore()) return herdrLaunchSource(herdrSocketPath());
-  const status = await coreConnection().call<{ pid?: unknown }>("server.status", {});
-  return typeof status.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };
+  // hc not answering: no proof of what a new terminal gets, so no resume offered from it
+  const status = await coreConnection().call<{ pid?: unknown }>("server.status", {}).catch(() => null);
+  return typeof status?.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };
 }
 
 /**

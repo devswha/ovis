@@ -491,6 +491,12 @@ describe("herdr-core adapter, agents", () => {
     expect(cores[0]!.typed).toEqual([]);
   });
 
+  it("types into no shell that has become another program with exec, its pid unchanged", async () => {
+    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "claude", argv: ["claude"] } })]);
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
   it("offers the agents Ovis knows by kind, leaving the ones Ovis starts itself to the server", async () => {
     const { socket } = await setup([terminal("t1")]);
     const kinds = (await agentManifests(socket)).manifests.map((manifest) => manifest.agent);
