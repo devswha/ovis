@@ -148,8 +148,9 @@ it, and the identity reset is refused.
    relay lets that socket, or any data socket below, take the PC's place, it sends a fresh
    challenge, and the PC answers with a code only its secret key can make (X25519 and
    HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). An answer that's
-   wrong, missing or later than 10 seconds closes the socket with `4401`, and the PC stops and shows
-   the reason instead of retrying (`shared/relay-server-proof.ts`,
+   wrong, missing or later than 10 seconds closes the socket with `4401`. When the control socket is
+   refused, the PC stops retrying and its relay status shows an error with the reason. A refused data
+   socket only ends that phone's connection: the status stays online and gives no reason (`shared/relay-server-proof.ts`,
    [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
    1 second longer each time up to 30 seconds, each wait varied by up to 20%
@@ -267,8 +268,9 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
   and `X-Frame-Options: SAMEORIGIN`.
 - **Without it.** Where no service worker that speaks this protocol controls the page, the app
   fetches the whole file through the relay and shows a `blob:` copy of at most 64 MiB
-  (`RELAY_BLOB_LIMIT` in `src/lib/relay/resources.ts`). Only pictures, videos, sounds and PDFs
-  open in place this way. Everything else, SVG pictures included, comes down as a download, since a
+  (`RELAY_BLOB_LIMIT` in `src/lib/relay/resources.ts`). Text, source and Markdown files don't take this
+  path: the viewer reads them through the mux and shows them as usual. Of the rest, only pictures,
+  videos, sounds and PDFs open in place this way. Any other raw file, SVG pictures included, comes down as a download, since a
   `blob:` copy would run with the app's own address. For a larger file the viewer says "Too large
   to open on the phone - download on the PC". A download is handed over as
   `application/octet-stream`, so a web view that opens it in place doesn't run it.
