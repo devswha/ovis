@@ -119,7 +119,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const pdfPage = await browser.newPage();
     await pdfPage.setContent(`<h1>${name}</h1>`);
     await pdfPage.pdf({ path: join(dir, "document.pdf") });
-    await pdfPage.close();
+    await closePage(pdfPage);
     const dbPath = join(dir, "opencode.db");
     const db = new Database(dbPath);
     db.exec(`CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text, parent_id text, slug text, directory text, title text, version text, revert text, time_created integer, time_updated integer);
@@ -228,17 +228,38 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     }, { blob });
     return context;
   }
-  async function pair(context: BrowserContext, p: typeof pcs[number]): Promise<Page> {
+  async function mediaPage(context: BrowserContext): Promise<Page> {
+    const opened = context.waitForEvent("page");
     const page = await context.newPage();
+    assert.equal(await opened, page);
     page.on("pageerror", (error) => console.error("page error", error.stack));
     page.on("response", (response) => { if (response.status() >= 400) console.error("HTTP", response.status(), response.url()); });
     page.setDefaultTimeout(25_000);
     await page.clock.install({ time: new Date("2026-10-30T00:00:00Z") });
     await page.clock.pauseAt(new Date("2026-10-30T00:00:01Z"));
+    return page;
+  }
+  async function closePage(page: Page): Promise<void> {
+    if (page.isClosed()) return;
+    const closed = page.waitForEvent("close");
+    await Promise.all([closed, page.close()]);
+  }
+  async function closeContext(context: BrowserContext): Promise<void> {
+    const closed = [context.waitForEvent("close"), ...context.pages().map((page) => page.waitForEvent("close"))];
+    await Promise.all([...closed, context.close()]);
+    contexts.splice(contexts.indexOf(context), 1);
+  }
+  async function navigate(page: Page, url: string): Promise<void> {
+    const navigated = page.waitForEvent("framenavigated", { predicate: (frame) => frame === page.mainFrame() });
+    await Promise.all([navigated, page.goto(url)]);
+  }
+  async function pair(context: BrowserContext, p: typeof pcs[number]): Promise<Page> {
+    const page = await mediaPage(context);
     const offer = decodeOffer(p.service.offer().url);
     assert.ok(offer);
-    await page.goto(encodeOffer({ ...offer, name: p.name }, origin));
-    await page.getByRole("button", { name: "Pair", exact: true }).click({ force: true });
+    await navigate(page, encodeOffer({ ...offer, name: p.name }, origin));
+    const paired = page.waitForEvent("framenavigated", { predicate: (frame) => frame === page.mainFrame() && !frame.url().includes("#offer=") });
+    await Promise.all([paired, page.getByRole("button", { name: "Pair", exact: true }).click({ force: true })]);
     await page.locator(".app").waitFor();
     return page;
   }
@@ -251,7 +272,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   }
   async function read(page: Page, p: typeof pcs[number], name: string, machine = "local"): Promise<void> {
     const path = machine === "local" ? join(p.dir, name) : `/remote/${name}`;
-    await page.goto(origin + readerHref(machine, path, `/s/${p.id}/`));
+    await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`));
     await page.locator(".file-reader").waitFor();
   }
   async function image(page: Page): Promise<void> {
@@ -418,80 +439,103 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
 
     for (const blob of [false, true]) {
       const ctx = blob ? await context(true) : sw;
-      const page = blob ? await pair(ctx, first) : tabs[0];
-      assert.ok(page);
-      await read(page, first, "page.html");
-      const result = await isolation(page);
-      isolated(result);
-      if (!blob) {
-        await read(page, first, "evil.svg");
-        await image(page);
-        assert.equal(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults.length), 0, "SVG image scripts never run");
-      }
-      // Execute the SVG's script inside the same opaque render host, proving its attempted APIs
-      // fail too, rather than counting the image decoder's non-execution as those three attempts.
-      const svg = readFileSync(join(first.dir, "evil.svg"), "utf8");
-      await page.evaluate((html) => {
-        const frame = document.createElement("iframe");
-        frame.sandbox.add("allow-scripts");
-        frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html }, "*"); };
-        frame.src = `${location.pathname}~render`;
-        document.body.append(frame);
-      }, `<!doctype html><body>${svg}</body>`);
-      isolated(await isolation(page));
+      const paired = blob ? await pair(ctx, first) : tabs[0];
+      assert.ok(paired);
+      if (blob) await closePage(paired);
+      // Pairing is shared in IndexedDB, but a download/PDF and its teardown own only their page.
+      const check = async (run: (page: Page) => Promise<void>): Promise<void> => {
+        const page = blob ? await mediaPage(ctx) : paired;
+        try { await run(page); }
+        finally { if (blob) await closePage(page); }
+      };
+      await check(async (page) => {
+        await read(page, first, "page.html");
+        isolated(await isolation(page));
+      });
+      await check(async (page) => {
+        await read(page, first, blob ? "picture.png" : "evil.svg");
+        if (!blob) {
+          await image(page);
+          assert.equal(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults.length), 0, "SVG image scripts never run");
+        }
+        // Execute the SVG's script inside the same opaque render host, proving its attempted APIs
+        // fail too, rather than counting the image decoder's non-execution as those three attempts.
+        const svg = readFileSync(join(first.dir, "evil.svg"), "utf8");
+        const rendered = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().endsWith("~render") });
+        await page.evaluate((html) => {
+          const frame = document.createElement("iframe");
+          frame.sandbox.add("allow-scripts");
+          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html }, "*"); };
+          frame.src = `${location.pathname}~render`;
+          document.body.append(frame);
+        }, `<!doctype html><body>${svg}</body>`);
+        await rendered;
+        isolated(await isolation(page));
+      });
       note(`isolation ${blob ? "blob" : "SW"}: rendered HTML and SVG attempts blocked for IndexedDB, relay fetch, parent.document and top navigation`);
       for (const name of ["hostile-html.pdf", "hostile-svg.pdf"]) {
-        const before = requests.length;
-        if (blob) {
-          const downloaded = page.waitForEvent("download");
-          await read(page, first, name);
-          const download = await downloaded;
-          assert.equal(await download.failure(), null);
-          assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
-          note(`blob no-CSP ${name}: octet-stream downloaded, no script or top navigation`);
-        } else {
-          const navigated = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().includes(encodeURIComponent(name)) });
-          await read(page, first, name);
-          const frame = await navigated;
-          await bounded(frame.evaluate(async () => {
-            if (document.readyState === "complete") return;
-            await new Promise<void>((resolve) => addEventListener("load", () => resolve(), { once: true }));
-          }), "raw malicious frame loaded");
-          assert.equal(await frame.evaluate(() => document.body?.dataset["ran"] ?? null), null);
-          assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
-          note(`SW no-CSP ${name}: enforced sandbox prevents all script execution`);
-        }
-        assert.ok(!page.url().includes("#untrusted-navigation"));
-        assert.ok(!requests.slice(before).some((entry) => entry.target.includes("path=/etc/hostname")), "no other-PC fetch reached either PC");
-      }
-      await pdf(page, first, "local", blob, "spoof.pdf");
-      assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), [], "HTML claiming application/pdf never executes");
-      assert.ok(!page.url().includes("#untrusted-navigation"));
-      if (blob) {
-        await read(page, first, "picture.png");
-        await image(page);
-        await pdf(page, first, "local", true);
-        await read(page, first, "seek.mp4");
-        const video = page.locator('video[src^="blob:"]');
-        await video.waitFor();
-        const size = await video.evaluate(async (element: HTMLVideoElement) => {
-          if (element.readyState < 1) await new Promise<void>((resolve) => element.addEventListener("loadedmetadata", () => resolve(), { once: true }));
-          if (!(element.duration > 0)) throw new Error("blob video has no duration");
-          return Math.max(...(window as Window & { blobSizes: number[] }).blobSizes);
+        await check(async (page) => {
+          const before = requests.length;
+          if (blob) {
+            const downloaded = page.waitForEvent("download");
+            await read(page, first, name);
+            const download = await downloaded;
+            assert.equal(await download.failure(), null);
+            assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
+            note(`blob no-CSP ${name}: octet-stream downloaded, no script or top navigation`);
+          } else {
+            const navigated = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().includes(encodeURIComponent(name)) });
+            await read(page, first, name);
+            const frame = await navigated;
+            await bounded(frame.evaluate(async () => {
+              if (document.readyState === "complete") return;
+              await new Promise<void>((resolve) => addEventListener("load", () => resolve(), { once: true }));
+            }), "raw malicious frame loaded");
+            assert.equal(await frame.evaluate(() => document.body?.dataset["ran"] ?? null), null);
+            assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
+            note(`SW no-CSP ${name}: enforced sandbox prevents all script execution`);
+          }
+          assert.ok(!page.url().includes("#untrusted-navigation"));
+          assert.ok(!requests.slice(before).some((entry) => entry.target.includes("path=/etc/hostname")), "no other-PC fetch reached either PC");
         });
-        assert.ok(size > 32 * 1024 * 1024 && size < 64 * 1024 * 1024);
-        note(`blob allowed: ${size} byte video loaded whole without overflowing the relay session`);
-        await read(page, first, "large.pdf");
-        await page.getByRole("alert").filter({ hasText: "Too large to open on the phone" }).waitFor();
-        assert.equal(await page.locator('iframe[src^="blob:"]').count(), 0);
-        assert.deepEqual(await page.evaluate(() => (window as Window & { blobSizes: number[] }).blobSizes), []);
-        await shot(page, "too-large");
-        for (const width of [390, 1440]) for (const theme of ["light", "dark"]) {
-          await page.setViewportSize({ width, height: 900 });
-          await page.evaluate((theme) => { document.documentElement.dataset["theme"] = theme; }, theme);
-          await shot(page, `too-large-${width}-${theme}`);
-        }
-        note("blob limit: 70 MiB refused with too-large state; no blob iframe created");
+      }
+      await check(async (page) => {
+        await pdf(page, first, "local", blob, "spoof.pdf");
+        assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), [], "HTML claiming application/pdf never executes");
+        assert.ok(!page.url().includes("#untrusted-navigation"));
+      });
+      if (blob) {
+        await check(async (page) => {
+          await read(page, first, "picture.png");
+          await image(page);
+        });
+        await check(async (page) => { await pdf(page, first, "local", true); });
+        await check(async (page) => {
+          await read(page, first, "seek.mp4");
+          const video = page.locator('video[src^="blob:"]');
+          await video.waitFor();
+          const size = await video.evaluate(async (element: HTMLVideoElement) => {
+            if (element.readyState < 1) await new Promise<void>((resolve) => element.addEventListener("loadedmetadata", () => resolve(), { once: true }));
+            if (!(element.duration > 0)) throw new Error("blob video has no duration");
+            return Math.max(...(window as Window & { blobSizes: number[] }).blobSizes);
+          });
+          assert.ok(size > 32 * 1024 * 1024 && size < 64 * 1024 * 1024);
+          note(`blob allowed: ${size} byte video loaded whole without overflowing the relay session`);
+        });
+        await check(async (page) => {
+          await read(page, first, "large.pdf");
+          await page.getByRole("alert").filter({ hasText: "Too large to open on the phone" }).waitFor();
+          assert.equal(await page.locator('iframe[src^="blob:"]').count(), 0);
+          assert.deepEqual(await page.evaluate(() => (window as Window & { blobSizes: number[] }).blobSizes), []);
+          await shot(page, "too-large");
+          for (const width of [390, 1440]) for (const theme of ["light", "dark"]) {
+            await page.setViewportSize({ width, height: 900 });
+            await page.evaluate((theme) => { document.documentElement.dataset["theme"] = theme; }, theme);
+            await shot(page, `too-large-${width}-${theme}`);
+          }
+          note("blob limit: 70 MiB refused with too-large state; no blob iframe created");
+        });
+        await closeContext(ctx);
       }
     }
 
@@ -507,7 +551,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         } } });
       });
       const page = await pair(ctx, first);
-      await page.goto(`${origin}/s/${first.id}/?${new URLSearchParams({ pane: first.pane, file: join(first.dir, "page.html") })}`);
+      await navigate(page, `${origin}/s/${first.id}/?${new URLSearchParams({ pane: first.pane, file: join(first.dir, "page.html") })}`);
       const copy = page.getByRole("button", { name: "Copy link", exact: true });
       await copy.waitFor();
       await copy.click({ force: true });
@@ -517,13 +561,13 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         return copied();
       });
       assert.equal(href, origin + readerHref("local", join(first.dir, "page.html"), `/s/${first.id}/`));
-      await page.close();
-      const opened = await ctx.newPage();
+      await closePage(page);
+      const opened = await mediaPage(ctx);
       assert.ok(href);
-      await opened.goto(href);
+      await navigate(opened, href);
       isolated(await isolation(opened));
       note("copy link: installed blob-mode file viewer copied a stable reader URL; a new tab opened it with its own channel");
-      await ctx.close();
+      await closeContext(ctx);
     }
 
     workerMode = "old";
@@ -550,7 +594,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       await image(page);
       assert.ok((await page.locator("img.file-viewer-media").getAttribute("src"))?.startsWith(`/s/${first.id}/~/`));
       note("stale worker: old protocol fell back to blob; after update the same PC used its scoped resource proxy");
-      await ctx.close();
+      await closeContext(ctx);
     }
 
     // Removing the SW's CSP must make this negative control fail: no iframe sandbox attribute
@@ -561,6 +605,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const page = await pair(ctx, first);
       await controlled(page);
       const src = relayResourcePath(first.id, fileUrl(join(first.dir, "hostile-html.pdf"), null));
+      const navigated = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url() === origin + src });
       await page.evaluate(async (src) => {
         const frame = document.createElement("iframe");
         const loaded = new Promise<void>((resolve) => frame.addEventListener("load", () => resolve(), { once: true }));
@@ -568,6 +613,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         document.body.append(frame);
         await loaded;
       }, src);
+      await navigated;
       if (mutate) {
         const result = await isolation(page);
         assert.throws(() => isolated(result));
@@ -578,7 +624,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         assert.deepEqual(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults), []);
         note("SW no-CSP HTML negative-control baseline: no script executed");
       }
-      await ctx.close();
+      await closeContext(ctx);
     }
     workerMode = "current";
     const policy = await fetch(`${origin}/s/${first.id}/~render`);
@@ -592,8 +638,9 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     for (const [index, ctx] of contexts.entries()) for (const [tab, page] of ctx.pages().entries()) await shot(page, `failure-${index}-${tab}`);
     throw error;
   } finally {
-    for (const ctx of contexts) await ctx.close();
-    await browser.close();
+    for (const ctx of [...contexts]) await closeContext(ctx);
+    const disconnected = new Promise<void>((resolve) => browser.once("disconnected", () => resolve()));
+    await Promise.all([disconnected, browser.close()]);
     assert.equal(browser.isConnected(), false);
     const ports = [shell.port, remote?.port, relay.port, ...pcs.map((p) => p.app.port)];
     shell.stop(true);
