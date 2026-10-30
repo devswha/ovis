@@ -17,6 +17,8 @@ export interface PortalStatus {
   readonly relay: string | null;
   /** the public address while it runs, without the default port */
   readonly url: string | null;
+  /** the short address Portal also serves for its `--name` while it runs; null when it printed none. Absent from an older server */
+  readonly short_url?: string | null;
   /** why a start would be refused now: no token set, or tailscale serve declared the only way in */
   readonly blocked: "token_required" | "serve_only" | null;
   /** what went wrong last; null after a success */

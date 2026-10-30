@@ -143,6 +143,18 @@ export function readyUrl(line: string): string | null {
   try { return new URL(match[1]!).origin; } catch { return null; }
 }
 
+/**
+ * The short address Portal also serves for a `--name` (`<name>.<relay>`), printed on the same ready line as
+ * `(short URL: …)`, without the default port; null when the line has none. A provider that matches redirect
+ * addresses exactly (Google) needs this host's callback registered too.
+ */
+export function shortReadyUrl(line: string): string | null {
+  if (readyUrl(line) === null) return null;
+  const match = /\(short URL: (https:\/\/[^\s)]+)\)/.exec(line);
+  if (!match) return null;
+  try { return new URL(match[1]!).origin; } catch { return null; }
+}
+
 function blockedBy({ tokenSet, serveOnly }: Guards): PortalStatus["blocked"] {
   if (!tokenSet) return "token_required";
   if (serveOnly) return "serve_only";
@@ -381,6 +393,8 @@ export class PortalService {
   private signInsRead: Probe<PortalSignIn[]> | null = null;
   /** who may open the address: the running Portal's, else the saved choice the next start uses */
   private auth: PortalAuth = NO_PORTAL_AUTH;
+  /** the short host of the address being served (`shortReadyUrl`), reported only while `url` is */
+  private shortUrl: string | null = null;
   /** the port this service represents; a service for another port must not change the owner's saved choice */
   private serverPort: number | null = null;
   /** this server's own token and serve-only answer, bound by createServer; a relaunch asks it, never a request */
@@ -443,6 +457,7 @@ export class PortalService {
       phase: this.phase,
       relay: this.relay,
       url: this.url,
+      short_url: this.url === null ? null : this.shortUrl,
       blocked: blockedBy(guards),
       error: this.error,
       output: this.lines.length > 0 ? this.lines.join("\n") : null,
@@ -744,6 +759,7 @@ export class PortalService {
           this.readyIdentity = this.identityDigest();
         }
         this.url = url;
+        this.shortUrl = shortReadyUrl(line);
         this.phase = "running";
       }
       return;

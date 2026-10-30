@@ -101,4 +101,15 @@ describe("the Portal panel's choice of who may open the address", () => {
       expect(render(createElement(PortalAuthSummary, { auth, url }))).not.toContain("_portal/auth/callback");
     }
   });
+
+  it("shows the short --name host's redirect address too, since a provider matches each one exactly", () => {
+    const url = "https://herdr-test-0123-0xabc.relay.example";
+    const shortUrl = "https://herdr-test-0123.relay.example";
+    const oidc = render(createElement(PortalAuthSummary, { auth: OIDC, url, shortUrl }));
+    expect(oidc).toContain(`${url}/_portal/auth/callback`);
+    expect(oidc).toContain(`${shortUrl}/_portal/auth/callback`);
+    expect(oidc.match(/<button/g)).toHaveLength(2);
+    // one host only (an older server, or no short address): one address
+    expect(render(createElement(PortalAuthSummary, { auth: OIDC, url, shortUrl: url })).match(/<button/g)).toHaveLength(1);
+  });
 });

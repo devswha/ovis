@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PortalStatus } from "../shared/protocol.ts";
 import { NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, type PortalAuth } from "../shared/portal.ts";
-import { atLeast, authArgs, handlePortalRequest, PortalService, proofMatches, readyUrl, relayOrigin } from "./portal.ts";
+import { atLeast, authArgs, handlePortalRequest, PortalService, proofMatches, readyUrl, relayOrigin, shortReadyUrl } from "./portal.ts";
 
 /**
  * The service runs a stand-in portal here, a shell script, and asks a relay through an injected
@@ -15,6 +15,8 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const ADDRESS = "https://herdr-test-0123456789abcdef0123456789abcdef01234567.relay.example";
 const RELAY = "https://relay.example";
+/** the short host Portal also serves for a `--name` (`<name>.<relay>`), printed on the same ready line */
+const SHORT = "https://herdr-test.relay.example";
 const open = { tokenSet: true, serveOnly: false };
 
 /** The flags a `portal expose --help` lists, in Go's layout: `-auth string`, with its words on the next line. */
@@ -70,7 +72,8 @@ function standIn(options: { version?: string; ready?: boolean; says?: string; ig
     options.ignoreTerm ? "    trap '' TERM" : "    trap 'exit 0' TERM",
     "    trap 'exit 3' USR1",
     options.says ? `    echo '${options.says}' >&2` : "    :",
-    options.ready === false ? "    :" : `    echo '2026-10-11T00:00:00Z INF service ready at ${ADDRESS}:443'`,
+    // Portal v2.7.0's ready line: the address-bound host, then the short one for its --name
+    options.ready === false ? "    :" : `    echo '2026-10-11T00:00:00Z INF service ready at ${ADDRESS}:443 (short URL: ${SHORT}:443) address=0x0123 alias_url=${SHORT}:443 event=relay_status'`,
     options.exitAfter ? "    exit 3 ;;" : "    while :; do sleep 0.05; done ;;",
     // Portal's own words: the credential, then the address that redeems it
     "  auth)",
@@ -190,6 +193,13 @@ describe("what Portal is given and says", () => {
     expect(readyUrl("2026-10-11T00:00:00Z WRN relay operation failed")).toBeNull();
   });
 
+  it("reads the short address of a --name off the ready line, when Portal prints one", () => {
+    expect(shortReadyUrl(`INF service ready at ${ADDRESS}:443 (short URL: ${SHORT}:443) address=0x0123 alias_url=${SHORT}:443`)).toBe(SHORT);
+    expect(shortReadyUrl(`INF service ready at ${ADDRESS}:443`)).toBeNull();
+    expect(shortReadyUrl(`INF service ready at ${ADDRESS}:443 (short URL: http://plain.example)`)).toBeNull();
+    expect(shortReadyUrl("WRN relay operation failed (short URL: https://x.example:443)")).toBeNull();
+  });
+
   it("compares versions by number", () => {
     expect(atLeast("v2.6.1", "v2.6.1")).toBe(true);
     expect(atLeast("v2.10.0", "v2.6.1")).toBe(true);
@@ -233,7 +243,7 @@ describe("running Portal", () => {
     const service = new PortalService({ stateDir, bin: portal.path, fetch: relay() });
     expect(service.start({ relay: RELAY, port: 7317, ...open })).toBe("started");
     const status = await until(service, (s) => s.phase !== "starting", "Portal was ready");
-    expect(status).toMatchObject({ phase: "running", url: ADDRESS, relay: RELAY });
+    expect(status).toMatchObject({ phase: "running", url: ADDRESS, short_url: SHORT, relay: RELAY });
     const seen = portal.seen();
     const flag = (name: string) => seen[seen.indexOf(name) + 1];
     expect(seen[0]).toBe("expose");

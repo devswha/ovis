@@ -61,9 +61,11 @@ export function PortalAuthChoice({ status, draft, disabled, onChange }: { status
 
 /**
  * What runs now, read-only: changing who may open an address means stopping it first. `url` is the
- * address Portal serves, which a Google or company login needs to be told to send people back to.
+ * address Portal serves, which a Google or company login needs to be told to send people back to;
+ * `shortUrl` is the short host Portal serves the same address on for its `--name`, whose callback a
+ * provider that matches exactly (Google) needs registered as well.
  */
-export function PortalAuthSummary({ auth, url }: { auth: PortalAuth; url: string | null }) {
+export function PortalAuthSummary({ auth, url, shortUrl = null }: { auth: PortalAuth; url: string | null; shortUrl?: string | null }) {
   const t = useT();
   return (
     <div className="settings-item portal-auth">
@@ -72,7 +74,7 @@ export function PortalAuthSummary({ auth, url }: { auth: PortalAuth; url: string
       {auth.issuer !== null && <p className="settings-hint portal-chip-text">{auth.issuer}</p>}
       {auth.method === "credential" && auth.allow.length === 0 && <p className="settings-hint">{t("Every unexpired link you issue opens it.")}</p>}
       {auth.allow.length > 0 && <ul className="portal-chips" aria-label={t("Allowed")}>{auth.allow.map((entry) => <li key={entry} className="portal-chip"><span className="portal-chip-text">{entry}</span></li>)}</ul>}
-      {auth.method === "oidc" && url !== null && <RedirectAddress url={url} />}
+      {auth.method === "oidc" && url !== null && [url, ...(shortUrl !== null && shortUrl !== url ? [shortUrl] : [])].map((host) => <RedirectAddress key={host} url={host} />)}
       <p className="settings-hint">{t("Stop Portal to change who can open it.")}</p>
     </div>
   );
