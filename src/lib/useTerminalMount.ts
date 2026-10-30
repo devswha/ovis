@@ -34,7 +34,7 @@ import { createTerminalFold, hyperlinkAt, wideGridKey, wideGrids } from "./termi
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
-import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, inUse, connectedSockets, plainError } from "./paneTerminalShared.ts";
+import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, connectedSockets, plainError, releaseViews } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 
 /**
@@ -1005,6 +1005,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         rejoin = false;
       };
       let deferredAttach = false;
+      // a hidden recent tab's view, kept unparsed until its return (null: none, or past VIEW_BUFFER_MAX)
+      let viewBuffer: string[] | null = null;
+      let viewBytes = 0;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
       // Text composed while the pane could not take input (a dictated phrase still in the editor)
@@ -1187,6 +1190,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               return;
             }
             if (lifetime === outputLifetime && recoveringPane !== owner) {
+              if (presentedRef.current) releaseViews();
               setOutputReady(true);
               setParsedTarget(target);
             }
@@ -1204,6 +1208,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
+          // a hidden recent tab keeps its view unparsed and parses it once on its return (resume): hidden
+          // tabs cost no parsing or drawing. Past the bound it is dropped, and the return draws from the attach.
+          if (!presentedRef.current) {
+            if (viewBuffer !== null && viewBytes + message.data.length <= VIEW_BUFFER_MAX) {
+              viewBuffer.push(message.data);
+              viewBytes += message.data.length;
+            } else viewBuffer = null;
+            return;
+          }
           const owner = message.pane_id;
           // a masked prompt drawn while the tab only watches: what is typed to take the pane back is not kept for it
           writeOutput(message.data, false, () => {
@@ -1918,11 +1931,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const current = paneRef.current;
         if (!current || embedded || mirroredRef.current || fixedGridRef.current) return;
         if (cachedRef.current && releasedRef.current) {
-          // A recent tab let go for caching watches its pane while this window is in use and it is among
-          // the most recent ones (watchedRef); otherwise its view stops. An away release stays one.
-          const keep = cachedReleaseRef.current && watchedRef.current && inUse() && !releaseAwayRef.current && socket.canWatch();
-          if (keep && !watchingRef.current) watch(current);
-          else if (!keep && watchingRef.current) { socket.unwatch(current); setWatching(false); }
+          afterSwitch(reconcileView);
           return;
         }
         if (releasedRef.current || (!idle && !cachedRef.current
@@ -1939,7 +1948,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         cachedReleaseRef.current = cachedRef.current;
         // A recent tab lets go of its attach, and of the input with it, as any hidden tab does; while
         // this window is in use, herdr's read-only view keeps its screen current for the return
-        if (!cachedRef.current || watchedRef.current && inUse() && !releaseAwayRef.current) watch(current);
+        if (!cachedRef.current) watch(current);
+        else afterSwitch(reconcileView);
         if (idle) {
           // the attach is gone: the next one that takes input starts the quiet spell again
           inputWasReady = false;
@@ -1977,6 +1987,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the pane's screen starts again from the view, as on a pane switch; the view's first frame is whole
       const watch = (pane: string): void => {
         const generation = ++outputGeneration;
+        if (!presentedRef.current) {
+          // the view of a hidden tab is parsed on its return, starting with this reset (watch-data)
+          viewBuffer = ["\x1bc"];
+          viewBytes = 2;
+          modifyOtherKeysRef.current = 0;
+          setWatching(socket.watch(pane, term.cols, term.rows));
+          return;
+        }
         // Reset in stream order: the attach's queued writes must not draw over the view.
         writeOutput("\x1bc", false, () => {
           if (disposed || paneRef.current !== pane || generation !== outputGeneration) return;
@@ -1984,6 +2002,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         });
         modifyOtherKeysRef.current = 0;
         setWatching(socket.watch(pane, term.cols, term.rows));
+      };
+      // A recent tab let go for caching watches its pane while this window is in use and it is among the
+      // most recent ones (watchedRef); otherwise its view stops. An away release stays one.
+      const reconcileView = (): void => {
+        const current = paneRef.current;
+        if (disposed || !current || !cachedRef.current || !releasedRef.current) return;
+        const keep = cachedReleaseRef.current && watchedRef.current && inUse() && !releaseAwayRef.current && socket.canWatch();
+        if (keep && !watchingRef.current) watch(current);
+        else if (!keep && watchingRef.current) { socket.unwatch(current); setWatching(false); }
       };
       // keep_size prevents resizing an existing attach, but a fresh sidecar still sizes the pane.
       // The client cannot distinguish those cases atomically, so both watch until the user returns.
@@ -2033,6 +2060,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
         // A frame the old stream left open is not the new one's
         frameGateRef.current.reset();
+        // what the view drew while this tab was hidden, parsed now in one go, before the attach's own screen
+        if (viewBuffer !== null && viewBuffer.length > 1) {
+          writeOutput(viewBuffer.join(""), false, () => {
+            if (!disposed && paneRef.current === current) modifyOtherKeysRef.current = 0;
+          });
+        }
+        viewBuffer = null;
+        viewBytes = 0;
+        // the hidden tabs' views start or stop once this pane drew (paneTerminalShared.ts)
+        holdViews();
         if (!cachedReleaseRef.current) {
           writeOutput("\x1bc", false, () => {
             if (disposed || paneRef.current !== current || generation !== outputGeneration) return;
@@ -2218,6 +2255,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (releaseTimer !== null) window.clearTimeout(releaseTimer);
         if (idleTimer !== null) window.clearTimeout(idleTimer);
         if (resumeTimer !== null) window.clearTimeout(resumeTimer);
+        dropViewChange(reconcileView);
         releaseRef.current = () => {};
         presentationRef.current = () => {};
         leaveRef.current = () => {};

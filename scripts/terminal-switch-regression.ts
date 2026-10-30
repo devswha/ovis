@@ -105,9 +105,26 @@ try {
       }
       if (evidence) await page.screenshot({ path: join(evidence, `terminal-switch-${width}-${theme}.png`) });
       if (!baseline) {
-        // Output received while hidden must already be painted when this tab returns.
-        await paneSendText(panes[1]!, "printf 'OVIS-HIDDEN-UPDATE\\n'\n");
-        await frame(panes[1]!).locator(".xterm-rows", { hasText: "OVIS-HIDDEN-UPDATE" }).waitFor({ state: "attached" });
+        // Output a hidden tab's view receives is kept unparsed while hidden and is on screen on its return.
+        const hidden = `OVIS-HIDDEN-${width}-${theme}`;
+        const delivered = Promise.withResolvers<void>();
+        const deliveredTimeout = setTimeout(() => delivered.reject(new Error("the hidden tab's view never received the output")), 10_000);
+        const onView = ({ payload }: { payload: string | Buffer }) => {
+          const message = JSON.parse(String(payload));
+          if (message.type === "watch-data" && message.pane_id === panes[1] && String(message.data).includes(hidden)) delivered.resolve();
+        };
+        for (const socket of sockets) socket.on("framereceived", onView);
+        try {
+          await paneSendText(panes[1]!, `printf 'OVIS-HIDDEN-%s\\n' ${width}-${theme}\n`);
+          await delivered.promise;
+        } finally {
+          clearTimeout(deliveredTimeout);
+          for (const socket of sockets) socket.off("framereceived", onView);
+        }
+        assert.equal(await frame(panes[1]!).locator(".xterm-rows", { hasText: hidden }).count(), 0, "a hidden tab does not parse its view");
+        await select(panes[1]!);
+        await frame(panes[1]!).locator(".xterm-rows", { hasText: hidden }).waitFor({ state: "attached" });
+        await select(panes[0]!);
         const evicting = frames.length;
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
