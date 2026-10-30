@@ -658,6 +658,9 @@ runtime apart from herdr's TUI server. Start Ovis with `OVIS_RUNTIME=herdr-core`
 terminals instead of the TUI's: this PC's panes are then the app's. An `hc` speaking protocol
 generation 1 (checked with 0.1.14) must be on the `PATH`, or named by `OVIS_HC_BIN`.
 
+`OVIS_RUNTIME=herdr-core` is Linux/macOS only: there is no Windows named pipe support yet.
+Ovis refuses to start with this runtime on Windows; use the default `herdr` runtime there.
+
 - **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
   order and names; every terminal block in a tab is a pane. A terminal no tab holds (a worker an
   agent started, one from `hc run`) has a tab of its own under **Other terminals**.

@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
@@ -29,10 +29,16 @@ export function hcBin(): string {
  */
 export function startRuntime(stateDir: string): HerdrCoreAdapter | null {
   if (runtime() !== "herdr-core") return null;
+  if (process.platform !== "linux" && process.platform !== "darwin") {
+    throw new Error("OVIS_RUNTIME=herdr-core is Linux/macOS only: no Windows named pipe support yet");
+  }
   // the state folder is otherwise created on first write: the socket goes there first
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  if (statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
+  chmodSync(stateDir, 0o700);
   const hc = new HcConnection(() => spawnHcConnect(hcBin()));
   const adapter = startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
+  chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
   return {
     socketPath: adapter.socketPath,
