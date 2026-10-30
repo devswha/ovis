@@ -16,8 +16,9 @@ export const useMachineId = () => useContext(MachineContext);
  */
 export const AppLayoutContext = createContext(false);
 export const useAppLayout = () => useContext(AppLayoutContext);
-/** the value AppLayoutContext carries for a PC whose herdr is `herdr` (this PC's from /api/health, a remote PC's from its roster entry) */
-export const appLayoutOf = (herdr: HerdrIdentity | undefined): boolean => herdr?.runtime === "herdr-core";
+/** the value AppLayoutContext carries for a PC whose herdr is `herdr` (this PC's from /api/health, a remote PC's from its roster entry);
+ * a herdr not known yet (health still loading) offers none of the layout calls either, until it says it is herdr's TUI server */
+export const appLayoutOf = (herdr: HerdrIdentity | undefined): boolean => herdr === undefined || herdr.runtime === "herdr-core";
 /** App's workspace order for every PC (lib/workspaceOrder.ts); a Sidebar outside App gets its own */
 export const ReorderContext = createContext(new ReorderCoordinator());
 export const useReorderCoordinator = () => useContext(ReorderContext);
