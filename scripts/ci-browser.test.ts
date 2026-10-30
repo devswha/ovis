@@ -41,6 +41,9 @@ source "$1"
  */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
+const inheritedEnv = Object.fromEntries(
+  ["HOME", "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"].flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []),
+);
 
 /** Ends `pid` and every process under it, read from the process table before any is ended. */
 async function endTree(pid: number): Promise<void> {
@@ -63,12 +66,12 @@ async function endTree(pid: number): Promise<void> {
   for (const member of tree) try { process.kill(member, "SIGKILL"); } catch { /* already gone */ }
 }
 
-async function lane(fail = "", kept = false, ci = "") {
+async function lane(fail = "", kept = false, ci = "", parentFfmpeg?: string) {
   const dir = mkdtempSync(join(tmpdir(), "hwc-browser-test-"));
   try {
     const child = Bun.spawn(["bash", "-c", stub, "stub", join(import.meta.dir, "ci-browser.sh")], {
       cwd: dir,
-      env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
+      env: { ...inheritedEnv, ...(parentFfmpeg ? { FFMPEG: parentFfmpeg } : {}), BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
       stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     // read as it comes, so what the lane printed is there even when the guard stops reading
@@ -142,6 +145,12 @@ describe("browser lane", () => {
     expect(text).toMatch(/^\[\d{4}-\d\d-\d\dT[^\]]+\] SERVER listening on http:\/\/127\.0\.0\.1:3000$/m);
     expect(text).toMatch(/^PASS stubbed browser step$/m);
     expect(text).toMatch(/^FAIL stubbed browser marker$/m);
+  }, LANE_TEST_MS);
+
+  it("ignores FFMPEG set in the parent environment", async () => {
+    const { text, code } = await lane("", false, "", "/stub/ffmpeg");
+    expect(code).toBe(0);
+    expect(rows(text).every((row) => row.code === 0)).toBe(true);
   }, LANE_TEST_MS);
 
   it("keeps only cheap existing screenshots when CHECK_DIR is set", async () => {
