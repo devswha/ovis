@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; env?: Record<string, string>; with?: Record<string, string> }
 interface Job { needs?: string | string[]; if?: string; environment?: string | { name: string }; permissions?: Record<string, string>; "timeout-minutes"?: number; steps: Step[] }
@@ -15,7 +16,7 @@ const indexOf = (predicate: (step: Step) => boolean): number => job().steps.find
 test("the shell deploys after publish, from the release workflow on main only, never on a tag push", () => {
   const workflow = loadWorkflow();
   expect(job().needs).toBe("publish");
-  expect(job().if).toBe("github.ref == 'refs/heads/main'");
+  expect(job().if).toBe("github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'");
   expect("push" in workflow.on).toBe(false);
 });
 
@@ -74,8 +75,8 @@ test("dist-shell.tar.gz and its SHA-256 are attached to the release after verifi
   expect(pack.run).toContain("sha256sum dist-shell.tar.gz");
 });
 
-/** Runs the verify step's script through `bash -e` against a local server that answers each request with the next status and `revision`. */
-async function runVerifyStep(statuses: number[], revision: string): Promise<{ code: number; output: string; requests: number }> {
+/** Runs the verify step's script through `bash -e` against a local server that answers each request with the next status and `body`. */
+async function runVerifyStep(statuses: number[], body: string): Promise<{ code: number; output: string; requests: number }> {
   const step = job().steps.find((candidate) => candidate.env?.SHELL_BUILD_URL !== undefined)!;
   const expected = "a".repeat(40);
   let requests = 0;
@@ -85,7 +86,7 @@ async function runVerifyStep(statuses: number[], revision: string): Promise<{ co
       const status = statuses[Math.min(requests++, statuses.length - 1)]!;
       return status === 302
         ? new Response(null, { status, headers: { location: "/moved" } })
-        : new Response(`${JSON.stringify({ revision })}\n`, { status });
+        : new Response(body, { status });
     },
   });
   const runner = await Bun.$`mktemp -d`.text();
@@ -94,7 +95,7 @@ async function runVerifyStep(statuses: number[], revision: string): Promise<{ co
     const child = Bun.spawn(["bash", "-e", "-c", script], {
       stdout: "pipe",
       stderr: "pipe",
-      env: { PATH: process.env.PATH!, RUNNER_TEMP: runner.trim(), SHELL_BUILD_URL: `http://127.0.0.1:${server.port}/build.json`, EXPECTED_REVISION: expected },
+      env: { PATH: `${dirname(process.execPath)}:${process.env.PATH}`, RUNNER_TEMP: runner.trim(), SHELL_BUILD_URL: `http://127.0.0.1:${server.port}/build.json`, EXPECTED_REVISION: expected },
     });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { code, output: stdout + stderr, requests };
@@ -105,27 +106,46 @@ async function runVerifyStep(statuses: number[], revision: string): Promise<{ co
 }
 
 const REVISION = "a".repeat(40);
+const revisionBody = (revision: string): string => `${JSON.stringify({ revision })}\n`;
 
 test("verification passes on a 200 that names the tag's revision", async () => {
-  expect((await runVerifyStep([200], REVISION)).code).toBe(0);
+  expect((await runVerifyStep([200], revisionBody(REVISION))).code).toBe(0);
 }, 30_000);
 
 test("verification retries a 503 and a 302 until a 2xx", async () => {
-  const result = await runVerifyStep([503, 302, 201], REVISION);
+  const result = await runVerifyStep([503, 302, 201], revisionBody(REVISION));
   expect(result.code).toBe(0);
   expect(result.requests).toBe(3);
 }, 30_000);
 
 test("verification fails on a 302 after bounded retries and says the code", async () => {
-  const result = await runVerifyStep([302], REVISION);
+  const result = await runVerifyStep([302], revisionBody(REVISION));
   expect(result.code).not.toBe(0);
   expect(result.requests).toBe(12);
   expect(result.output).toContain("HTTP 302");
 }, 30_000);
 
 test("verification fails on a 200 that serves another revision", async () => {
-  const result = await runVerifyStep([200], "b".repeat(40));
+  const result = await runVerifyStep([200], revisionBody("b".repeat(40)));
   expect(result.code).not.toBe(0);
   expect(result.requests).toBe(12);
   expect(result.output).toContain("did not serve revision");
+}, 30_000);
+
+test("verification fails when only a nested revision matches the tag's", async () => {
+  const result = await runVerifyStep([200], JSON.stringify({ revision: "b".repeat(40), metadata: { revision: REVISION } }));
+  expect(result.code).not.toBe(0);
+  expect(result.requests).toBe(12);
+  expect(result.output).toContain("did not serve revision");
+}, 30_000);
+
+test("verification fails on a body that is not JSON, even if it contains the revision", async () => {
+  const result = await runVerifyStep([200], `<html>revision ${REVISION}</html>`);
+  expect(result.code).not.toBe(0);
+  expect(result.requests).toBe(12);
+}, 30_000);
+
+test("verification fails when the top-level revision is not a string", async () => {
+  const result = await runVerifyStep([200], JSON.stringify({ revision: [REVISION] }));
+  expect(result.code).not.toBe(0);
 }, 30_000);

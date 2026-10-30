@@ -85,7 +85,7 @@ jobs:
   # secrets are unset (docs/development.md#releasing); the tarball and its SHA-256 are attached either way.
   shell-deploy:
     needs: publish
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'
     runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
     timeout-minutes: 15
     environment: production
@@ -147,7 +147,10 @@ jobs:
           # a redirect or an error page is not the shell: only a 2xx whose build.json names this commit passes
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
             code=$(curl -sS -o "$RUNNER_TEMP/build.json" -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$SHELL_BUILD_URL?rev=$EXPECTED_REVISION") || code=000
-            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && grep -qF "\"revision\":\"$EXPECTED_REVISION\"" "$RUNNER_TEMP/build.json"; then
+            # the top-level "revision" field, parsed, not a substring of the response; anything unparsable reads as empty
+            # shellcheck disable=SC2016 # JavaScript, not shell
+            revision=$(bun -e 'const body = JSON.parse(await Bun.file(process.argv[1]).text()); if (typeof body?.revision === "string") console.log(body.revision)' "$RUNNER_TEMP/build.json" 2>/dev/null) || revision=""
+            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && [ "$revision" = "$EXPECTED_REVISION" ]; then
               echo "app.ovis.sh serves $EXPECTED_REVISION"
               exit 0
             fi
