@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, it, jest } from "bun:test";
 import { HerdrSocket } from "./ws.ts";
+import { nativeTransport, setTransport, type WebSocketLike } from "./transport.ts";
 import type { ClientConnectionTrace, PendingMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 
@@ -2183,5 +2184,26 @@ it("refuses an agent-only message on a bridge without agent-only, and names it w
     } finally {
       client.close();
     }
+  }
+});
+
+it("runs on a transport's socket where the page has no global WebSocket", () => {
+  // Given a transport that opens its own socket and no browser WebSocket global
+  setTransport({ ...nativeTransport, kind: "relay", openSocket: (url) => new FakeSocket(url) as unknown as WebSocketLike });
+  globals.WebSocket = undefined;
+  const client = new HerdrSocket("ws://test/ws");
+  try {
+    // When it connects, opens and is woken
+    client.connect();
+    const socket = FakeSocket.last;
+    expect(client.connected).toBe(false);
+    socket.open();
+    client.wake();
+    // Then its ready state is read from the socket, not the missing global
+    expect(client.connected).toBe(true);
+  } finally {
+    client.close();
+    globals.WebSocket = FakeSocket;
+    setTransport(nativeTransport);
   }
 });

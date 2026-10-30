@@ -10,6 +10,7 @@ import { MachineContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";
 import { HighlightedCode } from "./HighlightedCode.tsx";
 import { useT } from "../lib/i18n.ts";
+import { useResourceUrlState } from "../lib/useResourceUrl.ts";
 import { type MarkdownImagePreview } from "../lib/markdownImages.ts";
 import { imageSlotStyle, standaloneImage } from "../lib/imageBox.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
@@ -121,13 +122,16 @@ export const MarkdownImageContext = createContext<MarkdownImageResolver | null>(
  * shows `fallback`. `src` is null while an address is still being resolved: the slot stands from
  * the first paint.
  */
-export function ReservedImage({ src, alt, width, className, slot, slotStyle, fallback }: {
+export function ReservedImage({ src: address, alt, width, className, slot, slotStyle, fallback }: {
   src: string | null; alt: string; width?: number; className?: string; slot: boolean; slotStyle?: CSSProperties; fallback?: ReactNode;
 }) {
   const t = useT();
+  const resource = useResourceUrlState(address);
+  const src = resource.url;
   // keyed by address: another one starts from the slot again and never takes the old one's answer
   const [settled, setSettled] = useState<{ src: string; failed: boolean } | null>(null);
-  const phase = src !== null && settled?.src === src ? (settled.failed ? "failed" : "decoded") : "loading";
+  // an address the transport refused fails like an image that would not decode
+  const phase = resource.error !== null ? "failed" : src !== null && settled?.src === src ? (settled.failed ? "failed" : "decoded") : "loading";
   // a cached image is complete before `onLoad` can fire
   const complete = useCallback((image: HTMLImageElement | null) => {
     if (image !== null && src !== null && image.complete && image.naturalWidth > 0) setSettled({ src, failed: false });

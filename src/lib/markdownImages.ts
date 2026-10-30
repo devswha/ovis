@@ -1,5 +1,6 @@
 import type { FileInfo } from "../../shared/protocol.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
+import { serverResourceUrl } from "./transport.ts";
 
 /** Bigger images are offered as a download: a phone decodes an image whole. */
 export const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -33,7 +34,10 @@ export function markdownImagePath(src: string, markdownPath: string): string | n
   return `/${parts.join("/")}`;
 }
 
-/** Stat a local markdown image before giving the browser a URL to decode. */
+/**
+ * Stat a local markdown image before giving the browser a URL to decode. The inline URL stays a
+ * server path, which ReservedImage resolves once; the download link is used as it is, so it is resolved here.
+ */
 export async function markdownImagePreview(
   src: string,
   markdownPath: string,
@@ -46,7 +50,7 @@ export async function markdownImagePreview(
     const info = await fetchInfo(path);
     if ("candidates" in info || info.kind !== "image") return null;
     return info.size > MAX_INLINE_IMAGE_BYTES
-      ? { kind: "too-large", size: info.size, downloadUrl: fileUrl(info.path, true) }
+      ? { kind: "too-large", size: info.size, downloadUrl: await serverResourceUrl(fileUrl(info.path, true)) }
       : { kind: "inline", url: fileUrl(info.path, false) };
   } catch {
     return null;
