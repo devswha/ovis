@@ -12,7 +12,7 @@ import { RelayShell } from "../../components/RelayShell.tsx";
 import { deviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import type { PendingPushStore } from "../push.ts";
-import { SettingsProvider } from "../settings.ts";
+import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
@@ -68,7 +68,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // it kept one while this window is in the app
   const pendingPush = mount.pendingPush ?? indexedPendingPush;
   const registerPending = (serverId: string): void => {
-    registerPendingPush(serverId, pendingPush).catch((error: unknown) => {
+    // with this device's alert choices, as the app's own registration sends them, which then skips it
+    registerPendingPush(serverId, pendingPush, alertPrefs(loadSettings())).catch((error: unknown) => {
       console.warn("Ovis: the PC did not take this device's new push subscription", error);
     });
   };

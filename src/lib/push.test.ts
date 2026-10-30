@@ -607,6 +607,33 @@ describe("a subscription the hosted shell's worker kept while no window could te
     expect(calls).toHaveLength(2);
   });
 
+  it("is registered once on a start with alerts allowed, where the app's own load-time registration runs too", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, {
+      oldSubscription: subscription("https://push.example/old"), newSubscription: subscription("https://push.example/new"),
+    });
+    // the browser now holds the rotated subscription, made for this PC's key
+    live = standIn("https://push.example/new", new Uint8Array(65).fill(4).buffer);
+    // a start: the shell's recovery, then the app's effect while the recovery is still on its way
+    const recovery = registerPendingPush(SERVER, indexedPendingPush, DEFAULT_ALERTS);
+    const load = ensurePushSubscription(DEFAULT_ALERTS);
+    expect(await recovery).toBe(true);
+    expect(await load).toBe("https://push.example/new");
+    expect(calls.filter(({ method }) => method === "POST")).toEqual([{ method: "POST", endpoint: "https://push.example/new" }]);
+    expect(issued).toBe(0);
+    // the skip is spent: the next start's load-time registration goes to the PC as always
+    await ensurePushSubscription(DEFAULT_ALERTS);
+    expect(calls.filter(({ method }) => method === "POST")).toHaveLength(2);
+  });
+
+  it("still hands the PC alerts chosen otherwise than the recovery sent", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, { newSubscription: subscription("https://push.example/new") });
+    live = standIn("https://push.example/new", new Uint8Array(65).fill(4).buffer);
+    const recovery = registerPendingPush(SERVER, indexedPendingPush, DEFAULT_ALERTS);
+    const load = ensurePushSubscription({ ...DEFAULT_ALERTS, input: !DEFAULT_ALERTS.input });
+    await Promise.all([recovery, load]);
+    expect(calls.filter(({ method }) => method === "POST")).toHaveLength(2);
+  });
+
   it("tells only the PC's own open windows, and still keeps it for a window that is not connected", async () => {
     const own: unknown[] = [];
     const other: unknown[] = [];

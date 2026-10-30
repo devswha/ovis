@@ -232,11 +232,15 @@ const fakes: FakePushService[] = [];
 const fakePushManager = async (context: BrowserContext, subscriptions: Record<string, FakePushService["subscription"]>): Promise<void> => {
   await context.addInitScript((subscriptions) => {
     const id = /^\/s\/([0-9a-f]{32})\//.exec(location.pathname)?.[1];
-    const json = id === undefined ? undefined : subscriptions[id];
-    if (id === undefined || json === undefined) return;
+    if (id === undefined || subscriptions[id] === undefined) return;
     const held = `qa-push:${id}`;
+    // the subscription the browser holds for this scope: the fake's, or the one a test rotated it to
+    const current = (): { endpoint: string; keys: { p256dh: string; auth: string } } => {
+      const rotated = localStorage.getItem(`qa-push-json:${id}`);
+      return rotated === null ? subscriptions[id]! : JSON.parse(rotated) as { endpoint: string; keys: { p256dh: string; auth: string } };
+    };
     const bytes = (key: BufferSource): number[] => [...new Uint8Array(ArrayBuffer.isView(key) ? key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) : key)];
-    const made = (key: number[]) => ({
+    const made = (key: number[], json = current()) => ({
       endpoint: json.endpoint, expirationTime: null,
       options: { userVisibleOnly: true, applicationServerKey: new Uint8Array(key).buffer },
       toJSON: () => ({ endpoint: json.endpoint, expirationTime: null, keys: json.keys }),
@@ -675,21 +679,30 @@ try {
     const worker = context.serviceWorkers().find((candidate) => candidate.url() === `${scopeOf(A)}sw.js`);
     assert.ok(worker, "PC A's worker is running");
     const fakeA2 = await startFakePushService();
-    fakes.push(fakeA2);
+    const fakeA3 = await startFakePushService();
+    fakes.push(fakeA2, fakeA3);
     await pageA.close();
     await pageB.close();
     assert.equal(context.pages().length, 0);
-    let registrations = 0;
-    const firstRegistration = deferred<void>();
-    const removed = deferred<string>();
+    /** every registration PC A takes, per endpoint, and each endpoint's first one */
+    const registrations = new Map<string, number>();
+    const firstOf = new Map<string, ReturnType<typeof deferred<void>>>([[fakeA2.subscription.endpoint, deferred<void>()], [fakeA3.subscription.endpoint, deferred<void>()]]);
+    const removedOf = new Map<string, ReturnType<typeof deferred<void>>>([[fakeA.subscription.endpoint, deferred<void>()], [fakeA2.subscription.endpoint, deferred<void>()]]);
+    const statusOf = new Map<string, ReturnType<typeof deferred<void>>>([[fakeA2.subscription.endpoint, deferred<void>()]]);
     const subscribe = pushA.subscribe.bind(pushA);
     const unsubscribe = pushA.unsubscribe.bind(pushA);
+    const status = pushA.status.bind(pushA);
     pushA.subscribe = (subscription, ...rest) => {
-      if (subscription.endpoint === fakeA2.subscription.endpoint) { registrations += 1; firstRegistration.resolve(); }
+      registrations.set(subscription.endpoint, (registrations.get(subscription.endpoint) ?? 0) + 1);
+      firstOf.get(subscription.endpoint)?.resolve();
       subscribe(subscription, ...rest);
     };
-    pushA.unsubscribe = (endpoint) => { removed.resolve(endpoint); unsubscribe(endpoint); };
-    const fired = await worker.evaluate(async ({ fresh, old }) => {
+    pushA.unsubscribe = (endpoint) => { removedOf.get(endpoint)?.resolve(); unsubscribe(endpoint); };
+    // the app asks after its subscription once its load-time registration is through (lib/pushHealth.ts)
+    pushA.status = (subscription, owner) => { statusOf.get(subscription.endpoint)?.resolve(); return status(subscription, owner); };
+    const countOf = (fake: FakePushService): number => registrations.get(fake.subscription.endpoint) ?? 0;
+    /** pushsubscriptionchange in PC A's real worker with no window open: what it kept */
+    const rotate = (fresh: FakePushService, old: FakePushService) => worker.evaluate(async ({ fresh, old }) => {
       const as = (json: { endpoint: string }) => ({ endpoint: json.endpoint, options: { applicationServerKey: null }, toJSON: () => json });
       const event = new ExtendableEvent("pushsubscriptionchange");
       const waits: Promise<unknown>[] = [];
@@ -704,39 +717,69 @@ try {
       const record = await new Promise<unknown>((resolve) => { const request = db.transaction("pending-push").objectStore("pending-push").getAll(); request.onsuccess = () => resolve(request.result); });
       db.close();
       return { windows, record };
-    }, { fresh: { endpoint: fakeA2.subscription.endpoint, expirationTime: null, keys: fakeA2.subscription.keys }, old: fakeA.subscription.endpoint });
-    assert.equal(fired.windows, 0, "no window client was open");
-    assert.deepEqual(fired.record, [{ server_id: A, subscription: { endpoint: fakeA2.subscription.endpoint, expirationTime: null, keys: fakeA2.subscription.keys }, old_endpoint: fakeA.subscription.endpoint }]);
-    assert.equal(registrations, 0, "the worker could not and did not reach the PC");
-    tell(`pending: pushsubscriptionchange in PC A's worker (${scopeOf(A)}sw.js) with ${fired.windows} window clients -> IndexedDB ovis-relay/pending-push = ${JSON.stringify(fired.record)}`);
-    // the next start: notification permission taken back, so the load-time registration stays out and only the pending one runs
-    await context.clearPermissions();
-    const boot = await context.newPage();
-    csp.push(await watchCsp(boot));
-    await boot.goto(scopeOf(A));
-    await inApp(boot);
-    await bounded(firstRegistration.promise, "the next start registered the kept subscription");
-    assert.equal(await bounded(removed.promise, "the next start dropped the old endpoint"), fakeA.subscription.endpoint);
-    await boot.waitForFunction(async () => {
+    }, { fresh: { endpoint: fresh.subscription.endpoint, expirationTime: null, keys: fresh.subscription.keys }, old: old.subscription.endpoint });
+    /** the browser holds `fake`'s subscription for PC A from now on, as it would after the rotation */
+    const browserHolds = (fake: FakePushService) => context.addInitScript(({ id, json }) => { localStorage.setItem(`qa-push-json:${id}`, JSON.stringify(json)); }, { id: A, json: fake.subscription });
+    const pendingCleared = (page: Page) => page.waitForFunction(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("ovis-relay", 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
       const count = await new Promise<number>((resolve) => { const request = db.transaction("pending-push").objectStore("pending-push").count(); request.onsuccess = () => resolve(request.result); });
       db.close();
       return count === 0;
     }, undefined, { polling: 100, timeout: 20_000 });
+
+    // 1. alerts allowed (the usual case): the shell's recovery and the app's load-time registration both run on the start
+    const first = await rotate(fakeA2, fakeA);
+    assert.equal(first.windows, 0, "no window client was open");
+    assert.deepEqual(first.record, [{ server_id: A, subscription: { endpoint: fakeA2.subscription.endpoint, expirationTime: null, keys: fakeA2.subscription.keys }, old_endpoint: fakeA.subscription.endpoint }]);
+    assert.equal(countOf(fakeA2), 0, "the worker could not and did not reach the PC");
+    tell(`pending (permission granted): pushsubscriptionchange in PC A's worker (${scopeOf(A)}sw.js) with ${first.windows} window clients -> IndexedDB ovis-relay/pending-push = ${JSON.stringify(first.record)}`);
+    await browserHolds(fakeA2);
+    const granted = await context.newPage();
+    csp.push(await watchCsp(granted));
+    await granted.goto(scopeOf(A));
+    await inApp(granted);
+    assert.equal(await granted.evaluate(() => Notification.permission), "granted", "notification permission stays granted for this start");
+    await bounded(firstOf.get(fakeA2.subscription.endpoint)!.promise, "the start registered the kept subscription");
+    await bounded(removedOf.get(fakeA.subscription.endpoint)!.promise, "the start dropped the old endpoint");
+    // the app's load-time registration of the same endpoint is through once the app asks after it
+    await bounded(statusOf.get(fakeA2.subscription.endpoint)!.promise, "the app's load-time registration finished and asked after the subscription");
+    await pendingCleared(granted);
+    assert.equal(countOf(fakeA2), 1, "one start, with alerts allowed, registered the kept subscription exactly once");
     assert.notEqual(registered(pushA, fakeA2, deviceA), null, "PC A holds the new subscription for the relay device");
     assert.equal(registered(pushA, fakeA, deviceA), null, "PC A dropped the old one");
     assert.equal(registered(pushB, fakeA2, deviceB), null, "PC B never heard of PC A's new subscription");
     assert.notEqual(registered(pushB, fakeB, deviceB), null, "PC B keeps its own subscription");
-    tell(`pending: next start of ${scopeOf(A)} -> POST /api/push/subscribe ${fakeA2.subscription.endpoint} and DELETE ${fakeA.subscription.endpoint} over the relay, owner ${deviceA}; record cleared; PC B untouched`);
+    tell(`pending (permission granted): next start of ${scopeOf(A)} with Notification.permission "granted" and the browser holding ${fakeA2.subscription.endpoint} -> POST /api/push/subscribe once and DELETE ${fakeA.subscription.endpoint} over the relay, owner ${deviceA}; the app's load-time registration finished (POST /api/push/status reached PC A) with registrations of the kept subscription = ${countOf(fakeA2)}; record cleared; PC B untouched`);
+    await granted.close();
+
+    // 2. alerts no longer allowed: only the recovery runs, and it alone registers the next rotation
+    const second = await rotate(fakeA3, fakeA2);
+    assert.equal(second.windows, 0, "no window client was open");
+    assert.equal(countOf(fakeA3), 0);
+    tell(`pending (permission cleared): second rotation with ${second.windows} window clients -> record ${JSON.stringify(second.record)}`);
+    await browserHolds(fakeA3);
+    await context.clearPermissions();
+    const boot = await context.newPage();
+    csp.push(await watchCsp(boot));
+    await boot.goto(scopeOf(A));
+    await inApp(boot);
+    await bounded(firstOf.get(fakeA3.subscription.endpoint)!.promise, "the next start registered the kept subscription");
+    await bounded(removedOf.get(fakeA2.subscription.endpoint)!.promise, "the next start dropped the old endpoint");
+    await pendingCleared(boot);
+    assert.notEqual(registered(pushA, fakeA3, deviceA), null, "PC A holds the newest subscription for the relay device");
+    assert.equal(registered(pushA, fakeA2, deviceA), null, "PC A dropped the one before");
+    assert.equal(registered(pushB, fakeA3, deviceB), null, "PC B never heard of it");
+    tell(`pending (permission cleared): next start -> POST /api/push/subscribe ${fakeA3.subscription.endpoint} and DELETE ${fakeA2.subscription.endpoint} over the relay, owner ${deviceA}; record cleared`);
     // a start after that: the record is gone, nothing is registered again (a round trip over the relay first)
     await boot.reload();
     await inApp(boot);
     await until("the PC counts the reloaded relay session", () => service.status().sessions >= 1);
-    const answered = await pushA.sendTest(fakeA2.subscription.endpoint);
+    const answered = await pushA.sendTest(fakeA3.subscription.endpoint);
     assert.ok(answered?.ok, "the new subscription receives PC A's pushes");
-    await fakeA2.waitFor((push) => push.payload.body === "Alerts are on for this device", "a push to the new subscription", 20_000);
-    assert.equal(registrations, 1, "registered exactly once across two starts");
-    tell(`pending: second start registered nothing more; registrations of the kept subscription = ${registrations}; a push to it reached fake A2 (VAPID valid ${fakeA2.received[0]!.vapidValid})`);
+    await fakeA3.waitFor((push) => push.payload.body === "Alerts are on for this device", "a push to the new subscription", 20_000);
+    assert.equal(countOf(fakeA3), 1, "registered exactly once across two starts");
+    assert.equal(countOf(fakeA2), 1, "the earlier one was not registered again");
+    tell(`pending (permission cleared): second start registered nothing more; registrations A2 = ${countOf(fakeA2)}, A3 = ${countOf(fakeA3)}; a push to A3 reached its fake (VAPID valid ${fakeA3.received[0]!.vapidValid})`);
     keep("task-18-pending.txt", `# relay-shell-browser-qa (m): a subscription rotated with no window open, registered on the next start once\n${pending.join("\n")}\n`);
     await context.close();
   }

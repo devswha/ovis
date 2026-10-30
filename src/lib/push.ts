@@ -133,7 +133,12 @@ export function currentPushOperation(): Promise<void> {
 export function ensurePushSubscription(alerts?: AlertPrefs): Promise<string | null> {
   if (pending) return pending;
   epoch += 1;
-  const request = operations.catch(() => undefined).then(() => subscribeDevice(alerts)).then((endpoint) => {
+  const request = operations.catch(() => undefined).then(() => {
+    // read once this registration's turn comes: the recovery queued before it has finished by then
+    const handedOver = recovered;
+    recovered = null;
+    return subscribeDevice(alerts, handedOver);
+  }).then((endpoint) => {
     registered = endpoint;
     return endpoint;
   }, (error: unknown) => {
@@ -147,7 +152,7 @@ export function ensurePushSubscription(alerts?: AlertPrefs): Promise<string | nu
   return request;
 }
 
-async function subscribeDevice(alerts?: AlertPrefs): Promise<string | null> {
+async function subscribeDevice(alerts?: AlertPrefs, handedOver: Recovered | null = null): Promise<string | null> {
   if (!pushSupported() || notificationState() !== "granted") return null;
   if (appPush()) return subscribeApp(alerts);
   const registration = await workerRegistration();
@@ -160,6 +165,8 @@ async function subscribeDevice(alerts?: AlertPrefs): Promise<string | null> {
     subscription = null;
   }
   subscription ??= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  // the start's recovery (registerPendingPush) handed the PC this very endpoint with these alerts just before
+  if (handedOver !== null && handedOver.endpoint === subscription.endpoint && handedOver.alerts === alertsKey(alerts)) return subscription.endpoint;
   try {
     await registerPushSubscription(subscription.toJSON(), alerts);
   } catch (error) {
@@ -214,26 +221,39 @@ export interface PendingPushStore {
   clear(serverId: string, endpoint: string): Promise<void>;
 }
 
+/** A registration the start's recovery made, which the load-time registration queued after it does not repeat. */
+interface Recovered {
+  endpoint: string;
+  alerts: string;
+}
+
+let recovered: Recovered | null = null;
+
+const alertsKey = (alerts: AlertPrefs | undefined): string => JSON.stringify(alerts ?? null);
+
 /**
  * Hands the PC the subscription its worker kept while no window could, over whatever transport is set
- * (the relay in the hosted shell), then forgets it: registered once. A PC that could not be reached
- * keeps it for the next start; a PC that answered with a refusal has had its say, and the load-time
- * registration (ensurePushSubscription) takes it from there. Resolves whether one was registered.
+ * (the relay in the hosted shell), with this device's `alerts`, then forgets it: registered once. The
+ * shell runs it before the app's own load-time registration (ensurePushSubscription), which then skips
+ * that endpoint once when its alerts are the same, so one start registers it once. A PC that could not
+ * be reached keeps it for the next start; a PC that answered with a refusal has had its say, and the
+ * load-time registration takes it from there. Resolves whether one was registered.
  */
-export function registerPendingPush(serverId: string, store: PendingPushStore): Promise<boolean> {
+export function registerPendingPush(serverId: string, store: PendingPushStore, alerts?: AlertPrefs): Promise<boolean> {
   epoch += 1;
   const request = operations.catch(() => undefined).then(async () => {
     const held = await store.get(serverId);
     const endpoint = held?.subscription.endpoint;
     if (held === undefined || endpoint === undefined) return false;
     try {
-      await registerPushSubscription(held.subscription);
+      await registerPushSubscription(held.subscription, alerts);
       if (held.old_endpoint !== null && held.old_endpoint !== endpoint) await unregisterPushSubscription(held.old_endpoint);
     } catch (error) {
       if (error instanceof ApiError && error.status < 500) await store.clear(serverId, endpoint);
       throw error;
     }
     await store.clear(serverId, endpoint);
+    recovered = { endpoint, alerts: alertsKey(alerts) };
     return true;
   });
   operations = request;
@@ -246,6 +266,7 @@ export function removePushSubscription(): Promise<void> {
   pending = null;
   epoch += 1;
   registered = null;
+  recovered = null;
   const request = operations.catch(() => undefined).then(unsubscribeDevice);
   operations = request;
   return request;
