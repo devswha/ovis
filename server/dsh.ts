@@ -86,10 +86,10 @@ export function completeDshFrames(bytes: Buffer): number {
 }
 
 async function readDsh(path: string): Promise<{ text: string; identity: string }> {
-  const file = await open(path, "r");
+  const file = await open(path, "r").catch(() => unavailable());
   try {
     const s = await file.stat();
-    if (!s.isFile() || s.uid !== process.getuid?.() || s.size > TRANSCRIPT_WINDOW_BYTES) return unavailable();
+    if (!s.isFile() || (process.getuid !== undefined && s.uid !== process.getuid()) || s.size > TRANSCRIPT_WINDOW_BYTES) return unavailable();
     const bytes = Buffer.alloc(s.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -137,6 +137,7 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
   const blocks = (content: any): ConversationPart[] => {
     if (!Array.isArray(content)) return unavailable();
     return content.flatMap((block): ConversationPart[] => {
+      if (block === null || typeof block !== "object") return unavailable();
       if (block.type === "text" && typeof block.text === "string") return [{ kind: "text", text: block.text }];
       if (block.type === "reasoning" && typeof block.text === "string") return block.text ? [{ kind: "thinking", text: block.text }] : [];
       if (block.type === "image" || block.type === "file") return [{ kind: "notice", text: `${block.type} attachment (view in terminal)` }];
@@ -146,6 +147,7 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
   };
   let seq = -1;
   for (const row of rows) {
+    if (row === null || typeof row !== "object") return unavailable();
     if (row.seq !== ++seq || typeof row.type !== "string") return unavailable();
     const data = row.data;
     if (row.type === "request/header") {

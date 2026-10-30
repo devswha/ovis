@@ -1,4 +1,3 @@
-import { resolveDshTranscript, dshConversation, dshToolOutput } from "./dsh.ts";
 /**
  * Agent session transcripts -> structured conversation turns.
  *
@@ -38,6 +37,7 @@ import { resolveDshTranscript, dshConversation, dshToolOutput } from "./dsh.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
+import { resolveDshTranscript, dshConversation, dshToolOutput } from "./dsh.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";

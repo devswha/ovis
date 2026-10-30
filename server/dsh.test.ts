@@ -13,8 +13,9 @@ async function fixture(run: (path:string)=>Promise<void>) {
  const root=await mkdtemp(join(tmpdir(),"ovis-dsh-")); const dir=join(root,id); await mkdir(dir);
  try {await run(join(dir,"session.v4.jsonl.zstd"));} finally {await rm(root,{recursive:true,force:true});}
 }
+const linuxTest = process.platform === "linux" ? test : test.skip;
 describe("native dsh conversation",()=>{
- test("shows an unwritten new process as empty but does not guess a resumed session",async()=>{
+ linuxTest("shows an unwritten new process as empty but does not guess a resumed session",async()=>{
  await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--profile","tui"]}]})).rejects.toBeInstanceOf(ConversationNotStarted);
  try {await resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--resume","missing"]}]});throw Error("unexpected binding");}catch(error){expect(error).toBeInstanceOf(ConversationUnavailable);expect(error).not.toBeInstanceOf(ConversationNotStarted);}
  });
@@ -27,6 +28,10 @@ describe("native dsh conversation",()=>{
  expect(()=>projectDsh(JSON.stringify({...header,version:5})+"\n","x")).toThrow(ConversationUnavailable);
  expect(()=>projectDsh(log(),"x","other")).toThrow(ConversationUnavailable);
  expect(()=>projectDsh(log(event("user/message",message("x"),1)),"x")).toThrow(ConversationUnavailable);
+ });
+ test("rejects malformed event and content values with the terminal fallback",()=>{
+ expect(()=>projectDsh(log(null),"x")).toThrow(ConversationUnavailable);
+ expect(()=>projectDsh(log(event("user/message",{...message("x"),content:[null]},0)),"x")).toThrow(ConversationUnavailable);
  });
  test("reads concatenated compressed frames and ignores an incomplete final append",async()=>fixture(async path=>{
  const first=Bun.zstdCompressSync(log(event("user/message",message("hello"),0)));
@@ -47,6 +52,9 @@ describe("native dsh conversation",()=>{
  rows[0]=event("user/message",message("changed"),0);await writeFile(path,Bun.zstdCompressSync(log(...rows)));
  await expect(dshConversation(path,{before:page.cursor!})).rejects.toBeInstanceOf(HistoryChanged);
  }));
+ test("uses the terminal fallback when the bound log disappears",async()=>fixture(async path=>{
+ await expect(dshConversation(path)).rejects.toBeInstanceOf(ConversationUnavailable);
+ }));
  test("reads plain logs and waits for an unfinished JSONL line",async()=>fixture(async compressed=>{
  const path=compressed.replace(".zstd","");
  await writeFile(path,log(event("user/message",message("hello"),0))+"{unfinished");
@@ -56,7 +64,7 @@ describe("native dsh conversation",()=>{
  const p=projectDsh(log(event("user/message",message("original"),0),event("user/message",{...message("summary"),source:{kind:"compact-checkpoint"}},1),event("assistant/message",{message:{role:"assistant",content:[{type:"text",text:"partial"}]}},2),event("turn/end",{reason:{kind:"cancelled"}},3)),"inode");
  expect(p.turns[0]!.role).toBe("user");expect(p.turns[1]!.parts[0]!.kind).toBe("compact");expect(p.turns[1]!.parts.at(-1)).toMatchObject({kind:"notice",text:"Turn ended: cancelled"});
  });
- test("rejects two held session locks instead of choosing one",async()=>fixture(async first=>fixture(async second=>{
+ linuxTest("rejects two held session locks instead of choosing one",async()=>fixture(async first=>fixture(async second=>{
  await writeFile(first,Bun.zstdCompressSync(log()));await writeFile(second,Bun.zstdCompressSync(log()));
  const locks=await Promise.all([open(join(first,"..","session.lock"),"w"),open(join(second,"..","session.lock"),"w")]);
  try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["/bin/dsh"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);} finally {await Promise.all(locks.map(lock=>lock.close()));}
@@ -65,7 +73,7 @@ describe("native dsh conversation",()=>{
  await writeFile(path,Bun.zstdCompressSync(log(event("tool/call",{callId:"a",name:"shell",arguments:"{}"},0),event("tool/result",{message:{toolCallId:"a",content:[{type:"text",text:"x".repeat(5000)}]}},1))));
  const part=(await dshConversation(path)).turns[0]!.parts[0]!;expect(part.kind).toBe("tool");if(part.kind!=="tool")throw Error();expect(await dshToolOutput(path,part.output_ref!)).toHaveLength(5000);
  }));
- test("binds only an exact held lock",async()=>fixture(async path=>{
+ linuxTest("binds only an exact held lock",async()=>fixture(async path=>{
  await writeFile(path,Bun.zstdCompressSync(log()));const lock=await open(join(path,"..","session.lock"),"w");
  const info={foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh"]}]};
  try {expect(await resolveDshTranscript(info)).toBe(path);await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["unrelated"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
