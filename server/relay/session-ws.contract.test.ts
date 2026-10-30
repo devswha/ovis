@@ -162,6 +162,27 @@ it("revokes an attached websocket with 1008 before ending the encrypted session"
   expect(link.frames.filter((frame) => frame.type === FrameType.WS_CLOSE)).toHaveLength(1);
 });
 
+it("downgrades an attached driver by closing stale authority and readmitting as watch", async () => {
+  const f = fixture();
+  const { link, device } = await connection(f);
+  const paneId = await pane(f);
+  const terminal = await attach(link, paneId);
+  f.app.context.services.devices.update(device.id, { role: "watch" });
+  expect((await bounded(terminal.socket.closed)).code).toBe(1008);
+  expect(await bounded(link.serverError)).toBe("auth_changed");
+  await bounded(link.closed);
+  const next = await relayConnection(f, { websocket: f.app.context.services.core.socketHandlers });
+  expect((await next.auth(device)).role).toBe("watch");
+  const watched = await attach(next, paneId);
+  watched.socket.send({ type: "role", mode: "interact" });
+  expect(await watched.socket.until((message) => message.type === "role-ack")).toMatchObject({ mode: "observe" });
+  watched.socket.send({ type: "input", pane_id: paneId, text: "forbidden\r" });
+  expect(await watched.socket.until((message) => message.type === "error")).toMatchObject({ code: "read_only" });
+  f.app.context.services.devices.revoke(device.id);
+  expect((await bounded(watched.socket.closed)).code).toBe(1008);
+  expect(await bounded(next.serverError)).toBe("auth_revoked");
+});
+
 it("refuses a watch device's input and elevation as on direct sockets", async () => {
   const f = fixture();
   const { link } = await connection(f, "watch");

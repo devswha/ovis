@@ -36,6 +36,26 @@ it("serves health through real protected channels and records the route template
   expect(log).not.toContain("not-logged");
 });
 
+it("keeps a renamed relay device admitted and still revokes its session", async () => {
+  const f = fixture();
+  const device = await relayDevice(f);
+  const link = await relayConnection(f);
+  await link.auth(device);
+  const response = await fetch(`http://127.0.0.1:${f.app.port}/api/devices/${device.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+    body: JSON.stringify({ label: "Renamed phone" }),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ label: "Renamed phone", role: "drive" });
+  await link.flush();
+  expect(link.session.mux.active).toBe(true);
+  expect(link.channel.isOpen()).toBe(true);
+  const health = await link.open("/api/health").response;
+  expect(await health.json()).toMatchObject({ auth: { via: "relay", role: "drive" } });
+  f.app.context.services.devices.revoke(device.id);
+  expect(await bounded(link.serverError)).toBe("auth_revoked");
+});
+
 for (const role of ["drive", "watch"] as const) {
   it(`keeps the preferences PUT contract and ${role} authority`, async () => {
     const f = fixture();

@@ -200,7 +200,7 @@ export class DeviceStore {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
-  /** Called immediately for an already-revoked identity, including an upgrade still in flight. */
+  /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
   onRevoke(id: string, close: () => void): () => void {
     if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
     const listeners = this.revocations.get(id) ?? new Set<() => void>();
@@ -324,9 +324,10 @@ export class DeviceStore {
     try {
       const key = await crypto.subtle.importKey("spki", Buffer.from(device.relay_public_key, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
       const verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
-      // Revocation or an update during WebCrypto must not return a stale principal.
-      if (!verified || !this.devices.includes(device)) return null;
-      return { id: device.id, label: device.label, role: device.role };
+      // Authorization changes during WebCrypto invalidate the proof; a rename does not.
+      const current = this.devices.find((d) => d.id === deviceId);
+      if (!verified || !current || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
+      return { id: current.id, label: current.label, role: current.role };
     } catch (error) {
       if (error instanceof DOMException) return null;
       throw error;
@@ -379,9 +380,11 @@ export class DeviceStore {
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;
-    const listeners = this.revocations.get(id);
-    this.revocations.delete(id);
-    for (const close of listeners ?? []) close();
+    if (updated.role !== device.role) {
+      const listeners = this.revocations.get(id);
+      this.revocations.delete(id);
+      for (const close of listeners ?? []) close();
+    }
     return { id: updated.id, label: updated.label, role: updated.role, created_at: updated.created_at, last_seen_at: updated.last_seen_at, current: false, ...(updated.relay_public_key === undefined ? {} : { via_relay: true as const }) };
   }
 

@@ -162,10 +162,30 @@ describe("relay device", () => {
     expect(closed).toBe(1);
     store.onRevoke(paired.device.id, () => { closed++; });
     store.update(paired.device.id, { label: "Renamed" });
-    expect(closed).toBe(2);
+    expect(closed).toBe(1);
     const nonce = new Uint8Array(32).fill(2);
     expect(await store.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce), "server-a"))
       .toEqual({ id: paired.device.id, label: "Renamed", role: "watch" });
+    store.revoke(paired.device.id);
+    expect(closed).toBe(2);
+  });
+
+  it("keeps relay authority when a rename races key verification", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-rename-race-")));
+    const keys = await relayKeys();
+    const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+    if (!paired) throw new Error("Expected relay pairing");
+    const nonce = new Uint8Array(32).fill(3);
+    const signature = await relaySignature(keys.privateKey, nonce);
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    const during = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+      store.update(paired.device.id, { label: "Renamed" });
+      return verify(...args);
+    });
+    try {
+      expect(await store.matchRelay(paired.device.id, nonce, signature, "server-a"))
+        .toEqual({ id: paired.device.id, label: "Renamed", role: "drive" });
+    } finally { during.mockRestore(); }
   });
 
   for (const lastAttempt of ["cookie", "relay"] as const) {

@@ -248,6 +248,47 @@ async function openEvents(base: string, headers: Record<string, string>, signal:
   return { events, next, ended, setCookies, cookie: setCookies[0]?.split(";")[0] ?? null };
 }
 
+for (const action of ["revoke", "role change"] as const) {
+it(`keeps native WS and SSE open on rename until ${action}`, async () => {
+  const root = mkdtempSync(join(tmpdir(), "ovis-native-rename-"));
+  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: root, token: "", tailscaleOwner: null, sidecar: false });
+  const base = `http://127.0.0.1:${server.port}`;
+  const store = server.context.services.devices;
+  const paired = store.pair(store.startPairing().code, "Phone", "drive");
+  if (!paired) throw new Error("Expected pairing");
+  store.match(paired.token);
+  const cookie = `${DEVICE_COOKIE}=${paired.token}`;
+  const abort = new AbortController();
+  const client = await connect(`${base.replace("http:", "ws:")}/ws`, cookie);
+  try {
+    const events = await openEvents(base, { cookie }, abort.signal);
+    await events.next((event) => event.type === "machines", "initial roster");
+    const response = await fetch(`${base}/api/devices/${paired.device.id}`, {
+      method: "PATCH", headers: guard, body: JSON.stringify({ label: "Renamed phone" }),
+    });
+    expect(response.status).toBe(200);
+    await response.json();
+    store.update(paired.device.id, { role: "drive" });
+    const acknowledged = nextMessage(client.socket, (message) => message.type === "role-ack", "role after rename");
+    client.socket.send(JSON.stringify({ type: "role", mode: "observe" }));
+    expect(await acknowledged).toMatchObject({ mode: "observe" });
+    const enrolled = events.next((event) => event.type === "device-paired", "enrollment after rename");
+    store.pair(store.startPairing().code, "Other phone", "drive");
+    await enrolled;
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+    if (action === "revoke") store.revoke(paired.device.id);
+    else store.update(paired.device.id, { role: "watch" });
+    expect((await client.closed).code).toBe(1008);
+    await events.ended;
+  } finally {
+    abort.abort();
+    client.socket.close();
+    server.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+}
+
 /** A browser's cookie jar: what each answer set, by cookie name, and the Cookie header its next request sends. */
 function cookieJar() {
   const cookies = new Map<string, string>();
