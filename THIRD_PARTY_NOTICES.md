@@ -46,6 +46,15 @@ the reading of a tool result's JSON envelope and `tool denied:` / `tool failed:`
 Copyright (c) 2026 Altan Sarisin. The MIT license text below applies. The session binding in
 `server/muse-store.ts` is Ovis's own.
 
+## oh-my-pi figure tokens
+
+`src/lib/svgFigure.ts` adapts the figure token vocabulary and the token and root-tag resolution of
+`prepareSvg` from [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi),
+`packages/tui/src/chat/svg-source.ts`, under MIT, Copyright (c) 2025 Mario Zechner,
+Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The MIT license text
+below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
+Ovis's own.
+
 ## Theme palettes
 
 The CSS theme colors adapt herdr's pinned palettes, with readability adjustments recorded in
