@@ -4,6 +4,8 @@
 # BROWSER_WORKERS: worker count for parallel mode (default: min(cores/2, 6))
 set -euo pipefail
 
+# The relay scripts drive the hosted shell, a build of its own (dist-shell/).
+bun run build:shell
 if [ "${BROWSER_PARALLEL:-}" = "1" ]; then
   exec bun scripts/ci-browser-parallel.ts
 fi
@@ -183,3 +185,5 @@ run_script scripts/machine-conflict-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-shell-browser-qa.ts
+run_script scripts/relay-media-browser-qa.ts
+run_script scripts/relay-e2e-regression.ts

@@ -1,8 +1,8 @@
 import type { WebSocketRoute } from "playwright-core";
 
 /**
- * The shell's wss: origin carried to a test relay, shared by shell and media browser QA. `frame` is
- * told of each frame the relay sends the page, `sent` of each the page sends the relay.
+ * The shell's wss: origin carried to a test relay, shared by the shell, media and end-to-end browser
+ * runs. `frame` hears each frame the relay sends the page, `sent` each frame the page sends.
  */
 export function relayBrowserSocket(ws: WebSocketRoute, address: () => string, frame: () => void = () => {}, release?: Promise<void>, sent: () => void = () => {}): void {
   const queue: (string | Buffer)[] = [];
