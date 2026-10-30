@@ -14,6 +14,7 @@ export interface PaneAttachDeps {
   activeRef: RefObject<boolean>;
   autoSelected: boolean;
   cached: boolean;
+  watched: boolean;
   coarseRef: RefObject<boolean>;
   deferAttachRef: RefObject<(pane: string) => boolean>;
   fontSettledRef: RefObject<FontSettled>;
@@ -67,7 +68,7 @@ export interface PaneAttachDeps {
 }
 
 export function usePaneAttach(deps: PaneAttachDeps): void {
-  const { activeRef, autoSelected, cached, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
+  const { activeRef, autoSelected, cached, watched, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
 
   // Reset on a pane or terminal replacement: a herdr restart can keep the pane ID.
   // Old composition timers must never see the new terminal.
@@ -178,5 +179,5 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
 
   // the message the tab kept its pane for has gone (or was held): out of use, it lets go now
   useEffect(() => { releaseRef.current(); }, [pending]);
-  useEffect(() => { presentationRef.current(); }, [cached, presented, mirrored]);
+  useEffect(() => { presentationRef.current(); }, [cached, watched, presented, mirrored]);
 }

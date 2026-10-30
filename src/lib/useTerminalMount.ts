@@ -54,6 +54,7 @@ export interface TerminalMountDeps {
   baseFontRef: RefObject<number>;
   pinchingRef: RefObject<boolean>;
   cachedRef: RefObject<boolean>;
+  watchedRef: RefObject<boolean>;
   cachedReleaseRef: RefObject<boolean>;
   cancelLeaveRef: RefObject<() => void>;
   cancelTouchRef: RefObject<() => void>;
@@ -168,7 +169,7 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef } = deps;
+  const { activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -1917,8 +1918,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const current = paneRef.current;
         if (!current || embedded || mirroredRef.current || fixedGridRef.current) return;
         if (cachedRef.current && releasedRef.current) {
-          if (watchingRef.current) { socket.unwatch(current); setWatching(false); }
-          // Caching stops the watch, but does not turn an away release into a cache-only release.
+          // A recent tab let go for caching watches its pane while this window is in use and it is among
+          // the most recent ones (watchedRef); otherwise its view stops. An away release stays one.
+          const keep = cachedReleaseRef.current && watchedRef.current && inUse() && !releaseAwayRef.current && socket.canWatch();
+          if (keep && !watchingRef.current) watch(current);
+          else if (!keep && watchingRef.current) { socket.unwatch(current); setWatching(false); }
           return;
         }
         if (releasedRef.current || (!idle && !cachedRef.current
@@ -1935,7 +1939,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         cachedReleaseRef.current = cachedRef.current;
         // A recent tab lets go of its attach, and of the input with it, as any hidden tab does; while
         // this window is in use, herdr's read-only view keeps its screen current for the return
-        if (!cachedRef.current || inUse() && !releaseAwayRef.current) watch(current);
+        if (!cachedRef.current || watchedRef.current && inUse() && !releaseAwayRef.current) watch(current);
         if (idle) {
           // the attach is gone: the next one that takes input starts the quiet spell again
           inputWasReady = false;
@@ -2087,9 +2091,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const back = (): void => {
         if (!presentedRef.current) {
           // a recent tab whose view stopped when the window was left watches again on the way back
-          const current = paneRef.current;
-          if (current && cachedRef.current && releasedRef.current && !watchingRef.current && cachedReleaseRef.current
-            && inUse() && !releaseAwayRef.current && socket.canWatch()) watch(current);
+          if (cachedRef.current && releasedRef.current) release();
           return;
         }
         // the key, click or paste that takes an idle pane back is held with what follows it until the attach

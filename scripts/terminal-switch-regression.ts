@@ -112,11 +112,17 @@ try {
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
         assert.ok(frames.slice(evicting).some((frame) => frame.type === "unwatch" && frame.pane_id === panes[1]), "eviction stops the tab's view");
-        // a phone keeps one recent tab beside the current one, a desktop three
-        const bound = width === 390 ? 2 : 4;
-        assert.equal(await page.locator("[data-layout-pane]").count(), bound, `the ${bound}-tab bound holds`);
+        assert.equal(await page.locator("[data-layout-pane]").count(), 4, "the existing four-tab bound holds");
+        // every recent tab keeps its screen, but a phone watches only the tab before the current one
+        const watching = new Set<string>();
+        for (const sent of frames) {
+          if (sent.type === "watch" && sent.pane_id) watching.add(sent.pane_id);
+          if (sent.type === "unwatch" && sent.pane_id) watching.delete(sent.pane_id);
+        }
+        const phone = width === 390;
+        assert.deepEqual([...watching].sort(), (phone ? [panes[3]!] : [panes[0]!, panes[2]!, panes[3]!]).sort(), "only the most recent hidden tabs watch");
         // Leaving the window stops the cached tabs' views even with releasePaneAway off.
-        const away = new Set(panes.slice(bound === 4 ? 2 : 3, 4));
+        const away = new Set(panes.slice(phone ? 3 : 2, 4));
         const released = Promise.withResolvers<void>();
         const timeout = setTimeout(() => released.reject(new Error("cached views were not stopped")), 5000);
         const observe = ({ payload }: { payload: string | Buffer }) => {
@@ -137,7 +143,7 @@ try {
           for (const socket of sockets) socket.off("framesent", observe);
         }
         // Coming back to the window watches the recent tabs again.
-        const watched = new Set(panes.slice(bound === 4 ? 2 : 3, 4));
+        const watched = new Set(panes.slice(phone ? 3 : 2, 4));
         const rewatched = Promise.withResolvers<void>();
         const rewatchTimeout = setTimeout(() => rewatched.reject(new Error("cached views did not start again on focus")), 5000);
         const onWatch = ({ payload }: { payload: string | Buffer }) => {

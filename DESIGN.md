@@ -1662,11 +1662,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   release flushes the final ratio. A tab/topology change cancels the drag.
 - Every pane keeps its own xterm, attachment, input ownership, lens, chat state and file-path
   context. Only the active pane may take keyboard focus after an asynchronous operation.
-- The four most recently visited tabs (two on a phone: a coarse pointer or a viewport up to 768px,
-  to save its battery) keep their mounted terminal screens current while the browser is in use. A
-  hidden tab lets go of its attach as before, and with it the pane's input and size: it watches the
-  pane through herdr's read-only view (`watch`), drawn for this tab's own grid, so a return shows the
-  pane as it is now while the new attach is made. It cannot take input, focus or the clipboard (OSC 52).
+- The four most recently visited tabs keep their mounted terminal screens, as before. A hidden tab
+  lets go of its attach as before, and with it the pane's input and size; while the browser is in use
+  the most recent ones also watch their pane through herdr's read-only view (`watch`), drawn for the
+  tab's own grid, so a return shows the pane as it is now while the new attach is made. A desktop
+  watches the three hidden ones; a phone (a coarse pointer or a viewport up to 768px) only the tab
+  before the current one, to save its battery, and its older tabs show their last screen until the
+  attach, as before. It cannot take input, focus or the clipboard (OSC 52).
   Leaving the window or eviction stops the view, and coming back to the window starts it again;
   **Use alongside herdr's own window** stops it at the next of those. A reconnect resumes the views
   the connection had, never a hidden attach. This follows Zed's multiple
