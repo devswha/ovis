@@ -46,6 +46,7 @@ import type { AgentStatus, ClientRole, PlanSummary, ServerMessage } from "../../
 import type { PaneControls, PaneView } from "../lib/actions.ts";
 import { usePaneLane } from "../lib/chatLane.ts";
 import { useSettings, type Palette, type ResolvedTheme } from "../lib/settings.ts";
+import { learnFromSend } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { isAppShortcut } from "../lib/shortcuts.ts";
 import { plainPageDirection } from "../lib/pageScroll.ts";
@@ -68,6 +69,7 @@ import { useComposerSends } from "../lib/useComposerSends.ts";
 import { usePeekReturn } from "../lib/usePeekReturn.ts";
 import { useChatCallbacks } from "../lib/useChatCallbacks.ts";
 import { useTypedKeys } from "../lib/useTypedKeys.ts";
+import { mountRole, paneObserving } from "../lib/paneObserving.ts";
 
 /** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
 const PASTE_GUIDANCE_MS = 6000;
@@ -621,6 +623,15 @@ export function PaneTerminal({
     if (active) onConnectionChangeRef.current?.(connected, connectedBefore || connected);
   }, [connected, connectedBefore, active]);
 
+  // what opens outside the pane (a diff's line notes) reads whether this window only watches it
+  const observingMount = useRef(Symbol("pane-terminal")).current;
+  useEffect(() => {
+    if (paneId === null) return;
+    const key = paneStorageId(machineId, paneId);
+    paneObserving.set(key, observingMount, mountRole({ observing, inputReady }));
+    return () => paneObserving.set(key, observingMount, null);
+  }, [machineId, paneId, observing, inputReady, observingMount]);
+
   useEffect(() => {
     if (active) onRoleAckRef.current?.(observing ? "observe" : "interact");
     else {
@@ -895,7 +906,15 @@ export function PaneTerminal({
     }} />
     : null;
 
-  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
+  // a message delivered from Chat names a tab whose pane has no transcript to say which came first (lib/tabLabels.ts);
+  // one held, queued or answering a question does not
+  const autoTabNamesRef = useRef(settings.autoTabNames);
+  autoTabNamesRef.current = settings.autoTabNames;
+  const showSentAndName = useCallback((pane: string, text: string, known: readonly string[] | null, seen: boolean) => {
+    if (autoTabNamesRef.current) learnFromSend(machineIdRef.current, pane, agentRef.current, text);
+    showSentCommand(pane, text, known, seen);
+  }, [showSentCommand]);
+  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
 
   // Capture the owner's pane for the entire upload batch, even across a pane switch.

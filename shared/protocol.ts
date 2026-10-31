@@ -747,6 +747,9 @@ export interface InteractivePrompt {
   answers?: InteractivePromptAnswer[];
   /** whether the prompt can step back to a previous question in a multi-step form */
   can_step_back?: boolean;
+  /** whether the prompt can go on to the next question without answering this one, as the agent's own
+   * key does (omo's Tab, Codex's →, Hermes's Tab): answered with `step_next` */
+  can_step_next?: boolean;
   /** previously selected option index for a single-select step, if any */
   default_option_index?: number | null;
   /** previously selected option indices for a multi-select step, if any */
@@ -819,6 +822,8 @@ export interface PromptAnswer {
   option_indices?: number[];
   custom_text?: string;
   step_back?: boolean;
+  /** to the next question, this one left unanswered (`can_step_next`) */
+  step_next?: boolean;
   step_index?: number;
   /** Unsent edits for the current OpenCode step, saved only when navigating back. */
   draft?: { option_indices: number[]; custom_text: string };

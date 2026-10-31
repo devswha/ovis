@@ -180,8 +180,11 @@ export function ReplyCommentsChip({ comments, storageKey, waiting }: { comments:
   }, [open]);
   if (comments.length === 0) return null;
   const count = comments.length;
+  // a note on a diff line is no comment on the reply: then the chip counts comments alone
+  const onReply = comments.every((item) => item.source === undefined);
   const label = waiting
     ? count === 1 ? t("1 comment waiting") : t("{count} comments waiting", { count })
+    : !onReply ? count === 1 ? t("1 comment") : t("{count} comments", { count })
     : count === 1 ? t("1 comment on the reply") : t("{count} comments on the reply", { count });
   return <div className="composer-quick reply-comments" ref={root}>
     <div className={`reply-comments-chip${waiting ? " is-waiting" : ""}`}>
