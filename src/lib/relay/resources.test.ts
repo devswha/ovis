@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { isRelayResourceTarget, relayResourcePath, relayResourceTarget } from "../../../shared/relay-mux.ts";
 import { fileUrl, projectFaviconUrl } from "../api.ts";
 import { toolGalleryImage, userGalleryImages } from "../chatImages.ts";
@@ -96,6 +96,41 @@ describe("bounded blob resources", () => {
     const transport = { ...nativeTransport, fetch: async () => new Response("<script>bad()</script>", { headers: { "content-type": "text/html" } }) };
     const url = await relayResourceUrl(transport, id, "/api/fs/file?path=a.html&download=1");
     try { expect((await fetch(url)).headers.get("content-type")).toBe("application/octet-stream"); }
+    finally { URL.revokeObjectURL(url); }
+  });
+});
+
+/** This window as a page of the shell whose service worker `worker` controls, for one test. */
+function controlledBy(worker: object, workers: object = { controller: worker }): void {
+  Object.defineProperty(navigator, "serviceWorker", { value: workers, configurable: true });
+  Object.defineProperty(globalThis, "location", { value: new URL(`https://shell.example/s/${id}/`), configurable: true });
+}
+afterEach(() => {
+  Reflect.deleteProperty(navigator, "serviceWorker");
+  Reflect.deleteProperty(globalThis, "location");
+});
+
+function streamTransfers(): boolean {
+  const stream = new ReadableStream();
+  const { port1, port2 } = new MessageChannel();
+  try { port1.postMessage(stream, [stream]); return true; }
+  catch (error) { if (error instanceof DOMException && error.name === "DataCloneError") return false; throw error; }
+  finally { port1.close(); port2.close(); }
+}
+
+describe("the service worker resource path", () => {
+  it("falls back to a blob where this window cannot transfer a stream to the worker", async () => {
+    // Given a runtime that cannot transfer a ReadableStream (Bun, as Safari before 27), under a worker that speaks the resource protocol
+    expect(streamTransfers()).toBe(false);
+    controlledBy({
+      scriptURL: `https://shell.example/s/${id}/sw.js`,
+      postMessage(message: { type: string }, [port]: MessagePort[]) { port?.postMessage({ type: message.type }); },
+    });
+    const transport = { ...nativeTransport, fetch: async () => new Response("image", { headers: { "content-type": "image/png" } }) };
+    // When
+    const url = await relayResourceUrl(transport, id, "/api/fs/file?path=a.png");
+    // Then the page gets a blob, not the worker's scoped URL that serveRelayResources could never answer
+    try { expect(url).toStartWith("blob:"); }
     finally { URL.revokeObjectURL(url); }
   });
 });

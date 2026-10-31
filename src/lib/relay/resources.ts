@@ -45,11 +45,25 @@ export async function relayResourceBlob(response: Response): Promise<Blob> {
   return new Blob(chunks, { type: inline ? mime : "application/octet-stream" });
 }
 
+let transferableStreams: boolean | undefined;
+/** serveRelayResources hands each body to the worker as a transferred stream, which Safari before 27 cannot do. */
+function canTransferStreams(): boolean {
+  if (transferableStreams !== undefined) return transferableStreams;
+  const stream = new ReadableStream();
+  const { port1, port2 } = new MessageChannel();
+  try { port1.postMessage(stream, [stream]); transferableStreams = true; }
+  catch (error) {
+    if (!(error instanceof DOMException && error.name === "DataCloneError")) throw error;
+    transferableStreams = false;
+  } finally { port1.close(); port2.close(); }
+  return transferableStreams;
+}
+
 /** Older shell workers control pages too: require the resource protocol before giving out its URL. */
 const capabilities = new WeakMap<ServiceWorker, Promise<boolean>>();
 export function resourceWorker(serverId: string): Promise<boolean> {
   const worker = typeof navigator === "undefined" ? null : navigator.serviceWorker?.controller;
-  if (!worker || typeof location === "undefined"
+  if (!worker || typeof location === "undefined" || !canTransferStreams()
     || new URL(worker.scriptURL).pathname !== `/s/${serverId}/sw.js`) return Promise.resolve(false);
   const known = capabilities.get(worker);
   if (known) return known;
