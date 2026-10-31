@@ -2,12 +2,13 @@ import { afterEach, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { encodeFrame, FrameType, LIMITS_V1 } from "../../shared/relay-mux.ts";
+import { decodeFrame, encodeFrame, FrameType, LIMITS_V1 } from "../../shared/relay-mux.ts";
 import { MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { MachineEvent } from "../../shared/machines.ts";
 import { handleRequest } from "../dispatch.ts";
 import { PairingRateLimitedError, readDeviceRegistry } from "../devices.ts";
 import { machineEventsClock, machineEventsQueuedBytes } from "../machine-api.ts";
+import { PortalService } from "../portal.ts";
 import { relayHeaders, RELAY_ORIGIN } from "./session.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
 
@@ -260,30 +261,58 @@ it("drops all forged identity headers at the Request boundary", async () => {
 
 it("drops forged headers on the encrypted wire and dispatches with synthetic origin", async () => {
   const f = fixture();
+  const portal = new PortalService({ stateDir: f.stateDir });
+  f.app.context.services.options.portal = portal;
+  const proof = spyOn(portal, "vouches").mockReturnValue(true);
+  const portalRole = spyOn(portal, "roleFor").mockReturnValue("drive");
+  const device = await relayDevice(f, "watch");
   const handled = deferred<Request>();
   const link = await relayConnection(f, { dispatch: async (request, context) => {
+    expect(context.peer).toMatchObject({ kind: "relay", device: { id: device.id, role: "watch" } });
     handled.resolve(request);
     return handleRequest(request, context);
   } });
-  const device = await relayDevice(f);
-  await link.auth(device);
-  const metadata = new TextEncoder().encode(JSON.stringify({
-    device_id: device.id, method: "GET", target: "/api/health",
-    headers: [["cookie", "forged"], ["origin", "https://evil.example"], ["authorization", "Bearer forged"],
-      ["host", "evil.example"], ["x-forwarded-for", "127.0.0.1"], ["tailscale-user-login", "owner@example.com"]], body: "none",
-  }));
-  const frame = new Uint8Array(8 + metadata.length);
-  frame.set([1, FrameType.HTTP_OPEN, 0, 0, 0, 0, 0, 1]);
-  frame.set(metadata, 8);
-  link.transformClientFrame = (bytes) => bytes[1] === FrameType.HTTP_OPEN ? frame : bytes;
-  const response = await link.open("/api/health").response;
-  expect(response.status).toBe(200);
-  await response.text();
-  const request = await bounded(handled.promise);
-  expect(request.headers.get("origin")).toBe(RELAY_ORIGIN);
-  expect(request.headers.get("sec-fetch-site")).toBe("same-origin");
-  for (const name of ["cookie", "authorization", "host", "x-forwarded-for", "tailscale-user-login"]) {
-    expect(request.headers.has(name)).toBe(false);
+  try {
+    expect(await link.auth(device)).toMatchObject({ device_id: device.id, role: "watch" });
+    // Inject after mux serialization but before encryption, bypassing the client's header filter.
+    link.transformClientFrame = (bytes) => {
+      const decoded = decodeFrame(bytes);
+      if (decoded.type !== FrameType.HTTP_OPEN) return bytes;
+      const metadata = new TextEncoder().encode(JSON.stringify({
+        ...decoded.payload,
+        headers: [["cookie", "forged"], ["origin", "https://evil.example"], ["authorization", "Bearer forged"],
+          ["host", "evil.example"], ["x-forwarded-for", "127.0.0.1"], ["tailscale-user-login", "owner@example.com"],
+          ["x-portal-proof", "valid-portal-proof"], ["x-portal-user", "owner"], ["x-portal-auth", "credential"]],
+      }));
+      const frame = new Uint8Array(8 + metadata.length);
+      frame.set(bytes.subarray(0, 8));
+      frame.set(metadata, 8);
+      return frame;
+    };
+    const response = await link.open("/api/health").response;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      auth: { authenticated: true, via: "relay", role: "watch" },
+      security: { observed_ingress: "relay" },
+    });
+    const request = await bounded(handled.promise);
+    expect(request.headers.get("origin")).toBe(RELAY_ORIGIN);
+    expect(request.headers.get("sec-fetch-site")).toBe("same-origin");
+    for (const name of ["cookie", "authorization", "host", "x-forwarded-for", "tailscale-user-login",
+      "x-portal-proof", "x-portal-user", "x-portal-auth"]) {
+      expect(request.headers.has(name)).toBe(false);
+    }
+    const write = await link.open("/api/preferences", { method: "PUT" }).response;
+    expect(write.status).toBe(403);
+    expect(await write.json()).toMatchObject({ error: { code: "read_only" } });
+    expect(link.channel.securityMode()).toBe("protected");
+    expect(link.daemon.securityMode()).toBe("protected");
+    expect(proof).not.toHaveBeenCalled();
+    expect(portalRole).not.toHaveBeenCalled();
+  } finally {
+    proof.mockRestore();
+    portalRole.mockRestore();
+    await portal.shutdown();
   }
 });
 
