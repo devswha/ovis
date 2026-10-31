@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ConversationPart, ConversationTurn, ConversationResponse } from "../shared/protocol.ts";
+import { imageType, inlineImageType } from "./codex-images.ts";
 import { toolSummary } from "./transcript-records.ts";
 import { trimOutput } from "./tool-output.ts";
 
@@ -221,6 +222,7 @@ export function parseGrokTranscript(text: string, path?: string, wholeCall?: str
         assistant = undefined; calls.clear(); turns.push(user);
       }
       if (meta.hideFromScrollback !== true) appendText(user!, record(u.content).text);
+      for (const picture of updatePictures(u)) user!.parts.push({ kind: "image", media_type: picture.mediaType, ref: `grok-image:${digestOf(picture.data)}` });
       continue;
     }
     if (!["agent_message_chunk", "tool_call", "tool_call_update"].includes(String(u.sessionUpdate))) continue;
@@ -259,6 +261,9 @@ export function parseGrokTranscript(text: string, path?: string, wholeCall?: str
       if (block.type === "diff") call.diffs.set(hash(JSON.stringify(block)), block);
     }
     const output = outputText([...call.diffs.values(), ...content.filter((block) => record(block).type !== "diff")]);
+    const images = [...new Set(updatePictures(fields).map((picture) => `${picture.mediaType}\0grok-image:${digestOf(picture.data)}`))]
+      .map((key) => ({ media_type: key.slice(0, key.indexOf("\0")), ref: key.slice(key.indexOf("\0") + 1) }));
+    if (images.length > 0) call.part.images = images; else delete call.part.images;
     delete call.part.output_ref; delete call.part.output_size;
     if (wholeCall === id) call.part.output = output.length > 2_000_000 ? `${output.slice(0, 2_000_000)}\n… trimmed` : output;
     else trimOutput(call.part, output, path ? outputRef(path, id) : `grok:${hash(id + output)}`);
@@ -285,6 +290,67 @@ export function grokToolOutput(path: string, ref: string): string | null {
         return turns.flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool")[at]?.output ?? null;
       } finally { closeSync(fd); }
     }
+  } catch { /* changed, incomplete or unavailable history */ }
+  return null;
+}
+
+/**
+ * A picture Grok holds inline in its update log: a prompt's `{ type: "image", data, mimeType }` chunk,
+ * or one in a tool update's content (`{ type: "content", content: { type: "image", ... } }`), as ACP
+ * writes them (1.0.67). The chat names it `grok-image:<sha256 of its bytes>`.
+ */
+export const GROK_IMAGE_REF = /^grok-image:([a-f0-9]{64})$/;
+
+/** The pictures `blocks` carry that the chat shows: a raster declared as one, within MAX_IMAGE_BYTES (inlineImageType). */
+function pictures(blocks: unknown[]): { mediaType: string; data: string }[] {
+  return blocks.flatMap((block) => {
+    const image = record(block);
+    const mediaType = image.type === "image" ? inlineImageType(image.mimeType, image.data) : null;
+    return mediaType === null ? [] : [{ mediaType, data: image.data as string }];
+  });
+}
+
+/** The pictures one update carries: a visible prompt chunk's, or a tool update's content blocks'. */
+function updatePictures(u: RecordValue): { mediaType: string; data: string }[] {
+  if (u.sessionUpdate === "user_message_chunk") return record(u._meta).hideFromScrollback === true ? [] : pictures([u.content]);
+  if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update" || !Array.isArray(u.content)) return [];
+  return pictures(u.content.flatMap((block) => record(block).type === "content" ? [record(block).content] : []));
+}
+
+const digestOf = (data: string): string => createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
+
+/**
+ * The picture `ref` names in the Grok update log `path`, read only from the prompts its active
+ * history keeps (grokProjection: a prompt rewound away serves nothing), and only when its bytes
+ * are a raster within MAX_IMAGE_BYTES that hash to the digest the ref names. Null for anything else.
+ */
+export async function grokImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  const digest = GROK_IMAGE_REF.exec(ref)?.[1];
+  if (digest === undefined) return null;
+  try {
+    const { segments } = grokProjection(path, statSync(path));
+    const fd = openSync(path, "r");
+    try {
+      for (const segment of segments) {
+        for (let at = segment.start; at < segment.end;) {
+          // the projection holds every record to MAX_LINE, so a record is read whole
+          const bytes = Buffer.alloc(Math.min(segment.end - at, MAX_LINE + 1));
+          const read = readSync(fd, bytes, 0, bytes.length, at);
+          const newline = bytes.subarray(0, read).indexOf(10);
+          if (read === 0 || newline === -1) return null;
+          const line = bytes.subarray(0, newline).toString("utf8");
+          at += newline + 1;
+          if (!line.includes('"image"')) continue;
+          const event = grokEvent(line, basename(dirname(path)));
+          for (const picture of event === null ? [] : updatePictures(event.update)) {
+            if (digestOf(picture.data) !== digest) continue;
+            const data = Buffer.from(picture.data, "base64");
+            return imageType(data) === picture.mediaType ? { mediaType: picture.mediaType, bytes: new Uint8Array(data) } : null;
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+    } finally { closeSync(fd); }
   } catch { /* changed, incomplete or unavailable history */ }
   return null;
 }

@@ -6,7 +6,7 @@ import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtemp
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { forgetTranscriptState, HistoryChanged, transcriptPage } from "./conversation.ts";
-import { grokToolOutput, grokProjection, GrokUnavailable, parseGrokTranscript } from "./grok.ts";
+import { grokImage, grokToolOutput, grokProjection, GrokUnavailable, parseGrokTranscript } from "./grok.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { grokHeldSessionsFromLsof, grokHomeFromEnvironment, grokLsofEvidence, grokPaneProcesses, grokTranscriptPath, isGrokExecutable, resolveGrokStore } from "./grok-store.ts";
 import * as herdr from "./herdr/client.ts";
@@ -57,6 +57,27 @@ describe("Grok native event adapter", () => {
     expect(JSON.parse(part.input).variant).toBe("Bash");
     expect(part.output).toBe("FICTIONAL_TOOL_OUTPUT\n");
     expect(page().turns.at(-1)!.parts.at(-1)).toEqual({ kind: "text", text: "FICTIONAL_AFTER_TOOL", phase: "final_answer" });
+  });
+  test("names the pictures a recorded 1.0.67 session sent and read, and reads each back by its digest", async () => {
+    const recorded = readFileSync(new URL("./fixtures/grok/pictures-1.0.67.jsonl", import.meta.url), "utf8");
+    const red = "grok-image:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
+    const blue = "grok-image:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
+    const own = join(root, "sessions", "%2Ftmp%2Fgrok-proj", "01a19135-9ed8-7802-9f7f-c2c74a10a956", "updates.jsonl");
+    mkdirSync(dirname(own), { recursive: true });
+    writeFileSync(own, recorded);
+    const turns = transcriptPage("grok-transcript", own).turns;
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(turns[0]!.parts.slice(1)).toEqual([{ kind: "image", media_type: "image/png", ref: red }]);
+    expect(turns[1]!.parts.find((part) => part.kind === "tool")).toMatchObject({ name: "read_file", images: [{ media_type: "image/png", ref: blue }] });
+    for (const ref of [red, blue]) {
+      const image = await grokImage(own, ref);
+      expect(image?.mediaType).toBe("image/png");
+      expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("grok-image:".length));
+    }
+    expect(await grokImage(own, `grok-image:${"0".repeat(64)}`)).toBeNull();
+    // a prompt rewound away leaves the active history: its picture is no longer served
+    appendFileSync(own, JSON.stringify({ timestamp: 1700000000, method: "_x.ai/session/update", params: { sessionId: "01a19135-9ed8-7802-9f7f-c2c74a10a956", update: { sessionUpdate: "rewind_marker", target_prompt_index: 0 } } }) + "\n");
+    expect(await grokImage(own, red)).toBeNull();
   });
   test("text chunks, hidden boundaries and synthetic prompts", () => {
     const turns = parseGrokTranscript(user(0, "hello ") + user(0, "world") + answer("one ") + answer("two") + user(1, "hidden", { hideFromScrollback: true }) + answer("separate answer") + user(2, "visible", { syntheticPrompt: true }));
