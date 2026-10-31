@@ -170,6 +170,16 @@ export class RelayLink {
       }, 15_000),
     };
     this.data.set(id, entry);
+    // The relay refuses a client outright once 8 are answered, before this PC hears of it, so a room full
+    // of clients that never sign in would turn everyone away. Keep a place free: the oldest client not
+    // signed in gives way to a new one. A signed-in session is never evicted.
+    if (this.data.size >= MAX_SESSIONS) {
+      const oldest = [...this.data].find(([other, candidate]) => other !== id && !candidate.deviceId);
+      if (oldest) {
+        this.data.delete(oldest[0]);
+        oldest[1].socket.close();
+      }
+    }
     let proofAnswered = false;
     const transport: Transport = {
       onmessage: null, onclose: null, onerror: null,

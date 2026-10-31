@@ -518,7 +518,8 @@ it("closes relay clients that never sign in, so they cannot hold the PC's slots"
   await f.start();
   const offer = await f.offer();
   const squatters = [];
-  for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, offer));
+  // seven: the eighth would already push the oldest out (below)
+  for (let index = 0; index < 7; index += 1) squatters.push(await squatter(f, offer));
   clock.advance(14_999);
   expect(squatters.every((squatting) => squatting.socket.readyState === WebSocket.OPEN)).toBe(true);
   const peer = client(f, offer);
@@ -564,4 +565,33 @@ it("keeps a signed-in client past the sign-in deadline", async () => {
   clock.advance(60_000);
   expect((await peer.http("/api/relay")).status).toBe(200);
   expect(f.service.status().sessions).toBe(1);
+});
+
+it("lets a new client in when every place holds a client that never signed in, evicting the oldest of them", async () => {
+  // a frozen clock: no sign-in deadline fires, only the eviction can make room
+  const f = await fixture(false, { clock: new TestClock() });
+  await f.start();
+  const offer = await f.offer();
+  const squatters = [];
+  for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, offer));
+  // the eighth arrival pushes the oldest out at once (well before a squatter closes on its own, about 10 s in)
+  await bounded(squatters[0]!.closed, 2_000);
+  const peer = await client(f, offer);
+  await bounded(squatters[1]!.closed, 2_000);
+  expect((await peer.http("/api/relay")).status).toBe(200);
+  expect(squatters.slice(2).every((squatting) => squatting.socket.readyState === WebSocket.OPEN)).toBe(true);
+});
+
+it("never evicts a signed-in session to make room", async () => {
+  const f = await fixture(false, { clock: new TestClock() });
+  await f.start();
+  const first = await client(f, await f.offer());
+  const signedIn = [first];
+  for (let index = 0; index < 3; index += 1) signedIn.push(await client(f, await f.offer(), false, first.device));
+  const squatters = [];
+  for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, await f.offer()));
+  const second = await client(f, await f.offer());
+  for (const session of signedIn) expect((await session.http("/api/relay")).status).toBe(200);
+  expect((await second.http("/api/relay")).status).toBe(200);
+  expect(f.service.status().sessions).toBe(5);
 });
