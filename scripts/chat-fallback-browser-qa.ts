@@ -286,16 +286,24 @@ try {
     await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
     const card = page.locator(".prompt-card");
     await card.locator(".prompt-card-words").waitFor({ state: "attached" });
+    // the context, its caption and the question in the card's order, each box whole, and the
+    // context at eight lines at rest (its content, when shorter) and two when the card is short
     const layout = await card.evaluate(node => {
-      const words = node.querySelector(".prompt-card-words")!.getBoundingClientRect();
-      const text = node.querySelector(".prompt-card-words-text")!.getBoundingClientRect();
+      const text = node.querySelector(".prompt-card-words-text")!;
       const caption = node.querySelector(".prompt-card-words .prompt-card-hint")!.getBoundingClientRect();
       const question = node.querySelector(".prompt-card-question")!.getBoundingClientRect();
-      return { wordsBottom: words.bottom, textBottom: text.bottom, captionTop: caption.top, captionBottom: caption.bottom, questionTop: question.top };
+      const bounds = text.getBoundingClientRect();
+      return { textBottom: bounds.bottom, textHeight: bounds.height, textScroll: text.scrollHeight, lineHeight: parseFloat(getComputedStyle(text).lineHeight), captionTop: caption.top, captionBottom: caption.bottom, questionTop: question.top, questionBottom: question.bottom, cardBottom: node.getBoundingClientRect().bottom };
     });
     assert.ok(layout.textBottom <= layout.captionTop, "terminal context and its caption do not overlap");
-    assert.ok(layout.captionBottom <= layout.wordsBottom, "the context wrapper contains its caption even in a short viewport");
-    assert.ok(layout.wordsBottom <= layout.questionTop, "terminal context stays above the question");
+    assert.ok(layout.captionBottom <= layout.questionTop, "the caption stays above the question");
+    if (viewport.height < 600) {
+      assert.ok(layout.textHeight <= 2 * layout.lineHeight + 1, `a short card's context gives way down to two lines (${layout.textHeight}px of ${layout.lineHeight}px lines)`);
+      assert.ok(layout.textScroll > layout.textHeight + 1, "and scrolls the rest in itself");
+      assert.ok(layout.questionBottom <= layout.cardBottom, "so the question is in view without scrolling the card");
+    } else {
+      assert.ok(layout.textHeight >= Math.min(layout.textScroll, 8 * layout.lineHeight) - 1, `at rest the context shows its lines, up to eight (${layout.textHeight}px of ${layout.textScroll}px)`);
+    }
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `claude-question-context-${viewport.width}-${viewport.height}.png`) });
     await card.locator("input.input").scrollIntoViewIfNeeded();
     const answerInView = await card.evaluate(node => {
