@@ -211,6 +211,10 @@ describe("inline markdown", () => {
     for (const end of ["?", "!", ".", ","]) expect(parseInline(`What is $x$${end}`).map((node) => node.type)).toEqual(["text", "math", "text"]);
     expect(parseInline("$3$ apples")).toEqual([{ type: "math", value: "3", dollar: true }, { type: "text", value: " apples" }]);
     expect(parseInline("`$x$`")).toEqual([{ type: "code", value: "$x$" }]);
+    // a code span after a dollar stays a code span: its backtick never joins a formula
+    expect(parseInline("$x `y$` z")).toEqual([{ type: "text", value: "$x " }, { type: "code", value: "y$" }, { type: "text", value: " z" }]);
+    expect(parseInline("Set $FOO `bar$`")).toEqual([{ type: "text", value: "Set $FOO " }, { type: "code", value: "bar$" }]);
+    expect(parseInline("$a`$ b")).toEqual([{ type: "text", value: "$a`$ b" }]);
   });
 
   it("preserves underscores in identifiers while retaining standalone emphasis", () => {
