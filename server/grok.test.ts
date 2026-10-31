@@ -75,6 +75,28 @@ describe("Grok native event adapter", () => {
       expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("grok-image:".length));
     }
     expect(await grokImage(own, `grok-image:${"0".repeat(64)}`)).toBeNull();
+    // escaped JSON names the same picture, and the endpoint finds it as the parser does
+    // Grok only appends: a rewrite here starts the reader afresh
+    writeFileSync(own, recorded.replace('"content":{"type":"image","data"', '"content":{"type":"im\\u0061ge","data"'));
+    forgetTranscriptState();
+    expect(transcriptPage("grok-transcript", own).turns[0]!.parts.slice(1)).toEqual([{ kind: "image", media_type: "image/png", ref: red }]);
+    expect((await grokImage(own, red))?.mediaType).toBe("image/png");
+    writeFileSync(own, recorded);
+    forgetTranscriptState();
+    // a prompt rewound while the lookup reads is not served
+    const rewound = JSON.stringify({ timestamp: 1700000000, method: "_x.ai/session/update", params: { sessionId: "01a19135-9ed8-7802-9f7f-c2c74a10a956", update: { sessionUpdate: "rewind_marker", target_prompt_index: 0 } } }) + "\n";
+    const reading = grokImage(own, red);
+    appendFileSync(own, rewound);
+    expect(await reading).toBeNull();
+    writeFileSync(own, recorded);
+    forgetTranscriptState();
+    // a file moved into the path while the lookup reads is not the one it read: nothing is served
+    const swapping = grokImage(own, red);
+    writeFileSync(`${own}.next`, recorded.replace(/"type":"image","data":"[^"]*","mimeType":"image\/png"/, '"type":"text","text":"gone"'));
+    renameSync(`${own}.next`, own);
+    expect(await swapping).toBeNull();
+    writeFileSync(own, recorded);
+    forgetTranscriptState();
     // a prompt rewound away leaves the active history: its picture is no longer served
     appendFileSync(own, JSON.stringify({ timestamp: 1700000000, method: "_x.ai/session/update", params: { sessionId: "01a19135-9ed8-7802-9f7f-c2c74a10a956", update: { sessionUpdate: "rewind_marker", target_prompt_index: 0 } } }) + "\n");
     expect(await grokImage(own, red)).toBeNull();

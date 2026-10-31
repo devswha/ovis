@@ -1,6 +1,6 @@
 /** Grok's native update log, projected onto active history before the shared pager reads it. */
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ConversationPart, ConversationTurn, ConversationResponse } from "../shared/protocol.ts";
 import { imageType, inlineImageType } from "./codex-images.ts";
@@ -319,35 +319,69 @@ function updatePictures(u: RecordValue): { mediaType: string; data: string }[] {
 
 const digestOf = (data: string): string => createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
 
+/** How much of the update log the image lookup reads at a time, the event loop running between windows. */
+const IMAGE_WINDOW = 1024 * 1024;
+
+/** The lines in [start, end) of the file open at `fd`, each with its byte offset, read a window at a time. */
+async function* segmentLines(fd: number, start: number, end: number): AsyncGenerator<{ line: string; at: number }> {
+  const window = Buffer.alloc(IMAGE_WINDOW);
+  let pieces: Buffer[] = [];
+  let length = 0;
+  let lineStart = start;
+  for (let position = start; position < end;) {
+    const read = readSync(fd, window, 0, Math.min(window.length, end - position), position);
+    if (read === 0) throw new GrokUnavailable();
+    for (let offset = 0; offset < read;) {
+      const newline = window.subarray(0, read).indexOf(10, offset);
+      const stop = newline === -1 ? read : newline;
+      // the projection holds every record to MAX_LINE: a longer one means the file changed under it
+      if (length + stop - offset > MAX_LINE) throw new GrokUnavailable();
+      pieces.push(Buffer.from(window.subarray(offset, stop)));
+      length += stop - offset;
+      if (newline === -1) break;
+      yield { line: Buffer.concat(pieces, length).toString("utf8"), at: lineStart };
+      pieces = []; length = 0;
+      lineStart = position + newline + 1;
+      offset = newline + 1;
+    }
+    position += read;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 /**
  * The picture `ref` names in the Grok update log `path`, read only from the prompts its active
- * history keeps (grokProjection: a prompt rewound away serves nothing), and only when its bytes
- * are a raster within MAX_IMAGE_BYTES that hash to the digest the ref names. Null for anything else.
+ * history keeps (grokProjection: a prompt rewound away serves nothing, also when it is rewound while
+ * the lookup reads), and only when its bytes are a raster within MAX_IMAGE_BYTES that hash to the
+ * digest the ref names. The log is read a window at a time. Null for anything else.
  */
 export async function grokImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const digest = GROK_IMAGE_REF.exec(ref)?.[1];
   if (digest === undefined) return null;
   try {
-    const { segments } = grokProjection(path, statSync(path));
     const fd = openSync(path, "r");
     try {
+      const { segments, revision } = grokProjection(path, statSync(path));
+      // the file read is the one the projection checked, not one moved into its path since
+      const opened = fstatSync(fd);
+      const named = statSync(path);
+      if (opened.dev !== named.dev || opened.ino !== named.ino) return null;
       for (const segment of segments) {
-        for (let at = segment.start; at < segment.end;) {
-          // the projection holds every record to MAX_LINE, so a record is read whole
-          const bytes = Buffer.alloc(Math.min(segment.end - at, MAX_LINE + 1));
-          const read = readSync(fd, bytes, 0, bytes.length, at);
-          const newline = bytes.subarray(0, read).indexOf(10);
-          if (read === 0 || newline === -1) return null;
-          const line = bytes.subarray(0, newline).toString("utf8");
-          at += newline + 1;
-          if (!line.includes('"image"')) continue;
+        for await (const { line, at } of segmentLines(fd, segment.start, segment.end)) {
+          // a picture's type is written "image", or with JSON escapes in it
+          if (!line.includes('"image"') && !line.includes("\\u")) continue;
           const event = grokEvent(line, basename(dirname(path)));
           for (const picture of event === null ? [] : updatePictures(event.update)) {
             if (digestOf(picture.data) !== digest) continue;
             const data = Buffer.from(picture.data, "base64");
-            return imageType(data) === picture.mediaType ? { mediaType: picture.mediaType, bytes: new Uint8Array(data) } : null;
+            if (imageType(data) !== picture.mediaType) return null;
+            // the history may have moved while the lookup read: the record must still be active
+            const current = statSync(path);
+            if (current.dev !== opened.dev || current.ino !== opened.ino) return null;
+            const now = grokProjection(path, current);
+            if (now.revision !== revision || !now.segments.some((kept) => kept.start <= at && at < kept.end)) return null;
+            return { mediaType: picture.mediaType, bytes: new Uint8Array(data) };
           }
-          await new Promise<void>((resolve) => setImmediate(resolve));
         }
       }
     } finally { closeSync(fd); }
