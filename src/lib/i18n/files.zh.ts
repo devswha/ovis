@@ -118,7 +118,7 @@ export const FILES_ZH: Record<string, string> = {
   "Browse folders in the palette": "在命令面板中浏览文件夹",
   "Add a note on this line": "为此行添加备注",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差异行：用方向键选择一行，按 Enter 为其添加备注",
-  "Note added. It goes first in your next message to this pane.": "已添加备注。它会放在发给此窗格的下一条消息最前面。",
+  "Note added. It goes first in the next message you send from this pane's Chat.": "已添加备注。它会放在你从此窗格的聊天发出的下一条消息最前面。",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "点击或轻点一行，或用方向键选择，即可为其添加备注。",
   "Add a note": "添加备注",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "加上此备注后下一条消息会太长。请缩短备注或消息，或删除一条等待中的评论。",
@@ -130,4 +130,5 @@ export const FILES_ZH: Record<string, string> = {
   "Notes go to the pane this diff came from, and it has none.": "备注会发往打开此差异的窗格，但它没有窗格。",
   "The pane this diff came from has closed, so a note has nowhere to go.": "打开此差异的窗格已关闭，备注无处可去。",
   "No agent is running in the pane this diff came from.": "打开此差异的窗格中没有正在运行的代理。",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "另一个窗口正在此窗格中输入，此窗口只能查看。点击窗格开始输入后，再添加备注。",
 };

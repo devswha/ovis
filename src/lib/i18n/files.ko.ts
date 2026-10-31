@@ -118,7 +118,7 @@ export const FILES_KO: Record<string, string> = {
   "Browse folders in the palette": "팔레트에서 폴더 탐색",
   "Add a note on this line": "이 줄에 메모 추가",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "변경 내용 줄: 화살표 키로 줄을 고르고, Enter로 메모를 추가합니다",
-  "Note added. It goes first in your next message to this pane.": "메모를 추가했습니다. 이 패널에 보내는 다음 메시지 맨 앞에 들어갑니다.",
+  "Note added. It goes first in the next message you send from this pane's Chat.": "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다.",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "줄을 클릭하거나 탭하거나 화살표 키로 골라 메모를 추가하세요.",
   "Add a note": "메모 추가",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "이 메모를 넣으면 다음 메시지가 너무 길어집니다. 메모나 메시지를 줄이거나, 대기 중인 코멘트를 지우세요.",
@@ -130,4 +130,5 @@ export const FILES_KO: Record<string, string> = {
   "Notes go to the pane this diff came from, and it has none.": "메모는 이 변경 내용을 연 패널로 가는데, 그 패널이 없습니다.",
   "The pane this diff came from has closed, so a note has nowhere to go.": "이 변경 내용을 연 패널이 닫혀서 메모를 보낼 곳이 없습니다.",
   "No agent is running in the pane this diff came from.": "이 변경 내용을 연 패널에서 실행 중인 에이전트가 없습니다.",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "이 창은 다른 창이 입력하는 동안 이 패널을 보기만 합니다. 패널을 클릭해 입력한 뒤 메모를 추가하세요.",
 };

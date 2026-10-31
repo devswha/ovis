@@ -31,8 +31,8 @@ const COMPOSER_LIMIT = 20_000;
 interface Submit { text: string; agent_only?: true }
 type Language = "en" | "ko";
 const WORDS = {
-  en: { added: "Added line 5", removed: "Removed line 4", unchanged: "Unchanged line 1", add: "Add a note", save: "Add to next message", done: "Note added. It goes first in your next message to this pane." },
-  ko: { added: "추가된 줄 5", removed: "삭제된 줄 4", unchanged: "변경 없는 줄 1", add: "메모 추가", save: "다음 메시지에 추가", done: "메모를 추가했습니다. 이 패널에 보내는 다음 메시지 맨 앞에 들어갑니다." },
+  en: { added: "Added line 5", removed: "Removed line 4", unchanged: "Unchanged line 1", add: "Add a note", save: "Add to next message", done: "Note added. It goes first in the next message you send from this pane's Chat." },
+  ko: { added: "추가된 줄 5", removed: "삭제된 줄 4", unchanged: "변경 없는 줄 1", add: "메모 추가", save: "다음 메시지에 추가", done: "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다." },
 } as const;
 
 async function shot(page: Page, name: string, state: string): Promise<void> {
@@ -178,12 +178,36 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     await form.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("repo-diff-body") === true), true, `${name}: Escape gives the focus back to the diff`);
     await page.locator(".repo-diff-viewer").waitFor();
-    // a typed note is never lost to Escape
+    // a typed note is never lost to Escape, nor to another line's +
     await page.keyboard.press("Enter");
     await field.fill("draft");
     await page.keyboard.press("Escape");
     assert.equal(await form.isVisible(), true, `${name}: Escape keeps a written note`);
+    await pressPlus(page, '[data-line="7"][data-line-type="change-addition"]', false);
+    assert.equal(await field.inputValue(), "draft", `${name}: another line's + keeps the written note`);
+    assert.equal(await form.locator(".repo-diff-line-note-place span").first().innerText(), words.added, `${name}: and its line`);
     await form.getByRole("button", { name: "Cancel", exact: true }).click();
+
+    // a line clicked while Find is open is the one the note goes on, not Find's match
+    await page.keyboard.press("ControlOrMeta+f");
+    await page.locator(".repo-diff-find input").fill("amount");
+    await page.locator(".repo-diff-line-place", { hasText: "Unchanged line 4" }).waitFor();
+    const six = await rowPoint(page, '[data-line="6"][data-line-type="change-addition"]');
+    await page.mouse.click(six.x, six.y);
+    await page.locator(".repo-diff-line-place", { hasText: "Added line 6" }).waitFor();
+    assert.deepEqual(await ringed(page), ["change-addition 6"], `${name}: the clicked line is ringed, not the match`);
+    // a drag that selects code picks no line
+    const seven = await rowPoint(page, '[data-line="7"][data-line-type="change-addition"]');
+    await page.mouse.move(seven.x - 60, seven.y);
+    await page.mouse.down();
+    await page.mouse.move(seven.x + 60, seven.y, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => getSelection()?.type), "Range", `${name}: the drag selected text`);
+    assert.equal(await place(page), "Added line 6", `${name}: selecting code keeps the picked line`);
+    await page.evaluate(() => getSelection()?.removeAllRanges());
+    await page.locator(".repo-diff-find input").focus();
+    await page.keyboard.press("Escape");
+    await page.locator(".repo-diff-find").waitFor({ state: "detached" });
 
     // closed, the viewer leaves the note in the chip; the next message carries it first, for an agent alone
     await page.keyboard.press("Escape");

@@ -224,7 +224,9 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
         return;
       }
       if (event.key !== "Escape") return;
-      // a note being written takes Escape: it closes while empty, and a written one is never lost to it
+      // Escape in the find bar is Find's; otherwise a note being written takes it: it closes while empty, and a written one is never lost to it
+      const inFind = document.activeElement instanceof Element && document.activeElement.closest(".repo-diff-find") !== null;
+      if (findingRef.current && inFind) { event.preventDefault(); closeFind(); return; }
       if (writingRef.current.open) {
         event.preventDefault();
         if (writingRef.current.empty) { setWriting(null); bodyRef.current?.focus({ preventScroll: true }); }
@@ -261,14 +263,18 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   const matches = useMemo(() => findInDiff(findLines, query), [findLines, query]);
   const current = activeIndex !== null && activeIndex < matches.length ? activeIndex : null;
   const activeMatch = current === null ? null : matches[current] ?? null;
-  const step = (direction: 1 | -1): void => setActiveIndex(stepMatch(current, matches.length, direction));
+  const step = (direction: 1 | -1): void => { setActiveIndex(stepMatch(current, matches.length, direction)); setCursor(null); };
   // the line a note goes on: Find's active match while Find is open, else the line picked by a click, a tap or the arrow keys
   const cursorLine = cursor === null ? null : findLines[cursor.index] ?? null;
-  const pointed: DiffFindLine | null = finding && activeMatch !== null ? activeMatch : cursorLine;
+  // a line picked since Find's match moved (a click, a tap, the arrow keys) is the one the note goes on
+  const pointed: DiffFindLine | null = finding && activeMatch !== null && cursor === null ? activeMatch : cursorLine;
+  /** A line's place among the patch's logical lines, by side and number: Find's matches are copies. */
+  const indexOf = (line: DiffFindLine): number => findLines.findIndex((item) => item.side === line.side && item.line === line.line);
   const blocked = note?.blocked ?? null;
   const commentsKey = target.paneId === null ? null : replyCommentsKey(paneStorageId(target.machineId, target.paneId));
   const beginNote = (line: DiffFindLine): void => {
-    if (note === undefined || answer === null || patch === null || blocked !== null) return;
+    // a note being written is never replaced by another line's
+    if (note === undefined || answer === null || patch === null || blocked !== null || (writing !== null && noteText.trim() !== "")) return;
     const quote = diffNoteQuote({ machine: note.machine, repository: answer.repository.root, comparison: capturedComparison(answer, patch), path, line });
     setWriting({ line, quote });
     setNoteText("");
@@ -285,7 +291,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
     if (writing === null || commentsKey === null || target.paneId === null || noteText.trim() === "" || blocked !== null) return;
     const draft = composerDrafts.read(`ovis:composer-draft:${paneStorageId(target.machineId, target.paneId)}`).text;
     // the draft and the comments already waiting stay as they are: a note that would not fit is refused, not cut
-    if (noteOverflows(replyComments.read(commentsKey), draft, writing.quote, noteText)) {
+    if (noteOverflows(replyComments.unreserved(replyComments.read(commentsKey)), draft, writing.quote, noteText)) {
       setNoteError(t("This note would make your next message too long. Shorten the note or the message, or remove a waiting comment."));
       return;
     }
@@ -307,9 +313,8 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
     if (note === undefined || findLines.length === 0 || !(event.target instanceof Element) || event.target.closest("input, textarea, button, a") !== null || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      const from = pointed === null ? -1 : findLines.indexOf(pointed);
+      const from = pointed === null ? -1 : indexOf(pointed);
       const index = from < 0 ? (event.key === "ArrowDown" ? 0 : findLines.length - 1) : Math.min(Math.max(from + (event.key === "ArrowDown" ? 1 : -1), 0), findLines.length - 1);
-      if (finding) setFinding(false);
       setCursor({ index, quiet: false });
       setNoteAdded(false);
     } else if (event.key === "Enter" && pointed !== null) {
@@ -317,7 +322,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
       beginNote(pointed);
     }
   };
-  const mark = finding ? activeMatch : cursorLine === null || cursor === null ? null : { side: cursorLine.side, line: cursorLine.line, start: 0, end: 0, quiet: cursor.quiet };
+  const mark = finding && cursor === null ? activeMatch : cursorLine === null || cursor === null ? null : { side: cursorLine.side, line: cursorLine.line, start: 0, end: 0, quiet: cursor.quiet };
   const unfold = useCallback(() => setFolded(false), []);
   const findCount = query === "" ? "" : current !== null ? t("{current} of {total}", { current: current + 1, total: matches.length }) : matches.length === 0 ? t("No matches") : "";
 
@@ -388,7 +393,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
               <Search size={16} aria-hidden="true" />
               <span className="repo-diff-find-label">{t("Find in diff")}</span>
               <input ref={findInput} className="input" type="search" value={query} maxLength={DIFF_FIND_MAX_QUERY} disabled={patch === null} spellCheck={false}
-                onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }}
+                onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); setCursor(null); }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                   if (event.key === "Enter") { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
@@ -408,7 +413,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
           {...(note !== undefined && patch !== null && shown === null ? { tabIndex: 0, "aria-label": t("Diff lines: the arrow keys pick a line, Enter adds a note on it") } : {})}>{body}</div>
         {note !== undefined && patch !== null && shown === null && writing === null && <div className="repo-diff-line-bar">
           <p className="repo-diff-line-place" role="status">
-            {noteAdded ? t("Note added. It goes first in your next message to this pane.")
+            {noteAdded ? t("Note added. It goes first in the next message you send from this pane's Chat.")
               : blocked !== null ? blocked
               : pointed !== null ? matchPlace(t, pointed)
               : t("Click or tap a line, or use the arrow keys, to add a note on it.")}

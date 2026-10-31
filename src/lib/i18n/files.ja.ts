@@ -118,7 +118,7 @@ export const FILES_JA: Record<string, string> = {
   "Browse folders in the palette": "パレットでフォルダを参照",
   "Add a note on this line": "この行にメモを追加",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差分の行: 矢印キーで行を選び、Enterでメモを追加します",
-  "Note added. It goes first in your next message to this pane.": "メモを追加しました。このペインへの次のメッセージの先頭に入ります。",
+  "Note added. It goes first in the next message you send from this pane's Chat.": "メモを追加しました。このペインのチャットから送る次のメッセージの先頭に入ります。",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "行をクリックまたはタップするか、矢印キーで選んでメモを追加します。",
   "Add a note": "メモを追加",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "このメモを入れると次のメッセージが長すぎます。メモかメッセージを短くするか、待機中のコメントを削除してください。",
@@ -130,4 +130,5 @@ export const FILES_JA: Record<string, string> = {
   "Notes go to the pane this diff came from, and it has none.": "メモはこの差分を開いたペインに送られますが、そのペインがありません。",
   "The pane this diff came from has closed, so a note has nowhere to go.": "この差分を開いたペインが閉じたため、メモの送り先がありません。",
   "No agent is running in the pane this diff came from.": "この差分を開いたペインで実行中のエージェントがありません。",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "別のウィンドウが入力している間、このウィンドウはペインを表示するだけです。ペインをクリックして入力できるようにしてから、メモを追加してください。",
 };

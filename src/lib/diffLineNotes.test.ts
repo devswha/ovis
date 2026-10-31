@@ -70,7 +70,7 @@ describe("diff line notes", () => {
     const patch = largePatch(10, 4);
     expect(capturedComparison(answer("commit", patch, { base: BASE, head: HEAD }), patch)).toBe(`commits ${BASE}..${HEAD}`);
     expect(capturedComparison(answer("branch", patch, { base: "main", head: HEAD, comparison: { repository_root: "/home/me/shop", head_oid: HEAD, base_oid: BASE, merge_base_oid: BASE } }), patch))
-      .toBe(`branch since main: HEAD ${HEAD}, base ${BASE}, merge base ${BASE}`);
+      .toBe(`branch since main: HEAD ${HEAD}, base ${BASE}, merge base ${BASE}, patch ${patchIdentity(patch)}`);
     expect(capturedComparison(answer("staged", patch), patch)).toBe(`staged on HEAD ${HEAD}, patch ${patchIdentity(patch)}`);
     expect(capturedComparison(answer("workspace", patch, { repository: { root: "/r", branch: null, head: null, detached: false, unborn: true } }), patch))
       .toBe(`working tree before the first commit, patch ${patchIdentity(patch)}`);
@@ -86,6 +86,8 @@ describe("diff line notes", () => {
     const draft = "x".repeat(MAX_COMPOSER_CHARS - messageWithComments([...waiting, { id: "", quote: "quote", comment: "note" }], "").length - 2);
     expect(noteOverflows(waiting, draft, "quote", "note")).toBe(false);
     expect(noteOverflows(waiting, `${draft}xyz`, "quote", "note")).toBe(true);
+    // a comment a send in flight carries is not in the next message
+    expect(noteOverflows([...waiting, { id: "big", quote: "q", comment: "z".repeat(MAX_COMPOSER_CHARS) }], "Go ahead", "quote", "note", new Set(["big"]))).toBe(false);
   });
 
   it("says why a pane cannot take a note: none, gone, a watching device, or no agent in it", () => {
@@ -93,7 +95,9 @@ describe("diff line notes", () => {
     expect(noteBlock({ paneId: "p1", pane: agent, watching: false })).toBeNull();
     expect(noteBlock({ paneId: null, pane: undefined, watching: false })).toBe("no-pane");
     expect(noteBlock({ paneId: "p1", pane: undefined, watching: false })).toBe("pane-gone");
+    expect(noteBlock({ paneId: "p1", pane: undefined, watching: false, reachable: false })).toBe("pc-offline");
     expect(noteBlock({ paneId: "p1", pane: agent, watching: true })).toBe("watching");
+    expect(noteBlock({ paneId: "p1", pane: agent, watching: false, observing: true })).toBe("observing");
     expect(noteBlock({ paneId: "p1", pane: { agent: null, agent_status: "unknown" }, watching: false })).toBe("no-agent");
   });
 });

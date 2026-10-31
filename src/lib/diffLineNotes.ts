@@ -22,7 +22,9 @@ export interface DiffNoteCapture {
 
 /** A fence of backticks longer than the longest run in `text` (at least three): no line of it can close the fence. */
 export function codeFence(text: string): string {
-  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((run) => run[0].length));
+  // counted in a loop: a line of a megabyte holds more runs than a spread into Math.max takes in V8
+  let longest = 0;
+  for (const run of text.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
   return "`".repeat(Math.max(3, longest + 1));
 }
 
@@ -37,7 +39,8 @@ export function patchIdentity(patch: string): string {
 }
 
 /**
- * The comparison as it was read: two full commits, a branch's HEAD, base and merge base, or (the
+ * The comparison as it was read: two full commits; a branch's HEAD, base and merge base and the
+ * patch's identity (it compares the working tree, which changes under the same commits); or (the
  * working tree and the index, which have no commit of their own) HEAD and the patch's identity.
  */
 export function capturedComparison(answer: RepoDiffFilePatch, patch: string): string {
@@ -50,7 +53,7 @@ export function capturedComparison(answer: RepoDiffFilePatch, patch: string): st
     case "branch": {
       const pinned = answer.comparison;
       if (pinned === null) return `branch since ${answer.base ?? ""} ${onHead}, patch ${patchIdentity(patch)}`;
-      return `branch since ${answer.base ?? pinned.base_oid}: HEAD ${pinned.head_oid}, base ${pinned.base_oid}, merge base ${pinned.merge_base_oid}`;
+      return `branch since ${answer.base ?? pinned.base_oid}: HEAD ${pinned.head_oid}, base ${pinned.base_oid}, merge base ${pinned.merge_base_oid}, patch ${patchIdentity(patch)}`;
     }
   }
 }
@@ -83,20 +86,24 @@ export function lineAtRow(lines: readonly DiffFindLine[], side: "deletions" | "a
 }
 
 /** Whether the next message would pass the composer's limit with this note and the draft typed so far. */
-export function noteOverflows(waiting: readonly ReplyComment[], draft: string, quote: string, note: string): boolean {
-  return messageWithComments([...waiting, { id: "", quote, comment: note.trim() }], draft).length > MAX_COMPOSER_CHARS;
+export function noteOverflows(waiting: readonly ReplyComment[], draft: string, quote: string, note: string, reserved: ReadonlySet<string> = new Set()): boolean {
+  // a comment a send on its way carries is not in the next message (Composer's `unreserved`)
+  const next = waiting.filter((item) => !reserved.has(item.id));
+  return messageWithComments([...next, { id: "", quote, comment: note.trim() }], draft).length > MAX_COMPOSER_CHARS;
 }
 
-export type NoteBlock = "no-pane" | "pane-gone" | "watching" | "no-agent";
+export type NoteBlock = "no-pane" | "pc-offline" | "pane-gone" | "watching" | "observing" | "no-agent";
 
 /**
  * Why the diff's own pane cannot take a note, or null when it can. Only that pane ever does: never
  * one on another PC, nor whichever is selected now.
  */
-export function noteBlock({ paneId, pane, watching }: { paneId: string | null; pane: { agent?: string | null; agent_status: AgentStatus } | undefined; watching: boolean }): NoteBlock | null {
+export function noteBlock({ paneId, pane, watching, observing = false, reachable = true }: { paneId: string | null; reachable?: boolean; pane: { agent?: string | null; agent_status: AgentStatus } | undefined; watching: boolean; observing?: boolean }): NoteBlock | null {
   if (paneId === null) return "no-pane";
+  if (!reachable) return "pc-offline";
   if (pane === undefined) return "pane-gone";
   if (watching) return "watching";
+  if (observing) return "observing";
   if (pane.agent === null || pane.agent === undefined || pane.agent === "") return "no-agent";
   return null;
 }
@@ -105,8 +112,10 @@ export function noteBlock({ paneId, pane, watching }: { paneId: string | null; p
 export function noteBlockWord(t: Translate, block: NoteBlock): string {
   switch (block) {
     case "no-pane": return t("Notes go to the pane this diff came from, and it has none.");
+    case "pc-offline": return t("That PC is not reachable right now.");
     case "pane-gone": return t("The pane this diff came from has closed, so a note has nowhere to go.");
     case "watching": return t("This device can only watch.");
+    case "observing": return t("This window only watches the pane while another one types in it. Click the pane to type, then add the note.");
     case "no-agent": return t("No agent is running in the pane this diff came from.");
   }
 }

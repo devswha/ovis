@@ -278,7 +278,8 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     lineHoverHighlight: "disabled",
     enableLineSelection: false,
     enableGutterUtility: noting,
-    onLineClick: noting ? ({ annotationSide, lineNumber }) => onLineRef.current?.(annotationSide, lineNumber, false) : undefined,
+    // a click that ends a text selection (copying code) picks no line; a selection in the shadow rows reads as collapsed to the page, so its type tells
+    onLineClick: noting ? ({ annotationSide, lineNumber }) => { if (getSelection()?.type !== "Range") onLineRef.current?.(annotationSide, lineNumber, false); } : undefined,
     unsafeCSS: DIFF_SHADOW_CSS,
     onPostRender,
   }), [style, wrap, theme, colored, onPostRender, noting]);
