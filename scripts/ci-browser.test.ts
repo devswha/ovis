@@ -172,7 +172,6 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
   "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
   "scripts/relay-media-browser-qa.ts", // needs dist-shell and ffmpeg; the lane runs it once the relay e2e lands
-  "scripts/relay-shell-browser-qa.ts", // needs dist-shell; the lane runs it once the relay e2e lands
   "scripts/rewind-browser-qa.ts",
   "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
   "scripts/terminal-file-links-regression.ts",

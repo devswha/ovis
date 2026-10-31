@@ -2,7 +2,9 @@
  * The hosted shell in a real browser against a real PC: dist-shell/ served as Cloudflare Pages
  * would serve it (pages-static.ts) under its enforced policy, a real `createServer` on the
  * isolated herdr test session with its relay turned on, and the Bun relay (relay/bun.ts) between
- * them. Run after `bun run build:shell`.
+ * them. It builds the shell itself (as `bun run build:shell` does) into a folder of its own, so the
+ * browser lane (scripts/ci-browser.sh) runs it with no other step and never against a dist-shell/
+ * older than the checkout.
  *
  * The shell accepts only a wss: relay, and the PC's server only a wss: relay origin, so both name
  * `wss://relay.test`: the server's outbound sockets reach the local relay through the service's
@@ -21,7 +23,6 @@
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,7 @@ import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../sh
 import type { SecureChannel, Transport } from "../shared/relay-e2ee.ts";
 import { encodeFrame, FrameType } from "../shared/relay-mux.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
+import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 import type { RelayOffer } from "../shared/relay-offer.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, PC_ANSWER_MS } from "../src/lib/relay/channel.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -54,7 +56,7 @@ import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 const repo = join(import.meta.dir, "..");
-const evidence = process.env["UI_EVIDENCE_DIR"] ?? null;
+const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const keep = (name: string, text: string): void => { if (evidence) writeFileSync(join(evidence, name), text); };
 const shot = async (page: Page, name: string): Promise<void> => { if (evidence) await page.screenshot({ path: join(evidence, `task-16-${name}.png`) }); };
@@ -120,7 +122,10 @@ const restartRelay = async (): Promise<void> => {
   await bounded(synced.promise, "the PC reconnected to the restarted relay", 45_000);
 };
 
-const site = servePagesSite(join(repo, "dist-shell"), 0);
+const shellDir = mkdtempSync(join(tmpdir(), "ovis-relay-shell-qa-site-"));
+const built = Bun.spawnSync([process.execPath, "--bun", join(repo, "node_modules/.bin/vite"), "build", "--mode", "shell", "--outDir", shellDir, "--emptyOutDir", "--logLevel", "warn"], { cwd: repo, stdout: "inherit", stderr: "inherit" });
+if (built.exitCode !== 0) throw new Error(`the shell build failed with exit code ${built.exitCode}`);
+const site = servePagesSite(shellDir, 0);
 const origin = `http://127.0.0.1:${site.port}`;
 
 /** A fresh pairing offer from the PC, re-based onto the shell host and named for the screens. */
@@ -137,7 +142,16 @@ const scopeOf = (serverId: string): string => `${origin}/s/${serverId}/`;
 
 // ---- the browser side of the relay ----
 
-interface BridgeSocket { url: string; assigned: Promise<void>; pcAnswered: Promise<void> }
+interface BridgeSocket {
+  url: string;
+  assigned: Promise<void>;
+  pcAnswered: Promise<void>;
+  /**
+   * Resolves at the page's next frame to the relay. The page answers a frame only once it has
+   * handled it, so a deadline that frame arms is running by then: a frozen clock is moved only after.
+   */
+  pageReplied(): Promise<void>;
+}
 /**
  * How a context's relay sockets are treated: carried to the relay as they come, carried once
  * `release` says so, or accepted and never answered. Each socket the page opens is reported.
@@ -163,13 +177,16 @@ async function bridgeRelay(context: BrowserContext, bridge: Bridge): Promise<voi
   await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => {
     const assigned = deferred<void>();
     const pcAnswered = deferred<void>();
-    bridge.opened({ url: ws.url(), assigned: assigned.promise, pcAnswered: pcAnswered.promise });
+    let replied = deferred<void>();
+    bridge.opened({ url: ws.url(), assigned: assigned.promise, pcAnswered: pcAnswered.promise, pageReplied: () => replied.promise });
     if (bridge.mode === "silent") return;
     let frames = 0;
     relayBrowserSocket(ws, () => relayUrl(ws.url()), () => {
       frames += 1;
+      // a new wait for the page's answer to this frame
+      replied = deferred<void>();
       if (frames === 1) assigned.resolve(); else pcAnswered.resolve();
-    }, bridge.mode === "hold" ? bridge.release.promise : undefined);
+    }, bridge.mode === "hold" ? bridge.release.promise : undefined, () => replied.resolve());
   });
 }
 
@@ -182,17 +199,31 @@ async function bridgeRelay(context: BrowserContext, bridge: Bridge): Promise<voi
  */
 async function scriptedPc(behaviour: "refuse" | "stall", name: string) {
   const keys = generateKeyPair();
-  const serverId = randomBytes(16).toString("hex");
+  // the relay admits a PC socket only once it proves the key its server_id is derived from (server/relay/link.ts)
+  const serverId = deriveServerId(keys.publicKey);
+  const proof = `&proof=1&public_key=${Buffer.from(keys.publicKey).toString("hex")}`;
+  /** Answers the relay's challenge, the socket's first frame; true while that frame was it. */
+  const proved = (socket: WebSocket, data: unknown, connectionId: string | null, answered: boolean): boolean => {
+    if (answered) return false;
+    const answer = answerServerChallenge(data, keys.secretKey, { server_id: serverId, role: connectionId === null ? "control" : "data", connection_id: connectionId });
+    if (answer === null) throw new Error("scripted PC: the relay sent no server_challenge");
+    socket.send(answer);
+    return true;
+  };
   const sockets: WebSocket[] = [];
   const dataFor = (connectionId: string): void => {
-    const socket = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&connection_id=${connectionId}&v=1`);
+    const socket = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&connection_id=${connectionId}&v=1${proof}`);
     socket.binaryType = "arraybuffer";
     sockets.push(socket);
     const transport: Transport = {
       onmessage: null, onclose: null, onerror: null,
       send: (data) => { socket.send(data); }, close: (code, reason) => socket.close(code, reason),
     };
-    socket.onmessage = (event) => transport.onmessage?.({ data: event.data as string | ArrayBuffer, isBinary: typeof event.data !== "string" });
+    let answered = false;
+    socket.onmessage = (event) => {
+      if (proved(socket, event.data, connectionId, answered)) { answered = true; return; }
+      transport.onmessage?.({ data: event.data as string | ArrayBuffer, isBinary: typeof event.data !== "string" });
+    };
     socket.onclose = (event) => transport.onclose?.(event.code, event.reason);
     let channel: SecureChannel | undefined;
     let incoming = Promise.resolve();
@@ -208,9 +239,11 @@ async function scriptedPc(behaviour: "refuse" | "stall", name: string) {
     } }).then((opened) => { channel = opened; return opened; });
     opening.catch(() => socket.close());
   };
-  const control = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&v=1`);
+  const control = new WebSocket(`ws://127.0.0.1:${relayPort}/v1/ws?server_id=${serverId}&role=server&v=1${proof}`);
   sockets.push(control);
+  let controlAnswered = false;
   control.onmessage = (event) => {
+    if (proved(control, event.data, null, controlAnswered)) { controlAnswered = true; return; }
     const value = JSON.parse(String(event.data)) as { type: string; connection_id?: string; connection_ids?: string[] };
     if (value.type === "sync") for (const id of value.connection_ids ?? []) dataFor(id);
     else if (value.type === "connected" && value.connection_id) dataFor(value.connection_id);
@@ -457,6 +490,7 @@ try {
     await state(page, "connecting").waitFor();
     const socket = await bounded(bridge.next(), "the shell's relay socket");
     await bounded(socket.assigned, "the relay assigned the connection with the PC away");
+    await bounded(socket.pageReplied(), "the page took the assignment and started its handshake");
     // the installed clock keeps ticking between calls, so the deadline is bracketed by a second, not a millisecond
     await page.clock.runFor(PC_ANSWER_MS - 1000);
     assert.equal(await state(page, "connecting").count(), 1, "still connecting a second before the PC's deadline");
@@ -490,10 +524,11 @@ try {
     await context.close();
   }
   {
+    // the offer first: a PC whose relay is gone gives none (409 relay_offline), and its code outlives the relay
+    const offer = await serverOffer();
     await relay!.stop();
     relay = null;
     const { context, page, bridge } = await open();
-    const offer = await serverOffer();
     await pairFrom(page, offer);
     await state(page, "relay-unreachable").waitFor();
     await page.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
@@ -524,7 +559,7 @@ try {
     await context.close();
   }
 
-  // (g) identity changed: a saved key for this PC that is not the offer's; forgetting it pairs again
+  // (g) identity changed: a saved key for this PC that is not the offer's; forgetting it only forgets
   {
     const { context, page, bridge } = await open({ theme: "light" });
     await page.goto(scope);
@@ -539,10 +574,17 @@ try {
     assert.deepEqual(bridge.sockets, [], "a changed identity is refused before any socket opens");
     await shot(page, "identity-changed");
     await page.getByRole("button", { name: "Forget this PC" }).click();
-    await state(page, "connecting").waitFor();
+    await state(page, "forgotten").waitFor();
+    await page.getByRole("heading", { name: "This phone forgot Desk PC" }).waitFor();
+    assert.equal(await saved(page, ID), null, "forgetting removed the saved key");
+    assert.deepEqual(bridge.sockets, [], "forgetting never pairs with the link whose key failed the check");
+    assert.equal(await page.getByRole("button", { name: "Pair", exact: true }).count(), 0, "no Pair from that link");
+    await shot(page, "forgotten");
+    // a new QR code from the PC itself pairs as a first pairing
+    await pairFrom(page, await serverOffer());
     await inApp(page);
-    assert.equal(bridge.sockets.length, 1, "forgetting the PC pairs again over one socket");
-    note("identity-changed: stale key refused with 0 sockets; Forget this PC -> paired again -> app");
+    assert.equal(bridge.sockets.length, 1, "the new QR code pairs over one socket");
+    note("identity-changed: stale key refused with 0 sockets; Forget this PC -> forgotten, key gone, 0 sockets; a new QR code -> paired -> app");
     await context.close();
   }
 
@@ -568,6 +610,7 @@ try {
       await pairFrom(page, pc.offer);
       const socket = await bounded(bridge.next(), "the shell's relay socket");
       await bounded(socket.pcAnswered, "the scripted PC's handshake answer reached the page");
+      await bounded(socket.pageReplied(), "the page took the PC's answer and went on with its handshake");
       await page.clock.runFor(ADMISSION_MS - 1000);
       assert.equal(await state(page, "connecting").count(), 1, "still connecting a second before the admission deadline");
       await page.clock.runFor(1100);
@@ -946,4 +989,5 @@ try {
   await relay?.stop();
   rmSync(stateDir, { recursive: true, force: true });
   rmSync(stateDir2, { recursive: true, force: true });
+  rmSync(shellDir, { recursive: true, force: true });
 }
