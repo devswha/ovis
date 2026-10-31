@@ -337,6 +337,19 @@ describe("a Portal that signs its visitors in", () => {
     expect((await redeem({ ...visitor, cookie }, nextCode.code)).status).toBe(204);
   });
 
+  it("refuses relay controls to a saved-drive visitor, so a relay offer cannot pair a device", async () => {
+    const portal = serving(undefined, true);
+    const visitor = { ...identity, "x-portal-proof": await portal.start(credential) };
+    expect(await health(portal.main, visitor)).toMatchObject({ via: "portal", role: "drive" });
+    for (const target of ["/api/relay/offer", "/api/relay/reset-identity", "/api/relay/stop"]) {
+      const denied = await fetch(`${portal.main}${target}`, {
+        method: "POST", headers: { ...visitor, origin: `https://${HOST}`, "x-herdr-update": "1" },
+      });
+      expect(denied.status, target).toBe(403);
+      expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
+    }
+  });
+
   it("refuses push status before handling a Portal visitor's subscription", async () => {
     const portal = serving();
     const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
