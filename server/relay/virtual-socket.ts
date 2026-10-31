@@ -22,14 +22,28 @@ export class VirtualSocket implements SocketLike {
       this.detach(code, reason);
       closed.resolve();
     };
-    // The mux drains messages admitted before a peer's graceful CLOSE. A local close,
-    // unlike that peer drain, has already detached the core and must accept no more input.
-    stream.onMessage = (message) => !this.closing && !this.ended && stream.live
-      ? handlers.message(this, typeof message === "string" ? message : Buffer.from(message)) : undefined;
+    // As on a native socket, the peer's CLOSE ends the connection once the messages before it
+    // were handed over: input still waiting to be typed then goes nowhere.
+    stream.onPeerClose = ({ code, reason }) => this.detach(code, reason);
+    // Handed over without waiting for the last one's handling, as a native socket does: a role
+    // change must reach the core before a key still in flight is typed. A local close, unlike
+    // the peer's drain, has already detached the core and must accept no more input.
+    stream.onMessage = (message) => {
+      if (this.closing || this.detached || !stream.live) return;
+      void Promise.resolve(handlers.message(this, typeof message === "string" ? message : Buffer.from(message)))
+        .catch(() => { if (stream.live) stream.reset("internal_error"); });
+    };
+  }
+
+  /** The peer closed, and the messages it sent before that are still being handed over. */
+  private get peerDraining(): boolean {
+    return this.stream.closedByPeer && !this.closing && !this.detached && !this.ended && this.stream.live;
   }
 
   get readyState(): number {
     if (this.ended || !this.stream.live) return WebSocket.CLOSED;
+    // A native socket is still open while it hands over the messages before the peer's close.
+    if (this.peerDraining) return WebSocket.OPEN;
     if (this.closing || this.stream.endedIn || this.stream.endedOut) return WebSocket.CLOSING;
     return this.stream.accepted ? WebSocket.OPEN : WebSocket.CONNECTING;
   }
@@ -41,6 +55,9 @@ export class VirtualSocket implements SocketLike {
   }
 
   send(text: string): number {
+    // A reply to such a message: the peer, which closed, would read it before the close, and
+    // our close went out already. Never 0, which the core takes for a stalled socket and closes.
+    if (this.peerDraining) return Buffer.byteLength(text);
     if (this.readyState !== WebSocket.OPEN) return 0;
     const bytes = Buffer.byteLength(text);
     if (this.getBufferedAmount() + bytes > OUTPUT_HARD_BYTES) {
@@ -66,7 +83,7 @@ export class VirtualSocket implements SocketLike {
   }
 
   close(code = 1000, reason = ""): void {
-    if (this.closing || this.ended || !this.stream.live) return;
+    if (this.closing || this.ended || this.detached || !this.stream.live) return;
     this.closing = true;
     // MachineRelay maps upstream disappearance to 1012 on native sockets. Mux carries RESET.
     if (code === 1006 || code === 1012 && this.data.relay) this.stream.reset("upstream_lost");

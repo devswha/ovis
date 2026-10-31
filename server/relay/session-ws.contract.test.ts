@@ -2,10 +2,11 @@ import { afterEach, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import type { ClientMessage, ServerMessage } from "../../shared/protocol.ts";
-import { FrameType } from "../../shared/relay-mux.ts";
+import { decodeFrame, FrameType } from "../../shared/relay-mux.ts";
 import type { createCore } from "../core/index.ts";
 import { handleRequest } from "../dispatch.ts";
-import { herdrRpc, paneSendKeys, paneSendText } from "../herdr/client.ts";
+import * as herdr from "../herdr/client.ts";
+import { herdrRpc, paneRead, paneSendKeys, paneSendText } from "../herdr/client.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS } from "../output-window.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
 import { VirtualSocket } from "./virtual-socket.ts";
@@ -66,6 +67,48 @@ async function attach(link: Link, paneId: string, ack = true) {
   socket.send({ type: "attach", pane_id: paneId, cols: 100, rows: 30, flow_control: "ack" });
   await socket.until((message) => message.type === "pty-data" && message.pane_id === paneId);
   return { socket, get bytes() { return bytes; }, get frames() { return frames; }, get last() { return last; } };
+}
+
+/** Holds the core's next guarded key write before herdr is written to: the key is in flight, not yet typed. */
+function holdKeyWrite() {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const settled = deferred<void>();
+  const send = herdr.paneSendKeys;
+  const held = spyOn(herdr, "paneSendKeys").mockImplementation(async (paneId, keys, socketPath, guard) => {
+    if (!guard) return send(paneId, keys, socketPath);
+    entered.resolve();
+    await release.promise;
+    try { return await send(paneId, keys, socketPath, guard); }
+    finally { settled.resolve(); }
+  });
+  restores.push(() => { release.resolve(); held.mockRestore(); });
+  return {
+    entered: bounded(entered.promise),
+    /** lets the key go on to herdr, which asks its guard first; resolves once that write is done or refused */
+    release() { release.resolve(); return bounded(settled.promise); },
+    restore() { held.mockRestore(); },
+  };
+}
+
+/** Resolves once the pane's output from now on shows `text`. */
+function printed(socket: Awaited<ReturnType<typeof attach>>["socket"], paneId: string, text: string) {
+  let output = "";
+  const shown = deferred<void>();
+  socket.listeners.add((message) => {
+    if (message.type === "pty-data" && message.pane_id === paneId && (output += message.data).includes(text)) shown.resolve();
+  });
+  return bounded(shown.promise);
+}
+
+/** Clears the shell line, runs a marker through herdr and returns the pane's text once the marker printed. */
+async function textAfterMarker(socket: Awaited<ReturnType<typeof attach>>["socket"], paneId: string) {
+  const done = printed(socket, paneId, "DONE");
+  // ^U: the shell drops whatever is left on its line
+  await paneSendText(paneId, "\u0015printf 'D%sE\\n' ON");
+  await paneSendKeys(paneId, ["Enter"]);
+  await done;
+  return (await paneRead({ paneId, source: "recent" })).text;
 }
 
 it("terminal queue isolation over relay", async () => {
@@ -191,6 +234,48 @@ it("refuses a watch device's input and elevation as on direct sockets", async ()
   expect(await terminal.socket.until((message) => message.type === "role-ack")).toMatchObject({ mode: "observe" });
   terminal.socket.send({ type: "input", pane_id: terminal.last?.pane_id ?? "", text: "forbidden\r" });
   expect(await terminal.socket.until((message) => message.type === "error")).toMatchObject({ code: "read_only" });
+});
+
+it("drops a key not yet typed when the phone closes the socket, as a native socket does", async () => {
+  const f = fixture();
+  const { link } = await connection(f);
+  const paneId = await pane(f);
+  const terminal = await attach(link, paneId);
+  const key = holdKeyWrite();
+  // the command line reaches the shell: only its Enter is in question
+  const echoed = printed(terminal.socket, paneId, "ELAY_MAR");
+  terminal.socket.send({ type: "input", pane_id: paneId, text: "printf 'R%sK\\n' ELAY_MAR" });
+  terminal.socket.send({ type: "keys", pane_id: paneId, keys: ["Enter"] });
+  await key.entered;
+  await echoed;
+  terminal.socket.stream.close(1000);
+  expect((await bounded(terminal.socket.closed)).code).toBe(1000);
+  await link.flush();
+  await key.release();
+  key.restore();
+  const probe = await attach(link, paneId);
+  expect(await textAfterMarker(probe.socket, paneId)).not.toContain("RELAY_MARK");
+});
+
+it("refuses a key not yet typed once observe is asked, as a native socket does", async () => {
+  const f = fixture();
+  const { link } = await connection(f);
+  const paneId = await pane(f);
+  const terminal = await attach(link, paneId);
+  const key = holdKeyWrite();
+  // the command line reaches the shell: only its Enter is in question
+  const echoed = printed(terminal.socket, paneId, "ELAY_MAR");
+  terminal.socket.send({ type: "input", pane_id: paneId, text: "printf 'R%sK\\n' ELAY_MAR" });
+  terminal.socket.send({ type: "keys", pane_id: paneId, keys: ["Enter"] });
+  await key.entered;
+  await echoed;
+  terminal.socket.send({ type: "role", mode: "observe" });
+  await link.flush();
+  await key.release();
+  key.restore();
+  expect(await terminal.socket.until((message) => message.type === "role-ack")).toMatchObject({ mode: "observe" });
+  expect(await textAfterMarker(terminal.socket, paneId)).not.toContain("RELAY_MARK");
+  expect(await terminal.socket.until((message) => message.type === "error")).toMatchObject({ code: "input_failed", pane_id: paneId });
 });
 
 it("routes machine_id through MachineRelay and resets upstream loss", async () => {
@@ -389,6 +474,38 @@ it("drains accepted messages before a normal close without replay or duplicate c
   expect(link.frames.filter((frame) => frame.type === FrameType.WS_CLOSE)).toHaveLength(1);
 });
 
+it("ends the connection at the peer's close even while this side's close waits behind output", async () => {
+  const f = fixture();
+  const made = deferred<VirtualSocket>();
+  const detached: number[] = [];
+  const { link } = await connection(f, "drive", {
+    websocket: {
+      open(socket) {
+        if (!(socket instanceof VirtualSocket)) throw new Error("Missing virtual socket");
+        made.resolve(socket);
+      },
+      message() {}, close(_socket, code) { detached.push(code); }, drain() {},
+    },
+  });
+  const stream = link.mux.openWs({ target: "/ws", headers: [], protocols: [] });
+  const release = deferred<void>();
+  // the phone has not read the output yet: no CREDIT, so the server's own CLOSE waits behind it
+  stream.onMessage = () => release.promise;
+  const socket = await bounded(made.promise);
+  try {
+    socket.send("x".repeat(700 * 1024));
+    await link.flush();
+    socket.send("x".repeat(600 * 1024));
+    await link.flush();
+    expect(socket.getBufferedAmount()).toBeGreaterThan(0);
+    stream.close(1000);
+    await link.flush();
+    // a native socket's close handler runs as the close arrives: input still queued goes nowhere
+    expect(detached).toEqual([1000]);
+    expect(socket.readyState).toBe(WebSocket.CLOSING);
+  } finally { release.resolve(); }
+});
+
 it("delivers revocation's 1008 even when graceful draining exhausts its budget", async () => {
   const f = fixture();
   const clock = new TestClock();
@@ -426,37 +543,60 @@ it("delivers revocation's 1008 even when graceful draining exhausts its budget",
   } finally { release.resolve(); }
 });
 
-it("delivers already admitted messages before a peer's graceful close", async () => {
+it("hands admitted messages over before a peer's graceful close, without waiting for their handling", async () => {
   const f = fixture();
   const entered = deferred<void>();
   const release = deferred<void>();
   const messages: string[] = [];
+  const detached: number[] = [];
   const { link } = await connection(f, "drive", {
     websocket: {
       open() {},
-      async message(_socket, raw) {
+      async message(socket, raw) {
         messages.push(String(raw));
+        // answered as connections.send answers: a send refused (0) closes the socket as stalled
+        if (String(raw) === "ping" && socket.send("pong") === 0) socket.close(4008, "output delivery failed");
         if (messages.length === 1) { entered.resolve(); await release.promise; }
       },
-      close() {}, drain() {},
+      close(_socket, code) { detached.push(code); }, drain() {},
     },
   });
   const stream = link.mux.openWs({ target: "/ws", headers: [], protocols: [] });
   const opened = deferred<void>();
   stream.onAccept = () => opened.resolve();
   const closed = deferred<number>();
+  // a reply the server still sends reaches a handler, so this side's close can finish
+  stream.onMessage = () => {};
   stream.onClose = (event) => closed.resolve(event.code);
   await bounded(opened.promise);
+  // A carrier hands a burst over in one turn: the CLOSE then arrives before the messages
+  // before it were handed over, which the mux does one microtask apart.
+  const held: (string | ArrayBuffer)[] = [];
+  const burst = deferred<void>();
+  const receive = link.session.receive.bind(link.session);
+  const holding = spyOn(link.session, "receive").mockImplementation((data) => {
+    held.push(data);
+    if (typeof data !== "string" && decodeFrame(new Uint8Array(data)).type === FrameType.WS_CLOSE) burst.resolve();
+  });
+  restores.push(() => holding.mockRestore());
   try {
     stream.send("first");
+    stream.send("ping");
     stream.send("last");
     stream.close(1000);
+    await bounded(burst.promise);
+    holding.mockRestore();
+    for (const data of held) receive(data);
     await bounded(entered.promise);
     await link.flush();
-    expect(messages).toEqual(["first"]);
-    release.resolve();
+    // a native socket also hands the rest over while "first" is still being handled, still
+    // open for a reply to each, and only then closes
+    expect(messages).toEqual(["first", "ping", "last"]);
+    expect(detached).toEqual([1000]);
     expect(await bounded(closed.promise)).toBe(1000);
+    release.resolve();
     await link.flush();
-    expect(messages).toEqual(["first", "last"]);
+    expect(messages).toEqual(["first", "ping", "last"]);
+    expect(detached).toEqual([1000]);
   } finally { release.resolve(); }
 });

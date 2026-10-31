@@ -354,6 +354,8 @@ export class WsStream extends MuxStream {
   rejection: HttpStream | undefined;
   onAccept: ((protocol: string | null, headers: HeaderList) => void) | undefined;
   onClose: ((event: WsClose) => void) | undefined;
+  /** The peer's graceful CLOSE arrived and every message before it was handled; onClose still follows. */
+  onPeerClose: ((event: Omit<WsClose, "clean">) => void) | undefined;
   private handler: ((message: string | Uint8Array) => void | Promise<void>) | undefined;
   private readonly messages: { data: string | Uint8Array; bytes: number }[] = [];
   private delivering = false;
@@ -361,6 +363,8 @@ export class WsStream extends MuxStream {
   private closing: Payload<typeof FrameType.WS_CLOSE> | undefined;
   private receivedClose: Payload<typeof FrameType.WS_CLOSE> | undefined;
   private notified = false;
+  private peerNotified = false;
+  private peerFirst = false;
   private closeTimer: CancelTimer | undefined;
 
   set onMessage(handler: ((message: string | Uint8Array) => void | Promise<void>) | undefined) {
@@ -458,6 +462,7 @@ export class WsStream extends MuxStream {
       this.pendingInbound--;
       this.engine.releaseMetadata(this, 8);
       this.engine.consume(this, message.bytes);
+      this.peerClosed();
       this.finishClose();
       this.deliver();
     }, () => { if (this.live) this.reset("internal_error"); });
@@ -484,6 +489,7 @@ export class WsStream extends MuxStream {
   receiveClose(payload: Payload<typeof FrameType.WS_CLOSE>): void {
     if (this.receivedClose) { this.reset("stream_protocol_error"); return; }
     this.receivedClose = payload;
+    this.peerFirst = !this.closing && !payload.abort;
     this.endedIn = true;
     if (payload.abort) {
       this.discardIncoming();
@@ -493,6 +499,7 @@ export class WsStream extends MuxStream {
       return;
     }
     if (!this.closing || payload.abort && !this.endedOut) this.close(payload.code, payload.reason, payload.abort);
+    this.peerClosed();
     if (this.endedOut) {
       this.closeTimer?.();
       this.finishClose();
@@ -504,6 +511,13 @@ export class WsStream extends MuxStream {
     if (this.endedIn) {
       this.finishClose();
     } else this.closeTimer = this.engine.timer(() => this.reset("upstream_lost"), 5000);
+  }
+  /** The peer closed gracefully before this side did: messages it sent before that may still be handed over. */
+  get closedByPeer(): boolean { return this.peerFirst; }
+  private peerClosed(): void {
+    if (!this.receivedClose || this.receivedClose.abort || this.pendingInbound || this.peerNotified || !this.live) return;
+    this.peerNotified = true;
+    this.onPeerClose?.({ code: this.receivedClose.code ?? 1005, reason: this.receivedClose.reason });
   }
   private finishClose(): void {
     if (!this.endedIn || !this.endedOut || this.pendingInbound) return;
