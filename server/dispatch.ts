@@ -228,17 +228,18 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
   // identity explicitly given drive in local state cannot use these controls to leave access
   // behind: device changes (including redeeming a pairing code), push subscriptions and their
-  // status, and Portal controls require the owner's app credential.
+  // status, Portal controls and relay controls (an offer carries a live pairing code) require the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || pathname.startsWith("/api/devices/")
+    || pathname.startsWith("/api/relay/")
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
   );
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {
     setRequestRoute("owner-refusal");
-    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal here. Use the access token or a paired device." } }, 403);
+    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal or the relay here. Use the access token or a paired device." } }, 403);
   }
 
   // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return

@@ -132,10 +132,12 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         /api/health and /api/access answers.
  *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
- *  POST   /api/relay/offer               -> { url, expires_at }; a fresh one-time pairing offer
+ *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
+ *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
- *         Relay mutations require drive role, same origin and X-Herdr-Update: 1; offer and reset
- *         additionally require a direct connection. Serve-only installs refuse relay start.
+ *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
+ *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
+ *         Serve-only installs refuse relay start.
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
@@ -397,8 +399,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  beside the X-Portal-Proof of the Portal this server started, so with no token asked. With a
  *  token configured, this PC and its Tailscale login stop counting: only the token, a paired device
  *  and that visitor do. That visitor drives like a paired device but leaves no standing access behind: the
- *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe and
- *  POST /api/portal/* answer it 403 owner_only. Without a token, and while no
+ *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe,
+ *  POST /api/portal/* and POST /api/relay/* answer it 403 owner_only. Without a token, and while no
  *  device is paired, anything that reaches the server is let in as before (the startup
  *  warning says so). Refusals answer 401 `unauthorized` (403 `other_user` for another Tailscale
  *  login, when no token is configured); the upgrade is refused. Static files are always public.

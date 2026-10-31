@@ -13,9 +13,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   }
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
   if (!updateRequestAllowed(request)) return fail("invalid_relay_request", "Use the relay controls from this app.", 403);
-  if (context.peer.kind === "relay" && (pathname === "/api/relay/offer" || pathname === "/api/relay/reset-identity")) {
-    return fail("local_required", "Pair and reset from a direct connection to this PC.", 403);
-  }
+  // A relayed session would hold the relay it runs on; Portal visitors are refused in dispatch.ts (owner_only).
+  if (context.peer.kind === "relay") return fail("local_required", "Control the relay from a direct connection to this PC.", 403);
   try {
     switch (pathname) {
       case "/api/relay/start": {
@@ -29,6 +28,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/offer":
         setRequestRoute("/api/relay/offer");
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
+        // While connecting, a client the offer reaches waits at the relay for this PC; in error nothing may answer it.
+        if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         return reply(service.offer());
       case "/api/relay/reset-identity": {
         setRequestRoute("/api/relay/reset-identity");

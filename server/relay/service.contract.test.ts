@@ -61,6 +61,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get service() { return service; },
     get attempts() { return attempts; },
     get dataOpened() { return dataOpened.promise; },
+    get controlLost() { return controlLost.promise; },
     get base() { return `http://127.0.0.1:${app.port}`; },
     async request(path = "", method = "GET", guarded = true) {
       return fetch(this.base + "/api/relay" + path, { method,
@@ -274,7 +275,7 @@ it("starts, decodes an offer, pairs, authenticates, and carries full HTTP and WS
   const returning = await client(f, offer, false, paired.device);
   expect((await returning.http("/api/relay")).status).toBe(200);
   expect(await (await returning.http("/api/access")).json()).toMatchObject({ relay: { phase: "online" } });
-  for (const path of ["/api/relay/offer", "/api/relay/reset-identity"]) {
+  for (const path of ["/api/relay/offer", "/api/relay/reset-identity", "/api/relay/start", "/api/relay/stop"]) {
     const refused = await returning.http(path, { method: "POST", headers: [["x-herdr-update", "1"]] });
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: { code: "local_required" } });
@@ -462,3 +463,16 @@ it.each(["http://app.example", "https://name:secret@app.example", "https://app.e
     expect(() => new RelayService({ stateDir: tmpdir(), app })).toThrow();
   },
 );
+
+it("refuses an offer while the relay is in error", async () => {
+  const clock = new TestClock();
+  const f = await fixture(false, { clock, random: () => 0.5 });
+  await f.start();
+  const lost = f.controlLost;
+  await f.localRelay.stop();
+  await bounded(lost);
+  expect(f.service.status().phase).toBe("error");
+  const refused = await f.request("/offer", "POST");
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: { code: "relay_offline" } });
+});
