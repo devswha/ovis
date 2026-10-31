@@ -139,9 +139,34 @@ if (RELAY_RESOURCES) self.addEventListener("message", (event) => {
   if (event.data?.type === "ovis-relay-resources-v1") event.ports[0]?.postMessage({ type: "ovis-relay-resources-v1" });
 });
 
+/** A page of this PC's app: its scope on this origin, not its render host or a file under `~`. */
+function ofThisPcApp(url, scope) {
+  try {
+    const address = new URL(url);
+    return address.origin === self.location.origin && address.pathname.startsWith(scope) && !address.pathname.startsWith(`${scope}~`);
+  } catch { return false; }
+}
+
+/**
+ * Whether this PC's own app asked: what a PC's own server gets from its SameSite=Strict cookie,
+ * which another site's link or frame never carries. The Sec-Fetch-* headers are added after the
+ * worker, so it cannot read them: a navigation (a tab, a frame, a download) counts by the page it
+ * came from, and any other request by the page that made it. No referrer (a typed address, or a
+ * page that withheld it) is refused too.
+ */
+async function askedByThisPc(event, scope) {
+  if (event.request.mode === "navigate") return ofThisPcApp(event.request.referrer, scope);
+  const client = event.clientId ? await self.clients.get(event.clientId) : undefined;
+  return client !== undefined && ofThisPcApp(client.url, scope);
+}
+
 /** No caching, including errors. Only controlled windows in this PC's registration are eligible. */
-async function relayResourceResponse(request, target) {
+async function relayResourceResponse(event, target) {
+  const { request } = event;
   const scope = new URL(self.registration.scope).pathname;
+  if (!(await askedByThisPc(event, scope))) {
+    return new Response("Open this file from Ovis.", { status: 403, headers: { "cache-control": "no-store" } });
+  }
   const windows = await self.clients.matchAll({ type: "window" });
   for (const client of windows) {
     const address = new URL(client.url);
@@ -180,7 +205,9 @@ async function relayResourceResponse(request, target) {
         // keeps HTML disguised as PDF out of the HTML parser; script-src also forbids
         // shell-origin script. Rendered HTML runs separately at ~render, not this route.
         const pdf = headers.get("content-type")?.split(";")[0].trim().toLowerCase() === "application/pdf";
-        headers.append("content-security-policy", `${pdf ? "" : "sandbox; "}default-src 'none'; script-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'`);
+        // Only the shell may frame a PC's file, as only the app frames a file of the PC's own server.
+        headers.append("content-security-policy", `${pdf ? "" : "sandbox; "}default-src 'none'; script-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'`);
+        headers.set("x-frame-options", "SAMEORIGIN");
         headers.set("x-content-type-options", "nosniff");
         reader = data.body?.getReader();
         const body = reader ? new ReadableStream({
@@ -224,7 +251,7 @@ self.addEventListener("fetch", (event) => {
     if (url.pathname.startsWith(`${scope}~`)) {
       const target = url.pathname.slice(scope.length + 1) + url.search;
       if (/^\/s\/[0-9a-f]{32}\/$/.test(scope) && new RegExp(RELAY_RESOURCES.target).test(target)) {
-        event.respondWith(relayResourceResponse(request, target));
+        event.respondWith(relayResourceResponse(event, target));
       }
       return;
     }
