@@ -34,6 +34,8 @@ import { attachableIdentity } from "./pty/sidecar.ts";
 import { handleUpdateRequest } from "./update-api.ts";
 import { handleHerdrUpdateRequest } from "./herdr-update.ts";
 import { handlePortalRequest } from "./portal.ts";
+import { handleRelayRequest } from "./relay/routes.ts";
+import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
 import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
@@ -59,6 +61,7 @@ type PortalStartup = { ok: true } | { ok: false; error: unknown };
 
 /** Per-server services shared by socket requests and other dispatch callers. */
 export interface RequestServices {
+  readonly relay: RelayService;
   readonly options: NonNullable<Parameters<typeof createServer>[0]>;
   readonly hostname: string;
   readonly token: string;
@@ -224,18 +227,20 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
   // identity explicitly given drive in local state cannot use these controls to leave access
-  // behind: device changes (including redeeming a pairing code), push subscriptions and their
-  // status, and Portal controls require the owner's app credential.
+  // behind: device changes (including redeeming a pairing code), relay controls (a relay offer
+  // carries a pairing code), push subscriptions and their status, and Portal controls require
+  // the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || pathname.startsWith("/api/devices/")
+    || pathname === "/api/relay" || pathname.startsWith("/api/relay/")
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
   );
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {
     setRequestRoute("owner-refusal");
-    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal here. Use the access token or a paired device." } }, 403);
+    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal or the relay here. Use the access token or a paired device." } }, 403);
   }
 
   // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return
@@ -351,6 +356,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
   }
+  if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
+    return handleRelayRequest(request, pathname, ctx);
+  }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
   // what every browser of this server shares; a watching device reads it and cannot change it (above)
@@ -407,12 +415,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       public_exposure: ingress === "funnel" ? "observed" : "unknown",
     } : undefined;
     const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
-    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...(security ? { security } : {}) }, 200, securityHeaders);
+    const relay = access.level === "full" ? { relay: ctx.services.relay.status() } : {};
+    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}) }, 200, securityHeaders);
     try {
       const info = await ping();
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
-      return jsonResponse({ ok: true, herdr, auth, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
+      return jsonResponse({ ok: true, herdr, auth, ...relay, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } }, 200, securityHeaders);
     } catch (error) {
       return errorResponse(error);
@@ -427,7 +436,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/access") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
-    return jsonResponse(await remoteAccess(ctx.port ?? DEFAULT_PORT), 200, { "cache-control": "no-store" });
+    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/session") {

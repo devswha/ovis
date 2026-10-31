@@ -128,6 +128,16 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
+ *  GET    /api/relay                     -> RelayStatus, no-store; also included in authenticated
+ *         /api/health and /api/access answers.
+ *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
+ *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
+ *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
+ *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
+ *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
+ *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
+ *         Serve-only installs refuse relay start.
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
@@ -389,8 +399,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  beside the X-Portal-Proof of the Portal this server started, so with no token asked. With a
  *  token configured, this PC and its Tailscale login stop counting: only the token, a paired device
  *  and that visitor do. That visitor drives like a paired device but leaves no standing access behind: the
- *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe and
- *  POST /api/portal/* answer it 403 owner_only. Without a token, and while no
+ *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe,
+ *  POST /api/portal/* and POST /api/relay/* answer it 403 owner_only. Without a token, and while no
  *  device is paired, anything that reaches the server is let in as before (the startup
  *  warning says so). Refusals answer 401 `unauthorized` (403 `other_user` for another Tailscale
  *  login, when no token is configured); the upgrade is refused. Static files are always public.
@@ -405,7 +415,9 @@ export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageRe
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, RemoteAccess, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+/** Older servers and the Tailscale-only builder omit relay state. */
+export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
 /**
  * Browser stream keys: how the server tells one browser from another without a credential, so a
@@ -434,6 +446,16 @@ export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, Bin
 export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
+
+/** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
+export interface RelayStatus {
+  readonly phase: "off" | "connecting" | "online" | "error";
+  readonly relay: string;
+  readonly app: string;
+  readonly sessions: number;
+  readonly blocked: null | "serve_only" | "identity_unreadable";
+  readonly error: string | null;
+}
 
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
