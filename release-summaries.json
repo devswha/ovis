@@ -1,4 +1,78 @@
 {
+  "0.4.22": {
+    "en": {
+      "new": [
+        "Portal can sign visitors in by link or login; they watch by default.",
+        "Chat reads DeepSeek Harness conversations on Linux.",
+        "An OmO pane counts and lists its background commands and monitors."
+      ],
+      "improved": [
+        "Drag a key bar key by its handle to reorder it in Settings.",
+        "On phones, same-host links can open in a popup inside the app."
+      ],
+      "fixed": [
+        "Codex Chat shows the conversation again once an answer finishes.",
+        "Codex Chat reads the conversation even after Codex lets go of it.",
+        "Codex Chat works behind Kiro's terminal wrapper on a Mac.",
+        "Claude's context usage counts the session's real window, 1M included.",
+        "A Claude question card stays until the next question replaces it."
+      ]
+    },
+    "ko": {
+      "new": [
+        "Portal 로그인으로 링크나 계정으로 방문자를 들이며, 기본은 보기 전용입니다.",
+        "Linux에서 DeepSeek Harness 대화를 Chat으로 읽습니다.",
+        "OmO 패인이 백그라운드 명령과 모니터를 세고 목록으로 보여 줍니다."
+      ],
+      "improved": [
+        "설정에서 키 바의 키를 손잡이로 끌어 순서를 바꿉니다.",
+        "휴대폰에서 같은 호스트의 링크를 앱 안의 팝업으로 엽니다."
+      ],
+      "fixed": [
+        "답변이 끝난 뒤에도 Codex Chat에 대화가 다시 보입니다.",
+        "Codex가 대화 저장소를 놓은 뒤에도 Codex Chat이 대화를 읽습니다.",
+        "Mac의 Kiro 터미널 래퍼 안에서도 Codex Chat이 동작합니다.",
+        "Claude 컨텍스트 사용량이 1M을 포함해 세션의 실제 한도를 씁니다.",
+        "Claude 질문 카드가 다음 질문이 나올 때까지 그대로 남습니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "Portal のサインインで、リンクやログインから訪問者を招けます(既定は閲覧のみ)。",
+        "Linux で DeepSeek Harness の会話をチャットで読めます。",
+        "OmO のペインが、バックグラウンドのコマンドとモニターを数えて一覧にします。"
+      ],
+      "improved": [
+        "設定で、キーバーのキーをハンドルでドラッグして並べ替えられます。",
+        "スマートフォンでは、同じホストのリンクをアプリ内のポップアップで開けます。"
+      ],
+      "fixed": [
+        "Codex のチャットで、回答が終わった後も会話が表示されるようになりました。",
+        "Codex が会話の保存先を手放した後も、Codex のチャットが会話を読めます。",
+        "Mac の Kiro のターミナルラッパー内でも、Codex のチャットが動きます。",
+        "Claude のコンテキスト使用量が、1M を含むセッションの実際の上限を使います。",
+        "Claude の質問カードが、次の質問に置き換わるまで消えなくなりました。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "Portal 可通过链接或登录让访客进入，默认仅可观看。",
+        "在 Linux 上，聊天可读取 DeepSeek Harness 的对话。",
+        "OmO 窗格会统计并列出其后台命令和监视器。"
+      ],
+      "improved": [
+        "在设置中可按住手柄拖动键栏按键来调整顺序。",
+        "在手机上，同主机链接可在应用内的弹窗中打开。"
+      ],
+      "fixed": [
+        "回答结束后，Codex 聊天会重新显示对话。",
+        "Codex 放开对话存储后，Codex 聊天仍能读取对话。",
+        "在 Mac 的 Kiro 终端包装器中，Codex 聊天也能正常工作。",
+        "Claude 的上下文用量按会话的实际窗口计算，包括 1M。",
+        "Claude 的提问卡片会一直保留，直到下一个问题出现。"
+      ]
+    }
+  },
   "0.4.21": {
     "en": {
       "new": [

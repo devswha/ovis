@@ -7,6 +7,110 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.4.22] - 2026-10-31
+
+### Added
+- Read DeepSeek Harness v4 chat on Linux, including reasoning, tools, and history, for the dsh
+  terminal UIs (dsh-tui, dsh-tui-pi) and headless runs.
+  ([#2453](https://github.com/devswha/ovis/pull/2453) by @jokkopucko)
+- With `OVIS_RUNTIME=herdr-core`, New workspace, New tab and Close work on the PC's herdr-core
+  terminals, and an agent picked in the dialog starts in the new terminal. A workspace or tab made
+  here shows in the Herdr app too, where the app places its own.
+  ([#2449](https://github.com/devswha/ovis/pull/2449))
+- `OVIS_RUNTIME=herdr-core` shows the terminals of the Herdr desktop app (herdr-core, `hc`) instead
+  of herdr's TUI server: the app's spaces and tabs in the sidebar, agent status and alerts from what
+  agents report, and the live terminal through `hc attach`. Requested by @Ploppy3 (#2439).
+  ([#2442](https://github.com/devswha/ovis/pull/2442) by @nahwan-kim)
+- Drag a key bar key by its leading handle to change its order in Settings, with edge scrolling
+  for long moves. Up/down buttons remain available without dragging; Escape cancels a drag.
+  ([#2463](https://github.com/devswha/ovis/pull/2463) by @zerodice0)
+- An OmO pane's background tasks now count and list its background commands (`bash` with
+  `run_in_background`, or a command auto-detached past the foreground window) and its monitors,
+  as a Claude Code pane's background commands are, read from the session's own transcript.
+  Detached eval cells, which already counted, are listed too. A persistent monitor is listed
+  but not counted, and work started before the OmO process now holding the session reads as lost.
+  ([#2468](https://github.com/devswha/ovis/pull/2468) by @Yoonwoo-Ha)
+- **Settings → Phone & devices → Portal** can put Portal's own sign-in in front of the address: a
+  private link, an Ethereum wallet, or Google or company login (OpenID Connect), each with the
+  names, wallets or accounts it lets in. Whoever gets through may watch by default, with no access
+  token asked. Invitations keep a watch role on the server; the owner's app token still drives
+  and paired devices keep their roles. Devices says who signed in. A visitor let in this way cannot
+  pair or revoke devices, subscribe to push alerts or control Portal, and a page of theirs left
+  open loses access within 5 minutes of the link expiring or a sign-out. A private-link Portal
+  offers **Invite someone**: a link for 1, 7, 30 or 90 days, shown once. The app believes who
+  Portal signed in only with a proof it hands that Portal in its environment, so other ways to
+  the app's port cannot pass for it. A sign-in needs Portal v2.7.0 or later, which lists
+  `--auth-identity-proof` and the OIDC flags; the panel says plainly when the installed `portal`
+  does not. Google or company login reads its client secret from
+  `OVIS_PORTAL_OIDC_CLIENT_SECRET`. The default, the access token or a paired device, is
+  unchanged.
+  ([#2065](https://github.com/devswha/ovis/pull/2065) by @rabbitson87)
+- A browser that Portal's sign-in let in can sign out from **Settings → Devices**. One click ends
+  both app and Portal sessions when both exist; it does not sign out of the identity provider.
+  Google or company login shows both callback addresses to register, including the short host.
+  ([#2065](https://github.com/devswha/ovis/pull/2065) by @rabbitson87)
+
+### Changed
+- On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
+  or resizing workspaces, tabs and panes, nor the worktree actions: the Herdr app's window owns that
+  layout, and herdr-core refused them.
+  ([#2451](https://github.com/devswha/ovis/pull/2451))
+- With `OVIS_RUNTIME=herdr-core`, a terminal's live view streams over the server's own connection to
+  herdr-core, instead of an `hc attach` process and a PTY host for every open pane.
+  ([#2447](https://github.com/devswha/ovis/pull/2447))
+
+### Fixed
+- An answer to one of Claude Code's questions (AskUserQuestion) comes back once the terminal shows
+  the next question, the review or nothing. The question just answered, or a generic card from a
+  half-drawn screen, no longer comes back for two seconds after the answer.
+  ([#2466](https://github.com/devswha/ovis/pull/2466) by @jpcarranza94)
+- Claude context uses the session's captured limit, including 1M windows below 200k tokens.
+  ([#2452](https://github.com/devswha/ovis/pull/2452) by @jokkopucko)
+- Codex Chat no longer falls back to the terminal once Codex has let go of its conversation store:
+  Ovis reads the store even when no Codex holds it open, still without writing to it.
+  ([#2446](https://github.com/devswha/ovis/pull/2446))
+- Codex Chat shows a pane's conversation again after an answer finishes: the "Worked for 4s •
+  7:05 PM" line Codex draws below a finished answer no longer keeps the answer from being
+  recognised, which left Chat on the terminal view.
+  ([#2443](https://github.com/devswha/ovis/pull/2443))
+- Copilot Chat recognizes a verified parent-to-child handoff when the parent's complete log first
+  identifies its session at release, without requiring an earlier registration entry.
+  ([#2457](https://github.com/devswha/ovis/pull/2457) by @YuuuXie)
+- With `OVIS_RUNTIME=herdr-core`, starting an agent no longer types into a pane whose own program is
+  not a shell, a terminal Ovis started into a Herdr app space or tab with nothing else live in it
+  keeps its place when the app adopts it, and resuming a Claude session checks the store a new
+  terminal really gets (herdr-core's environment, not Ovis's).
+  ([#2456](https://github.com/devswha/ovis/pull/2456))
+- With `OVIS_RUNTIME=herdr-core`, a pane shows a finished turn only when its program reported it
+  (working, then idle or done): a program's error, a pause it reported, or a report it cleared no
+  longer shows as done.
+  ([#2455](https://github.com/devswha/ovis/pull/2455))
+- Codex Chat on macOS can read a conversation behind Kiro's shell-integration terminal wrapper
+  when the wrapper's nested foreground Codex is uniquely proven, even without a herdr agent label.
+  ([#2420](https://github.com/devswha/ovis/pull/2420) by @cheol-95)
+- Cached nested conversations also require matching wrapper, shell and Codex process start times,
+  so reused process IDs cannot retain a previous conversation's binding.
+  ([#2420](https://github.com/devswha/ovis/pull/2420) by @cheol-95)
+- Same-host web links can open in a closable in-app popup on narrow screens when Web links is set
+  to In the app.
+  ([#2459](https://github.com/devswha/ovis/pull/2459) by @Haeminway1)
+- On the Node PTY host, a terminal whose command exits while its output is paused or still being
+  sent keeps that last output: the host now holds the pty until it has read everything, as the Rust
+  PTY host does, instead of dropping what was left after 200 ms.
+  ([#2461](https://github.com/devswha/ovis/pull/2461))
+- After an answer, the question card stays, waiting, until the next question takes its place. It
+  no longer disappears and comes back between two questions of one form.
+  ([#2467](https://github.com/devswha/ovis/pull/2467) by @jpcarranza94)
+- Before updating a bridge that replaces a PC's independently managed Ovis,
+  verify the replacement's live ownership. A stale descriptor cannot trigger
+  a bundle installation or discard the prior server's reconnect guard.
+  ([#2450](https://github.com/devswha/ovis/pull/2450) by @briantcl1992)
+
+### Maintenance
+- The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
+  it passes on a Linux PC that has a recent Node installed.
+  ([#2448](https://github.com/devswha/ovis/pull/2448) by @briantcl1992)
+
 ## [0.4.21] - 2026-10-30
 
 ### Added
@@ -7311,7 +7415,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/devswha/ovis/compare/v0.4.21...HEAD
+[Unreleased]: https://github.com/devswha/ovis/compare/v0.4.22...HEAD
+[0.4.22]: https://github.com/devswha/ovis/compare/v0.4.21...v0.4.22
 [0.4.21]: https://github.com/devswha/ovis/compare/v0.4.20...v0.4.21
 [0.4.20]: https://github.com/devswha/ovis/compare/v0.4.19...v0.4.20
 [0.4.19]: https://github.com/devswha/ovis/compare/v0.4.18...v0.4.19
