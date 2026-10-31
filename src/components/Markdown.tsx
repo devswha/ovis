@@ -15,6 +15,7 @@ import { type MarkdownImagePreview } from "../lib/markdownImages.ts";
 import { imageSlotStyle, standaloneImage } from "../lib/imageBox.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { MermaidLightbox } from "./MermaidLightbox.tsx";
+import { svgFigurePalette, svgFigureUrl } from "../lib/svgFigure.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { lazyChunk } from "../lib/lazyChunk.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
@@ -105,6 +106,47 @@ function MermaidDiagram({ value }: { value: string }) {
         <Maximize2 aria-hidden="true" />
       </button>
       {zoomed && <MermaidLightbox svg={svg} onClose={() => setZoomed(false)} />}
+    </div>
+  );
+}
+
+/** Counts changes to <html>'s theme attributes (`data-theme`, `data-palette`, inline colors), so a figure redraws in the new colors. */
+function useThemeRevision(): number {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setRevision((value) => value + 1));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette", "style", "class"] });
+    return () => observer.disconnect();
+  }, []);
+  return revision;
+}
+
+/**
+ * A ```svg fence drawn as the figure it is (lib/svgFigure.ts), as an image so its markup never
+ * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
+ * it shows as the code block it is.
+ */
+function SvgFigure({ value }: { value: string }) {
+  const t = useT();
+  const revision = useThemeRevision();
+  const [zoomed, setZoomed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  // `revision` is not read: a change to it may be a new theme, whose colors the palette reads again.
+  // The viewport also writes <html>'s style (lib/viewport.ts): the figure is drawn again only when
+  // a color it reads changed, so a keyboard or resize does not reparse every figure.
+  const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
+  const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
+  const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
+  if (src === null || failed === src) return <CodeBlock language="svg" value={value} />;
+  return (
+    <div className="markdown-mermaid-frame">
+      <div className="markdown-mermaid" onClick={() => setZoomed(true)}>
+        <img src={src} alt={t("Diagram")} draggable={false} onError={() => setFailed(src)} />
+      </div>
+      <button type="button" className="icon-button markdown-mermaid-zoom" onClick={() => setZoomed(true)} aria-label={t("Enlarge diagram")} title={t("Enlarge diagram")}>
+        <Maximize2 aria-hidden="true" />
+      </button>
+      {zoomed && <MermaidLightbox src={src} onClose={() => setZoomed(false)} />}
     </div>
   );
 }
@@ -366,7 +408,9 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
       case "blockquote": return <blockquote key={key}><Blocks blocks={block.blocks} /></blockquote>;
       case "code": return block.language === "mermaid"
         ? <MermaidDiagram key={key} value={block.value} />
-        : <CodeBlock key={key} language={block.language} value={block.value} />;
+        : block.language.toLowerCase() === "svg"
+          ? <SvgFigure key={key} value={block.value} />
+          : <CodeBlock key={key} language={block.language} value={block.value} />;
       case "math": return <MathExpression key={key} value={block.value} displayMode />;
       case "hr": return <hr key={key} />;
       case "table": return (
