@@ -55,7 +55,7 @@ function MathExpression({ value, displayMode = false, dollar = false, fallback }
   const katex = useKatex();
   // a $$ formula keeps its own lines, as written
   const source = fallback ?? (dollar && displayMode
-    ? <span className="markdown-math-source">{`$$\n${value}\n$$`}</span>
+    ? <span className="markdown-math-source">{value.includes("\n") ? `$$\n${value}\n$$` : `$$${value}$$`}</span>
     : <span>{dollar ? `$${value}$` : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>);
   if (!katex || mathNestsTooDeep(value)) return source;
   try {

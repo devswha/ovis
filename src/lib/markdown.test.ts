@@ -86,6 +86,7 @@ describe("parseMarkdown", () => {
       expect(draw("$x^2$ costs $5 and $10")).toMatch(/^(?:(?!katex).)*class="katex"(?:(?!class="katex").)*\$5 and \$10/s);
       // one KaTeX cannot draw shows as written: a $$ formula on its own lines, a math fence as its code
       expect(draw("$$\na \\unknowncommand\nb\n$$")).toContain('<span class="markdown-math-source">$$\na \\unknowncommand\nb\n$$</span>');
+      expect(draw("$$\\unknowncommand$$")).toContain('<span class="markdown-math-source">$$\\unknowncommand$$</span>');
       expect(draw("```math\n\\unknowncommand\n```")).toContain("<pre");
       for (const source of ["$$\nx^2\n$$", "```math\nx^2\n```"]) {
         const html = draw(source);
@@ -190,7 +191,7 @@ describe("inline markdown", () => {
     const text = (value: string): InlineNode[] => [{ type: "text", value }];
     for (const prose of [
       "costs $5 and $10 today", "$5 or $10", "from $5 to $10.", "I paid $5 for X$ and", "$20, $30 and $40",
-      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "Run $HOME/${PATH} now", "$5 or six$", "${HOME} and ${PATH}", "$x$y",
+      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "Run $HOME/${PATH} now", "Use $HOME/$? to inspect it", "cd $HOME/$(whoami)", "echo $A$!", "$5 or six$", "${HOME} and ${PATH}", "$x$y",
     ]) expect(parseInline(prose)).toEqual(text(prose));
     expect(parseInline("$x^2$ and $\\alpha$.")).toEqual([
       { type: "math", value: "x^2", dollar: true }, { type: "text", value: " and " }, { type: "math", value: "\\alpha", dollar: true }, { type: "text", value: "." },
