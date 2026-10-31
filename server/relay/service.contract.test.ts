@@ -231,7 +231,7 @@ async function squatter(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffe
   mux.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0,
     payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
   await bounded(welcome.promise);
-  return { closed: closed.promise };
+  return { socket, closed: closed.promise };
 }
 
 it("relay off makes no connection", async () => {
@@ -505,6 +505,7 @@ it("closes relay clients that never sign in, so they cannot hold the PC's slots"
   const squatters = [];
   for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, offer));
   clock.advance(14_999);
+  expect(squatters.every((squatting) => squatting.socket.readyState === WebSocket.OPEN)).toBe(true);
   const peer = client(f, offer);
   clock.advance(1);
   await bounded(Promise.all(squatters.map((squatting) => squatting.closed)));
@@ -538,4 +539,14 @@ it("refuses an offer while the relay is in error", async () => {
   const refused = await f.request("/offer", "POST");
   expect(refused.status).toBe(409);
   expect(await refused.json()).toMatchObject({ error: { code: "relay_offline" } });
+});
+
+it("keeps a signed-in client past the sign-in deadline", async () => {
+  const clock = new TestClock();
+  const f = await fixture(false, { clock, random: () => 0.5 });
+  await f.start();
+  const peer = await client(f, await f.offer());
+  clock.advance(60_000);
+  expect((await peer.http("/api/relay")).status).toBe(200);
+  expect(f.service.status().sessions).toBe(1);
 });
