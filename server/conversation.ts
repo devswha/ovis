@@ -102,6 +102,12 @@ export const DEFAULT_PAGE_PROMPTS = MAX_PAGE_PROMPTS;
 
 /** A single turn longer than a window still gets a page of its own, up to this. */
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;
+/**
+ * How far back a Copilot page reaches for the start of its turn: Copilot interns every picture of a
+ * turn in it as base64 (`session.binary_asset`), so one turn with a few pictures passes a window
+ * (#2478). Its pages widen to the turn's start, the newest one too, up to this.
+ */
+const COPILOT_PAGE_BYTES = 4 * MAX_PAGE_BYTES;
 
 /** The prompts a page keeps for this read: the reader's choice, inside the server's own bounds. */
 function pagePrompts(page: ConversationPage): number {
@@ -436,22 +442,36 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
  * line that opens a turn, at `floor` (a held start) or at the very beginning. An
  * older page is read once, so for a turn longer than a window it reaches further
  * back, a new chunk at a time, up to MAX_PAGE_BYTES. The newest page is read on
- * every append, so it never does: with no turn start in its window it starts
- * mid-turn, at a whole line.
+ * every append, so it never does, but for Copilot's (COPILOT_PAGE_BYTES): with no turn
+ * start in its window it starts mid-turn, at a whole line.
  */
 function pageBefore(stream: TranscriptStream, source: StreamSource, to: number, { floor = stream.floor, widen, prompts }: { floor?: number; widen: boolean; prompts: number }): { start: number; bytes: Buffer } {
   let from = Math.max(floor, to - TRANSCRIPT_WINDOW_BYTES);
-  let bytes = readStream(stream, from, to);
+  const bytes = readStream(stream, from, to);
+  // the bytes searched for turn starts: the window, then each chunk widening adds before it
+  let searched = bytes;
   for (;;) {
-    const starts = stream.promptStarts ? stream.promptStarts.filter((at) => at >= from && at < to).map((at) => at - from) : turnStarts(bytes, source, undefined, turnBlobs(stream, source));
+    const starts = stream.promptStarts ? stream.promptStarts.filter((at) => at >= from && at < from + searched.length).map((at) => at - from) : turnStarts(searched, source, undefined, turnBlobs(stream, source));
     const keep = starts.length > prompts ? starts[starts.length - prompts] : from === floor ? 0 : starts[0];
-    if (keep !== undefined) return { start: from + keep, bytes: bytes.subarray(keep) };
-    if (!widen || to - from >= MAX_PAGE_BYTES) {
+    // a start found while widening is read from once, not built up a chunk at a time
+    if (keep !== undefined) return searched === bytes ? { start: from + keep, bytes: bytes.subarray(keep) } : { start: from + keep, bytes: readStream(stream, from + keep, to) };
+    if (!widen || to - from >= (source === "copilot-transcript" ? COPILOT_PAGE_BYTES : MAX_PAGE_BYTES)) {
       const firstLine = bytes.indexOf(0x0a) + 1;
-      return { start: from + firstLine, bytes: bytes.subarray(firstLine) };
+      return { start: to - bytes.length + firstLine, bytes: bytes.subarray(firstLine) };
     }
+    // no start in what was searched: only the new chunk can hold one, and the line it cuts ends past it
     const next = Math.max(floor, from - TRANSCRIPT_WINDOW_BYTES);
-    bytes = Buffer.concat([readStream(stream, next, from), bytes]);
+    const pieces = [readStream(stream, next, from)];
+    for (let at = from; at < to;) {
+      const piece = readStream(stream, at, Math.min(to, at + IMAGE_SEARCH_WINDOW));
+      // a file cut short since its size was taken reads nothing more: what was read is searched
+      if (piece.length === 0) break;
+      const lineEnd = piece.indexOf(0x0a);
+      pieces.push(lineEnd === -1 ? piece : piece.subarray(0, lineEnd + 1));
+      if (lineEnd !== -1) break;
+      at += piece.length;
+    }
+    searched = Buffer.concat(pieces);
     from = next;
   }
 }
@@ -1978,7 +1998,8 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
         text = "";
       } else {
         // no turn starts in the window: the page begins mid-turn, read whole as before
-        const whole = pageBefore(stream, source, stream.length, { widen: false, prompts: pagePrompts(page) });
+        // (a Copilot page reaches back to its turn's start: COPILOT_PAGE_BYTES)
+        const whole = pageBefore(stream, source, stream.length, { widen: source === "copilot-transcript", prompts: pagePrompts(page) });
         start = held !== null && held >= whole.start ? held : whole.start;
         text = whole.bytes.subarray(start - whole.start).toString("utf8");
       }

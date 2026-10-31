@@ -1554,3 +1554,30 @@ it.skipIf(process.platform !== "linux")("follows process-owned foreground eviden
     expect(copilotTranscriptFile(session, options, args, pid)).toBeNull();
   } finally { await fixture.close(); }
 });
+
+it("keeps a recorded turn whole when the pictures Copilot interned in it pass the page window (#2478)", () => {
+  // the real recorded turn, with two interned pictures (Copilot 1.0.105's `session.binary_asset`) between its
+  // tool call and the call's result, together more than one page window of bytes
+  const recorded = readFileSync(new URL("./fixtures/copilot-recorded.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
+  const complete = recorded.findIndex((record) => record.includes('"tool.execution_complete"'));
+  const picture = (n: number) => JSON.stringify({ type: "session.binary_asset", data: { assetId: `sha256:${String(n).repeat(64)}`, type: "image", mimeType: "image/png", byteLength: 6_700_000, data: "A".repeat(9 * 1024 * 1024) }, id: crypto.randomUUID(), timestamp: "2026-01-01T00:00:00.000Z", parentId: null });
+  const dir = mkdtempSync(join(tmpdir(), "copilot-page-split-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    // an earlier turn first, so the pictured turn starts mid-file and an older page has something to hold
+    const earlier = recorded.filter((record) => /"type":"(user\.message|assistant\.message)"/.test(record) && !record.includes("toolRequests\":[{"))
+      .map((record) => record.replace("Recorded fixture text.", "Earlier turn."));
+    writeFileSync(path, [recorded[0]!, ...earlier, ...recorded.slice(1, complete), picture(1), picture(2), ...recorded.slice(complete)].join("\n") + "\n");
+    // more than a page window (TRANSCRIPT_WINDOW_BYTES, 16 MiB)
+    expect(statSync(path).size).toBeGreaterThan(16 * 1024 * 1024);
+    const whole = parseCopilotTranscript(readFileSync(path, "utf8"));
+    expect(whole.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    // one page at a prompt each: the newest holds the pictured turn whole, the older one the turn before it
+    const latest = transcriptPage("copilot-transcript", path, { prompts: 1 });
+    expect(latest.turns).toEqual(whole.slice(2));
+    expect(latest.turns[1]?.parts[0]).toMatchObject({ kind: "tool", name: "shell", output: "Recorded fixture text." });
+    expect(latest.cursor).not.toBeNull();
+    const older = transcriptPage("copilot-transcript", path, { before: latest.cursor!, prompts: 1 });
+    expect(older.turns).toEqual(whole.slice(0, 2));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
