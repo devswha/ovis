@@ -336,7 +336,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const resource = useResourceUrlState(info !== null && info.kind !== "text" && info.kind !== "image" ? url : null);
   const urlSrc = relay ? resource.url : url;
   const pageSrc = useResourceUrl(!relay && htmlPage && !source ? pageUrl : null);
-  const image = useResourceUrlState(info?.kind === "image" ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
+  // an image past the inline limit is only offered as a download: the body never loads it
+  const image = useResourceUrlState(info?.kind === "image" && info.size <= MAX_INLINE_IMAGE_BYTES ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
   const imageSrc = image.url;
   // The same inert media body can be saved through the download attribute. In blob mode this
   // avoids fetching and retaining a second complete video/PDF merely to draw its download link.
@@ -419,7 +420,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       <ul>{candidates.map((candidate) => <li key={candidate}><button type="button" className="btn btn-ghost" onClick={() => setPath(candidate + path.slice(target.path.length))}>{candidate}</button></li>)}</ul>
     </div>;
     if (info === null) return null;
-    const resourceError = resource.error ?? image.error ?? download.error;
+    // the download link's own request never replaces a body that loaded (a ranged text preview, an image)
+    const resourceError = resource.error ?? image.error;
     if (resourceError) return <p className="file-viewer-note" role="alert">{resourceError instanceof RelayResourceTooLargeError
       ? t("Too large to open on the phone - download on the PC") : t("The file could not be opened.")}</p>;
     switch (info.kind) {
