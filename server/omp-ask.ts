@@ -18,10 +18,11 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
   if (!parsed || call === null) return prompt;
-  // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the strip
+  // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the
+  // review's rows, which omp draws whatever the strip's colours prove
   const asked = askedQuestions("ask", open[0]!.args) ?? [];
   const drawn = parsed.responder === "omp-submit"
-    ? parsed.steps !== undefined && JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify(parsed.steps.slice(0, -1).map(step => step.label))
+    ? JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify((parsed.answers ?? []).map(answer => answer.question))
     : asked.some(question => questionShown(prompt, question, parsed.ompQuestionCut === true));
   if (!drawn) return prompt;
   return publicPrompt({ ...parsed, id: `${parsed.id}~${Bun.hash(call).toString(36)}`, ompCall: call });

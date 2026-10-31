@@ -11,6 +11,7 @@ const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
 import { omoAskOf } from "./omo-questions.ts";
 import { ANSI_RE, type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
 import * as conversation from "./conversation.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 
 // The card moves between a form's questions without answering, as the agent's own keys do: OmO's
 // Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab. Each key is sent alone and the
@@ -382,12 +383,16 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
-  test("omp: a session lookup that fails for a moment keeps the card's id, and its tap", async () => {
+  test.each([["busy herdr", () => new Error("busy")], ["unreadable /proc", () => new ConversationUnavailable("no_session_path")]] as const)("omp: a session lookup that fails for a moment (%s) keeps the card's id, and its tap", async (_, failure) => {
     await withPane("omp", omp(0), async pane => {
       const bound = await card();
       const lookup = conversation.ompTranscriptPath as unknown as { mockRejectedValueOnce: (error: Error) => void };
-      lookup.mockRejectedValueOnce(new Error("busy"));
+      lookup.mockRejectedValueOnce(failure());
       expect((await card()).id).toBe(bound.id);
+      // the read whose lookup failed authorizes no key
+      lookup.mockRejectedValueOnce(failure());
+      expect(await move(bound.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
       follows(pane, omp, 4, "tab", "shift+tab");
       expect(await move(bound.id, { step_next: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab"]);
@@ -411,6 +416,14 @@ describe("the answer route moves between questions, one key at a time, each seen
       const beforeKey = (): Promise<void> => new Promise(() => undefined);
       expect(await move(prompt.id, { option_index: 0 }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("omp: the review keeps its id whether or not the colours prove where the form stands", async () => {
+    await withPane("omp", omp(3), async pane => {
+      const proven = await card();
+      pane.visible = omp(2);
+      expect((await card()).id).toBe(proven.id);
     });
   });
 

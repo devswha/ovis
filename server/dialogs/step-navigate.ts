@@ -82,8 +82,9 @@ export async function navigateNativeSteps(initial: ParsedPrompt, target: number,
       }
       // the stop it left, still drawn, waits; another form or another stop ends the move
       if (shown && steps !== undefined && (steps.identity !== form.identity || steps.index !== index || shown.id !== previous.id)) return null;
-      // omp's strip drawn with no call binding it (another call, or another strip): nothing will bind it again in time
-      if (shown && steps === undefined && shown.agent === "omp" && (shown.steps?.length ?? 0) > 0) return null;
+      // omp's strip unbound by what cannot be a frame half drawn: another call bound, or other labels on the strip
+      if (shown && steps === undefined && shown.agent === "omp" && ((shown.ompCall !== undefined && shown.ompCall !== initial.ompCall)
+        || (shown.steps !== undefined && JSON.stringify(shown.steps.map(step => step.label)) !== JSON.stringify(initial.steps?.map(step => step.label))))) return null;
       await Bun.sleep(Math.min(50, Math.max(0, io.deadline - Date.now())));
     }
     if (!moved) return null;

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { HerdrPane, InteractivePrompt, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
 import { agentProcesses, ompTranscriptPath, paneRunsOmo, readCommandTranscript } from "./conversation.ts";
-import { ConversationUnavailable } from "./conversation-shared.ts";
+import { ConversationNotStarted } from "./conversation-shared.ts";
 import { agentProcessInFront } from "./agent-process.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
@@ -750,8 +750,12 @@ async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadl
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** Bind omp tab moves to its open call, and optionally restore the call's Markdown (omp-ask.ts). */
-/** Each omp pane's last session lookup that answered, which a lookup that fails for a moment stands in for. */
-const ompLookups = new Map<string, { path: string; open: OmoAsks }>();
+/**
+ * Each omp pane's last session lookup that answered, which a lookup that fails for a while stands in for, and the
+ * failures in a row since: past OMP_LOOKUP_FAILURES the pane's session reads as unproved.
+ */
+const ompLookups = new Map<string, { path: string; open: OmoAsks; failures: number }>();
+const OMP_LOOKUP_FAILURES = 3;
 
 async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<{ prompt: InteractivePrompt; unverified?: true }> {
   const parsed = parsedByPublicPrompt.get(prompt);
@@ -763,15 +767,19 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
     if (cwd) {
       path = (await ompTranscriptPath(paneId, cwd)).path;
       open = ompAskReader.read(path);
-      ompLookups.set(paneId, { path, open });
+      ompLookups.delete(paneId);
+      ompLookups.set(paneId, { path, open, failures: 0 });
+      if (ompLookups.size > 64) ompLookups.delete(ompLookups.keys().next().value!);
     }
   } catch (error) {
-    // No session proved for the pane, or not written yet: ordinary answers remain usable, unbound.
-    if (error instanceof ConversationUnavailable) ompLookups.delete(paneId);
-    // A lookup that failed for a moment: the card keeps the binding (and id) the last lookup gave, and this read
-    // authorizes no key, rather than a card with another id that would start a new asking
+    const last = ompLookups.get(paneId);
+    // Not written yet, no lookup that ever answered, or one failing for long: ordinary answers remain usable, unbound.
+    if (error instanceof ConversationNotStarted || !last || last.failures + 1 >= OMP_LOOKUP_FAILURES) ompLookups.delete(paneId);
+    // A lookup that fails for a moment (a busy herdr, an unreadable /proc): the card keeps the binding (and id) the last
+    // lookup gave, and this read authorizes no key, rather than a card with another id that would start a new asking
     else {
-      ({ path, open } = ompLookups.get(paneId) ?? { path, open });
+      last.failures += 1;
+      ({ path, open } = last);
       unverified = true;
     }
   }
@@ -1721,7 +1729,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
           const guarding = guardKey(body.pane_id, agent, look);
           guarding.catch(() => undefined);
-          const guarded = await Promise.race([guarding.then(() => true), Bun.sleep(SETTLE_MS).then(() => false)]);
+          const guarded = await Promise.race([guarding.then(() => true), Bun.sleep(agent === "pi" ? Math.max(0, deadlineAt - Date.now()) : SETTLE_MS).then(() => false)]);
           if (!guarded) throw new KeyRefused();
           const first = !move && !committed;
           if (!move) committed = true;
