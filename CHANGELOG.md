@@ -19,7 +19,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2449](https://github.com/devswha/ovis/pull/2449))
 - `OVIS_RUNTIME=herdr-core` shows the terminals of the Herdr desktop app (herdr-core, `hc`) instead
   of herdr's TUI server: the app's spaces and tabs in the sidebar, agent status and alerts from what
-  agents report, and the live terminal through `hc attach`. Requested by @Ploppy3 (#2439).
+  agents report, and the live terminal streamed from herdr-core. Requested by @Ploppy3 (#2439).
   ([#2442](https://github.com/devswha/ovis/pull/2442) by @nahwan-kim)
 - Drag a key bar key by its leading handle to change its order in Settings, with edge scrolling
   for long moves. Up/down buttons remain available without dragging; Escape cancels a drag.
