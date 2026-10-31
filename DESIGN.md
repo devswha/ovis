@@ -605,7 +605,19 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   meta keep their sizes. The chat scales all of them by `--chat-scale` (`--chat-fs-body` is the scaled
   `--fs-chat`), so the Chat font size setting names the body size and the prose is one step above it.
   `--chat-scale` is the chat's size over the interface's: unchosen, the chat follows the interface size;
-  chosen, it is drawn as itself whatever the interface size.
+  chosen, it is drawn as itself whatever the interface size. The space between and inside the
+  transcript's blocks scales with it (`--chat-space-*`, `--chat-chip-h` and `--chat-control-h` stand
+  for the spacing tokens, `--chip-h` and `--control-h` in the transcript and in a file preview's
+  blocks): at the page's spacing a small chat text sat loose between wide gaps and a large one
+  cramped. It follows Zed's Markdown preview, whose rem is its font size, so its spacing grows with
+  its text, and iOS Dynamic Type, which scales a layout's metrics with the text (`UIFontMetrics`).
+  Unlike Zed's preview, the view's edges keep the page's spacing (`--chat-edge`, which the virtual
+  list's inset takes, and a file preview's margin), so the transcript stays on the composer's
+  column, and `--touch-target` keeps its size: a meta row shrinks under its copy target's overhang,
+  a work block's head (a `--control-h` row) under a target that reaches down over the rule below it
+  in a transparent border, not up, where the answer's copies above reach, and a code block's header
+  stays that target's height. Stacked work rows keep the full target: a reach would take the next
+  row's taps.
 
 ### Line breaking
 - The UI language is `<html lang>` (`lib/settings.ts`), and `src/styles.css` keys the breaking
