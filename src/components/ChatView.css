@@ -381,6 +381,13 @@
   margin-bottom: var(--space-3);
 }
 
+/* a $$ formula KaTeX cannot draw (or not yet): its own lines, as written */
+.markdown-math-source {
+  display: block;
+  white-space: pre-wrap;
+  margin-bottom: var(--space-3);
+}
+
 .markdown-image {
   max-width: 100%;
   height: auto;
