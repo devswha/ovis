@@ -61,6 +61,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get service() { return service; },
     get attempts() { return attempts; },
     get dataOpened() { return dataOpened.promise; },
+    get controlLost() { return controlLost.promise; },
     get base() { return `http://127.0.0.1:${app.port}`; },
     async request(path = "", method = "GET", guarded = true) {
       return fetch(this.base + "/api/relay" + path, { method,
@@ -400,6 +401,21 @@ it("cancels a connecting link before restart can resume it", async () => {
   expect(f.attempts).toBe(attempts);
   await f.restart();
   expect(f.service.status().phase).toBe("off");
+});
+
+it("answers a repeated start with 200 while the link retries", async () => {
+  const clock = new TestClock();
+  const f = await fixture(false, { clock });
+  await f.start();
+  const lost = f.controlLost;
+  await f.localRelay.stop();
+  await bounded(lost);
+  expect(f.service.status().phase).toBe("error");
+  const attempts = f.attempts;
+  const again = await f.request("/start", "POST");
+  expect(again.status).toBe(200);
+  expect(await again.json()).toMatchObject({ phase: "error" });
+  expect(f.attempts).toBe(attempts);
 });
 
 it("keeps watch devices read-only on all relay mutations", async () => {

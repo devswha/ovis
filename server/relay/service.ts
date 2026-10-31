@@ -102,6 +102,9 @@ export class RelayService {
     return this.status();
   }
 
+  /** A link exists from a successful start until stop; while it exists it retries by itself. */
+  get linked(): boolean { return this.link !== undefined; }
+
   private disconnect(): Promise<void> {
     const link = this.link;
     this.link = undefined;
