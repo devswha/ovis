@@ -60,8 +60,12 @@ export function capturedComparison(answer: RepoDiffFilePatch, patch: string): st
 
 const KIND_WORD = { addition: "added", deletion: "removed", context: "unchanged" } as const;
 
-/** A name as a JSON string: one line whatever it holds, and two names that differ stay two (a newline is not a space). */
-const named = (text: string): string => JSON.stringify(text);
+/**
+ * A name as a JSON string: one line whatever it holds, and two names that differ stay two (a newline
+ * is not a space). JSON leaves U+2028, U+2029 and U+0085 raw, which some viewers break a line at:
+ * they are escaped too, and the string still parses to the same name.
+ */
+const named = (text: string): string => JSON.stringify(text).replace(/[\u2028\u2029\u0085]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 /**
  * The quote the note goes with: where the line is (the path, PC and repository as JSON strings),
@@ -70,13 +74,14 @@ const named = (text: string): string => JSON.stringify(text);
  */
 export function diffNoteQuote(capture: DiffNoteCapture): string {
   const { line } = capture;
-  const whitespace = line.text !== "" && line.text.trim() === "";
-  const text = whitespace ? JSON.stringify(line.text) : line.text;
+  // U+0085 is no whitespace to trim(), though a viewer may break a line at it
+  const whitespace = /^[\s\u0085]+$/.test(line.text);
+  const text = whitespace ? named(line.text) : line.text;
   const fence = codeFence(text);
   return [
     `Diff note on ${named(capture.path)}, ${line.side} side, line ${line.line} (${KIND_WORD[line.kind]})`,
     `PC ${named(capture.machine)}, repository ${named(capture.repository)}`,
-    `Compared as captured: ${capture.comparison.replace(/[\r\n]+/g, " ")}`,
+    `Compared as captured: ${capture.comparison.replace(/[\r\n\u2028\u2029\u0085]+/g, " ")}`,
     ...(whitespace ? ["The line holds only whitespace, written below as a JSON string."] : []),
     fence,
     text,

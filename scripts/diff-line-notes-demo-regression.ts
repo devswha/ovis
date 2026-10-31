@@ -108,14 +108,28 @@ async function pressPlus(page: Page, selector: string, opens: boolean): Promise<
 }
 
 /** The parts of a note's quote an agent reads (lib/diffLineNotes.ts): its JSON-named path, side, line and kind, and the fenced text. */
-function noteParts(quote: string): { path: string; side: string; line: number; kind: string; text: string } {
+function noteParts(quote: string): { path: string; machine: string; repository: string; side: string | undefined; kind: string | undefined; line: number; text: string } {
   const lines = quote.split("\n");
-  const head = /^Diff note on ("(?:[^"\\]|\\.)*"), (old|new) side, line (\d+) \((\w+)\)$/.exec(lines[0] ?? "");
   const open = lines.findIndex((line) => /^`{3,}$/.test(line));
   const close = open < 0 ? -1 : lines.indexOf(lines[open]!, open + 1);
-  if (head === null || close !== lines.length - 1) throw new Error(`not a note's quote: ${quote}`);
-  return { path: JSON.parse(head[1]!) as string, side: head[2]!, line: Number(head[3]), kind: head[4]!, text: lines.slice(open + 1, close).join("\n") };
+  if (close !== lines.length - 1) throw new Error(`no fence closes the quote: ${quote}`);
+  // the names are the JSON strings before the fence, in order: path, PC, repository
+  const strings = /"(?:[^"\\]|\\.)*"/g;
+  const names = [...lines.slice(0, open).join("\n").matchAll(strings)].map((match) => JSON.parse(match[0]) as string);
+  // the first line's values once its name is taken out: the side, the kind and the one-based line
+  const head = lines[0]!.replace(strings, "");
+  const fenced = lines.slice(open + 1, close).join("\n");
+  // a whitespace-only line goes as a JSON string
+  let text = fenced;
+  if (/^".*"$/.test(fenced)) { const parsed = JSON.parse(fenced) as string; if (/^[\s\u0085]*$/.test(parsed)) text = parsed; }
+  return {
+    path: names[0]!, machine: names[1]!, repository: names[2]!,
+    side: /\b(old|new)\b/.exec(head)?.[1], kind: /\b(added|removed|unchanged)\b/.exec(head)?.[1], line: Number(/\d+/.exec(head)?.[0]),
+    text,
+  };
 }
+
+const pick = ({ path, side, line, kind, text }: ReturnType<typeof noteParts>) => ({ path, side, line, kind, text });
 
 const ringed = (page: Page): Promise<string[]> => page.evaluate(() => [...(document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll<HTMLElement>("[data-line][data-find-active]") ?? [])].map((row) => `${row.dataset["lineType"]} ${row.dataset["line"]}`));
 const stored = (page: Page): Promise<{ quote: string; comment: string; source?: string }[]> => page.evaluate((id) => JSON.parse(localStorage.getItem(`ovis:reply-comments:${id}`) ?? "[]"), PANE);
@@ -165,7 +179,7 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     let notes = await stored(page);
     assert.equal(notes.length, 1, `${name}: one note waits in the diff's own pane`);
     assert.equal(notes[0]!.source, "diff");
-    assert.deepEqual(noteParts(notes[0]!.quote), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the quote holds the place and the fenced line`);
+    assert.deepEqual(pick(noteParts(notes[0]!.quote)), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the quote holds the place and the fenced line`);
     await shot(page, name, "added");
 
     // the keys: the focused diff picks lines with the arrows, Enter begins a note, Escape closes it while empty
@@ -253,7 +267,7 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     const quoted = carried!.split("\n");
     assert.equal(quoted.at(-1), "Keep the rounding of negative amounts.", `${name}: the note's comment follows its quote`);
     assert.ok(quoted.slice(0, -1).every((line) => line.startsWith(">")), `${name}: the quote goes as quote lines`);
-    assert.deepEqual(noteParts(quoted.slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n")), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the message carries the note first`);
+    assert.deepEqual(pick(noteParts(quoted.slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n"))), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the message carries the note first`);
     assert.equal(typed, "Go ahead.", `${name}: then the typed text`);
     assert.equal(message.agent_only, true, `${name}: for an agent alone`);
     await page.locator(".reply-comments").waitFor({ state: "detached" });
@@ -292,7 +306,7 @@ async function phone(browser: Browser, origin: string, theme: "dark" | "light", 
     assert.equal(await place(page), words.done);
     const notes = await stored(page);
     assert.equal(notes.length, 1);
-    assert.deepEqual({ ...noteParts(notes[0]!.quote), text: undefined }, { path: "src/money.ts", side: "new", line: 5, kind: "added", text: undefined }, `${name}: the note is on the added line`);
+    assert.deepEqual({ ...pick(noteParts(notes[0]!.quote)), text: undefined }, { path: "src/money.ts", side: "new", line: 5, kind: "added", text: undefined }, `${name}: the note is on the added line`);
     await shot(page, name, "added");
     await page.locator(".repo-diff-close").tap();
     await closeFiles(page);

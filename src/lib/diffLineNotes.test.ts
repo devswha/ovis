@@ -38,18 +38,22 @@ function capture(patch: string, at: { side: "old" | "new"; line: number }, scope
  */
 function parts(quote: string) {
   const lines = quote.split("\n");
-  const head = /^Diff note on ("(?:[^"\\]|\\.)*"), (old|new) side, line (\d+) \((\w+)\)$/.exec(lines[0]!);
-  const where = /^PC ("(?:[^"\\]|\\.)*"), repository ("(?:[^"\\]|\\.)*")$/.exec(lines[1]!);
   const open = lines.findIndex((line) => /^`{3,}$/.test(line));
-  const fence = lines[open]!;
-  const close = lines.indexOf(fence, open + 1);
-  if (head === null || where === null || open < 0 || close !== lines.length - 1) throw new Error(`not a note's quote: ${quote}`);
+  const close = open < 0 ? -1 : lines.indexOf(lines[open]!, open + 1);
+  if (close !== lines.length - 1) throw new Error(`no fence closes the quote: ${quote}`);
+  // the names are the JSON strings before the fence, in order: path, PC, repository
+  const strings = /"(?:[^"\\]|\\.)*"/g;
+  const names = [...lines.slice(0, open).join("\n").matchAll(strings)].map((match) => JSON.parse(match[0]) as string);
+  // the first line's values once its name is taken out: the side, the kind and the one-based line
+  const head = lines[0]!.replace(strings, "");
   const fenced = lines.slice(open + 1, close).join("\n");
-  const whitespace = lines.slice(3, open).some((line) => line.includes("JSON"));
+  // a whitespace-only line goes as a JSON string
+  let text = fenced;
+  if (/^".*"$/.test(fenced)) { const parsed = JSON.parse(fenced) as string; if (/^[\s\u0085]*$/.test(parsed)) text = parsed; }
   return {
-    path: JSON.parse(head[1]!) as string, side: head[2], line: Number(head[3]), kind: head[4],
-    machine: JSON.parse(where[1]!) as string, repository: JSON.parse(where[2]!) as string,
-    comparison: lines[2]!, text: whitespace ? JSON.parse(fenced) as string : fenced,
+    path: names[0]!, machine: names[1]!, repository: names[2]!,
+    side: /\b(old|new)\b/.exec(head)?.[1], kind: /\b(added|removed|unchanged)\b/.exec(head)?.[1], line: Number(/\d+/.exec(head)?.[0]),
+    text,
   };
 }
 
@@ -58,9 +62,9 @@ describe("diff line notes", () => {
     const patch = largePatch(4000, 3990);
     const quote = diffNoteQuote(capture(patch, { side: "old", line: 3990 }));
     const got = parts(quote);
-    expect({ ...got, comparison: undefined }).toEqual({ path: "src/big.ts", side: "old", line: 3990, kind: "removed", machine: "home-server", repository: "/home/me/shop", comparison: undefined, text: "  removed 3990;" });
-    expect(got.comparison).toContain(HEAD);
-    expect(got.comparison).toContain(patchIdentity(patch));
+    expect(got).toEqual({ path: "src/big.ts", side: "old", line: 3990, kind: "removed", machine: "home-server", repository: "/home/me/shop", text: "  removed 3990;" });
+    expect(quote).toContain(HEAD);
+    expect(quote).toContain(patchIdentity(patch));
   });
 
   it("names any path whole: two files whose names differ only by a newline or a space are two places", () => {
@@ -73,6 +77,14 @@ describe("diff line notes", () => {
     expect(newline).not.toBe(space);
   });
 
+  it("escapes the characters some viewers break a line at, so a name stays on its line", () => {
+    const at = capture(largePatch(10, 4), { side: "old", line: 4 });
+    const odd = "a\u2028b\u2029c\u0085d";
+    const quote = diffNoteQuote({ ...at, path: odd, machine: odd, repository: odd });
+    expect(quote).not.toMatch(/[\u2028\u2029\u0085]/);
+    expect(parts(quote)).toMatchObject({ path: odd, machine: odd, repository: odd });
+  });
+
   it("keeps a whitespace-only line as it is, through the quote of the message it goes in", () => {
     const patch = ["--- a/x", "+++ b/x", "@@ -0,0 +1,1 @@", "+ \t  ", ""].join("\n");
     const quote = diffNoteQuote({ ...capture(patch, { side: "new", line: 1 }), path: "x" });
@@ -80,6 +92,13 @@ describe("diff line notes", () => {
     const sent = messageWithComments([{ id: "a", quote, comment: "trailing tab" }], "");
     const unquoted = sent.split("\n").slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n");
     expect(parts(unquoted).text).toBe(" \t  ");
+    // a line of the separators some viewers break at counts as whitespace too, and goes escaped
+    for (const odd of ["\u0085", "\u0085\u2028 "]) {
+      const patchOdd = ["--- a/x", "+++ b/x", "@@ -0,0 +1,1 @@", `+${odd}`, ""].join("\n");
+      const quoteOdd = diffNoteQuote({ ...capture(patchOdd, { side: "new", line: 1 }), path: "x" });
+      expect(quoteOdd).not.toMatch(/[\u2028\u2029\u0085]/);
+      expect(parts(quoteOdd).text).toBe(odd);
+    }
   });
 
   it("finds the logical line of a hovered or tapped row: a removed row by its old number, the rest by their new one", () => {
