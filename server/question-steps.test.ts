@@ -120,6 +120,15 @@ describe("Hermes's clarify batch: the card goes to another open question as Tab 
     expect(prompt?.can_step_back ?? false).toBe(false);
   });
 
+  test("the batch is named by every question, which are answered and the answer drawn under each", () => {
+    const identity = (screen: string) => parsedByPublicPrompt.get(parseInteractivePrompt("hermes", screen)!)?.nativeSteps?.identity;
+    const open = identity(hermes(1));
+    expect(open).toBeDefined();
+    // the same three questions: the first answered, or answered otherwise, is another batch
+    expect(identity(hermes(1, [0]))).not.toBe(open);
+    expect(identity(hermes(1, [0]).replace("   Red\n", "   Blue\n"))).not.toBe(identity(hermes(1, [0])));
+  });
+
   test("an answered question shows no open marker once Tab is on it: nothing past it is offered", () => {
     const prompt = parseInteractivePrompt("hermes", hermes(0, [1]));
     expect(prompt?.steps?.map((step) => step.answered)).toEqual([false, true, false]);
@@ -269,7 +278,12 @@ describe("the answer route moves between questions, one key at a time, each seen
 
   test.skipIf(process.platform !== "linux")("OmO: a form that does not move stops after its first key", async () => {
     await withOmoPane(omo(0), async (pane) => {
-      expect(await move((await card()).id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
+      const first = await card();
+      expect(await move(first.id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
+      // the Tab went out: the same drawing is asked anew, and the card it left takes no further move
+      expect((await card()).id).not.toBe(first.id);
+      expect(await move(first.id, { step_index: 1 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });
@@ -317,9 +331,9 @@ describe("the answer route moves between questions, one key at a time, each seen
   test.skipIf(process.platform !== "linux")("OmO: a guard that outlasts the request's deadline sends no further key", async () => {
     await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
-      // the second key's look waits on herdr past the deadline (300 ms here, 4 s in the server)
+      // the second key's look never comes back (herdr holding its reply): the deadline ends it, 300 ms here, 4 s in the server
       let looks = 0;
-      const beforeKey = async (): Promise<void> => { if (++looks === 2) await Bun.sleep(1_000); };
+      const beforeKey = (): Promise<void> => ++looks === 2 ? new Promise<void>(() => undefined) : Promise.resolve();
       expect(await move((await card()).id, { step_index: 2 }, { ...SHORT, beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });

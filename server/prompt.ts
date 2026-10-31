@@ -1371,6 +1371,44 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         return jsonResponse({ error: { code: "reply_failed", message: `Failed to reply to OpenCode form (HTTP ${replyResult.status}).` } }, 502);
       }
 
+      /**
+       * The keys and reads of a move between a form's questions (pi's tabs, omo, Codex, Hermes), each held to the request's
+       * deadline: the look before each key (keyGuard) and herdr's write itself, refused past it. Once a key may have been
+       * pressed (its write went out, or its reply never came) the move ends this asking on whatever exit it takes, so an
+       * unchanged drawing reads as a new asking; a failure proven to come before the write (cancelled, unreachable) does not.
+       */
+      const moveKeys = (active: () => boolean) => {
+        let pressed = false;
+        const left = (): number => Math.max(0, deadlineAt - Date.now());
+        return {
+          pressed: (): boolean => pressed,
+          send: async (key: string): Promise<void> => {
+            const inTime = (): boolean => active() && Date.now() < deadlineAt;
+            if (!inTime()) throw new MoveLapsed();
+            const guarded = await Promise.race([keyGuard(body.pane_id, agent, deadline).then(() => true), Bun.sleep(left()).then(() => false)]);
+            if (!guarded || !inTime()) throw new MoveLapsed();
+            const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
+            sending.catch(() => undefined);
+            let sent: boolean;
+            try { sent = await Promise.race([sending.then(() => true), Bun.sleep(left()).then(() => false)]); }
+            catch (error) {
+              const before = error instanceof HerdrError && (error.code === "cancelled" || error.code === "connect_failed");
+              if (!before) pressed = true;
+              throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error;
+            }
+            pressed = true;
+            if (!sent) throw new MoveLapsed();
+          },
+          read: async (): Promise<Awaited<ReturnType<typeof readPrompt>> | null> => {
+            if (!active()) return null;
+            const reading = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+            reading.catch(() => undefined);
+            const live = await Promise.race([reading, Bun.sleep(left()).then(() => null)]);
+            return live && active() ? live : null;
+          },
+        };
+      };
+
       // a form whose own keys move between its questions (omo, Codex, Hermes): one key at a time, each move seen
       if (parsedPrompt?.nativeSteps && (body.step_back === true || body.step_next === true || body.step_index !== undefined)) {
         const target = nativeStepTarget(parsedPrompt, body);
@@ -1380,41 +1418,29 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        const keys = moveKeys(active);
+        let done = false;
         try {
           const moved = await navigateNativeSteps(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            // the same guards as an answer's keys, inside the request's 4 s
-            send: async (key) => {
-              const inTime = (): boolean => active() && Date.now() < deadlineAt;
-              if (!inTime()) throw new MoveLapsed();
-              // the guard itself may outlast the deadline: then no key at all
-              const guarded = await Promise.race([keyGuard(body.pane_id, agent, deadline).then(() => true), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
-              if (!guarded) throw new MoveLapsed();
-              // asked again right before herdr writes the key: refused, it sends nothing (`cancelled`). A reply that
-              // outlasts the deadline leaves the key perhaps pressed: the move ends there, and so does this asking
-              const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
-              sending.catch(() => undefined);
-              const sent = await Promise.race([sending.then(() => true, (error: unknown) => { throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error; }), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
-              if (!sent) { askingEnded(body.pane_id); throw new MoveLapsed(); }
-            },
+            send: keys.send,
             read: async () => {
-              if (!active()) return null;
-              const reading = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
-              reading.catch(() => undefined);
-              // a read that outlasts the deadline is no read
-              const live = await Promise.race([reading, Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => null)]);
-              if (!live || !active()) return null;
-              const shown = !live.inputUnverified && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              const live = await keys.read();
+              const shown = live && !live.inputUnverified && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
               return shown?.agent === parsedPrompt.agent ? shown : null;
             },
           });
           if (!moved) return promptChanged();
+          done = true;
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
         } catch (error) {
           if (error instanceof KeyRefused) return promptChanged();
           throw error;
-        } finally { answersUnderWay.delete(body.pane_id); }
+        } finally {
+          answersUnderWay.delete(body.pane_id);
+          if (!done && keys.pressed()) askingEnded(body.pane_id);
+        }
       }
 
       if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
@@ -1457,26 +1483,29 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        // pi's own tabs: the same guarded, deadline-bound keys and reads (the look before each key is pi-ask's)
+        const keys = moveKeys(active);
+        let done = false;
         try {
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            send: async key => {
-              if (await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
-              await paneSendKeys(body.pane_id, [key]);
-            },
+            send: keys.send,
             read: async () => {
-              if (!active()) return null;
-              const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
-              return !live.inputUnverified && live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-")) && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              const live = await keys.read();
+              return live && !live.inputUnverified && live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-")) && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
             },
           });
           if (!moved) return promptChanged();
+          done = true;
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
         } catch (error) {
-          if (error instanceof PiAskFormOpen) return promptChanged();
+          if (error instanceof KeyRefused) return promptChanged();
           throw error;
-        } finally { answersUnderWay.delete(body.pane_id); }
+        } finally {
+          answersUnderWay.delete(body.pane_id);
+          if (!done && keys.pressed()) askingEnded(body.pane_id);
+        }
       }
 
       // checked against the card before anything is sent: an invalid answer never opens the queue
