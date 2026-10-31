@@ -27,7 +27,7 @@ test("relay deploy job waits in the production environment with read-only permis
 test("the deploy is skipped without the secrets and the health check follows it", () => {
   const { steps } = loadWorkflow().jobs.deploy;
   const guard = steps.findIndex((step) => step.env?.HAS_CLOUDFLARE_API_TOKEN !== undefined && step.env?.HAS_CLOUDFLARE_ACCOUNT_ID !== undefined);
-  const deploy = steps.findIndex((step) => step.run?.includes("wrangler deploy"));
+  const deploy = steps.findIndex((step) => step.run?.includes("bunx wrangler"));
   const health = steps.findIndex((step) => step.run?.includes("curl") && step.run.includes("https://relay.ovis.sh/health"));
   expect(guard).toBeGreaterThanOrEqual(0);
   expect(deploy).toBeGreaterThan(guard);
@@ -78,9 +78,14 @@ test("the health step fails on a 302 and says the code", async () => {
   expect(result.output).toContain("HTTP 302");
 }, 30_000);
 
+test("the deploy runs one exact Wrangler version, not whatever bunx resolves", () => {
+  const deploy = loadWorkflow().jobs.deploy.steps.find((step) => step.run?.includes("bunx wrangler"))!;
+  expect(deploy.run).toMatch(/^bunx wrangler@\d+\.\d+\.\d+ deploy$/);
+});
+
 test("the relay's own tests run before the deploy", () => {
   const { steps } = loadWorkflow().jobs.deploy;
   const tests = steps.findIndex((step) => step.run === "bun test ./relay");
   expect(tests).toBeGreaterThanOrEqual(0);
-  expect(tests).toBeLessThan(steps.findIndex((step) => step.run?.includes("wrangler deploy")));
+  expect(tests).toBeLessThan(steps.findIndex((step) => step.run?.includes("bunx wrangler")));
 });
