@@ -15,7 +15,7 @@ import { DETACHED, notificationText } from "./omo-detached.ts";
  *
  * Ends: `Background terminal session bash_N finished: <state>` (senpi-terminal:notification), a
  * monitor's `summary` event (senpi-monitor:notification, matched by id or an unambiguous description
- * when no id is present), `Killed <id>.` (kill_bash), and a cell's notice.
+ * when no monitor id matches), `Killed <id>.` (kill_bash), and a cell's notice.
  * Only tool answers and runtime notifications are read: a message that quotes these words is not.
  */
 export interface OmoJob {
@@ -115,7 +115,8 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
         if (!Array.isArray(kinds) || !kinds.includes("summary")) continue;
         const id = found?.["id"];
         const description = found?.["description"];
-        if (typeof id === "string" && id.length > 0) {
+        // Command-backed notifications carry a process id (bash_N), not the start's mon_X.
+        if (typeof id === "string" && next.running.some((job) => job.kind === "monitor" && job.id === id)) {
           next = ended(next, (job) => job.kind === "monitor" && job.id === id, at, endStatus(word ?? "completed"));
         } else if (typeof description === "string") {
           const matches = next.running.filter((job) => job.kind === "monitor" && job.description === description);

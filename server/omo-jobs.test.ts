@@ -35,7 +35,7 @@ describe("omoJobsAfter", () => {
     const jobs = read(
       evalResult("2026-10-21T20:03:38.401Z", "", [bashCall, monitorCall]),
       notice("senpi-monitor:notification", "2026-10-21T20:04:00.000Z", "<system-reminder>Monitor event(refit done): READY</system-reminder>", { monitors: [{ id: "bash_2", description: "refit done", eventCount: 1, kinds: ["line"] }] }),
-      notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "<system-reminder>Monitor event(refit done): watcher completed (exit code 0)</system-reminder>", { monitors: [{ id: "mon_FDXZMFR0QJTTRAD3", description: "refit done", eventCount: 1, kinds: ["summary"] }] }),
+      notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "<system-reminder>Monitor event(refit done): watcher completed (exit code 0)</system-reminder>", { monitors: [{ id: "bash_2", description: "refit done", eventCount: 1, kinds: ["summary"] }] }),
       notice("senpi-terminal:notification", "2026-10-21T20:05:36.684Z", "<system-reminder>Background terminal session bash_1 finished: completed (exit code 0).\nFinal output:\nEXIT 0</system-reminder>"),
     );
     // Then neither runs, and both are listed as done.
@@ -83,16 +83,31 @@ describe("omoJobsAfter", () => {
     });
   }
 
-  it("does not fall back to description when a notification carries an unknown id", () => {
+  it("ends a monitor by its unique description when the notification carries its process id", () => {
     // Given a live monitor.
     const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "", [monitorCall]));
-    // When another monitor with the same description ends.
+    // When the runtime reports the process id rather than the monitor id.
     const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
-      monitors: [{ id: "mon_OTHER", description: "refit done", kinds: ["summary"] }],
+      monitors: [{ id: "bash_2", description: "refit done", kinds: ["summary"] }],
     }));
-    // Then the live monitor remains counted.
+    // Then the uniquely described monitor ends and is no longer counted.
+    expect(done.running).toEqual([]);
+    expect(done.ended.map((job) => [job.id, job.ended?.status])).toEqual([["mon_FDXZMFR0QJTTRAD3", "completed"]]);
+    expect(omoJobCount(done, null)).toBe(0);
+  });
+
+  it("ends neither monitor when a process id cannot distinguish shared descriptions", () => {
+    // Given two live monitors with the same description.
+    const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "", [
+      monitorCall, { ...monitorCall, resultPreview: "Monitor started with ID: mon_SECOND" },
+    ]));
+    // When the runtime reports a process id that matches neither monitor id.
+    const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+      monitors: [{ id: "bash_2", description: "refit done", kinds: ["summary"] }],
+    }));
+    // Then neither monitor ends and both remain counted.
     expect(done).toEqual(jobs);
-    expect(omoJobCount(done, null)).toBe(1);
+    expect(omoJobCount(done, null)).toBe(2);
   });
 
   for (const [word, status] of [["signal_SIGTERM", "cancelled"], ["killed", "cancelled"], ["exited_1 (exit code 1)", "failed"]] as const) {
