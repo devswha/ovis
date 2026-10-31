@@ -24,10 +24,9 @@ mark, else the place's own glyph), a title, and a trailing cell that says how it
 and Agents are independent lists, as in herdr's Spaces and Agents panels; tab and pane navigation
 stays over the terminal and in the palette. Sections are parted by space and a dim head, never by
 a rule; the Agents list's workspace cards are an edge around rows, not a line between sections.
-Hover and selection are one neutral fill at two strengths; a selected row adds a neutral leading
-stroke, since no such fill reaches 3:1 on the panel. Brand marks are the only color
-there that is not a state, and a ready row draws no state at all. Amber connects focus, the chosen
-lens glyph and the terminal cursor.
+Hover and selection are one neutral fill at two strengths, with no stroke around a selected row.
+Brand marks are the only color there that is not a state, and a ready row draws no state at all.
+Amber connects focus, the chosen lens glyph and the terminal cursor.
 
 Messages say only what the person needs now, not everything the app knows:
 - Something to do: one sentence and the control that does it ("Couldn't attach [Try again]").
@@ -1030,6 +1029,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   navigation bar (and the Claude iOS app) keeps one overflow button in the bar and the content's
   controls below it. Wherever that ellipsis shows to a finger, the pane's banners (View only and the
   rest) start below it, so none covers it.
+- On a PC whose terminals are the Herdr app's (`HerdrIdentity.runtime` `herdr-core`), the app's
+  window owns the workspaces, tabs and splits, and herdr-core refuses to rename, reorder or move
+  them, to split, swap, zoom or resize a pane, and the worktree actions. The browser then leaves
+  those out wherever they are offered (the row, tab and pane menus, the touch tab menu, the
+  palette, Rename tab's field, the split shortcuts, F2, double-click, Alt+arrows, drags and the
+  dividers) rather than showing them disabled. It follows Zed, whose remote projects leave out
+  what the remote host cannot do (VS Code's `when` clauses work the same way); New workspace, New tab, New terminal, Close, Pin and Earlier
+  sessions stay. `AppLayoutContext` (lib/machineContext.tsx) carries it per PC: the selected PC,
+  each half of the split view and each PC's sidebar roster.
 
 ### Badge (`.badge`)
 - Agent states read **READY**, **RUN**, **INPUT**, **DONE**; unknown reads **—**. **BG** is a pane
@@ -1122,17 +1130,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   columns as the header zone's buttons above the list. One-line rows and section heads are
   `--control-h` tall, two-line agent rows `--control-h` + `--space-3`; fills use `--radius-md`.
   Hover is `color-mix(in srgb, var(--bg-hover) 50%, var(--bg-panel))`, only where a pointer hovers;
-  selection is `--bg-hover` with an inset `calc(2 * var(--hairline))` leading stroke in
-  `--text-dim`, at least 3:1 on that fill, the hover fill and the panel in every theme entry, where
-  the fill alone is 1.09-1.56:1 (#1618; `scripts/sidebar-selection-contrast-demo-regression.ts`).
-  It follows VS Code's leading bar on the active activity-bar item, kept neutral, not amber.
-  Keyboard focus draws the ring inside the row and no fill; on a selected row the stroke widens by
-  `--ring-offset` so it still shows inside the ring. The 3:1 holds for rows of a connected PC; an
-  offline PC's agent rows are disabled and dimmed to 0.5 on purpose, an inactive control the
-  contrast rule exempts, so the check skips them. In forced colors (Windows high contrast) the
-  shadow is dropped, so the selected row keeps a `Highlight` leading bar instead: a workspace row's
-  is a border pulled into the gutter so its content does not move; an agent row's is drawn inside
-  the row, since the Agents list scrolls and would clip it. No rule
+  selection is the `--bg-hover` fill alone, as the Codex and Claude apps mark the open
+  conversation in their sidebars. A leading stroke in `--text-dim` (#1618) was dropped: on a
+  `--radius-md` row it curved around the corners and read as a bracket. The fill is 1.04-1.56:1 on
+  the panel, under the 3:1 #1618 asked for, a trade-off the owner chose; `scripts/sidebar-selection-contrast-demo-regression.ts` records it per theme entry,
+  holds every text in the row at 4.5:1 and fails if a stroke comes back. Keyboard focus draws the
+  ring inside the row and no fill. In forced colors (Windows high contrast) the fill is repainted
+  as Canvas and would erase the selection, so there the selected row keeps a `Highlight` leading
+  bar of at least 3:1: a workspace row's is a border pulled into the gutter so its content does
+  not move; an agent row's is drawn inside the row, since the Agents list scrolls and would clip
+  it. No rule
   separates sections: `--space-4` and a dim `--fs-sm` head do.
 - The PC/workspace list and the lower Agents list scroll independently above the fixed footer.
   Agents takes the height of its rows, at most half the sidebar, docked above the footer; the
@@ -1356,7 +1363,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   included. As herdr draws its tree, each indented worktree hangs from its repository's folder on
   a `--hairline` `--border-strong` branch in the indent: a tee for each but the last, an elbow for
   the last.
-  Selection uses a neutral rounded fill and a neutral leading stroke; workspace rows have no amber
+  Selection uses a neutral rounded fill and no stroke; workspace rows have no amber
   rail or separate reorder gutter. Drag the row itself, or press `Alt+↑/↓` while its selector is
   focused, to reorder it.
   On a touch screen (`pointer: coarse`) the browser's drag is off: a long press (400ms, still
@@ -3628,3 +3635,26 @@ headless choice; sign-in waits continue reconnecting automatically.
 | Terminal content accessibility relies on xterm defaults | `PaneTerminal.tsx` | Screen-reader mode changes terminal DOM and input behavior | Decide with herdr TUI owners |
 | Drawer has no focus trap | `.sidebar.is-open` | Closed state leaves the tab order, but open-state trapping is not implemented | Add a shared focus utility |
 | Modal focus is initialized, not fully trapped | Dialog components | Escape/scrim/close work; tab containment is not shared | Add the same focus utility |
+
+## Local Markdown images in Chat
+
+Chat follows the Codex app's inline image presentation reported by the user: a local
+`![alt](path)` in an answer displays the image in place. It reuses the file viewer's Markdown
+image component and machine-scoped stat/file endpoints, with the pane ID retained. Absolute
+Unix paths and local file URIs resolve without cwd. Relative paths stay relative for the pane file
+API, which prefers foreground_cwd over pane.cwd; bytes use the canonical path its stat returns.
+External URLs stay links. Failed local lookups (network, missing file, timeout, busy server) keep
+their link and offer Try again without a reconnect. The retry is disabled while in flight. Unsupported
+references, ambiguous paths, non-image files and access denials retain their plain fallback;
+images above 20 MiB offer a download. Images use the existing reserved layout while loading and
+unavailable-image state if decoding fails. Windows-drive paths retain the resolver's existing
+link fallback. Encoded filename characters decode once, including literal `#`, `?` and `%`.
+Only local file references are stat'ed; other URI schemes and control characters stay fallback.
+A standalone or inline image opens ChatView's existing image viewer on click or keyboard activation,
+with its alt text as caption and its actual filename for download. The opener regains focus on close.
+An image inside an authored link or a read-only label keeps that container's action, with no nested
+button. File previews do not get Chat's opener. A reconnect retries image stat resolutions that
+may have failed while offline; losing the socket alone keeps already decoded images in place. A byte
+load that failed retries after the new stat passes the size/type checks, without remounting decoded
+neighbors. No new setting, endpoint or permission grant is
+introduced.

@@ -13,10 +13,11 @@ export interface ResourceUrlState {
  * answers at once with the path itself; a transport that answers later leaves it null meanwhile,
  * and one that refuses leaves it null with the refusal in `error`, so a caller can show a failure.
  * data:, blob: and other origins' URLs come back as they are.
+ * Change `retry` only when the caller has authorized another load of a failed resource.
  */
-export function useResourceUrlState(path: string | null): ResourceUrlState {
+export function useResourceUrlState(path: string | null, retry = 0): ResourceUrlState {
   const transport = getTransport();
-  const target = useMemo(() => ({ path, transport }), [path, transport]);
+  const target = useMemo(() => ({ path, transport }), [path, transport, retry]);
   const direct = path === null || !path.startsWith("/api/") || transport.kind === "native";
   const [resolved, setResolved] = useState<{ target: typeof target; state: ResourceUrlState } | null>(null);
   useEffect(() => {

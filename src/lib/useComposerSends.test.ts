@@ -35,7 +35,7 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
       socketRef: { current: { connected: true } as HerdrSocket }, sessionRef: { current: null }, pendingScopeRef: { current: "scope" },
       heldRef: { current: false }, secretRef: { current: null }, observeRef: { current: false }, draftHeldForRef: { current: null },
       stillOpenRef: { current: null }, stillOpenNotedRef: { current: false }, chatNavigation: { current: 0 }, setChatLocalSend: () => {},
-      ended: false, heldByOpenQueue: false, answering: null, pendingAnswer: null, settings: { autoSendQueued: false },
+      ended: false, heldByOpenQueue: false, answering: null, answerPending: false, pendingAnswer: null, settings: { autoSendQueued: false },
       knownOutcomes: () => [], inputRowNow: () => "ready", showSentCommand: (_pane, text) => { shown.push(text); },
       submitComposerMessage: () => Promise.resolve(answer),
       ...extra,
@@ -50,6 +50,27 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
 const waiting = "Waiting for 2 background agents to finish";
 const idleBox = ["─".repeat(40), "❯", "─".repeat(40)];
 const closedClaude = readFileSync(new URL("../../server/fixtures/claude-rewind-2.1.304-closed-40.txt", import.meta.url), "utf8");
+
+it("refuses composer choices and confirmation while the answered card waits for its next read", async () => {
+  const prompt: InteractivePrompt = {
+    id: "answered", agent: "claude", kind: "question", title: "Question", question: "Which store?",
+    body: null, options: [{ label: "Redis", description: null }], multi_select: false, custom_option_index: null,
+  };
+  const answers: unknown[] = [], picks: unknown[] = [], messages: string[] = [];
+  const actions = sends("answered-pane", { ok: true }, [], {
+    answering: prompt, answerPending: true,
+    pendingAnswer: { pane: "answered-pane", promptId: prompt.id, answer: { option_index: 0 } },
+    answerPanePrompt: async (answer) => { answers.push(answer); },
+    setPendingAnswer: (pick) => { picks.push(pick); },
+    submitComposerMessage: (text) => { messages.push(text); return Promise.resolve({ ok: true }); },
+    t: (key) => key,
+  });
+  expect(await actions.composerSend("1")).not.toBe(true);
+  expect(actions.waitingAnswer).toBeNull();
+  expect(answers).toEqual([]);
+  expect(picks).toEqual([]);
+  expect(messages).toEqual([]);
+});
 
 for (const autoSendQueued of [false, true]) {
   it.each([

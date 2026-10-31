@@ -375,10 +375,24 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
-  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  set). It also stores each session’s model and context limit under `~/.herdr/statusline-context/`,
+  using a profile hash prefix so Claude config directories do not share session files. Context capture
+  requires a real directory owned by your uid without group/other permissions; it never changes that
+  directory’s permissions. Chat requires the installer’s mark, matching profile, session and model,
+  and a capture no more than six hours old, read through a bounded, no-follow file descriptor.
+  This needs no subscription usage data. New session captures inspect at most 128 directory entries
+  for expired captures of their own profile; cleanup is best-effort, not a total file-count bound.
+  Context replacement and removal first quarantine an entry, then verify it through a descriptor.
+  Unrecognized entries are restored without overwriting a newcomer, or kept as visible
+  `statusline-context-recovery-*` entries if restoration is blocked. Publication uses a hard link
+  and never overwrites an existing target. These pathname-only POSIX operations cannot prevent a
+  concurrent process running as your uid from replacing a parent directory between operations.
+  A concurrent same-user process replacing the quarantine name or directory itself during the few microseconds of an operation is also outside what pathname APIs can exclude.
+  The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
-  deletes what was added; a file there that it did not write is never replaced or deleted. If you have
+  deletes its marked files; context removal checks the profile too and removes the context directory
+  only when empty. Unmarked files are left alone under normal, nonconcurrent use. If you have
   since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
   and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
   Windows.
@@ -667,6 +681,30 @@ A sign-in needs a Portal that can prove who signed in. The panel decides by the 
 
 Portal tells the app who signed in with `X-Portal-User` and `X-Portal-Auth` (`--auth-identity-headers`) and, beside them, `X-Portal-Proof`: a secret the app makes at each launch of that Portal, hands over in its environment (`AUTH_IDENTITY_PROOF`, never an argument, since `ps` shows those) and keeps in memory. Portal drops a visitor's own copy of all three. The app believes the identity only on a request whose proof matches (compared in constant time) and whose values are shaped as Portal makes them. Without the proof, or with a wrong one, the headers are ignored and the request meets the token rules like any other, so another proxy on this PC (`tailscale serve`, nginx, Caddy), a local process or any other way to the app's port gets nothing by typing them. The proof is not saved, logged or sent in any answer, and it goes with the Portal that had it: when that Portal stops, ends or is launched again, the old proof counts for nothing. It is as private as `OVIS_TOKEN`: whoever can read the server's or Portal's environment can read both. Without a sign-in no proof is made, and the command drops a visitor's copies (`--strip-request-header X-Portal-User --strip-request-header X-Portal-Auth`). A `portal expose` you run by hand with `--auth` is just a proxy to the app, which still asks for its token.
 
+## Herdr app terminals
+
+The [Herdr desktop app](https://herdr.dev/download/) runs its terminals on herdr-core (`hc`), a
+runtime apart from herdr's TUI server. Start Ovis with `OVIS_RUNTIME=herdr-core` to show those
+terminals instead of the TUI's: this PC's panes are then the app's. An `hc` speaking protocol
+generation 1 (checked with 0.1.14) must be on the `PATH`, or named by `OVIS_HC_BIN`.
+
+`OVIS_RUNTIME=herdr-core` is Linux/macOS only: there is no Windows named pipe support yet.
+Ovis refuses to start with this runtime on Windows; use the default `herdr` runtime there.
+
+- **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
+  order and names; every terminal block in a tab is a pane. A terminal no tab holds (a worker an
+  agent started, one from `hc run`) has a tab of its own under **Other terminals**.
+- **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
+  agent that reports none shows no status. `error` counts as finished.
+- **Terminal:** the live view is `hc attach`, input and the key bar work as on herdr, and the
+  terminal takes the size of the viewer that last typed in it or resized it: the app's window, or
+  your phone once you type or open it there.
+- **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
+  empty input box reads as typed text, and a send waits for you to confirm it.
+- **Not on herdr-core:** making, rearranging, renaming or closing workspaces, tabs, splits and
+  panes, which belong to the app's window; search and scrollback selection in a pane; plugins and
+  worktrees. Remote PCs keep running herdr's TUI server.
+
 ## Configuration
 
 Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS_REF` was `HERDR_WEB_UI_REF`). The old names still work; where both are set, the `OVIS_*` one wins. The state dir moved from `~/.config/herdr-web-ui` to `~/.config/ovis` the first time the new version ran, leaving a link at the old path.
@@ -690,6 +728,8 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_PUSH_SUBJECT` | this repository's URL | VAPID contact URL or `mailto:` address |
 | `OVIS_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
 | `OVIS_HERDR_BIN` | `herdr` | herdr executable used for terminal attach |
+| `OVIS_RUNTIME` | `herdr` | `herdr-core` shows the terminals of [herdr-core](https://herdr.dev/core) (`hc`), the core the Herdr desktop app runs on, instead of herdr's TUI server: see [Herdr app terminals](#herdr-app-terminals) |
+| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`, for its connection and for terminal attach. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
 | `OVIS_SSH` | `ssh` (Git for Windows' on Windows) | OpenSSH client for [remote PCs](#remote-pcs-over-ssh); the `sftp` and `ssh-keygen` beside it are used too |
 | `OVIS_APP_NAME` | unset (`Ovis`) | The name the installed app has on a phone or computer, for example the PC's name. Each PC installs as an app of its own, and without it they are all called `Ovis`. An app already installed takes the new name when the browser next updates it, usually within a day or two, without a reinstall. Keep it short: a home screen cuts a long label |
 | `OVIS_PASTE_DIR` | `<pane cwd>/.ovis` | Where pasted and attached files are saved: an absolute path or `~/…`. Set it to keep them out of your projects; an agent may then ask before reading one. It covers the panes of this server's PC; a remote PC keeps the default |
@@ -843,6 +883,9 @@ A React client talks to a Bun HTTP/WebSocket server.
 - **Chat:** it reads the agents' own session files, and sending types into the same live pane.
 
 herdr owns the processes and the scrollback.
+
+With `OVIS_RUNTIME=herdr-core`, the server answers herdr's socket API itself from herdr-core
+(`server/herdr-core/`), through one `hc connect`, and attaches with `hc attach`.
 
 ## FAQ
 
