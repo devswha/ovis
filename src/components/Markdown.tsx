@@ -386,8 +386,11 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
  */
 export const Markdown = memo(function Markdown({ children, className, html = false, skills = null }: { children: string; className?: string; html?: boolean; skills?: SkillMatcher | null }) {
   const blocks = useMemo(() => parseMarkdown(children, 0, html), [children, html]);
-  const parsed = <ParsedMarkdown blocks={blocks} className={className} />;
-  return skills === null ? parsed : <SkillMatcherContext.Provider value={skills}>{parsed}</SkillMatcherContext.Provider>;
+  // always a provider, which passes on the names around it when it has none of its own: the pane's skill names
+  // load after its text, and a tree that changed shape then would mount every message again, a decoded image
+  // dropping back to its loading slot
+  const around = useContext(SkillMatcherContext);
+  return <SkillMatcherContext.Provider value={skills ?? around}><ParsedMarkdown blocks={blocks} className={className} /></SkillMatcherContext.Provider>;
 });
 
 /** `nodes` with each link, file link and picture as its words: text in a control that answers when clicked opens nothing itself. */

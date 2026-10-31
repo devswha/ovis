@@ -605,7 +605,18 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   meta keep their sizes. The chat scales all of them by `--chat-scale` (`--chat-fs-body` is the scaled
   `--fs-chat`), so the Chat font size setting names the body size and the prose is one step above it.
   `--chat-scale` is the chat's size over the interface's: unchosen, the chat follows the interface size;
-  chosen, it is drawn as itself whatever the interface size.
+  chosen, it is drawn as itself whatever the interface size. The space between and inside the
+  transcript's blocks scales with it (`--chat-space-*`, `--chat-chip-h` and `--chat-control-h` stand
+  for the spacing tokens, `--chip-h` and `--control-h` in the transcript and in a file preview's
+  blocks): at the page's spacing a small chat text sat loose between wide gaps and a large one
+  cramped. It follows Zed's Markdown preview, whose rem is its font size, so its spacing grows with
+  its text, and iOS Dynamic Type, which scales a layout's metrics with the text (`UIFontMetrics`).
+  Unlike Zed's preview, the view's edges keep the page's spacing (`--chat-edge`, which the virtual
+  list's inset takes, and a file preview's margin), so the transcript stays on the composer's
+  column, and `--touch-target` keeps its size: a meta row shrinks under its copy target's overhang,
+  while work block heads (folded or open), stacked work rows and code block headers keep a
+  `--touch-target` minimum row height on touch screens. A folded head keeps its full 44 px row,
+  without a transparent reach or negative margin, so the default chat size matches the page's spacing.
 
 ### Line breaking
 - The UI language is `<html lang>` (`lib/settings.ts`), and `src/styles.css` keys the breaking
@@ -2114,7 +2125,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A table fills the reply's width; its cells, file paths included, break between words only, so a
   column is never narrower than its longest word, and a table without room scrolls sideways in
   its own box.
-  Thinking renders as a folded block only when **Show thinking** is enabled.
+  Thinking renders as a folded block only when **Show thinking** is enabled. With **Expand
+  thinking** on as well (Settings → Chat, this device's, offered while Show thinking is on;
+  `expandThinking`) the block starts open (#2346); one the reader opens or folds stays so for its
+  message.
 - Auto-follow stops when the reader scrolls up, or opens a tool, a folded block or a whole output:
   they read there, and the opened row stays put while the turn streams below it (#1388). T3 Code
   keeps a reader at the very bottom pinned when they toggle a tool; Ovis already reads scrolling
@@ -2205,6 +2219,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   words are never behind the fold. A block the reader opened or folded stays as they left it, and
   so does one they focused or clicked inside: the fold at the end of a turn never takes the rows
   from under them.
+- **Collapse work** (Settings → Chat, this device's, off by default; `foldWork`,
+  `workBlockStartsOpen`) starts every block folded to its header, the running head included, so
+  a long turn is one line that still says its state, counts and failures (#2228). The head of a
+  blocked agent ("Needs you") still opens: it may hold what the reader answers. A block the
+  reader opens or folds keeps that for its message whatever the setting says, and the next
+  message starts folded again. Follows Zed's agent panel, whose `expand_terminal_card: false`
+  folds a terminal card even while its command runs, and the one working line of the Codex and
+  Claude apps; Ovis keeps its open default and makes the fold the opt-in.
 - The header is one line: the counts (`.work-block-summary`) take the width the title and the
   failure count leave and end in an ellipsis. `· 1 failed` (`.work-block-failed`) is its own item
   and is never cut, because the fold hides the failed row; at the largest chat type on the

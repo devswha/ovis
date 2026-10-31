@@ -24,6 +24,7 @@ import { checkTerminalComposition } from "./terminal-composition-regression.ts";
 import { checkTabMenu } from "./tab-menu-regression.ts";
 import { checkDefaultView } from "./default-view-regression.ts";
 import { checkSettingSurvivesReload } from "./settings-unload-regression.ts";
+import { checkSettingsAcrossTabs } from "./settings-tabs-regression.ts";
 import { checkTerminalInputSpacing } from "./terminal-input-spacing-regression.ts";
 import { checkComposerReconnect } from "./composer-reconnect-regression.ts";
 import { checkDroplet } from "./droplet-regression.ts";
@@ -109,6 +110,7 @@ export async function runUiContextChecks(): Promise<void> {
     await timed("checkTabMenu", () => checkTabMenu(browser!, origin));
     await timed("checkDefaultView", () => checkDefaultView(browser!, origin));
     await timed("checkSettingSurvivesReload", () => checkSettingSurvivesReload(browser!, origin));
+    await timed("checkSettingsAcrossTabs", () => checkSettingsAcrossTabs(browser!, origin));
     await timed("checkTerminalInputSpacing", () => checkTerminalInputSpacing(browser!, origin));
     await timed("checkComposerReconnect", () => checkComposerReconnect(browser!, origin, paneB));
     await timed("checkDroplet", () => checkDroplet(browser!, origin));
