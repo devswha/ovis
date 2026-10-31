@@ -1,5 +1,5 @@
 import { useContext, useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, ChevronUp, FileText, Send } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronUp, FileText, Send } from "lucide-react";
 
 import "./PromptCard.css";
 
@@ -179,6 +179,20 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
         {/* read, not drawn: the title is the card's one red */}
         <span className="visually-hidden">{t("input needed")}</span>
         <h2>{words.title}</h2>
+        {/* on to the next question, this one left unanswered, as the agent's own key does (omo's Tab, Codex's →) */}
+        {prompt.can_step_next && (
+          <button
+            type="button"
+            className="btn btn-ghost prompt-card-next"
+            disabled={pending || navigationBlocked || typedAnswer?.option_index !== undefined}
+            aria-label={t("Next question")}
+            title={t("Next question")}
+            onClick={(event) => void answer({ step_next: true, draft: { option_indices: [...selected], custom_text: custom } }, event)}
+          >
+            <span>{t("Next")}</span>
+            <ArrowRight aria-hidden="true" />
+          </button>
+        )}
         {/* the card shows a plan in its short box; the file viewer draws the whole of it as Markdown */}
         {planFile && openFile && (
           <button type="button" className="btn btn-ghost prompt-card-plan-file" onClick={() => openFile(planFile)}>
@@ -194,7 +208,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
       {prompt.steps && (
         <ol className="prompt-card-steps" aria-label={t("Questions")}>
           {prompt.steps.map((step, index) => {
-            const isClickable = !step.current && (step.can_navigate || step.answered && prompt.can_step_back);
+            // a form that marks its own steps (`can_navigate`) is taken at its word; an older one goes back to its answered steps
+            const isClickable = !step.current && (step.can_navigate || step.answered && prompt.can_step_back && !prompt.steps!.some((other) => other.can_navigate));
             return (
               <li
                 key={index}

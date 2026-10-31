@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
+import type { NativeSteps } from "./step-navigate.ts";
 
 /**
  * A parser that several readers call on the same screen, run once per read: the readers of one
@@ -126,6 +127,8 @@ export type ParsedPrompt = InteractivePrompt & {
   responder: Responder;
   /** Stable question identity across the folded widget and the expanded form. */
   omoQuestion?: { call: string; index: number };
+  /** The form's questions as its own keys move between them without answering (dialogs/step-navigate.ts). */
+  nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
     fieldKey: string;
@@ -300,7 +303,7 @@ export function finishPrompt(
   draft: PromptDraft,
   internal: Omit<ParsedPrompt, keyof InteractivePrompt>,
   /** fields as the id reads them, where that is not as the card shows them (a fallback card's ticking working line) */
-  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "default_custom_text">> & { call?: string } = {},
+  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "can_step_next" | "default_custom_text">> & { call?: string } = {},
 ): ParsedPrompt {
   // the card in English, field for field where the draft had them: the id reads the same words as ever
   const input: Omit<InteractivePrompt, "id" | "agent"> = {
@@ -351,6 +354,7 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     ...(parsed.steps ? { steps: parsed.steps } : {}),
     ...(parsed.answers ? { answers: parsed.answers } : {}),
     ...(parsed.can_step_back ? { can_step_back: parsed.can_step_back } : {}),
+    ...(parsed.can_step_next ? { can_step_next: parsed.can_step_next } : {}),
     ...(parsed.default_option_index !== undefined && parsed.default_option_index !== null ? { default_option_index: parsed.default_option_index } : {}),
     ...(parsed.default_option_indices ? { default_option_indices: parsed.default_option_indices } : {}),
     ...(parsed.default_custom_text ? { default_custom_text: parsed.default_custom_text } : {}),
