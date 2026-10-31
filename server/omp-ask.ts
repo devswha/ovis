@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { askedQuestions } from "../shared/askQuestions.ts";
+import { askedQuestions, type AskedQuestion } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
@@ -12,13 +12,15 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   if (!parsed || !form) return prompt;
   const call = open.length === 1 ? open[0] : undefined;
   const questions = call ? askedQuestions("ask", call.args) : null;
+  const active = questions?.[form.index];
   const input = call?.args;
   const rawQuestions = input !== null && typeof input === "object" && "questions" in input && Array.isArray(input.questions) ? input.questions : [];
   const matches = questions && questions.length + 1 === form.count && questions.every((question, index) => {
     const raw = rawQuestions[index];
     const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
     return (question.header?.trim() || id || `Q${index + 1}`) === parsed.steps?.[index]?.label;
-  });
+  }) && (parsed.responder === "omp-submit" ? form.index === questions.length
+    : active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true));
   const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
   return publicPrompt({
     ...parsed,
@@ -48,15 +50,7 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" || open.length !== 1) return prompt;
-  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter((asked) => asked.multi === prompt.multi_select
-    && asked.options.length === prompt.options.length
-    && asked.options.every((option, index) => {
-      const shown = prompt.options[index]!;
-      const description = option.description?.trim() ? option.description : null;
-      return option.preview === null && shows(shown.label, drawn(label(option.label), false))
-        && (description === null ? shown.description === null : shown.description !== null && shows(shown.description, drawn(description, false)));
-    })
-    && shows(prompt.question, drawn(asked.question, true), parsed.ompQuestionCut === true));
+  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked, parsed.ompQuestionCut === true));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
   const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));
@@ -65,6 +59,19 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
   const shown = options.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
   if (new Set(shown).size !== shown.length) return prompt;
   return publicPrompt({ ...parsed, question: asked.question, options, text_format: "markdown" });
+}
+
+/** The same drawn question and ordered options must authorize both Markdown and tab moves. */
+function questionShown(prompt: InteractivePrompt, asked: AskedQuestion, cut: boolean): boolean {
+  return asked.multi === prompt.multi_select
+    && asked.options.length === prompt.options.length
+    && asked.options.every((option, index) => {
+      const shown = prompt.options[index]!;
+      const description = option.description?.trim() ? option.description : null;
+      return option.preview === null && shows(shown.label, drawn(label(option.label), false))
+        && (description === null ? shown.description === null : shown.description !== null && shows(shown.description, drawn(description, false)));
+    })
+    && shows(prompt.question, drawn(asked.question, true), cut);
 }
 
 /** a name as a page shows it, for telling the card's options apart: one Unicode form by look, spacing collapsed, any case (src/lib/promptAnswer.ts `spaced`) */
