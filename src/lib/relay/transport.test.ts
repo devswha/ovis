@@ -179,6 +179,21 @@ it("resets the server request when an AbortSignal interrupts a streaming respons
   await expect(reader?.read()).rejects.toMatchObject({ name: "AbortError" });
 });
 
+it("sends a request body where the browser has no Request.body, as Firefox", async () => {
+  // Given a browser whose Request has no body property, and a PC that echoes what it received
+  const native = globalThis.Request;
+  // only the page's requests (relay.ovis.invalid addresses) lack it: the PC in this process keeps its own
+  globalThis.Request = class extends native {
+    override get body() { return this.url.startsWith("https://relay.ovis.invalid/") ? undefined as unknown as null : super.body; }
+  };
+  cleanups.push(() => { globalThis.Request = native; });
+  const f = await fixture({ dispatch: async (request) => new Response(await request.text()) });
+  // When the page posts JSON over the relay
+  const response = await f.transport.fetch("/api/echo", { method: "POST", headers: { "content-type": "application/json" }, body: '{"a":1}' });
+  // Then the PC got the body
+  expect(await response.text()).toBe('{"a":1}');
+});
+
 it("rejects an upload on carrier loss with TypeError and aborts the server handler", async () => {
   // Given an upload whose handler has read a chunk but has not returned headers.
   const reading = deferred<void>();

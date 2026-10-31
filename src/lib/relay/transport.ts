@@ -197,12 +197,16 @@ export class RelayTransport implements Transport {
     // These are browser networking policies, not properties of an encrypted mux request.
     const request = new Request(address, { ...init, credentials: "omit", mode: "cors" });
     request.signal.throwIfAborted();
+    // Firefox has no Request.body (undefined, where a request without one has null): buffer its body instead
+    const upload = request.body !== undefined ? request.body
+      : request.method === "GET" || request.method === "HEAD" ? null
+      : await request.arrayBuffer().then((bytes) => bytes.byteLength > 0 ? new Blob([bytes]).stream() : null);
     const open = (): Promise<Response> => {
       const allowed: readonly string[] = REQUEST_HEADERS;
       const stream = this.mux().openHttp({
         target: target(request.url), method: method(request.method),
         headers: [...request.headers].filter(([name]) => allowed.includes(name)),
-        body: request.body ? "stream" : "none",
+        body: upload ? "stream" : "none",
       });
       return new Promise<Response>((resolve, reject) => {
         const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
@@ -230,7 +234,7 @@ export class RelayTransport implements Transport {
           resolve(new Response(body, { status, headers: headers.map(([name, value]) => [name, value]) }));
         };
         if (request.signal.aborted) { aborted(); return; }
-        if (request.body) void stream.sendBody(request.body).catch((error: unknown) => {
+        if (upload) void stream.sendBody(upload).catch((error: unknown) => {
           if (stream.stopped) return;
           stream.reset("internal_error");
           reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay upload failed", { cause: error }));
