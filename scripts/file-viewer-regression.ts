@@ -1048,7 +1048,7 @@ try {
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
   assert.ok((await virtualRows()) < 500, "8 MB of text is a bounded window of rows");
   assert.equal(await big.locator(".file-viewer-text").count(), 0, "not an element per line");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A text file past the source budget shows its first 8 MB as a window of rows, says so in its header and has no Copy");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
@@ -1395,7 +1395,7 @@ try {
   await many.getByRole("button", { name: "Show less", exact: true }).waitFor();
   assert.equal(await many.locator(".hl-line").count(), 0, "no element per line");
   assert.equal((await many.locator(".hl-code").innerText()).split("\n").length, 30_000);
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A chat code block of 30 000 lines opens as one text, and the page never freezes");
 
   // a Markdown file the highlighter is slow on: its Preview shows, and its source stays plain with a
@@ -1410,7 +1410,7 @@ try {
   assert.equal(await slow.locator(".hl-note").count(), 0, "the note is not repeated under the code");
   await slow.locator(".file-viewer-text .hl-line").first().waitFor();
   assert.equal(await slow.locator(".file-viewer-text code span:not(.hl-line)").count(), 0, "the source is plain");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A Markdown file the highlighter is slow on previews, its source stays plain, and the page never freezes");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
@@ -1447,7 +1447,7 @@ try {
   // its 65 536-line source is past an element per line: a window of rows
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
   assert.equal(await longList.locator(".file-viewer-markdown").count(), 0, "the Preview is not drawn");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A file of too many lines shows its first 200 000 as rows, a Markdown file of too many elements as its source, and the page never freezes");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
