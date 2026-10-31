@@ -3,11 +3,11 @@ import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
 /** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
 /**
- * The oldest Ovis server the hosted shell connects to: 0.4.21, the first release with server/relay/
- * (package.json read 0.4.20 when the relay landed). Raise it only in a PR that makes the shell need
- * a newer server API, with a changelog line. A server below it gets the update screen
- * (src/lib/relay/skew.ts); `.github/workflows/ci.yml` job `relay-skew` runs the shell against
- * the tag equal to it and against the latest `v*` tag.
+ * The oldest Ovis server the hosted shell connects to: 0.4.21 (package.json read 0.4.20 when the
+ * relay landed; v0.4.21 itself holds no server/relay/, so the first release that does is newer).
+ * Raise it only in a PR that makes the shell need a newer server API, with a changelog line. A
+ * server below it gets the update screen (src/lib/relay/skew.ts). No CI job runs the shell against
+ * older releases yet: that comes with the relay end-to-end run, once a release holds server/relay/.
  *
  * A branch the shell keeps for a server older than its own version is marked
  * `// COMPAT(relay): added in <v>, remove after <v+2>`, so raising this constant finds it.

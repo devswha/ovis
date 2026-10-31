@@ -455,48 +455,9 @@ jobs:
             .ci/browser-evidence/**/*.zip
           include-hidden-files: true
           if-no-files-found: ignore
-  relay-skew:
-    name: Relay version skew
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
-    timeout-minutes: 30
-    steps:
-      # every tag: the run checks out the tag equal to MIN_SERVER_VERSION and the latest v* tag
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Skip heavy tests on draft PRs
-        if: needs.changes.outputs.draft == 'true'
-        run: |
-          echo "Draft PR detected, skipping the relay skew run"
-          exit 0
-      - uses: ./.github/actions/setup-ci
-        if: needs.changes.outputs.draft != 'true'
-        with:
-          node: 'true'
-          herdr: 'true'
-      - run: bun install --frozen-lockfile
-        if: needs.changes.outputs.draft != 'true'
-      - name: Get Playwright version
-        if: needs.changes.outputs.draft != 'true'
-        id: playwright-version
-        run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
-      - name: Cache Playwright browser
-        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .ci-cache/playwright
-          key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
-      # skips each tag with a notice while it does not exist or has no server/relay/ (scripts/relay-skew.ts)
-      - name: Shell against the oldest supported and the latest release
-        if: needs.changes.outputs.draft != 'true'
-        run: bun scripts/relay-skew.ts
   integration-browser:
     name: Integration and browser
-    needs: [changes, integration, browser-main, browser-other, relay-skew]
+    needs: [changes, integration, browser-main, browser-other]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -508,7 +469,6 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           BROWSER_MAIN_RESULT: ${{ needs.browser-main.result }}
           BROWSER_OTHER_RESULT: ${{ needs.browser-other.result }}
-          RELAY_SKEW_RESULT: ${{ needs.relay-skew.result }}
         run: |
           if [ "$CODE" = "false" ]; then
             echo "Skipped: only documentation changes"
@@ -530,10 +490,6 @@ jobs:
           fi
           if [ "$BROWSER_OTHER_RESULT" != "success" ]; then
             echo "Browser regression (other scripts) failed"
-            exit 1
-          fi
-          if [ "$RELAY_SKEW_RESULT" != "success" ]; then
-            echo "Relay version skew failed"
             exit 1
           fi
           echo "All tests passed"
