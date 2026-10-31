@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync,
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCopilotTranscript } from "./copilot.ts";
+import { copilotImage, parseCopilotTranscript } from "./copilot.ts";
 import * as copilotStore from "./copilot-store.ts";
 import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneConversation, toolOutput, transcriptPage, transcriptToolOutput } from "./conversation.ts";
@@ -216,6 +216,30 @@ it("reads a redacted recorded CLI session with root task ancestry and a tool-onl
     { kind: "text", text: "Recorded fixture text.", phase: "commentary" },
   ]);
   expect(parseConversationMetadata(recorded, "copilot-transcript").model).toBe("fixture-model");
+});
+
+it("names the pictures a recorded 1.0.105 session interned, attached and tool-read, and reads each back by its digest", async () => {
+  const recorded = readFileSync(new URL("./fixtures/copilot-pictures-1.0.105-events.jsonl", import.meta.url), "utf8");
+  const red = "copilot:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
+  const blue = "copilot:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
+  const turns = parseCopilotTranscript(recorded);
+  expect(turns.map(({ role }) => role)).toEqual(["user", "assistant"]);
+  expect(turns[0]?.parts.slice(1)).toEqual([{ kind: "image", media_type: "image/png", ref: red }]);
+  expect(turns[1]?.parts[0]).toMatchObject({ kind: "tool", name: "view", images: [{ media_type: "image/png", ref: blue }] });
+  const dir = mkdtempSync(join(tmpdir(), "copilot-pictures-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, recorded);
+    for (const ref of [red, blue]) {
+      const image = await copilotImage(path, ref);
+      expect(image?.mediaType).toBe("image/png");
+      expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("copilot:".length));
+    }
+    // a digest the session never interned, and bytes that no longer hash to the name they are filed under
+    expect(await copilotImage(path, `copilot:${"0".repeat(64)}`)).toBeNull();
+    writeFileSync(path, recorded.replace("iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR4", "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR5"));
+    expect(await copilotImage(path, red)).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 it.each(["assistant.message", "tool.execution_start"])("preserves string arguments from %s with bounded display and verified tool output", (type) => {
