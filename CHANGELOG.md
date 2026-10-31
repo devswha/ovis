@@ -97,6 +97,11 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   Cloudflare Worker deployed from CI with the maintainer's approval, or as a plain Bun server. Ovis
   does not use it yet.
   ([#2499](https://github.com/devswha/ovis/pull/2499))
+- The PC side of the Ovis relay: a link from this PC to the relay that answers the relay's server
+  proof, with `/api/relay` routes to start and stop it that only the owner may use, and only over a
+  direct connection to the PC. `plugin pair` prints a relay QR when the relay is online. It is off
+  by default: nothing connects until it is started, and there is no Settings switch for it yet.
+  ([#2504](https://github.com/devswha/ovis/pull/2504))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
