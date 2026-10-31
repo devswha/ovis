@@ -251,6 +251,66 @@ describe("shared preferences", () => {
     expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8")).settings).toMatchObject({ autoTabNames: false, theme: "dark" });
   });
 
+  it("after the setting is turned off over an unreadable labels file, every later save of a setting, pin or mute goes through", () => {
+    for (const start of ["loaded", "unreadable"] as const) {
+      const dir = root();
+      if (start === "loaded") writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1|term_a": "Fix it" } }));
+      else mkdirSync(join(dir, "tab-labels.json"));
+      const store = new PreferenceStore(dir);
+      if (start === "loaded") { rmSync(join(dir, "tab-labels.json")); mkdirSync(join(dir, "tab-labels.json")); }
+      store.set({ settings: { autoTabNames: false } });
+      expect(store.get().tab_labels).toBeUndefined();
+      store.set({ settings: {}, pins: ["local:w1:p1"] });
+      store.set({ settings: {}, muted_panes: ["w1:p1"] });
+      store.set({ settings: { theme: "dark" } });
+      expect(new PreferenceStore(dir).get()).toEqual({ revision: 4, settings: { autoTabNames: false, theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
+    }
+  });
+
+  it("labels never make a save of the settings, pins or mutes too large: the labels that do not fit are left out", () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix it" } });
+    // pins that fill the document all but the labels' room
+    const pins = Array.from({ length: 220 }, (_, n) => `local:w1:p${n}:${"x".repeat(270)}`);
+    const saved = store.set({ settings: {}, pins, tab_labels: Object.fromEntries(Array.from({ length: 60 }, (_, n) => [`w1:p${n + 10}|term_${n}`, "a".repeat(60)])) });
+    expect(saved.pins).toHaveLength(220);
+    expect(Object.keys(saved.tab_labels ?? {})).not.toContain("w1:p10|term_0");
+    expect(new PreferenceStore(dir).get().pins).toHaveLength(220);
+    // the labels held are left out of the document, never deleted from their file
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: { "w1:p1|term_a": "Fix it" } });
+  });
+
+  it("labels a failed delete left while the setting was off are never loaded, and go with the next save", () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Private" } });
+    const blocker = join(dir, `tab-labels.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    expect(store.set({ settings: { autoTabNames: false } }).tab_labels).toBeUndefined();
+    rmSync(blocker, { recursive: true });
+    // the delete failed: the file still holds the label, a restart shows none
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: { "w1:p1|term_a": "Private" } });
+    const restarted = new PreferenceStore(dir);
+    expect(restarted.get().tab_labels).toBeUndefined();
+    // turned on again, it is deleted, never read back
+    restarted.set({ settings: { autoTabNames: true } });
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: {} });
+    expect(restarted.set({ settings: {}, tab_labels: { "w1:p2|term_b": "New" } }).tab_labels).toEqual({ "w1:p2|term_b": "New" });
+  });
+
+  it("labels a save could not write leave memory even when its mutes then fail", () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Held" } });
+    const labelBlocker = join(dir, `tab-labels.json.${process.pid}.tmp`);
+    const muteBlocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
+    mkdirSync(labelBlocker);
+    mkdirSync(muteBlocker);
+    expect(() => store.set({ settings: {}, muted_panes: ["w1:p1"], tab_labels: { "w1:p2|term_b": "Next" } })).toThrow();
+    expect(store.get().tab_labels).toBeUndefined();
+  });
+
   it("turning the setting off deletes a labels file repaired after a damaged start, unread till then", () => {
     const dir = root();
     writeFileSync(join(dir, "tab-labels.json"), "{ not json");
@@ -261,14 +321,14 @@ describe("shared preferences", () => {
     expect(new PreferenceStore(dir).get().tab_labels).toBeUndefined();
   });
 
-  it("a label save that failed is not held, so its retry writes it", () => {
+  it("a label save that failed is not held and fails nothing else, so its retry writes it", () => {
     const dir = root();
     const store = new PreferenceStore(dir);
     store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "First" } });
     const blocker = join(dir, `tab-labels.json.${process.pid}.tmp`);
     mkdirSync(blocker);
-    expect(() => store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Second" } })).toThrow();
-    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "First" });
+    // the theme is saved; the labels leave memory until a change of them reads the file again
+    expect(store.set({ settings: { theme: "dark" }, tab_labels: { "w1:p2|term_b": "Second" } })).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [] });
     rmSync(blocker, { recursive: true });
     store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Second" } });
     expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1|term_a": "First", "w1:p2|term_b": "Second" });
