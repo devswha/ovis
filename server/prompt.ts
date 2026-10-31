@@ -882,8 +882,10 @@ async function readKnownPrompt(
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
     || /^\s*←.*✓ Submit\s*→$/m.test(screen) && /Enter to select · ↑\/↓ to navigate/.test(screen));
+  // Claude's question tabs, whole: only the bar's colors say which tab is shown (dialogs/claude.ts)
+  const claudeTabs = agent === "claude" && /^\s*\u2190\s+[\u2610\u2612\u2611\u2714].*\u2192\s*$/m.test(screen);
   let inputUnverified: true | undefined;
-  if (piTabs) {
+  if (piTabs || claudeTabs) {
     // Detection text has no styles. Background or neutral-vs-dim/green text identifies
     // the active tab, not answered boxes: verify the viewport before authorizing moves.
     const before = screen;
@@ -896,7 +898,9 @@ async function readKnownPrompt(
       .split(/\r?\n/).map(line => line.trimEnd()).join("\n").trimEnd();
     if (colors !== null && viewportShowsLive(scrollBefore, scrollAfter, colors, before, screen)
       && text(colors) === text(screen)) screen = colors;
-    else inputUnverified = true; // Plain-text labels remain readable, but authorize no input.
+    // Plain-text labels remain readable, but authorize no input. Claude's card answers as
+    // before from plain text: it only goes without its steps.
+    else if (piTabs) inputUnverified = true;
   }
   // omo's form reads its text from the session's call, the screen showing where the form stands
   const omoAsks = ["omo", "pi", "claude", ""].includes(agent) && pane.cwd && OMO_FORM_RE.test(screen)
@@ -1353,8 +1357,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
 
       if (body.step_back === true || body.step_index !== undefined) {
-        const native = parsedPrompt?.piAskForm;
-        if (!native || body.step_back === true && body.step_index !== undefined
+        // pi's tabs, or Claude's question tabs and their review (#2465): ←/→, each move seen before the next
+        const claude = parsedPrompt?.claudeTabs !== undefined;
+        const native = parsedPrompt?.piAskForm ?? parsedPrompt?.claudeTabs;
+        if (!parsedPrompt || !native || body.step_back === true && body.step_index !== undefined
           || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined) {
           return badRequest("invalid_answer", "Exactly one supported navigation action is required.");
         }
@@ -1374,30 +1380,44 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             return badRequest("invalid_answer", "Submit or clear edits before switching questions.");
           }
         }
-        const asking = askings.get(body.pane_id);
-        const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
+        // a move is a new asking, begun before its first key: a card read before it (another device's,
+        // or this tab's before a move away and back) is refused, while one a poll reads during the move
+        // is of this asking and still answers once the move is done (#2503 review)
+        const prior = askings.get(body.pane_id);
+        if (!prior || prior.content === null) return promptChanged();
+        const asking: Asking = { content: prior.content, n: askingCount += 1, queued: prior.queued };
+        askings.set(body.pane_id, asking);
+        const active = (): boolean => !deadline.aborted && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
         try {
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
             send: async key => {
-              if (await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
+              if (!claude && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
               await paneSendKeys(body.pane_id, [key]);
             },
             read: async () => {
               if (!active()) return null;
               const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
-              return !live.inputUnverified && live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-")) && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              const ours = claude ? live.agent === "claude"
+                : live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-"));
+              return !live.inputUnverified && ours && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
             },
-          });
+          }, claude ? (shown) => shown.claudeTabs : undefined);
           if (!moved) return promptChanged();
-          askingEnded(body.pane_id);
+          // a move is no answer: the tab it ended on is what the pane asks now, under the move's asking
+          if (askings.get(body.pane_id) === asking) asking.content = moved.id;
           return jsonResponse({ ok: true });
         } catch (error) {
           if (error instanceof PiAskFormOpen) return promptChanged();
           throw error;
-        } finally { answersUnderWay.delete(body.pane_id); }
+        } finally {
+          answersUnderWay.delete(body.pane_id);
+          // ended as well as begun: a read that began during the move and comes back after it shows a
+          // screen of the move, and changes nothing about the asking (#2503 review)
+          answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        }
       }
 
       // checked against the card before anything is sent: an invalid answer never opens the queue
@@ -1648,10 +1668,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
       // A model list closes, or opens its next list, a moment after its key: the same wait, so
       // the card's read right after the answer does not get the list just answered once more
-      if (target.steps) form.still = sameContent(contentId(target));
+      // Claude draws its next tab, or its review, a moment after the key: the same wait, by what the
+      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503)
+      if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
+      else if (target.steps) form.still = sameContent(contentId(target));
       else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
-      // Claude draws its next tab, or its review, a moment after the key: the same wait
-      else if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       return jsonResponse({ ok: true });
     });
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
