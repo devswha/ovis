@@ -2,12 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { memoryLimiters, relayLimits, relayLimitsFromArgs } from "./bun-limits.ts";
 import { startBunRelay } from "./bun.ts";
 import { admit } from "./core.ts";
-import { Peer, randomServerId, relayUrls } from "./relay-test-client.ts";
+import { Peer, newServer, relayUrls } from "./relay-test-client.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const stop of cleanup.splice(0)) await stop(); });
 const upgrade = { headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" } };
-const request = () => new Request(relayUrls("http://relay.test", randomServerId()).client, upgrade);
+const request = () => new Request(relayUrls("http://relay.test", newServer()).client, upgrade);
 const status = async (response: Awaited<ReturnType<typeof admit>>) => response instanceof Response ? response.status : 101;
 
 test("default token buckets enforce 120 per address and refill without sleeps", async () => {
@@ -63,9 +63,9 @@ test("Bun starts with default rate limiting and ignores spoofed forwarding addre
   // Invalid WebSocket keys make upgrade fail after admission without retaining sockets.
   const headers = { ...upgrade.headers, "sec-websocket-key": "invalid" };
   for (let i = 0; i < 120; i++) {
-    expect((await fetch(relayUrls(base, randomServerId()).client, { headers })).status).toBe(426);
+    expect((await fetch(relayUrls(base, newServer()).client, { headers })).status).toBe(426);
   }
-  const refused = await fetch(relayUrls(base, randomServerId()).client, {
+  const refused = await fetch(relayUrls(base, newServer()).client, {
     headers: { ...headers, "x-forwarded-for": "203.0.113.123" },
   });
   expect(refused.status).toBe(429);
@@ -77,18 +77,18 @@ test.each(["rooms", "sockets"] as const)("Bun reserves the %s cap across concurr
   const relay = startBunRelay({ port: 0, limits: { maxRooms: cap === "rooms" ? 1 : 10, maxSockets: cap === "sockets" ? 1 : 10 } });
   cleanup.push(() => relay.stop());
   const base = `ws://127.0.0.1:${relay.port}`;
-  const one = new Peer(new WebSocket(relayUrls(base, randomServerId()).client));
-  const two = new Peer(new WebSocket(relayUrls(base, randomServerId()).client));
+  const one = new Peer(new WebSocket(relayUrls(base, newServer()).client));
+  const two = new Peer(new WebSocket(relayUrls(base, newServer()).client));
   await Promise.all([one.ready, two.ready]);
   const live = one.socket.readyState === WebSocket.OPEN ? one : two;
   const refused = live === one ? two : one;
   await refused.closeCode();
   expect((await live.json())["type"]).toBe("assigned");
-  const response = await fetch(relayUrls(base.replace("ws:", "http:"), randomServerId()).client, upgrade);
+  const response = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, upgrade);
   expect(response.status).toBe(503);
   live.socket.close();
   await live.closeCode();
-  const next = await Peer.open(relayUrls(base, randomServerId()).client);
+  const next = await Peer.open(relayUrls(base, newServer()).client);
   expect((await next.json())["type"]).toBe("assigned");
 });
 
@@ -96,11 +96,11 @@ test("failed upgrades release room and socket reservations", async () => {
   const relay = startBunRelay({ port: 0, limits: { maxRooms: 1, maxSockets: 1 } });
   cleanup.push(() => relay.stop());
   const base = `ws://127.0.0.1:${relay.port}`;
-  const response = await fetch(relayUrls(base.replace("ws:", "http:"), randomServerId()).client, {
+  const response = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, {
     headers: { ...upgrade.headers, "sec-websocket-key": "invalid" },
   });
   expect(response.status).toBe(426);
-  const peer = await Peer.open(relayUrls(base, randomServerId()).client);
+  const peer = await Peer.open(relayUrls(base, newServer()).client);
   expect((await peer.json())["type"]).toBe("assigned");
 });
 
@@ -112,9 +112,9 @@ test.each([["rooms", 256], ["sockets", 1024]] as const)("Bun enforces the defaul
   cleanup.push(() => relay.stop());
   const base = `ws://127.0.0.1:${relay.port}`;
   for (let i = 0; i < capacity; i++) {
-    const peer = await Peer.open(relayUrls(base, randomServerId()).client);
+    const peer = await Peer.open(relayUrls(base, newServer()).client);
     expect((await peer.json())["type"]).toBe("assigned");
   }
-  const response = await fetch(relayUrls(base.replace("ws:", "http:"), randomServerId()).client, upgrade);
+  const response = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, upgrade);
   expect(response.status).toBe(503);
 });
