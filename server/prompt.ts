@@ -705,6 +705,9 @@ async function ompOwnsInput(paneId: string): Promise<boolean> {
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
 class OmpNotInFront extends Error {}
 
+/** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
+class MoveLapsed extends Error {}
+
 /**
  * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
  * and an omp stopped behind its shell since the read takes none either: the shell would. A stop between this
@@ -1368,9 +1371,14 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             deadline: deadlineAt, active,
             // the same guards as an answer's keys, inside the request's 4 s
             send: async (key) => {
-              if (!active()) throw new PiAskFormOpen();
-              await beforeKey(body.pane_id, agent, deadline);
-              await paneSendKeys(body.pane_id, [key]);
+              const inTime = (): boolean => active() && Date.now() < deadlineAt;
+              if (!inTime()) throw new MoveLapsed();
+              // the guard itself may outlast the deadline: then no key at all
+              const guarded = await Promise.race([beforeKey(body.pane_id, agent, deadline).then(() => true), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
+              if (!guarded) throw new MoveLapsed();
+              // asked again right before herdr writes the key: refused, it sends nothing (`cancelled`)
+              try { await paneSendKeys(body.pane_id, [key], undefined, inTime); }
+              catch (error) { throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error; }
             },
             read: async () => {
               if (!active()) return null;
@@ -1387,7 +1395,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
         } catch (error) {
-          if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront) return promptChanged();
+          if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront || error instanceof MoveLapsed) return promptChanged();
           throw error;
         } finally { answersUnderWay.delete(body.pane_id); }
       }

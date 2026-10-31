@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -142,7 +142,7 @@ describe("Hermes's open-ended question in a batch", () => {
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; onSent?: (key: string) => void; cwd?: string; omo?: { pid: number; path: string } }
+interface Pane { agent: string; screen: string; sent: string[]; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
 async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
@@ -158,7 +158,13 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       input += chunk.toString();
       if (!input.includes("\n")) return;
       const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string } };
-      const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+      // a herdr that holds its reply this long (ms)
+      const stall = pane.onRpc?.(request.method);
+      const answer = (result: unknown) => {
+        const reply = () => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+        if (typeof stall === "number") setTimeout(reply, stall);
+        else reply();
+      };
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd, ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: pane.screen } });
       if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
@@ -264,17 +270,24 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
-  test.skipIf(process.platform !== "linux")("OmO: a pi-ask form opened mid-move gets no further key", async () => {
+  test.skipIf(process.platform !== "linux")("OmO: a move's keys pass the answer's own guard: a pi-ask form opened before the next key takes none", async () => {
     const agentDir = mkdtempSync(join(tmpdir(), "question-steps-pi-"));
     const previous = process.env["PI_CODING_AGENT_DIR"];
     process.env["PI_CODING_AGENT_DIR"] = agentDir;
     try {
       await withOmoPane(omo(0), async (pane) => {
         let at = 0;
+        let infos = -1;
         pane.onSent = (key) => {
           if (key === "tab") at += 1;
           pane.screen = omo(at);
-          // pi-ask's bridge opens a form for this pane's process: its socket, which cannot be confirmed as pi-ask's own
+          infos = 0;
+        };
+        // After the first Tab each read asks for the pane's processes twice, the arrival's and then the look
+        // before the next key; the fifth ask is the second key's own guard. pi-ask's bridge opens a form for the
+        // pane's process right then, after the last read showed the form: a socket not proven pi-ask's own.
+        pane.onRpc = (method) => {
+          if (method !== "pane.process_info" || infos < 0 || ++infos !== 5) return;
           const bridge = join(agentDir, "herdr-web-ui-ask");
           mkdirSync(bridge, { recursive: true, mode: 0o700 });
           writeFileSync(join(bridge, `${pane.omo!.pid}.sock`), "");
@@ -289,20 +302,44 @@ describe("the answer route moves between questions, one key at a time, each seen
     }
   });
 
-  test.skipIf(process.platform !== "linux")("OmO: another form drawn after the first Tab gets no second one", async () => {
-    // the same labels, another call: omo asked again with other questions
-    const other = (at: number) => omo(at).replaceAll("Which shape do you prefer?", "Which shape, again?").replace(" Ask user · 30m", " Ask user · 29m").replace("[Color] [Size] [Shape]", "[Colour] [Size] [Shape]").replace("→ Color", "→ Colour").replace("  Color", "  Colour");
+  test.skipIf(process.platform !== "linux")("OmO: a new call asked under the move gets no second key, its tabs alike", async () => {
+    // the same headers, its last question asked with other options and another call id: another form, though the tabs read alike
+    const CALL_ID = (JSON.parse(OMO_SESSION_CALL) as { message: { content: { id: string }[] } }).message.content[0]!.id;
+    const changed = OMO_SESSION_CALL.replace('"label":"Square"', '"label":"Triangle"').replace(CALL_ID, `${CALL_ID}_again`);
+    expect(changed).not.toBe(OMO_SESSION_CALL);
     await withOmoPane(omo(0), async (pane) => {
-      pane.onSent = () => { pane.screen = other(1); };
+      let at = 0;
+      pane.onSent = (key) => {
+        if (key === "tab") at += 1;
+        pane.screen = omo(at);
+        // omo settles the call and asks again, appending to its session as it always does
+        if (at === 1) appendFileSync(pane.omo!.path, `${JSON.stringify({ type: "custom", customType: "ask-user:settlement", data: { requestId: CALL_ID } })}\n${changed}\n`);
+      };
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
     // and a screen that changed between the card and the move: no key at all
     await withOmoPane(omo(0), async (pane) => {
       const first = await card();
-      pane.screen = other(0);
+      pane.screen = omo(1);
       expect((await move(first.id, { step_index: 2 })).status).toBe(409);
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test.skipIf(process.platform !== "linux")("OmO: a guard that outlasts the request's 4 s sends no further key", async () => {
+    await withOmoPane(omo(0), async (pane) => {
+      let at = 0;
+      let infos = -1;
+      pane.onSent = (key) => {
+        if (key === "tab") at += 1;
+        pane.screen = omo(at);
+        infos = 0;
+      };
+      // the second key's guard (the fifth process lookup after the first Tab, as above) waits on herdr past the deadline
+      pane.onRpc = (method) => method === "pane.process_info" && infos >= 0 && ++infos === 5 ? 4_500 : undefined;
+      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
     });
   });
 
