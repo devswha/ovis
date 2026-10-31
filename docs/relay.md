@@ -114,9 +114,13 @@ relay can't start or stop the relay, show its QR code or reset its identity (403
 device that can type, it can still start a pairing code under Devices.
 
 **Who controls the relay.** Start, stop, pairing offers and identity reset require drive access
-and a direct connection to the PC. A Portal
-visitor may read the state, but every relay mutation answers 403 `owner_only`: Settings shows
-a disabled switch, no offer and no reset. Use the owner's access token or a paired device instead.
+and a direct connection to the PC. A Portal visitor may read the state but cannot change it:
+the default watch visitor gets 403 `read_only`; even a visitor with a saved drive role gets
+403 `owner_only`. The watch guard runs before the Portal owner guard
+([`server/dispatch.ts:223-243`](../server/dispatch.ts#L223-L243)).
+Settings shows a disabled switch, an explanation of the direct-owner requirement, no offer and
+no reset. Open Ovis on the PC or at its direct address, using the owner's access token or a
+paired device with drive access instead.
 The hosted shell hides the group because mutations
 over the relay answer 403 `local_required`. While the relay is off an offer answers 409
 `relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.

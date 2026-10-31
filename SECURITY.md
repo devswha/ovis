@@ -38,7 +38,11 @@ In scope, for example:
   connection or a visitor Portal's own sign-in vouches for with its proof (`server/access.ts`,
   `server/auth.ts`, `server/portal.ts`), including through a proxy or forged headers; and a visitor
   Portal let in using the app's own controls to leave access behind, such as pairing a device,
-  subscribing to push alerts or issuing a link; a watch-only Portal visitor that can type, send
+  subscribing to push alerts, controlling the relay or issuing a link. Relay mutations answer
+  403 `read_only` for default watch visitors, then 403 `owner_only` for Portal visitors with
+  a saved drive role: the watch guard precedes the owner guard
+  ([`server/dispatch.ts:223-243`](server/dispatch.ts#L223-L243)).
+  A watch-only Portal visitor that can type, send
   keys, resize, read files or perform a write action is also in scope;
 - pairing codes, device cookies and revocation (`server/devices.ts`); a revoked or observe-only
   device that can still type, send keys or resize;
