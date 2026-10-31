@@ -1056,8 +1056,10 @@ const SETTLE_MS = 1_500;
 async function formMovedOn(paneId: string, still: (prompt: InteractivePrompt | null) => boolean, codexHome?: string, openCodeStateDir?: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await Bun.sleep(50);
-    const prompt = await readPrompt(paneId, codexHome, openCodeStateDir).then((read) => read.prompt, () => null);
-    if (!still(prompt)) return;
+    const read = await readPrompt(paneId, codexHome, openCodeStateDir).catch(() => undefined);
+    // A failed read says nothing about whether the screen moved on.
+    if (read === undefined || read.stale) continue;
+    if (!still(read.prompt)) return;
   }
 }
 
