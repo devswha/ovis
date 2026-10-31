@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRelayIdentity, relayIdentityPath, rotateRelayIdentity } from "./identity.ts";
+import { loadRelayIdentity, RelayIdentityError, relayIdentityPath, rotateRelayIdentity } from "./identity.ts";
 import { privateStateFs } from "../private-state.ts";
 
 const dirs: string[] = [];
@@ -51,6 +52,36 @@ describe("relay identity", () => {
     expect(loadRelayIdentity(dir)).toEqual(saved);
     if (process.platform !== "win32") expect(mode(path)).toBe(0o600);
   });
+
+  it.skipIf(process.platform === "win32")("makes a corrupt identity private before refusing it without changing its content", () => {
+    const dir = stateDir();
+    const path = relayIdentityPath(dir);
+    const text = "{not json, but may still contain a secret";
+    mkdirSync(join(dir, "relay"));
+    writeFileSync(path, text);
+    chmodSync(path, 0o644);
+    expect(() => loadRelayIdentity(dir)).toThrow(RelayIdentityError);
+    expect(mode(path)).toBe(0o600);
+    expect(readFileSync(path, "utf8")).toBe(text);
+  });
+
+  for (const code of ["ENOENT", "EIO"]) {
+    it.skipIf(process.platform === "win32")(`wraps a permission check failure (${code}) as identity_unreadable`, () => {
+      const dir = stateDir();
+      loadRelayIdentity(dir);
+      const spy = spyOn(fs, "statSync").mockImplementation(() => {
+        throw Object.assign(new Error("Injected stat failure"), { code });
+      });
+      try {
+        let error: unknown;
+        try { loadRelayIdentity(dir); } catch (caught) { error = caught; }
+        expect(error).toBeInstanceOf(RelayIdentityError);
+        expect(error).toHaveProperty("code", "identity_unreadable");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  }
 
   it.each(["{not json", "[]", "null", JSON.stringify({ v: 1, server_id: "x", public_key: "a", secret_key: "b" })])(
     "refuses a bad file (%#) and leaves it unchanged", (text) => {

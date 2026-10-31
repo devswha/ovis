@@ -325,6 +325,34 @@ it("closes a handshake that queues too many bytes", async () => {
   expect(await opening).toBeInstanceOf(Error);
 });
 
+it("charges non-ASCII handshake text in UTF-8 bytes against the connection budget", async () => {
+  const { link, opening, helloBytes } = await stalledHandshake();
+  fill(link.daemon, MAX_HANDSHAKE_INBOUND_BYTES - helloBytes - HANDSHAKE_MESSAGE_OVERHEAD_BYTES - 2);
+  expect(link.daemon.closes).toEqual([]);
+  // Two code units, but three UTF-8 bytes: one byte past the remaining budget.
+  void link.daemon.deliver({ data: "\u00e9x", isBinary: false });
+  expect(link.daemon.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
+  expect(await opening).toBeInstanceOf(Error);
+});
+
+it("charges non-ASCII handshake text in UTF-8 bytes against the total budget", async () => {
+  const full = MAX_HANDSHAKE_INBOUND_BYTES_TOTAL / MAX_HANDSHAKE_INBOUND_BYTES;
+  const held: Awaited<ReturnType<typeof stalledHandshake>>[] = [];
+  for (let i = 0; i < full; i++) {
+    const handshake = await stalledHandshake();
+    fill(handshake.link.daemon, MAX_HANDSHAKE_INBOUND_BYTES - handshake.helloBytes - 1024);
+    held.push(handshake);
+  }
+  const { link, opening, helloBytes } = await stalledHandshake();
+  fill(link.daemon, full * 1024 - helloBytes - HANDSHAKE_MESSAGE_OVERHEAD_BYTES - 2);
+  expect(held.flatMap(({ link }) => link.daemon.closes)).toEqual([]);
+  expect(link.daemon.closes).toEqual([]);
+  // This connection has ample room; only the shared byte budget is exhausted.
+  void link.daemon.deliver({ data: "\u00e9x", isBinary: false });
+  expect(link.daemon.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
+  expect(await opening).toBeInstanceOf(Error);
+});
+
 it("never opens a handshake whose ready is still being sent when the carrier closes", async () => {
   const link = pair();
   const ready = Promise.withResolvers<void>();

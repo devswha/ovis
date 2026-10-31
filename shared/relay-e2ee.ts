@@ -88,9 +88,11 @@ function guardCarrier(real: Transport, closeCode: () => number, budget: boolean)
       return;
     }
     if (counting) {
+      const charge = (typeof data === "string" ? new TextEncoder().encode(data).byteLength : size)
+        + HANDSHAKE_MESSAGE_OVERHEAD_BYTES;
       messages += 1;
-      bytes += size + HANDSHAKE_MESSAGE_OVERHEAD_BYTES;
-      handshakeInboundBytes += size + HANDSHAKE_MESSAGE_OVERHEAD_BYTES;
+      bytes += charge;
+      handshakeInboundBytes += charge;
       if (messages > MAX_HANDSHAKE_INBOUND_MESSAGES || bytes > MAX_HANDSHAKE_INBOUND_BYTES
         || handshakeInboundBytes > MAX_HANDSHAKE_INBOUND_BYTES_TOTAL) {
         refuse(PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE, "Too much handshake traffic");

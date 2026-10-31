@@ -43,14 +43,14 @@ export function loadRelayIdentity(stateDir: string): RelayIdentity {
   return loadExisting(path, text);
 }
 
-/** Parses a saved identity and makes its file private again if others can read it. */
+/** Makes a saved identity private again before parsing it, even if its content is corrupt. */
 function loadExisting(path: string, text: string): RelayIdentity {
-  const identity = parseIdentity(text);
-  if (process.platform !== "win32" && (statSync(path).mode & 0o077) !== 0) {
-    try { chmodSync(path, 0o600); }
-    catch { throw new RelayIdentityError("the file is readable by others and cannot be made private"); }
+  if (process.platform !== "win32") {
+    try {
+      if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o600);
+    } catch { throw new RelayIdentityError("the file permissions cannot be checked or made private"); }
   }
-  return identity;
+  return parseIdentity(text);
 }
 
 /** Replaces the identity with a new server_id and key pair, atomically. */
