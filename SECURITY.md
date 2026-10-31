@@ -54,7 +54,7 @@ In scope, for example:
 - the Ovis relay path: anything that lets the relay, whoever runs it or anyone else read, change,
   replay or inject traffic between a phone and the PC, or get in through the relay without a paired
   device's key, anyone taking a PC's place on the relay without that PC's secret key, and a revoke or relay identity reset that leaves a phone connected. That covers
-  `shared/relay-e2ee.ts` and the paseo code it wraps (`shared/vendor/paseo-e2ee/`),
+  `shared/relay-server-proof.ts`, `shared/relay-e2ee.ts` and the paseo code it wraps (`shared/vendor/paseo-e2ee/`),
   `shared/relay-mux.ts`, `shared/relay-mux-engine.ts`, `server/relay/`, the relay parts of
   `server/devices.ts` and `server/access.ts`, and the relay service itself (`relay/`,
   `relay.ovis.sh`);
@@ -69,8 +69,9 @@ Out of scope, as documented in [Access and safety](docs/guide.md#access-and-safe
   known. It is open to anyone who reaches it, and the server warns about it on startup. Getting past
   the gate once a token is set or a device is paired is in scope;
 - anything reached through `tailscale funnel`, which is unsupported;
-- what the Ovis relay sees by design: which PC (`server_id`) a phone connects to, when, from which
-  address, and the timing and size of every encrypted message, keystroke timing included
+- what the Ovis relay sees by design: which PC (`server_id`) a phone connects to, the PC's public
+  key and admission challenge and answer, when, from which address, and the timing and size of
+  every encrypted message, keystroke timing included
   ([the relay's trust model](docs/relay.md#trust-model)), and the relay or its host dropping,
   delaying or refusing connections;
 - people you gave drive access to (a driving paired device, the token, your tailnet login, or an
@@ -81,6 +82,20 @@ Out of scope, as documented in [Access and safety](docs/guide.md#access-and-safe
 Test only on PCs and accounts you own.
 
 ## The Ovis relay
+
+Every PC control and data socket proves possession of its static X25519 secret before admission.
+Its `server_id` is the first 16 bytes of the domain-separated SHA-256 hash of its public key;
+the proof is an HMAC-SHA256 over a fresh nonce and the socket's route, keyed by an ephemeral
+X25519 exchange ([wire format](docs/relay.md#how-a-connection-is-made)). This admission proof is
+separate from phone-to-PC Noise encryption and device authentication.
+
+Missing, invalid, expired or timed-out PC proofs close `4401`; it is not always a permanent
+identity failure. The PC retries transient refusals with backoff and stops only on a control
+`4401` naming `server key does not match server_id` or `invalid server key`. An invalid first
+challenge closes locally with retryable `4000`. A 17th pending proof displaces the oldest with
+`1013`. Only clients the PC has answered occupy the eight client slots; at most four unanswered
+clients wait, with oldest-first eviction and a 15-second answer deadline while the PC can answer.
+These client limits close `1013`; lost buffered frames after eviction close `1012`.
 
 To report abuse that goes through `relay.ovis.sh`, such as traffic that isn't Ovis's or a flood of
 connections for one PC, write to devswha@gmail.com with the `server_id` involved and when it

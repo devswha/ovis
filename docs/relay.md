@@ -145,26 +145,42 @@ it, and the identity reset is refused.
 ## How a connection is made
 
 1. **The PC connects.** With the relay on, the PC opens a control WebSocket to
-   `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1`, with its public key. Before the
+   `wss://relay.ovis.sh/v1/ws?server_id=<id>&role=server&v=1&proof=1&public_key=<64 lowercase hex>`.
+   The `server_id` is the first 16 bytes of
+   `SHA256(UTF8("ovis-relay-server-id-v1") || public_key)`, encoded as 32 lowercase hex digits. Before the
    relay lets that socket, or any data socket below, take the PC's place, it sends a fresh
    challenge, and the PC answers with a code only its secret key can make (X25519 and
    HMAC-SHA256, tied to the `server_id`, the socket's role and its connection ID). The relay closes
    the socket with `4401` when the PC didn't offer the proof at all, when its key doesn't match the
    `server_id`, or when the answer is wrong. A challenge left unanswered for 10 seconds, or answered
-   after that, closes it with `1013`, as does a new PC socket while four of that PC's proofs are
-   still pending. The PC closes the socket itself with `4000` when the challenge
-   it got is invalid or out of order. Both `1013` and `4000` are hiccups, and the PC keeps
-   reconnecting with its usual backoff. Only a `4401` on the control socket stops the PC retrying,
-   and its relay status shows an error with the reason. A refused data
+   after that, also closes it with `4401`. At most 16 proofs may be pending per PC; a new one
+   displaces the oldest with `1013`. The PC closes the socket itself with `4000` when the challenge
+   it got is invalid or out of order. It retries these transient refusals with its usual backoff,
+   including `4401` with `server proof timed out` or `invalid or expired server proof`.
+   Only a control-socket `4401` with `server key does not match server_id` or `invalid server key`
+   stops the PC retrying, and its relay status shows that error. A refused data
    socket only ends that phone's connection: the status stays online and gives no reason (`shared/relay-server-proof.ts`,
    [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
    1 second longer each time up to 30 seconds, each wait varied by up to 20%
    ([`server/relay/link.ts`](../server/relay/link.ts)).
+   The challenge is `{"type":"server_challenge","public_key":"<ephemeral X25519 hex>","nonce":"<32 random bytes hex>"}`;
+   the answer is `{"type":"server_proof","answer":"<HMAC-SHA256 hex>"}`. The MAC key is the raw
+   X25519 shared secret, and the message is
+   `nonce || UTF8(server_id + NUL + role + NUL + connection_id + NUL + "ovis-relay-server-proof-v1")`,
+   with role `control` or `data` and an empty control connection ID. The relay rejects an all-zero
+   shared secret and compares the MAC in constant time. This proves the PC's secret possession to
+   the relay; it does not authenticate the relay to the PC or replace the phone's Noise handshake.
 2. **The phone connects.** The app opens the same address with `role=client`. The relay gives the
    connection a random ID and tells the PC, which opens a data WebSocket for it, and from then on the
    relay passes frames between the two sockets byte for byte
    ([what it answers](../relay/README.md#what-it-answers)).
+   A phone takes one of eight answered-client slots only when the PC's data socket sends its first
+   non-keepalive frame. Up to four unanswered phones may wait; a fifth displaces the oldest with
+   `1013`. A waiting phone closes `1013` after 15 seconds in which the PC could answer, reset when
+   its data socket attaches. Without a control or data socket its deadline pauses until the PC
+   returns. Lost buffered frames after a relay eviction close the phone `1012` when its data
+   socket attaches or the phone sends again.
 3. **Handshake.** The phone and the PC run the Noise NK handshake over those sockets, with the PC's
    public key from the QR code.
 4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the
@@ -383,11 +399,15 @@ WebSocket close codes the app can see through the relay:
 | `1009` | a message over 1 MiB |
 | `4008` | a terminal's reader fell too far behind ([terminal flow control](terminal-flow-control.md)) |
 
-The relay closes the PC's own sockets with `4401` when the PC's proof of its key is missing, its key
-doesn't match the `server_id` or the answer is wrong, and with `1013` when the challenge goes
-unanswered for 10 seconds or four of the PC's proofs are already pending. The PC closes a socket itself with `4000` when the challenge is invalid or
-out of order. It retries after `1013` and `4000`, and stops only after a `4401` on its control socket
-([step 1](#how-a-connection-is-made)). A phone never sees these codes: it finds the PC offline.
+The relay closes the PC's own sockets with `4401` when its proof is missing, its key doesn't match
+the `server_id`, its answer is wrong or late, or its challenge goes unanswered for 10 seconds.
+With 16 proofs already pending, the oldest closes `1013` to admit the newcomer. The PC closes a
+socket itself with `4000` when the challenge is invalid or out of order. It retries after `1013`,
+`4000` and transient or ambiguous `4401` refusals. Only control-socket `4401` reasons
+`server key does not match server_id` and `invalid server key` stop retries
+([step 1](#how-a-connection-is-made)). A phone does not receive the PC's proof close directly:
+it can instead find the PC offline or lose its carrier with `1012`. Phones can also receive the
+relay's own `1013` capacity or answer-deadline close.
 
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
@@ -438,7 +458,8 @@ The maintainer runs `relay.ovis.sh` and `app.ovis.sh` as a best effort, with no 
 is always up.
 
 - **`relay.ovis.sh`** is a Cloudflare Worker with one Durable Object per PC. Only the Relay deploy
-  workflow (`.github/workflows/relay-deploy.yml`) deploys it, after a change to `relay/` reaches main
+  workflow (`.github/workflows/relay-deploy.yml`), on GitHub-hosted runners, deploys it after a change
+  to `relay/` or `shared/relay-server-proof.ts` reaches main
   and passes CI or when run by hand from main, and always with the maintainer's approval. A deploy
   drops every connection; PCs and phones reconnect by themselves, and nothing is sent again. Workers
   Logs are off and the relay stores nothing ([relay/README.md](../relay/README.md#deploy)).
