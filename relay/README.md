@@ -24,12 +24,34 @@ upgrade, and a request that is not an upgrade is `426`.
 | client | `role=client` | a phone or browser; the relay picks its `connection_id` |
 | data | `role=server&connection_id=<id>` | the PC, one per client |
 
+The PC proves every socket it opens (control and data): its query also carries
+`proof=1&public_key=<64 lowercase hex>`, its static X25519 public key, and its `server_id` must be
+the first 16 bytes of `SHA256(UTF8("ovis-relay-server-id-v1") || public_key)` as 32 lowercase hex
+digits. The relay's first frame is then
+`{"type":"server_challenge","public_key":"<ephemeral X25519 hex>","nonce":"<32 random bytes hex>"}`,
+and the PC's first frame must be `{"type":"server_proof","answer":"<HMAC-SHA256 hex>"}`, keyed with
+the X25519 shared secret over `nonce || UTF8(server_id + NUL + role + NUL + connection_id + NUL +
+"ovis-relay-server-proof-v1")` (role `control` or `data`, an empty connection id for control);
+`shared/relay-server-proof.ts` has both sides. The relay compares the answer in constant time and
+refuses an all-zero shared secret. Until it answers, the socket is no part of the room: it hears no
+client and replaces nothing. A missing proof, a key that does not derive the `server_id`, a wrong,
+replayed or late answer (10 s) closes it `4401`, so knowing a `server_id` (it is in every offer,
+and a revoked device keeps it) is not enough to take the PC's place. At most 16 PC sockets of one
+`server_id` wait to answer at once; a 17th closes the oldest `1013`, so pushing the PC's own socket
+out takes 16 arrivals within its one round trip.
+
 - A client's first frame is `{"type":"assigned","connection_id":"<32 hex>"}`, its random 128-bit id.
 - The control socket hears `{"type":"sync","connection_ids":[...]}` when it opens (the clients
   still waiting for a data socket), `{"type":"connected","connection_id":"..."}` when a client
   arrives and `{"type":"disconnected","connection_id":"..."}` when one leaves. The PC answers
   `connected` (or `sync`) by opening the client's data socket. Anything else the PC sends on the
   control socket is dropped.
+- A client holds one of the PC's slots once the PC has answered it, that is once its data socket
+  has sent a frame. Until then it is waiting: with the PC connected, it is closed `1013` 15 s after
+  the PC could have answered (from its data socket attaching, or from the client or the PC
+  arriving, whichever is later), keepalives or not. While no PC is connected it waits for one, and
+  a PC that comes back gets the full 15 s again. A client past the waiting limit pushes the oldest
+  waiting one out, so holding the waiting places takes 4 arrivals within one phone's handshake.
 - From then on, every frame from the client goes to its data socket and back, text as text and
   binary as binary, byte for byte. Frames a client sends before its data socket attaches are held
   and handed over in order when it does.
@@ -43,8 +65,10 @@ upgrade, and a request that is not an upgrade is `426`.
 | Limit | Value | Past it |
 |---|---|---|
 | frame size | 64 KiB (Ovis frames stay under about 22 KiB) | that socket closes `1009` |
-| clients per `server_id` | 8 | the new client closes `1013` |
-| clients waiting for their data socket, per `server_id` | 4 | the new client closes `1013` |
+| clients the PC has answered, per `server_id` | 8 | the new client closes `1013` |
+| clients the PC has not answered yet, per `server_id` | 4 | the oldest of them closes `1013` |
+| a client the PC has not answered, with the PC connected | 15 s | the client closes `1013` |
+| a PC socket answering its challenge | 10 s, 16 at once per `server_id` | `4401`; past 16 the oldest closes `1013` |
 | frames held for a waiting client | 200 frames or 1 MiB, whichever comes first | the client closes `1013` |
 | idle | 120 s without a frame or keepalive | the socket closes `1001` |
 | connections per address (Cloudflare) | 30 a minute | `429`, `Retry-After: 60` |
@@ -55,10 +79,11 @@ upgrade, and a request that is not an upgrade is `426`.
 | `1001` | to a data socket: its client left. To any socket: idle, or a data socket for a client that is gone |
 | `1008` | to a control socket: a newer control socket for the same `server_id` replaced it. Also an unknown wire version, or a second data socket for one client |
 | `1009` | a frame over 64 KiB |
-| `1012` | to a client: its data socket (the PC's side) went away, or the relay lost the frames it held (a Durable Object evicted mid-wait); reconnect |
+| `1012` | to a client: its data socket (the PC's side) went away, or the relay lost the frames it held (a Durable Object evicted mid-wait, noticed when the data socket attaches or the client sends again; each such close is counted in the room's `heldFramesLost`); reconnect |
 | `1013` | a limit above; try again later |
+| `4401` | to a PC socket: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
 
-The newest control socket wins rather than the first, because an older one may be half-open after
+The newest proven control socket wins rather than the first, because an older one may be half-open after
 the PC's network moved; the PC reconnects within its backoff either way. The rate limits are
 Cloudflare's Rate Limiting bindings (`wrangler.toml`), counted per Cloudflare location and
 approximate; the per-address limit is asked first, so one address over its limit never uses up
@@ -69,7 +94,8 @@ and counts from 30 s after it, so such a socket closes at most 150 s after its l
 
 ## What it sees and keeps
 
-It sees, per socket: the `server_id`, the role, the `connection_id`, when frames pass and how
+It sees, per socket: the `server_id`, the role, the `connection_id`, the PC's public key and its
+answer to the challenge, when frames pass and how
 large they are, and the connecting address (as the key of the per-address rate limiter only). It
 does not see what a frame says: frames are encrypted end to end, and the relay neither parses nor
 logs them.
@@ -84,7 +110,7 @@ again, and clients reconnect.
 ## Deploy
 
 `relay.ovis.sh` is deployed from CI only, never from a laptop: the Relay deploy workflow
-(`.github/workflows/relay-deploy.yml`) runs on a push to main that touches `relay/` once CI passes,
+(`.github/workflows/relay-deploy.yml`) runs on a push to main that touches `relay/` (or `shared/relay-server-proof.ts`, which the Worker imports) once CI passes,
 and by hand from main. It runs `bun test ./relay`, then `bunx wrangler@4.156.0 deploy` in `relay/` with
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, then asks `https://relay.ovis.sh/health` up to
 5 times, 5 s apart (20 s each), and fails only when none of the answers is a 2xx.

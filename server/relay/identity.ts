@@ -1,16 +1,17 @@
 /**
- * This server's identity on the relay: a random server_id and the X25519 key pair phones pin.
+ * This server's identity on the relay: the X25519 key pair phones pin, and the server_id derived
+ * from its public key, so the relay can make the PC prove it holds the key (shared/relay-server-proof.ts).
  * It lives in `stateDir/relay/identity.json` (0600, written through private-state.ts) and nowhere
  * else; the secret key is never logged. A file that will not parse is never replaced: the relay
  * refuses to start with `identity_unreadable`, since a silent new identity would orphan every
  * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
  */
-import { randomBytes } from "node:crypto";
 import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import nacl from "tweetnacl";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
+import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { preparePrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
 
 export interface RelayIdentity {
@@ -62,7 +63,7 @@ function createIdentity(path: string, replace = false): RelayIdentity {
   const pair = generateKeyPair();
   const identity: RelayIdentity = {
     v: 1,
-    server_id: randomBytes(16).toString("hex"),
+    server_id: deriveServerId(pair.publicKey),
     public_key: exportPublicKey(pair.publicKey),
     secret_key: exportSecretKey(pair.secretKey),
   };
@@ -108,5 +109,7 @@ function parseIdentity(text: string): RelayIdentity {
     const derived = nacl.box.keyPair.fromSecretKey(secretKey).publicKey;
     if (!nacl.verify(derived, publicKey)) throw new Error("mismatch");
   } catch { throw new RelayIdentityError("the key pair is invalid"); }
+  // the relay admits only the PC whose key derives its server_id
+  if (deriveServerId(importPublicKey(o.public_key)) !== o.server_id) throw new RelayIdentityError("the server_id is not derived from the public key");
   return { v: 1, server_id: o.server_id, public_key: o.public_key, secret_key: o.secret_key };
 }

@@ -6,7 +6,7 @@
  * exits 1 unless every frame arrived, byte for byte and in order.
  */
 import { startBunRelay } from "./bun.ts";
-import { equalBytes, openPair, randomServerId, within, type Peer } from "./relay-test-client.ts";
+import { equalBytes, establish, newServer, openPair, within, type Peer } from "./relay-test-client.ts";
 
 const args = process.argv.slice(2);
 const option = (name: string, fallback: string) => {
@@ -46,10 +46,15 @@ let failure: unknown = null;
 const sockets: Peer[] = [];
 try {
   const pairs = await within(Promise.all(Array.from({ length: pcs }, async () => {
-    const serverId = randomServerId();
-    const first = await openPair(base, serverId);
+    const server = newServer();
+    const first = await openPair(base, server);
+    await establish(first);
     const out = [first];
-    for (let index = 1; index < clientsPerPc; index++) out.push(await openPair(base, serverId, first.control));
+    for (let index = 1; index < clientsPerPc; index++) {
+      const pair = await openPair(base, server, first.control);
+      await establish(pair);
+      out.push(pair);
+    }
     return out;
   })), "every PC and client to connect", deadlineMs).then((all) => all.flat());
   for (const pair of pairs) sockets.push(pair.client, pair.data);

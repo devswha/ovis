@@ -46,12 +46,19 @@ const ROLES = new Set(["control", "data", "client"]);
 function isInfo(value: unknown): value is SocketInfo {
   if (typeof value !== "object" || value === null) return false;
   const info = value as Record<string, unknown>;
+  const proof = info["proof"] as Record<string, unknown> | undefined;
   return typeof info["role"] === "string" && ROLES.has(info["role"]) && (info["connection_id"] === null || typeof info["connection_id"] === "string")
-    && typeof info["seen"] === "number" && typeof info["buffered"] === "boolean";
+    && typeof info["seen"] === "number" && typeof info["buffered"] === "boolean"
+    && (info["answered"] === undefined || info["answered"] === true)
+    && (info["deadline"] === undefined || typeof info["deadline"] === "number")
+    && (info["arrived"] === undefined || typeof info["arrived"] === "number")
+    && (proof === undefined || (typeof proof === "object" && proof !== null && typeof proof["expected"] === "string" && typeof proof["expires"] === "number"));
 }
 
 export class RelayRoom {
   private readonly room: Room<HibernatableSocket>;
+  /** alarm reads and writes, one after another, so a later one never undoes an earlier one */
+  private alarmWrites: Promise<void> = Promise.resolve();
 
   constructor(private readonly state: RelayState, _env?: Env) {
     state.setWebSocketAutoResponse(new (runtime().WebSocketRequestResponsePair)(KEEPALIVE_PING, KEEPALIVE_PONG));
@@ -81,6 +88,7 @@ export class RelayRoom {
         try { socket.close(code, reason); } catch { /* see above */ }
       },
       keepaliveAt: (socket) => state.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? null,
+      wake: (at) => { void this.armBy(at); },
       now: () => Date.now(),
     };
     this.room = new Room(host);
@@ -92,8 +100,23 @@ export class RelayRoom {
     const pair = new (runtime().WebSocketPair)();
     this.state.acceptWebSocket(pair[1]);
     this.room.open(pair[1], socket);
-    if ((await this.state.storage.getAlarm()) === null) await this.state.storage.setAlarm(Date.now() + IDLE_MS);
+    await this.armBy(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
+  }
+
+  /** clients this instance closed 1012 because the frames held for them were lost in an eviction */
+  get heldFramesLost(): number {
+    return this.room.heldFramesLost;
+  }
+
+  /** makes sure the alarm fires by `at`: sets it unless one is set sooner */
+  private armBy(at: number): Promise<void> {
+    // a failed earlier write must not stop every later one
+    this.alarmWrites = this.alarmWrites.catch(() => undefined).then(async () => {
+      const current = await this.state.storage.getAlarm();
+      if (current === null || at < current) await this.state.storage.setAlarm(at);
+    });
+    return this.alarmWrites;
   }
 
   webSocketMessage(socket: HibernatableSocket, message: string | ArrayBuffer): void {
@@ -110,7 +133,8 @@ export class RelayRoom {
 
   async alarm(): Promise<void> {
     const next = this.room.sweep();
-    if (next !== null) await this.state.storage.setAlarm(Math.max(next, Date.now() + 1000));
+    // the alarm that fired is spent: set the next one outright
+    if (next !== null) await (this.alarmWrites = this.alarmWrites.catch(() => undefined).then(() => this.state.storage.setAlarm(Math.max(next, Date.now() + 1000))));
   }
 }
 

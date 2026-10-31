@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBunRelay, type BunRelay } from "./bun.ts";
+import { SERVER_PROOF_CLOSE } from "../shared/relay-server-proof.ts";
 import { BUFFER_FRAMES, CLOSE, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING } from "./core.ts";
-import { Peer, equalBytes, openPair, randomServerId, relayUrls } from "./relay-test-client.ts";
+import { Peer, answerChallenge, equalBytes, establish, newServer, openPair, openServer, randomServerId, relayUrls } from "./relay-test-client.ts";
 
 let relay: BunRelay;
 let base: string;
@@ -56,8 +57,9 @@ describe("relay over HTTP", () => {
     const global = limiter("global");
     const limited = startBunRelay({ port: 0, limiters: { perAddress, global } });
     try {
-      const url = relayUrls(`ws://127.0.0.1:${limited.port}`, randomServerId()).control;
-      const ok = await Peer.open(url);
+      const server = newServer();
+      const url = relayUrls(`ws://127.0.0.1:${limited.port}`, server).control;
+      const ok = await openServer(url, server);
       expect(await ok.json("sync")).toEqual({ type: "sync", connection_ids: [] });
       ok.socket.close();
       expect(asked).toEqual(["address:127.0.0.1", "global:all"]);
@@ -92,7 +94,7 @@ describe("relay sockets", () => {
   });
 
   test("pairs control, client and data, and passes text and binary unchanged both ways", async () => {
-    const { client, data, connectionId } = await openPair(base, randomServerId());
+    const { client, data, connectionId } = await openPair(base, newServer());
     expect(connectionId).toMatch(/^[0-9a-f]{32}$/);
     const frames = [randomBytes(1), randomBytes(22 * 1024), "hello \u{1F600} text", bigRandom(MAX_MESSAGE_BYTES), JSON.stringify({ type: "connected", connection_id: "spoof" })];
     for (const frame of frames) {
@@ -108,7 +110,7 @@ describe("relay sockets", () => {
   });
 
   test("answers the keepalive itself and passes nothing on", async () => {
-    const { control, client, data } = await openPair(base, randomServerId());
+    const { control, client, data } = await openPair(base, newServer());
     control.socket.send(KEEPALIVE_PING);
     expect(await control.next("pong")).toBe(KEEPALIVE_PONG);
     client.socket.send(KEEPALIVE_PING);
@@ -119,9 +121,9 @@ describe("relay sockets", () => {
   });
 
   test("holds a client's frames until its data socket attaches, then hands them over in order", async () => {
-    const id = randomServerId();
+    const id = newServer();
     const urls = relayUrls(base, id);
-    const control = await Peer.open(urls.control);
+    const control = await openServer(urls.control, id);
     await control.json("sync");
     const client = await Peer.open(urls.client);
     const { connection_id } = await client.json("assigned") as { connection_id: string };
@@ -131,16 +133,16 @@ describe("relay sockets", () => {
     // a ping round trip after them: the relay has taken every frame before the data socket asks
     client.socket.send(KEEPALIVE_PING);
     expect(await client.next("pong")).toBe(KEEPALIVE_PONG);
-    const data = await Peer.open(urls.data(connection_id));
+    const data = await openServer(urls.data(connection_id), id, connection_id);
     for (const frame of sent) expect(equalBytes(await data.next("held frame"), frame)).toBe(true);
     client.socket.send("live");
     expect(await data.next("live frame")).toBe("live");
   });
 
   test("closes a client 1013 that sends more than 200 frames or 1 MiB before the PC attaches", async () => {
-    const id = randomServerId();
+    const id = newServer();
     const urls = relayUrls(base, id);
-    const control = await Peer.open(urls.control);
+    const control = await openServer(urls.control, id);
     await control.json("sync");
 
     const many = await Peer.open(urls.client);
@@ -156,15 +158,15 @@ describe("relay sockets", () => {
   });
 
   test("a newer control socket replaces the older with 1008 and hears the clients still waiting", async () => {
-    const id = randomServerId();
+    const id = newServer();
     const urls = relayUrls(base, id);
-    const first = await Peer.open(urls.control);
+    const first = await openServer(urls.control, id);
     expect(await first.json("sync")).toEqual({ type: "sync", connection_ids: [] });
     const paired = await openPair(base, id, first);
     const waiting = await Peer.open(urls.client);
     const { connection_id } = await waiting.json("assigned") as { connection_id: string };
     await first.json("connected");
-    const second = await Peer.open(urls.control);
+    const second = await openServer(urls.control, id);
     expect(await first.closeCode("replaced control")).toBe(CLOSE.POLICY);
     expect(await second.json("sync")).toEqual({ type: "sync", connection_ids: [connection_id] });
     // the pair already attached keeps working without its control socket
@@ -173,7 +175,7 @@ describe("relay sockets", () => {
   });
 
   test("a client going away closes its data socket 1001 and tells the PC; the data socket going away closes its client 1012", async () => {
-    const id = randomServerId();
+    const id = newServer();
     const one = await openPair(base, id);
     one.client.socket.close(1000);
     expect(await one.data.closeCode("data after client left")).toBe(CLOSE.GOING_AWAY);
@@ -185,21 +187,22 @@ describe("relay sockets", () => {
   });
 
   test("refuses a data socket for no client (1001) and a second one for the same client (1008)", async () => {
-    const id = randomServerId();
+    const id = newServer();
     const urls = relayUrls(base, id);
-    const stray = await Peer.open(urls.data(randomServerId()));
+    const strayId = randomServerId();
+    const stray = await openServer(urls.data(strayId), id, strayId);
     expect(await stray.closeCode("stray data")).toBe(CLOSE.GOING_AWAY);
     const { connectionId, client, data } = await openPair(base, id);
-    const again = await Peer.open(urls.data(connectionId));
+    const again = await openServer(urls.data(connectionId), id, connectionId);
     expect(await again.closeCode("second data")).toBe(CLOSE.POLICY);
     client.socket.send("first still owns it");
     expect(await data.next()).toBe("first still owns it");
   });
 
-  test(`refuses the ${MAX_CLIENTS + 1}th client of one server_id, and the ${MAX_PENDING + 1}th waiting one, with 1013`, async () => {
-    const id = randomServerId();
+  test(`refuses the ${MAX_CLIENTS + 1}th client the PC answered, and closes the oldest of ${MAX_PENDING + 1} it has not, with 1013`, async () => {
+    const id = newServer();
     const urls = relayUrls(base, id);
-    const control = await Peer.open(urls.control);
+    const control = await openServer(urls.control, id);
     await control.json("sync");
     const waiting: Peer[] = [];
     for (let index = 0; index < MAX_PENDING; index++) {
@@ -208,23 +211,89 @@ describe("relay sockets", () => {
       await control.json("connected");
       waiting.push(client);
     }
-    const tooManyWaiting = await Peer.open(urls.client);
-    expect(await tooManyWaiting.closeCode("5th waiting")).toBe(CLOSE.TRY_AGAIN);
+    const newest = await Peer.open(urls.client);
+    await newest.json("assigned");
+    expect(await waiting.shift()!.closeCode("the oldest waiting")).toBe(CLOSE.TRY_AGAIN);
+    expect((await control.json("disconnected"))["type"]).toBe("disconnected");
+    expect((await control.json("connected"))["type"]).toBe("connected");
+    waiting.push(newest);
     for (const client of waiting) client.socket.close();
     for (let index = 0; index < MAX_PENDING; index++) await control.json("disconnected");
 
-    for (let index = 0; index < MAX_CLIENTS; index++) await openPair(base, id, control);
+    for (let index = 0; index < MAX_CLIENTS; index++) await establish(await openPair(base, id, control));
     const ninth = await Peer.open(urls.client);
     expect(await ninth.closeCode("9th client")).toBe(CLOSE.TRY_AGAIN);
     // another server_id is not affected
-    const other = await openPair(base, randomServerId());
+    const other = await openPair(base, newServer());
     expect(other.connectionId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   test("closes a socket 1009 that sends a frame over 64 KiB", async () => {
-    const { client, data } = await openPair(base, randomServerId());
+    const { client, data } = await openPair(base, newServer());
     client.socket.send(new Uint8Array(MAX_MESSAGE_BYTES + 1));
     expect(await client.closeCode("too big")).toBe(CLOSE.TOO_BIG);
     expect(await data.closeCode("its data socket")).toBe(CLOSE.GOING_AWAY);
+  });
+});
+
+describe("relay admission over real sockets", () => {
+  test("takeover: without the PC's secret key, a control socket is closed 4401 and the PC keeps its room", async () => {
+    const pc = newServer();
+    const urls = relayUrls(base, pc);
+    const live = await openServer(urls.control, pc);
+    await live.json("sync");
+    const other = newServer();
+    // no proof; another key; the right public key with a wrong answer; a replayed answer; not JSON
+    const bare = await Peer.open(`${base}/v1/ws?server_id=${pc.serverId}&role=server&v=1`);
+    expect(await bare.closeCode("no proof")).toBe(SERVER_PROOF_CLOSE);
+    const wrongKey = await Peer.open(urls.control.replace(pc.publicKey, other.publicKey));
+    expect(await wrongKey.closeCode("another key")).toBe(SERVER_PROOF_CLOSE);
+    const wrongAnswer = await Peer.open(urls.control);
+    wrongAnswer.socket.send(answerChallenge(await wrongAnswer.next("challenge"), pc, null, other.secretKey)!);
+    expect(await wrongAnswer.closeCode("wrong answer")).toBe(SERVER_PROOF_CLOSE);
+    const garbage = await Peer.open(urls.control);
+    await garbage.next("challenge");
+    garbage.socket.send(new Uint8Array([0, 255]));
+    expect(await garbage.closeCode("binary answer")).toBe(SERVER_PROOF_CLOSE);
+    // the live PC was never replaced and still hears its clients
+    live.socket.send(KEEPALIVE_PING);
+    expect(await live.next("pong")).toBe(KEEPALIVE_PONG);
+    const pair = await openPair(base, pc, live);
+    await establish(pair);
+  });
+
+  test("takeover: a forged data socket gets none of a waiting phone's frames, and the PC's own still attaches", async () => {
+    const pc = newServer();
+    const urls = relayUrls(base, pc);
+    const control = await openServer(urls.control, pc);
+    await control.json("sync");
+    const client = await Peer.open(urls.client);
+    const { connection_id } = await client.json("assigned") as { connection_id: string };
+    await control.json("connected");
+    client.socket.send("held ciphertext");
+    const forged = await Peer.open(urls.data(connection_id));
+    forged.socket.send(answerChallenge(await forged.next("challenge"), pc, connection_id, newServer().secretKey)!);
+    expect(await forged.closeCode("forged data")).toBe(SERVER_PROOF_CLOSE);
+    expect(forged.pending).toBe(0);
+    const data = await openServer(urls.data(connection_id), pc, connection_id);
+    expect(await data.next("held frame")).toBe("held ciphertext");
+  });
+
+  test(`slots: clients the PC attached but never answered count as waiting, so the ${MAX_PENDING + 1}th pushes the oldest out with 1013`, async () => {
+    const pc = newServer();
+    const control = await openServer(relayUrls(base, pc).control, pc);
+    await control.json("sync");
+    const pairs = [];
+    for (let index = 0; index < MAX_PENDING; index++) pairs.push(await openPair(base, pc, control));
+    const urls = relayUrls(base, pc);
+    const phone = await Peer.open(urls.client);
+    const { connection_id } = await phone.json("assigned") as { connection_id: string };
+    expect(await pairs[0]!.client.closeCode("the oldest unanswered client")).toBe(CLOSE.TRY_AGAIN);
+    expect(await pairs[0]!.data.closeCode("its data socket")).toBe(CLOSE.GOING_AWAY);
+    expect(await control.json("disconnected")).toEqual({ type: "disconnected", connection_id: pairs[0]!.connectionId });
+    expect(await control.json("connected")).toEqual({ type: "connected", connection_id });
+    // the newcomer is served
+    const data = await openServer(urls.data(connection_id), pc, connection_id);
+    await establish({ client: phone, data });
   });
 });

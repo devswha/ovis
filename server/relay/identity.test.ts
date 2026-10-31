@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { loadRelayIdentity, RelayIdentityError, relayIdentityPath, rotateRelayIdentity } from "./identity.ts";
 import { privateStateFs } from "../private-state.ts";
 
@@ -40,6 +42,8 @@ describe("relay identity", () => {
     const dir = stateDir();
     const first = loadRelayIdentity(dir);
     expect(first.server_id).toMatch(/^[0-9a-f]{32}$/);
+    // the relay admits the PC only by a key that derives its server_id
+    expect(first.server_id).toBe(deriveServerId(importPublicKey(first.public_key)));
     if (process.platform !== "win32") expect(mode(relayIdentityPath(dir))).toBe(0o600);
     expect(loadRelayIdentity(dir)).toEqual(first);
   });
@@ -92,6 +96,16 @@ describe("relay identity", () => {
       expect(() => loadRelayIdentity(dir)).toThrow(/identity_unreadable/);
       expect(readFileSync(path, "utf8")).toBe(text);
     });
+
+  it("refuses a server_id not derived from the public key and leaves the file unchanged", () => {
+    const dir = stateDir();
+    const saved = loadRelayIdentity(dir);
+    const path = relayIdentityPath(dir);
+    const text = JSON.stringify({ ...saved, server_id: "0123456789abcdef0123456789abcdef" });
+    writeFileSync(path, text);
+    expect(() => loadRelayIdentity(dir)).toThrow(/identity_unreadable/);
+    expect(readFileSync(path, "utf8")).toBe(text);
+  });
 
   it("refuses a key pair whose halves do not match", () => {
     const dir = stateDir();
