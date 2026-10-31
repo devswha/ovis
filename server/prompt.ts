@@ -1414,8 +1414,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const target = nativeStepTarget(parsedPrompt, body);
         if (typeof target === "string") return badRequest("invalid_answer", target);
         if (!draftKept(parsedPrompt, body.draft)) return badRequest("invalid_answer", "Submit or clear edits before switching questions.");
-        const asking = askings.get(body.pane_id);
-        const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
+        // a move is a new asking, begun before its first key: a card read before it is refused, while one a poll
+        // reads during the move is of this asking and still answers once the move is done
+        const prior = askings.get(body.pane_id);
+        if (!prior || prior.content === null) return promptChanged();
+        const asking: Asking = { content: prior.content, n: askingCount += 1, queued: prior.queued };
+        askings.set(body.pane_id, asking);
+        const active = (): boolean => !deadline.aborted && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
         const keys = moveKeys(active);
@@ -1432,13 +1437,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           });
           if (!moved) return promptChanged();
           done = true;
-          askingEnded(body.pane_id);
+          // a move is no answer: the question it ended on is what the pane asks now, under the move's asking
+          if (askings.get(body.pane_id) === asking) asking.content = moved.id;
           return jsonResponse({ ok: true });
         } catch (error) {
           if (error instanceof KeyRefused) return promptChanged();
           throw error;
         } finally {
           answersUnderWay.delete(body.pane_id);
+          // ended as well as begun: a read that began during the move and comes back after it shows a screen of the
+          // move, and changes nothing about the asking
+          answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
           if (!done && keys.pressed()) askingEnded(body.pane_id);
         }
       }

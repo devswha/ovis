@@ -276,6 +276,25 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test.skipIf(process.platform !== "linux")("OmO: a card a poll reads during a step answers the next tap", async () => {
+    await withOmoPane(omo(0), async (pane) => {
+      let at = 0;
+      let poll: Promise<InteractivePrompt> | undefined;
+      pane.onSent = (key) => {
+        if (key === "tab") at += 1;
+        pane.screen = omo(at);
+        // the card's own poll, read while the step is still under way
+        poll ??= card();
+      };
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      const polled = await poll!;
+      expect(polled.question).toBe("Which size do you prefer?");
+      // the next tap comes from the card that poll drew: the same asking, not a stale one
+      expect(await move(polled.id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["tab", "tab"]);
+    });
+  });
+
   test.skipIf(process.platform !== "linux")("OmO: a form that does not move stops after its first key", async () => {
     await withOmoPane(omo(0), async (pane) => {
       const first = await card();

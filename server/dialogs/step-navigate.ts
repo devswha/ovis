@@ -58,15 +58,15 @@ export async function navigateNativeSteps(initial: ParsedPrompt, target: number,
   send(key: string): Promise<void>;
   active(): boolean;
   deadline: number;
-}): Promise<boolean> {
+}): Promise<ParsedPrompt | null> {
   const form = initial.nativeSteps!;
   let previous = initial;
   let index = form.index;
   while (index !== target) {
-    if (!io.active() || Date.now() >= io.deadline) return false;
+    if (!io.active() || Date.now() >= io.deadline) return null;
     const before = await io.read();
     if (!before || before.nativeSteps?.identity !== form.identity || before.nativeSteps.index !== index
-      || before.id !== previous.id || !io.active()) return false;
+      || before.id !== previous.id || !io.active()) return null;
     const direction = target > index ? 1 : -1;
     await io.send(direction === 1 ? form.next : form.previous);
     const expected = index + direction;
@@ -81,10 +81,11 @@ export async function navigateNativeSteps(initial: ParsedPrompt, target: number,
         break;
       }
       // the stop it left, still drawn, waits; another form or another stop ends the move
-      if (shown && steps !== undefined && (steps.identity !== form.identity || steps.index !== index || shown.id !== previous.id)) return false;
+      if (shown && steps !== undefined && (steps.identity !== form.identity || steps.index !== index || shown.id !== previous.id)) return null;
       await Bun.sleep(Math.min(50, Math.max(0, io.deadline - Date.now())));
     }
-    if (!moved) return false;
+    if (!moved) return null;
   }
-  return io.active();
+  // the card the move ended on, which the asking now stands for
+  return io.active() ? previous : null;
 }
