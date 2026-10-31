@@ -44,6 +44,7 @@
     "scripts/claude-image-browser-qa.ts",
     "scripts/omp-codex-image-browser-qa.ts",
     "scripts/grok-image-browser-qa.ts",
+    "scripts/copilot-image-browser-qa.ts",
     "scripts/gjc-status-browser-regression.ts",
     "scripts/sidebar-activity-demo-regression.ts",
     "scripts/sidebar-selection-contrast-demo-regression.ts",
