@@ -107,7 +107,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2450](https://github.com/devswha/ovis/pull/2450) by @briantcl1992)
 - A Chat message to Pi that starts or ends with a space, holds a tab, or ends with an `@mention`
   no longer stays "waiting for transcript" forever and holds every later send on the pane behind it.
-  ([#2474](https://github.com/devswha/ovis/pull/2474) by @BeerBelly69)
+  ([#2474](https://github.com/devswha/ovis/pull/2474) reported by @BeerBelly69)
+- A message that went to the terminal no longer stays "Not confirmed" when the connection dropped
+  before its receipt arrived: the browser that sent it gets the receipt back when it reconnects or
+  reloads, within ten minutes. Nothing is sent again, and a message whose delivery was never
+  confirmed stays unconfirmed.
+  ([#2475](https://github.com/devswha/ovis/pull/2475) reported by @christso)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
