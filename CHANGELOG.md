@@ -75,6 +75,22 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   agent works; a block waiting on you still opens (#2228). Both are off by default and kept per
   device, and a block you open or fold yourself stays that way for its message.
   ([#2484](https://github.com/devswha/ovis/pull/2484) reported by @altgans and @Ploppy3)
+- The card for Claude Code's questions (AskUserQuestion) and its "Ready to submit your answers?"
+  review now list the questions as steps, with Back, as omo's and pi's forms do. A step moves
+  Claude's own tabs with ←/→ and keeps the answers already given. When the terminal does not show
+  the tab expected after a move, the card stops and leaves the rest to the terminal.
+  ([#2503](https://github.com/devswha/ovis/pull/2503) reported and co-authored by @jpcarranza94)
+- A tab still named by its number ("Tab 2") now shows a few words of its first message, in every
+  browser of the server. A name you gave a tab is kept, herdr's own tab names do not change, only
+  those words are kept (until the tab closes), and Settings → Name tabs from the first message turns
+  it off and deletes them.
+  ([#2502](https://github.com/devswha/ovis/pull/2502) reported by @vibewriter-hand)
+- A line of a file's diff takes a note for the agent: a + beside a hovered row, a click or tap on the
+  row and the bar's Add a note (a full touch target on a phone), or the arrow keys and Enter. The note
+  waits with the comments on a reply and goes first in the pane's next message, with where the line
+  is, the comparison as it was read and the line's text; nothing is sent until you send. A note that
+  would make the message too long is refused, and a pane with no agent says why it takes none.
+  ([#2505](https://github.com/devswha/ovis/pull/2505))
 - The Ovis relay service (`relay/`): the meeting point where a PC running Ovis and a phone that
   cannot reach it directly both dial out, carrying only end-to-end encrypted frames it has no key
   for and keeping no logs. A PC must prove it holds its key to serve its `server_id`. It runs as a
@@ -172,6 +188,13 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Starting Portal and reading remote access settings over a relay session now use this server's
   listening port instead of the default port.
   ([#2476](https://github.com/devswha/ovis/pull/2476))
+- An OmO question card with several questions now moves between them without an answer, as Tab
+  and Shift+Tab do in the terminal: tap another question's step, or use Back and the new Next
+  button. Codex's question card gets Back and Next (its ←/→), and Hermes's batch of questions
+  gets its steps, Back and Next (its Tab and Shift+Tab). Each move sends the agent's own key and
+  waits until the screen shows the question it moved to. If the screen shows anything else, the
+  card stops and sends nothing more.
+  ([#2506](https://github.com/devswha/ovis/pull/2506))
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
