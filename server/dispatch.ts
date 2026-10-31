@@ -227,12 +227,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
   // identity explicitly given drive in local state cannot use these controls to leave access
-  // behind: device changes (including redeeming a pairing code), push subscriptions and their
-  // status, Portal controls and relay controls (an offer carries a live pairing code) require the owner's app credential.
+  // behind: device changes (including redeeming a pairing code), relay controls (a relay offer
+  // carries a pairing code), push subscriptions and their status, and Portal controls require
+  // the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || pathname.startsWith("/api/devices/")
-    || pathname.startsWith("/api/relay/")
+    || pathname === "/api/relay" || pathname.startsWith("/api/relay/")
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
   );
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)

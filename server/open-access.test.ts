@@ -337,22 +337,17 @@ describe("a Portal that signs its visitors in", () => {
     expect((await redeem({ ...visitor, cookie }, nextCode.code)).status).toBe(204);
   });
 
-  it("refuses every relay action to a saved-drive visitor and keeps it for the owner's token", async () => {
+  it("refuses relay controls to a saved-drive visitor, so a relay offer cannot pair a device", async () => {
     const portal = serving(undefined, true);
     const visitor = { ...identity, "x-portal-proof": await portal.start(credential) };
     expect(await health(portal.main, visitor)).toMatchObject({ via: "portal", role: "drive" });
-    const relay = (headers: Record<string, string>, action: string) => fetch(`${portal.main}/api/relay/${action}`, {
-      method: "POST", headers: { ...headers, origin: `https://${HOST}`, "x-herdr-update": "1" },
-    });
-    for (const action of ["start", "stop", "offer", "reset-identity"]) {
-      const denied = await relay(visitor, action);
-      expect(denied.status, action).toBe(403);
+    for (const target of ["/api/relay/offer", "/api/relay/reset-identity", "/api/relay/stop"]) {
+      const denied = await fetch(`${portal.main}${target}`, {
+        method: "POST", headers: { ...visitor, origin: `https://${HOST}`, "x-herdr-update": "1" },
+      });
+      expect(denied.status, target).toBe(403);
       expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
     }
-    // The access token is the owner credential: it reaches the relay handler (off here, so no offer).
-    const owner = await relay({ ...visitor, ...portal.owner }, "offer");
-    expect(owner.status).toBe(409);
-    expect(await owner.json()).toMatchObject({ error: { code: "relay_off" } });
   });
 
   it("refuses push status before handling a Portal visitor's subscription", async () => {

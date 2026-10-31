@@ -20,7 +20,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/start": {
         setRequestRoute("/api/relay/start");
         const status = service.start();
-        return reply(status, status.blocked ? 409 : status.phase === "error" ? 500 : 200);
+        // an existing link in "error" is retrying, not a failed start
+        return reply(status, status.blocked ? 409 : status.phase === "error" && !service.linked ? 500 : 200);
       }
       case "/api/relay/stop":
         setRequestRoute("/api/relay/stop");

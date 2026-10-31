@@ -436,6 +436,21 @@ it("cancels a connecting link before restart can resume it", async () => {
   expect(f.service.status().phase).toBe("off");
 });
 
+it("answers a repeated start with 200 while the link retries", async () => {
+  const clock = new TestClock();
+  const f = await fixture(false, { clock });
+  await f.start();
+  const lost = f.controlLost;
+  await f.localRelay.stop();
+  await bounded(lost);
+  expect(f.service.status().phase).toBe("error");
+  const attempts = f.attempts;
+  const again = await f.request("/start", "POST");
+  expect(again.status).toBe(200);
+  expect(await again.json()).toMatchObject({ phase: "error" });
+  expect(f.attempts).toBe(attempts);
+});
+
 it("keeps watch devices read-only on all relay mutations", async () => {
   const f = await fixture();
   await f.start();
