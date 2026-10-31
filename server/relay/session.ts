@@ -49,6 +49,8 @@ export interface RelaySessionOptions {
   /** Owns the upgrade and socket lifecycle, including stream disposal. Absent adapters refuse WS_OPEN. */
   readonly onWs?: (stream: WsStream, exchange: RelayWebSocketRequest) => void;
   readonly onClose?: (code: SessionError) => void;
+  /** The client signed in or paired: from here on the carrier counts as a device's session. */
+  readonly onAuthenticated?: (deviceId: string) => void;
 }
 
 export interface RelayWebSocketRequest {
@@ -213,6 +215,7 @@ export class RelaySession {
           if (!devices.has(device.id)) { this.close("auth_revoked"); return; }
           this.mux.authenticate(device.id);
           this.state = "ready";
+          this.options.onAuthenticated?.(device.id);
         });
         return;
       }

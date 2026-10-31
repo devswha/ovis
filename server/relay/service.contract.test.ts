@@ -201,6 +201,39 @@ async function client(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer,
   };
 }
 
+/** A client that finishes the protected handshake and says hello, then never signs in or pairs. */
+async function squatter(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer) {
+  const socket = new WebSocket(`ws://127.0.0.1:${f.localRelay.port}/v1/ws?server_id=${offer.server_id}&role=client&v=1`);
+  socket.binaryType = "arraybuffer";
+  const assigned = deferred<void>();
+  const closed = deferred<void>();
+  const transport: Transport = {
+    onmessage: null, onclose: null, onerror: null,
+    send: (data) => { socket.send(data); }, close: (code, reason) => socket.close(code, reason),
+  };
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string" && event.data.includes('"assigned"')) { assigned.resolve(); return; }
+    transport.onmessage?.({ data: event.data, isBinary: typeof event.data !== "string" });
+  };
+  socket.onclose = (event) => { transport.onclose?.(event.code, event.reason); closed.resolve(); };
+  cleanup.push(() => socket.close());
+  await bounded(assigned.promise);
+  const welcome = deferred<void>();
+  let mux: MuxEngine | undefined;
+  const channel = await bounded(openClientSecureChannel(transport, { daemonPublicKeyB64: offer.server_public_key,
+    events: { onmessage: (data) => { if (typeof data !== "string") mux?.receive(new Uint8Array(data)); }, onclose: () => mux?.carrierLost() } }));
+  mux = new MuxEngine({
+    role: "client", clock: relayClock, send: (bytes) => channel.send(bytes.slice().buffer),
+    close: (code) => channel.close(code), outboundWireByteLength: (bytes) => channel.outboundWireByteLength(bytes.slice().buffer),
+    routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
+    onSession: (frame) => { if (frame.type === FrameType.WELCOME) welcome.resolve(); },
+  });
+  mux.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0,
+    payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
+  await bounded(welcome.promise);
+  return { closed: closed.promise };
+}
+
 it("relay off makes no connection", async () => {
   const f = await fixture();
   expect((await (await f.request()).json() as RelayStatus).phase).toBe("off");
@@ -463,6 +496,36 @@ it.each(["http://app.example", "https://name:secret@app.example", "https://app.e
     expect(() => new RelayService({ stateDir: tmpdir(), app })).toThrow();
   },
 );
+
+it("closes relay clients that never sign in, so they cannot hold the PC's slots", async () => {
+  const clock = new TestClock();
+  const f = await fixture(false, { clock, random: () => 0.5 });
+  await f.start();
+  const offer = await f.offer();
+  const squatters = [];
+  for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, offer));
+  clock.advance(14_999);
+  const peer = client(f, offer);
+  clock.advance(1);
+  await bounded(Promise.all(squatters.map((squatting) => squatting.closed)));
+  expect((await (await peer).http("/api/relay")).status).toBe(200);
+  expect(f.service.status().sessions).toBe(1);
+});
+
+it("keeps at most four relay sessions per device, closing its oldest", async () => {
+  const f = await fixture();
+  await f.start();
+  const offer = await f.offer();
+  const first = await client(f, offer);
+  const later = [];
+  for (let index = 0; index < 3; index += 1) later.push(await client(f, offer, false, first.device));
+  expect(f.service.status().sessions).toBe(4);
+  const fifth = await client(f, offer, false, first.device);
+  await bounded(first.closed);
+  expect((await fifth.http("/api/relay")).status).toBe(200);
+  expect((await later[0]!.http("/api/relay")).status).toBe(200);
+  expect(f.service.status().sessions).toBe(4);
+});
 
 it("refuses an offer while the relay is in error", async () => {
   const clock = new TestClock();

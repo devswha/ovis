@@ -2,7 +2,8 @@ import { afterEach, expect, it } from "bun:test";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayLink } from "./link.ts";
 import { bounded, deferred, relayFixture, TestClock } from "./test-helpers.ts";
-import { SERVER_PROOF_CLOSE, SERVER_PROOF_REQUIRED } from "../../shared/relay-server-proof.ts";
+import { serverChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_REQUIRED } from "../../shared/relay-server-proof.ts";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
 
 const fixtures: ReturnType<typeof relayFixture>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
@@ -91,4 +92,38 @@ it("reconnects linearly from one to thirty seconds with twenty percent jitter an
   clock.advance(60_000);
   expect(attempts).toHaveLength(36);
   expect(clock.tasks.size).toBe(0);
+});
+
+it("drops and reconnects a control socket that sends an oversized message after the proof", async () => {
+  const fixture = relayFixture();
+  fixtures.push(fixture);
+  const clock = new TestClock();
+  const identity = loadRelayIdentity(fixture.stateDir);
+  const lost = deferred<string>();
+  let attempts = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response(null, { status: 400 }); },
+    websocket: {
+      open(socket) {
+        socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame);
+      },
+      // valid JSON the link would otherwise read as a pong
+      message(socket) { socket.send(JSON.stringify({ type: "pong", padding: "x".repeat(8192) })); },
+    },
+  });
+  const link = new RelayLink({
+    relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port,
+    clock, random: () => 0.5, connect: (url) => { attempts++; return new WebSocket(url); },
+    onState: (phase, error) => { if (phase === "error" && error) lost.resolve(error); },
+  });
+  try {
+    link.start();
+    expect(await bounded(lost.promise)).toContain("reconnecting");
+    clock.advance(1000);
+    expect(attempts).toBe(2);
+  } finally {
+    await link.stop();
+    await server.stop(true);
+  }
 });

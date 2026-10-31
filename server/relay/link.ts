@@ -7,7 +7,17 @@ import { RelaySession, relayClock } from "./session.ts";
 import type { RelaySocketHandlers } from "./virtual-socket.ts";
 import { version } from "../../package.json";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { answerServerChallenge, SERVER_PROOF_CLOSE } from "../../shared/relay-server-proof.ts";
+import { answerServerChallenge, PERMANENT_SERVER_PROOF_REFUSALS, SERVER_PROOF_CLOSE } from "../../shared/relay-server-proof.ts";
+
+/** Signed-in sessions this PC serves at once, as many as the relay lets in (relay/core.ts MAX_CLIENTS). */
+const MAX_SESSIONS = 8;
+/** Clients still signing in beyond those, as many as the relay holds waiting (relay/core.ts MAX_PENDING). */
+const MAX_PENDING = 4;
+/** One device key cannot take every place: its oldest session gives way. */
+const MAX_PER_DEVICE = 4;
+/** A relay control message is a short JSON object (a sync names at most 8 ids). */
+const CONTROL_MESSAGE_BYTES = 4096;
+const CONTROL_MESSAGES_PER_SECOND = 64;
 
 export interface RelayLinkOptions {
   readonly relay: string;
@@ -27,6 +37,8 @@ interface DataConnection {
   readonly sockets: Set<Parameters<RelaySocketHandlers["open"]>[0]>;
   session?: RelaySession;
   cancelKeepalive?: () => void;
+  /** Set once the client signed in or paired; until then the connection holds no session place. */
+  deviceId?: string;
 }
 
 /** Physical relay I/O only: admission and dispatch remain in RelaySession. */
@@ -43,7 +55,7 @@ export class RelayLink {
     this.clock = options.clock ?? relayClock;
   }
 
-  get sessions(): number { return [...this.data.values()].filter((entry) => entry.session?.mux.active).length; }
+  get sessions(): number { return [...this.data.values()].filter((entry) => entry.deviceId && entry.session?.mux.active).length; }
 
   start(): void { if (!this.stopped && !this.control) this.openControl(); }
 
@@ -67,6 +79,8 @@ export class RelayLink {
     this.control = socket;
     let proofAnswered = false;
     let lastPong = this.clock.now();
+    let windowStart = this.clock.now();
+    let windowMessages = 0;
     // An upgrade that never answers is also a lost relay.
     this.cancelKeepalive = this.clock.setTimeout(() => socket.close(), 15_000);
     socket.onopen = () => {
@@ -83,6 +97,9 @@ export class RelayLink {
     };
     socket.onmessage = (event) => {
       if (this.stopped || this.control !== socket || typeof event.data !== "string") return;
+      // Bounded before parsing: an oversized or flooding control socket is dropped and reconnected.
+      if (this.clock.now() - windowStart >= 1000) { windowStart = this.clock.now(); windowMessages = 0; }
+      if (event.data.length > CONTROL_MESSAGE_BYTES || ++windowMessages > CONTROL_MESSAGES_PER_SECOND) { socket.close(); return; }
       if (!proofAnswered) {
         proofAnswered = this.prove(socket, event.data, null);
         return;
@@ -108,8 +125,7 @@ export class RelayLink {
       this.control = undefined;
       this.cancelKeepalive?.();
       // The relay also uses 4401 for late answers. Only an explicit key mismatch is permanent.
-      if (event.code === SERVER_PROOF_CLOSE
-        && (event.reason === "server key does not match server_id" || event.reason === "invalid server key")) {
+      if (event.code === SERVER_PROOF_CLOSE && PERMANENT_SERVER_PROOF_REFUSALS.includes(event.reason)) {
         console.error(JSON.stringify({ event: "relay.server_proof.failed", code: event.code, reason: event.reason }));
         this.options.onState("error", `Relay refused the server proof (${event.code}): ${event.reason}`);
         return;
@@ -135,10 +151,15 @@ export class RelayLink {
   }
 
   private openData(id: string): void {
-    if (this.stopped || this.data.has(id) || this.data.size >= 8) return;
+    if (this.stopped || this.data.has(id)) return;
+    // The relay bounds who reaches this PC (relay/core.ts: MAX_CLIENTS answered, MAX_PENDING waiting);
+    // a client still signing in holds no session place and is closed at its deadline below.
+    if (this.data.size >= MAX_SESSIONS + MAX_PENDING) return;
+    if ([...this.data.values()].filter((entry) => entry.deviceId).length >= MAX_SESSIONS) return;
     let socket: WebSocket;
     try { socket = this.socket(id); } catch { return; }
     socket.binaryType = "arraybuffer";
+    // Runs until the client signs in or pairs, not just until the protected channel opens.
     const entry: DataConnection = {
       socket, sockets: new Set(),
       cancelTimeout: this.clock.setTimeout(() => socket.close(), 15_000),
@@ -183,13 +204,13 @@ export class RelayLink {
       },
       events: { onmessage: (data) => { if (!this.stopped) entry.session?.receive(data); } },
     }).then((channel) => {
-      entry.cancelTimeout();
       if (this.stopped || this.data.get(id) !== entry || !channel.isOpen()) { channel.close(); return; }
       const handlers = this.options.services.core.socketHandlers;
       entry.session = new RelaySession({
         channel, services: this.options.services, port: this.options.port, serverId: this.options.identity.server_id,
         serverVersion: version, minSupportedClient: "0.4.20",
         routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
+        onAuthenticated: (deviceId) => this.authenticated(id, entry, deviceId),
         websocket: {
           ...handlers,
           open: (peer) => { entry.sockets.add(peer); return handlers.open(peer); },
@@ -197,6 +218,16 @@ export class RelayLink {
         },
       });
     }).catch(() => socket.close());
+  }
+
+  private authenticated(id: string, entry: DataConnection, deviceId: string): void {
+    if (this.data.get(id) !== entry) return;
+    entry.cancelTimeout();
+    entry.deviceId = deviceId;
+    const signedIn = [...this.data.values()].filter((other) => other.deviceId);
+    if (signedIn.length > MAX_SESSIONS) { entry.session?.close("resource_exhausted"); return; }
+    const own = signedIn.filter((other) => other.deviceId === deviceId);
+    for (const other of own.slice(0, Math.max(0, own.length - MAX_PER_DEVICE))) other.session?.close("resource_exhausted");
   }
 
   /** Cancel retries synchronously; finish queued policy closes before ending protected carriers. */
