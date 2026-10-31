@@ -22,7 +22,7 @@ import { focusWorkspaceListToggle } from "../lib/focus.ts";
 import { useT } from "../lib/i18n.ts";
 import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
-import { currentTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { CRAMPED_QUERY, loneTabHidden, SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
@@ -124,7 +124,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       move: paneDrag.move, back: paneDrag.back, drop: paneDrag.drop, cancel: paneDrag.cancel,
     } : undefined,
   });
-  const firstLines = useSyncExternalStore(subscribeTabLabels, currentTabLabels, currentTabLabels);
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
   // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
   const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames

@@ -12,8 +12,9 @@ describe("preferences sync", () => {
   it("sends the tab labels learned and dropped here, key by key", () => {
     const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } };
     expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server", "w1:p2|t2": "Learned" } })).toEqual({ settings: {}, tab_labels: { "w1:p2|t2": "Learned" } });
-    // a pane seen closed here: its key goes out to be dropped
-    expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: {} })).toEqual({ settings: {}, tab_labels_removed: ["w1:p1|t1"] });
+    // a pane seen closed here: the drop is no one's action, so it waits for one, and goes with it
+    expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: {} })).toBeNull();
+    expect(preferencesChange(known, { ...local(light, [], []), tabLabels: {} })).toEqual({ settings: { theme: "light" }, tab_labels_removed: ["w1:p1|t1"] });
     expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } })).toBeNull();
   });
 

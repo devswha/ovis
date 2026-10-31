@@ -21,7 +21,7 @@ import { PAGES } from "./SettingsDialog.tsx";
 import { folderName, placeLine } from "../lib/paneName.ts";
 import { agentTabName } from "../lib/sidebarAgents.ts";
 import { autoTabLabel, tabLabel } from "../lib/tabName.ts";
-import { currentTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -155,7 +155,7 @@ function ShortcutHint({ shortcutId }: { shortcutId?: ShortcutId }) {
 export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false }: CommandPaletteProps) {
   const t = useT();
   const { settings } = useSettings();
-  const firstLines = useSyncExternalStore(subscribeTabLabels, currentTabLabels, currentTabLabels);
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const machineId = useMachineId();
   const api = useMachineApi();
   const touch = useMediaQuery("(pointer: coarse)");

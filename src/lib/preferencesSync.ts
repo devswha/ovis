@@ -70,8 +70,10 @@ export function preferencesChange(base: Baseline, local: Local): PreferencesChan
   // while the setting is off the server keeps none: nothing learned is sent, so nothing is refused again and again
   const added: Record<string, string> = base.tabLabels === null || local.settings.autoTabNames === false ? {} : Object.fromEntries(Object.entries(labelsHere).filter(([key]) => !(key in heldLabels)));
   const removed = base.tabLabels === null ? [] : Object.keys(heldLabels).filter((key) => !(key in labelsHere));
-  const labelsChanged = Object.keys(added).length > 0 || removed.length > 0;
-  if (Object.keys(settings).length === 0 && !pinsChanged && !mutedChanged && !labelsChanged) return null;
+  // a label dropped because its pane was seen gone is no one's action: the drop waits for a change someone made,
+  // so reading or watching a page never writes the shared preferences
+  const othersChanged = Object.keys(settings).length > 0 || pinsChanged || mutedChanged || Object.keys(added).length > 0;
+  if (!othersChanged) return null;
   return {
     settings,
     ...(pinsChanged || base.pins === null ? { pins: [...local.pins] } : {}),

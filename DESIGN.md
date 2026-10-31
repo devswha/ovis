@@ -1621,7 +1621,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   terminal id. Only those words are kept, never the message; a label leaves with its pane, and all
   leave when the setting is turned off. It is learned once, from the New tab dialog's first message,
   a transcript read from its beginning, or a Chat send delivered to a pane with no transcript (not one
-  held, queued or answering a question); a watching device shows the labels and learns none.
+  held, queued or answering a question). Only a user's action shares it (the dialog's Start, a message
+  delivered from Chat to an agent's pane): a label read from a transcript shows in that page alone until
+  then, and a label dropped for a closed pane goes out with the next change someone makes, so reading or
+  watching a page never writes the shared preferences. A watching device shows the labels and learns none.
   Settings → Appearance, Name tabs from the first message (on by default, its description says what is
   kept), keeps tabs as herdr names them.
 - A vertical mouse wheel over a strip whose tabs do not fit scrolls it sideways, as Zed's tab bar

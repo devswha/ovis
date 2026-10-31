@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { Machine } from "../../shared/machines.ts";
 import { MAX_TAB_LABEL_LENGTH } from "../../shared/preferences.ts";
 import { autoTabLabel } from "./tabName.ts";
-import { forgetTabLabelsForTests, currentTabLabels, firstPromptOf, learnFromConversation, learnFromSend, learnTabLabel, setTabLabelLearning, setTabLabels, settleTabLabels, shortTabLabel } from "./tabLabels.ts";
+import { forgetTabLabelsForTests, currentTabLabels, shownTabLabels, firstPromptOf, learnFromConversation, learnFromSend, learnTabLabel, setTabLabelLearning, setTabLabels, settleTabLabels, shortTabLabel } from "./tabLabels.ts";
 
 afterEach(forgetTabLabelsForTests);
 
@@ -102,16 +102,24 @@ describe("tab labels from the first message", () => {
     expect(currentTabLabels()).toEqual({ "w1:p1|term_a": "Shared" });
   });
 
-  it("learns from a transcript read from its beginning, and from a send only where no transcript says", () => {
+  it("keeps a label read from a transcript this page's own, and shares it with the user's first send", () => {
     const panes = [pc("local", [{ pane_id: "w7:p1", terminal_id: "term_q" }, { pane_id: "w7:p2", terminal_id: "term_r" }])];
     const user = (text: string) => ({ role: "user" as const, ts: null, parts: [{ kind: "text" as const, text }] });
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: "c:4", turns: [user("A later message")] });
-    learnFromSend("local", "w7:p1", "codex", "Typed in Chat");
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: null, turns: [user("The first one")] });
+    settleTabLabels(panes);
+    // shown here, shared nowhere: reading a pane writes nothing
+    expect(shownTabLabels()).toEqual({ "w7:p1|term_q": "The first one" });
+    expect(currentTabLabels()).toEqual({});
+    // the user's send shares the label the transcript gave, not the text sent
+    learnFromSend("local", "w7:p1", "codex", "Typed in Chat");
+    expect(currentTabLabels()).toEqual({ "w7:p1|term_q": "The first one" });
+    // a pane with no transcript: the send itself names it, shared
     learnFromConversation("local", "w7:p2", { source: "scrollback", turns: [] });
     learnFromSend("local", "w7:p2", "codex", "Sent to a shell agent");
     settleTabLabels(panes);
     expect(currentTabLabels()).toEqual({ "w7:p1|term_q": "The first one", "w7:p2|term_r": "Sent to a shell agent" });
+    expect(shownTabLabels()).toEqual(currentTabLabels());
   });
 
   it("never labels a shell pane from a line sent to it", () => {
