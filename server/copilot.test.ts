@@ -237,6 +237,12 @@ it("names the pictures a recorded 1.0.105 session interned, attached and tool-re
     }
     // a digest the session never interned, and bytes that no longer hash to the name they are filed under
     expect(await copilotImage(path, `copilot:${"0".repeat(64)}`)).toBeNull();
+    // a line past the largest picture record is passed over without ending the search
+    writeFileSync(path, `${"x".repeat(16 * 1024 * 1024)}\n${recorded}`);
+    expect((await copilotImage(path, red))?.mediaType).toBe("image/png");
+    // the picture's record last in the file, with no newline after it yet
+    writeFileSync(path, recorded.split("\n")[2]!);
+    expect((await copilotImage(path, red))?.mediaType).toBe("image/png");
     writeFileSync(path, recorded.replace("iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR4", "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR5"));
     expect(await copilotImage(path, red)).toBeNull();
   } finally { rmSync(dir, { recursive: true, force: true }); }

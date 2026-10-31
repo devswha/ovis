@@ -1,7 +1,6 @@
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, readSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { closeSync, readSync } from "node:fs";
 import { imageType, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 import { openCopilotFile } from "./copilot-store.ts";
 import { MAX_TURNS, toolSummary } from "./transcript-records.ts";
@@ -67,22 +66,52 @@ export function copilotPromptOpens(data: unknown): boolean {
   return typeof content === "string" && (!!content.trim() || copilotPromptPictures(data).length > 0);
 }
 
+/** The longest record copilotImage reads: a picture of MAX_IMAGE_BYTES as base64, and room for its fields. */
+const ASSET_RECORD_MAX = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64 * 1024;
+const ASSET_WINDOW = 1024 * 1024;
+
+/** The lines of the file open at `fd`, from its start, the last one too when no newline ends it, each at most ASSET_RECORD_MAX bytes: a longer one is dropped as it is read. */
+async function* boundedLines(fd: number): AsyncGenerator<string> {
+  const window = Buffer.alloc(ASSET_WINDOW);
+  let pieces: Buffer[] = [];
+  let length = 0;
+  let oversized = false;
+  for (let position = 0; ;) {
+    const count = readSync(fd, window, 0, window.length, position);
+    if (count === 0) {
+      if (!oversized && length > 0) yield Buffer.concat(pieces, length).toString("utf8");
+      return;
+    }
+    position += count;
+    for (let at = 0; at < count;) {
+      const newline = window.subarray(0, count).indexOf(0x0a, at);
+      const end = newline < 0 ? count : newline;
+      if (!oversized && length + end - at <= ASSET_RECORD_MAX) { pieces.push(Buffer.from(window.subarray(at, end))); length += end - at; }
+      else { oversized = true; pieces = []; length = 0; }
+      if (newline < 0) break;
+      if (!oversized) yield Buffer.concat(pieces, length).toString("utf8");
+      pieces = []; length = 0; oversized = false;
+      at = newline + 1;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 /**
  * The picture `ref` names in the Copilot transcript `path`, from the root `session.binary_asset`
  * record that interned it, and only when its bytes are a raster within MAX_IMAGE_BYTES (inlineImageType,
  * as the other agents' inline pictures) that hash to the digest the ref names. The transcript is opened
- * pinned as the page reads it (openCopilotFile) and read a line at a time; a line that does not name
- * the digest is never parsed. Null for anything else.
+ * pinned as the page reads it (openCopilotFile) and read a window at a time, the event loop running
+ * between windows; a line longer than the largest picture record it could serve is skipped without
+ * being held, and a line that does not name the digest is never parsed. Null for anything else.
  */
 export async function copilotImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const digest = COPILOT_IMAGE_REF.exec(ref)?.[1];
   if (digest === undefined) return null;
   let fd: number;
   try { fd = openCopilotFile(path); } catch { return null; }
-  const stream = createReadStream(path, { fd, encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    for await (const line of lines) {
+    for await (const line of boundedLines(fd)) {
       if (!line.includes('"session.binary_asset"') || !line.includes(digest)) continue;
       let entry: Row | null;
       try { entry = row(JSON.parse(line)); } catch { continue; }
@@ -96,7 +125,7 @@ export async function copilotImage(path: string, ref: string): Promise<{ mediaTy
       return { mediaType: declared, bytes: new Uint8Array(bytes) };
     }
   } catch { return null; }
-  finally { lines.close(); stream.destroy(); }
+  finally { closeSync(fd); }
   return null;
 }
 
