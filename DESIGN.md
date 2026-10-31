@@ -1609,6 +1609,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Pane actions are not tab actions. Up to 768px, where a split tab shows one pane at a time, the
   tab's menu lists the tab's panes first, the open one marked current, over a hairline.
   Only at these narrow widths does it omit Split and Zoom pane; Unzoom pane stays available whenever the tab is zoomed.
+- A tab herdr still names by its number ("Tab 2"), which a CLI that sets only its own title leaves
+  alike, shows a few words of the first message its agent was given, about 24 columns (a wide
+  character takes two) cut at a word's end with `…` (#2019); its hover stays the pane's title. A
+  slash command, a path or a code fence names nothing, so the next line is taken. This follows the
+  Codex app, which titles a thread from its first prompt, rather than asking the model for a title (a
+  model call and a wait). A name someone gave the tab (Rename tab, the New tab dialog's Name, a script,
+  even one that is only an agent's name) is never covered, the workspace keeps its name, and herdr's
+  own tab label is never written: the label is Ovis's display name, kept in the shared preferences
+  (`tab_labels`) keyed by pane and terminal, since herdr reuses pane ids after a restart but never a
+  terminal id. Only those words are kept, never the message; a label leaves with its pane, and all
+  leave when the setting is turned off. It is learned once, from the New tab dialog's first message,
+  a transcript read from its beginning, or a Chat send delivered to a pane with no transcript (not one
+  held, queued or answering a question). Only a user's action shares it (the dialog's Start, a message
+  delivered from Chat to an agent's pane): a label read from a transcript shows in that page alone until
+  then, and a label dropped for a closed pane goes out with the next change someone makes, so reading or
+  watching a page never writes the shared preferences. A watching device shows the labels and learns none.
+  Settings → Appearance, Name tabs from the first message (on by default, its description says what is
+  kept), keeps tabs as herdr names them.
 - A vertical mouse wheel over a strip whose tabs do not fit scrolls it sideways, as Zed's tab bar
   and VS Code's editor tabs do, by the wheel's own unit (pixels, lines or pages). Touch, a trackpad's sideways
   swipe, a pinch and a strip whose tabs fit are left to the browser.

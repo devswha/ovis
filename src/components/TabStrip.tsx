@@ -9,7 +9,7 @@
  * That menu also carries the open pane's actions, so a lone pane shows no ellipsis of its own.
  * A strip whose tabs do not fit scrolls sideways by touch, a trackpad or a mouse wheel.
  */
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Ellipsis, Folder, FolderInput, Pencil, Plus, Terminal, X } from "lucide-react";
 
 import "./TabStrip.css";
@@ -21,7 +21,8 @@ import { useFacesArrived } from "../lib/fontFaces.ts";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
 import { useT } from "../lib/i18n.ts";
 import type { RenameRequest } from "../lib/useRenameRequest.ts";
-import { customTabLabel, tabLabel } from "../lib/tabName.ts";
+import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { CRAMPED_QUERY, loneTabHidden, SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
@@ -123,7 +124,14 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       move: paneDrag.move, back: paneDrag.back, drop: paneDrag.drop, cancel: paneDrag.cancel,
     } : undefined,
   });
-  const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1);
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
+  // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
+  const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames
+    ? autoTabLabel(tab, panes.filter((pane) => pane.tab_id === tab.tab_id), machineId, firstLines, placeOf(tab)) : null;
+  // the name herdr holds (or was just sent), which a rename compares against
+  const givenName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, placeOf(tab));
+  const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : autoOf(tab) ?? givenName(tab);
 
   useEffect(() => {
     // the pane each tab was last seen on, per PC: a tab clicked again opens where it was left
@@ -274,7 +282,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (label === "") { setError(t("A tab needs a name.")); return; }
     refocus.current = tab.tab_id;
     setEditing(null);
-    if (label === nameOf(tab)) return;
+    if (label === givenName(tab)) return;
     setSent({ tabId: tab.tab_id, label });
     void renameTab(tab.tab_id, label).catch((reason: unknown) => {
       if (latest.current.machineId !== machineId || latest.current.workspaceId !== workspace.workspace_id) return;
