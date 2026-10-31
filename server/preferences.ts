@@ -185,6 +185,8 @@ export class PreferenceStore {
       }
     }
     // labels this save could not read or write are not this store's any more, even when the mutes then fail
+    // labels left out for their size are still on disk: the next change of them reads the file first
+    if (!labelsFit) this.labelsUnsettled = true;
     if (labelsUnreadable || !labelsFit || (labelsChanged && !labelsWritten)) {
       const { tab_labels: _dropped, ...rest } = this.current;
       this.current = rest;

@@ -279,6 +279,19 @@ describe("shared preferences", () => {
     expect(new PreferenceStore(dir).get().pins).toHaveLength(220);
     // the labels held are left out of the document, never deleted from their file
     expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: { "w1:p1|term_a": "Fix it" } });
+    // the pins shrink: a label added next is laid over the held ones, read again from their file
+    store.set({ settings: {}, pins: [] });
+    expect(store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Next" } }).tab_labels).toEqual({ "w1:p1|term_a": "Fix it", "w1:p2|term_b": "Next" });
+  });
+
+  it("turning the setting off deletes labels left out of the document for their size", () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix it" } });
+    const pins = Array.from({ length: 220 }, (_, n) => `local:w1:p${n}:${"x".repeat(270)}`);
+    store.set({ settings: {}, pins, tab_labels: Object.fromEntries(Array.from({ length: 60 }, (_, n) => [`w1:p${n + 10}|term_${n}`, "a".repeat(60)])) });
+    store.set({ settings: { autoTabNames: false } });
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: {} });
   });
 
   it("labels a failed delete left while the setting was off are never loaded, and go with the next save", () => {
