@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,7 +9,8 @@ import { handlePromptRequest, KeyRefused, parseInteractivePrompt, type PromptReq
 /** A deadline a move that cannot finish reaches at once, so no test waits out the real 4 s */
 const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
 import { omoAskOf } from "./omo-questions.ts";
-import { type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
+import * as conversation from "./conversation.ts";
 
 // The card moves between a form's questions without answering, as the agent's own keys do: OmO's
 // Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab. Each key is sent alone and the
@@ -47,6 +48,52 @@ const navigable = (prompt: InteractivePrompt | null) => prompt?.steps?.map((step
 /** The session's ask_user_question call behind omo(): the card moves only on a form it can name by its questions. */
 const OMO_CALL: OmoAsk = omoAskOf({ id: "session.jsonl\0toolu_qs", wait: true, args: (JSON.parse(OMO_SESSION_CALL) as { message: { content: { arguments: unknown }[] } }).message.content[0]!.arguments })!;
 const omoCard = (screen: string, ask: OmoAsk | null = OMO_CALL) => parseInteractivePrompt("pi", screen, ask, true, ask ? [ask] : []);
+
+const QUESTIONS: readonly (readonly [string, string, readonly string[]])[] = [
+  ["Color", "Which color?", ["Red", "Blue"]],
+  ["Size", "Which size?", ["Small", "Large"]],
+  ["Shape", "Which shape?", ["Circle", "Square"]],
+];
+
+/** omp 18.13.2 Ask: TabBar's active cell has selectedBg; inactive cells have muted foreground. */
+function omp(at: number, wrapped = false): string {
+  const tabs = [...QUESTIONS.map(([header]) => header), "Submit"].map((label, index) =>
+    index === at ? `\x1b[1m\x1b[48;2;40;49;58m\x1b[38;2;240;240;240m ${label} \x1b[0m`
+      : `\x1b[38;2;130;130;130m ${label} \x1b[39m`);
+  const header = wrapped ? tabs.map(tab => `│ ${tab} │`).join("\n") : `│ ${tabs.join("  ")} │`;
+  const body = at === 3
+    ? `│ Review answers │\n├────────────────────────────────────┤\n│ 3 unanswered questions; Enter still submits. │\n│ 1. Color: unanswered │\n│ 2. Size: unanswered │\n│ 3. Shape: unanswered │\n│ ❯ Submit │\n├────────────────────────────────────┤\n│ ⏎ submit · ↑/↓ scroll · ⎋ cancel │`
+    : `│ ${QUESTIONS[at]?.[1]} │\n├────────────────────────────────────┤\n│ ❯ ○ ${QUESTIONS[at]?.[2][0]} │\n│   ○ ${QUESTIONS[at]?.[2][1]} │\n│   ○ Other (type your own) │\n├────────────────────────────────────┤\n│ ⏎ select · n note · ↑/↓ move · ⇥/←/→ question · ⎋ cancel │`;
+  return `╭─ Ask ──────────────────────────────╮\n${header}\n${body}\n╰────────────────────────────────────╯`;
+}
+
+describe("omp Ask question steps", () => {
+  test.each([false, true])("reads every question and review from an unambiguous styled strip, wrapped=%s", wrapped => {
+    for (let at = 0; at < 4; at++) {
+      const prompt = parseInteractivePrompt("omp", omp(at, wrapped));
+      expect(prompt).not.toBeNull();
+      expect(prompt?.steps?.map(step => step.label)).toEqual(["Color", "Size", "Shape", "Submit"]);
+      expect(prompt?.steps?.findIndex(step => step.current)).toBe(at);
+      expect(navigable(prompt)).toEqual([0, 1, 2, 3].map(index => index !== at));
+      expect(prompt?.can_step_back ?? false).toBe(at > 0);
+      expect(prompt?.can_step_next ?? false).toBe(at < 3);
+    }
+  });
+
+  test.each(["plain", "two-active", "clipped", "duplicate", "no-hint"] as const)("offers no steps for ambiguous or incomplete evidence: %s", kind => {
+    let screen = omp(0);
+    if (kind === "plain") screen = screen.replace(ANSI_RE, "");
+    if (kind === "two-active") screen = screen.replace("\x1b[38;2;130;130;130m Size", "\x1b[48;5;20m\x1b[38;2;130;130;130m Size");
+    if (kind === "clipped") screen = screen.replace(" Shape ", " Sha… ");
+    if (kind === "duplicate") screen = screen.replace(" Size ", " Color ");
+    if (kind === "no-hint") screen = screen.replace(" · ⇥/←/→ question", "");
+    const prompt = parseInteractivePrompt("omp", screen);
+    expect(prompt).not.toBeNull();
+    expect(prompt?.steps).toBeUndefined();
+    expect(prompt?.can_step_back ?? false).toBe(false);
+    expect(prompt?.can_step_next ?? false).toBe(false);
+  });
+});
 
 describe("OmO's form: the card goes to another question as Tab and Shift+Tab do", () => {
   test("every other question is a step to tap, with Back and Next", () => {
@@ -155,12 +202,23 @@ describe("Hermes's open-ended question in a batch", () => {
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
+interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string) => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
 async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
   const path = join(root, "herdr.sock");
   const pane: Pane = { agent, screen, sent: [] };
+  const transcript = join(root, "session.jsonl");
+  if (agent === "omp") {
+    pane.ompCall = id => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
+      type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: {
+        questions: QUESTIONS.map(([header, question, options]) => ({ id: header, header, question, options: options.map(label => ({ label })) })),
+      } }] },
+    }) + "\n");
+    pane.ompCall("initial");
+  }
+  // Session authorization is not under test; the real reader still consumes each call record.
+  const resolveTranscript = agent === "omp" ? spyOn(conversation, "ompTranscriptPath").mockResolvedValue({ path: transcript, blobs: null }) : null;
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -170,7 +228,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
     socket.on("data", (chunk) => {
       input += chunk.toString();
       if (!input.includes("\n")) return;
-      const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string } };
+      const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string; format?: string } };
       // a herdr that holds its reply this long (ms)
       const stall = pane.onRpc?.(request.method);
       const answer = (result: unknown) => {
@@ -178,9 +236,10 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
         if (typeof stall === "number") setTimeout(reply, stall);
         else reply();
       };
-      if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd, ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
-      if (request.method === "pane.read") return answer({ read: { text: pane.screen } });
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
+      if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd ?? (pane.agent === "omp" ? root : undefined), ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
+      if (request.method === "pane.read") return answer({ read: { text: pane.agent === "omp" ? request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") : pane.screen } });
+      if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
+      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.agent}`] }] : [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
       for (const sent of request.params.keys ?? [`text:${request.params.text}`]) {
@@ -194,6 +253,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
   const previous = process.env["HERDR_SOCKET"];
   process.env["HERDR_SOCKET"] = path;
   try { await run(pane); } finally {
+    resolveTranscript?.mockRestore();
     if (previous === undefined) delete process.env["HERDR_SOCKET"];
     else process.env["HERDR_SOCKET"] = previous;
     for (const socket of sockets) socket.destroy();
@@ -249,6 +309,64 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
 }
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
+  test("omp: Next, a forward step and review Back send only tab keys without answering", async () => {
+    await withPane("omp", omp(0), async pane => {
+      follows(pane, omp, 4, "tab", "shift+tab");
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect((await card()).question).toBe("Which size?");
+      expect(await move((await card()).id, { step_index: 3 })).toEqual({ status: 200, code: undefined });
+      expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect((await card()).question).toBe("Which shape?");
+      expect(pane.sent).toEqual(["tab", "tab", "tab", "shift+tab"]);
+    });
+  });
+
+  test("omp: a different strip after the first key stops the move", async () => {
+    await withPane("omp", omp(0), async pane => {
+      pane.onSent = () => { pane.screen = omp(1).replace(" Shape ", " Changed "); };
+      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
+    });
+  });
+
+  test("omp: a stale colored viewport never authorizes a move", async () => {
+    await withPane("omp", omp(0), async pane => {
+      pane.visible = omp(1);
+      expect((await move((await card()).id, { step_next: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("omp: another call with identical headers stops after the first key", async () => {
+    await withPane("omp", omp(0), async pane => {
+      pane.onSent = () => { pane.ompCall?.("reopened"); pane.screen = omp(1); };
+      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
+    });
+  });
+
+  test("omp: an unverifiable styled viewport leaves ordinary answers usable", async () => {
+    await withPane("omp", omp(0), async pane => {
+      pane.visible = omp(1);
+      const prompt = await card();
+      expect(prompt.steps?.some(step => step.can_navigate)).not.toBe(true);
+      expect(await move(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["enter"]);
+    });
+  });
+
+  test("omp: a clipped navigation hint still enriches the complete styled strip", async () => {
+    const clipped = (at: number) => omp(at).replace("question · ⎋ cancel", "quest…");
+    await withPane("omp", clipped(0), async pane => {
+      follows(pane, clipped, 4, "tab", "shift+tab");
+      const first = await card();
+      expect(first.can_step_next).toBe(true);
+      expect(await move(first.id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect((await card()).steps?.findIndex(step => step.current)).toBe(1);
+      expect(pane.sent).toEqual(["tab"]);
+    });
+  });
+
   test.skipIf(process.platform !== "linux")("OmO: Next sends Tab, and the card that comes back is the next question, not answered", async () => {
     await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");

@@ -10,8 +10,8 @@ import { codexTranscriptPath, paneCodexHome, unansweredCodexQuestions } from "./
 import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
-import { OmoAskReader, ompAsksAfter } from "./omo-ask.ts";
-import { ompMarkdownPrompt } from "./omp-ask.ts";
+import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
+import { ompMarkdownPrompt, ompStepPrompt } from "./omp-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -22,6 +22,7 @@ import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type Pro
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { sameText } from "./dialogs/omo.ts";
+import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
 import { parsePiDialog } from "./dialogs/pi.ts";
 import { pendingPiQuestionnaires } from "./pi-questionnaire.ts";
@@ -722,14 +723,22 @@ async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): 
 }
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
-/** An omp Ask card in the agent's own Markdown when its session's open ask call is the menu on screen (omp-ask.ts); else the card as drawn. */
-async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt): Promise<InteractivePrompt> {
-  if (parsedByPublicPrompt.get(prompt)?.responder !== "omp-question") return prompt;
+/** Bind omp tab moves to its open call, and optionally restore the call's Markdown (omp-ask.ts). */
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<InteractivePrompt> {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  if (parsed?.responder !== "omp-question" && !parsed?.nativeSteps) return prompt;
+  let path = "";
+  let open: OmoAsks = [];
   try {
-    return ompMarkdownPrompt(prompt, ompAskReader.read((await ompTranscriptPath(paneId, cwd)).path));
+    if (cwd) {
+      path = (await ompTranscriptPath(paneId, cwd)).path;
+      open = ompAskReader.read(path);
+    }
   } catch {
-    return prompt; // no session proved for the pane, or not written yet: the card as drawn
+    // No session proved for the pane, or not written yet: ordinary answers remain usable.
   }
+  const bound = ompStepPrompt(prompt, open, path);
+  return markdown ? ompMarkdownPrompt(bound, open) : bound;
 }
 
 async function readKnownPrompt(
@@ -902,7 +911,8 @@ async function readKnownPrompt(
   // Claude's question tabs, whole: only the bar's colors say which tab is shown (dialogs/claude.ts)
   const claudeTabs = agent === "claude" && /^\s*\u2190\s+[\u2610\u2612\u2611\u2714].*\u2192\s*$/m.test(screen);
   let inputUnverified: true | undefined;
-  if (piTabs || claudeTabs) {
+  const ompTabs = agent === "omp" && (OMP_TABS_HINT_RE.test(screen) || OMP_REVIEW_HINT_RE.test(screen));
+  if (piTabs || claudeTabs || ompTabs) {
     // Detection text has no styles. Background or neutral-vs-dim/green text identifies
     // the active tab, not answered boxes: verify the viewport before authorizing moves.
     const before = screen;
@@ -915,8 +925,8 @@ async function readKnownPrompt(
       .split(/\r?\n/).map(line => line.trimEnd()).join("\n").trimEnd();
     if (colors !== null && viewportShowsLive(scrollBefore, scrollAfter, colors, before, screen)
       && text(colors) === text(screen)) screen = colors;
-    // Plain-text labels remain readable, but authorize no input. Claude's card answers as
-    // before from plain text: it only goes without its steps.
+    // Plain-text labels remain readable, but authorize no input. Claude's and omp's cards answer as
+    // before from plain text: they only go without their steps.
     else if (piTabs) inputUnverified = true;
   }
   // omo's form reads its text from the session's call, the screen showing where the form stands
@@ -960,7 +970,7 @@ async function readKnownPrompt(
   }
   let prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
-  if (markdown && prompt && agent === "omp" && pane.cwd) prompt = await withOmpMarkdown(paneId, pane.cwd, prompt);
+  if (prompt && agent === "omp") prompt = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown);
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
@@ -1218,8 +1228,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
-      // where the card has no keys of its own to move by (an OpenCode or pi-ask form would take it as its answer)
-      if (body.step_next === true && (!parsedPrompt?.nativeSteps || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
+      // where the card has no supported move (OpenCode would take it as an answer). Pi tabs and the
+      // owned pi-ask bridge have their own navigation metadata rather than nativeSteps.
+      if (body.step_next === true && ((!parsedPrompt?.nativeSteps && !parsedPrompt?.piAskForm && !parsedPrompt?.piAskUser)
+        || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
         return badRequest("invalid_answer", "Next goes to another question and answers none.");
       }
       if (parsedPrompt?.responder === "opencode-question" && parsedPrompt.openCodeForm) {
@@ -1470,15 +1482,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         return response;
       }
 
-      if (body.step_back === true || body.step_index !== undefined) {
+      if (body.step_back === true || body.step_next === true || body.step_index !== undefined) {
         // pi's tabs, or Claude's question tabs and their review (#2465): ←/→, each move seen before the next
         const claude = parsedPrompt?.claudeTabs !== undefined;
         const native = parsedPrompt?.piAskForm ?? parsedPrompt?.claudeTabs;
-        if (!parsedPrompt || !native || body.step_back === true && body.step_index !== undefined
+        if (!parsedPrompt || !native || [body.step_back === true, body.step_next === true, body.step_index !== undefined].filter(Boolean).length !== 1
           || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined) {
           return badRequest("invalid_answer", "Exactly one supported navigation action is required.");
         }
-        const target = body.step_index ?? native.index - 1;
+        const target = body.step_index ?? native.index + (body.step_next === true ? 1 : -1);
         if (!Number.isInteger(target) || target < 0 || target === native.index || !parsedPrompt.steps?.[target]?.can_navigate) {
           return badRequest("invalid_answer", "Invalid question to navigate to.");
         }
