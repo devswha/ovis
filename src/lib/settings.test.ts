@@ -244,6 +244,16 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
 });
 
+it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
+  for (const key of ["expandThinking", "foldWork"] as const) {
+    expect(sanitizeSettings({})[key]).toBe(false);
+    expect(sanitizeSettings({ [key]: true })[key]).toBe(true);
+    expect(sanitizeSettings({ [key]: "true" })[key]).toBe(false);
+    expect(SETTING_SCOPE[key]).toBe("device");
+    expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain(key);
+  }
+});
+
 it("keeps the screen wake lock off until this device explicitly enables it", () => {
   expect(DEFAULT_SETTINGS.keepScreenOn).toBe(false);
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);

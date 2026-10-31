@@ -2114,7 +2114,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A table fills the reply's width; its cells, file paths included, break between words only, so a
   column is never narrower than its longest word, and a table without room scrolls sideways in
   its own box.
-  Thinking renders as a folded block only when **Show thinking** is enabled.
+  Thinking renders as a folded block only when **Show thinking** is enabled. With **Expand
+  thinking** on as well (Settings → Chat, this device's, offered while Show thinking is on;
+  `expandThinking`) the block starts open (#2346); one the reader opens or folds stays so for its
+  message.
 - Auto-follow stops when the reader scrolls up, or opens a tool, a folded block or a whole output:
   they read there, and the opened row stays put while the turn streams below it (#1388). T3 Code
   keeps a reader at the very bottom pinned when they toggle a tool; Ovis already reads scrolling
@@ -2205,6 +2208,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   words are never behind the fold. A block the reader opened or folded stays as they left it, and
   so does one they focused or clicked inside: the fold at the end of a turn never takes the rows
   from under them.
+- **Collapse work** (Settings → Chat, this device's, off by default; `foldWork`,
+  `workBlockStartsOpen`) starts every block folded to its header, the running head included, so
+  a long turn is one line that still says its state, counts and failures (#2228). The head of a
+  blocked agent ("Needs you") still opens: it may hold what the reader answers. A block the
+  reader opens or folds keeps that for its message whatever the setting says, and the next
+  message starts folded again. Follows Zed's agent panel, whose `expand_terminal_card: false`
+  folds a terminal card even while its command runs, and the one working line of the Codex and
+  Claude apps; Ovis keeps its open default and makes the fold the opt-in.
 - The header is one line: the counts (`.work-block-summary`) take the width the title and the
   failure count leave and end in an ellipsis. `· 1 failed` (`.work-block-failed`) is its own item
   and is never cut, because the fold hides the failed row; at the largest chat type on the

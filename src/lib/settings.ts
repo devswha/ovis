@@ -143,6 +143,11 @@ export interface Settings {
   suggestionChip: boolean;
   /** show the agent's folded reasoning blocks in the chat view */
   showThinking: boolean;
+  /** the reasoning showThinking shows starts open instead of folded (#2346); a row the reader opens or folds stays so for its message */
+  expandThinking: boolean;
+  /** a turn's work blocks start folded to their head line, the running one included, but the one that waits on the user (#2228);
+   *  a block the reader opens or folds stays so for its message */
+  foldWork: boolean;
   /** request a screen wake lock while a pane is open in this visible tab */
   keepScreenOn: boolean;
   /** UI language; `system` follows the browser (src/lib/i18n.ts) */
@@ -202,11 +207,13 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
  * fileOpen, webLinks, the launch modes, followHerdrFocus, composerNewTabButton, composerArtifacts, terminalMirrorWrap, sidebarFilter, the
- * interface font and the chat's history page size are not collected: the telemetry schema (shared/telemetry.ts) does not carry them. */
+ * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
+ * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode"
-  | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts">;
+  | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
+  | "expandThinking" | "foldWork">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -288,6 +295,8 @@ export const SETTING_SCOPE = {
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
   chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
+  // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
+  expandThinking: "device", foldWork: "device",
   // a desk's composer button: a phone never shows it
   composerNewTabButton: "device",
   // the composer's row is this screen's: a phone may keep it bare while a desk shows the chip
@@ -344,6 +353,8 @@ export const DEFAULT_SETTINGS: Settings = {
   composerArtifacts: false,
   suggestionChip: false,
   showThinking: false,
+  expandThinking: false,
+  foldWork: false,
   keepScreenOn: false,
   language: "system",
   alertsOn: true,
@@ -529,6 +540,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
     suggestionChip: typeof record["suggestionChip"] === "boolean" ? record["suggestionChip"] : DEFAULT_SETTINGS.suggestionChip,
     showThinking: typeof record["showThinking"] === "boolean" ? record["showThinking"] : DEFAULT_SETTINGS.showThinking,
+    expandThinking: typeof record["expandThinking"] === "boolean" ? record["expandThinking"] : DEFAULT_SETTINGS.expandThinking,
+    foldWork: typeof record["foldWork"] === "boolean" ? record["foldWork"] : DEFAULT_SETTINGS.foldWork,
     keepScreenOn: typeof record["keepScreenOn"] === "boolean" ? record["keepScreenOn"] : DEFAULT_SETTINGS.keepScreenOn,
     language: LANGUAGE_SETTINGS.includes(record["language"] as LanguageSetting) ? record["language"] as LanguageSetting : DEFAULT_SETTINGS.language,
     alertsOn: typeof record["alertsOn"] === "boolean" ? record["alertsOn"] : DEFAULT_SETTINGS.alertsOn,
