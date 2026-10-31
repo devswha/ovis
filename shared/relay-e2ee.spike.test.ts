@@ -4,8 +4,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { PASEO_FILES } from "../scripts/vendor-paseo.ts";
+import { MAX_FRAME_BYTES } from "./relay-mux.ts";
 import {
   exportPublicKey, generateKeyPair, openClientSecureChannel, openDaemonSecureChannel,
+  MAX_HANDSHAKE_INBOUND_BYTES, MAX_HANDSHAKE_INBOUND_BYTES_TOTAL, MAX_HANDSHAKE_INBOUND_MESSAGES,
+  HANDSHAKE_MESSAGE_OVERHEAD_BYTES, MAX_CARRIER_BINARY_BYTES, MAX_PRE_OPEN_SEND_BYTES,
   PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE, PROTECTED_RECORD_FAILED_CLOSE_CODE,
   SecureChannelRejectedError, PROTECTED_MODE_REQUIRED_CLOSE_CODE,
   type KeyPair, type SecureChannel, type Transport, type TransportMessage,
@@ -259,6 +262,158 @@ it("bounds pre-open sends and rejects them when the handshake closes", async () 
   for (const result of await Promise.all(pending)) expect(result).toBeInstanceOf(Error);
 });
 
+it("bounds the bytes of pre-open sends", async () => {
+  const link = pair();
+  link.client.held = true;
+  const client = await openClientSecureChannel(link.client, {
+    daemonPublicKeyB64: exportPublicKey(generateKeyPair().publicKey),
+  });
+  // A refused send is rejected at once; a queued one stays pending until the handshake ends.
+  const tooLarge = client.send(new Uint8Array(MAX_PRE_OPEN_SEND_BYTES + 1).buffer);
+  expect(Bun.peek.status(tooLarge)).toBe("rejected");
+  await expect(tooLarge).rejects.toBeInstanceOf(RangeError);
+  const queued = client.send(new Uint8Array(MAX_PRE_OPEN_SEND_BYTES).buffer);
+  expect(Bun.peek.status(queued)).toBe("pending");
+  const overflow = client.send("x");
+  expect(Bun.peek.status(overflow)).toBe("rejected");
+  await expect(overflow).rejects.toBeInstanceOf(RangeError);
+  client.close();
+  await expect(queued).rejects.toBeInstanceOf(Error);
+});
+
+// A daemon that accepted the hello but whose ready is still in flight queues what arrives.
+async function stalledHandshake() {
+  const link = pair();
+  link.daemon.send = () => new Promise<void>(() => {});
+  const keys = generateKeyPair();
+  const opening = openDaemonSecureChannel(link.daemon, { daemonKeyPair: keys }).catch((error: unknown) => error);
+  await openClientSecureChannel(link.client, { daemonPublicKeyB64: exportPublicKey(keys.publicKey) });
+  const hello = link.client.sent[0];
+  if (typeof hello?.data !== "string") throw new Error("No hello sent");
+  return { link, opening, helloBytes: hello.data.length + HANDSHAKE_MESSAGE_OVERHEAD_BYTES };
+}
+/** Queues messages charging exactly `bytes`, each message's overhead included. */
+function fill(transport: MemoryTransport, bytes: number): void {
+  // The longest text whose base64 reading stays within the binary carrier limit.
+  const chunk = 4 * Math.floor(MAX_CARRIER_BINARY_BYTES / 3);
+  const overhead = HANDSHAKE_MESSAGE_OVERHEAD_BYTES;
+  for (let left = bytes; left > 0;) {
+    // Never leave less than one message's overhead behind, so the last message lands exactly.
+    const length = left - overhead <= chunk ? left - overhead : Math.min(chunk, left - 2 * overhead);
+    void transport.deliver({ data: "x".repeat(length), isBinary: false });
+    left -= length + overhead;
+  }
+}
+
+it("closes a handshake that queues too many messages", async () => {
+  const { link, opening } = await stalledHandshake();
+  // The hello is the first queued message.
+  for (let i = 1; i < MAX_HANDSHAKE_INBOUND_MESSAGES; i++) void link.daemon.deliver({ data: "x", isBinary: false });
+  expect(link.daemon.closes).toEqual([]);
+  void link.daemon.deliver({ data: "x", isBinary: false });
+  expect(link.daemon.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
+  expect(await opening).toBeInstanceOf(Error);
+});
+
+it("closes a handshake that queues too many bytes", async () => {
+  const { link, opening, helloBytes } = await stalledHandshake();
+  fill(link.daemon, MAX_HANDSHAKE_INBOUND_BYTES - helloBytes);
+  expect(link.daemon.closes).toEqual([]);
+  // Even an empty message costs its overhead.
+  void link.daemon.deliver({ data: "", isBinary: false });
+  expect(link.daemon.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
+  expect(await opening).toBeInstanceOf(Error);
+});
+
+it("never opens a handshake whose ready is still being sent when the carrier closes", async () => {
+  const link = pair();
+  const ready = Promise.withResolvers<void>();
+  link.daemon.send = () => ready.promise;
+  const keys = generateKeyPair();
+  let opened = false;
+  const opening = openDaemonSecureChannel(link.daemon, { daemonKeyPair: keys, events: { onopen: () => { opened = true; } } })
+    .catch((error: unknown) => error);
+  await openClientSecureChannel(link.client, { daemonPublicKeyB64: exportPublicKey(keys.publicKey) });
+  link.daemon.close();
+  ready.resolve();
+  expect(await opening).toBeInstanceOf(Error);
+  // Let the handshake's microtasks after the resolved send run to completion; no time passes.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(opened).toBe(false);
+});
+
+for (const delay of [1, 2, 3, 4]) it(`never opens, delivers or resolves after the carrier closes ${delay} microtasks after the ready is sent`, async () => {
+  const link = pair();
+  const keys = generateKeyPair();
+  // The send settles first; the close lands while the handshake is still resuming.
+  const later = (left: number) => queueMicrotask(() => left > 1 ? later(left - 1) : link.daemon.close());
+  // Typed as the Transport's send, which may return void: a synchronous send settles at once.
+  (link.daemon as Transport).send = () => { later(delay); };
+  // Opening before the close is fine; opening after it is not.
+  let openedAfterClose = false;
+  const received: (string | ArrayBuffer)[] = [];
+  const opening = openDaemonSecureChannel(link.daemon, {
+    daemonKeyPair: keys,
+    events: { onopen: () => { openedAfterClose = link.daemon.closed; }, onmessage: (data) => received.push(data) },
+  }).catch((error: unknown) => error);
+  await openClientSecureChannel(link.client, { daemonPublicKeyB64: exportPublicKey(keys.publicKey) });
+  expect(await opening).toBeInstanceOf(Error);
+  // Let the handshake's microtasks run to completion; no time passes.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(link.daemon.closed).toBe(true);
+  expect(openedAfterClose).toBe(false);
+  expect(received).toEqual([]);
+});
+
+it("bounds the bytes queued by all handshakes together and releases them on close", async () => {
+  // Given handshakes that together hold the whole budget, each within its own.
+  const full = MAX_HANDSHAKE_INBOUND_BYTES_TOTAL / MAX_HANDSHAKE_INBOUND_BYTES;
+  const held: Awaited<ReturnType<typeof stalledHandshake>>[] = [];
+  for (let i = 0; i < full; i++) {
+    const handshake = await stalledHandshake();
+    fill(handshake.link.daemon, MAX_HANDSHAKE_INBOUND_BYTES - handshake.helloBytes);
+    held.push(handshake);
+  }
+  expect(held.flatMap(({ link }) => link.daemon.closes)).toEqual([]);
+  // When one more hello arrives, then that connection closes.
+  const refused = await stalledHandshake();
+  expect(refused.link.daemon.closes).toEqual([PROTECTED_HANDSHAKE_FAILED_CLOSE_CODE]);
+  // When a queued handshake ends, then its bytes are free again.
+  held[0]?.link.daemon.close();
+  const admitted = await stalledHandshake();
+  expect(admitted.link.daemon.closes).toEqual([]);
+});
+
+for (const direction of ["client", "daemon"] as const) {
+  // "text bytes": a text frame whose data arrives as an ArrayBuffer, as a Node carrier delivers it.
+  for (const kind of ["binary", "text", "text bytes"] as const) {
+    it(`refuses a ${kind} carrier message to the ${direction} past the frame limit without decoding it`, async () => {
+      // Given valid records for a frame at the mux limit and one just past it.
+      const session = await connected();
+      const sender = direction === "client" ? session.daemon : session.client;
+      const outgoing = direction === "client" ? session.link.daemon : session.link.client;
+      const incoming = session.link[direction];
+      outgoing.held = true;
+      await sender.send(new Uint8Array(MAX_FRAME_BYTES).fill(1).buffer);
+      // One byte more still rounds to the same base64 length.
+      await sender.send(new Uint8Array(MAX_FRAME_BYTES + 1).fill(2).buffer);
+      const [atLimit, past] = outgoing.sent.slice(-2).map((message) => {
+        if (kind === "binary") return record(bytes(message));
+        const text = Buffer.from(bytes(message)).toString("base64");
+        return { data: kind === "text" ? text : new TextEncoder().encode(text).buffer, isBinary: false };
+      });
+      if (!atLimit || !past) throw new Error("No records captured");
+      await incoming.deliver(atLimit);
+      expect(session.received[direction]).toHaveLength(1);
+      // When the larger one arrives, then it is never decoded: a decoded valid record would be delivered.
+      await incoming.deliver(past);
+      expect(session.received[direction]).toHaveLength(1);
+      expect(session[direction].isOpen()).toBe(false);
+      expect(incoming.closes).toEqual([direction === "client" ? PROTECTED_RECORD_FAILED_CLOSE_CODE : 1011]);
+    });
+  }
+}
+
 for (const failure of ["malformed record", "explicit close"] as const) {
   it(`rejects queued sends on ${failure} while an earlier transport send is unresolved`, async () => {
     // Given a real protected channel with A blocked inside its transport.
@@ -330,14 +485,15 @@ function concatenate(...parts: Uint8Array[]): Uint8Array {
 for (const direction of ["client", "daemon"] as const) {
   for (const attack of ["replayed", "reordered", "truncated", "duplicated", "injected"] as const) {
     it(`closes ${direction} on ${attack} records without delivering plaintext`, async () => {
-      // Given fresh protected keys and a relay holding a multi-chunk binary record.
+      // Given fresh protected keys and a relay holding a binary record.
       const keys = generateKeyPair();
       const session = await connected(keys);
       const sender = direction === "client" ? session.daemon : session.client;
       const outgoing = direction === "client" ? session.link.daemon : session.link.client;
       const incoming = session.link[direction];
       outgoing.held = true;
-      await sender.send(new Uint8Array(70_000).fill(7).buffer);
+      // Small enough that a duplicated record stays within the carrier limit.
+      await sender.send(new Uint8Array(8_000).fill(7).buffer);
       const captured = outgoing.sent.at(-1);
       if (!captured) throw new Error("No record captured");
       const original = bytes(captured);

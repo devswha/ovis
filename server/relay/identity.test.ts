@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRelayIdentity, relayIdentityPath, rotateRelayIdentity } from "./identity.ts";
@@ -41,6 +41,15 @@ describe("relay identity", () => {
     expect(first.server_id).toMatch(/^[0-9a-f]{32}$/);
     if (process.platform !== "win32") expect(mode(relayIdentityPath(dir))).toBe(0o600);
     expect(loadRelayIdentity(dir)).toEqual(first);
+  });
+
+  it("makes an identity file readable by others private again when it loads it", () => {
+    const dir = stateDir();
+    const saved = loadRelayIdentity(dir);
+    const path = relayIdentityPath(dir);
+    chmodSync(path, 0o644);
+    expect(loadRelayIdentity(dir)).toEqual(saved);
+    if (process.platform !== "win32") expect(mode(path)).toBe(0o600);
   });
 
   it.each(["{not json", "[]", "null", JSON.stringify({ v: 1, server_id: "x", public_key: "a", secret_key: "b" })])(
