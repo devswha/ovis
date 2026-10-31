@@ -98,6 +98,7 @@
   "scripts/sidebar-branch-line-demo-regression.ts": 7,
   "scripts/omo-question-wheel-regression.ts": 6,
   "scripts/claude-image-browser-qa.ts": 6,
+  "scripts/grok-image-browser-qa.ts": 4,
   "scripts/copilot-image-browser-qa.ts": 4,
   "scripts/chat-outcome-note-browser-qa.ts": 6,
   "scripts/application-paging-regression.ts": 5,
