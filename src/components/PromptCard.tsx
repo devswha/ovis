@@ -26,6 +26,8 @@ export interface PromptCardProps {
   onPromptChanged(): void;
   /** the answer went out; `toMessageBox`: the keyboard's focus was in the card, which is about to go, nothing else has taken it since, and the press was a key or a mouse, not a tap */
   onAnswered(toMessageBox: boolean): void;
+  /** its answer went out: the card waits, as while sending, until the next read of the screen replaces it or takes it away */
+  answered?: boolean;
   /** an option picked by a typed message, sent only on Confirm */
   typedAnswer?: TypedAnswer | null;
   onTypedAnswerDone?(): void;
@@ -35,7 +37,7 @@ export interface PromptCardProps {
   screenWords?: string | null;
 }
 
-export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
+export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
   const t = useT();
   const { answerPanePrompt } = useMachineApi();
   const [selected, setSelected] = useState<Set<number>>(() => {
@@ -48,7 +50,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
     return new Set();
   });
   const [custom, setCustom] = useState(() => prompt.default_custom_text ?? "");
-  const [pending, setPending] = useState(false);
+  const [sending, setPending] = useState(false);
+  const pending = sending || answered;
   const [error, setError] = useState<UserError | null>(null);
   // folded to its header, to read the transcript under it; the question still waits, so the card
   // stays. A typed answer to confirm opens it, and the next prompt's card starts open

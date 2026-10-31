@@ -190,6 +190,7 @@ try {
     window.formPrompt = null;
     window.panePrompts = {};
     window.formAnswers = [];
+    window.formNext = null;
     window.formDelay = 0;
     window.formReturned = 0;
     window.formReadFails = false;
@@ -214,9 +215,12 @@ try {
         if (prompt !== null) {
           if (answer.prompt_id !== prompt.id) { window.formReadHold = false; return json({ error: { code: "prompt_changed", message: "the screen no longer shows that prompt" } }, 409); }
           window.formAnswers.push(answer);
-          if (answer.pane_id === web) window.formPrompt = null; else delete window.panePrompts[answer.pane_id];
+          // window.formNext: the form's next question, on screen once the answer is back, as the server waits for it
+          const next = answer.pane_id === web ? window.formNext : null;
+          window.formNext = null;
+          if (next === null) { if (answer.pane_id === web) window.formPrompt = null; else delete window.panePrompts[answer.pane_id]; }
           // window.formDelay: the answer takes that long to come back, as send_keys and the re-read do
-          return new Promise((done) => setTimeout(done, window.formDelay || 0)).then(() => { window.formReturned += 1; return json({ ok: true }); });
+          return new Promise((done) => setTimeout(done, window.formDelay || 0)).then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
         }
       }
       return demo(input, init);
@@ -804,6 +808,29 @@ try {
           assert.deepEqual(errors, []);
         } catch (error) { await preserveFailure(page, error); } finally { await close(); }
         console.log("PASS an answer that comes back after the next prompt is showing leaves that prompt, its focus and its typed pick alone");
+      }
+
+      {
+        // A form's next question takes the card's place once the answer is back and the screen is read
+        // again: the card waits for it, and the dock is never empty between the two questions
+        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: FORM });
+        try {
+          await page.evaluate((next) => {
+            const at = window as unknown as { formDelay: number; formNext: unknown; dockEmptied: number };
+            at.formDelay = 300;
+            at.formNext = next;
+            at.dockEmptied = 0;
+            const dock = document.querySelector(".prompt-dock")!;
+            new MutationObserver(() => { if (dock.querySelector(".prompt-card") === null) at.dockEmptied += 1; }).observe(dock, { childList: true, subtree: true });
+          }, NEXT);
+          await page.locator(".prompt-card").getByRole("button", { name: /^1\. In memory/ }).click();
+          await page.locator(".prompt-card").getByText(NEXT.question).waitFor();
+          assert.equal(await page.evaluate(() => (window as unknown as { dockEmptied: number }).dockEmptied), 0, "the card never left the dock");
+          assert.equal(await page.locator(".prompt-card-options").getAttribute("aria-busy"), "false", "the next question can be answered");
+          assert.deepEqual(await answersOf(page), [{ pane_id: panes.web, prompt_id: "demo-form", option_index: 0 }]);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+        console.log("PASS a form's next question takes the card's place: the dock is never empty between two questions");
       }
 
       {
