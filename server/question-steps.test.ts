@@ -221,14 +221,32 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test("OmO: another form drawn after the first Tab gets no second one", async () => {
+    // the same labels, another call: omo asked again with other questions
+    const other = (at: number) => omo(at).replaceAll("Which shape?", "Which shape, again?").replace(" Ask user · 30m", " Ask user · 29m").replace("[Color] [Size] [Shape]", "[Colour] [Size] [Shape]").replace("→ Color", "→ Colour").replace("  Color", "  Colour");
+    await withPane("pi", omo(0), async (pane) => {
+      pane.onSent = () => { pane.screen = other(1); };
+      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
+    });
+    // and a screen that changed between the card and the move: no key at all
+    await withPane("pi", omo(0), async (pane) => {
+      const first = await card();
+      pane.screen = other(0);
+      expect((await move(first.id, { step_index: 2 })).status).toBe(409);
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
   test("OmO: an answer with the move, a step out of reach or the card's unsent edits send nothing", async () => {
     await withPane("pi", omo(0), async (pane) => {
       const first = await card();
-      expect((await move(first.id, { step_next: true, option_index: 0 })).status).toBe(400);
-      expect((await move(first.id, { step_back: true })).status).toBe(400);
-      expect((await move(first.id, { step_next: true, step_back: true })).status).toBe(400);
-      expect((await move(first.id, { step_index: 0 })).status).toBe(400);
-      expect((await move(first.id, { step_next: true, draft: { option_indices: [], custom_text: "green" } })).status).toBe(400);
+      const refused = { status: 400, code: "invalid_answer" };
+      expect(await move(first.id, { step_next: true, option_index: 0 })).toEqual(refused);
+      expect(await move(first.id, { step_back: true })).toEqual(refused);
+      expect(await move(first.id, { step_next: true, step_back: true })).toEqual(refused);
+      expect(await move(first.id, { step_index: 0 })).toEqual(refused);
+      expect(await move(first.id, { step_next: true, draft: { option_indices: [], custom_text: "green" } })).toEqual(refused);
       expect(pane.sent).toEqual([]);
     });
   });
@@ -257,7 +275,9 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("a card with no keys of its own to move by refuses Next", async () => {
     const one = `\n ask 1 question\n ▸ Pick a colour\n   ▸ 1. Red\n     2. Blue\n     3. Other (type your answer)\n 0/1 ${HERMES_HINT}\n`;
     await withPane("hermes", one, async (pane) => {
-      expect((await move((await card()).id, { step_next: true })).status).toBe(400);
+      // with an answer in the same body, too: Next is never read as that answer
+      expect(await move((await card()).id, { step_next: true, option_index: 0 })).toEqual({ status: 400, code: "invalid_answer" });
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 400, code: "invalid_answer" });
       expect(pane.sent).toEqual([]);
     });
   });

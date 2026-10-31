@@ -83,7 +83,8 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
     responder: "codex-question", menuLabels: rows.map((row) => row.label),
     selectedIndex: rows.findIndex((row) => row.selected), checkedOptionIndices: [], customMenuIndex: customIndex,
     rejectWithEscapeIndex: null,
-  });
+    // Back and Next come from the hint, which a narrow pane may cut: the same question keeps its id without them
+  }, { can_step_back: undefined, can_step_next: undefined });
 }
 
 /**
