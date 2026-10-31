@@ -39,6 +39,8 @@ import type { AccessRefusal, AccessVia, BindScope, DeviceRole, ObservedIngress, 
 import type { DeviceMatch } from "./devices.ts";
 
 export interface AccessInput {
+  /** Authenticated by the relay transport, never derived from request headers or cookies. */
+  relayPeer?: DeviceMatch;
   /** the connection came from this machine: 127/8, ::1 or their IPv4-mapped forms */
   loopback: boolean;
   /** a proxy in front shows in the request (`cameThroughProxy`): tailscale serve and most reverse proxies do */
@@ -149,7 +151,7 @@ export function observedIngress(input: Pick<AccessInput, "loopback" | "forwarded
   peerKnown: boolean;
   /** a forwarding header (`forwardingHeaders`) came with the request */
   forwardingHeaders: boolean;
-}): ObservedIngress {
+}): Exclude<ObservedIngress, "relay"> {
   if (!input.peerKnown) return "unknown";
   const tailscaleHere = input.owner !== null || input.tagged;
   const throughServe = input.serveOnly && input.loopback && tailscaleHere;
@@ -245,6 +247,7 @@ export function portalLogin(input: Pick<AccessInput, "portal">): PortalLogin | n
 }
 
 export function decideAccess(input: AccessInput): Access {
+  if (input.relayPeer !== undefined) return { level: "full", via: "relay", role: input.relayPeer.role, device: input.relayPeer };
   if (input.tokenMatched) return { level: "full", via: "token", role: "drive" };
   if (input.device !== null) return { level: "full", via: "device", role: input.device.role, device: input.device };
   // before the token gate below, which holds every other way in: Portal's sign-in replaces the token

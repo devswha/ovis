@@ -1,7 +1,7 @@
 import type { PortalSignIn } from "./portal.ts";
 
 /** How a request got in, when it did. */
-export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal";
+export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal" | "relay";
 /** Why a request did not. */
 export type AccessRefusal = "other_user" | "pairing_required" | "token_required";
 /** What a paired device may do: drive (type, answer, manage) or only watch. */
@@ -44,7 +44,7 @@ export interface LanExposure {
 /** The configured bind address, read from its literal (`bindScope` in server/access.ts): never a DNS lookup or the request's Host. */
 export type BindScope = "loopback" | "tailnet" | "other";
 /** How this one request arrived, as far as it proves (`observedIngress` in server/access.ts); not how every device reaches the server. `direct`: no proxy said it forwarded the request, which a proxy that adds nothing (an SSH tunnel, nginx's bare `proxy_pass`) also looks like. */
-export type ObservedIngress = "direct" | "proxy" | "tailscale" | "funnel" | "unknown";
+export type ObservedIngress = "direct" | "proxy" | "tailscale" | "funnel" | "unknown" | "relay";
 
 /**
  * GET /api/health (both scopes), authenticated requests only, a watching device's included:
@@ -72,6 +72,8 @@ export interface PairedDevice {
   readonly last_seen_at: string | null;
   /** the device this request came from */
   readonly current: boolean;
+  /** paired with a public key for relay access, not a browser cookie */
+  readonly via_relay?: true;
 }
 
 /** POST /api/devices/pair/start */
