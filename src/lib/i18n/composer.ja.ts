@@ -7,6 +7,8 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_JA: Record<string, string> = {
+  "Next": "次へ",
+  "Next question": "次の質問",
   "Edit queued message": "キュー内のメッセージを編集",
   "Sent to Pi · waiting for transcript": "Pi に送信済み · 会話への記録を待っています",
   "Sent to Pi · transcript confirmation unavailable": "Pi に送信済み · 会話への記録を確認できません",

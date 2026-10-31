@@ -28,6 +28,7 @@ import { pendingPiQuestionnaires } from "./pi-questionnaire.ts";
 import { isPiQuestionnaireScreen, parsePiQuestionnaire, piQuestionnaireInputMatches, piQuestionnaireOf } from "./dialogs/pi-questionnaire.ts";
 import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
+import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -684,8 +685,11 @@ async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<b
   return await piAskActivity(paneId, signal) !== "absent";
 }
 
+/** The look before a key said no key may go: nothing more of the answer or move is sent (409 prompt_changed). */
+export class KeyRefused extends Error {}
+
 /** A pi-ask form opened under a key-driven answer: nothing more is sent. */
-class PiAskFormOpen extends Error {}
+class PiAskFormOpen extends KeyRefused {}
 
 /**
  * Whether omp itself holds the pane's input: one of its own processes is in the pane's foreground (herdr's
@@ -702,7 +706,20 @@ async function ompOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
-class OmpNotInFront extends Error {}
+class OmpNotInFront extends KeyRefused {}
+
+/** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
+class MoveLapsed extends KeyRefused {}
+
+/**
+ * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
+ * and an omp stopped behind its shell since the read takes none either: the shell would. A stop between this
+ * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground.
+ */
+async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
+  if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
+  if (agent === "omp" && !(await ompOwnsInput(paneId))) throw new OmpNotInFront();
+}
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** An omp Ask card in the agent's own Markdown when its session's open ask call is the menu on screen (omp-ask.ts); else the card as drawn. */
@@ -1106,6 +1123,10 @@ export interface PromptRequestOptions {
   openCodeState?: OpenCodePromptState;
   /** an answer reached the agent (a 2xx that sent it on, not a saved step or a navigation), for the daily active message's usage */
   onAnswered?: () => void;
+  /** how long an answer or a move may take, from its first read to its last key (ms); tests shorten it */
+  answerDeadlineMs?: number;
+  /** the look right before each key an answer or a move sends (beforeKey); tests stand in for it */
+  beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -1180,15 +1201,27 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     const response = await serialize(body.pane_id, async () => {
       // given up while it waited its turn: nothing is read, opened or sent for it
       if (request.signal.aborted) return promptChanged();
-      const deadlineAt = Date.now() + 4_000;
-      const deadline = AbortSignal.any([request.signal, AbortSignal.timeout(4_000)]);
+      const deadlineMs = options.answerDeadlineMs ?? 4_000;
+      const deadlineAt = Date.now() + deadlineMs;
+      const deadline = AbortSignal.any([request.signal, AbortSignal.timeout(deadlineMs)]);
+      const keyGuard = options.beforeKey ?? beforeKey;
       const openCodeState = options.openCodeState ?? defaultOpenCodeState;
-      const { prompt, agent, pane, panes, inputUnverified } = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+      // the first read is held to the same deadline as every key after it: past it, nothing is sent
+      const first = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+      first.catch(() => undefined);
+      const firstRead = await Promise.race([first, Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => null)]);
+      if (!firstRead || Date.now() > deadlineAt) return promptChanged();
+      const { prompt, agent, pane, panes, inputUnverified } = firstRead;
       // a plan card's id carries its plan file's revision: the file as it is now must match too
       if (inputUnverified || !prompt || (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
+      // Next goes on to another question and never answers this one: not with an answer in the same body, and not
+      // where the card has no keys of its own to move by (an OpenCode or pi-ask form would take it as its answer)
+      if (body.step_next === true && (!parsedPrompt?.nativeSteps || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
+        return badRequest("invalid_answer", "Next goes to another question and answers none.");
+      }
       if (parsedPrompt?.responder === "opencode-question" && parsedPrompt.openCodeForm) {
         const openCodeForm = parsedPrompt.openCodeForm;
         if (!openCodeForm.available) return jsonResponse({ error: { code: "service_unavailable", message: "OpenCode service is not available. Your answer has not been sent." } }, 502);
@@ -1342,6 +1375,87 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         return jsonResponse({ error: { code: "reply_failed", message: `Failed to reply to OpenCode form (HTTP ${replyResult.status}).` } }, 502);
       }
 
+      /**
+       * The keys and reads of a move between a form's questions (pi's tabs, omo, Codex, Hermes), each held to the request's
+       * deadline: the look before each key (keyGuard) and herdr's write itself, refused past it. Once a key may have been
+       * pressed (its write went out, or its reply never came) the move ends this asking on whatever exit it takes, so an
+       * unchanged drawing reads as a new asking; a failure proven to come before the write (cancelled, unreachable) does not.
+       */
+      const moveKeys = (active: () => boolean) => {
+        let pressed = false;
+        const left = (): number => Math.max(0, deadlineAt - Date.now());
+        return {
+          pressed: (): boolean => pressed,
+          send: async (key: string): Promise<void> => {
+            const inTime = (): boolean => active() && Date.now() < deadlineAt;
+            if (!inTime()) throw new MoveLapsed();
+            const guarded = await Promise.race([keyGuard(body.pane_id, agent, deadline).then(() => true), Bun.sleep(left()).then(() => false)]);
+            if (!guarded || !inTime()) throw new MoveLapsed();
+            const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
+            sending.catch(() => undefined);
+            let sent: boolean;
+            try { sent = await Promise.race([sending.then(() => true), Bun.sleep(left()).then(() => false)]); }
+            catch (error) {
+              const before = error instanceof HerdrError && (error.code === "cancelled" || error.code === "connect_failed");
+              if (!before) pressed = true;
+              throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error;
+            }
+            pressed = true;
+            if (!sent) throw new MoveLapsed();
+          },
+          read: async (): Promise<Awaited<ReturnType<typeof readPrompt>> | null> => {
+            if (!active()) return null;
+            const reading = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+            reading.catch(() => undefined);
+            const live = await Promise.race([reading, Bun.sleep(left()).then(() => null)]);
+            return live && active() ? live : null;
+          },
+        };
+      };
+
+      // a form whose own keys move between its questions (omo, Codex, Hermes): one key at a time, each move seen
+      if (parsedPrompt?.nativeSteps && (body.step_back === true || body.step_next === true || body.step_index !== undefined)) {
+        const target = nativeStepTarget(parsedPrompt, body);
+        if (typeof target === "string") return badRequest("invalid_answer", target);
+        if (!draftKept(parsedPrompt, body.draft)) return badRequest("invalid_answer", "Submit or clear edits before switching questions.");
+        // a move is a new asking, begun before its first key: a card read before it is refused, while one a poll
+        // reads during the move is of this asking and still answers once the move is done
+        const prior = askings.get(body.pane_id);
+        if (!prior || prior.content === null) return promptChanged();
+        const asking: Asking = { content: prior.content, n: askingCount += 1, queued: prior.queued };
+        askings.set(body.pane_id, asking);
+        const active = (): boolean => !deadline.aborted && askings.get(body.pane_id) === asking && asking.content !== null;
+        answersUnderWay.add(body.pane_id);
+        answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        const keys = moveKeys(active);
+        let done = false;
+        try {
+          const moved = await navigateNativeSteps(parsedPrompt, target, {
+            deadline: deadlineAt, active,
+            send: keys.send,
+            read: async () => {
+              const live = await keys.read();
+              const shown = live && !live.inputUnverified && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              return shown?.agent === parsedPrompt.agent ? shown : null;
+            },
+          });
+          if (!moved) return promptChanged();
+          done = true;
+          // a move is no answer: the question it ended on is what the pane asks now, under the move's asking
+          if (askings.get(body.pane_id) === asking) asking.content = moved.id;
+          return jsonResponse({ ok: true });
+        } catch (error) {
+          if (error instanceof KeyRefused) return promptChanged();
+          throw error;
+        } finally {
+          answersUnderWay.delete(body.pane_id);
+          // ended as well as begun: a read that began during the move and comes back after it shows a screen of the
+          // move, and changes nothing about the asking
+          answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+          if (!done && keys.pressed()) askingEnded(body.pane_id);
+        }
+      }
+
       if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
         const { response, answered } = await answerPiAskUser(body.pane_id, parsedPrompt, body, deadline);
         if (response.ok) askingEnded(body.pane_id);
@@ -1390,33 +1504,35 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const active = (): boolean => !deadline.aborted && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        // pi's own tabs: the same guarded, deadline-bound keys and reads (the look before each key is pi-ask's)
+        const keys = moveKeys(active);
+        let done = false;
         try {
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            send: async key => {
-              if (!claude && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
-              await paneSendKeys(body.pane_id, [key]);
-            },
+            send: keys.send,
             read: async () => {
-              if (!active()) return null;
-              const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+              const live = await keys.read();
+              if (!live) return null;
               const ours = claude ? live.agent === "claude"
                 : live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-"));
               return !live.inputUnverified && ours && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
             },
           }, claude ? (shown) => shown.claudeTabs : undefined);
           if (!moved) return promptChanged();
+          done = true;
           // a move is no answer: the tab it ended on is what the pane asks now, under the move's asking
           if (askings.get(body.pane_id) === asking) asking.content = moved.id;
           return jsonResponse({ ok: true });
         } catch (error) {
-          if (error instanceof PiAskFormOpen) return promptChanged();
+          if (error instanceof KeyRefused) return promptChanged();
           throw error;
         } finally {
           answersUnderWay.delete(body.pane_id);
           // ended as well as begun: a read that began during the move and comes back after it shows a
           // screen of the move, and changes nothing about the asking (#2503 review)
           answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+          if (!done && keys.pressed()) askingEnded(body.pane_id);
         }
       }
 
@@ -1537,11 +1653,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
-          // right before each key: a pi-ask form that opened since the read takes none of them
-          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
-          // and an omp stopped behind its shell since the read takes none either: the shell would. A stop between
-          // this look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground
-          if (agent === "omp" && !(await ompOwnsInput(body.pane_id))) throw new OmpNotInFront();
+          await keyGuard(body.pane_id, agent, deadline);
           const first = !move && !committed;
           if (!move) committed = true;
           try {
@@ -1640,7 +1752,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
-        if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront) return promptChanged();
+        if (error instanceof KeyRefused) return promptChanged();
         throw error;
       } finally {
         answersUnderWay.delete(body.pane_id);
