@@ -75,6 +75,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   agent works; a block waiting on you still opens (#2228). Both are off by default and kept per
   device, and a block you open or fold yourself stays that way for its message.
   ([#2484](https://github.com/devswha/ovis/pull/2484) reported by @altgans and @Ploppy3)
+- The Ovis relay service (`relay/`): the meeting point where a PC running Ovis and a phone that
+  cannot reach it directly both dial out, carrying only end-to-end encrypted frames it has no key
+  for and keeping no logs. A PC must prove it holds its key to serve its `server_id`. It runs as a
+  Cloudflare Worker deployed from CI with the maintainer's approval, or as a plain Bun server. Ovis
+  does not use it yet.
+  ([#2499](https://github.com/devswha/ovis/pull/2499))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
