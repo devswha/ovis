@@ -5,8 +5,8 @@ import { usePageVisible } from "./visibility.ts";
 
 /**
  * The hosted shell names itself in its `index.html`: a phone that reached this PC through the
- * relay cannot mint offers or reset the identity there (the server refuses both over a relayed
- * session), so the relay panel stays off it.
+ * relay cannot control that relay (the server refuses every mutation over a relayed session),
+ * so the relay panel stays off it.
  */
 export function inRelayShell(): boolean {
   return typeof document !== "undefined" && document.querySelector('meta[name="ovis-shell"]')?.getAttribute("content") === "relay";

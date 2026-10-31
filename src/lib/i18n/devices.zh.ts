@@ -156,6 +156,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Remote access through Ovis relay": "通过 Ovis 中继远程访问",
   "Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.": "无需 Tailscale，随时随地在手机上使用 Ovis。流量端到端加密；中继只能看到何时传输以及传输了多少。",
   "Ovis relay": "Ovis 中继",
+  "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "只有 PC 所有者通过直接连接才能控制中继。请在 PC 上打开 Ovis，或访问 PC 的直接地址。",
   "Turning it on closes the device gate: a new browser then needs a pairing code or the access token.": "开启后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   "Reset relay identity": "重置中继身份",
   "This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.": "此 PC 将获得新的中继身份。通过中继配对的手机会失去配对，需要新的代码。",

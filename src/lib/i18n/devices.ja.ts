@@ -156,6 +156,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Remote access through Ovis relay": "Ovis リレー経由のリモートアクセス",
   "Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.": "Tailscale なしで、どこからでもスマートフォンから Ovis を使えます。通信は端末間で暗号化され、リレーにはいつ・どれだけ通ったかしか分かりません。",
   "Ovis relay": "Ovis リレー",
+  "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "リレーを操作できるのは、PC に直接接続した所有者だけです。PC 上で Ovis を開くか、PC の直接のアドレスにアクセスしてください。",
   "Turning it on closes the device gate: a new browser then needs a pairing code or the access token.": "オンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   "Reset relay identity": "リレー ID をリセット",
   "This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.": "この PC は新しいリレー ID を受け取ります。リレー経由でペアリングしたスマートフォンはペアリングが解除され、新しいコードが必要になります。",

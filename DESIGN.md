@@ -3127,9 +3127,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   asking again and again. **Reset relay identity** is one row
   with its one-sentence consequence and a neutral **Reset**, confirmed in the shared
   `ConfirmDialog` ("Phones paired through the relay will need to scan a new code"). A watching
-  device sees the switch disabled and the state, no offer and no reset; the hosted shell (a page
-  carrying `<meta name="ovis-shell" content="relay">`) shows the group not at all, since a
-  relayed phone can neither pair nor reset. In Devices, a device paired through the relay wears
+  device or Portal visitor sees the switch disabled and the state, no offer and no reset:
+  the condition text beside it explains that only the PC's owner can control the relay through a
+  direct connection and asks them to open Ovis on the PC or at its direct address. It reuses the
+  row's condition style, beside the control it explains, rather than a separate banner.
+  Portal watch visitors get `403 read_only` first; even a saved drive invitation gets
+  `403 owner_only` (the watch guard precedes the owner guard in `server/dispatch.ts:223-243`).
+  The hosted shell (a page
+  carrying `<meta name="ovis-shell" content="relay">`) shows the group not at all, since
+  every relay mutation requires a direct connection (`403 local_required` over the relay).
+  In Devices, a device paired through the relay wears
   the **via relay** pill, the `this device` pill in neutral tones (`.devices-via-relay`: a
   category, not this device's own mark). The precedent is Paseo's relay pairing (the daemon's
   key and relay in a QR `#offer=` fragment the phone confirms, shown while the relay is up); this

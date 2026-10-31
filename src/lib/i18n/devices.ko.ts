@@ -156,6 +156,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Remote access through Ovis relay": "Ovis 릴레이를 통한 원격 접속",
   "Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.": "Tailscale 없이 어디서든 폰으로 Ovis를 쓰세요. 트래픽은 종단 간 암호화되며, 릴레이는 언제 얼마나 오가는지만 봅니다.",
   "Ovis relay": "Ovis 릴레이",
+  "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "릴레이는 PC 소유자만 직접 연결해서 제어할 수 있습니다. PC에서 Ovis를 열거나 PC의 직접 주소로 접속하세요.",
   "Turning it on closes the device gate: a new browser then needs a pairing code or the access token.": "켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   "Reset relay identity": "릴레이 신원 재설정",
   "This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.": "이 PC가 새 릴레이 신원을 받습니다. 릴레이로 페어링된 폰은 페어링이 풀리고 새 코드가 필요합니다.",

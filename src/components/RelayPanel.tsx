@@ -12,7 +12,7 @@ import { QrCode } from "./QrCode.tsx";
 import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 
 export interface RelayPanelProps {
-  /** a watching device reads the state and changes nothing; it is shown no offer either */
+  /** a watching device or Portal visitor reads the state and changes nothing; neither is shown an offer */
   readOnly?: boolean;
   /** the device gate is still open and no token is set: turning the relay on closes it (server/relay/service.ts) */
   closesGate?: boolean;
@@ -23,7 +23,7 @@ const failureText = (error: unknown): string => error instanceof ApiError ? erro
 /**
  * Settings → Phone & devices → Remote access through Ovis relay: the switch that connects this PC
  * to the relay, what the relay is doing, the QR code a phone scans to pair through it, and the
- * identity reset. Hidden on the hosted shell (a relayed phone can neither pair nor reset) and on
+ * identity reset. Hidden on the hosted shell (relay controls require a direct connection) and on
  * a server without the route.
  */
 export function RelayPanel({ readOnly = false, closesGate = false }: RelayPanelProps) {
@@ -43,6 +43,7 @@ export function RelayPanel({ readOnly = false, closesGate = false }: RelayPanelP
     <SettingsGroup title={t("Remote access through Ovis relay")} section="relay" note={t("Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.")}>
       <SettingsRow label={t("Ovis relay")} description={<>
         <span className="relay-status" role="status">{statusText(t, status)}</span>
+        {readOnly && <span className="settings-condition" data-testid="relay-owner-help">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</span>}
         {closesGate && !on && status.blocked === null && <span className="settings-condition">{t("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.")}</span>}
       </>}>
         <Toggle label={t("Ovis relay")} checked={on} disabled={readOnly || pending || status.blocked !== null} onChange={(next) => void toggle(next)} />

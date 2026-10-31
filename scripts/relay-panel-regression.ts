@@ -97,6 +97,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const offerAnswer = () => page.waitForResponse((response) => response.url().endsWith("/api/relay/offer") && response.request().method() === "POST");
     assert.equal(await toggle.getAttribute("aria-checked"), "false", "the relay starts off");
     assert.equal(await toggle.isEnabled(), true, "nothing blocks the relay on a plain install");
+    assert.equal(await group.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
     await state.filter({ hasText: "Off." }).waitFor();
     assert.equal(await qr.count(), 0, "no offer while the relay is off");
     assert.equal((await relayState()).phase, "off");
@@ -176,6 +177,34 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.notEqual(rotated.server_public_key, offered.server_public_key);
     await state.filter({ hasText: "Online. No phone connected." }).waitFor();
     await qr.waitFor();
+
+    // Even a Portal visitor with a saved drive role cannot control the relay (owner_only).
+    const visitorContext = await englishContext(browser);
+    contexts.push(visitorContext);
+    const visitor = await visitorContext.newPage();
+    await visitor.route("**/api/health*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json() as { auth: Record<string, unknown> };
+      await route.fulfill({ response, json: { ...body, auth: { ...body.auth, via: "portal", role: "drive" } } });
+    });
+    const visitorMutations: string[] = [];
+    await visitor.route("**/api/relay/**", (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      visitorMutations.push(new URL(route.request().url()).pathname);
+      return route.fulfill({ status: 403, json: { error: { code: "owner_only", message: "Use the access token or a paired device." } } });
+    });
+    await openPhoneSettings(visitor, fixture.origin);
+    const visitorGroup = visitor.locator('.settings-dialog [data-section="relay"]');
+    await visitorGroup.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
+    assert.equal(await visitorGroup.getByRole("switch", { name: "Ovis relay", exact: true }).isDisabled(), true);
+    const visitorHelp = visitorGroup.getByTestId("relay-owner-help");
+    assert.equal(await visitorHelp.isVisible(), true, "the Portal restriction explains itself beside the disabled switch");
+    assert.ok((await visitorHelp.innerText()).trim().length > 0, "the explanation is not empty");
+    assert.equal(await group.getByTestId("relay-owner-help").count(), 0, "the online direct owner still has no restriction explanation");
+    assert.equal(await visitorGroup.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
+    assert.equal(await visitorGroup.getByRole("button", { name: "Reset", exact: true }).count(), 0);
+    assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
+    await visitorContext.close();
 
     // off: the row says so and the offer goes with the connection
     await toggle.click();

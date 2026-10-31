@@ -922,7 +922,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
         </SettingsRow>
       </SettingsGroup>
 
-      <RelayPanel readOnly={auth?.role === "watch"} closesGate={security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured} />
+      <RelayPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} closesGate={security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured} />
 
       <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
 
