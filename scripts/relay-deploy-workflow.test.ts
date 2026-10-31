@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 interface Step { name?: string; if?: string; run?: string; uses?: string; env?: Record<string, string>; "working-directory"?: string }
 interface Workflow {
   on: { push: { branches: string[]; paths: string[] }; workflow_dispatch: unknown };
-  jobs: { deploy: { environment: { name: string }; permissions: Record<string, string>; steps: Step[] } };
+  jobs: { deploy: { "runs-on": unknown; environment: { name: string }; permissions: Record<string, string>; steps: Step[] } };
 }
 
 /** The workflow at `path` (default: the committed one), as parsed YAML. */
@@ -14,14 +14,37 @@ export const loadWorkflow = (path = process.env.RELAY_DEPLOY_WORKFLOW ?? new URL
 test("relay deploy runs on a push to main touching relay/ and by hand", () => {
   const { on } = loadWorkflow();
   expect(on.push.branches).toEqual(["main"]);
-  expect(on.push.paths).toEqual(["relay/**"]);
+  expect(on.push.paths).toEqual(["relay/**", "shared/relay-server-proof.ts"]);
   expect("workflow_dispatch" in on).toBe(true);
+});
+
+test("relay deploy runs for every file outside relay/ the Worker imports", () => {
+  const { paths } = loadWorkflow().on.push;
+  const sources = [...new Bun.Glob("relay/*.ts").scanSync()].filter((path) => !path.endsWith(".test.ts"));
+  const outside = new Set<string>();
+  for (const source of sources) {
+    for (const [, target] of readFileSync(source, "utf8").matchAll(/from "(\.\.\/[^"]+)"/g)) outside.add(new URL(target!, `file:///${source}`).pathname.slice(1));
+  }
+  expect(outside.size).toBeGreaterThan(0);
+  for (const path of outside) expect(paths).toContain(path);
 });
 
 test("relay deploy job waits in the production environment with read-only permissions", () => {
   const { deploy } = loadWorkflow().jobs;
   expect(deploy.environment.name).toBe("production");
   expect(deploy.permissions).toEqual({ contents: "read" });
+});
+
+test("relay deploy runs on a GitHub-hosted runner, never a self-hosted one", () => {
+  expect(loadWorkflow().jobs.deploy["runs-on"]).toBe("ubuntu-24.04");
+});
+
+test("only the deploy step gets the Cloudflare secrets", () => {
+  const { steps } = loadWorkflow().jobs.deploy;
+  for (const secret of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]) {
+    const holders = steps.filter((step) => Object.values(step.env ?? {}).some((value) => value.includes(`secrets.${secret}`) && !value.includes("!=")));
+    expect(holders.map((step) => step.run?.startsWith("bunx wrangler@") && step.run.endsWith(" deploy"))).toEqual([true]);
+  }
 });
 
 test("the deploy is skipped without the secrets and the health check follows it", () => {
