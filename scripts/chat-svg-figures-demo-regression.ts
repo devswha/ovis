@@ -33,12 +33,11 @@ const FIGURE = [
   "</svg>",
 ].join("\n");
 const UNSAFE = [
-  '<svg viewBox="0 0 10 10" onload="window.__svgRan = true">',
-  "  <script>window.__svgRan = true</script>",
-  '  <image href="https://example.invalid/pixel.png" width="10" height="10"/>',
-  "</svg>",
-].join("\n");
-const REPLY = ["Here is the flow:", "", "```svg", FIGURE, "```", "", "And one that must not draw:", "", "```svg", UNSAFE, "```", "", "Done."].join("\n");
+  '<svg viewBox="0 0 10 10"><script>window.__svgRan = "script"</script></svg>',
+  '<svg viewBox="0 0 10 10" onload="window.__svgRan = \'handler\'"></svg>',
+  '<svg viewBox="0 0 10 10"><image href="https://example.invalid/pixel.png" width="10" height="10"/></svg>',
+];
+const REPLY = ["Here is the flow:", "", "```svg", FIGURE, "```", "", "And three that must not draw:", "", ...UNSAFE.flatMap((fence) => ["```svg", fence, "```", ""]), "Done."].join("\n");
 const TURNS = [
   { role: "user", ts: "2026-10-31T10:00:00.000Z", parts: [{ kind: "text", text: "Draw the flow" }] },
   { role: "assistant", ts: "2026-10-31T10:00:05.000Z", parts: [{ kind: "text", text: REPLY }] },
@@ -101,8 +100,11 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
     assert.ok(markup.includes(`stroke="${drawn.accent}"`), `${width} ${theme}: --accent is the theme's accent ${drawn.accent}`);
     assert.ok(markup.includes(`color="${drawn.text}"`), `${width} ${theme}: currentColor is the theme's text ${drawn.text}`);
 
-    const unsafeBlock = scope.locator("pre", { hasText: "window.__svgRan" });
-    assert.equal(await unsafeBlock.count(), 1, `${width} ${theme}: the unsafe fence stays a code block`);
+    // each fence holds one unsafe part, so each is judged on its own
+    for (const marker of ["<script>", "onload=", "example.invalid"]) {
+      assert.equal(await scope.locator("pre", { hasText: marker }).count(), 1, `${width} ${theme}: the fence with ${marker} stays a code block`);
+    }
+    assert.equal(await scope.locator(".markdown-mermaid img").count(), 1, `${width} ${theme}: only the safe fence is drawn`);
     assert.equal(await page.evaluate(() => (window as unknown as { __svgRan?: boolean }).__svgRan === true), false, `${width} ${theme}: its script never ran`);
     assert.deepEqual(outside, [], `${width} ${theme}: nothing is fetched from outside the app`);
 
@@ -115,8 +117,15 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
     if (evidence !== null) await page.screenshot({ path: join(evidence, `chat-svg-figures-codex-${theme}-${width}-enlarged.png`) });
     await page.keyboard.press("Escape");
     await zoomed.waitFor({ state: "detached" });
+    // a theme change on a live page redraws the figure in the new colors
+    const other = theme === "dark" ? "light" : "dark";
+    await page.evaluate((next) => { document.documentElement.dataset.theme = next; }, other);
+    await page.waitForFunction((before) => document.querySelector(".markdown-mermaid img")?.getAttribute("src") !== before, drawn.src);
+    const redrawn = await figure.evaluate((img: HTMLImageElement) => ({ src: img.src, text: getComputedStyle(document.documentElement).getPropertyValue("--text").trim() }));
+    assert.notEqual(redrawn.text, drawn.text, `${width} ${theme}: the ${other} theme has another text color`);
+    assert.ok(decodeURIComponent(redrawn.src.slice(redrawn.src.indexOf(",") + 1)).includes(`color="${redrawn.text}"`), `${width} ${theme}: after the switch currentColor is ${redrawn.text}`);
     assert.deepEqual(errors, []);
-    console.log(`PASS ${width}px ${theme}: figure ${drawn.width}x${drawn.height} in theme colors, unsafe fence a code block, nothing ran or loaded, enlarge view`);
+    console.log(`PASS ${width}px ${theme}: figure ${drawn.width}x${drawn.height} in theme colors, each unsafe fence a code block, nothing ran or loaded, enlarge view, redrawn on a theme switch`);
   } finally { await context.close(); }
 }
 

@@ -53,6 +53,9 @@ it("keeps a figure that could run or load something as code", () => {
     '<svg viewBox="0 0 10 10"><rect style="fill: url(https://example.com/x)"/></svg>',
     '<svg viewBox="0 0 10 10"><style>@import "https://example.com/x.css";</style></svg>',
     '<!DOCTYPE svg [<!ENTITY a "aaaa">]><svg viewBox="0 0 10 10"><text>&a;</text></svg>',
+    '<svg viewBox="0 0 10 10"><rect style="fill: u&#114;l(https://example.com/x)"/></svg>',
+    '<svg viewBox="0 0 10 10"><style>&#x40;import "https://example.com/x.css";</style></svg>',
+    '<svg viewBox="0 0 10 10"><image h&#114;ef="https://example.com/a.png"/></svg>',
   ];
   for (const source of unsafe) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
 });
@@ -68,4 +71,43 @@ it("draws a figure whose references stay inside it", () => {
 it("keeps a figure past the size cap as code", () => {
   const body = "<rect/>".repeat(Math.ceil(SVG_FIGURE_MAX_LENGTH / 7));
   expect(svgFigureUrl(`<svg viewBox="0 0 10 10">${body}</svg>`, { fg: "#eee" })).toBeNull();
+});
+
+it("judges the markup as drawn, so a token cannot assemble an href, a handler or a script", () => {
+  for (const source of [
+    '<svg viewBox="0 0 10 10"><image hvar(--missing, ref)="https://example.com/x.png"/></svg>',
+    '<svg viewBox="0 0 10 10"><rect onvar(--nope, load)="x()"/></svg>',
+    '<svg viewBox="0 0 10 10"><var(--nope, script)>x</script></svg>',
+  ]) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
+});
+
+it("keeps a figure no URL can carry, or whose root is not first, as code, and reads the root's quotes", () => {
+  expect(svgFigureUrl('<svg viewBox="0 0 10 10"><text>\ud800</text></svg>', { fg: "#eee" })).toBeNull();
+  expect(svgFigureUrl('<!-- <svg fake="yes"> --><svg viewBox="0 0 10 10"></svg>', { fg: "#eee" })).toBeNull();
+  const quoted = decode(svgFigureUrl('<?xml version="1.0"?>\n<svg data-note="a>b" viewBox="0 0 900 560"></svg>', { fg: "#eee" }));
+  expect(quoted).toMatch(/^<svg color="#eee"[^>]* width="900" height="560" data-note="a>b"/);
+});
+
+it("takes a token's fallback when its name is no palette entry, inherited ones included", () => {
+  expect(decode(svgFigureUrl('<svg viewBox="0 0 10 10"><rect fill="var(--toString, red)"/></svg>', { fg: "#eee" }))).toContain('fill="red"');
+});
+
+it("reads a fence in time that grows with its length, not its square", () => {
+  const cpu = (): number => { const used = process.cpuUsage(); return (used.user + used.system) / 1000; };
+  const shapes = [(n: number) => '<svg viewBox="0 0 1 1"><text>' + "var(--x," + " ".repeat(n) + "!</text></svg>", (n: number) => "<svg ".repeat(n / 5)];
+  for (const shape of shapes) {
+    const small = shape(8_000);
+    const large = shape(64_000);
+    let fastestSmall = Infinity;
+    let fastestLarge = Infinity;
+    for (let round = 0; round < 5 && !(fastestLarge / Math.max(fastestSmall, 0.05) < 30); round += 1) {
+      let start = cpu();
+      for (let run = 0; run < 20; run += 1) svgFigureUrl(small, { fg: "#eee" });
+      fastestSmall = Math.min(fastestSmall, cpu() - start);
+      start = cpu();
+      for (let run = 0; run < 20; run += 1) svgFigureUrl(large, { fg: "#eee" });
+      fastestLarge = Math.min(fastestLarge, cpu() - start);
+    }
+    expect(fastestLarge / Math.max(fastestSmall, 0.05)).toBeLessThan(30);
+  }
 });

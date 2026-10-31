@@ -56,21 +56,82 @@ const UNSAFE = [
   /\burl\((?!\s*["']?\s*#)/i,
   /image-set\(/i,
   /\battributeName\s*=\s*["']?\s*(?:[\w.-]+:)?href/i,
-  /\bstyle\s*=\s*(?:"[^"]*\\|'[^']*\\)/i,
-  /<\s*(?:[\w.-]+:)?style\b[^>]*>[^<]*\\/i,
 ];
+/** A style (element or attribute) with a backslash anywhere: a CSS escape could spell `url`. */
+const STYLED = /<\s*(?:[\w.-]+:)?style\b|\bstyle\s*=/i;
 
-/** `var(--name)` / `var(--name, fallback)`; the fallback may hold one level of parentheses (`rgb(…)`). */
-const VAR_REFERENCE = /var\(\s*--([\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g;
-/** The first `<svg …>` start tag (a namespace prefix allowed). */
-const ROOT_TAG = /<(?:[\w.-]+:)?svg(?=[\s/>])[^>]*>/;
-const CLOSE_TAG = /<\/(?:[\w.-]+:)?svg\s*>\s*$/;
+/** A numeric character reference, which XML reads as its character in a name or a value (`u&#114;l(`). */
+const CHARACTER_REFERENCE = /&#(?:[xX]0*([0-9a-fA-F]{1,6})|0*(\d{1,7}));?/g;
+
+/**
+ * Every pattern above is tried on the markup as it is drawn (so a token cannot assemble one), with
+ * its numeric character references read as the characters they stand for.
+ */
+function unsafe(svg: string): boolean {
+  const read = svg.replace(CHARACTER_REFERENCE, (_reference, hex: string | undefined, decimal: string | undefined) => {
+    const code = hex !== undefined ? Number.parseInt(hex, 16) : Number(decimal);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : "";
+  });
+  return UNSAFE.some((pattern) => pattern.test(read)) || (read.includes("\\") && STYLED.test(read));
+}
+
+/** An XML declaration the root may follow; nothing else (a comment, whitespace aside) may come first. */
+const DECLARATION = /^<\?xml\s[^?]{0,200}\?>\s*/;
+const ROOT_START = /^<(?:[\w.-]+:)?svg(?=[\s/>])/;
+const CLOSE_TAG = /<\/(?:[\w.-]+:)?svg\s*>$/;
+
+/** Where the start tag opening at 0 ends (its `>`, quotes respected), or -1 when it does not end. */
+function tagEnd(text: string): number {
+  let quote = "";
+  for (let index = 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) { if (char === quote) quote = ""; }
+    else if (char === '"' || char === "'") quote = char;
+    else if (char === ">") return index;
+  }
+  return -1;
+}
+
+/** Longest `var(--name, fallback)` fallback read; a longer one is left as written (and drawn as the browser reads it). */
+const MAX_FALLBACK = 200;
+
+/**
+ * `var(--name)` / `var(--name, fallback)` (the fallback may hold one level of parentheses,
+ * `rgb(…)`) as `value(name, fallback)`. One pass, each reference read at most MAX_FALLBACK
+ * characters past its name, so no input makes it slow.
+ */
+function resolveTokens(text: string, value: (name: string, fallback: string) => string): string {
+  let out = "";
+  let from = 0;
+  for (let start = text.indexOf("var(", from); start !== -1; start = text.indexOf("var(", from)) {
+    const name = /^var\(\s*--([\w-]{1,64})\s*([,)])/.exec(text.slice(start, start + 80));
+    if (name === null) { out += text.slice(from, start + 4); from = start + 4; continue; }
+    let end = start + name[0].length;
+    let fallback = "";
+    if (name[2] === ",") {
+      let depth = 0;
+      let close = -1;
+      for (let index = end; index < Math.min(text.length, end + MAX_FALLBACK); index += 1) {
+        const char = text[index];
+        if (char === "(") { depth += 1; if (depth > 1) break; }
+        else if (char === ")") { if (depth === 0) { close = index; break; } depth -= 1; }
+      }
+      if (close === -1) { out += text.slice(from, start + 4); from = start + 4; continue; }
+      fallback = text.slice(end, close).trim();
+      end = close + 1;
+    }
+    out += text.slice(from, start) + value(name[1]!, fallback);
+    from = end;
+  }
+  return out + text.slice(from);
+}
 const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE+]+)[\s,]+([\d.eE+]+)\s*["']/;
 
 /**
  * A fence's source as a data: URL the chat draws as an image, or null while it is not a whole
- * figure yet (a reply still streaming, or not SVG at all), past the size cap, or holding markup
- * that could run or load something (UNSAFE), which keeps the fence a code block.
+ * figure yet (a reply still streaming, or not SVG at all: the root comes first, after an XML
+ * declaration at most), past the size cap, holding markup that could run or load something
+ * (UNSAFE), or not text a URL can carry (a lone surrogate), which keeps the fence a code block.
  * Tokens become the palette's colors (an unknown name takes its fallback, else the text color).
  * The root gets what an image document cannot inherit from the page: `color` for `currentColor`,
  * a sans-serif `font-family`, the SVG namespace, and a size from its `viewBox` when it has none
@@ -79,14 +140,16 @@ const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE
 export function svgFigureUrl(source: string, palette: SvgFigurePalette): string | null {
   if (source.length > SVG_FIGURE_MAX_LENGTH) return null;
   const trimmed = source.trim();
-  const root = ROOT_TAG.exec(trimmed);
-  if (root === null || !CLOSE_TAG.test(trimmed)) return null;
-  if (UNSAFE.some((pattern) => pattern.test(trimmed))) return null;
+  const head = DECLARATION.exec(trimmed)?.[0] ?? "";
+  if (!ROOT_START.test(trimmed.slice(head.length)) || !CLOSE_TAG.test(trimmed.slice(-256))) return null;
   const fg = palette.fg ?? "currentColor";
-  const lookup = palette as Record<string, string | undefined>;
-  const resolved = trimmed.replace(VAR_REFERENCE, (_match, name: string, fallback: string | undefined) => lookup[name] ?? (fallback?.trim() || fg));
+  const resolved = resolveTokens(trimmed.slice(head.length), (name, fallback) =>
+    (Object.hasOwn(palette, name) ? palette[name as keyof SvgFigurePalette] : undefined) ?? (fallback || fg));
+  const end = tagEnd(resolved);
+  if (end === -1) return null;
   const usesXlink = resolved.includes("xlink:");
-  const svg = resolved.replace(ROOT_TAG, (tag) => {
+  const tag = resolved.slice(0, end + 1);
+  const root = (() => {
     let added = "";
     if (!/\scolor\s*=/.test(tag)) added += ` color="${fg}"`;
     if (!/\sfont-family\s*=/.test(tag)) added += ` font-family="sans-serif"`;
@@ -95,6 +158,13 @@ export function svgFigureUrl(source: string, palette: SvgFigurePalette): string 
     const box = VIEW_BOX.exec(tag);
     if (box !== null && !/\swidth\s*=/.test(tag) && !/\sheight\s*=/.test(tag)) added += ` width="${box[1]}" height="${box[2]}"`;
     return added ? tag.replace(/^<[^\s/>]+/, `$&${added}`) : tag;
-  });
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  })();
+  const svg = root + resolved.slice(end + 1);
+  if (unsafe(svg)) return null;
+  try {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  } catch {
+    // a lone surrogate: no URL carries it
+    return null;
+  }
 }
