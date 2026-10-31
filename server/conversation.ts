@@ -615,8 +615,10 @@ function newestPage(path: string, stream: TranscriptStream, source: StreamSource
  * read afresh. Like liveScans it trusts Copilot to append: an earlier line rewritten in place, with
  * the bytes before the read point kept and the file grown, is not noticed.
  */
-interface CopilotTurnScan { id: string; start: number; scanned: number; tail: string; lines: { at: number; line: string }[] }
+interface CopilotTurnScan { id: string; start: number; scanned: number; tail: string; lines: { at: number; line: string }[]; bytes: number }
 const copilotTurnScans = new Map<string, CopilotTurnScan>();
+/** What every kept turn's lines may come to together: one turn as far as a page reaches before it is found afresh. */
+const COPILOT_TURN_SCAN_BYTES = COPILOT_PAGE_BYTES + TRANSCRIPT_WINDOW_BYTES;
 
 function forgetCopilotTurns(path: string): void {
   for (const key of copilotTurnScans.keys()) if (key.startsWith(`${path}\0`)) copilotTurnScans.delete(key);
@@ -636,17 +638,27 @@ function copilotNewestTurn(path: string, stream: TranscriptStream, prompts: numb
   }
   if (scan === undefined || bytes === null) {
     const whole = pageBefore(stream, "copilot-transcript", stream.length, { widen: true, prompts });
-    scan = { id: stream.id, start: whole.start, scanned: whole.start, tail: "", lines: [] };
+    scan = { id: stream.id, start: whole.start, scanned: whole.start, tail: "", lines: [], bytes: 0 };
     bytes = whole.bytes;
   }
   let at = 0;
   for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, at)) {
-    scan.lines.push({ at: scan.scanned + at, line: copilotSetAside(bytes.subarray(at, newline).toString("utf8")) });
+    const line = copilotSetAside(bytes.subarray(at, newline).toString("utf8"));
+    scan.lines.push({ at: scan.scanned + at, line });
+    scan.bytes += Buffer.byteLength(line);
     at = newline + 1;
   }
   scan.scanned += at;
   scan.tail = bytesBefore(stream, scan.scanned);
   remember(copilotTurnScans, key, scan, 4);
+  // kept by bytes too, least recently read first out, and never a turn past the whole budget
+  let kept = 0;
+  for (const entry of copilotTurnScans.values()) kept += entry.bytes;
+  for (const [other, entry] of copilotTurnScans) {
+    if (kept <= COPILOT_TURN_SCAN_BYTES) break;
+    copilotTurnScans.delete(other);
+    kept -= entry.bytes;
+  }
   return { start: scan.start, lines: scan.lines, partial: bytes.subarray(at).toString("utf8") };
 }
 

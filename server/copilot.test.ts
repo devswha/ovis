@@ -1591,6 +1591,8 @@ it("keeps a recorded turn whole when the pictures Copilot interned in it pass th
     }) as typeof fs.readSync);
     let grown: ReturnType<typeof transcriptPage>;
     try { grown = transcriptPage("copilot-transcript", path, { prompts: 1 }); } finally { counting.mockRestore(); }
+    // the spy sees the page's own reads: the appended record is read, and nothing much besides
+    expect(read).toBeGreaterThan(0);
     expect(read).toBeLessThan(64 * 1024);
     expect(grown.turns).toEqual(parseCopilotTranscript(readFileSync(path, "utf8")).slice(2));
     expect(grown.turns.at(-1)?.parts.at(-1)).toEqual({ kind: "text", text: "Appended answer.", phase: "final_answer" });
