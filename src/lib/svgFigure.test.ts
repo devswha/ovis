@@ -44,6 +44,8 @@ it("keeps a figure that could run or load something as code", () => {
   const unsafe = [
     '<svg viewBox="0 0 10 10"><script>alert(1)</script></svg>',
     '<svg viewBox="0 0 10 10" onload="alert(1)"></svg>',
+    '<svg/onload="alert(1)" viewBox="0 0 10 10"></svg>',
+    '<svg viewBox="0 0 10 10"><set attributeName="onload" to="alert(1)"/></svg>',
     '<svg viewBox="0 0 10 10"><rect ONCLICK = "x()"/></svg>',
     '<svg viewBox="0 0 10 10"><foreignObject><div>x</div></foreignObject></svg>',
     '<svg viewBox="0 0 10 10"><image href="https://example.com/a.png"/></svg>',
@@ -95,7 +97,10 @@ it("takes a token's fallback when its name is no palette entry, inherited ones i
 
 it("reads a fence in time that grows with its length, not its square", () => {
   const cpu = (): number => { const used = process.cpuUsage(); return (used.user + used.system) / 1000; };
-  const shapes = [(n: number) => '<svg viewBox="0 0 1 1"><text>' + "var(--x," + " ".repeat(n) + "!</text></svg>", (n: number) => "<svg ".repeat(n / 5)];
+  const shapes = [(n: number) => '<svg viewBox="0 0 1 1"><text>' + "var(--x," + " ".repeat(n) + "!</text></svg>", (n: number) => "<svg ".repeat(n / 5),
+    (n: number) => '<svg viewBox="0 0 1 1"><a href=' + " ".repeat(n) + "x/></svg>",
+    (n: number) => '<svg viewBox="0 0 1 1"><rect style="fill: url(' + " ".repeat(n) + 'x)"/></svg>',
+    (n: number) => '<svg viewBox="0 0 1 1"><set attributeName="' + " ".repeat(n) + 'x"/></svg>'];
   for (const shape of shapes) {
     const small = shape(8_000);
     const large = shape(64_000);

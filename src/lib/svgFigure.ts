@@ -48,14 +48,14 @@ export const SVG_FIGURE_MAX_LENGTH = 256 * 1024;
  */
 const UNSAFE = [
   /<\s*(?:[\w.-]+:)?(?:script|foreignObject)\b/i,
-  /\son[a-z]+\s*=/i,
+  /[\s/"']on[a-z]+\s*=/i,
   /<!\s*(?:DOCTYPE|ENTITY)/i,
   /<\?xml-stylesheet/i,
   /@import/i,
   /\bhref\s*=(?!\s*["']?\s*#)/i,
   /\burl\((?!\s*["']?\s*#)/i,
   /image-set\(/i,
-  /\battributeName\s*=\s*["']?\s*(?:[\w.-]+:)?href/i,
+  /\battributeName\s*=\s*["']?\s*(?:(?:[\w.-]+:)?href|on)/i,
 ];
 /** A style (element or attribute) with a backslash anywhere: a CSS escape could spell `url`. */
 const STYLED = /<\s*(?:[\w.-]+:)?style\b|\bstyle\s*=/i;
@@ -65,13 +65,14 @@ const CHARACTER_REFERENCE = /&#(?:[xX]0*([0-9a-fA-F]{1,6})|0*(\d{1,7}));?/g;
 
 /**
  * Every pattern above is tried on the markup as it is drawn (so a token cannot assemble one), with
- * its numeric character references read as the characters they stand for.
+ * its numeric character references read as the characters they stand for and each run of
+ * whitespace read as one space, so no pattern's `\s*` pair can try every split of a long run.
  */
 function unsafe(svg: string): boolean {
   const read = svg.replace(CHARACTER_REFERENCE, (_reference, hex: string | undefined, decimal: string | undefined) => {
     const code = hex !== undefined ? Number.parseInt(hex, 16) : Number(decimal);
     return code <= 0x10ffff ? String.fromCodePoint(code) : "";
-  });
+  }).replace(/\s+/g, " ");
   return UNSAFE.some((pattern) => pattern.test(read)) || (read.includes("\\") && STYLED.test(read));
 }
 
