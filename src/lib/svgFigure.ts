@@ -40,40 +40,95 @@ export const SVG_FIGURE_MAX_LENGTH = 256 * 1024;
 
 /**
  * Markup that could run code or load something if the figure were ever drawn outside an <img>:
- * scripts, event handlers, foreignObject, a DOCTYPE (entities), a stylesheet import or link, an
- * href or url() that leaves the figure (only `#id` stays inside), CSS image-set(), an animation of
- * an href, and a CSS escape in a style (which could spell `url`). An image document already runs
- * and fetches none of it; a figure holding any of it is not drawn, so the code block shows what
- * the agent sent.
+ * Only known SVG drawing elements are accepted, whatever their namespace prefix. Attributes
+ * are checked by local name too: no handlers, base URL or animation of either or an href, and
+ * references must stay inside the figure. CSS escapes could spell `url`, even in a presentation
+ * attribute. This also protects a figure opened as a document through the browser's image menu,
+ * where the image context's restrictions no longer apply.
  */
+const DRAWING_ELEMENTS = new Set([
+  "svg", "g", "defs", "desc", "title", "symbol", "use", "switch", "view",
+  "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+  "text", "tspan", "textpath", "marker", "lineargradient", "radialgradient", "stop",
+  "pattern", "clippath", "mask", "image", "style", "filter",
+  "feblend", "fecolormatrix", "fecomponenttransfer", "fecomposite", "feconvolvematrix",
+  "fediffuselighting", "fedisplacementmap", "fedistantlight", "fedropshadow", "feflood",
+  "fefunca", "fefuncb", "fefuncg", "fefuncr", "fegaussianblur", "feimage", "femerge",
+  "femergenode", "femorphology", "feoffset", "fepointlight", "fespecularlighting",
+  "fespotlight", "fetile", "feturbulence", "animate", "animatemotion", "animatetransform", "mpath", "set",
+]);
 const UNSAFE = [
-  /<\s*(?:[\w.-]+:)?(?:script|foreignObject)\b/i,
-  /[\s/"']on[a-z]+\s*=/i,
-  /<!\s*(?:DOCTYPE|ENTITY)/i,
-  /<\?xml-stylesheet/i,
   /@import/i,
-  /\bhref\s*=(?!\s*["']?\s*#)/i,
   /\burl\((?!\s*["']?\s*#)/i,
   /image-set\(/i,
-  /\battributeName\s*=\s*["']?\s*(?:(?:[\w.-]+:)?href|on)/i,
 ];
-/** A style (element or attribute) with a backslash anywhere: a CSS escape could spell `url`. */
-const STYLED = /<\s*(?:[\w.-]+:)?style\b|\bstyle\s*=/i;
 
-/** A numeric character reference, which XML reads as its character in a name or a value (`u&#114;l(`). */
+/** Sticky tokens: a malformed tag/attribute is refused, never skipped to find a later match. */
+const ELEMENT = /<(\/?)([^\s/<>="'!?]+)(?=[\s/>])/y;
+const ATTRIBUTE = /\s+([^\s/<>="'!?]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
+const TAG_END = /\s*(\/?)>/y;
+const localName = (name: string): string => name.slice(name.lastIndexOf(":") + 1).toLowerCase();
+
+/** A numeric character reference, which XML reads as its character (`u&#114;l(`). */
 const CHARACTER_REFERENCE = /&#(?:[xX]0*([0-9a-fA-F]{1,6})|0*(\d{1,7}));?/g;
 
-/**
- * Every pattern above is tried on the markup as it is drawn (so a token cannot assemble one), with
- * its numeric character references read as the characters they stand for and each run of
- * whitespace read as one space, so no pattern's `\s*` pair can try every split of a long run.
- */
-function unsafe(svg: string): boolean {
-  const read = svg.replace(CHARACTER_REFERENCE, (_reference, hex: string | undefined, decimal: string | undefined) => {
+function readReferences(text: string): string {
+  return text.replace(CHARACTER_REFERENCE, (_reference, hex: string | undefined, decimal: string | undefined) => {
     const code = hex !== undefined ? Number.parseInt(hex, 16) : Number(decimal);
     return code <= 0x10ffff ? String.fromCodePoint(code) : "";
   }).replace(/\s+/g, " ");
-  return UNSAFE.some((pattern) => pattern.test(read)) || (read.includes("\\") && STYLED.test(read));
+}
+
+/**
+ * Scan the resolved markup once, respecting quoted attributes before decoding references.
+ * Names end at XML delimiters, not at an ASCII-only prefix pattern. Comments contribute no
+ * text and CDATA contributes its contents, so neither can split a CSS token past the checks.
+ * Every cursor moves forward; an unterminated comment, CDATA section or quoted value stops
+ * the scan rather than retrying at every possible opening. CSS checks collapse whitespace
+ * runs first, so their adjacent `\s*` matches cannot try every split of a long run.
+ */
+function unsafe(svg: string): boolean {
+  const parts: string[] = [];
+  let styled = false;
+  let from = 0;
+  for (let start = svg.indexOf("<"); start !== -1; start = svg.indexOf("<", from)) {
+    parts.push(svg.slice(from, start));
+    const comment = svg.startsWith("<!--", start);
+    const cdata = svg.startsWith("<![CDATA[", start);
+    if (comment || cdata) {
+      const end = svg.indexOf(comment ? "-->" : "]]>", start + (comment ? 4 : 9));
+      if (end === -1) return true;
+      if (cdata) parts.push(svg.slice(start + 9, end));
+      from = end + 3;
+      continue;
+    }
+    ELEMENT.lastIndex = start;
+    const element = ELEMENT.exec(svg);
+    if (element === null || element[2] === undefined) return true;
+    const name = localName(element[2]);
+    if (!DRAWING_ELEMENTS.has(name)) return true;
+    styled ||= name === "style";
+    from = ELEMENT.lastIndex;
+    for (;;) {
+      TAG_END.lastIndex = from;
+      if (TAG_END.test(svg)) { from = TAG_END.lastIndex; break; }
+      if (element[1] === "/") return true;
+      ATTRIBUTE.lastIndex = from;
+      const attribute = ATTRIBUTE.exec(svg);
+      if (attribute === null || attribute[1] === undefined) return true;
+      const key = localName(readReferences(attribute[1]));
+      const value = readReferences(attribute[2] ?? attribute[3] ?? "").trim();
+      const target = localName(value);
+      if (key.startsWith("on") || key === "base" || value.includes("\\")
+        || (key === "href" && !value.startsWith("#"))
+        || (key === "attributename" && (target.startsWith("on") || target === "href" || target === "base"))) return true;
+      from = ATTRIBUTE.lastIndex;
+    }
+    parts.push(svg.slice(start, from));
+  }
+  parts.push(svg.slice(from));
+  const read = readReferences(parts.join(""));
+  return UNSAFE.some((pattern) => pattern.test(read)) || (styled && read.includes("\\"));
 }
 
 /** An XML declaration the root may follow; nothing else (a comment, whitespace aside) may come first. */

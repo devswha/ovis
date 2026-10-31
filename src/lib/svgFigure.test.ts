@@ -70,6 +70,66 @@ it("draws a figure whose references stay inside it", () => {
   expect(svg).toContain('fill="url(#g)"');
 });
 
+for (const prefix of ["é", "図", "😀"]) {
+  it(`keeps executable elements with the ${prefix} namespace prefix as code`, () => {
+    expect(svgFigureUrl(
+      `<svg xmlns:${prefix}="http://www.w3.org/2000/svg"><${prefix}:script>alert(1)</${prefix}:script></svg>`,
+      { fg: "#eee" },
+    )).toBeNull();
+  });
+
+  it(`vets styles with the ${prefix} namespace prefix`, () => {
+    expect(svgFigureUrl(
+      `<svg xmlns:${prefix}="http://www.w3.org/2000/svg"><${prefix}:style>@\\69mport "https://example.com/x.css";</${prefix}:style></svg>`,
+      { fg: "#eee" },
+    )).toBeNull();
+  });
+
+  it(`keeps animation of an href with the ${prefix} namespace prefix as code`, () => {
+    expect(svgFigureUrl(
+      `<svg xmlns:${prefix}="http://www.w3.org/1999/xlink"><use href="#p"><set attributeName="${prefix}:href" to="https://example.com/x.svg#p"/></use></svg>`,
+      { fg: "#eee" },
+    )).toBeNull();
+  });
+
+  it(`vets attribute local names with the ${prefix} namespace prefix`, () => {
+    for (const attribute of [`${prefix}:onload="alert(1)"`, `${prefix}:href="https://example.com/x"`,
+      `${prefix}:attributeName="${prefix}:href" to="https://example.com/x"`]) {
+      expect(svgFigureUrl(`<svg xmlns:${prefix}="http://www.w3.org/2000/svg"><set ${attribute}/></svg>`, { fg: "#eee" })).toBeNull();
+    }
+  });
+
+  it(`draws safe elements and local references with the ${prefix} namespace prefix`, () => {
+    const source = `<svg xmlns:${prefix}="http://www.w3.org/2000/svg"><defs><path id="p" d="M0 0"/></defs><${prefix}:g><${prefix}:style>path { fill: red; }</${prefix}:style><${prefix}:use href="#p"/></${prefix}:g></svg>`;
+    expect(decode(svgFigureUrl(source, { fg: "#eee" }))).toContain(`<${prefix}:use href="#p"/>`);
+  });
+}
+
+for (const element of ["iframe", "object", "embed", "link", "unknown", "é:foreignObject"]) {
+  it(`keeps the non-drawing element ${element} as code`, () => {
+    expect(svgFigureUrl(`<svg><${element}/></svg>`, { fg: "#eee" })).toBeNull();
+  });
+}
+
+for (const [name, body] of [
+  ["escaped paint URL", '<rect fill="u\\72l(https://example.com/x)"/>'],
+  ["character-reference escaped paint URL", '<rect fill="u&#92;72l(https://example.com/x)"/>'],
+  ["comment-split style URL", '<style>rect { fill: u<!--x-->rl(https://example.com/x); }</style>'],
+  ["comment-split style import", '<style>@im<!--x-->port "https://example.com/x.css";</style>'],
+  ["CDATA-split style URL", '<style>rect { fill: u<![CDATA[r]]>l(https://example.com/x); }</style>'],
+  ["XML base", '<g xml:base="https://example.com/"><use href="#p"/></g>'],
+  ["animated XML base", '<set attributeName="xml:base" to="https://example.com/"/>'],
+]) {
+  it(`keeps ${name} as code`, () => {
+    expect(svgFigureUrl(`<svg>${body}</svg>`, { fg: "#eee" })).toBeNull();
+  });
+}
+
+it("draws safe style text, comments, CDATA and presentation attributes", () => {
+  const source = '<svg><!-- a figure --><style><![CDATA[rect { fill: url(#g); }]]></style><defs><linearGradient id="g"/></defs><rect fill="url(#g)"/><text>é 図 😀</text></svg>';
+  expect(decode(svgFigureUrl(source, { fg: "#eee" }))).toContain('<rect fill="url(#g)"/>');
+});
+
 it("keeps a figure past the size cap as code", () => {
   const body = "<rect/>".repeat(Math.ceil(SVG_FIGURE_MAX_LENGTH / 7));
   expect(svgFigureUrl(`<svg viewBox="0 0 10 10">${body}</svg>`, { fg: "#eee" })).toBeNull();
@@ -100,7 +160,11 @@ it("reads a fence in time that grows with its length, not its square", () => {
   const shapes = [(n: number) => '<svg viewBox="0 0 1 1"><text>' + "var(--x," + " ".repeat(n) + "!</text></svg>", (n: number) => "<svg ".repeat(n / 5),
     (n: number) => '<svg viewBox="0 0 1 1"><a href=' + " ".repeat(n) + "x/></svg>",
     (n: number) => '<svg viewBox="0 0 1 1"><rect style="fill: url(' + " ".repeat(n) + 'x)"/></svg>',
-    (n: number) => '<svg viewBox="0 0 1 1"><set attributeName="' + " ".repeat(n) + 'x"/></svg>'];
+    (n: number) => '<svg viewBox="0 0 1 1"><set attributeName="' + " ".repeat(n) + 'x"/></svg>',
+    (n: number) => '<svg><g data-note="' + "x".repeat(n) + '"/></svg>',
+    (n: number) => "<svg><" + "é".repeat(n) + ":g/></svg>",
+    (n: number) => "<svg>" + "<!--".repeat(n / 4) + "</svg>",
+    (n: number) => "<svg>" + "<![CDATA[".repeat(n / 9) + "</svg>"];
   for (const shape of shapes) {
     const small = shape(8_000);
     const large = shape(64_000);

@@ -36,8 +36,15 @@ const UNSAFE = [
   '<svg viewBox="0 0 10 10"><script>window.__svgRan = "script"</script></svg>',
   '<svg viewBox="0 0 10 10" onload="window.__svgRan = \'handler\'"></svg>',
   '<svg viewBox="0 0 10 10"><image href="https://example.invalid/pixel.png" width="10" height="10"/></svg>',
+  '<svg xmlns:é="http://www.w3.org/2000/svg"><é:script>window.__svgRan = "prefixed"</é:script></svg>',
+  '<svg xmlns:é="http://www.w3.org/2000/svg"><é:style>@\\69mport "https://example.com/x.css";</é:style></svg>',
+  '<svg xmlns:é="http://www.w3.org/1999/xlink"><use href="#p"><set attributeName="é:href" to="https://example.com/x.svg#p"/></use></svg>',
+  '<svg><rect fill="u\\72l(https://example.com/x)"/></svg>',
+  '<svg><style>rect { fill: u<!--x-->rl(https://example.com/x); }</style></svg>',
+  '<svg><style>@im<!--x-->port "https://example.com/x.css";</style></svg>',
+  '<svg xml:base="https://example.com/"><use href="#p"/></svg>',
 ];
-const REPLY = ["Here is the flow:", "", "```svg", FIGURE, "```", "", "And three that must not draw:", "", ...UNSAFE.flatMap((fence) => ["```svg", fence, "```", ""]), "Done."].join("\n");
+const REPLY = ["Here is the flow:", "", "```svg", FIGURE, "```", "", "And these must not draw:", "", ...UNSAFE.flatMap((fence) => ["```svg", fence, "```", ""]), "Done."].join("\n");
 const TURNS = [
   { role: "user", ts: "2026-10-31T10:00:00.000Z", parts: [{ kind: "text", text: "Draw the flow" }] },
   { role: "assistant", ts: "2026-10-31T10:00:05.000Z", parts: [{ kind: "text", text: REPLY }] },
@@ -101,7 +108,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
     assert.ok(markup.includes(`color="${drawn.text}"`), `${width} ${theme}: currentColor is the theme's text ${drawn.text}`);
 
     // each fence holds one unsafe part, so each is judged on its own
-    for (const marker of ["<script>", "onload=", "example.invalid"]) {
+    for (const marker of ["<script>", "onload=", "example.invalid", "é:script", "é:style", "é:href", "u\\72l", "u<!--x-->", "@im<!--x-->", "xml:base"]) {
       assert.equal(await scope.locator("pre", { hasText: marker }).count(), 1, `${width} ${theme}: the fence with ${marker} stays a code block`);
     }
     assert.equal(await scope.locator(".markdown-mermaid img").count(), 1, `${width} ${theme}: only the safe fence is drawn`);
