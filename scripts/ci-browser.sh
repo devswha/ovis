@@ -137,6 +137,7 @@ run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts
 run_script scripts/chat-local-send-follow-demo-regression.ts
 run_script scripts/reply-comments-demo-regression.ts
+run_script scripts/diff-line-notes-demo-regression.ts
 run_script scripts/chat-tool-paths-demo-regression.ts
 run_script scripts/chat-list-markers-demo-regression.ts
 run_script scripts/chat-svg-figures-demo-regression.ts
