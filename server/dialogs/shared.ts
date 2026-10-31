@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
+import type { NativeSteps } from "./step-navigate.ts";
 
 /**
  * A parser that several readers call on the same screen, run once per read: the readers of one
@@ -126,6 +127,8 @@ export type ParsedPrompt = InteractivePrompt & {
   responder: Responder;
   /** Stable question identity across the folded widget and the expanded form. */
   omoQuestion?: { call: string; index: number };
+  /** The form's questions as its own keys move between them without answering (dialogs/step-navigate.ts). */
+  nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
     fieldKey: string;
@@ -349,6 +352,7 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     ...(parsed.steps ? { steps: parsed.steps } : {}),
     ...(parsed.answers ? { answers: parsed.answers } : {}),
     ...(parsed.can_step_back ? { can_step_back: parsed.can_step_back } : {}),
+    ...(parsed.can_step_next ? { can_step_next: parsed.can_step_next } : {}),
     ...(parsed.default_option_index !== undefined && parsed.default_option_index !== null ? { default_option_index: parsed.default_option_index } : {}),
     ...(parsed.default_option_indices ? { default_option_indices: parsed.default_option_indices } : {}),
     ...(parsed.default_custom_text ? { default_custom_text: parsed.default_custom_text } : {}),

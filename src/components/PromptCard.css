@@ -72,6 +72,20 @@
   font-size: var(--fs-xs);
 }
 
+/* "Next" sits at the header's end, before the fold: on to the next question, unanswered */
+.prompt-card-next {
+  flex: none;
+  height: var(--space-6);
+  margin-inline-start: auto;
+  padding: 0 var(--space-2);
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
+}
+
+.prompt-card-next + .prompt-card-fold {
+  margin-inline-start: 0;
+}
+
 /* "View plan" sits at the header's end, beside the title */
 .prompt-card-plan-file {
   margin-inline-start: auto;

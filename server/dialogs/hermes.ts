@@ -1,5 +1,6 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, onePerPass, type AnswerStep, KEY, type ParsedPrompt, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, KEY, type ParsedPrompt, type PromptDraft, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
+import type { NativeSteps } from "./step-navigate.ts";
 
 /**
  * Hermes's clarify question, as its Ink TUI draws it (ui-tui/src/components/prompts.tsx):
@@ -22,6 +23,33 @@ const HERMES_ASK_RE = /^ask \d+ questions?$/;
 const HERMES_ROW_RE = /^(▸ )?(\[[ x]\] )?(\d+)\. (.+)$/;
 
 const HERMES_OTHER = "Other (type your answer)";
+
+/**
+ * A batch's questions as the card's steps, each line `✓` answered, `▸` open now, `·` waiting,
+ * the question wrapped at its own indent. Tab and Shift+Tab move the open one (ui-tui
+ * prompts.tsx), but an answered question shows `✓` even while Tab is on it, so nothing tells it
+ * is there: the card goes only to open questions with none answered on the way.
+ */
+function hermesNavigation(block: string[], base: number, current: number): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
+  const indent = (line: string) => line.length - line.trimStart().length;
+  const questions: { label: string; answered: boolean; current: boolean }[] = [];
+  for (const [index, line] of block.entries()) {
+    if (indent(line) !== base) continue;
+    const text = line.trim();
+    if (/^[▸·✓] /.test(text)) questions.push({ label: text.slice(2), answered: text.startsWith("✓"), current: index === current });
+    else if (questions.length > 0) questions.at(-1)!.label += ` ${text}`;
+  }
+  const at = questions.findIndex((question) => question.current);
+  if (questions.length < 2 || at < 0) return {};
+  // every question from the open one to `to`, that one included, still open
+  const reachable = (to: number) => to !== at && questions.slice(Math.min(at, to), Math.max(at, to) + 1).every((question) => !question.answered);
+  return {
+    steps: questions.map((question, index) => ({ ...question, ...(reachable(index) ? { can_navigate: true } : {}) })),
+    can_step_back: at > 0 && reachable(at - 1),
+    can_step_next: at < questions.length - 1 && reachable(at + 1),
+    nativeSteps: { identity: JSON.stringify(questions.map((question) => question.label)), index: at, count: questions.length, next: KEY.tab, previous: KEY.backtab },
+  };
+}
 
 function parseHermesClarify(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
@@ -70,12 +98,15 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   const multi = choices.every((row) => row.box);
   if (!multi && choices.some((row) => row.box)) return null;
   const checked = choices.flatMap((row, index) => row.checked ? [index] : []);
+  const { nativeSteps, ...navigation } = hermesNavigation(block, base, at);
   return finishPrompt("hermes", {
     kind: "question", title: own("Question"), question, body,
     options: choices.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: null })),
     // typed text on a multi-select question joins the ticks, which the card has no way to say
     multi_select: multi, custom_option_index: multi ? null : choices.length,
+    ...navigation,
   }, {
+    ...(nativeSteps ? { nativeSteps } : {}),
     responder: "hermes-question", menuLabels: rows.map((row) => row.label), selectedIndex,
     checkedOptionIndices: checked, customMenuIndex: multi ? null : choices.length, rejectWithEscapeIndex: null,
     // Enter on the Other row opens its `>` line

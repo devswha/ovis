@@ -28,6 +28,7 @@ import { pendingPiQuestionnaires } from "./pi-questionnaire.ts";
 import { isPiQuestionnaireScreen, parsePiQuestionnaire, piQuestionnaireInputMatches, piQuestionnaireOf } from "./dialogs/pi-questionnaire.ts";
 import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
+import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -1337,6 +1338,33 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
         return jsonResponse({ error: { code: "reply_failed", message: `Failed to reply to OpenCode form (HTTP ${replyResult.status}).` } }, 502);
       }
+
+      // a form whose own keys move between its questions (omo, Codex, Hermes): one key at a time, each move seen
+      if (parsedPrompt?.nativeSteps && (body.step_back === true || body.step_next === true || body.step_index !== undefined)) {
+        const target = nativeStepTarget(parsedPrompt, body);
+        if (typeof target === "string") return badRequest("invalid_answer", target);
+        if (!draftKept(parsedPrompt, body.draft)) return badRequest("invalid_answer", "Submit or clear edits before switching questions.");
+        const asking = askings.get(body.pane_id);
+        const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
+        answersUnderWay.add(body.pane_id);
+        answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        try {
+          const moved = await navigateNativeSteps(parsedPrompt, target, {
+            deadline: deadlineAt, active,
+            send: (key) => paneSendKeys(body.pane_id, [key]),
+            read: async () => {
+              if (!active()) return null;
+              const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+              const shown = !live.inputUnverified && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              return shown?.agent === parsedPrompt.agent ? shown : null;
+            },
+          });
+          if (!moved) return promptChanged();
+          askingEnded(body.pane_id);
+          return jsonResponse({ ok: true });
+        } finally { answersUnderWay.delete(body.pane_id); }
+      }
+      if (body.step_next === true) return badRequest("invalid_answer", "This question has no next one to go to.");
 
       if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
         const { response, answered } = await answerPiAskUser(body.pane_id, parsedPrompt, body, deadline);
