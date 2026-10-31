@@ -47,10 +47,14 @@ function useKatex(): Katex | null {
   return katex;
 }
 
-function MathExpression({ value, displayMode = false }: { value: string; displayMode?: boolean }) {
+/**
+ * A formula drawn by KaTeX. Until KaTeX loads, or when it cannot draw the formula, `fallback`
+ * shows instead: by default the formula as the agent wrote it (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
+ */
+function MathExpression({ value, displayMode = false, dollar = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; fallback?: ReactNode }) {
   const katex = useKatex();
-  const source = displayMode ? `\\[${value}\\]` : `\\(${value}\\)`;
-  if (!katex || mathNestsTooDeep(value)) return <span>{source}</span>;
+  const source = fallback ?? <span>{dollar ? (displayMode ? `$$${value}$$` : `$${value}$`) : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>;
+  if (!katex || mathNestsTooDeep(value)) return source;
   try {
     // KaTeX escapes text and rejects untrusted commands by default, and an unknown command
     // throws - the catch below then draws the source form. `trust` stays at its default, which
@@ -60,7 +64,7 @@ function MathExpression({ value, displayMode = false }: { value: string; display
     const html = katex.renderToString(value, { displayMode, strict: "ignore" });
     return <span className={displayMode ? "markdown-math-display" : "markdown-math"} dangerouslySetInnerHTML={{ __html: html }} />;
   } catch {
-    return <span>{source}</span>;
+    return source;
   }
 }
 
@@ -291,7 +295,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
         if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <a key={key} className="markdown-code-link" href={node.value} target="_blank" rel="noopener noreferrer" onClick={webClick(node.value)}><code>{node.value}</code></a>;
         return open !== null && codeIsFilePath(node.value) ? <FilePathLink key={key} path={node.value} code open={open} /> : <code key={key}>{node.value}</code>;
       }
-      case "math": return <MathExpression key={key} value={node.value} />;
+      case "math": return <MathExpression key={key} value={node.value} dollar={node.dollar} />;
       case "image": {
         return <span key={key}>{imageResolver === null
           ? <Inline key={key} nodes={node.fallback} interactive={interactive} />
@@ -410,8 +414,11 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
         ? <MermaidDiagram key={key} value={block.value} />
         : block.language.toLowerCase() === "svg"
           ? <SvgFigure key={key} value={block.value} />
-          : <CodeBlock key={key} language={block.language} value={block.value} />;
-      case "math": return <MathExpression key={key} value={block.value} displayMode />;
+          // a ```math fence (GitHub's form) is display math; one KaTeX cannot draw stays the code block it is
+          : block.language === "math"
+            ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
+            : <CodeBlock key={key} language={block.language} value={block.value} />;
+      case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} />;
       case "hr": return <hr key={key} />;
       case "table": return (
         <div className="markdown-table-wrap" key={key}>

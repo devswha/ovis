@@ -68,6 +68,7 @@
   "scripts/mirror-fold-demo-regression.ts": 14,
   "scripts/chat-list-markers-demo-regression.ts": 14,
   "scripts/chat-svg-figures-demo-regression.ts": 14,
+  "scripts/chat-math-demo-regression.ts": 15,
   "scripts/held-rows-demo-regression.ts": 13,
   "scripts/workspace-rows-regression.ts": 12,
   "scripts/chat-fallback-browser-qa.ts": 12,
