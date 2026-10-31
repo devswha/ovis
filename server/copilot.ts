@@ -143,6 +143,9 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
   for (const [index, line] of lines.entries()) {
     const at = offset;
     if (baseOffset !== undefined) offset += Buffer.byteLength(line) + 1;
+    // a checked picture record the newest-turn cache keeps only the length of (copilotSetAside)
+    const setAside = SET_ASIDE.exec(line);
+    if (setAside !== null) { offset += Number(setAside[1]) - Buffer.byteLength(line); continue; }
     if (!line.trim()) continue;
     let value: unknown;
     try { value = JSON.parse(line); } catch {
@@ -166,6 +169,22 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
       ...(baseOffset === undefined ? {} : { offset: at, raw: line }) });
   }
   return records;
+}
+
+/** A line copilotSetAside stands in for: the byte length of the record it replaces, behind a mark made for this process that no file holds. */
+const SET_ASIDE_MARK = `\u0000copilot-set-aside:${randomBytes(16).toString("hex")}:`;
+const SET_ASIDE = new RegExp(`^${SET_ASIDE_MARK}(\\d{1,10})$`);
+
+/**
+ * A picture record (`session.binary_asset`) a page keeps in memory as its length only, once it has been
+ * checked whole as the page parser would read it: the parser never reads one, and copilotRecords keeps
+ * every later record's offset. Any other line, or one that does not parse, is returned as it is.
+ */
+export function copilotSetAside(line: string): string {
+  if (!line.startsWith('{"type":"session.binary_asset",')) return line;
+  let entry: unknown;
+  try { entry = JSON.parse(line); } catch { return line; }
+  return row(entry)?.type === "session.binary_asset" && row(row(entry)?.data) !== null ? `${SET_ASIDE_MARK}${Buffer.byteLength(line)}` : line;
 }
 
 /** Convert persisted Copilot CLI turns to the shared, read-only chat shape. */
