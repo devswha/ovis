@@ -5746,6 +5746,45 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  test("answers Claude's question tabs only once the pane shows the next step, so the step answered does not come up again", async () => {
+    // Claude Code 2.1.314: two questions, then the review, each drawn a moment after the key
+    const rule = "─".repeat(80);
+    const tabs = (device: boolean, symptoms: boolean) => `←  ${device ? "☒" : "☐"} Device  ${symptoms ? "☒" : "☐"} Symptoms  ✔ Submit  →\n\n`;
+    const hint = "\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n";
+    const mark = (at: number, row: number) => at === row ? "❯" : " ";
+    const device = (at: number) => `${tabs(false, false)}Which device do you use?\n\n${["Phone", "Desktop browser", "Type something."].map((row, index) => `${mark(at, index)} ${index + 1}. ${row}`).join("\n")}\n${rule}\n  4. Chat about this\n${hint}`;
+    const problems = ["Answer not sent", "Wrong option sent", "Card stays open"];
+    const symptoms = (at: number, ticked: number[]) => `${tabs(true, ticked.length > 0)}Which problems do you see?\n\n${problems.map((row, index) => `${mark(at, index)} ${index + 1}. [${ticked.includes(index) ? "✔" : " "}] ${row}`).join("\n")}\n${mark(at, 3)} 4. [ ] Type something\n     Submit\n${rule}\n  5. Chat about this\n${hint}`;
+    const review = `${tabs(true, true)}Review your answers\n\n ● Which device do you use?\n   → Desktop browser\n ● Which problems do you see?\n   → Answer not sent, Card stays open\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n`;
+    await withPane("claude", "blocked", device(0), async (pane) => {
+      let at = 0;
+      const ticked: number[] = [];
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = device(++at);
+        if (sent === "enter") setTimeout(() => { at = 0; pane.screen = symptoms(at, ticked); }, 200);
+      };
+      expect(await answer((await card())!.id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+      expect((await card())!.question).toBe("Which problems do you see?");
+
+      pane.onSent = (sent) => {
+        if (sent === "down") at += 1;
+        if (sent === "enter" || sent === "space") ticked.push(at);
+        pane.screen = symptoms(at, ticked);
+        // the review comes in two draws: its heading first, a screen no reader knows
+        if (sent === "right") setTimeout(() => { pane.screen = `${tabs(true, true)}Review your answers\n`; }, 100);
+        if (sent === "right") setTimeout(() => { pane.screen = review; }, 300);
+      };
+      expect(await answer((await card())!.id, { option_indices: [0, 2] })).toEqual({ status: 200, code: undefined });
+      expect(ticked).toEqual([0, 2]);
+      expect((await card())!.title).toBe("Review your answers");
+
+      // submitted: Claude goes on with the answers
+      pane.onSent = (sent) => { if (sent === "enter") setTimeout(() => { pane.status = "working"; pane.screen = `⏺ User answered Claude's questions\n\n${rule}\n❯ \n${rule}\n`; }, 200); };
+      expect(await answer((await card())!.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(await card()).toBeNull();
+    });
+  });
+
   // each refusal waits out the answer's own 1.5 s for the list to show the row
   test("presses nothing in Codex's list once it is not the list, or the row, that was tapped", async () => {
     // the levels of another model in its place under the move: the same rows, another list
