@@ -22,6 +22,7 @@ import { isAppShortcut, isMacPlatform } from "./shortcuts.ts";
 import { keyboardHoldsGrid, keyboardUp } from "./keyboard.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { bareNameLinks, hyperlinkFilter, isWebLink, openWebLink, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
+import { shouldOpenWebPage } from "./webPanel.ts";
 import { adjustTerminalGlyphs } from "./terminalGlyphs.ts";
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import { keepDeleteRepeatText, keyboardNeedsText, restoreDeleteRepeatCaret } from "./deleteRepeat.ts";
@@ -191,12 +192,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // xterm activates a link whenever a press and its release land on it: a drag that selects
       // part of a path and a right click do too, and neither means "open this"
       const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !term.hasSelection();
+      const shouldOpenInPanel = (event: MouseEvent, uri: string): boolean =>
+        shouldOpenWebPage(event, uri, (target, shiftKey) => openWebRef.current?.(target, shiftKey) ?? false, machineId);
       // an OSC 8 hyperlink's target: a file opens in the viewer, an http(s) address as a web link, and nothing else
       const openHyperlink = (event: MouseEvent, uri: string): void => {
         if (!linkPressed(event)) return;
         const path = fileUriPath(uri);
         if (path !== null) openFileRef.current?.(path);
-        else if (isWebLink(uri) && !openWebRef.current(uri, event.shiftKey)) openWebLink(uri);
+        else if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openWebLink(uri);
       };
       const term = new Terminal({
         convertEol: false,
@@ -247,7 +250,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       term.loadAddon(fit);
       matchHerdrWidths(term);
       // the same policy as the linkHandler above: an http(s) address or nothing (S10)
-      term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !openWebRef.current(uri, event.shiftKey)) openWebLink(uri); }));
+      term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openWebLink(uri); }));
       // a bare file name (`design.md`) is a link only under Cmd (Ctrl off a Mac), drawn as the key goes down
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
@@ -444,7 +447,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (!linkPressed(event)) return false;
           if ("url" in target) {
             if (!isWebLink(target.url)) return false;
-            if (!openWebRef.current(target.url, event.shiftKey)) openWebLink(target.url);
+            if (!shouldOpenInPanel(event, target.url)) openWebLink(target.url);
             return true;
           }
           const buffer = term.buffer.active;

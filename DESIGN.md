@@ -2986,6 +2986,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   closing the dialog resets it for the next open. The detail lists the terminal keys
   in their display order. Every key can be
   removed or moved with up/down buttons; those controls keep `--touch-target` hit areas on phones.
+  A leading Lucide grip gives pointer and touch users a shorter path: press to drag, with an
+  insertion line before or after the target row and a raised fill on the source. Only the grip
+  owns the gesture; swiping the row still scrolls. Holding it at the detail body's edge scrolls
+  that body. Release saves once; Escape or pointer cancellation leaves the order untouched.
+  Like [T3 Code's Arrange threads](https://github.com/pingdotgg/t3code/blob/main/docs/user/thread-sidebar.md#pin-and-reorder-threads),
+  the handle supplements Move up/down rather than replacing the no-drag path. This uses the
+  sidebar's existing hit-testing and edge scrolling, with an insertion line instead of animated
+  gaps. The up/down controls remain the keyboard and screen-reader path; the grip is decorative
+  to assistive technology. No transition is added.
   Add key offers the supported key catalog, and Ctrl/Alt/Shift toggles add or remove held-modifier
   buttons. Custom combination chooses one key or printable character plus modifiers, with its cap
   previewed before Add. Saved combinations send exactly those modifiers; ordinary keys inherit the
@@ -3636,3 +3645,17 @@ may have failed while offline; losing the socket alone keeps already decoded ima
 load that failed retries after the new stat passes the size/type checks, without remounting decoded
 neighbors. No new setting, endpoint or permission grant is
 introduced.
+
+## Same-host web links
+
+The device's **Web links** setting stays on **In a new tab** by default. Choosing **In the app**
+opens only pages this PC serves, on the app's hostname, in the existing web panel. A wide window
+keeps the panel beside the pane; a narrow window uses the file viewer's modal surface, with a
+named close button, focus return and browser Back. Shift-click still chooses the other destination.
+The page and a docked file share one place and one history entry: either one replacing the other
+takes over that entry in place, so one Back closes the panel shown and the next leaves the conversation.
+A popup file moved beside the pane while the page is shown steps back past the page's entry and pushes the docked file from their opener, so Forward cannot bring the popup back; resizing under such a popup file adds no entry of its own.
+Other hosts keep opening in a new tab, and unsafe schemes stay blocked; the app's `frame-src` stays
+limited to its own host. This follows T3 Code's in-thread visual replies and full-screen page view,
+while keeping external page links in the browser as its [HTML renders guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/html-renders.md)
+does. No code or visual assets are copied.

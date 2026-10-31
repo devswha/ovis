@@ -36,6 +36,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { readStatuslineContext } from "./statusline.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
@@ -43,7 +44,7 @@ import { authorizedTranscript } from "./transcript-store.ts";
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
-import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
+import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
 import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
@@ -81,6 +82,7 @@ import { commandTranscriptRecords, PI_EVIDENCE_TYPES, type CommandTranscriptReco
 import { type ClaudeBranch, claudeForks, followClaudeBranch, type PromptChain, turnStarts } from "./transcript-turns.ts";
 import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 import { userHome } from "./user-home.ts";
+import { kiroCodexProcess } from "./kiro-terminal.ts";
 
 export { isOmoProcess } from "./omo.ts";
 export { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
@@ -1370,6 +1372,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       agent = "dsh";
       if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
     }
+    else if (await kiroCodexProcess(info?.process_info as ProcessInfo | undefined) !== null) agent = "codex";
   }
   // a Muse, Letta or dsh pane's processes are asked for once, for omo and for its own binding
   if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
@@ -1414,8 +1417,9 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     }
     if (agent === "codex") {
       // the pane's own store: the rollout, its history and its images are all read from there
-      const home = await paneCodexHome(paneId, codexHome);
-      const path = await codexTranscriptPath(paneId, cwd, home, panes);
+      const { home, placed } = await paneCodexHomePlaced(paneId, codexHome);
+      // a store chosen while no Codex process of the pane was seen is checked against the one the lookup proves
+      const path = await codexTranscriptPath(paneId, cwd, home, panes, !placed);
       if (!path) throw new ConversationUnavailable("no_session_path");
       return { source: "codex-transcript", path, codexHome: home };
     }
@@ -1680,6 +1684,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   }
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
+  if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
+    const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
+    if (window !== null) return {
+      ...answer,
+      metadata: { ...answer.metadata, context: { ...answer.metadata.context, window } },
+      // A statusline capture can change without a transcript append.
+      version: answerVersion(answer.version, String(window)),
+    };
+  }
   if (resolved.source === "cmd-transcript") {
     // The pane's current model can change without a transcript append. Enrich a response,
     // never the shared transcript page, and include the live model in its ETag.

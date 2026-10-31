@@ -2,6 +2,16 @@
 
 Ovis includes material from the projects below, under their own licenses.
 
+## Paseo endpoint encryption
+
+`shared/vendor/paseo-e2ee/` vendors the Noise NK endpoint encryption from
+[getpaseo/paseo](https://github.com/getpaseo/paseo) at revision
+`1aef1ec6625f2c32cbd62cfbeb02cffb43a275d2`, under Apache-2.0,
+Copyright (c) 2025-present Mohamed Boudra. The full upstream license is included
+at `shared/vendor/paseo-e2ee/LICENSE`; the Apache-2.0 text below also applies.
+The Noise fixture retains its rweather/noise-c source URLs. Its vector assertions
+are ported to `shared/relay-e2ee.spike.test.ts`.
+
 ## QR Code generator
 
 `app/windows/src/QrCode.cs` ports the byte-mode encoder from

@@ -5,7 +5,7 @@ import { foldCode, mathNestsTooDeep, parseInline, parseMarkdown, type InlineNode
 import { codeIsFilePath, OpenFileContext, splitFilePaths } from "../lib/filePaths.ts";
 import { FilePathLink } from "./FilePathLink.tsx";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { WebPanelContext } from "../lib/webPanel.ts";
+import { shouldOpenWebPage, WebPanelContext } from "../lib/webPanel.ts";
 import { MachineContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";
 import { HighlightedCode } from "./HighlightedCode.tsx";
@@ -230,8 +230,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
   const machineId = useContext(MachineContext);
   // a plain or Shift click may open the address beside the pane; Ctrl, Cmd and Alt keep the browser's own meaning
   const webClick = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (openWebPage?.(href, event.shiftKey, machineId)) event.preventDefault();
+    if (shouldOpenWebPage(event, href, openWebPage, machineId)) event.preventDefault();
   };
   return <>{nodes.map((node, index) => {
     const key = `${node.type}-${index}`;

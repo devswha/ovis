@@ -375,10 +375,24 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
-  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  set). It also stores each session’s model and context limit under `~/.herdr/statusline-context/`,
+  using a profile hash prefix so Claude config directories do not share session files. Context capture
+  requires a real directory owned by your uid without group/other permissions; it never changes that
+  directory’s permissions. Chat requires the installer’s mark, matching profile, session and model,
+  and a capture no more than six hours old, read through a bounded, no-follow file descriptor.
+  This needs no subscription usage data. New session captures inspect at most 128 directory entries
+  for expired captures of their own profile; cleanup is best-effort, not a total file-count bound.
+  Context replacement and removal first quarantine an entry, then verify it through a descriptor.
+  Unrecognized entries are restored without overwriting a newcomer, or kept as visible
+  `statusline-context-recovery-*` entries if restoration is blocked. Publication uses a hard link
+  and never overwrites an existing target. These pathname-only POSIX operations cannot prevent a
+  concurrent process running as your uid from replacing a parent directory between operations.
+  A concurrent same-user process replacing the quarantine name or directory itself during the few microseconds of an operation is also outside what pathname APIs can exclude.
+  The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
-  deletes what was added; a file there that it did not write is never replaced or deleted. If you have
+  deletes its marked files; context removal checks the profile too and removes the context directory
+  only when empty. Unmarked files are left alone under normal, nonconcurrent use. If you have
   since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
   and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
   Windows.
