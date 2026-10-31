@@ -143,7 +143,7 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
   // rendering exactly as it appears in the terminal and native transcript.
   // a bare or <angle> http(s) URL is a link too; it stops at the first non-ASCII character,
   // so `…/pull/36에서` links the address and leaves the Korean after it as text
-  const marker = /(`[^`\n]+`|\\\(.+?\\\)|(?<![\p{L}\p{N}\\$])\$(?:[^\s$\\]|[^\s$][^\n\r\u2028\u2029$]*[^\s$\\])\$(?![\p{L}\p{N}_${])|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|(?<![\w.@/-])www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}\p{M}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
+  const marker = /(`[^`\n]+`|\\\(.+?\\\)|(?<![A-Za-z0-9\\$])\$(?:[^\s$\\]|[^\s$][^\n\r\u2028\u2029$]*[^\s$\\])\$(?![A-Za-z0-9_${])|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|(?<![\w.@/-])www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}\p{M}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
   // its last part alone, for a `__` that nothing closes as bold: one `_` may still close it
   const emphasis = /(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_])/yu;
   // what any part of `marker` starts with
@@ -179,8 +179,9 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
     if (char === "\\") {
       if (!(mathClose(start + 3) < mathBreak(start + 2))) pattern = null;
     } else if (char === "$") {
-      // a formula's `$` follows no letter, digit, backslash or `$`, and its closer is on this line
-      if (/[\p{L}\p{N}\\$]/u.test(source[start - 1] ?? "") || !(dollarClose(start + 2) < mathBreak(start + 1))) pattern = null;
+      // a formula's `$` follows no Latin letter, digit, backslash or `$` (Korean, Japanese and
+      // Chinese text runs into a formula with no space: `값은$x$이다`), and its closer is on this line
+      if (/[A-Za-z0-9\\$]/.test(source[start - 1] ?? "") || !(dollarClose(start + 2) < mathBreak(start + 1))) pattern = null;
     } else if (char === "[") {
       const label = labelEnd(start + 1);
       const target = label + 2;
@@ -456,6 +457,8 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
       let complete = false;
       while (true) {
         const at = part.indexOf(close);
+        // the opening line closes its formula and goes on in prose: it is prose
+        if (at !== -1 && next === index && part.slice(at + 2).trim() !== "") break;
         if (at !== -1 && part.slice(at + 2).trim() === "") {
           body.push(part.slice(0, at));
           blocks.push(open === "$$" ? { type: "math", value: body.join("\n").trim(), dollar: true } : { type: "math", value: body.join("\n").trim() });
