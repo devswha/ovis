@@ -470,9 +470,10 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
         body.push(part);
         next += 1;
         // a blank line (display math holds none) or a fence ends the search, and so does a line
-        // that is a whole formula of its own: it is drawn as one, rather than closing this one or
-        // being hidden by it
-        if (next >= lines.length || lineAt(lines, next).trim() === "" || /^\s{0,3}```/.test(lineAt(lines, next)) || wholeFormula(lineAt(lines, next))) break;
+        // that is a whole formula of its own, or one opening a formula with the other delimiter: it
+        // is drawn as one, rather than closing this one or being hidden by it
+        if (next >= lines.length || lineAt(lines, next).trim() === "" || /^\s{0,3}```/.test(lineAt(lines, next)) || wholeFormula(lineAt(lines, next))
+          || (open === "$$" ? /^\s*\\\[/ : /^\s*\$\$/).test(lineAt(lines, next))) break;
         part = lineAt(lines, next);
       }
       // An incomplete formula stays prose; later headings and fences still parse normally.
