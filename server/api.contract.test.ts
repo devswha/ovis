@@ -529,7 +529,7 @@ describe("usage API", () => {
     const token = "oc_sk_contract_only";
     const usage = new UsageService({
       home: usageState, env: { OPENCODE_API_KEY: token }, platform: "linux", now: () => Date.parse("2026-10-06T00:00:00Z"),
-      keychain: async () => ({ status: "missing" }), run: async () => null,
+      keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
       fetch: async (url, init) => {
         expect(url).toBe("https://opencode.ai/zen/go/v1/usage");
         expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${token}`);
