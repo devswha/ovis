@@ -60,19 +60,26 @@ export function capturedComparison(answer: RepoDiffFilePatch, patch: string): st
 
 const KIND_WORD = { addition: "added", deletion: "removed", context: "unchanged" } as const;
 
-/** One line of the quote, whatever a path or a folder holds. */
-const oneLine = (text: string): string => text.replace(/[\r\n]+/g, " ");
+/** A name as a JSON string: one line whatever it holds, and two names that differ stay two (a newline is not a space). */
+const named = (text: string): string => JSON.stringify(text);
 
-/** The quote the note goes with: where the line is, what was compared, and the line's text in a fence. */
+/**
+ * The quote the note goes with: where the line is (the path, PC and repository as JSON strings),
+ * what was compared, and the line's text in a fence. A line of whitespace alone would lose it to the
+ * message's quote lines, so it is written as a JSON string, and the quote says so.
+ */
 export function diffNoteQuote(capture: DiffNoteCapture): string {
   const { line } = capture;
-  const fence = codeFence(line.text);
+  const whitespace = line.text !== "" && line.text.trim() === "";
+  const text = whitespace ? JSON.stringify(line.text) : line.text;
+  const fence = codeFence(text);
   return [
-    `Diff note on ${oneLine(capture.path)}, ${line.side} side, line ${line.line} (${KIND_WORD[line.kind]})`,
-    `PC ${oneLine(capture.machine)}, repository ${oneLine(capture.repository)}`,
-    `Compared as captured: ${oneLine(capture.comparison)}`,
+    `Diff note on ${named(capture.path)}, ${line.side} side, line ${line.line} (${KIND_WORD[line.kind]})`,
+    `PC ${named(capture.machine)}, repository ${named(capture.repository)}`,
+    `Compared as captured: ${capture.comparison.replace(/[\r\n]+/g, " ")}`,
+    ...(whitespace ? ["The line holds only whitespace, written below as a JSON string."] : []),
     fence,
-    line.text,
+    text,
     fence,
   ].join("\n");
 }
@@ -92,17 +99,19 @@ export function noteOverflows(waiting: readonly ReplyComment[], draft: string, q
   return messageWithComments([...next, { id: "", quote, comment: note.trim() }], draft).length > MAX_COMPOSER_CHARS;
 }
 
-export type NoteBlock = "no-pane" | "pc-offline" | "pane-gone" | "watching" | "observing" | "no-agent";
+export type NoteBlock = "no-pane" | "pc-offline" | "pane-gone" | "watching" | "pane-not-open" | "observing" | "no-agent";
 
 /**
  * Why the diff's own pane cannot take a note, or null when it can. Only that pane ever does: never
  * one on another PC, nor whichever is selected now.
  */
-export function noteBlock({ paneId, pane, watching, observing = false, reachable = true }: { paneId: string | null; reachable?: boolean; pane: { agent?: string | null; agent_status: AgentStatus } | undefined; watching: boolean; observing?: boolean }): NoteBlock | null {
+export function noteBlock({ paneId, pane, watching, observing = false, mounted = true, reachable = true }: { paneId: string | null; reachable?: boolean; mounted?: boolean; pane: { agent?: string | null; agent_status: AgentStatus } | undefined; watching: boolean; observing?: boolean }): NoteBlock | null {
   if (paneId === null) return "no-pane";
   if (!reachable) return "pc-offline";
   if (pane === undefined) return "pane-gone";
   if (watching) return "watching";
+  // a pane this window shows no terminal of: whether it may type there is not known yet
+  if (!mounted) return "pane-not-open";
   if (observing) return "observing";
   if (pane.agent === null || pane.agent === undefined || pane.agent === "") return "no-agent";
   return null;
@@ -115,6 +124,7 @@ export function noteBlockWord(t: Translate, block: NoteBlock): string {
     case "pc-offline": return t("That PC is not reachable right now.");
     case "pane-gone": return t("The pane this diff came from has closed, so a note has nowhere to go.");
     case "watching": return t("This device can only watch.");
+    case "pane-not-open": return t("Open the pane this diff came from first, so this window knows it can type there.");
     case "observing": return t("This window only watches the pane while another one types in it. Click the pane to type, then add the note.");
     case "no-agent": return t("No agent is running in the pane this diff came from.");
   }

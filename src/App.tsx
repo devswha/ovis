@@ -1016,7 +1016,7 @@ export function App() {
         }} keyboardActive={!settingsOpen && (viewing === null || fileDocked)} note={(() => {
           // only the diff's own pane on its own PC takes its notes, never the one selected now
           const machine = machines.find((item) => item.id === diffViewing.machineId);
-          const block = noteBlock({ paneId: diffViewing.paneId, pane: machine?.snapshot?.panes.find((pane) => pane.pane_id === diffViewing.paneId), watching: auth?.role === "watch", observing: diffPaneObserving, reachable: machine?.state === "connected" });
+          const block = noteBlock({ paneId: diffViewing.paneId, pane: machine?.snapshot?.panes.find((pane) => pane.pane_id === diffViewing.paneId), watching: auth?.role === "watch", observing: diffPaneObserving === "watching", mounted: diffPaneObserving !== "unknown", reachable: machine?.state === "connected" });
           return { machine: machine?.name ?? diffViewing.machineId, blocked: block === null ? null : noteBlockWord(t, block) };
         })()} />
       </MachineContext.Provider>}

@@ -131,4 +131,5 @@ export const FILES_ZH: Record<string, string> = {
   "The pane this diff came from has closed, so a note has nowhere to go.": "打开此差异的窗格已关闭，备注无处可去。",
   "No agent is running in the pane this diff came from.": "打开此差异的窗格中没有正在运行的代理。",
   "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "另一个窗口正在此窗格中输入，此窗口只能查看。点击窗格开始输入后，再添加备注。",
+  "Open the pane this diff came from first, so this window knows it can type there.": "请先打开此差异所属的窗格，这样此窗口才知道能否在其中输入。",
 };

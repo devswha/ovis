@@ -9,7 +9,9 @@ describe("pane observing", () => {
     let heard = 0;
     store.subscribe(() => { heard++; });
     expect(store.has("p")).toBe(false);
+    expect(store.known("p")).toBe(false);
     store.set("p", left, true);
+    expect(store.known("p")).toBe(true);
     expect(store.has("p")).toBe(true);
     // a second mount that types: its composer takes the note
     store.set("p", right, false);

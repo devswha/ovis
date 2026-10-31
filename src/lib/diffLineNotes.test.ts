@@ -32,18 +32,54 @@ function capture(patch: string, at: { side: "old" | "new"; line: number }, scope
   return { machine: "home-server", repository: "/home/me/shop", comparison: capturedComparison(answer(scope, patch), patch), path: "src/big.ts", line };
 }
 
+/**
+ * The parts of a note's quote an agent reads: the strings it names (JSON, so any path survives), the
+ * side, line and kind, the comparison, and the fenced text (a whitespace-only line as a JSON string).
+ */
+function parts(quote: string) {
+  const lines = quote.split("\n");
+  const head = /^Diff note on ("(?:[^"\\]|\\.)*"), (old|new) side, line (\d+) \((\w+)\)$/.exec(lines[0]!);
+  const where = /^PC ("(?:[^"\\]|\\.)*"), repository ("(?:[^"\\]|\\.)*")$/.exec(lines[1]!);
+  const open = lines.findIndex((line) => /^`{3,}$/.test(line));
+  const fence = lines[open]!;
+  const close = lines.indexOf(fence, open + 1);
+  if (head === null || where === null || open < 0 || close !== lines.length - 1) throw new Error(`not a note's quote: ${quote}`);
+  const fenced = lines.slice(open + 1, close).join("\n");
+  const whitespace = lines.slice(3, open).some((line) => line.includes("JSON"));
+  return {
+    path: JSON.parse(head[1]!) as string, side: head[2], line: Number(head[3]), kind: head[4],
+    machine: JSON.parse(where[1]!) as string, repository: JSON.parse(where[2]!) as string,
+    comparison: lines[2]!, text: whitespace ? JSON.parse(fenced) as string : fenced,
+  };
+}
+
 describe("diff line notes", () => {
   it("names the PC, repository, comparison, path, side and line of a removed line near the end of a large diff, its text fenced", () => {
     const patch = largePatch(4000, 3990);
     const quote = diffNoteQuote(capture(patch, { side: "old", line: 3990 }));
-    expect(quote).toBe([
-      "Diff note on src/big.ts, old side, line 3990 (removed)",
-      "PC home-server, repository /home/me/shop",
-      `Compared as captured: working tree on HEAD ${HEAD}, patch ${patchIdentity(patch)}`,
-      "```",
-      "  removed 3990;",
-      "```",
-    ].join("\n"));
+    const got = parts(quote);
+    expect({ ...got, comparison: undefined }).toEqual({ path: "src/big.ts", side: "old", line: 3990, kind: "removed", machine: "home-server", repository: "/home/me/shop", comparison: undefined, text: "  removed 3990;" });
+    expect(got.comparison).toContain(HEAD);
+    expect(got.comparison).toContain(patchIdentity(patch));
+  });
+
+  it("names any path whole: two files whose names differ only by a newline or a space are two places", () => {
+    const patch = largePatch(10, 4);
+    const at = capture(patch, { side: "old", line: 4 });
+    const newline = diffNoteQuote({ ...at, path: "a\nb.ts", machine: "pc\r\none", repository: "/r\"x" });
+    const space = diffNoteQuote({ ...at, path: "a b.ts" });
+    expect(parts(newline)).toMatchObject({ path: "a\nb.ts", machine: "pc\r\none", repository: "/r\"x" });
+    expect(parts(space).path).toBe("a b.ts");
+    expect(newline).not.toBe(space);
+  });
+
+  it("keeps a whitespace-only line as it is, through the quote of the message it goes in", () => {
+    const patch = ["--- a/x", "+++ b/x", "@@ -0,0 +1,1 @@", "+ \t  ", ""].join("\n");
+    const quote = diffNoteQuote({ ...capture(patch, { side: "new", line: 1 }), path: "x" });
+    expect(parts(quote).text).toBe(" \t  ");
+    const sent = messageWithComments([{ id: "a", quote, comment: "trailing tab" }], "");
+    const unquoted = sent.split("\n").slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n");
+    expect(parts(unquoted).text).toBe(" \t  ");
   });
 
   it("finds the logical line of a hovered or tapped row: a removed row by its old number, the rest by their new one", () => {
@@ -61,9 +97,7 @@ describe("diff line notes", () => {
     expect(codeFence("``````")).toBe("```````");
     const patch = ["--- a/x", "+++ b/x", "@@ -0,0 +1,1 @@", "+````", ""].join("\n");
     const quote = diffNoteQuote({ ...capture(patch, { side: "new", line: 1 }), path: "x" });
-    const lines = quote.split("\n");
-    const open = lines.findIndex((line) => line.startsWith("`"));
-    expect(lines.slice(open)).toEqual(["`````", "````", "`````"]);
+    expect(parts(quote).text).toBe("````");
   });
 
   it("keeps the captured comparison: full commits, the branch's three commits, or HEAD and the patch's identity", () => {
@@ -98,6 +132,8 @@ describe("diff line notes", () => {
     expect(noteBlock({ paneId: "p1", pane: undefined, watching: false, reachable: false })).toBe("pc-offline");
     expect(noteBlock({ paneId: "p1", pane: agent, watching: true })).toBe("watching");
     expect(noteBlock({ paneId: "p1", pane: agent, watching: false, observing: true })).toBe("observing");
+    // a pane this window has not mounted: whether it may type there is not known, so no note
+    expect(noteBlock({ paneId: "p1", pane: agent, watching: false, mounted: false })).toBe("pane-not-open");
     expect(noteBlock({ paneId: "p1", pane: { agent: null, agent_status: "unknown" }, watching: false })).toBe("no-agent");
   });
 });

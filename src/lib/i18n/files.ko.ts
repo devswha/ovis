@@ -131,4 +131,5 @@ export const FILES_KO: Record<string, string> = {
   "The pane this diff came from has closed, so a note has nowhere to go.": "이 변경 내용을 연 패널이 닫혀서 메모를 보낼 곳이 없습니다.",
   "No agent is running in the pane this diff came from.": "이 변경 내용을 연 패널에서 실행 중인 에이전트가 없습니다.",
   "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "이 창은 다른 창이 입력하는 동안 이 패널을 보기만 합니다. 패널을 클릭해 입력한 뒤 메모를 추가하세요.",
+  "Open the pane this diff came from first, so this window knows it can type there.": "이 변경 내용을 연 패널을 먼저 여세요. 그래야 이 창이 그 패널에 입력할 수 있는지 압니다.",
 };

@@ -107,6 +107,16 @@ async function pressPlus(page: Page, selector: string, opens: boolean): Promise<
   throw new Error(`the + beside ${selector} never opened the editor`);
 }
 
+/** The parts of a note's quote an agent reads (lib/diffLineNotes.ts): its JSON-named path, side, line and kind, and the fenced text. */
+function noteParts(quote: string): { path: string; side: string; line: number; kind: string; text: string } {
+  const lines = quote.split("\n");
+  const head = /^Diff note on ("(?:[^"\\]|\\.)*"), (old|new) side, line (\d+) \((\w+)\)$/.exec(lines[0] ?? "");
+  const open = lines.findIndex((line) => /^`{3,}$/.test(line));
+  const close = open < 0 ? -1 : lines.indexOf(lines[open]!, open + 1);
+  if (head === null || close !== lines.length - 1) throw new Error(`not a note's quote: ${quote}`);
+  return { path: JSON.parse(head[1]!) as string, side: head[2]!, line: Number(head[3]), kind: head[4]!, text: lines.slice(open + 1, close).join("\n") };
+}
+
 const ringed = (page: Page): Promise<string[]> => page.evaluate(() => [...(document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll<HTMLElement>("[data-line][data-find-active]") ?? [])].map((row) => `${row.dataset["lineType"]} ${row.dataset["line"]}`));
 const stored = (page: Page): Promise<{ quote: string; comment: string; source?: string }[]> => page.evaluate((id) => JSON.parse(localStorage.getItem(`ovis:reply-comments:${id}`) ?? "[]"), PANE);
 const place = (page: Page): Promise<string> => page.locator(".repo-diff-line-place").innerText();
@@ -155,7 +165,7 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     let notes = await stored(page);
     assert.equal(notes.length, 1, `${name}: one note waits in the diff's own pane`);
     assert.equal(notes[0]!.source, "diff");
-    assert.match(notes[0]!.quote, /^Diff note on src\/money\.ts, old side, line 4 \(removed\)\nPC [^\n]+, repository [^\n]+\nCompared as captured: [^\n]+\n```\n {2}return amount \* 100;\n```$/, `${name}: the quote holds the place, the comparison and the fenced line`);
+    assert.deepEqual(noteParts(notes[0]!.quote), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the quote holds the place and the fenced line`);
     await shot(page, name, "added");
 
     // the keys: the focused diff picks lines with the arrows, Enter begins a note, Escape closes it while empty
@@ -238,7 +248,13 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     await composer.press("Enter");
     await page.waitForFunction((count) => (window as unknown as { noteLab: { submits: Submit[] } }).noteLab.submits.length > count, before, WAIT);
     const message = (await submits(page)).at(-1)!;
-    assert.match(message.text, /^> Diff note on src\/money\.ts, old side, line 4 \(removed\)\n> PC [^\n]+\n> Compared as captured: [^\n]+\n> ```\n> {3}return amount \* 100;\n> ```\nKeep the rounding of negative amounts\.\n\nGo ahead\.$/, `${name}: the message carries the note first`);
+    // the note first, as quote lines, then its comment, then the typed text
+    const [carried, typed] = message.text.split("\n\n");
+    const quoted = carried!.split("\n");
+    assert.equal(quoted.at(-1), "Keep the rounding of negative amounts.", `${name}: the note's comment follows its quote`);
+    assert.ok(quoted.slice(0, -1).every((line) => line.startsWith(">")), `${name}: the quote goes as quote lines`);
+    assert.deepEqual(noteParts(quoted.slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n")), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the message carries the note first`);
+    assert.equal(typed, "Go ahead.", `${name}: then the typed text`);
     assert.equal(message.agent_only, true, `${name}: for an agent alone`);
     await page.locator(".reply-comments").waitFor({ state: "detached" });
     assert.deepEqual(await stored(page), [], `${name}: the sent note left storage`);
@@ -276,7 +292,7 @@ async function phone(browser: Browser, origin: string, theme: "dark" | "light", 
     assert.equal(await place(page), words.done);
     const notes = await stored(page);
     assert.equal(notes.length, 1);
-    assert.match(notes[0]!.quote, /^Diff note on src\/money\.ts, new side, line 5 \(added\)\n/, `${name}: the note is on the added line`);
+    assert.deepEqual({ ...noteParts(notes[0]!.quote), text: undefined }, { path: "src/money.ts", side: "new", line: 5, kind: "added", text: undefined }, `${name}: the note is on the added line`);
     await shot(page, name, "added");
     await page.locator(".repo-diff-close").tap();
     await closeFiles(page);

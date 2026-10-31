@@ -131,4 +131,5 @@ export const FILES_JA: Record<string, string> = {
   "The pane this diff came from has closed, so a note has nowhere to go.": "この差分を開いたペインが閉じたため、メモの送り先がありません。",
   "No agent is running in the pane this diff came from.": "この差分を開いたペインで実行中のエージェントがありません。",
   "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "別のウィンドウが入力している間、このウィンドウはペインを表示するだけです。ペインをクリックして入力できるようにしてから、メモを追加してください。",
+  "Open the pane this diff came from first, so this window knows it can type there.": "まずこの差分を開いたペインを開いてください。そうするとこのウィンドウがそこに入力できるか分かります。",
 };
