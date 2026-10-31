@@ -29,11 +29,13 @@ export interface SharedPreferences {
    */
   muted_panes?: string[];
   /**
-   * The first line of the first message each agent pane was given, keyed as the mutes are
-   * (`paneStorageId`): a tab still named only by its number or its agent shows a short label from
-   * it (src/lib/tabLabels.ts). Set once per pane and never changed: a change adds the panes it
-   * names that the server has no line for. At most MAX_TAB_LABELS, the oldest leaving first; absent
-   * while none is kept, and from a server too old to keep them.
+   * A few words of the first message each agent pane was given, which a tab herdr still names by
+   * its number shows (src/lib/tabLabels.ts). Keyed `<paneStorageId>|<terminal_id>`: herdr reuses
+   * pane ids after a restart, never a terminal id. A change adds labels and drops keys one by one
+   * (`tab_labels`, `tab_labels_removed`), so two browsers saving at once lose neither's; a browser
+   * drops a label once it saw its pane and then saw it gone. While the shared `autoTabNames` setting
+   * is off none is kept. At most MAX_TAB_LABELS, the oldest leaving first; absent while none is kept,
+   * and from a server too old to keep them.
    */
   tab_labels?: Record<string, string>;
 }
@@ -43,9 +45,10 @@ const MAX_PIN_LENGTH = 300;
 export const MAX_MUTED_PANES = 500;
 const MAX_MUTED_PANE_LENGTH = 300;
 export const MAX_TAB_LABELS = 64;
-const MAX_TAB_LABEL_KEY_LENGTH = 300;
-/** a first line is kept to this many UTF-16 code units: the tab's hover says the rest is cut */
-export const MAX_TAB_LABEL_LENGTH = 120;
+/** a pane's key (`paneStorageId`, whose remote form is percent-encoded), `|`, its terminal id */
+const TAB_LABEL_KEY = /^[A-Za-z0-9:%._~-]{1,200}\|[A-Za-z0-9:._-]{1,64}$/;
+/** a label is a few words, never the message: at most this many UTF-16 code units */
+export const MAX_TAB_LABEL_LENGTH = 64;
 /** a shared value is a few words or a short list; a change and the whole document it makes stay small */
 export const MAX_PREFERENCES_BYTES = 64 * 1024;
 
@@ -53,9 +56,10 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 
 /**
  * What a browser sends: the settings it changed, the pins and the muted panes when they changed
- * (absent: unchanged; an empty list: none left), and the tab labels it learned (only added, never removed)
+ * (absent: unchanged; an empty list: none left), the tab labels it learned (a key the server already
+ * holds keeps its label) and the keys of the labels it dropped
  */
-export interface PreferencesChange { settings: SharedPreferences["settings"]; pins?: string[]; muted_panes?: string[]; tab_labels?: Record<string, string> }
+export interface PreferencesChange { settings: SharedPreferences["settings"]; pins?: string[]; muted_panes?: string[]; tab_labels?: Record<string, string>; tab_labels_removed?: string[] }
 
 /** A list of keys as a body or a stored file may carry it: at most `limit` nonempty strings of at most `length` characters; null when it is anything else. */
 function keyList(value: unknown, limit: number, length: number): string[] | null | undefined {
@@ -64,25 +68,30 @@ function keyList(value: unknown, limit: number, length: number): string[] | null
   return [...new Set(value as string[])];
 }
 
-/** Tab labels as a body or a stored file may carry them: at most MAX_TAB_LABELS nonempty lines by pane key; null when it is anything else. */
+/** Tab labels as a body or a stored file may carry them: at most MAX_TAB_LABELS short one-line labels by pane and terminal; null when it is anything else. */
 function labelMap(value: unknown): Record<string, string> | null | undefined {
   if (value === undefined) return undefined;
   if (!isObject(value)) return null;
   const entries = Object.entries(value);
-  if (entries.length > MAX_TAB_LABELS || !entries.every(([key, line]) => key.length > 0 && key.length <= MAX_TAB_LABEL_KEY_LENGTH
+  if (entries.length > MAX_TAB_LABELS || !entries.every(([key, line]) => TAB_LABEL_KEY.test(key)
     && typeof line === "string" && line.trim() !== "" && line.length <= MAX_TAB_LABEL_LENGTH && !/[\n\r\u2028\u2029]/.test(line))) return null;
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-/**
- * The labels kept after `added` reaches `stored`: a pane that has a line keeps it, a new one joins at
- * the end, and past MAX_TAB_LABELS the oldest leave.
- */
-export function mergeTabLabels(stored: Record<string, string> | undefined, added: Record<string, string> | undefined): Record<string, string> | undefined {
-  if (added === undefined || Object.keys(added).length === 0) return stored;
-  const merged = { ...stored };
-  for (const [key, line] of Object.entries(added)) if (!(key in merged)) merged[key] = line;
-  return Object.fromEntries(Object.entries(merged).slice(-MAX_TAB_LABELS));
+/** The newest MAX_TAB_LABELS labels: past it the oldest leave. */
+export function capTabLabels(labels: Record<string, string>): Record<string, string> {
+  const entries = Object.entries(labels);
+  return entries.length <= MAX_TAB_LABELS ? labels : Object.fromEntries(entries.slice(-MAX_TAB_LABELS));
+}
+
+/** The labels a change leaves: the held ones, less the keys it drops, with the ones it learned for keys not held; none while the shared setting is off. */
+export function nextTabLabels(held: Record<string, string> | undefined, change: PreferencesChange, settings: SharedPreferences["settings"]): Record<string, string> | undefined {
+  if (settings.autoTabNames === false) return held === undefined ? undefined : {};
+  if (change.tab_labels === undefined && change.tab_labels_removed === undefined) return held;
+  const next = { ...held };
+  for (const key of change.tab_labels_removed ?? []) delete next[key];
+  for (const [key, label] of Object.entries(change.tab_labels ?? {})) if (!(key in next)) next[key] = label;
+  return capTabLabels(next);
 }
 
 /** System's legacy single palette is the dark side, independent of this browser's OS. */
@@ -119,9 +128,10 @@ export function sharedPreferencesBody(raw: unknown): PreferencesChange | null {
   const pins = keyList(raw["pins"], MAX_PINS, MAX_PIN_LENGTH);
   const muted = keyList(raw["muted_panes"], MAX_MUTED_PANES, MAX_MUTED_PANE_LENGTH);
   const labels = labelMap(raw["tab_labels"]);
-  if (pins === null || muted === null || labels === null) return null;
+  const removed = keyList(raw["tab_labels_removed"], MAX_TAB_LABELS * 2, 300);
+  if (pins === null || muted === null || labels === null || removed === null || removed?.some((key) => !TAB_LABEL_KEY.test(key))) return null;
   const given = raw["settings"];
   const settings: SharedPreferences["settings"] = {};
   for (const key of SHARED_SETTING_KEYS) if (key in given) settings[key] = given[key];
-  return { settings, ...(pins === undefined ? {} : { pins }), ...(muted === undefined ? {} : { muted_panes: muted }), ...(labels === undefined ? {} : { tab_labels: labels }) };
+  return { settings, ...(pins === undefined ? {} : { pins }), ...(muted === undefined ? {} : { muted_panes: muted }), ...(labels === undefined ? {} : { tab_labels: labels }), ...(removed === undefined ? {} : { tab_labels_removed: removed }) };
 }

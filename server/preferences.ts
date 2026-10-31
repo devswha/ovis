@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { MAX_PREFERENCES_BYTES, mergeTabLabels, normalizeThemeChange, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
+import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 
@@ -112,19 +112,22 @@ export class PreferenceStore {
       if (held) base = held;
       keepDamaged = held === null;
     }
-    // labels on disk that this store has not read (a file repaired since a damaged start) are laid under the change
+    // labels on disk that this store has not read (a file repaired since a damaged start) are what the change replaces or keeps
     if (this.labelsUnsettled) {
       const held = this.readLabels();
-      if (held !== null && Object.keys(held).length > 0) base = { ...base, tab_labels: mergeTabLabels(held, base.tab_labels) };
+      if (held !== null && Object.keys(held).length > 0) base = { ...base, tab_labels: held };
     }
     change = normalizeThemeChange(base.settings, change);
     const pins = change.pins ?? base.pins;
     // a change that names no list leaves the mutes; an empty list is the last one unmuted
     const muted = change.muted_panes ?? base.muted_panes ?? [];
-    const labels = mergeTabLabels(base.tab_labels, change.tab_labels);
-    // a change that adds no label writes no tab-labels.json
-    const labelsChanged = labels !== base.tab_labels;
-    const next: SharedPreferences = { revision: base.revision + 1, settings: { ...base.settings, ...change.settings }, ...(pins === undefined ? {} : { pins }), muted_panes: muted, ...(labels === undefined ? {} : { tab_labels: labels }) };
+    const settings = { ...base.settings, ...change.settings };
+    // the setting turned off takes every label with it, on disk too
+    const labels = nextTabLabels(base.tab_labels, change, settings);
+    // a change that leaves the labels as they are writes no tab-labels.json
+    const labelsChanged = JSON.stringify(labels ?? {}) !== JSON.stringify(base.tab_labels ?? {});
+    const kept = labels !== undefined && Object.keys(labels).length > 0 ? labels : undefined;
+    const next: SharedPreferences = { revision: base.revision + 1, settings, ...(pins === undefined ? {} : { pins }), muted_panes: muted, ...(kept === undefined ? {} : { tab_labels: kept }) };
     if (byteLength(JSON.stringify(next)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
     // the revision first: a save that fails there leaves the mutes as they were. One that fails at the
     // list puts the previous preferences.json back, so a refused save leaves nothing on disk that no
@@ -136,19 +139,25 @@ export class PreferenceStore {
     const keepDamagedLabels = labelsChanged && this.labelsUnsettled && this.readLabels() === null;
     const { muted_panes: _stored, tab_labels: _labels, ...shared } = next;
     writeStateDocument(this.path, `${JSON.stringify(shared, null, 2)}\n`, keepDamaged);
+    // labels this save wrote to disk: a failed save holds them (below) only when it did
+    let labelsWritten = false;
     if (change.muted_panes !== undefined || labelsChanged) {
       try {
-        // the labels first: they are only added, so labels kept on disk after a failed save of the mutes
-        // lose nothing and are read back, while mutes saved before a failed save of the labels would
-        // stand on disk though the browser was told they did not
+        // the labels first: labels kept on disk after a failed save of the mutes are held here (below),
+        // where the next change's additions and removals are laid over them, while mutes saved before
+        // a failed save of the labels would silence panes though the browser was told they were not
         if (labelsChanged) {
-          writeStateDocument(this.labelsPath, `${JSON.stringify({ tab_labels: labels }, null, 2)}\n`, keepDamagedLabels);
+          writeStateDocument(this.labelsPath, `${JSON.stringify({ tab_labels: kept ?? {} }, null, 2)}\n`, keepDamagedLabels);
           this.labelsUnsettled = false;
+          labelsWritten = true;
         }
         if (change.muted_panes !== undefined) writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
       } catch (error) {
-        // labels already on disk stay (they are only added): this store holds them now, so a later save keeps them
-        if (labelsChanged && !this.labelsUnsettled) this.current = { ...this.current, ...(labels === undefined ? {} : { tab_labels: labels }) };
+        // labels already on disk are what this store holds now, so a later save starts from them
+        if (labelsWritten) {
+          const { tab_labels: _was, ...rest } = this.current;
+          this.current = { ...rest, ...(kept === undefined ? {} : { tab_labels: kept }) };
+        }
         const { muted_panes: _held, tab_labels: _heldLabels, ...before } = base;
         try { writeStateDocument(this.path, `${JSON.stringify(before, null, 2)}\n`, false); }
         catch (restore) { console.error(`Cannot put ${this.path} back after a failed save of ${this.mutesPath}: ${restore instanceof Error ? restore.message : String(restore)}`); }
@@ -183,7 +192,7 @@ export async function handlePreferencesRequest(request: Request, store: Preferen
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   const body = sharedPreferencesBody(raw);
-  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane]: string } }");
+  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }");
   try { return reply(store.set(body)); }
   catch (error) {
     if (error instanceof PreferencesTooLarge) return tooLarge();

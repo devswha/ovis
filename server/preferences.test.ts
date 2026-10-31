@@ -166,65 +166,109 @@ describe("shared preferences", () => {
     expect(await (await put(back, JSON.stringify({ settings: { theme: "light" } }))).json()).toMatchObject({ revision: 4, muted_panes: ["w1:p1"] });
   });
 
-  it("keeps each pane's first tab label once, in a document of its own, and sends none while none is kept", async () => {
+  it("adds and drops tab labels key by key, in a document of its own, and sends none while none is kept", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
-    const first = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1": "Fix the login redirect" } }));
-    expect(await first.json()).toEqual({ revision: 1, settings: {}, muted_panes: [], tab_labels: { "w1:p1": "Fix the login redirect" } });
-    // a second browser's line for the same pane does not replace the first; another pane's joins it
-    const second = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1": "Something later", "remote:pc-2:w1%3Ap1": "Write the docs" } }));
-    expect((await second.json()).tab_labels).toEqual({ "w1:p1": "Fix the login redirect", "remote:pc-2:w1%3Ap1": "Write the docs" });
-    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: { "w1:p1": "Fix the login redirect", "remote:pc-2:w1%3Ap1": "Write the docs" } });
+    const first = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix the login…" } }));
+    expect(await first.json()).toEqual({ revision: 1, settings: {}, muted_panes: [], tab_labels: { "w1:p1|term_a": "Fix the login…" } });
+    // a key the server holds keeps its label; another pane's joins; a dropped key leaves
+    const second = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1|term_a": "Later", "remote:pc-2:w1%3Ap1|term_b": "Write the docs" } }));
+    expect((await second.json()).tab_labels).toEqual({ "w1:p1|term_a": "Fix the login…", "remote:pc-2:w1%3Ap1|term_b": "Write the docs" });
+    const third = await put(store, JSON.stringify({ settings: {}, tab_labels_removed: ["w1:p1|term_a"] }));
+    expect((await third.json()).tab_labels).toEqual({ "remote:pc-2:w1%3Ap1|term_b": "Write the docs" });
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: { "remote:pc-2:w1%3Ap1|term_b": "Write the docs" } });
     // preferences.json keeps the shape older releases read and write
-    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 2, settings: {} });
-    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1": "Fix the login redirect", "remote:pc-2:w1%3Ap1": "Write the docs" });
+    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 3, settings: {} });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "remote:pc-2:w1%3Ap1|term_b": "Write the docs" });
     // a change of something else leaves them, and writes no labels
     const before = readFileSync(join(dir, "tab-labels.json"), "utf8");
-    expect((await (await put(store, JSON.stringify({ settings: { theme: "dark" } }))).json()).tab_labels).toEqual({ "w1:p1": "Fix the login redirect", "remote:pc-2:w1%3Ap1": "Write the docs" });
+    expect((await (await put(store, JSON.stringify({ settings: { theme: "dark" } }))).json()).tab_labels).toEqual({ "remote:pc-2:w1%3Ap1|term_b": "Write the docs" });
     expect(readFileSync(join(dir, "tab-labels.json"), "utf8")).toBe(before);
+    // the last one gone: the document carries none again
+    expect((await (await put(store, JSON.stringify({ settings: {}, tab_labels_removed: ["remote:pc-2:w1%3Ap1|term_b"] }))).json()).tab_labels).toBeUndefined();
   });
 
-  it("keeps the newest MAX_TAB_LABELS labels and refuses a label that is not one line", async () => {
+  it("keeps both browsers' labels when they save at once, neither having heard the other", () => {
     const store = new PreferenceStore(root());
-    for (let n = 0; n < MAX_TAB_LABELS + 3; n += 1) store.set({ settings: {}, tab_labels: { [`w1:p${n}`]: `task ${n}` } });
-    const kept = Object.keys(store.get().tab_labels!);
-    expect(kept).toHaveLength(MAX_TAB_LABELS);
-    expect(kept[0]).toBe("w1:p3");
-    expect(kept.at(-1)).toBe(`w1:p${MAX_TAB_LABELS + 2}`);
-    for (const tab_labels of [{ "w1:p1": "two\nlines" }, { "w1:p1": "two\rlines" }, { "w1:p1": "two\u2028lines" }, { "w1:p1": " " }, { "w1:p1": "x".repeat(MAX_TAB_LABEL_LENGTH + 1) }, { "w1:p1": 3 }, ["w1:p1"]]) {
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "From A" } });
+    store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "From B" } });
+    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "From A", "w1:p2|term_b": "From B" });
+  });
+
+  it("purges every stored tab label when the setting is turned off, and keeps none while it is", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix it", "w1:p2|term_b": "Ship it" } });
+    // another browser turns it off without saying anything of the labels
+    expect(store.set({ settings: { autoTabNames: false } }).tab_labels).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: {} });
+    // a browser that has not heard yet sends its labels: none is kept while the setting is off
+    expect(store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix it" } }).tab_labels).toBeUndefined();
+    expect(new PreferenceStore(dir).get().tab_labels).toBeUndefined();
+    store.set({ settings: { autoTabNames: true }, tab_labels: { "w1:p3|term_c": "Again" } });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p3|term_c": "Again" });
+  });
+
+  it("keeps the newest MAX_TAB_LABELS labels and refuses a label or key that is not one", async () => {
+    const store = new PreferenceStore(root());
+    const many = Object.fromEntries(Array.from({ length: MAX_TAB_LABELS }, (_, n) => [`w1:p${n}|term_${n}`, `task ${n}`]));
+    expect(Object.keys(store.set({ settings: {}, tab_labels: many }).tab_labels!)).toHaveLength(MAX_TAB_LABELS);
+    for (const tab_labels of [
+      { "w1:p1|term_a": "two\nlines" }, { "w1:p1|term_a": "two\rlines" }, { "w1:p1|term_a": "two\u2028lines" }, { "w1:p1|term_a": " " },
+      { "w1:p1|term_a": "x".repeat(MAX_TAB_LABEL_LENGTH + 1) }, { "w1:p1|term_a": 3 }, ["w1:p1"],
+      // a key is a pane and its terminal, never free text that could fill the document
+      { "w1:p1": "no terminal" }, { [`${"x".repeat(250)}|term_a`]: "long" }, { "w1 p1|term_a": "space" },
+      { ...many, "w1:pX|term_x": "one too many" },
+    ]) {
       expect((await put(store, JSON.stringify({ settings: {}, tab_labels }))).status).toBe(400);
     }
+    for (const tab_labels_removed of [["w1:p1"], ["w1:p1|term_a", 3], "w1:p1|term_a"]) {
+      expect((await put(store, JSON.stringify({ settings: {}, tab_labels_removed }))).status).toBe(400);
+    }
+  });
+
+  it("a label save that failed is not held, so its retry writes it", () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    store.set({ settings: {}, tab_labels: { "w1:p1|term_a": "First" } });
+    const blocker = join(dir, `tab-labels.json.${process.pid}.tmp`);
+    mkdirSync(blocker);
+    expect(() => store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Second" } })).toThrow();
+    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "First" });
+    rmSync(blocker, { recursive: true });
+    store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Second" } });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1|term_a": "First", "w1:p2|term_b": "Second" });
   });
 
   it("an older release's save erases no tab label, and a damaged labels file is kept aside by the next label", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
-    await put(store, JSON.stringify({ settings: { theme: "light" }, tab_labels: { "w1:p1": "Fix it" } }));
+    await put(store, JSON.stringify({ settings: { theme: "light" }, tab_labels: { "w1:p1|term_a": "Fix it" } }));
     const held = JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"));
     writeFileSync(join(dir, "preferences.json"), `${JSON.stringify({ revision: held.revision + 1, settings: { theme: "dark" } }, null, 2)}\n`);
-    expect(new PreferenceStore(dir).get()).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [], tab_labels: { "w1:p1": "Fix it" } });
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 2, settings: { theme: "dark" }, muted_panes: [], tab_labels: { "w1:p1|term_a": "Fix it" } });
     writeFileSync(join(dir, "tab-labels.json"), "{ not json");
     const damaged = new PreferenceStore(dir);
     expect(damaged.get().tab_labels).toBeUndefined();
-    await put(damaged, JSON.stringify({ settings: {}, tab_labels: { "w1:p2": "Next" } }));
+    await put(damaged, JSON.stringify({ settings: {}, tab_labels: { "w1:p2|term_b": "Next" } }));
     expect(readFileSync(join(dir, "tab-labels.json.bad"), "utf8")).toBe("{ not json");
-    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p2": "Next" });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p2|term_b": "Next" });
   });
 
-  it("lays a labels file repaired after a damaged start under the next label, and keeps labels saved before a failed mute save", async () => {
+  it("starts from a labels file repaired after a damaged start, and keeps labels saved before a failed mute save", async () => {
     const dir = root();
     writeFileSync(join(dir, "tab-labels.json"), "{ not json");
     const store = new PreferenceStore(dir);
-    writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1": "Repaired" } }));
-    store.set({ settings: {}, tab_labels: { "w1:p2": "New" } });
-    expect(store.get().tab_labels).toEqual({ "w1:p1": "Repaired", "w1:p2": "New" });
-    // the mute list cannot be written: the label went to disk first, and the store keeps it for the next save
+    writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1|term_a": "Repaired" } }));
+    expect(store.set({ settings: { theme: "dark" } }).tab_labels).toEqual({ "w1:p1|term_a": "Repaired" });
+    // the mute list cannot be written: the labels went to disk first, and the store holds them for the next save
     const blocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
     mkdirSync(blocker);
-    expect(() => store.set({ settings: {}, muted_panes: ["w1:p1"], tab_labels: { "w1:p3": "Kept" } })).toThrow();
+    expect(() => store.set({ settings: {}, muted_panes: ["w1:p1"], tab_labels: { "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" } })).toThrow();
     rmSync(blocker, { recursive: true });
-    store.set({ settings: {}, tab_labels: { "w1:p4": "Later" } });
-    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1": "Repaired", "w1:p2": "New", "w1:p3": "Kept", "w1:p4": "Later" });
+    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" });
+    store.set({ settings: { theme: "light" } });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" });
   });
 
   it("a damaged mute list mutes nothing, leaves the settings, and is kept aside by the next mute", async () => {

@@ -35,23 +35,21 @@ describe("tab names", () => {
   });
 
   describe("a label from the first message (#2019)", () => {
-    const panes = [{ pane_id: "w1:p2" }];
-    const labels = { "w1:p2": "Fix the login redirect after the session expires" };
+    const panes = [{ pane_id: "w1:p2", terminal_id: "term_b" }];
+    const labels = { "w1:p2|term_b": "Fix the login redirect…" };
 
-    it("names a tab herdr names by its number, with the whole line on hover", () => {
-      for (const label of ["2", ""]) {
-        expect(autoTabLabel({ label, number: 2 }, panes, "local", labels)).toEqual({ label: "Fix the login redirect…", title: labels["w1:p2"] });
-      }
+    it("names a tab herdr names by its number", () => {
+      for (const label of ["2", ""]) expect(autoTabLabel({ label, number: 2 }, panes, "local", labels)).toBe("Fix the login redirect…");
     });
 
-    it("never covers a name someone gave the tab", () => {
+    it("never covers a name someone gave the tab, an agent's name included", () => {
       for (const label of ["build", "claude", "claude-2", "3"]) expect(autoTabLabel({ label, number: 2 }, panes, "local", labels)).toBeNull();
     });
 
-    it("reads the line of this PC's pane only, and has none without one", () => {
+    it("reads the label of this PC's pane on its terminal only", () => {
       expect(autoTabLabel({ label: "2", number: 2 }, panes, "pc-2", labels)).toBeNull();
-      expect(autoTabLabel({ label: "2", number: 2 }, panes, "pc-2", { "remote:pc-2:w1%3Ap2": "Ship it" })).toEqual({ label: "Ship it", title: "Ship it" });
-      expect(autoTabLabel({ label: "2", number: 2 }, panes, "local", {})).toBeNull();
+      expect(autoTabLabel({ label: "2", number: 2 }, [{ pane_id: "w1:p2", terminal_id: "term_new" }], "local", labels)).toBeNull();
+      expect(autoTabLabel({ label: "2", number: 2 }, panes, "pc-2", { "remote:pc-2:w1%3Ap2|term_b": "Ship it" })).toBe("Ship it");
     });
   });
 });

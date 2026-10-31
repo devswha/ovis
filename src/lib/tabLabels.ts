@@ -1,19 +1,24 @@
 /**
- * The first line of each agent pane's first message, shared with the other browsers of the server
- * (the `tab_labels` of shared/preferences.ts, through lib/preferencesSync.ts). A tab still named
- * only by herdr's number or by its agent shows a short label from it, and the whole line on hover
- * (lib/tabName.ts autoTabLabel), so tabs of the same agent tell apart (#2019). It is an Ovis display
- * name only: herdr's tab label is never written, so herdr's own tab row and its other clients keep
- * theirs. A pane is keyed with its PC (`paneStorageId`), as the mutes are.
+ * A few words of each agent pane's first message, shared with the other browsers of the server
+ * (the `tab_labels` of shared/preferences.ts, through lib/preferencesSync.ts). A tab herdr still
+ * names by its number shows them (lib/tabName.ts autoTabLabel), so tabs of the same agent tell
+ * apart (#2019). It is an Ovis display name only: herdr's tab label is never written, so herdr's
+ * own tab row and its other clients keep theirs.
  *
- * A pane's line is learned once, from what Ovis knows first: the New tab dialog's first message, a
- * Chat send with no earlier message known, or a transcript read from its beginning. It is never
- * replaced: a later message, or another browser's line for the same pane, leaves it.
+ * A label is keyed with the pane's PC, its id and its terminal (`tabLabelKey`): herdr reuses pane
+ * ids after a restart, never a terminal id, so a new pane never shows an old one's words. A label
+ * leaves once this page saw its pane and then saw it gone (`settleTabLabels`), and the server drops
+ * all when the setting is turned off. Only the short label is kept, never the message.
+ *
+ * A line is learned once per pane, from what Ovis knows first: the New tab dialog's first message,
+ * a transcript read from its beginning, or a Chat send delivered to a pane with no transcript. It
+ * is first held by pane id (`pending`) and keyed once the pane's terminal is seen in a snapshot.
  */
 
+import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
-import { MAX_TAB_LABEL_LENGTH, mergeTabLabels } from "../../shared/preferences.ts";
-import type { ConversationResponse, ConversationTurn } from "../../shared/protocol.ts";
+import { capTabLabels, MAX_TAB_LABEL_LENGTH } from "../../shared/preferences.ts";
+import type { ConversationResponse, ConversationTurn, PaneInfo } from "../../shared/protocol.ts";
 
 /** how many columns a tab shows of the line before it is cut with an ellipsis; a wide character (Hangul, CJK, an emoji) takes two */
 export const SHORT_TAB_LABEL_COLUMNS = 24;
@@ -21,8 +26,18 @@ const WIDE = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F
 
 let labels: Readonly<Record<string, string>> = {};
 const listeners = new Set<() => void>();
+/** lines learned for a pane whose terminal this page has not seen yet, by `paneStorageId` */
+const pending = new Map<string, string>();
+/** off on a watching device, and while the setting is off: nothing is learned */
+let learning = true;
+/** the labels whose pane and terminal this page has seen live: only those can be seen gone */
+const seen = new Set<string>();
+/** labels seen gone: their terminal is never back, so one a save brings back again leaves again */
+const gone = new Set<string>();
 
-export const tabLabelKey = paneStorageId;
+export function tabLabelKey(machineId: string, pane: Pick<PaneInfo, "pane_id" | "terminal_id">): string {
+  return `${paneStorageId(machineId, pane.pane_id)}|${pane.terminal_id}`;
+}
 
 /** The labels as this page knows them: the server's, and the ones learned here and not yet sent. */
 export function currentTabLabels(): Readonly<Record<string, string>> {
@@ -42,43 +57,30 @@ export function subscribeTabLabels(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-/**
- * The line a message gives a tab: its first line that says something, its spaces collapsed, cut to
- * what the server keeps; null for a message with no words (only spaces, a picture).
- */
-export function firstPromptLine(text: string): string | null {
-  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "");
-  if (line === undefined) return null;
-  return line.length <= MAX_TAB_LABEL_LENGTH ? line : `${cutAt(line, MAX_TAB_LABEL_LENGTH - 1).trimEnd()}…`;
-}
-
 /** A line's characters as drawn: graphemes, or code points where the browser has no Intl.Segmenter (Safari 14). */
 function characters(text: string): string[] {
   return typeof Intl.Segmenter === "function" ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(({ segment }) => segment) : Array.from(text);
 }
 
-/** At most `max` characters of `text`, never splitting a character drawn as one (an emoji, a Hangul syllable with its marks). */
-function cutAt(text: string, max: number): string {
-  let out = "";
-  for (const segment of characters(text)) {
-    if (out.length + segment.length > max) break;
-    out += segment;
-  }
-  return out;
-}
+/** A line that names nothing a tab could be told by: a slash command, a path, a code fence. */
+const NOT_A_NAME = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/]|```|~~~)/;
 
 /**
- * What the tab shows of a line: a few words, cut at a word's end when one is near the limit, else at
- * the limit (a language written without spaces), with an ellipsis when anything was cut.
+ * What the tab shows of a message: its first line that says something (not a slash command, a path
+ * or a code fence), its spaces collapsed, a few words of it cut at a word's end when one is near
+ * the limit, else at the limit (a language written without spaces), with an ellipsis when anything
+ * was cut; null for a message with nothing to name a tab by.
  */
-export function shortTabLabel(line: string): string {
+export function shortTabLabel(text: string): string | null {
+  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "" && !NOT_A_NAME.test(part));
+  if (line === undefined) return null;
   const head: string[] = [];
   let columns = 0;
   let space = -1;
   let spaceAt = 0;
   for (const segment of characters(line)) {
     const width = WIDE.test(segment) ? 2 : 1;
-    if (columns + width > SHORT_TAB_LABEL_COLUMNS) {
+    if (columns + width > SHORT_TAB_LABEL_COLUMNS || head.join("").length + segment.length >= MAX_TAB_LABEL_LENGTH) {
       const kept = space >= 0 && spaceAt >= SHORT_TAB_LABEL_COLUMNS / 2 ? head.slice(0, space) : head;
       return `${kept.join("").trimEnd()}…`;
     }
@@ -89,14 +91,52 @@ export function shortTabLabel(line: string): string {
   return line;
 }
 
-/** Learns a pane's line from `text` unless it has one: true when it was learned. */
-export function learnTabLabel(machineId: string, paneId: string, text: string): boolean {
-  const key = tabLabelKey(machineId, paneId);
-  if (key in labels) return false;
-  const line = firstPromptLine(text);
-  if (line === null) return false;
-  setTabLabels(mergeTabLabels(labels, { [key]: line }) ?? {});
-  return true;
+/** The setting, and whether this device may learn (a watching device takes the labels and learns none). */
+export function setTabLabelLearning(setting: boolean, watching: boolean): void {
+  learning = setting && !watching;
+  if (!learning) pending.clear();
+}
+
+/** Learns a pane's label from `text` unless it has one, once its terminal is seen (`settleTabLabels`). */
+export function learnTabLabel(machineId: string, paneId: string, text: string): void {
+  if (!learning) return;
+  const id = paneStorageId(machineId, paneId);
+  if (pending.has(id)) return;
+  const label = shortTabLabel(text);
+  if (label === null) return;
+  pending.set(id, label);
+  // the roster's settling (App) keys it as soon as it can
+  for (const listener of [...listeners]) listener();
+}
+
+/**
+ * Brings the labels in line with the PCs this page knows: a line learned for a pane the snapshot now
+ * shows takes its key, and a label leaves once this page saw its pane on its terminal and then a
+ * connected PC's roster without it (closed, or its id reused by another terminal after a restart).
+ * A label whose pane this page never saw stays, however the roster looks: it may come from another
+ * browser ahead of this page's roster. One that is never seen again is never shown either (its key
+ * names its terminal), and leaves with the oldest past MAX_TAB_LABELS.
+ */
+export function settleTabLabels(machines: readonly Pick<Machine, "id" | "state" | "snapshot">[]): void {
+  const authoritative = machines.filter((machine) => machine.state === "connected" && machine.snapshot !== null);
+  const live = new Map<string, string>();
+  for (const machine of authoritative) for (const pane of machine.snapshot!.panes) live.set(paneStorageId(machine.id, pane.pane_id), tabLabelKey(machine.id, pane));
+  const liveKeys = new Set(live.values());
+  const onPc = (key: string, machineId: string): boolean => machineId === "local" ? !key.startsWith("remote:") : key.startsWith(paneStorageId(machineId, ""));
+  const next: Record<string, string> = {};
+  for (const [key, label] of Object.entries(labels)) {
+    if (liveKeys.has(key)) { seen.add(key); next[key] = label; continue; }
+    if (seen.has(key) && authoritative.some((machine) => onPc(key, machine.id))) { seen.delete(key); gone.add(key); }
+    if (!gone.has(key)) next[key] = label;
+  }
+  for (const [id, label] of pending) {
+    const key = live.get(id);
+    if (key === undefined) continue;
+    pending.delete(id);
+    // a label of this terminal is kept; one of an earlier terminal of the same pane id is never shown, and blocks nothing
+    if (!(key in next) && !gone.has(key)) { next[key] = label; seen.add(key); }
+  }
+  setTabLabels(capTabLabels(next));
 }
 
 /** panes whose chat is drawn from the screen (no transcript Ovis reads): a message sent from Chat is the first Ovis can know of */
@@ -107,20 +147,20 @@ const untranscribed = new Set<string>();
  * (`cursor` null), and whether the pane has a transcript at all.
  */
 export function learnFromConversation(machineId: string, paneId: string, conversation: Pick<ConversationResponse, "source" | "cursor" | "turns">): void {
-  const key = tabLabelKey(machineId, paneId);
-  if (conversation.source === "scrollback") { untranscribed.add(key); return; }
-  untranscribed.delete(key);
+  const id = paneStorageId(machineId, paneId);
+  if (conversation.source === "scrollback") { untranscribed.add(id); return; }
+  untranscribed.delete(id);
   if (conversation.cursor !== null) return;
   const first = firstPromptOf(conversation.turns);
   if (first !== null) learnTabLabel(machineId, paneId, first);
 }
 
 /**
- * A message sent from Chat: it names the tab only where no transcript will say which message came
- * first. A pane with one learns its line from it instead, read from the beginning.
+ * A message delivered from Chat: it names the tab only where no transcript will say which message
+ * came first. A pane with one learns its label from it instead, read from the beginning.
  */
 export function learnFromSend(machineId: string, paneId: string, text: string): void {
-  if (untranscribed.has(tabLabelKey(machineId, paneId))) learnTabLabel(machineId, paneId, text);
+  if (untranscribed.has(paneStorageId(machineId, paneId))) learnTabLabel(machineId, paneId, text);
 }
 
 /** The text of a conversation's first message, when the turns start at its beginning; null when it has none with words yet. */

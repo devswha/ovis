@@ -126,12 +126,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   });
   const firstLines = useSyncExternalStore(subscribeTabLabels, currentTabLabels, currentTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
-  // a tab named only by its number or its agent shows a few words of its first message (#2019); never herdr's own label
-  const autoOf = (tab: HerdrTab): { label: string; title: string } | null => settings.autoTabNames
+  // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
+  const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames
     ? autoTabLabel(tab, panes.filter((pane) => pane.tab_id === tab.tab_id), machineId, firstLines, placeOf(tab)) : null;
   // the name herdr holds (or was just sent), which a rename compares against
   const givenName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, placeOf(tab));
-  const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : autoOf(tab)?.label ?? givenName(tab);
+  const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : autoOf(tab) ?? givenName(tab);
 
   useEffect(() => {
     // the pane each tab was last seen on, per PC: a tab clicked again opens where it was left
@@ -436,7 +436,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           const status = rollupStatus(own.map((pane) => paneStatus(pane as HerdrPane)));
           const pickerOpen = picker?.tab.tab_id === tab.tab_id;
           const name = nameOf(tab);
-          const auto = sent?.tabId === tab.tab_id ? null : autoOf(tab);
           return (
             <div className={`tab-strip-item${active ? " is-active" : ""}${own.length > 1 ? " has-panes" : ""}${editing?.tabId === tab.tab_id ? " is-editing" : ""}${reorder.drag?.tabId === tab.tab_id ? " is-dragging" : ""}${reorder.drag?.boundary === index ? " is-drop-before" : ""}${reorder.drag?.boundary === tabs.length && index === tabs.length - 1 ? " is-drop-after" : ""}`} key={tab.tab_id}>
               {editing?.tabId === tab.tab_id ? (
@@ -470,7 +469,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   aria-keyshortcuts={appLayout ? "Shift+F10" : "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"}
                   aria-controls={panePanel}
                   tabIndex={active ? 0 : -1}
-                  title={auto?.title ?? (own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length }))}
+                  title={own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length })}
                   onPointerDown={(event) => reorder.onPointerDown(event, tab.tab_id)}
                   onPointerMove={reorder.onPointerMove}
                   onPointerUp={reorder.onPointerUp}

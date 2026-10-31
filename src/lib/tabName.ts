@@ -1,5 +1,5 @@
 import type { HerdrTab, PaneInfo } from "../../shared/protocol.ts";
-import { shortTabLabel, tabLabelKey } from "./tabLabels.ts";
+import { tabLabelKey } from "./tabLabels.ts";
 
 /**
  * The name a tab was given, or null while herdr names it itself: by its place in the row ("2"),
@@ -15,19 +15,19 @@ export function tabLabel(tab: Pick<HerdrTab, "label" | "number">, t: (key: strin
   return customTabLabel(tab, place) ?? t("Tab {n}", { n: place });
 }
 
-type TabPane = Pick<PaneInfo, "pane_id">;
+type TabPane = Pick<PaneInfo, "pane_id" | "terminal_id">;
 
 /**
- * The label a tab takes from its first message (lib/tabLabels.ts), and the whole line for its hover:
- * only while herdr names it by its number, never over a name someone gave it (Rename tab, the New
- * tab dialog's Name, a script, an agent's name typed as one). `panes` are the tab's, in the order
- * whose first line wins; null when none has one.
+ * The label a tab takes from its first message (lib/tabLabels.ts): only while herdr names it by its
+ * number, never over a name someone gave it (Rename tab, the New tab dialog's Name, a script, an
+ * agent's name typed as one). `panes` are the tab's, in the order whose label wins; null when none
+ * has one. The tab's hover stays its pane's title.
  */
-export function autoTabLabel(tab: Pick<HerdrTab, "label" | "number">, panes: readonly TabPane[], machineId: string, labels: Readonly<Record<string, string>>, place: number = tab.number): { label: string; title: string } | null {
+export function autoTabLabel(tab: Pick<HerdrTab, "label" | "number">, panes: readonly TabPane[], machineId: string, labels: Readonly<Record<string, string>>, place: number = tab.number): string | null {
   if (customTabLabel(tab, place) !== null) return null;
   for (const pane of panes) {
-    const line = labels[tabLabelKey(machineId, pane.pane_id)];
-    if (line) return { label: shortTabLabel(line), title: line };
+    const label = labels[tabLabelKey(machineId, pane)];
+    if (label) return label;
   }
   return null;
 }

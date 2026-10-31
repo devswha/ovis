@@ -628,7 +628,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   };
   // the footer names a tab as the strip draws it, a label from its first message included (lib/tabName.ts)
   const placeTabName = ({ machine }: MachinePane, tab: TabInfo, place: number): string => (settings.autoTabNames
-    ? autoTabLabel(tab, machine.snapshot?.panes.filter((pane) => pane.tab_id === tab.tab_id) ?? [], machine.id, firstLines, place)?.label : undefined)
+    ? autoTabLabel(tab, machine.snapshot?.panes.filter((pane) => pane.tab_id === tab.tab_id) ?? [], machine.id, firstLines, place) : null)
     ?? tabLabel(tab, t, place);
   const activeRow = rows[activeIndex];
   const activeWorkspace = activeRow?.kind === "pane" ? activeRow.machine.snapshot?.workspaces.find((workspace) => workspace.workspace_id === activeRow.pane.workspace_id) : undefined;

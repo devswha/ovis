@@ -1514,7 +1514,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         }
         if (cancelled || generation !== olderGeneration.current) return;
         if (conversation !== previousAnswer) validatedPresentation.current = readKey;
-        // a tab named only by its number or its agent takes its label from the first message (#2019)
+        // a tab herdr still names by its number takes its label from the first message (#2019)
         if (autoTabNames.current) learnFromConversation(machineId, paneId, conversation);
         const proved = finish.status !== "done" || (readKey === presentationRef.current && finishRef.current.status === "done"
           && finish.epoch !== undefined && finish.id !== undefined

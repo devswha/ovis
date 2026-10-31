@@ -9,24 +9,41 @@ const local = (settings: Settings, pins: readonly string[], muted: readonly stri
 const light: Settings = { ...DEFAULT_SETTINGS, theme: "light" };
 
 describe("preferences sync", () => {
-  it("sends only the tab labels learned here, and keeps the server's line for a pane over its own", () => {
-    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1": "Server line" } };
-    const mine: Local = { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1": "Server line", "w1:p2": "Learned here" } };
-    expect(preferencesChange(known, mine)).toEqual({ settings: {}, tab_labels: { "w1:p2": "Learned here" } });
-    expect(preferencesChange(known, { ...mine, tabLabels: { "w1:p1": "Server line" } })).toBeNull();
-    // another browser learned w1:p2 first: its line stands, and nothing is left to send
-    const taken = takePreferences(known, mine, { revision: 2, settings: {}, pins: [], muted_panes: [], tab_labels: { "w1:p1": "Server line", "w1:p2": "Theirs" } }, null);
-    expect(taken.tabLabels).toEqual({ "w1:p1": "Server line", "w1:p2": "Theirs" });
-    expect(preferencesChange(taken.base, { ...mine, tabLabels: taken.tabLabels! })).toBeNull();
+  it("sends the tab labels learned and dropped here, key by key", () => {
+    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } };
+    expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server", "w1:p2|t2": "Learned" } })).toEqual({ settings: {}, tab_labels: { "w1:p2|t2": "Learned" } });
+    // a pane seen closed here: its key goes out to be dropped
+    expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: {} })).toEqual({ settings: {}, tab_labels_removed: ["w1:p1|t1"] });
+    expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } })).toBeNull();
   });
 
-  it("drops a tab label the server let go of, and keeps one still unsent", () => {
-    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1": "Old" } };
-    const mine: Local = { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1": "Old", "w1:p9": "New here" } };
-    const taken = takePreferences(known, mine, { revision: 3, settings: {}, pins: [], muted_panes: [], tab_labels: { "w1:p5": "Other" } }, null);
-    expect(taken.tabLabels).toEqual({ "w1:p5": "Other", "w1:p9": "New here" });
-    // a document without labels (none kept, or an older server) leaves this page's
-    expect(takePreferences(known, mine, { revision: 3, settings: {}, pins: [], muted_panes: [] }, null).tabLabels).toBeNull();
+  it("lays the tab labels learned and dropped here over another browser's, label by label", () => {
+    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "One", "w1:p2|t2": "Two" } };
+    // here: p1 closed, p3 learned; there: p4 learned
+    const mine: Local = { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p2|t2": "Two", "w1:p3|t3": "Three" } };
+    const taken = takePreferences(known, mine, { revision: 2, settings: {}, pins: [], muted_panes: [], tab_labels: { "w1:p1|t1": "One", "w1:p2|t2": "Two", "w1:p4|t4": "Four" } }, null);
+    expect(taken.tabLabels).toEqual({ "w1:p2|t2": "Two", "w1:p4|t4": "Four", "w1:p3|t3": "Three" });
+    // what is still unsent goes out next, key by key
+    expect(preferencesChange(taken.base, { ...mine, tabLabels: taken.tabLabels! })).toEqual({ settings: {}, tab_labels: { "w1:p3|t3": "Three" }, tab_labels_removed: ["w1:p1|t1"] });
+    // nothing changed here: the server's map stands, a document without one holding none (the setting turned off elsewhere)
+    expect(takePreferences(known, { ...mine, tabLabels: known.tabLabels! }, { revision: 3, settings: {}, pins: [], muted_panes: [] }, null).tabLabels).toEqual({});
+  });
+
+  it("sends no learned label while the setting is off, and takes the server's empty map", () => {
+    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: {} };
+    const off = { ...DEFAULT_SETTINGS, autoTabNames: false };
+    expect(preferencesChange({ ...known, settings: sharedSettings(off) }, { ...local(off, [], []), tabLabels: { "w1:p1|t1": "Unsent" } })).toBeNull();
+    const taken = takePreferences(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Unsent" } }, { revision: 2, settings: { autoTabNames: false }, pins: [], muted_panes: [] }, null);
+    expect(taken.tabLabels).toEqual({});
+  });
+
+  it("sends an older server no tab labels once it showed it keeps none", () => {
+    const old: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: null };
+    const mine: Local = { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Mine" } };
+    expect(preferencesChange(old, mine)).toBeNull();
+    const taken = takePreferences(old, mine, { revision: 4, settings: {}, pins: [], muted_panes: [] }, null);
+    expect(taken.tabLabels).toBeNull();
+    expect(taken.base.tabLabels).toBeNull();
   });
 
   it("sends only the shared settings that changed, and the pins only when they did", () => {
