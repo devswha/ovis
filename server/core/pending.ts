@@ -195,7 +195,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   };
   const piReceiptText = (identity: PendingIdentity, text: string): string | undefined => {
     if (identity.agent !== "pi") return undefined;
-    try { return closeMention(pendingText(modelSwitchText(identity.agent, text))); }
+    // Pi trims a prompt before recording it (pi-tui Editor.submitValue, interactive onSubmit), the
+    // space closeMention adds included: the receipt matches that record exactly (#2454)
+    try { return closeMention(pendingText(modelSwitchText(identity.agent, text))).trim(); }
     catch { return undefined; }
   };
   const piMessages = (paneId: string, owner: Client): PendingMessage[] => (piTyped.get(paneId) ?? [])
