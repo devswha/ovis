@@ -14,8 +14,8 @@ import { DETACHED, notificationText } from "./omo-detached.ts";
  * description); a direct call's answer is its text. A cell's detach is omo-detached.ts's notice.
  *
  * Ends: `Background terminal session bash_N finished: <state>` (senpi-terminal:notification), a
- * monitor's `summary` event (senpi-monitor:notification, which names the monitor by the description
- * it was started with, not by its id), `Killed <id>.` (kill_bash), and a cell's notice.
+ * monitor's `summary` event (senpi-monitor:notification, matched by id or an unambiguous description
+ * when no id is present), `Killed <id>.` (kill_bash), and a cell's notice.
  * Only tool answers and runtime notifications are read: a message that quotes these words is not.
  */
 export interface OmoJob {
@@ -113,8 +113,14 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
         const found = row(monitor);
         const kinds = found?.["kinds"];
         if (!Array.isArray(kinds) || !kinds.includes("summary")) continue;
+        const id = found?.["id"];
         const description = found?.["description"];
-        next = ended(next, (job) => job.kind === "monitor" && job.description === description, at, endStatus(word ?? "completed"));
+        if (typeof id === "string" && id.length > 0) {
+          next = ended(next, (job) => job.kind === "monitor" && job.id === id, at, endStatus(word ?? "completed"));
+        } else if (typeof description === "string") {
+          const matches = next.running.filter((job) => job.kind === "monitor" && job.description === description);
+          if (matches.length === 1) next = ended(next, (job) => job === matches[0], at, endStatus(word ?? "completed"));
+        }
       }
     } else if (kind === "senpi-codemode:notification") {
       // a cell's own end, and a command it left behind when it auto-detached

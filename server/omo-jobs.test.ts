@@ -35,7 +35,7 @@ describe("omoJobsAfter", () => {
     const jobs = read(
       evalResult("2026-10-21T20:03:38.401Z", "", [bashCall, monitorCall]),
       notice("senpi-monitor:notification", "2026-10-21T20:04:00.000Z", "<system-reminder>Monitor event(refit done): READY</system-reminder>", { monitors: [{ id: "bash_2", description: "refit done", eventCount: 1, kinds: ["line"] }] }),
-      notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "<system-reminder>Monitor event(refit done): watcher completed (exit code 0)</system-reminder>", { monitors: [{ id: "bash_2", description: "refit done", eventCount: 1, kinds: ["summary"] }] }),
+      notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "<system-reminder>Monitor event(refit done): watcher completed (exit code 0)</system-reminder>", { monitors: [{ id: "mon_FDXZMFR0QJTTRAD3", description: "refit done", eventCount: 1, kinds: ["summary"] }] }),
       notice("senpi-terminal:notification", "2026-10-21T20:05:36.684Z", "<system-reminder>Background terminal session bash_1 finished: completed (exit code 0).\nFinal output:\nEXIT 0</system-reminder>"),
     );
     // Then neither runs, and both are listed as done.
@@ -49,6 +49,50 @@ describe("omoJobsAfter", () => {
       notice("senpi-monitor:notification", "2026-10-21T20:04:00.000Z", "<system-reminder>Monitor event(refit done): epoch 3</system-reminder>", { monitors: [{ id: "bash_2", description: "refit done", eventCount: 1, kinds: ["line"] }] }),
     );
     expect(jobs.running.map((job) => job.id)).toEqual(["mon_FDXZMFR0QJTTRAD3"]);
+  });
+
+  it("ends only the identified monitor when descriptions are shared", () => {
+    // Given two live monitors with the same description.
+    const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "", [
+      monitorCall, { ...monitorCall, resultPreview: "Monitor started with ID: mon_SECOND" },
+    ]));
+    expect(omoJobCount(jobs, null)).toBe(2);
+    // When the second monitor ends.
+    const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+      monitors: [{ id: "mon_SECOND", description: "refit done", kinds: ["summary"] }],
+    }));
+    // Then only the second ends and the count drops by one.
+    expect(done.running.map((job) => job.id)).toEqual(["mon_FDXZMFR0QJTTRAD3"]);
+    expect(done.ended.map((job) => job.id)).toEqual(["mon_SECOND"]);
+    expect(omoJobCount(done, null)).toBe(1);
+  });
+
+  for (const count of [1, 2]) {
+    it(`ends a monitor without an id only when its description is unique (${count} live)`, () => {
+      // Given one or two live monitors sharing a description.
+      const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "", [
+        monitorCall, ...count === 2 ? [{ ...monitorCall, resultPreview: "Monitor started with ID: mon_SECOND" }] : [],
+      ]));
+      // When a legacy notification has no id.
+      const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+        monitors: [{ description: "refit done", kinds: ["summary"] }],
+      }));
+      // Then an ambiguous description ends neither monitor.
+      expect(omoJobCount(done, null)).toBe(count === 1 ? 0 : 2);
+      expect(done.ended.map((job) => job.id)).toEqual(count === 1 ? ["mon_FDXZMFR0QJTTRAD3"] : []);
+    });
+  }
+
+  it("does not fall back to description when a notification carries an unknown id", () => {
+    // Given a live monitor.
+    const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "", [monitorCall]));
+    // When another monitor with the same description ends.
+    const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+      monitors: [{ id: "mon_OTHER", description: "refit done", kinds: ["summary"] }],
+    }));
+    // Then the live monitor remains counted.
+    expect(done).toEqual(jobs);
+    expect(omoJobCount(done, null)).toBe(1);
   });
 
   for (const [word, status] of [["signal_SIGTERM", "cancelled"], ["killed", "cancelled"], ["exited_1 (exit code 1)", "failed"]] as const) {
