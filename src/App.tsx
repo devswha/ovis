@@ -69,6 +69,8 @@ import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
 import { WebPanelContext } from "./lib/webPanel.ts";
 import { RepoDiffViewer } from "./components/RepoDiffViewer.tsx";
+import { noteBlock, noteBlockWord } from "./lib/diffLineNotes.ts";
+import { usePaneObserving } from "./lib/paneObserving.ts";
 import { OpenFileContext } from "./lib/filePaths.ts";
 import { useAccessState, useLockedRef, usePairFromAddress } from "./lib/useAccess.ts";
 import { useLocalHealth } from "./lib/useLocalHealth.ts";
@@ -204,6 +206,8 @@ export function App() {
   // the pane canvas's actions, for the phone's tab menu (TabStrip)
   const paneActionsRef = useRef<((target: HerdrPane) => RowMenuItem[]) | null>(null);
   const { filesOpen, setFilesOpen, viewing, openFile, closeFile, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
+  // a diff's line notes go to its own pane: none while this window only watches that pane
+  const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory } = useNewSessionState({ initialLink });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped } = useConnectionChip();
@@ -1009,7 +1013,12 @@ export function App() {
             releaseDiff();
           }
           openFile({ path, paneId: diffViewing.paneId, machineId: diffViewing.machineId }, docked);
-        }} keyboardActive={!settingsOpen && (viewing === null || fileDocked)} />
+        }} keyboardActive={!settingsOpen && (viewing === null || fileDocked)} note={(() => {
+          // only the diff's own pane on its own PC takes its notes, never the one selected now
+          const machine = machines.find((item) => item.id === diffViewing.machineId);
+          const block = noteBlock({ paneId: diffViewing.paneId, pane: machine?.snapshot?.panes.find((pane) => pane.pane_id === diffViewing.paneId), watching: auth?.role === "watch", observing: diffPaneObserving === "watching", mounted: diffPaneObserving !== "unknown", reachable: machine?.state === "connected" });
+          return { machine: machine?.name ?? diffViewing.machineId, blocked: block === null ? null : noteBlockWord(t, block) };
+        })()} />
       </MachineContext.Provider>}
       {viewing !== null && !fileDocked && <MachineContext.Provider value={viewing.machineId}>
         <FileViewer key={viewing.path} path={viewing.path} paneId={viewing.paneId} onClose={closeFile} onOpen={(path) => openFile({ ...viewing, path, presentation })} onKind={reportFileKind} onTogglePresentation={toggleFilePresentation} keyboardActive={!settingsOpen} />
