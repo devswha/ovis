@@ -55,13 +55,21 @@ if (import.meta.main) {
   const { createServer } = await import("../server/index.ts");
   const { UsageService } = await import("../server/usage.ts");
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-settings-unload-"));
-  const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir, usage: new UsageService(undefined, []) });
-  const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
+  let server: ReturnType<typeof createServer> | undefined;
+  let browser: Browser | undefined;
   try {
+    server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir, usage: new UsageService(undefined, []) });
+    browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
     await checkSettingSurvivesReload(browser, `http://127.0.0.1:${server.port}`);
   } finally {
-    await browser.close();
-    server.stop();
-    rmSync(stateDir, { recursive: true, force: true });
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        server?.stop();
+      } finally {
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    }
   }
 }
