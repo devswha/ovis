@@ -92,7 +92,10 @@ holding a link of the form `https://app.ovis.sh/s/<server_id>/#offer=<data>`. Th
 (`server_id`), its public key, the relay's address and a pairing code
 ([`shared/relay-offer.ts`](../shared/relay-offer.ts)). It sits in the link's fragment, which
 browsers never send to a server, and the app takes it off the address bar before anything else runs
-([`src/lib/relay/boot.ts`](../src/lib/relay/boot.ts)). The code is the same kind the Devices group
+([`src/lib/relay/boot.ts`](../src/lib/relay/boot.ts)). Since a PC's `server_id` is worked out from
+its public key, a link whose key doesn't give its `server_id` can't be that PC's: the app refuses it
+every time it's opened or pasted, before any connection, and saves or removes no key
+(`forgedOffer` in [`src/lib/relay/shellState.ts`](../src/lib/relay/shellState.ts)). The code is the same kind the Devices group
 shows: six digits, good for ten minutes, spent after five wrong tries. The PC makes at most 10
 pairing codes in 10 minutes, and after 20 failed relay pairings in 10 minutes it takes none for the
 next 10: a pairing tried then ends with `auth_failed`, and the phone shows **That pairing code no
@@ -444,8 +447,9 @@ What the app on the phone shows when a connection doesn't come up
 | … did not finish connecting | the PC answered, but admission didn't finish within 10 seconds |
 | That pairing code no longer works | the code was wrong, spent or expired |
 | This phone was removed from … | the device was revoked; the phone has deleted its key |
-| … has a new identity | the PC's key isn't the one the phone paired with |
-| This phone forgot … | **Forget this PC** on the new-identity screen removed the saved key; it pairs with nothing, so pairing again needs a new QR code from the PC itself |
+| … has a new identity | the PC's key isn't the one the phone paired with, or the saved key isn't the one the PC's `server_id` is worked out from |
+| This link is not …'s | the link's key isn't the one its `server_id` is worked out from: refused before any connection every time it's opened, Forget or not, with only **Back**; nothing is saved or removed |
+| This phone forgot … | **Forget this PC** on the new-identity screen removed the saved key; it pairs with nothing, so pairing again needs a new QR code from the PC itself. Forget never makes a forged link pairable: opened again, it is refused again |
 | Update needed | the PC speaks another relay protocol or mux version |
 | Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
 | This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
