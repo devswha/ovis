@@ -139,6 +139,23 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
   });
 
+  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+      expect(loadSettings()[key]).toBe(false);
+      saveSettings(sanitizeSettings({ [key]: true }));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      expect(loadSettings()[key]).toBe(true);
+      expect(loadSettings().terminalFontSize).toBe(18);
+      saveSettings({ ...loadSettings(), [key]: false });
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "\"true\"");
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "not json");
+      expect(loadSettings()[key]).toBe(false);
+    }
+  });
+
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
     putOld({ theme: "dark", palette: "charcoal" });
     const stale = readOld();
