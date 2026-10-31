@@ -139,6 +139,7 @@ function ompSteps(screen: string, before: number) {
   const index = piActiveTab(raw, markers);
   if (index === null) return null;
   return {
+    // The strip has no answered markers: leave steps unmarked unless review rows prove an answer.
     steps: labels.map((label, at) => ({ label, answered: false, current: at === index, can_navigate: at !== index })),
     can_step_back: index > 0,
     can_step_next: index < labels.length - 1,
@@ -194,7 +195,11 @@ function parseOmpSubmit(screen: string): ParsedPrompt | null {
     ...(answers ? { answers } : {}),
     options: [{ label: own("Submit"), description: null }, { label: own("Cancel"), description: null }],
     multi_select: false, custom_option_index: null,
-    ...(navigation ? { steps: navigation.steps, can_step_back: navigation.can_step_back, can_step_next: navigation.can_step_next } : {}),
+    ...(navigation ? {
+      steps: navigation.steps.map(step => ({ ...step, answered: answers?.some(answer => answer.question === step.label
+        && answer.answer !== null && answer.answer !== "unanswered" && !/…|\.\.\./.test(answer.answer)) ?? false })),
+      can_step_back: navigation.can_step_back, can_step_next: navigation.can_step_next,
+    } : {}),
   }, {
     ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}),
     responder: "omp-submit", menuLabels: ["Submit", "Cancel"], selectedIndex: 0,

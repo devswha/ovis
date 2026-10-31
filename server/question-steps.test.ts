@@ -68,6 +68,13 @@ function omp(at: number, wrapped = false): string {
 }
 
 describe("omp Ask question steps", () => {
+  test("marks only answers proved by the native review rows", () => {
+    const review = omp(3).replace("Color: unanswered", "Color: Red").replace("Shape: unanswered", "Shape:");
+    const prompt = parseInteractivePrompt("omp", review);
+    expect(prompt?.steps?.map(step => step.answered)).toEqual([true, false, false, false]);
+    expect(prompt?.answers?.map(answer => answer.answer)).toEqual(["Red", "unanswered", null]);
+  });
+
   test.each([false, true])("reads every question and review from an unambiguous styled strip, wrapped=%s", wrapped => {
     for (let at = 0; at < 4; at++) {
       const prompt = parseInteractivePrompt("omp", omp(at, wrapped));
@@ -202,7 +209,7 @@ describe("Hermes's open-ended question in a batch", () => {
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string) => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
+interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
 async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
@@ -210,9 +217,11 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
   const pane: Pane = { agent, screen, sent: [] };
   const transcript = join(root, "session.jsonl");
   if (agent === "omp") {
-    pane.ompCall = id => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
+    pane.ompCall = (id, changed) => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
       type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: {
-        questions: QUESTIONS.map(([header, question, options]) => ({ id: header, header, question, options: options.map(label => ({ label })) })),
+        questions: QUESTIONS.map(([header, question, options], index) => ({ id: header, header,
+          question: changed === "question" && index === 0 ? "A different question?" : question,
+          options: options.map((label, option) => ({ label: changed === "option" && index === 0 && option === 0 ? "Orange" : label })) })),
       } }] },
     }) + "\n");
     pane.ompCall("initial");
@@ -309,6 +318,16 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
 }
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
+  test.each(["question", "option"] as const)("omp: a call whose %s differs from the displayed question offers no moves", async changed => {
+    await withPane("omp", omp(0), async pane => {
+      pane.ompCall?.("ahead-of-screen", changed);
+      const prompt = await card();
+      expect(prompt.steps?.some(step => step.can_navigate)).toBe(false);
+      expect((await move(prompt.id, { step_next: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
   test("omp: Next, a forward step and review Back send only tab keys without answering", async () => {
     await withPane("omp", omp(0), async pane => {
       follows(pane, omp, 4, "tab", "shift+tab");
