@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { Machine } from "../../shared/machines.ts";
 import { MAX_TAB_LABEL_LENGTH } from "../../shared/preferences.ts";
 import { autoTabLabel } from "./tabName.ts";
-import { currentTabLabels, firstPromptOf, learnFromConversation, learnFromSend, learnTabLabel, setTabLabelLearning, setTabLabels, settleTabLabels, shortTabLabel } from "./tabLabels.ts";
+import { forgetTabLabelsForTests, currentTabLabels, firstPromptOf, learnFromConversation, learnFromSend, learnTabLabel, setTabLabelLearning, setTabLabels, settleTabLabels, shortTabLabel } from "./tabLabels.ts";
 
-afterEach(() => { setTabLabelLearning(true, false); setTabLabels({}); settleTabLabels([]); });
+afterEach(forgetTabLabelsForTests);
 
 type Pc = Pick<Machine, "id" | "state" | "snapshot">;
 const pc = (id: string, panes: { pane_id: string; terminal_id: string }[], state: Machine["state"] = "connected"): Pc =>
@@ -106,12 +106,21 @@ describe("tab labels from the first message", () => {
     const panes = [pc("local", [{ pane_id: "w7:p1", terminal_id: "term_q" }, { pane_id: "w7:p2", terminal_id: "term_r" }])];
     const user = (text: string) => ({ role: "user" as const, ts: null, parts: [{ kind: "text" as const, text }] });
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: "c:4", turns: [user("A later message")] });
-    learnFromSend("local", "w7:p1", "Typed in Chat");
+    learnFromSend("local", "w7:p1", "codex", "Typed in Chat");
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: null, turns: [user("The first one")] });
     learnFromConversation("local", "w7:p2", { source: "scrollback", turns: [] });
-    learnFromSend("local", "w7:p2", "Sent to a shell agent");
+    learnFromSend("local", "w7:p2", "codex", "Sent to a shell agent");
     settleTabLabels(panes);
     expect(currentTabLabels()).toEqual({ "w7:p1|term_q": "The first one", "w7:p2|term_r": "Sent to a shell agent" });
+  });
+
+  it("never labels a shell pane from a line sent to it", () => {
+    learnFromConversation("local", "w1:p1", { source: "scrollback", turns: [] });
+    learnFromConversation("local", "w1:p2", { source: "scrollback", turns: [] });
+    learnFromSend("local", "w1:p1", null, "ls -la");
+    learnFromSend("local", "w1:p2", "codex", "Fix the parser");
+    settleTabLabels([pc("local", [{ pane_id: "w1:p1", terminal_id: "term_a" }, { pane_id: "w1:p2", terminal_id: "term_b" }])]);
+    expect(currentTabLabels()).toEqual({ "w1:p2|term_b": "Fix the parser" });
   });
 
   it("finds the first message with words in turns read from the beginning", () => {

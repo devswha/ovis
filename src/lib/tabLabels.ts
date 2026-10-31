@@ -157,10 +157,21 @@ export function learnFromConversation(machineId: string, paneId: string, convers
 
 /**
  * A message delivered from Chat: it names the tab only where no transcript will say which message
- * came first. A pane with one learns its label from it instead, read from the beginning.
+ * came first, and only an agent's pane (a line typed to a shell names nothing). A pane with a
+ * transcript learns its label from it instead, read from the beginning.
  */
-export function learnFromSend(machineId: string, paneId: string, text: string): void {
-  if (untranscribed.has(paneStorageId(machineId, paneId))) learnTabLabel(machineId, paneId, text);
+export function learnFromSend(machineId: string, paneId: string, agent: string | null | undefined, text: string): void {
+  if (agent && untranscribed.has(paneStorageId(machineId, paneId))) learnTabLabel(machineId, paneId, text);
+}
+
+/** Every label, line and fact this page holds, as at its start: each test stands alone. */
+export function forgetTabLabelsForTests(): void {
+  labels = {};
+  pending.clear();
+  seen.clear();
+  gone.clear();
+  untranscribed.clear();
+  learning = true;
 }
 
 /** The text of a conversation's first message, when the turns start at its beginning; null when it has none with words yet. */

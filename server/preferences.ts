@@ -112,10 +112,21 @@ export class PreferenceStore {
       if (held) base = held;
       keepDamaged = held === null;
     }
-    // labels on disk that this store has not read (a file repaired since a damaged start) are what the change replaces or keeps
-    if (this.labelsUnsettled) {
-      const held = this.readLabels();
-      if (held !== null && Object.keys(held).length > 0) base = { ...base, tab_labels: held };
+    // labels on disk that this store has not read (a file repaired since a damaged start) are what the change
+    // adds to and drops from. Read only for a change of the labels: a file that cannot be read (its rights, a
+    // directory in its place) drops the labels from the change, never the settings, pins or mutes with them
+    // (the setting turned off is one: it deletes them)
+    let labelsUnreadable = false;
+    if (this.labelsUnsettled && (change.tab_labels !== undefined || change.tab_labels_removed !== undefined || change.settings.autoTabNames === false)) {
+      try {
+        const held = this.readLabels();
+        if (held !== null && Object.keys(held).length > 0) base = { ...base, tab_labels: held };
+      } catch (error) {
+        console.error(`Cannot read ${this.labelsPath} (${(error as NodeJS.ErrnoException).code ?? "error"}); the change is saved without touching the tab labels`);
+        const { tab_labels: _added, tab_labels_removed: _removed, ...rest } = change;
+        change = rest;
+        labelsUnreadable = true;
+      }
     }
     change = normalizeThemeChange(base.settings, change);
     const pins = change.pins ?? base.pins;
@@ -123,7 +134,7 @@ export class PreferenceStore {
     const muted = change.muted_panes ?? base.muted_panes ?? [];
     const settings = { ...base.settings, ...change.settings };
     // the setting turned off takes every label with it, on disk too
-    const labels = nextTabLabels(base.tab_labels, change, settings);
+    const labels = labelsUnreadable ? base.tab_labels : nextTabLabels(base.tab_labels, change, settings);
     // a change that leaves the labels as they are writes no tab-labels.json
     const labelsChanged = JSON.stringify(labels ?? {}) !== JSON.stringify(base.tab_labels ?? {});
     const kept = labels !== undefined && Object.keys(labels).length > 0 ? labels : undefined;

@@ -227,6 +227,40 @@ describe("shared preferences", () => {
     }
   });
 
+  it("a labels file it cannot read drops only the labels from a change, never the settings, pins or mutes", () => {
+    const dir = root();
+    // a directory in its place: reading it fails, as it would for a file without read rights
+    mkdirSync(join(dir, "tab-labels.json"));
+    const store = new PreferenceStore(dir);
+    expect(store.set({ settings: { theme: "dark" }, pins: ["local:w1:p1"] })).toMatchObject({ revision: 1, settings: { theme: "dark" }, pins: ["local:w1:p1"] });
+    const saved = store.set({ settings: { theme: "light" }, muted_panes: ["w1:p1"], tab_labels: { "w1:p1|term_a": "Fix it" } });
+    expect(saved).toEqual({ revision: 2, settings: { theme: "light" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
+    expect(new PreferenceStore(dir).get()).toEqual({ revision: 2, settings: { theme: "light" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] });
+    // turning the setting off cannot delete what it cannot read: the setting is saved all the same
+    expect(store.set({ settings: { autoTabNames: false }, tab_labels: { "w1:p1|term_a": "Fix it" } }).settings).toMatchObject({ autoTabNames: false });
+  });
+
+  it("a labels file read at start that cannot be read later blocks no save, the setting turned off included", () => {
+    const dir = root();
+    writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1|term_a": "Fix it" } }));
+    const store = new PreferenceStore(dir);
+    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "Fix it" });
+    rmSync(join(dir, "tab-labels.json"));
+    mkdirSync(join(dir, "tab-labels.json"));
+    expect(store.set({ settings: { autoTabNames: false, theme: "dark" }, tab_labels: { "w1:p2|term_b": "Next" } }).settings).toMatchObject({ autoTabNames: false, theme: "dark" });
+    expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8")).settings).toMatchObject({ autoTabNames: false, theme: "dark" });
+  });
+
+  it("turning the setting off deletes a labels file repaired after a damaged start, unread till then", () => {
+    const dir = root();
+    writeFileSync(join(dir, "tab-labels.json"), "{ not json");
+    const store = new PreferenceStore(dir);
+    writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1|term_a": "Repaired" } }));
+    store.set({ settings: { autoTabNames: false } });
+    expect(JSON.parse(readFileSync(join(dir, "tab-labels.json"), "utf8"))).toEqual({ tab_labels: {} });
+    expect(new PreferenceStore(dir).get().tab_labels).toBeUndefined();
+  });
+
   it("a label save that failed is not held, so its retry writes it", () => {
     const dir = root();
     const store = new PreferenceStore(dir);
@@ -260,15 +294,17 @@ describe("shared preferences", () => {
     writeFileSync(join(dir, "tab-labels.json"), "{ not json");
     const store = new PreferenceStore(dir);
     writeFileSync(join(dir, "tab-labels.json"), JSON.stringify({ tab_labels: { "w1:p1|term_a": "Repaired" } }));
-    expect(store.set({ settings: { theme: "dark" } }).tab_labels).toEqual({ "w1:p1|term_a": "Repaired" });
+    // a change of something else reads no labels file, and writes none: the repaired one stays on disk
+    expect(store.set({ settings: { theme: "dark" } }).tab_labels).toBeUndefined();
+    expect(store.set({ settings: {}, tab_labels: { "w1:p2|term_b": "Next" } }).tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p2|term_b": "Next" });
     // the mute list cannot be written: the labels went to disk first, and the store holds them for the next save
     const blocker = join(dir, `muted-panes.json.${process.pid}.tmp`);
     mkdirSync(blocker);
-    expect(() => store.set({ settings: {}, muted_panes: ["w1:p1"], tab_labels: { "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" } })).toThrow();
+    expect(() => store.set({ settings: {}, muted_panes: ["w1:p1"], tab_labels: { "w1:p3|term_c": "Kept" } })).toThrow();
     rmSync(blocker, { recursive: true });
-    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" });
+    expect(store.get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p2|term_b": "Next", "w1:p3|term_c": "Kept" });
     store.set({ settings: { theme: "light" } });
-    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p3|term_c": "Kept" });
+    expect(new PreferenceStore(dir).get().tab_labels).toEqual({ "w1:p1|term_a": "Repaired", "w1:p2|term_b": "Next", "w1:p3|term_c": "Kept" });
   });
 
   it("a damaged mute list mutes nothing, leaves the settings, and is kept aside by the next mute", async () => {
