@@ -336,7 +336,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
       )}
       {/* in the card from its first render, clipped while empty (never display: none): a live region that
           appears together with its words is not read; one that is there and gets them is */}
-      <p className={pending || stale ? "prompt-card-status" : "visually-hidden"} role="status">{pending ? t("Sending your answer…") : stale ? t("Not updated: the question on screen may have changed.") : null}</p>
+      <p className={pending || stale ? "prompt-card-status" : "visually-hidden"} role="status">{pending && t("Sending your answer…")}{pending && stale && <br />}{stale && t("Not updated: the question on screen may have changed.")}</p>
       {error !== null && <p className="prompt-card-error" role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>}
     </section>
   );

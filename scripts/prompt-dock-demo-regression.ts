@@ -810,6 +810,29 @@ try {
         console.log("PASS an answer that comes back after the next prompt is showing leaves that prompt, its focus and its typed pick alone");
       }
 
+      for (const width of [390, 1440]) {
+        for (const theme of ["light", "dark"]) {
+          const { page, errors, shot, close } = await open({ width, height: 900, touch: width === 390, theme, prompt: FORM });
+          try {
+            await page.evaluate(() => { (window as unknown as { formReadFails: boolean }).formReadFails = true; });
+            await page.locator(".prompt-card").getByRole("button", { name: /^1\. In memory/ }).click();
+            await page.waitForFunction(() => (window as unknown as { formReturned: number }).formReturned === 1);
+            const status = page.locator(".prompt-card [role=status]");
+            await status.getByText("Not updated: the question on screen may have changed.", { exact: false }).waitFor();
+            assert.ok((await status.textContent())?.includes("Sending your answer…"), "sending status remains alongside the stale notice");
+            const box = page.locator(".composer-text");
+            await box.fill("2");
+            await box.press("Enter");
+            assert.equal(await box.inputValue(), "2", "the refused duplicate answer keeps the user's draft");
+            assert.equal((await answersOf(page)).length, 1, "the composer sent no second answer");
+            assert.equal(await page.locator(".prompt-card-confirm").count(), 0, "no second pick waits for confirmation");
+            await shot(`answered-stale-${width}-${theme}`);
+            assert.deepEqual(errors, []);
+          } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+          console.log(`PASS an answered stale card blocks composer answers and keeps its draft at ${width}px in ${theme}`);
+        }
+      }
+
       {
         // A form's next question takes the card's place once the answer is back and the screen is read
         // again: the card waits for it, and the dock is never empty between the two questions

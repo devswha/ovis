@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { PromptCard } from "./PromptCard.tsx";
+import { PromptCard, type PromptCardProps } from "./PromptCard.tsx";
 
 const goal: InteractivePrompt = {
   id: "g", agent: "claude", kind: "menu", title: "Goal active", question: "the file hello.txt exists", body: "running 25s · 0 tokens",
@@ -13,12 +13,12 @@ const goal: InteractivePrompt = {
   own_text: { title: { key: "Goal active" }, labels: { 0: { key: "Close" } } },
 };
 
-const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null): string => {
+const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null, state: Pick<PromptCardProps, "answered" | "stale"> = {}): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: languages });
   try {
     return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(PromptCard, {
-      paneId: "w1:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, screenWords,
+      paneId: "w1:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, screenWords, ...state,
     }) }));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
@@ -27,6 +27,15 @@ const render = (prompt: InteractivePrompt, languages: string[], screenWords: str
 };
 
 describe("a prompt card's own words", () => {
+  it("shows both translated status messages when an answered card becomes stale", () => {
+    for (const language of ["en", "ko"] as const) {
+      const html = render(goal, [language], null, { answered: true, stale: true });
+      expect(html).toContain(translate(language, "Sending your answer…"));
+      expect(html).toContain(translate(language, "Not updated: the question on screen may have changed."));
+      expect(html).toContain('aria-busy="true"');
+    }
+  });
+
   it("shows the words the bridge wrote in the reader's language, and the agent's as written (#1482)", () => {
     for (const language of ["ko", "ja", "zh"] as const) {
       const html = render(goal, [language]);

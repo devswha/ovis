@@ -18,6 +18,8 @@ export interface ComposerSendsDeps {
   agentStatus: AgentStatus | undefined;
   answerPanePrompt: (answer: { pane_id: string; prompt_id: string }) => Promise<unknown>;
   answering: InteractivePrompt | null;
+  /** the card's answer went out, but its next screen read has not answered yet */
+  answerPending: boolean;
   draftHeldForRef: MutableRefObject<string | null>;
   ended: boolean;
   heldByOpenQueue: boolean;
@@ -55,7 +57,7 @@ export interface ComposerSendsDeps {
 }
 
 export function useComposerSends(deps: ComposerSendsDeps) {
-  const { agent, agentStatus, answerPanePrompt, answering, chatNavigation, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
+  const { agent, agentStatus, answerPanePrompt, answering, answerPending, chatNavigation, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
 
   /** An answer from the message box, not the card: its failure is the box's note. */
   const sendAnswer = useCallback((pane: string, prompt: InteractivePrompt, choice: TypedAnswer): Promise<boolean | string> => {
@@ -75,17 +77,19 @@ export function useComposerSends(deps: ComposerSendsDeps) {
    * box confirms it and Escape cancels it, as the card's two buttons do. null: none waits for this prompt.
    */
   const waitingAnswer = useMemo(() => {
-    if (paneId === null || answering === null || pendingAnswer === null || pendingAnswer.pane !== paneId || pendingAnswer.promptId !== answering.id) return null;
+    if (answerPending || paneId === null || answering === null || pendingAnswer === null || pendingAnswer.pane !== paneId || pendingAnswer.promptId !== answering.id) return null;
     const pane = paneId, choice = pendingAnswer.answer;
     return {
       confirm: (): Promise<boolean | string> => sendAnswer(pane, answering, choice),
       cancel: (): void => setPendingAnswer(null),
     };
-  }, [answering, paneId, pendingAnswer, sendAnswer, setPendingAnswer]);
+  }, [answering, answerPending, paneId, pendingAnswer, sendAnswer, setPendingAnswer]);
 
   const composerSend = useCallback(
     (text: string, clearDraft?: string, sendAnyway = false, agentOnly = false): boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal> => {
       const pane = paneRef.current;
+      // A refused send keeps the draft; no second choice goes to the card waiting on its read.
+      if (pane !== null && answerPending) return false;
       // Codex's queue open in the terminal holds the input: a message would become the answer
       if (pane !== null && heldByOpenQueue) {
         return t("Codex has a question open in the terminal: answer it above, or close it there (alt+↓) to message Codex.");
@@ -152,7 +156,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         return true;
       });
     },
-    [agent, agentStatus, answering, heldByOpenQueue, sendAnswer, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputAtRest, inputRowNow, stillOpenNote],
+    [agent, agentStatus, answering, answerPending, heldByOpenQueue, sendAnswer, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputAtRest, inputRowNow, stillOpenNote],
   );
 
   const actOnPending = useCallback(async (id: string, action: "steer" | "discard" | "edit"): Promise<void> => {

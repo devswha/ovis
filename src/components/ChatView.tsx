@@ -186,7 +186,7 @@ export interface ChatViewProps {
   /** the composer shows its greeting: the chat's own "nothing yet" line stays out */
   greeted?: boolean;
   /** the agent's waiting prompt, for the composer to answer too */
-  onPrompt?: (paneId: string, prompt: InteractivePrompt | null) => void;
+  onPrompt?: (paneId: string, prompt: InteractivePrompt | null, answered?: boolean) => void;
   /** with no prompt waiting, the next prompt the agent suggests (Claude's grey input text) */
   onSuggestion?: (paneId: string, suggestion: string | null) => void;
   /** a cancelled send the agent put back in its input box: the composer fills it again, and it is no sent turn here either */
@@ -1731,9 +1731,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   }, [pollPrompt, paneId, machineId, promptPollKey, promptRefreshKey, fetchPanePromptState, visible]);
 
   useEffect(() => {
-    onPrompt?.(paneId, prompt);
+    onPrompt?.(paneId, prompt, prompt !== null && answeredPrompt === prompt.id);
     return () => onPrompt?.(paneId, null);
-  }, [onPrompt, paneId, prompt]);
+  }, [onPrompt, paneId, prompt, answeredPrompt]);
 
   // a pane left behind keeps no suggestion and no restored send
   useEffect(() => () => { onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); }, [paneId]);
