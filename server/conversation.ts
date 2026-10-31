@@ -1359,16 +1359,16 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       "pane.process_info", { pane_id: paneId },
     ).catch(() => null);
     const foreground = info?.process_info?.foreground_processes ?? [];
+    const running = foreground.some((process) =>
+      isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
+    );
+    // Preserve GJC's route even when it runs a dsh child in the same foreground group.
+    if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
     // a dsh TUI that does not report to herdr (dsh-tui-pi): its launcher in front, read from this same
     // probe, which the dsh binding then reuses; the lock that process holds still picks the session
-    if (foreground.some((process) => Array.isArray(process.argv) && isDshProcess(process.argv))) {
+    else if (foreground.some((process) => Array.isArray(process.argv) && isDshProcess(process.argv))) {
       agent = "dsh";
       if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
-    } else {
-      const running = foreground.some((process) =>
-        isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
-      );
-      if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
     }
   }
   // a Muse, Letta or dsh pane's processes are asked for once, for omo and for its own binding

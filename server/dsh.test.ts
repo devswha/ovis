@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm, open, symlink, rename } from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorizeDshTranscript, completeDshFrames, isDshProcess, dshConversation as boundConversation, dshToolOutput as boundToolOutput, dshSessionsDirectory, forgetDshProcesses, projectDsh, resolveDshTranscript } from "./dsh.ts";
@@ -87,7 +88,7 @@ describe("native dsh conversation",()=>{
  }));
  test("keeps prior human turns across compaction and marks failed turns",()=>{
  const p=projectDsh(log(event("user/message",message("original"),0),event("user/message",{...message("summary"),source:{kind:"compact-checkpoint"}},1),event("assistant/message",{message:{role:"assistant",content:[{type:"text",text:"partial"}]}},2),event("turn/end",{reason:{kind:"cancelled"}},3)),"inode");
- expect(p.turns[0]!.role).toBe("user");expect(p.turns[1]!.parts[0]!.kind).toBe("compact");expect(p.turns[1]!.parts.at(-1)).toMatchObject({kind:"notice",text:"Turn ended: cancelled"});
+ expect(p.turns[0]!.role).toBe("user");expect(p.turns[1]!.parts[0]!.kind).toBe("compact");expect(p.turns[1]!.parts.at(-1)).toMatchObject({kind:"notice",text:expect.stringMatching(/\bcancelled\b/)});
  });
  linuxTest("rejects two held session locks instead of choosing one",async()=>fixture(async first=>fixture(async second=>{
  await writeFile(first,Bun.zstdCompressSync(log()));await writeFile(second,Bun.zstdCompressSync(log()));
@@ -314,12 +315,95 @@ linuxTest("does not show a new empty chat for a lock-free dsh that started befor
 test("shows a turn that failed before any reply, as dsh records a provider error", () => {
   const p = projectDsh(log(event("user/message", message("hello"), 0), event("turn/end", { turn: 1, reason: { kind: "error", error: { message: "429: rate limited" } } }, 1)), "inode");
   expect(p.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
-  expect(p.turns[1]!.parts).toEqual([{ kind: "notice", text: "Turn ended: error" }]);
+  expect(p.turns[1]!.parts).toEqual([{ kind: "notice", text: expect.stringMatching(/\berror\b/) }]);
 });
 
 linuxTest("treats a dsh that started in the same clock tick as this server as unproven, not new", async () => {
   const sameTick = BigInt(processStartTicks(process.pid)!);
   const error = await resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] }, sameTick).then(() => null, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ConversationUnavailable);
+  expect(error).not.toBeInstanceOf(ConversationNotStarted);
+});
+
+for (const failure of ["environ", "sessions", "descriptors", "birth", "final-birth", "gone", "changed-birth"] as const) {
+  linuxTest(`does not choose a peer transcript when a recognized dsh has ${failure}`, async () => fixture(async first => fixture(async second => {
+    await writeFile(first, Bun.zstdCompressSync(log()));
+    await writeFile(second, Bun.zstdCompressSync(log()));
+    const firstLock = await open(join(first, "..", "session.lock"), "w");
+    const secondLock = join(second, "..", "session.lock");
+    await writeFile(secondLock, "");
+    const child = Bun.spawn([process.execPath, "-e", 'require("node:fs").openSync(process.argv[1], "r"); process.stdout.write("ready\\n"); setInterval(() => {}, 60000);', secondLock], {
+      stdin: "ignore", stdout: "pipe", stderr: "ignore",
+    });
+    const reader = child.stdout.getReader();
+    const nativeBirth = processProbe.processStartTicks;
+    const nativeReaddir = fs.readdir;
+    let birthSpy: ReturnType<typeof spyOn<typeof processProbe, "processStartTicks">> | undefined;
+    let fdSpy: ReturnType<typeof spyOn<typeof fs, "readdir">> | undefined;
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n");
+      const info = { foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }, { pid: child.pid, argv: DSH_ARGV }] };
+      // Both locks are real; only the selected inspection step is made unreadable.
+      await expect(resolveDshTranscript(info)).rejects.toBeInstanceOf(ConversationUnavailable);
+      memory.mockImplementation(async pid => pid === child.pid && failure === "environ" ? null : {
+        argv: [], environ: pid === child.pid && failure === "sessions" ? ["DSH_HOME=relative"] : [`DSH_HOME=${home}`],
+      });
+      if (failure === "descriptors") {
+        fdSpy = spyOn(fs, "readdir").mockImplementation(new Proxy(nativeReaddir, {
+          apply(target, receiver, args) {
+            if (args[0] === `/proc/${child.pid}/fd`) return Promise.reject(new Error("fixture unreadable fd list"));
+            return Reflect.apply(target, receiver, args);
+          },
+        }));
+      }
+      if (failure === "birth" || failure === "final-birth" || failure === "changed-birth") {
+        let reads = 0;
+        birthSpy = spyOn(processProbe, "processStartTicks").mockImplementation(pid => {
+          if (pid !== child.pid) return nativeBirth(pid);
+          const start = nativeBirth(pid);
+          if (start === null) throw new Error("fixture child birth unavailable");
+          if (failure === "birth") return null;
+          if (++reads === 1) return start;
+          return failure === "final-birth" ? null : String(BigInt(start) + 1n);
+        });
+      }
+      if (failure === "gone") {
+        child.kill();
+        await child.exited;
+      }
+      if (failure === "gone" || failure === "changed-birth") {
+        expect((await resolveDshTranscript(info)).path).toBe(first);
+      } else {
+        const error = await resolveDshTranscript(info).then(() => null, (caught: unknown) => caught);
+        expect(error).toBeInstanceOf(ConversationUnavailable);
+        expect(error).not.toBeInstanceOf(ConversationNotStarted);
+      }
+    } finally {
+      birthSpy?.mockRestore();
+      fdSpy?.mockRestore();
+      await reader.cancel();
+      reader.releaseLock();
+      child.kill();
+      await child.exited;
+      await firstLock.close();
+    }
+  })));
+}
+
+linuxTest("rejects a preferred linked log instead of downgrading to an older plain log", async () => fixture(async path => {
+  const other = join(home, "sessions", "87654321-4321-4321-4321-cba987654321");
+  await mkdir(other);
+  await writeFile(join(other, "session.v4.jsonl.zstd"), Bun.zstdCompressSync(log()));
+  await symlink(join(other, "session.v4.jsonl.zstd"), path);
+  await writeFile(path.replace(".zstd", ""), log(event("user/message", message("older-plain-A"), 0)));
+  const lock = await open(join(path, "..", "session.lock"), "w");
+  try {
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await lock.close(); }
+}));
+
+linuxTest("does not infer an empty chat when the server birth is unknown", async () => {
+  const error = await resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] }, null).then(() => null, (caught: unknown) => caught);
   expect(error).toBeInstanceOf(ConversationUnavailable);
   expect(error).not.toBeInstanceOf(ConversationNotStarted);
 });

@@ -1,10 +1,11 @@
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { readdir, readlink, realpath, open, stat } from "node:fs/promises";
+import { readdir, readlink, realpath, open, stat, lstat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { ompProcessMemory, processStartTicks } from "./omp-process.ts";
+import { processAlive } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
 
 type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
@@ -17,7 +18,8 @@ const boundProcesses = new Set<string>();
  * a lock-free dsh that started before this server, or in the same clock tick, may have held one before we looked
  * and is no proven new chat.
  */
-const SERVER_START = BigInt(processStartTicks(process.pid) ?? "0");
+const serverStartTicks = processStartTicks(process.pid);
+const SERVER_START = serverStartTicks === null ? null : BigInt(serverStartTicks);
 
 export type DshTranscript = { path: string; root: string; identity: string };
 
@@ -93,8 +95,8 @@ function explicitResume(argv: readonly unknown[], environ: readonly string[]): b
 export function forgetDshProcesses(): void { boundProcesses.clear(); }
 
 /** A held lock binds the foreground process to its session; modification times do not. */
-/** `serverStart`: this server's start tick; a lock-free dsh counts as new only when it started strictly after it. */
-export async function resolveDshTranscript(info: Processes | null | undefined, serverStart: bigint = SERVER_START): Promise<DshTranscript> {
+/** `serverStart`: this server's start tick, or unknown; a lock-free dsh counts as new only when it started strictly after it. */
+export async function resolveDshTranscript(info: Processes | null | undefined, serverStart: bigint | null = SERVER_START): Promise<DshTranscript> {
   if (process.platform !== "linux") return unavailable();
   const found = new Map<string, DshTranscript>();
   /** every session a dsh process holds locked, readable or not: more than one is no binding */
@@ -102,43 +104,68 @@ export async function resolveDshTranscript(info: Processes | null | undefined, s
   const fresh: string[] = [];
   let inspected = 0;
   for (const proc of info?.foreground_processes ?? []) {
-    if (!proc.pid || !Array.isArray(proc.argv) || !isDshProcess(proc.argv)) continue;
+    if (!Array.isArray(proc.argv) || !isDshProcess(proc.argv)) continue;
+    if (!proc.pid) return unavailable();
     const start = processStartTicks(proc.pid);
-    if (!start) continue;
+    if (!start) {
+      if (!processAlive(proc.pid)) continue;
+      return unavailable();
+    }
     try {
-      if ((await stat(`/proc/${proc.pid}`)).uid !== process.getuid?.()) continue;
+      if ((await stat(`/proc/${proc.pid}`)).uid !== process.getuid?.()) return unavailable();
       const memory = await ompProcessMemory(proc.pid, false);
-      if (memory === null) continue;
+      if (memory === null) return unavailable();
       const sessions = dshSessionsDirectory(memory.environ);
-      if (sessions === null) continue;
+      if (sessions === null) return unavailable();
       const candidates: DshTranscript[] = [];
+      const processLocks = new Set<string>();
       let held = false;
       const descriptors = await readdir(`/proc/${proc.pid}/fd`);
       if (descriptors.length > 4096) return unavailable();
       for (const fd of descriptors) {
-        const target = await readlink(`/proc/${proc.pid}/fd/${fd}`).catch(() => "");
+        const target = await readlink(`/proc/${proc.pid}/fd/${fd}`).catch((error: NodeJS.ErrnoException) => {
+          // readdir itself can leave a closed descriptor in our own process's listing.
+          if (error.code === "ENOENT") return "";
+          throw error;
+        });
         if (basename(target) !== "session.lock" || !/^(?:session-)?[0-9a-f-]{36}$/i.test(basename(dirname(target)))) continue;
         held = true;
         const folder = dirname(await realpath(target));
-        lockedSessions.add(folder);
+        processLocks.add(folder);
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
+          // Only an absent encoding permits trying the older one, never an unreadable or linked log.
+          const present = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+          if (present === null) continue;
           const authorized = await authorizeDshTranscript(path, sessions);
           // the log must be the locked session's own, not a link into another session of the store
-          if (authorized !== null && dirname(authorized.path) === folder) { candidates.push(authorized); break; }
+          if (authorized === null || dirname(authorized.path) !== folder) return unavailable();
+          candidates.push(authorized);
+          break;
         }
       }
-      if (processStartTicks(proc.pid) === start) {
+      const currentStart = processStartTicks(proc.pid);
+      if (currentStart === null) return unavailable();
+      if (currentStart === start) {
         inspected++;
+        for (const folder of processLocks) lockedSessions.add(folder);
         const identity = `${proc.pid}:${start}`;
         if (held) {
           if (boundProcesses.size >= 256) boundProcesses.delete(boundProcesses.values().next().value!);
           boundProcesses.add(identity);
         }
         for (const transcript of candidates) found.set(transcript.path, transcript);
-        if (!held && !boundProcesses.has(identity) && BigInt(start) > serverStart && !explicitResume(proc.argv, memory.environ)) fresh.push(identity);
+        if (!held && !boundProcesses.has(identity) && serverStart !== null && BigInt(start) > serverStart && !explicitResume(proc.argv, memory.environ)) fresh.push(identity);
       }
-    } catch { /* a process can exit during inspection */ }
+    } catch {
+      // An unread recognized process still vetoes selection unless it demonstrably exited or was replaced.
+      const currentStart = processStartTicks(proc.pid);
+      if (!processAlive(proc.pid) || (currentStart !== null && currentStart !== start)) continue;
+      return unavailable();
+    }
   }
   if (found.size === 0 && inspected === 1 && fresh.length === 1) throw new ConversationNotStarted(fresh[0]!, "dsh-transcript", fresh[0]!);
   if (found.size !== 1 || lockedSessions.size !== 1) return unavailable();
