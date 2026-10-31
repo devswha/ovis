@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { HerdrPane, InteractivePrompt, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
 import { agentProcesses, ompTranscriptPath, paneRunsOmo, readCommandTranscript } from "./conversation.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 import { agentProcessInFront } from "./agent-process.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
@@ -749,21 +750,33 @@ async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadl
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** Bind omp tab moves to its open call, and optionally restore the call's Markdown (omp-ask.ts). */
-async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<InteractivePrompt> {
+/** Each omp pane's last session lookup that answered, which a lookup that fails for a moment stands in for. */
+const ompLookups = new Map<string, { path: string; open: OmoAsks }>();
+
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<{ prompt: InteractivePrompt; unverified?: true }> {
   const parsed = parsedByPublicPrompt.get(prompt);
-  if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && !parsed?.nativeSteps) return prompt;
+  if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && !parsed?.nativeSteps) return { prompt };
   let path = "";
   let open: OmoAsks = [];
+  let unverified: true | undefined;
   try {
     if (cwd) {
       path = (await ompTranscriptPath(paneId, cwd)).path;
       open = ompAskReader.read(path);
+      ompLookups.set(paneId, { path, open });
     }
-  } catch {
-    // No session proved for the pane, or not written yet: ordinary answers remain usable.
+  } catch (error) {
+    // No session proved for the pane, or not written yet: ordinary answers remain usable, unbound.
+    if (error instanceof ConversationUnavailable) ompLookups.delete(paneId);
+    // A lookup that failed for a moment: the card keeps the binding (and id) the last lookup gave, and this read
+    // authorizes no key, rather than a card with another id that would start a new asking
+    else {
+      ({ path, open } = ompLookups.get(paneId) ?? { path, open });
+      unverified = true;
+    }
   }
   const bound = ompStepPrompt(ompCallPrompt(prompt, open, path), open, path);
-  return markdown ? ompMarkdownPrompt(bound, open) : bound;
+  return { prompt: markdown ? ompMarkdownPrompt(bound, open) : bound, unverified };
 }
 
 async function readKnownPrompt(
@@ -995,7 +1008,11 @@ async function readKnownPrompt(
   }
   let prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
-  if (prompt && agent === "omp") prompt = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown);
+  if (prompt && agent === "omp") {
+    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown);
+    prompt = read.prompt;
+    if (read.unverified) inputUnverified = true;
+  }
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };

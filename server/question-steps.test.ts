@@ -284,7 +284,9 @@ async function withOmoPane(screen: string, run: (pane: Pane) => Promise<void>, r
     pane.cwd = root;
     const path = join(agentDir, "sessions", "2026-11-01T00-00-00_qs-session.jsonl");
     writeFileSync(path, JSON.stringify({ type: "session", id: "qs-session", cwd: root, timestamp: new Date().toISOString() }) + "\n" + record + "\n");
-    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume()"], { cwd: root, stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { ...process.env, OMO_CODING_AGENT_DIR: agentDir } });
+    const child = Bun.spawn([process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.resume()"], { cwd: root, stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, OMO_CODING_AGENT_DIR: agentDir } });
+    // running its own code, so /proc shows its environment and not the one it started from
+    await child.stdout.getReader().read();
     pane.omo = { pid: child.pid, path };
     try { await run(pane); } finally {
       child.kill();
@@ -369,6 +371,29 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test("omp: a call the screen does not draw neither binds the card nor changes its id", async () => {
+    await withPane("omp", omp(0), async pane => {
+      pane.ompCall?.("ahead", "question");
+      const first = await card();
+      pane.ompCall?.("further-ahead", "question");
+      const second = await card();
+      expect(second.id).toBe(first.id);
+      expect(second.steps?.some(step => step.can_navigate) ?? false).toBe(false);
+    });
+  });
+
+  test("omp: a session lookup that fails for a moment keeps the card's id, and its tap", async () => {
+    await withPane("omp", omp(0), async pane => {
+      const bound = await card();
+      const lookup = conversation.ompTranscriptPath as unknown as { mockRejectedValueOnce: (error: Error) => void };
+      lookup.mockRejectedValueOnce(new Error("busy"));
+      expect((await card()).id).toBe(bound.id);
+      follows(pane, omp, 4, "tab", "shift+tab");
+      expect(await move(bound.id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["tab"]);
+    });
+  });
+
   test.each(["answer", "move"] as const)("omp: a call that changes after the last read takes no key (%s)", async kind => {
     await withPane("omp", omp(0), async pane => {
       follows(pane, omp, 4, "tab", "shift+tab");
@@ -403,7 +428,8 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("omp: a different strip after the first key stops the move", async () => {
     await withPane("omp", omp(0), async pane => {
       pane.onSent = () => { pane.screen = omp(1).replace(" Shape ", " Changed "); };
-      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      // stopped by what it reads, not by the deadline: one far past the test's own time limit
+      expect(await move((await card()).id, { step_index: 2 }, { answerDeadlineMs: 60_000 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });
@@ -419,7 +445,7 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("omp: another call with identical headers stops after the first key", async () => {
     await withPane("omp", omp(0), async pane => {
       pane.onSent = () => { pane.ompCall?.("reopened"); pane.screen = omp(1); };
-      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(await move((await card()).id, { step_index: 2 }, { answerDeadlineMs: 60_000 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });

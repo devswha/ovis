@@ -18,6 +18,12 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
   if (!parsed || call === null) return prompt;
+  // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the strip
+  const asked = askedQuestions("ask", open[0]!.args) ?? [];
+  const drawn = parsed.responder === "omp-submit"
+    ? parsed.steps !== undefined && JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify(parsed.steps.slice(0, -1).map(step => step.label))
+    : asked.some(question => questionShown(prompt, question, parsed.ompQuestionCut === true));
+  if (!drawn) return prompt;
   return publicPrompt({ ...parsed, id: `${parsed.id}~${Bun.hash(call).toString(36)}`, ompCall: call });
 }
 
@@ -33,13 +39,9 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const call = open.length === 1 ? open[0] : undefined;
   const questions = call ? askedQuestions("ask", call.args) : null;
   const active = questions?.[form.index];
-  const input = call?.args;
-  const rawQuestions = input !== null && typeof input === "object" && "questions" in input && Array.isArray(input.questions) ? input.questions : [];
-  const matches = questions && questions.length + 1 === form.count && questions.every((question, index) => {
-    const raw = rawQuestions[index];
-    const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
-    return (question.header?.trim() || id || `Q${index + 1}`) === parsed.steps?.[index]?.label;
-  }) && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true);
+  const labels = questions ? callLabels(call!.args, questions) : null;
+  const matches = labels && labels.length + 1 === form.count && labels.every((label, index) => label === parsed.steps?.[index]?.label)
+    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true);
   const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
   return publicPrompt({
     ...parsed,
@@ -77,6 +79,16 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
   const shown = options.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
   if (new Set(shown).size !== shown.length) return prompt;
   return publicPrompt({ ...parsed, question: asked.question, options, text_format: "markdown" });
+}
+
+/** The tab labels omp draws for a call's questions: the header, else the question's id, else its place. */
+function callLabels(input: unknown, questions: readonly AskedQuestion[]): string[] {
+  const rawQuestions = input !== null && typeof input === "object" && "questions" in input && Array.isArray(input.questions) ? input.questions : [];
+  return questions.map((question, index) => {
+    const raw: unknown = rawQuestions[index];
+    const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
+    return question.header?.trim() || id || `Q${index + 1}`;
+  });
 }
 
 /** The same drawn question and ordered options must authorize both Markdown and tab moves. */
