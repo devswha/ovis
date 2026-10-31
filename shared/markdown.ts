@@ -30,8 +30,8 @@ export interface ListBlock {
 }
 
 export type MarkdownBlock =
-  /** `dollar`: written between `$$` lines rather than `\[` and `\]` */
-  | { type: "math"; value: string; dollar?: true }
+  /** `dollar`: written between `$$` rather than `\[` and `\]`; `oneLine`: opened and closed on one line */
+  | { type: "math"; value: string; dollar?: true; oneLine?: true }
   /** `align`: centered by the HTML a README wrote it in (markdownHtml.ts) */
   | { type: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; content: InlineNode[]; align?: "center" }
   | { type: "paragraph"; lines: InlineNode[][]; align?: "center" }
@@ -461,7 +461,8 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
         if (at !== -1 && next === index && part.slice(at + 2).trim() !== "") break;
         if (at !== -1 && part.slice(at + 2).trim() === "") {
           body.push(part.slice(0, at));
-          blocks.push(open === "$$" ? { type: "math", value: body.join("\n").trim(), dollar: true } : { type: "math", value: body.join("\n").trim() });
+          const value = body.join("\n").trim();
+          blocks.push(open === "$$" ? { type: "math", value, dollar: true, ...(next === index ? { oneLine: true as const } : {}) } : { type: "math", value });
           index = next + 1;
           complete = true;
           break;

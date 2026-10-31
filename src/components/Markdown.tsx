@@ -51,11 +51,11 @@ function useKatex(): Katex | null {
  * A formula drawn by KaTeX. Until KaTeX loads, or when it cannot draw the formula, `fallback`
  * shows instead: by default the formula as the agent wrote it (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
  */
-function MathExpression({ value, displayMode = false, dollar = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; fallback?: ReactNode }) {
+function MathExpression({ value, displayMode = false, dollar = false, oneLine = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; oneLine?: boolean; fallback?: ReactNode }) {
   const katex = useKatex();
   // a $$ formula keeps its own lines, as written
   const source = fallback ?? (dollar && displayMode
-    ? <span className="markdown-math-source">{value.includes("\n") ? `$$\n${value}\n$$` : `$$${value}$$`}</span>
+    ? <span className="markdown-math-source">{oneLine ? `$$${value}$$` : `$$\n${value}\n$$`}</span>
     : <span>{dollar ? `$${value}$` : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>);
   if (!katex || mathNestsTooDeep(value)) return source;
   try {
@@ -421,7 +421,7 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
           : block.language === "math"
             ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
             : <CodeBlock key={key} language={block.language} value={block.value} />;
-      case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} />;
+      case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} oneLine={block.oneLine} />;
       case "hr": return <hr key={key} />;
       case "table": return (
         <div className="markdown-table-wrap" key={key}>

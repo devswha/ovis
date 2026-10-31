@@ -90,6 +90,7 @@ describe("parseMarkdown", () => {
       // one KaTeX cannot draw shows as written: a $$ formula on its own lines, a math fence as its code
       expect(draw("$$\na \\unknowncommand\nb\n$$")).toContain('<span class="markdown-math-source">$$\na \\unknowncommand\nb\n$$</span>');
       expect(draw("$$\\unknowncommand$$")).toContain('<span class="markdown-math-source">$$\\unknowncommand$$</span>');
+      expect(draw("$$\n\\unknowncommand\n$$")).toContain('<span class="markdown-math-source">$$\n\\unknowncommand\n$$</span>');
       expect(draw("```math\n\\unknowncommand\n```")).toContain("<pre");
       for (const source of ["$$\nx^2\n$$", "```math\nx^2\n```"]) {
         const html = draw(source);
