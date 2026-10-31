@@ -16,12 +16,13 @@
  * change, until the new stream's opening document is read; anything else goes, so a refusal shows.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
+import { mergeTabLabels, mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
 import { ApiError, fetchPreferences, savePreferences } from "./api.ts";
 import { DEFAULT_THEME } from "./themes.ts";
 import { sanitizeSettings, sharedSettings, useSettings, type Settings } from "./settings.ts";
 import { currentPaneMutes, setPaneMutes, subscribePaneMutes } from "./paneMutes.ts";
 import { currentSidebarPins, setSidebarPins, subscribeSidebarPins } from "./sidebarPins.ts";
+import { currentTabLabels, setTabLabels, subscribeTabLabels } from "./tabLabels.ts";
 import { userErrorMessage, type UserError } from "./userError.ts";
 
 const SEND_AFTER_MS = 600;
@@ -41,9 +42,15 @@ type Shared = Partial<Record<SharedSettingKey, unknown>>;
  * What this browser last knew the server to hold; `pins` is null while the server has held none,
  * `muted` while no document has carried a list (a server too old to keep one never sends it).
  */
-export interface Baseline { settings: Shared; pins: readonly string[] | null; muted: readonly string[] | null }
+export interface Baseline { settings: Shared; pins: readonly string[] | null; muted: readonly string[] | null; tabLabels?: Readonly<Record<string, string>> }
 /** What this browser holds; `muted` is null until the server's list arrived (lib/paneMutes.ts). */
-export interface Local { settings: Settings; pins: readonly string[]; muted: readonly string[] | null }
+export interface Local { settings: Settings; pins: readonly string[]; muted: readonly string[] | null; tabLabels?: Readonly<Record<string, string>> }
+
+/** The tab labels learned here that the server is not known to hold: the only ones a change carries (they are only added). */
+function learnedLabels(base: Baseline, local: Local): Record<string, string> {
+  const known = base.tabLabels ?? {};
+  return Object.fromEntries(Object.entries(local.tabLabels ?? {}).filter(([key]) => !(key in known)));
+}
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -58,11 +65,14 @@ export function preferencesChange(base: Baseline, local: Local): PreferencesChan
   const settings = Object.fromEntries(Object.entries(now).filter(([key, value]) => !same(value, base.settings[key as SharedSettingKey])));
   const pinsChanged = base.pins !== null && !same(local.pins, base.pins);
   const mutedChanged = base.muted !== null && local.muted !== null && !same(local.muted, base.muted);
-  if (Object.keys(settings).length === 0 && !pinsChanged && !mutedChanged) return null;
+  const labels = learnedLabels(base, local);
+  const labelsLearned = Object.keys(labels).length > 0;
+  if (Object.keys(settings).length === 0 && !pinsChanged && !mutedChanged && !labelsLearned) return null;
   return {
     settings,
     ...(pinsChanged || base.pins === null ? { pins: [...local.pins] } : {}),
     ...(mutedChanged ? { muted_panes: [...local.muted!] } : {}),
+    ...(labelsLearned ? { tab_labels: labels } : {}),
   };
 }
 
@@ -74,6 +84,8 @@ export interface Taken {
   pins: string[] | null;
   /** the muted panes to set here; null when the server keeps no list (no mute is offered then); undefined leaves them */
   muted: string[] | null | undefined;
+  /** the tab labels to set here; null leaves them */
+  tabLabels: Record<string, string> | null;
 }
 
 /**
@@ -148,11 +160,18 @@ export function takePreferences(base: Baseline, local: Local, remote: SharedPref
       muted = same(merged, now) ? undefined : merged;
     }
   }
+  // The tab labels are only added: the server's stand, and a label learned here that it does not hold yet
+  // joins them and goes out next. One this browser had heard from the server and the server no longer
+  // holds left it (past MAX_TAB_LABELS), and leaves here too, so no two browsers keep sending old ones back.
+  // A document without them holds none, or comes from a server that keeps none: the labels here stay.
+  const tabLabels = remote.tab_labels === undefined ? null : mergeTabLabels(remote.tab_labels, learnedLabels(base, local)) ?? {};
   return {
-    base: { settings, pins: remote.pins === undefined ? base.pins : [...remote.pins], muted: remote.muted_panes === undefined ? null : [...remote.muted_panes] },
+    base: { settings, pins: remote.pins === undefined ? base.pins : [...remote.pins], muted: remote.muted_panes === undefined ? null : [...remote.muted_panes],
+      ...(remote.tab_labels !== undefined ? { tabLabels: { ...remote.tab_labels } } : base.tabLabels !== undefined ? { tabLabels: base.tabLabels } : {}) },
     patch: patch as Partial<Settings>,
     pins,
     muted,
+    tabLabels,
   };
 }
 
@@ -183,10 +202,11 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const { settings, update } = useSettings();
   const pins = useSyncExternalStore(subscribeSidebarPins, currentSidebarPins, currentSidebarPins);
   const muted = useSyncExternalStore(subscribePaneMutes, currentPaneMutes, currentPaneMutes);
-  const latest = useRef<Local>({ settings, pins, muted });
-  latest.current = { settings, pins, muted };
+  const tabLabels = useSyncExternalStore(subscribeTabLabels, currentTabLabels, currentTabLabels);
+  const latest = useRef<Local>({ settings, pins, muted, tabLabels });
+  latest.current = { settings, pins, muted, tabLabels };
   // what this browser last knew the server to hold; until a document arrives, what it holds itself
-  const base = useRef<Baseline>({ settings: sharedSettings(settings), pins: null, muted: null });
+  const base = useRef<Baseline>({ settings: sharedSettings(settings), pins: null, muted: null, tabLabels: {} });
   const revision = useRef(0);
   // a document has arrived (the GET, or the event stream's opening): sending begins then
   const loadedRef = useRef(false);
@@ -238,10 +258,11 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     const taken = takePreferences(base.current, latest.current, remote, inFlight.current, readOnly.current, refused.current);
     base.current = taken.base;
     // a second document in the same tick compares against what this one set, not the last render
-    latest.current = { settings: sanitizeSettings({ ...latest.current.settings, ...taken.patch }), pins: taken.pins ?? latest.current.pins, muted: taken.muted === undefined ? latest.current.muted : taken.muted };
+    latest.current = { settings: sanitizeSettings({ ...latest.current.settings, ...taken.patch }), pins: taken.pins ?? latest.current.pins, muted: taken.muted === undefined ? latest.current.muted : taken.muted, tabLabels: taken.tabLabels ?? latest.current.tabLabels };
     if (Object.keys(taken.patch).length > 0) update(taken.patch);
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);
+    if (taken.tabLabels !== null) setTabLabels(taken.tabLabels);
     loadedRef.current = true;
     setLoaded(true);
     setTaken((count) => count + 1);
@@ -325,7 +346,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     window.clearTimeout(retryTimer.current);
   }, []);
 
-  const change = loaded ? preferencesChange(base.current, { settings, pins, muted }) : null;
+  const change = loaded ? preferencesChange(base.current, { settings, pins, muted, tabLabels }) : null;
   const pending = change === null ? null : JSON.stringify(change);
   // what was unsent now matches the server (another browser saved the same): nothing is left to confirm
   useEffect(() => {
@@ -377,6 +398,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         }
         // a server that answers a mute list with none keeps none: the mutes stand down here, unsent again
         if (body.muted_panes !== undefined && saved.muted_panes === undefined) { base.current.muted = null; setPaneMutes(null); }
+        // a server that answers labels with none keeps none: they stay this page's, and are not sent again
+        if (body.tab_labels !== undefined && saved.tab_labels === undefined) base.current.tabLabels = { ...base.current.tabLabels, ...body.tab_labels };
         // the answer is the whole document as this change left it: one from elsewhere that landed
         // before comes with it, one that landed after was held and is read now
         absorb(saved);

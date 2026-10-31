@@ -17,7 +17,7 @@
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
-import { normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
+import { mergeTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
@@ -371,7 +371,8 @@ function changePreferences(raw: unknown): Response {
   if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[] }", 400);
   const { settings } = normalizeThemeChange(preferences.settings, change);
   const pins = change.pins ?? preferences.pins;
-  preferences = { revision: preferences.revision + 1, settings: { ...preferences.settings, ...settings }, ...(pins === undefined ? {} : { pins }), muted_panes: change.muted_panes ?? preferences.muted_panes ?? [] };
+  const labels = mergeTabLabels(preferences.tab_labels, change.tab_labels);
+  preferences = { revision: preferences.revision + 1, settings: { ...preferences.settings, ...settings }, ...(pins === undefined ? {} : { pins }), muted_panes: change.muted_panes ?? preferences.muted_panes ?? [], ...(labels === undefined ? {} : { tab_labels: labels }) };
   emitSse({ type: "preferences", preferences });
   return json(preferences, 200, { "cache-control": "no-store" });
 }

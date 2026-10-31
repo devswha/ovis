@@ -38,6 +38,7 @@ import { phaseRows, planRows, taskRows, todoRows, type ChecklistRow } from "../l
 import { isTodoTool, parseTodoAnswer, todoCallSummary, type TodoItem, type TodoStatus } from "../lib/todos.ts";
 import { formatGoalTime, turnGoal, type GoalState, type GoalStatus } from "../lib/goals.ts";
 import { useSettings } from "../lib/settings.ts";
+import { learnFromConversation } from "../lib/tabLabels.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { followGlides } from "../lib/followScroll.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -1237,6 +1238,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const { settings } = useSettings();
   // older turns load a page at a time; the setting decides how many prompts a page holds
   const pagePrompts = settings.historyPrompts;
+  // read by the conversation reads as they answer: turning the setting on or off needs no new read
+  const autoTabNames = useRef(settings.autoTabNames);
+  autoTabNames.current = settings.autoTabNames;
   const machineId = useMachineId();
   // the pane the chat has open keeps its page: its answer is the last one evicted
   useEffect(() => {
@@ -1510,6 +1514,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         }
         if (cancelled || generation !== olderGeneration.current) return;
         if (conversation !== previousAnswer) validatedPresentation.current = readKey;
+        // a tab named only by its number or its agent takes its label from the first message (#2019)
+        if (autoTabNames.current) learnFromConversation(machineId, paneId, conversation);
         const proved = finish.status !== "done" || (readKey === presentationRef.current && finishRef.current.status === "done"
           && finish.epoch !== undefined && finish.id !== undefined
           && conversationFinishEvidence.accept(seenKey(machineId, finish.epoch, paneId), finish.id, conversation, previousAnswer));
@@ -1648,6 +1654,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (shownPane.current !== paneId || olderGeneration.current !== generation) return;
         const page = await fetchPaneConversation(paneId, { before, prompts: pagePrompts });
         if (shownPane.current !== paneId || olderGeneration.current !== generation) return;
+        if (autoTabNames.current) learnFromConversation(machineId, paneId, page);
         if (page.history_id !== history.current) {
           dropOlder(); setState(EMPTY_STATE); setLoaded(false); signature.current = ""; lastAnswer.current = null;
           setPollKey((key) => key + 1); return;

@@ -20,7 +20,8 @@ import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
 import { folderName, placeLine } from "../lib/paneName.ts";
 import { agentTabName } from "../lib/sidebarAgents.ts";
-import { tabLabel } from "../lib/tabName.ts";
+import { autoTabLabel, tabLabel } from "../lib/tabName.ts";
+import { currentTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -153,6 +154,8 @@ function ShortcutHint({ shortcutId }: { shortcutId?: ShortcutId }) {
 
 export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false }: CommandPaletteProps) {
   const t = useT();
+  const { settings } = useSettings();
+  const firstLines = useSyncExternalStore(subscribeTabLabels, currentTabLabels, currentTabLabels);
   const machineId = useMachineId();
   const api = useMachineApi();
   const touch = useMediaQuery("(pointer: coarse)");
@@ -623,11 +626,15 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     const { tab, all } = tabOf(row);
     return agentTabName(tab, all, t);
   };
+  // the footer names a tab as the strip draws it, a label from its first message included (lib/tabName.ts)
+  const placeTabName = ({ machine }: MachinePane, tab: TabInfo, place: number): string => (settings.autoTabNames
+    ? autoTabLabel(tab, machine.snapshot?.panes.filter((pane) => pane.tab_id === tab.tab_id) ?? [], machine.id, firstLines, place)?.label : undefined)
+    ?? tabLabel(tab, t, place);
   const activeRow = rows[activeIndex];
   const activeWorkspace = activeRow?.kind === "pane" ? activeRow.machine.snapshot?.workspaces.find((workspace) => workspace.workspace_id === activeRow.pane.workspace_id) : undefined;
   const activeTab = activeRow?.kind === "pane" ? tabOf(activeRow) : undefined;
   const footerPlace = activeRow?.kind === "pane"
-    ? [multiMachine ? activeRow.machine.name : null, activeWorkspace?.label ?? t("Unknown workspace"), activeTab?.tab ? tabLabel(activeTab.tab, t, activeTab.place) : null].filter(Boolean).join(" › ")
+    ? [multiMachine ? activeRow.machine.name : null, activeWorkspace?.label ?? t("Unknown workspace"), activeTab?.tab ? placeTabName(activeRow, activeTab.tab, activeTab.place) : null].filter(Boolean).join(" › ")
     : activeRow?.kind === "action" ? activeRow.action.label
     : activeRow?.kind === "folder" ? activeRow.label
     : activeRow?.offered.action.title ?? "";
