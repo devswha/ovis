@@ -140,9 +140,10 @@ function ompSteps(screen: string, before: number) {
   if (index === null) return null;
   return {
     // The strip has no answered markers: leave steps unmarked unless review rows prove an answer.
-    steps: labels.map((label, at) => ({ label, answered: false, current: at === index, can_navigate: at !== index })),
+    // the review (Submit, last) draws no question of the call, so a move to it cannot be checked: questions only
+    steps: labels.map((label, at) => ({ label, answered: false, current: at === index, can_navigate: at !== index && at < labels.length - 1 })),
     can_step_back: index > 0,
-    can_step_next: index < labels.length - 1,
+    can_step_next: index < labels.length - 2,
     nativeSteps: { identity: JSON.stringify(labels), index, count: labels.length, next: KEY.tab, previous: KEY.backtab },
   };
 }
@@ -204,7 +205,8 @@ function parseOmpSubmit(screen: string): ParsedPrompt | null {
     ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}),
     responder: "omp-submit", menuLabels: ["Submit", "Cancel"], selectedIndex: 0,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: 1,
-  });
+    // where the review stands among the tabs comes and goes with the colours read: not part of the card's id
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
 /** A clipped legacy footer is enough to identify a menu only when every parsed row
@@ -291,7 +293,8 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
       keys.push(KEY.enter);
       return keySteps(keys);
     } } : {}),
-  });
+    // the steps come and go with the colours read and the call found: not part of the card's id
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
 /**

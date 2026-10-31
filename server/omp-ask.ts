@@ -1,11 +1,14 @@
-import { createHash } from "node:crypto";
 import { askedQuestions, type AskedQuestion } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
-/** A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves. */
+/**
+ * A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves, and only on a
+ * question whose drawn text and options are that call's. The review draws headers and answers alone, which another call
+ * with the same headers draws as well: it offers no move. The card's id stays as read, with or without the binding.
+ */
 export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   const form = parsed?.nativeSteps;
@@ -19,12 +22,10 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
     const raw = rawQuestions[index];
     const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
     return (question.header?.trim() || id || `Q${index + 1}`) === parsed.steps?.[index]?.label;
-  }) && (parsed.responder === "omp-submit" ? form.index === questions.length
-    : active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true));
+  }) && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true);
   const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
   return publicPrompt({
     ...parsed,
-    ...(identity ? { id: createHash("sha256").update(JSON.stringify([parsed.id, identity])).digest("hex").slice(0, 12) } : {}),
     nativeSteps: identity ? { ...form, identity } : undefined,
     steps: parsed.steps?.map(step => ({ ...step, can_navigate: identity ? step.can_navigate : false })),
     can_step_back: identity ? parsed.can_step_back : false,

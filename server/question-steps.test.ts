@@ -81,9 +81,10 @@ describe("omp Ask question steps", () => {
       expect(prompt).not.toBeNull();
       expect(prompt?.steps?.map(step => step.label)).toEqual(["Color", "Size", "Shape", "Submit"]);
       expect(prompt?.steps?.findIndex(step => step.current)).toBe(at);
-      expect(navigable(prompt)).toEqual([0, 1, 2, 3].map(index => index !== at));
+      // the review (Submit) is never a step to go to: nothing on it names the call
+      expect(navigable(prompt)).toEqual([0, 1, 2, 3].map(index => index !== at && index < 3));
       expect(prompt?.can_step_back ?? false).toBe(at > 0);
-      expect(prompt?.can_step_next ?? false).toBe(at < 3);
+      expect(prompt?.can_step_next ?? false).toBe(at < 2);
     }
   });
 
@@ -328,15 +329,42 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
-  test("omp: Next, a forward step and review Back send only tab keys without answering", async () => {
+  test("omp: Next, a forward step and Back send only tab keys without answering", async () => {
     await withPane("omp", omp(0), async pane => {
       follows(pane, omp, 4, "tab", "shift+tab");
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
       expect((await card()).question).toBe("Which size?");
-      expect(await move((await card()).id, { step_index: 3 })).toEqual({ status: 200, code: undefined });
-      expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
       expect((await card()).question).toBe("Which shape?");
-      expect(pane.sent).toEqual(["tab", "tab", "tab", "shift+tab"]);
+      expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect((await card()).question).toBe("Which size?");
+      expect(pane.sent).toEqual(["tab", "tab", "shift+tab"]);
+    });
+  });
+
+  test("omp: the review draws no question of the call, so neither it nor a move onto it is offered", async () => {
+    await withPane("omp", omp(2), async pane => {
+      const last = await card();
+      expect(last.steps?.at(-1)?.can_navigate).not.toBe(true);
+      expect(last.can_step_next ?? false).toBe(false);
+      expect((await move(last.id, { step_index: 3 })).status).toBe(400);
+      pane.screen = omp(3);
+      const review = await card();
+      expect(review.steps?.some(step => step.can_navigate) ?? false).toBe(false);
+      expect(review.can_step_back ?? false).toBe(false);
+      expect((await move(review.id, { step_back: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("omp: the card keeps its id whether or not the colours prove where the form stands", async () => {
+    await withPane("omp", omp(0), async pane => {
+      const proven = await card();
+      expect(proven.can_step_next).toBe(true);
+      pane.visible = omp(1);
+      const unproven = await card();
+      expect(unproven.can_step_next ?? false).toBe(false);
+      expect(unproven.id).toBe(proven.id);
     });
   });
 
