@@ -21,7 +21,7 @@ import { closeBackslash, closeMention, type createSubmitText, freeClaudeBox, fre
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
-import type { ClientMessage, HerdrPane, PendingMessage, SessionSnapshot } from "../../shared/protocol.ts";
+import type { ClientMessage, HerdrPane, PendingMessage, PendingRemoval, SessionSnapshot } from "../../shared/protocol.ts";
 import { typingGuards } from "../input-guard.ts";
 import { claudeForegroundSession, isClaudeProcess } from "../claude-store.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
@@ -112,7 +112,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return typingGuards.pendingLease(sight(client, paneId).facts());
   });
   const pending = new PendingInputs<PendingOwner, PendingLease | null>((owner, paneId, messages, removed) => {
-    if (isClient(owner)) { send(owner, { type: "pending-messages", pane_id: paneId, messages, ...(removed ? { removed } : {}) }); return; }
+    if (isClient(owner)) {
+      send(owner, { type: "pending-messages", pane_id: paneId, messages, ...(removed ? { removed } : {}) });
+      keepReceipts(owner, paneId, messages, removed);
+      return;
+    }
     // a first message: every connection attached to the pane sees it, and keeps the receipt once it went
     if (removed) firstReceipts.set(paneId, [...(firstReceipts.get(paneId) ?? []), ...removed].slice(-FIRST_MESSAGE_RECEIPTS));
     for (const client of clients) {
@@ -158,6 +162,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
+  /** a follow-up's sent or discarded receipt, kept for its browser's return (#2421): the same bounds and binding as Pi's */
+  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded"; at: number }> = [];
+  /** the resume key each follow-up's browser had when the bridge took it, by connection and message id */
+  const receiptKeys = new WeakMap<Client, Map<string, string>>();
   const resumeKey = (client: Client, paneId: string): string | undefined => {
     const id = client.data.attached.get(paneId)?.receiptResumeId;
     return id ? JSON.stringify([client.data.deviceId ?? null, id]) : undefined;
@@ -165,6 +173,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const prunePi = (): void => {
     const cutoff = Date.now() - PI_RESUME_MS;
     while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
+    while (completed.length && (completed[0]!.at < cutoff || completed.length > PI_RESUME_LIMIT)) completed.shift();
     let count = 0;
     for (const [paneId, items] of piTyped) {
       const kept = items.filter((item) => {
@@ -886,12 +895,41 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           item.owner = client;
           rebound = true;
         }
-        const removed = piCompleted.filter((item) => item.paneId === paneId && item.key === key)
-          .map(({ id }) => ({ id, outcome: "consumed" as const }));
+        const removed = [
+          ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
+          ...completed.filter((item) => item.paneId === paneId && item.key === key).map(({ id, outcome }) => ({ id, outcome, resumed: true as const })),
+        ];
         if (removed.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], removed });
       } catch { /* failed authorization cannot resume even presentation */ }
     }
     return rebound;
+  }
+  /**
+   * Keeps a follow-up's sent or discarded receipt for its browser's return: a socket that drops before the
+   * receipt reaches it leaves the browser's copy unconfirmed. Only an exact outcome is kept (never a dismissed
+   * uncertain copy), bound to the device and browser that sent it, and it is presentation only: nothing is typed.
+   */
+  function keepReceipts(owner: Client, paneId: string, messages: PendingMessage[], removed: readonly PendingRemoval[] | undefined): void {
+    const key = resumeKey(owner, paneId);
+    const keys = receiptKeys.get(owner) ?? new Map<string, string>();
+    if (key) for (const message of messages) if (!keys.has(message.id)) keys.set(message.id, key);
+    for (const item of removed ?? []) {
+      const kept = keys.get(item.id);
+      keys.delete(item.id);
+      if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded")) continue;
+      completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: Date.now() });
+      // a reload can attach its successor before the Enter's reply settles the send
+      for (const successor of clients) {
+        if (successor === owner || !livePiOwner(successor) || !successor.data.attached.has(paneId)
+          || resumeKey(successor, paneId) !== kept || connectionOf(successor).mode === "observe") continue;
+        try {
+          authorizeSocket(successor);
+          send(successor, { type: "pending-messages", pane_id: paneId, messages: [], removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
+        } catch { /* failed authorization cannot resume even presentation */ }
+      }
+    }
+    if (keys.size) receiptKeys.set(owner, keys); else receiptKeys.delete(owner);
+    prunePi();
   }
   /** A connection that attached the pane: it sees the pane's first messages and their receipts, and may be the one to type them. */
   function attached(client: Client, paneId: string): void {
