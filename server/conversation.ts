@@ -80,6 +80,7 @@ import { launchedAgents } from "./launched-agents.ts";
 import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
 import { commandTranscriptRecords, PI_EVIDENCE_TYPES, type CommandTranscriptRecord } from "./outcome.ts";
 import { type ClaudeBranch, claudeForks, followClaudeBranch, type PromptChain, turnStarts } from "./transcript-turns.ts";
+import { copilotSetAside } from "./copilot.ts";
 import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 import { userHome } from "./user-home.ts";
 import { kiroCodexProcess } from "./kiro-terminal.ts";
@@ -606,6 +607,49 @@ function newestPage(path: string, stream: TranscriptStream, source: StreamSource
   return start === undefined ? null : { start, starts };
 }
 
+/**
+ * The newest Copilot turn that has outgrown its window (#2478), kept between polls: where it starts,
+ * how far it was read and the bytes just before that, and its complete lines, a picture record as its
+ * length only (copilotSetAside). A poll reads only what was appended since; another history, a file
+ * whose bytes before the read point changed, a new prompt, or a turn grown a window past the cap is
+ * read afresh. Like liveScans it trusts Copilot to append: an earlier line rewritten in place, with
+ * the bytes before the read point kept and the file grown, is not noticed.
+ */
+interface CopilotTurnScan { id: string; start: number; scanned: number; tail: string; lines: { at: number; line: string }[] }
+const copilotTurnScans = new Map<string, CopilotTurnScan>();
+
+function forgetCopilotTurns(path: string): void {
+  for (const key of copilotTurnScans.keys()) if (key.startsWith(`${path}\0`)) copilotTurnScans.delete(key);
+}
+
+/** The newest Copilot page that begins before its window: its start, its complete lines and the last line still being written. */
+function copilotNewestTurn(path: string, stream: TranscriptStream, prompts: number): { start: number; lines: CopilotTurnScan["lines"]; partial: string } {
+  const key = `${path}\0${prompts}`;
+  let scan = copilotTurnScans.get(key);
+  let bytes: Buffer | null = null;
+  // a turn grown a window past the cap is found afresh, so a page still ends up at most about the cap
+  if (scan && scan.id === stream.id && scan.scanned <= stream.length && stream.length - scan.start <= COPILOT_PAGE_BYTES + TRANSCRIPT_WINDOW_BYTES
+    && bytesBefore(stream, scan.scanned) === scan.tail) {
+    bytes = readStream(stream, scan.scanned, stream.length);
+    // a prompt appended since starts a newer turn: the page is found afresh from it
+    if (turnStarts(bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1), "copilot-transcript", undefined, null).length > 0) bytes = null;
+  }
+  if (scan === undefined || bytes === null) {
+    const whole = pageBefore(stream, "copilot-transcript", stream.length, { widen: true, prompts });
+    scan = { id: stream.id, start: whole.start, scanned: whole.start, tail: "", lines: [] };
+    bytes = whole.bytes;
+  }
+  let at = 0;
+  for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, at)) {
+    scan.lines.push({ at: scan.scanned + at, line: copilotSetAside(bytes.subarray(at, newline).toString("utf8")) });
+    at = newline + 1;
+  }
+  scan.scanned += at;
+  scan.tail = bytesBefore(stream, scan.scanned);
+  remember(copilotTurnScans, key, scan, 4);
+  return { start: scan.start, lines: scan.lines, partial: bytes.subarray(at).toString("utf8") };
+}
+
 /** Only native notification records name metadata files; quoted tool output names none. */
 function collectSubagentIds(text: string, ids: Set<string>): void {
   if (!text.includes("<task-notification>")) return;
@@ -866,6 +910,7 @@ export function forgetTranscriptState(): void {
   forgetOpencodeState();
   forgetOmpBlobTypes();
   liveScans.clear();
+  copilotTurnScans.clear();
   settledTurns.clear();
   liveTranscriptTurns.clear();
   transcriptRevisions.clear();
@@ -907,6 +952,7 @@ export function forgetPaneTranscriptState(paneId: string): void {
     transcriptRevisions.delete(path);
     commandTranscripts.delete(path);
     liveScans.delete(path);
+    forgetCopilotTurns(path);
     for (const key of [...settledTurns.keys()]) if (key.startsWith(`${path}\0`)) settledTurns.delete(key);
     liveTranscriptTurns.delete(path);
     clearScans.delete(path);
@@ -1993,15 +2039,23 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
       // page has moved past it, the chat gets the newest page and fetches the turns
       // in between with `before` + `since`: no poll reads more than a page.
       if (newest !== null) {
+        // a turn the window holds the start of again: a later one outgrowing it is found afresh
+        if (source === "copilot-transcript") forgetCopilotTurns(path);
         start = held !== null && held >= newest.start ? held : newest.start;
         live = liveTurns(path, stream, source, start, newest.starts, piAgentDir);
         text = "";
       } else {
-        // no turn starts in the window: the page begins mid-turn, read whole as before
-        // (a Copilot page reaches back to its turn's start: COPILOT_PAGE_BYTES)
-        const whole = pageBefore(stream, source, stream.length, { widen: source === "copilot-transcript", prompts: pagePrompts(page) });
-        start = held !== null && held >= whole.start ? held : whole.start;
-        text = whole.bytes.subarray(start - whole.start).toString("utf8");
+        // no turn starts in the window: the page begins mid-turn, read whole as before; a Copilot
+        // page reaches back to its turn's start (COPILOT_PAGE_BYTES) and reads only what was appended since
+        if (source === "copilot-transcript") {
+          const turn = copilotNewestTurn(path, stream, pagePrompts(page));
+          start = held !== null && held >= turn.start ? held : turn.start;
+          text = turn.lines.filter(({ at }) => at >= start).map(({ line }) => `${line}\n`).join("") + turn.partial;
+        } else {
+          const whole = pageBefore(stream, source, stream.length, { widen: false, prompts: pagePrompts(page) });
+          start = held !== null && held >= whole.start ? held : whole.start;
+          text = whole.bytes.subarray(start - whole.start).toString("utf8");
+        }
       }
     }
     if (live === null && page.before === undefined && start > stream.floor) head = metadataHead(path, stream, source, start);

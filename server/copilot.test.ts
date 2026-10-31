@@ -1579,5 +1579,31 @@ it("keeps a recorded turn whole when the pictures Copilot interned in it pass th
     expect(latest.cursor).not.toBeNull();
     const older = transcriptPage("copilot-transcript", path, { before: latest.cursor!, prompts: 1 });
     expect(older.turns).toEqual(whole.slice(0, 2));
+    // while the turn is live, a poll reads what was appended, not the turn again
+    const appended = JSON.stringify({ type: "assistant.message", data: { content: "Appended answer.", toolRequests: [], phase: "final_answer" }, id: crypto.randomUUID(), timestamp: "2026-01-01T00:00:01.000Z", parentId: null }) + "\n";
+    appendFileSync(path, appended);
+    let read = 0;
+    const realRead = fs.readSync;
+    const counting = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const count = (realRead as (...args: Parameters<typeof fs.readSync>) => number)(...args);
+      read += count;
+      return count;
+    }) as typeof fs.readSync);
+    let grown: ReturnType<typeof transcriptPage>;
+    try { grown = transcriptPage("copilot-transcript", path, { prompts: 1 }); } finally { counting.mockRestore(); }
+    expect(read).toBeLessThan(64 * 1024);
+    expect(grown.turns).toEqual(parseCopilotTranscript(readFileSync(path, "utf8")).slice(2));
+    expect(grown.turns.at(-1)?.parts.at(-1)).toEqual({ kind: "text", text: "Appended answer.", phase: "final_answer" });
+    // a file written anew rather than appended to is read whole again
+    const rewritten = readFileSync(path, "utf8").replace("Appended answer.", "Rewritten answer");
+    writeFileSync(path, rewritten);
+    expect(transcriptPage("copilot-transcript", path, { prompts: 1 }).turns).toEqual(parseCopilotTranscript(rewritten).slice(2));
+    // a newer prompt appended between polls with more than a window after it: its turn is the newest page
+    const later = recorded.find((record) => record.includes('"user.message"'))!.replace("Recorded fixture text.", "Later prompt.");
+    appendFileSync(path, [later, picture(3), picture(4)].join("\n") + "\n");
+    const afterLater = parseCopilotTranscript(readFileSync(path, "utf8"));
+    expect(transcriptPage("copilot-transcript", path, { prompts: 1 }).turns).toEqual(afterLater.slice(-1));
+    // a line on disk shaped like the page's own stand-in for a picture is no record: the strict reader refuses it
+    expect(() => parseCopilotTranscript(`\u0000copilot-set-aside:12\n${recorded[1]}\n`)).toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
