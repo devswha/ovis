@@ -1380,8 +1380,14 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             return badRequest("invalid_answer", "Submit or clear edits before switching questions.");
           }
         }
-        const asking = askings.get(body.pane_id);
-        const active = (): boolean => !deadline.aborted && asking !== undefined && askings.get(body.pane_id) === asking && asking.content !== null;
+        // a move is a new asking, begun before its first key: a card read before it (another device's,
+        // or this tab's before a move away and back) is refused, while one a poll reads during the move
+        // is of this asking and still answers once the move is done (#2503 review)
+        const prior = askings.get(body.pane_id);
+        if (!prior || prior.content === null) return promptChanged();
+        const asking: Asking = { content: prior.content, n: askingCount += 1, queued: prior.queued };
+        askings.set(body.pane_id, asking);
+        const active = (): boolean => !deadline.aborted && askings.get(body.pane_id) === asking && asking.content !== null;
         answersUnderWay.add(body.pane_id);
         answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
         try {
@@ -1400,12 +1406,18 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             },
           }, claude ? (shown) => shown.claudeTabs : undefined);
           if (!moved) return promptChanged();
-          askingEnded(body.pane_id);
+          // a move is no answer: the tab it ended on is what the pane asks now, under the move's asking
+          if (askings.get(body.pane_id) === asking) asking.content = moved.id;
           return jsonResponse({ ok: true });
         } catch (error) {
           if (error instanceof PiAskFormOpen) return promptChanged();
           throw error;
-        } finally { answersUnderWay.delete(body.pane_id); }
+        } finally {
+          answersUnderWay.delete(body.pane_id);
+          // ended as well as begun: a read that began during the move and comes back after it shows a
+          // screen of the move, and changes nothing about the asking (#2503 review)
+          answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
+        }
       }
 
       // checked against the card before anything is sent: an invalid answer never opens the queue
@@ -1656,10 +1668,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
       // A model list closes, or opens its next list, a moment after its key: the same wait, so
       // the card's read right after the answer does not get the list just answered once more
-      if (target.steps) form.still = sameContent(contentId(target));
+      // Claude draws its next tab, or its review, a moment after the key: the same wait, by what the
+      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503)
+      if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
+      else if (target.steps) form.still = sameContent(contentId(target));
       else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
-      // Claude draws its next tab, or its review, a moment after the key: the same wait
-      else if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       return jsonResponse({ ok: true });
     });
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message

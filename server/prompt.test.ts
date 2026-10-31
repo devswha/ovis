@@ -4134,6 +4134,12 @@ describe("an answer and the menu it was made for", () => {
     nextRead?: { text: string; delay: number };
     /** herdr presses this key and its reply is lost on the way */
     replyLostOn?: string;
+    /** herdr answers the next key only once this settles: what happens while a key is on its way */
+    holdSend?: Promise<unknown>;
+    /** the next screen read is taken as the screen is when it arrives, and answered only once this settles */
+    holdRead?: Promise<unknown>;
+    /** a held screen read has arrived */
+    onReadHeld?: () => void;
     /** more panes showing the same screen: p_2 … */
     more?: number;
     /** the next snapshot alone takes this long */
@@ -4168,6 +4174,13 @@ describe("an answer and the menu it was made for", () => {
             pane.nextReadFails = false;
             return void socket.destroy();
           }
+          const gate = pane.holdRead;
+          if (gate) {
+            pane.holdRead = undefined;
+            const text = request.params.source === "visible" && pane.visibleScreen !== undefined ? pane.visibleScreen : request.params.format === "ansi" ? pane.viewport ?? pane.screen : pane.screen;
+            pane.onReadHeld?.();
+            return void gate.then(() => answer({ read: { text } }));
+          }
           const once = pane.nextRead;
           pane.nextRead = undefined;
           if (once) return void setTimeout(() => answer({ read: { text: once.text } }), once.delay);
@@ -4189,6 +4202,9 @@ describe("an answer and the menu it was made for", () => {
           lost ||= sent === pane.replyLostOn;
         }
         if (lost) return void socket.destroy();
+        const held = pane.holdSend;
+        pane.holdSend = undefined;
+        if (held) return void held.then(() => answer({}));
         answer({});
       });
     });
@@ -5815,6 +5831,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  // #2503 review by @jpcarranza94, live on Claude Code 2.1.316
+  test("with colors (steps), an answer to Claude's last question waits through a half-drawn review", async () => {
+    const panel = (state: string) => readFileSync(new URL(`./fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
+    const draw = (pane: Pane, screen: string) => { pane.viewport = screen; pane.screen = screen.replace(ANSI_RE, ""); };
+    const review = panel("review");
+    const heading = review.split("\n").slice(0, 4).join("\n") + "\n";
+    await withPane("claude", "blocked", "", async (pane) => {
+      draw(pane, panel("second"));
+      const second = (await card())!;
+      expect(second.steps?.length).toBe(3);
+      pane.onSent = (sent) => {
+        if (sent !== "enter") return;
+        setTimeout(() => draw(pane, heading), 100);
+        setTimeout(() => draw(pane, review), 300);
+      };
+      expect(await answer(second.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect((await card())!.title).toBe("Review your answers");
+    });
+  });
+
   test("goes back between Claude's question tabs with ← only as the pane shows each tab, and stops when it does not", async () => {
     // Claude Code 2.1.312 at 120 columns, colors kept: the active tab is drawn on a background (#2465)
     const panel = (state: string) => readFileSync(new URL(`./fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
@@ -5892,6 +5928,60 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(pane.sent).toEqual(["right", "right"]);
       expect(under).toEqual(["device", "symptoms"]);
       expect((await card())!.title).toBe("Review your answers");
+    });
+    // a poll while a step is on its way reads the tab it moves to: that card's id still answers once
+    // the step is done, so the next tap on a step is not refused (#2503 review by @jpcarranza94)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      let polled: InteractivePrompt | null = null;
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        const next = pane.sent.filter((key) => key === "left").length === 1 ? "symptoms" : "device";
+        show(pane, next);
+        // the poll runs to its end before herdr answers the key, so before the step can end
+        if (next === "symptoms") pane.holdSend = card().then((shown) => { polled = shown; });
+      };
+      expect(await answer((await card())!.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(polled!).toMatchObject({ question: "Which problems do you see?" });
+      expect(await answer(polled!.id, { step_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      expect((await card())!.question).toBe("Which device do you use?");
+    });
+    // a card read before moves that come back to its tab is not the card now: each move is a new
+    // asking, so the review read before Back and a step back to the review is refused (#2503 review)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const before = (await card())!;
+      pane.onSent = (sent) => { if (sent === "left") show(pane, "symptoms"); if (sent === "right") show(pane, "review"); };
+      expect(await answer(before.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(await answer((await card())!.id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "right"]);
+      expect((await card())!.title).toBe("Review your answers");
+      expect(await answer(before.id, { step_back: true })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["left", "right"]);
+    });
+    // a poll begun during a move and answered after it read the tab the move left: it changes nothing
+    // about the asking, so the card of the tab the move reached still answers (#2503 review)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      let release = () => {};
+      let late: Promise<InteractivePrompt | null> = Promise.resolve(null);
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        pane.holdRead = new Promise<void>((resolve) => { release = resolve; });
+        // the key waits for the poll's first read, taken as the review; only then does the pane redraw
+        pane.holdSend = new Promise<void>((resolve) => { pane.onReadHeld = () => { pane.onReadHeld = undefined; show(pane, "symptoms"); resolve(); }; });
+        late = card();
+      };
+      expect(await answer(review.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      const reached = (await card())!;
+      expect(reached.question).toBe("Which problems do you see?");
+      release();
+      await late;
+      expect((await card())!.id).toBe(reached.id);
+      pane.onSent = (sent) => { if (sent === "left") show(pane, "device"); };
+      expect(await answer(reached.id, { step_back: true })).toEqual({ status: 200, code: undefined });
     });
     // the pane went two tabs for one ←: not the tab asked for, so no second key
     await withPane("claude", "blocked", "", async (pane) => {
