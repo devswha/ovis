@@ -14,6 +14,7 @@ describe("decideAccess", () => {
     expect(decideAccess({
       ...base, relayPeer, device, tokenMatched: true, tokenConfigured: true,
       tailscaleLogin: "another@example.com", owner: "owner@example.com", gated: true,
+      portal: { proven: true, user: "owner", auth: "credential", role: "drive" },
     })).toEqual({ level: "full", via: "relay", role: "watch", device: relayPeer });
   });
   for (const forwardedFor of [null, "127.0.0.1", "203.0.113.50", "100.101.102.103, 100.64.0.9", "100.63.255.255", "100.128.0.0", "fd7a:115c:a1e1::1", "100.64.0.999", "::ffff:100.64.0.9"]) {

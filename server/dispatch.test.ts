@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import * as herdr from "./herdr/client.ts";
 import { createServer } from "./index.ts";
+import { PortalService } from "./portal.ts";
 
 for (const [path, status, expectedTimeouts] of [["/api/health", 200, [60]], ["/api/nope", 404, [60]]] as const) {
   it(`dispatches GET ${path} with a fake socket context`, async () => {
@@ -36,14 +37,16 @@ for (const [path, status, expectedTimeouts] of [["/api/health", 200, [60]], ["/a
   });
 }
 
-it("uses only the relay principal, even with valid driving cookies and bridge tokens", async () => {
+it("uses only the relay principal, even with valid driving cookies, bridge tokens and Portal proof", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-relay-"));
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "shared-token", bridgeToken: "bridge-token", tailscaleOwner: null, machines: false, sidecar: false });
+  const portal = new PortalService({ stateDir });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, portal, token: "shared-token", bridgeToken: "bridge-token", tailscaleOwner: null, machines: false, sidecar: false });
   const store = app.context.services.devices;
   const cookie = store.pair(store.startPairing().code, "Driving cookie", "drive");
   if (!cookie) throw new Error("Expected cookie pairing");
   const cookieMatch = spyOn(store, "match").mockImplementation(() => { throw new Error("Relay must not inspect cookies"); });
   const identity = spyOn(app.context.services, "identityOf").mockImplementation(() => { throw new Error("Relay must not inspect Tailscale"); });
+  const proof = spyOn(portal, "vouches").mockReturnValue(true);
   const principal = { id: "0123456789abcdef", label: "Relay watcher", role: "watch" as const };
   const ctx: ServerContext = {
     ...app.context, peer: { kind: "relay", device: principal, sessionId: "session-a" },
@@ -59,6 +62,7 @@ it("uses only the relay principal, even with valid driving cookies and bridge to
   const headers = {
     cookie: `ovis_device=${cookie.token}; ovis_token=shared-token`, authorization: "Bearer shared-token",
     "tailscale-user-login": "owner@example.com", "x-forwarded-for": "100.64.0.1",
+    "x-portal-proof": "valid-portal-proof", "x-portal-user": "owner", "x-portal-auth": "credential",
     origin: "https://relay.ovis.invalid", "x-herdr-machine": "1",
   };
   const request = (path: string, method = "GET") => new Request(`https://relay.ovis.invalid${path}`, { method, headers });
@@ -78,9 +82,12 @@ it("uses only the relay principal, even with valid driving cookies and bridge to
     expect(store.gated).toBe(false);
     expect(cookieMatch).not.toHaveBeenCalled();
     expect(identity).not.toHaveBeenCalled();
+    expect(proof).not.toHaveBeenCalled();
   } finally {
     cookieMatch.mockRestore();
     identity.mockRestore();
+    proof.mockRestore();
+    await portal.shutdown();
     app.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }

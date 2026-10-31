@@ -145,7 +145,7 @@ export async function relayConnection(fixture: ReturnType<typeof relayFixture>,
   });
   const daemon = await daemonOpening;
   session = new RelaySession({
-    channel: daemon, services: fixture.app.context.services,
+    channel: daemon, services: fixture.app.context.services, port: fixture.app.port,
     serverId: "0123456789abcdef0123456789abcdef", serverVersion: "0.4.20", minSupportedClient: "0.4.20",
     routingOverhead: 0, maxWireMessageBytes: 256 * 1024, ...options,
   });

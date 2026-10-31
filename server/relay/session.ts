@@ -35,6 +35,8 @@ export function relayHeaders(list: HeaderList): Headers {
 export interface RelaySessionOptions {
   readonly channel: SecureChannel;
   readonly services: RequestServices;
+  /** The server's listening port, resolved after binding (including port: 0). */
+  readonly port: number;
   readonly serverId: string;
   readonly serverVersion: string;
   readonly minSupportedClient: string;
@@ -256,7 +258,7 @@ export class RelaySession {
   private context(device: DeviceMatch, timeout: ServerContext["timeout"], upgrade: ServerContext["upgrade"],
     relayBodyBudget?: EventStreamBudget): ServerContext {
     return {
-      services: this.options.services, port: undefined, requestIP: () => null, timeout, upgrade,
+      services: this.options.services, port: this.options.port, requestIP: () => null, timeout, upgrade,
       peer: { kind: "relay", device, sessionId: this.sessionId }, relayBodyBudget,
     };
   }
