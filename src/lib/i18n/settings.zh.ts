@@ -138,6 +138,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Keys, order and custom combinations for the terminal.": "设置终端按键、顺序和自定义组合。",
   "Choose the keys and their order under the terminal. The keyboard mode button stays first.": "选择终端下方显示的按键及其顺序。键盘模式按钮固定在最前面。",
   "Key bar keys": "按键栏中的按键",
+  "Drag to reorder": "拖动以调整顺序",
   "Held modifier": "保持按下的修饰键",
   "Saved combination": "已保存的组合键",
   "Remove {name}": "移除 {name}",

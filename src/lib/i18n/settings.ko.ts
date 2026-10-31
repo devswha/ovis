@@ -138,6 +138,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "Keys, order and custom combinations for the terminal.": "터미널 키와 순서, 사용자 조합을 설정합니다.",
   "Choose the keys and their order under the terminal. The keyboard mode button stays first.": "터미널 아래에 표시할 키와 순서를 고릅니다. 키보드 모드 버튼은 맨 앞에 유지됩니다.",
   "Key bar keys": "키 바의 키",
+  "Drag to reorder": "드래그하여 순서 변경",
   "Held modifier": "고정 보조 키",
   "Saved combination": "저장된 조합",
   "Remove {name}": "{name} 제거",

@@ -2986,6 +2986,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   closing the dialog resets it for the next open. The detail lists the terminal keys
   in their display order. Every key can be
   removed or moved with up/down buttons; those controls keep `--touch-target` hit areas on phones.
+  A leading Lucide grip gives pointer and touch users a shorter path: press to drag, with an
+  insertion line before or after the target row and a raised fill on the source. Only the grip
+  owns the gesture; swiping the row still scrolls. Holding it at the detail body's edge scrolls
+  that body. Release saves once; Escape or pointer cancellation leaves the order untouched.
+  Like [T3 Code's Arrange threads](https://github.com/pingdotgg/t3code/blob/main/docs/user/thread-sidebar.md#pin-and-reorder-threads),
+  the handle supplements Move up/down rather than replacing the no-drag path. This uses the
+  sidebar's existing hit-testing and edge scrolling, with an insertion line instead of animated
+  gaps. The up/down controls remain the keyboard and screen-reader path; the grip is decorative
+  to assistive technology. No transition is added.
   Add key offers the supported key catalog, and Ctrl/Alt/Shift toggles add or remove held-modifier
   buttons. Custom combination chooses one key or printable character plus modifiers, with its cap
   previewed before Add. Saved combinations send exactly those modifiers; ordinary keys inherit the

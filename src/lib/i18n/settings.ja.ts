@@ -138,6 +138,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Keys, order and custom combinations for the terminal.": "ターミナルのキー、並び順、キーの組み合わせを設定します。",
   "Choose the keys and their order under the terminal. The keyboard mode button stays first.": "ターミナルの下に表示するキーと順序を選びます。キーボードモードのボタンは先頭に固定されます。",
   "Key bar keys": "キーバーのキー",
+  "Drag to reorder": "ドラッグして並べ替え",
   "Held modifier": "固定する修飾キー",
   "Saved combination": "保存した組み合わせ",
   "Remove {name}": "{name} を削除",
