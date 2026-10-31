@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate, agentManifests, agentStart } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate, agentManifests, agentStart, ping } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
 import type { HcTerminal } from "./snapshot.ts";
@@ -156,6 +156,11 @@ describe("herdr-core adapter", () => {
     expect((await sessionSnapshot(socket)).panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
   });
 
+  it("says it is herdr-core, so the browser offers only what herdr-core can do", async () => {
+    const { socket } = await setup([terminal("t1")]);
+    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core" });
+  });
+
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
     const { socket } = await setup([terminal("t1", { status: { app: "claude", state: "blocked" } }), terminal("t2")]);
     const snapshot = await sessionSnapshot(socket);
@@ -234,7 +239,7 @@ describe("herdr-core adapter", () => {
     core.notify(channel, "missed", { seq: 9, terminals: [] });
     await ended.promise;
     expect(frames).toEqual([
-      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "done", agent: "omp" } },
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "unknown", agent: "omp" } },
       { event: "pane.exited", data: { type: "pane_exited", pane_id: "t1" } },
       { event: "pane.closed", data: { type: "pane_closed", pane_id: "t1" } },
     ]);
@@ -409,7 +414,7 @@ describe("herdr-core adapter, agents", () => {
   it("starts an agent by typing its kind and quoted arguments into the pane's idle shell, and answers once it is in front", async () => {
     const shell = { pid: 10, name: "bash" };
     const agent = { pid: 11, name: "claude" };
-    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, foreground: shell });
+    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, argv: ["/bin/bash"], foreground: shell });
     const { socket, cores } = await setup([record], {
       // hc's foreground: the shell until the line was typed, then the agent
       "terminal.get": () => ({ terminal: { ...record, foreground: cores[0]!.typed.length > 0 ? agent : shell } }),
@@ -427,7 +432,7 @@ describe("herdr-core adapter, agents", () => {
     const shell = { pid: 10, name: "bash" };
     // hc's foreground: the shell until the line is typed, then each later look sees the next one
     const sequence = (after: { pid: number; name: string; argv?: string[] }[]) => {
-      const record = terminal("t1", { pid: 10, foreground: shell });
+      const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
       const holder: { cores: FakeCore[] } = { cores: [] };
       let seen = 0;
       const get = () => ({ terminal: { ...record, foreground: holder.cores[0]?.typed.length ? after[Math.min(seen++, after.length - 1)] : shell } });
@@ -445,7 +450,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("lets what is typed after a start reach the pane while the start waits for its agent", async () => {
     const shell = { pid: 10, name: "bash" };
-    const record = terminal("t1", { pid: 10, foreground: shell });
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[]; agentUp: boolean } = { cores: [], agentUp: false };
     const ready = await setup([record], { "terminal.get": () => ({ terminal: { ...record, foreground: holder.agentUp ? { pid: 11, name: "claude" } : shell } }) });
     holder.cores = ready.cores;
@@ -462,7 +467,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("types Cursor's agent command, not the IDE's, and waits for it in front", async () => {
     const shell = { pid: 10, name: "bash" };
-    const record = terminal("t1", { pid: 10, foreground: shell });
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[] } = { cores: [] };
     const ready = await setup([record], { "terminal.get": () => ({ terminal: { ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "cursor-agent" } : shell } }) });
     holder.cores = ready.cores;
@@ -471,11 +476,57 @@ describe("herdr-core adapter, agents", () => {
   });
 
   it("refuses a pane with a program in front, a kind that is no command, and an argument with a control character", async () => {
-    const { socket, cores } = await setup([terminal("t1", { pid: 10, foreground: { pid: 12, name: "vim" } })]);
+    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 12, name: "vim" } })]);
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
     await expect(agentStart({ name: "x", kind: "rm -rf /", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: ["a\u0015touch /tmp/x\r"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t9" }, socket)).rejects.toMatchObject({ code: "pane_not_found" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("types into no pane whose own program is not a shell, even with that program in front of itself", async () => {
+    // a terminal the app started as a program: hc reports it in front of itself, like a shell
+    const { socket, cores } = await setup([
+      terminal("t1", { pid: 10, argv: ["claude"], foreground: { pid: 10, name: "claude", argv: ["claude"] } }),
+      // a template or a line: dash runs it as its child and stays in front under its own pid
+      terminal("t2", { pid: 20, argv: ["sh", "-c", "claude"], foreground: { pid: 20, name: "sh", argv: ["sh", "-c", "claude"] } }),
+    ]);
+    // never a shell to start in: refused at once, not retried as a busy one
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_unsupported" });
+    await expect(agentStart({ name: "y", kind: "codex", paneId: "t2" }, socket)).rejects.toMatchObject({ code: "agent_pane_unsupported" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("types into no shell that exec'd a non-plain shell, and checks fish's quoting on the shell in front", async () => {
+    const { socket, cores } = await setup([
+      terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "bash", argv: ["bash", "-c", "read line"] } }),
+      terminal("t2", { pid: 20, argv: ["/bin/bash"], foreground: { pid: 20, name: "fish", argv: ["fish"] } }),
+    ]);
+    await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", timeoutMs: 300 }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
+    await expect(agentStart({ name: "y", kind: "claude", paneId: "t2", args: ["C:\\dir"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("refuses a backslash fish would read differently", async () => {
+    const fish = { pid: 20, name: "fish", argv: ["/usr/bin/fish"] };
+    const { socket, cores } = await setup([terminal("t2", { pid: 20, argv: ["/usr/bin/fish"], foreground: fish })]);
+    await expect(agentStart({ name: "x", kind: "claude", paneId: "t2", args: ["C:\\dir"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("starts in a login shell", async () => {
+    const login = { pid: 10, name: "zsh", argv: ["-zsh", "-l"] };
+    const record = terminal("t1", { pid: 10, argv: ["-zsh", "-l"], foreground: login });
+    const holder: { cores: FakeCore[] } = { cores: [] };
+    const ready = await setup([record], { "terminal.get": () => ({ terminal: { ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "claude" } : login } }) });
+    holder.cores = ready.cores;
+    await agentStart({ name: "y", kind: "claude", paneId: "t1" }, ready.socket);
+    expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'claude'\r");
+  });
+
+  it("types into no shell that has become another program with exec, its pid unchanged", async () => {
+    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "claude", argv: ["claude"] } })]);
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
     expect(cores[0]!.typed).toEqual([]);
   });
 

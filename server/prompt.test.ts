@@ -4122,6 +4122,8 @@ describe("an answer and the menu it was made for", () => {
     /** how long herdr takes over each screen read from now on */
     readDelay?: number;
     onRead?: () => void;
+    /** fail this screen read, without claiming that the screen is empty */
+    nextReadFails?: boolean;
     /** herdr never answers what it is asked about the pane's agent */
     agentUnanswered?: boolean;
     /** what an ANSI read shows instead of `screen`: the pane's viewport, scrolled off its live screen */
@@ -4162,6 +4164,10 @@ describe("an answer and the menu it was made for", () => {
         if (request.method === "session.snapshot") return void setTimeout(() => answer({ snapshot: { panes: Array.from({ length: 1 + (pane.more ?? 0) }, (_, index) => ({ pane_id: `p_${index + 1}`, agent: pane.agent, agent_status: pane.status, cwd: pane.cwd, ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) })), layouts: [] } }), snapshotDelay ?? 0);
         if (request.method === "pane.read") {
           pane.onRead?.();
+          if (pane.nextReadFails) {
+            pane.nextReadFails = false;
+            return void socket.destroy();
+          }
           const once = pane.nextRead;
           pane.nextRead = undefined;
           if (once) return void setTimeout(() => answer({ read: { text: once.text } }), once.delay);
@@ -5642,6 +5648,26 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  test("keeps waiting for Claude's next question through a failed read after answering", async () => {
+    const screen = (question: string) => `←  ☐ Device  ☐ Symptoms  ✔ Submit  →\n\n${question}\n\n❯ 1. Phone\n  2. Desktop browser\n  3. Type something.\n${"─".repeat(80)}\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n`;
+    await withPane("claude", "blocked", screen("Which device do you use?"), async (pane) => {
+      const prompt = (await card())!;
+      let reads = 0;
+      pane.onSent = (sent) => {
+        if (sent !== "enter") return;
+        pane.onRead = () => {
+          reads += 1;
+          if (reads === 1) pane.nextReadFails = true;
+          if (reads === 3) pane.screen = screen("Which problems do you see?");
+        };
+      };
+      expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(reads).toBe(3);
+      expect((await card())!.question).toBe("Which problems do you see?");
+      expect(pane.sent).toEqual(["enter"]);
+    });
+  });
+
   // each refusal waits out the answer's own 1.5 s for the list to show the row
   test("types no s, and no further arrow, once Claude's model list is not the one that was tapped", async () => {
     // closed in the terminal right after the answer read it, with no move to wait on: the look
@@ -5742,6 +5768,45 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       const prompt = (await card())!;
       expect(await answer(prompt.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["down", "text:s"]);
+      expect(await card()).toBeNull();
+    });
+  });
+
+  test("answers Claude's question tabs only once the pane shows the next step, so the step answered does not come up again", async () => {
+    // Claude Code 2.1.314: two questions, then the review, each drawn a moment after the key
+    const rule = "─".repeat(80);
+    const tabs = (device: boolean, symptoms: boolean) => `←  ${device ? "☒" : "☐"} Device  ${symptoms ? "☒" : "☐"} Symptoms  ✔ Submit  →\n\n`;
+    const hint = "\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n";
+    const mark = (at: number, row: number) => at === row ? "❯" : " ";
+    const device = (at: number) => `${tabs(false, false)}Which device do you use?\n\n${["Phone", "Desktop browser", "Type something."].map((row, index) => `${mark(at, index)} ${index + 1}. ${row}`).join("\n")}\n${rule}\n  4. Chat about this\n${hint}`;
+    const problems = ["Answer not sent", "Wrong option sent", "Card stays open"];
+    const symptoms = (at: number, ticked: number[]) => `${tabs(true, ticked.length > 0)}Which problems do you see?\n\n${problems.map((row, index) => `${mark(at, index)} ${index + 1}. [${ticked.includes(index) ? "✔" : " "}] ${row}`).join("\n")}\n${mark(at, 3)} 4. [ ] Type something\n     Submit\n${rule}\n  5. Chat about this\n${hint}`;
+    const review = `${tabs(true, true)}Review your answers\n\n ● Which device do you use?\n   → Desktop browser\n ● Which problems do you see?\n   → Answer not sent, Card stays open\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n`;
+    await withPane("claude", "blocked", device(0), async (pane) => {
+      let at = 0;
+      const ticked: number[] = [];
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = device(++at);
+        if (sent === "enter") setTimeout(() => { at = 0; pane.screen = symptoms(at, ticked); }, 200);
+      };
+      expect(await answer((await card())!.id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+      expect((await card())!.question).toBe("Which problems do you see?");
+
+      pane.onSent = (sent) => {
+        if (sent === "down") at += 1;
+        if (sent === "enter" || sent === "space") ticked.push(at);
+        pane.screen = symptoms(at, ticked);
+        // the review comes in two draws: its heading first, a screen no reader knows
+        if (sent === "right") setTimeout(() => { pane.screen = `${tabs(true, true)}Review your answers\n`; }, 100);
+        if (sent === "right") setTimeout(() => { pane.screen = review; }, 300);
+      };
+      expect(await answer((await card())!.id, { option_indices: [0, 2] })).toEqual({ status: 200, code: undefined });
+      expect(ticked).toEqual([0, 2]);
+      expect((await card())!.title).toBe("Review your answers");
+
+      // submitted: Claude goes on with the answers
+      pane.onSent = (sent) => { if (sent === "enter") setTimeout(() => { pane.status = "working"; pane.screen = `⏺ User answered Claude's questions\n\n${rule}\n❯ \n${rule}\n`; }, 200); };
+      expect(await answer((await card())!.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
       expect(await card()).toBeNull();
     });
   });

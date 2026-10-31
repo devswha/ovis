@@ -1047,19 +1047,40 @@ async function closeOpenQuestion(paneId: string): Promise<void> {
 const SETTLE_MS = 1_500;
 
 /**
- * After an answer to a form of several questions (omo) or to a model list (Claude Code, Codex):
- * back once the pane shows its next step (the next question, the review, a model's levels, or
- * nothing when it was submitted or closed), so the card's read right after the answer gets that
- * step and never the one just answered. A screen that does not move within a second leaves it to
- * the card's next poll.
+ * After an answer to a form of several questions (omo, Claude's question tabs) or to a model list
+ * (Claude Code, Codex): back once the pane shows its next step (the next question, the review, a
+ * model's levels, or nothing when it was submitted or closed), so the card's read right after the
+ * answer gets that step and never the one just answered. `still` says whether a read is the step
+ * just answered. A screen that does not move within a second leaves it to the card's next poll.
  */
-async function formMovedOn(paneId: string, answered: string, codexHome?: string, openCodeStateDir?: string): Promise<void> {
+async function formMovedOn(paneId: string, still: (prompt: InteractivePrompt | null) => boolean, codexHome?: string, openCodeStateDir?: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await Bun.sleep(50);
-    const prompt = await readPrompt(paneId, codexHome, openCodeStateDir).then((read) => read.prompt, () => null);
-    // by what it says: the answer ended that asking, so the same step still on screen has a new id
-    if (contentId(prompt) !== answered) return;
+    const read = await readPrompt(paneId, codexHome, openCodeStateDir).catch(() => undefined);
+    // A failed read says nothing about whether the screen moved on.
+    if (read === undefined || read.stale) continue;
+    if (!still(read.prompt)) return;
   }
+}
+
+/** The step answered, by what it says: the answer ended that asking, so the same step still on screen has a new id. */
+const sameContent = (answered: string | undefined) => (prompt: InteractivePrompt | null): boolean => contentId(prompt) === answered;
+
+/**
+ * Claude's question (AskUserQuestion) just answered, still on screen: its question with the same
+ * options, whatever is ticked (a tick marks its tab answered, and the card's title changes with it),
+ * or the review still up. A screen no reader knows while Claude still waits (the fallback card) is
+ * the next step half drawn.
+ */
+function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | null) => boolean {
+  return (prompt) => {
+    if (prompt?.fallback === true) return true;
+    const shown = prompt ? parsedByPublicPrompt.get(prompt) : undefined;
+    if (!shown) return false;
+    if (answered.responder === "claude-submit") return shown.responder === "claude-submit";
+    return shown.responder === "claude-question" && shown.question === answered.question
+      && JSON.stringify(shown.options) === JSON.stringify(answered.options);
+  };
 }
 
 function promptChanged(): Response {
@@ -1146,7 +1167,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     // read, checked and answered in the pane's turn: a message still in flight goes first, and
     // one sent meanwhile waits until the queue is opened, answered and closed again
     const serialize = options.serialize ?? (<T>(_paneId: string, task: () => Promise<T>) => task());
-    const form: { answered?: string } = {};
+    const form: { still?: (prompt: InteractivePrompt | null) => boolean } = {};
     const log = { paneId: body.pane_id, matched: false };
     answerLog = log;
     // the answer reached the agent: OpenCode or pi-ask took it, or its keys went to the pane. A saved OpenCode
@@ -1627,13 +1648,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
       // A model list closes, or opens its next list, a moment after its key: the same wait, so
       // the card's read right after the answer does not get the list just answered once more
-      if (target.steps) form.answered = contentId(target);
-      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.answered = lastSeen ?? contentId(target);
+      if (target.steps) form.still = sameContent(contentId(target));
+      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
+      // Claude draws its next tab, or its review, a moment after the key: the same wait
+      else if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       return jsonResponse({ ok: true });
     });
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
     // queued for it meanwhile is not held up behind the polls
-    if (form.answered !== undefined) await formMovedOn(body.pane_id, form.answered, options.codexHome, options.openCodeStateDir);
+    if (form.still !== undefined) await formMovedOn(body.pane_id, form.still, options.codexHome, options.openCodeStateDir);
     if (response.ok && delivered) options.onAnswered?.();
     await logAnswer(log, response);
     return response;

@@ -56,6 +56,7 @@ describe("buildSnapshot", () => {
     }
   });
 
+  // an error says nothing about the turn having finished: no badge, never done
   it("takes each pane's agent and status from what its program reported, and rolls the most pressing up", () => {
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), block("t2"), block("t3"), block("t4")] } }] }] };
     const snapshot = buildSnapshot([
@@ -64,7 +65,7 @@ describe("buildSnapshot", () => {
       terminal("t3", { status: { app: "omp", state: "error" } }),
       terminal("t4"),
     ], layout, "0.1.14");
-    expect(snapshot.panes.map((p) => [p.agent, p.agent_status])).toEqual([["claude", "working"], ["codex", "blocked"], ["omp", "done"], [null, "unknown"]]);
+    expect(snapshot.panes.map((p) => [p.agent, p.agent_status])).toEqual([["claude", "working"], ["codex", "blocked"], ["omp", "unknown"], [null, "unknown"]]);
     expect(snapshot.tabs[0]!.agent_status).toBe("blocked");
     expect(snapshot.workspaces[0]!.agent_status).toBe("blocked");
     expect(snapshot.agents.map((a) => a.pane_id)).toEqual(["t1", "t2", "t3"]);
@@ -127,6 +128,46 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.panes.filter((p) => p.tab_id === "T").map((p) => p.pane_id)).toEqual(["t1"]);
     // a space id that is the app's tab id is no space: the terminal is one of the others
     expect(snapshot.panes.find((p) => p.pane_id === "t4")!.workspace_id).toBe(OTHER_WORKSPACE_ID);
+  });
+
+  it("puts a labeled terminal in the app's space and tab even when nothing else there is live, so adoption keeps its ids", () => {
+    // the app's document still names space S and its tab T, whose own terminal is gone
+    const layout = { spaces: [{ id: "S", name: "work", tabs: [{ id: "T", name: "main", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T" } })], layout, "0.1.14");
+    const pane = snapshot.panes.find((p) => p.pane_id === "t5")!;
+    expect([pane.workspace_id, pane.tab_id]).toEqual(["S", "T"]);
+    expect(snapshot.workspaces.find((w) => w.workspace_id === "S")!.label).toBe("work");
+    expect(snapshot.tabs.find((t) => t.tab_id === "T")!.label).toBe("main");
+  });
+
+  it("never reuses an id the app's document holds for a terminal's own tab", () => {
+    // space S has nothing live; another space's live tab is called "S:t5", the id t5's own tab would get
+    const layout = { spaces: [
+      { id: "S", name: "", tabs: [] },
+      { id: "O", name: "other", tabs: [{ id: "S:t5", name: "", root: { type: "block", id: "b", content: { terminal: "t1" } } }] },
+    ] };
+    const snapshot = buildSnapshot([terminal("t1"), terminal("t5", { labels: { "herdr.space": "S" } })], layout, "0.1.14");
+    const tabIds = snapshot.tabs.map((t) => t.tab_id);
+    expect(new Set(tabIds).size).toBe(tabIds.length);
+    expect(snapshot.panes.find((p) => p.pane_id === "t5")!.workspace_id).toBe("S");
+  });
+
+  it("names an unnamed space and tab of the app's after the terminal it gets, as after adoption", () => {
+    const layout = { spaces: [{ id: "S", name: "", folder: "/srv/site", tabs: [{ id: "T", name: "", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T", "ovis.workspace": "Web", "ovis.tab": "Logs" } })], layout, "0.1.14");
+    expect([snapshot.workspaces[0]!.label, snapshot.tabs[0]!.label]).toEqual(["Web", "Logs"]);
+  });
+
+  it("names an unnamed space and tab of the app's from the app's own `where` label first", () => {
+    const layout = { spaces: [{ id: "S", name: "", tabs: [{ id: "T", name: "", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([terminal("t5", { labels: { "herdr.space": "S", "herdr.tab": "T", where: "Work / Logs", "ovis.workspace": "Web", "ovis.tab": "Tail" } })], layout, "0.1.14");
+    expect([snapshot.workspaces[0]!.label, snapshot.tabs[0]!.label]).toEqual(["Work", "Logs"]);
+  });
+
+  it("shows no space or tab of the app's with nothing live in it", () => {
+    const layout = { spaces: [{ id: "S", name: "work", tabs: [{ id: "T", name: "main", root: { type: "block", id: "b", content: { terminal: "t1" } } }] }] };
+    const snapshot = buildSnapshot([], layout, "0.1.14");
+    expect([snapshot.workspaces, snapshot.tabs]).toEqual([[], []]);
   });
 
   it("never gives a workspace and a tab the same id, even when only labels made them", () => {

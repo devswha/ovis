@@ -163,6 +163,16 @@ function flush(socket: Socket<ConnectionState>): void {
 /** An agent whose command is not its kind, as the Herdr app runs it (herdr-app defaults/programs.json): the Cursor IDE is `cursor`. */
 const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent" };
 
+/**
+ * A shell the start line is typed into, as hc reports a terminal started with no program
+ * (`/bin/bash`, a login `-zsh`): the POSIX ones, and fish, which reads the same quoting for an
+ * agent's name and plain arguments (nu does not).
+ */
+const SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+/** The flags a plain interactive shell may be started with; anything else (`-c`) runs a program in it. */
+const SHELL_FLAGS = new Set(["-l", "--login", "-i"]);
+const plainShell = (argv: readonly string[]): boolean => SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => SHELL_FLAGS.has(arg));
+
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
 
@@ -269,7 +279,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
       const hello = await hc.hello();
-      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true } };
+      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core" } };
     },
     async "session.snapshot"() {
       return { snapshot: await snapshot() };
@@ -324,7 +334,17 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       // pane's input turn is held for the typing only, so nothing typed after waits on the start.
       await inTurn(paneId, async () => {
         const ready = await terminal(paneId);
-        if (!ready.pid || ready.foreground?.pid !== ready.pid) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+        // the terminal's own program must be a plain shell: one the app started as a program (`claude`)
+        // is in front of itself too, and `sh -c claude` (a template, a line) runs it under dash's pid.
+        // Such a pane never takes a start: no retry
+        const own = ready.argv ?? [];
+        if (!plainShell(own)) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} runs no shell of its own to start an agent in`);
+        // fish reads a backslash inside single quotes as an escape: the argument would change
+        const front = ready.foreground;
+        const frontArgv = front?.argv ?? (front ? [front.name] : []);
+        if ([own[0], frontArgv[0]].some((program) => /(?:^|\/)-?fish$/u.test(program ?? "")) && args.some((arg) => arg.includes("\\"))) throw new AdapterError("invalid_params", "fish would read a backslash in an argument differently");
+        // and a plain shell in front now: a program it runs, or one it `exec`ed (same pid, `exec bash -c …` too), would take the line
+        if (!ready.pid || front?.pid !== ready.pid || !plainShell(frontArgv)) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
         // Ctrl-U first: a line someone left half typed is cleared, not run with the command after it
         await type(paneId, `\u0015${shellCommandLine("posix", command, args)}\r`);
       });

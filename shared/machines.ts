@@ -83,6 +83,12 @@ export interface HerdrIdentity {
   terminal_attach?: boolean;
   /** without attach, the terminal lens shows the pane's screen repainted a few times a second (server/mirror.ts) */
   terminal_mirror?: boolean;
+  /**
+   * `herdr-core`: the PC's terminals are herdr-core's (OVIS_RUNTIME=herdr-core), whose workspaces,
+   * tabs and splits belong to the Herdr app's window; renaming, moving, splitting and resizing
+   * them is not offered. Absent: herdr's TUI server.
+   */
+  runtime?: "herdr-core";
 }
 export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed";
 /** `ovis`: the PC's own Ovis updates itself (Machine.remote_ovis); absent for a bridge this app installs */
