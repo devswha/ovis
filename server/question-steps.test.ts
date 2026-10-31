@@ -1,83 +1,86 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
 import { handlePromptRequest, parseInteractivePrompt } from "./prompt.ts";
+import { omoAskOf } from "./omo-questions.ts";
+import { type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
 
 // The card moves between a form's questions without answering, as the agent's own keys do: OmO's
 // Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab. Each key is sent alone and the
 // screen must show the question it moves to before the next one.
 
-const rule = "─".repeat(119);
-const omoFooter = `${rule}\n~/omo-proj • main • 25K/200K (12.7%) (auto)      (anthropic) claude-haiku-4-5-20251001:off\n(😺 OmO Native by Q Kim)\n`;
-const QUESTIONS = [["Color", "Which color do you prefer?", ["Red", "Blue"]], ["Size", "Which size?", ["Small", "Large"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
-
-/** omo 5.1.51's form of three questions, as captured in a 120-column herdr pane: `at` 3 is its Submit tab. */
-function omo(at: number, answered: number[] = []): string {
-  const tabs = [...QUESTIONS.map(([header], index) => `${index === at ? "→ " : "  "}${header}${answered.includes(index) ? " ✓" : ""}`), `${at === 3 ? "→ " : "  "}Submit`];
-  const count = `${answered.length}/3 answered`;
-  const body = at === 3
-    ? [" Review your answers", ...QUESTIONS.map(([header]) => `   ${header}: unanswered`), "", " Comment (optional; unanswered questions are reported)", ">",
-      ` Submit (${count})`, " enter submit  ↑ review answers  shift+tab back  tab next question  esc back"]
-    : [` ${QUESTIONS[at]![1]}`, ...QUESTIONS[at]![2].map((option, row) => `${row === 0 ? " → " : "   "}${row + 1}. ${option}`), "   Type your own answer...",
-      ` Submit (${count}) - Enter advances`, " ↑↓ move  1-9 select  space select  enter next  tab next question  c comment  esc cancel"];
-  return `\n [Color] [Size] [Shape] wait for answer\n\n${rule}\n\n Ask user · 30m\n ${tabs.join("  ")}\n${body.join("\n")}\n\n${omoFooter}`;
-}
-
-/** Codex 0.166's request_user_input with two questions. */
-function codex(at: number): string {
-  const [question, options] = at === 0 ? ["Which model?", ["small (Recommended)  The fast one.", "large                The careful one."]] : ["Which split?", ["train (Recommended)  Use the training split.", "test                 Use the test split."]];
-  return `
-  Question ${at + 1}/2 (2 unanswered)
-  ${question}
-  › 1. ${options[0]}
-    2. ${options[1]}
-    3. None of the above    Optionally, add details in notes (tab).
-  tab to add notes | enter to ${at === 1 ? "submit all" : "submit answer"} | ←/→ to navigate questions | esc to interrupt
-`;
-}
+const fixture = (name: string): string => readFileSync(join(import.meta.dir, "fixtures", `question-steps-${name}`), "utf8");
+// omo 5.1.51 and Codex 0.166 as captured in a 120x40 herdr pane (fixtures/question-steps-captures.md)
+const OMO_SCREENS = ["q1", "q2", "q3", "review"].map((state) => fixture(`omo-5.1.51-${state}.txt`));
+/** omo's form of three questions: `at` 3 is its Submit tab. */
+const omo = (at: number): string => OMO_SCREENS[at]!;
+const OMO_TYPING = fixture("omo-5.1.51-q1-typing.txt");
+/** the session's record of the ask_user_question call behind those screens */
+const OMO_SESSION_CALL = fixture("omo-5.1.51.jsonl").split("\n")[0]!;
+const CODEX_SCREENS = ["q1", "q2"].map((state) => fixture(`codex-0.166.0-${state}.txt`));
+/** Codex's request_user_input with two questions. */
+const codex = (at: number): string => CODEX_SCREENS[at]!;
 
 const HERMES_HINT = "answered · ↑/↓ select · Enter confirm and continue · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel";
-const HERMES = [["Pick a colour", ["Red", "Blue"]], ["Pick a size", ["Small", "Large"]], ["Pick a shape", ["Circle", "Square"]]] as const;
+const HERMES: readonly (readonly [string, readonly string[]])[] = [["Pick a colour", ["Red", "Blue"]], ["Pick a size", ["Small", "Large"]], ["Pick a shape", ["Circle", "Square"]]];
+const HERMES_OPEN: readonly (readonly [string, readonly string[]])[] = [["Pick a colour", ["Red", "Blue"]], ["Name a fruit", []], ["Pick a shape", ["Circle", "Square"]]];
 
 /** Hermes's clarify batch (ui-tui prompts.tsx): `✓` answered, `▸` the open one expanded, `·` waiting. */
-function hermes(at: number, answered: number[] = []): string {
-  const lines = HERMES.flatMap(([question, choices], index) => [
+function hermes(at: number, answered: number[] = [], questions = HERMES, typing = false): string {
+  const lines = questions.flatMap(([question, choices], index) => [
     ` ${answered.includes(index) ? "✓" : index === at ? "▸" : "·"} ${question}`,
-    ...(answered.includes(index) ? [`   ${choices[0]}`] : []),
-    ...(index === at ? [...choices, "Other (type your answer)"].map((choice, row) => `   ${row === 0 ? "▸" : " "} ${row + 1}. ${choice}`) : []),
+    ...(answered.includes(index) ? [`   ${choices[0] ?? "Apple"}`] : []),
+    ...(index !== at ? [] : choices.length === 0 || typing ? ["   > "] : [...choices, "Other (type your answer)"].map((choice, row) => `   ${row === 0 ? "▸" : " "} ${row + 1}. ${choice}`)),
   ]);
-  return `\n ask 3 questions\n${lines.join("\n")}\n ${answered.length}/3 ${HERMES_HINT}\n ─ (⌐■_■) deliberating…  · 10s │ opus 5.5\n`;
+  const hint = typing ? "answered · Enter confirm and continue · Esc back" : HERMES_HINT;
+  return `\n ask 3 questions\n${lines.join("\n")}\n ${answered.length}/3 ${hint}\n ─ (⌐■_■) deliberating…  · 10s │ opus 5.5\n`;
 }
 
 const navigable = (prompt: InteractivePrompt | null) => prompt?.steps?.map((step) => step.can_navigate === true);
 
+/** The session's ask_user_question call behind omo(): the card moves only on a form it can name by its questions. */
+const OMO_CALL: OmoAsk = omoAskOf({ id: "session.jsonl\0toolu_qs", wait: true, args: (JSON.parse(OMO_SESSION_CALL) as { message: { content: { arguments: unknown }[] } }).message.content[0]!.arguments })!;
+const omoCard = (screen: string, ask: OmoAsk | null = OMO_CALL) => parseInteractivePrompt("pi", screen, ask, true, ask ? [ask] : []);
+
 describe("OmO's form: the card goes to another question as Tab and Shift+Tab do", () => {
   test("every other question is a step to tap, with Back and Next", () => {
-    const first = parseInteractivePrompt("pi", omo(0));
+    const first = omoCard(omo(0));
     expect(first).toMatchObject({ agent: "omo", title: "Question 1 of 3", can_step_next: true });
     expect(first?.can_step_back ?? false).toBe(false);
     expect(navigable(first)).toEqual([false, true, true]);
-    const second = parseInteractivePrompt("pi", omo(1));
+    const second = omoCard(omo(1));
     expect(second).toMatchObject({ title: "Question 2 of 3", can_step_back: true, can_step_next: true });
     expect(navigable(second)).toEqual([true, false, true]);
     // Next on the last question goes on to the review, as Tab does
-    expect(parseInteractivePrompt("pi", omo(2))).toMatchObject({ can_step_back: true, can_step_next: true });
+    expect(omoCard(omo(2))).toMatchObject({ can_step_back: true, can_step_next: true });
+  });
+
+  test("a form no session call names is shown with its steps, and offers no move", () => {
+    const unnamed = omoCard(omo(0), null);
+    expect(unnamed?.steps?.map((step) => step.label)).toEqual(["Color", "Size", "Shape"]);
+    expect(navigable(unnamed)).toEqual([false, false, false]);
+    expect(unnamed?.can_step_next ?? false).toBe(false);
+    // another call whose questions differ is another form: its identity says so
+    const other: OmoAsk = { ...OMO_CALL, questions: OMO_CALL.questions.map((question, at) => at === 2 ? { ...question, options: [{ label: "Circle", description: null }, { label: "Triangle", description: null }] } : question) };
+    const ids = [omoCard(omo(1)), omoCard(omo(1), other)].map((prompt) => parsedByPublicPrompt.get(prompt!)?.nativeSteps?.identity);
+    expect(ids[0]).toBeDefined();
+    expect(ids[1]).toBeDefined();
+    expect(ids[0]).not.toBe(ids[1]);
   });
 
   test("the review goes back to any question, and has no Next", () => {
-    const review = parseInteractivePrompt("pi", omo(3));
+    const review = omoCard(omo(3));
     expect(review).toMatchObject({ title: "Review your answers", can_step_back: true });
     expect(review?.can_step_next ?? false).toBe(false);
     expect(navigable(review)).toEqual([true, true, true]);
   });
 
   test("an answer typed in the terminal holds the form: Tab would save it, so no step is offered", () => {
-    const typing = omo(0).replace("   Type your own answer...\n Submit (0/3 answered) - Enter advances\n ↑↓ move  1-9 select  space select  enter next  tab next question  c comment  esc cancel",
-      " Your answer (enter to save, ↑↓ back to options, esc to discard)\n> blu\n Submit (0/3 answered) - Enter advances\n enter save and next  ↑↓ back to options  tab next question  esc discard");
-    const prompt = parseInteractivePrompt("pi", typing);
+    const typing = OMO_TYPING;
+    const prompt = omoCard(typing);
     expect(prompt?.kind).toBe("menu");
     expect(navigable(prompt)).toEqual([false, false, false]);
     expect(prompt?.can_step_back ?? false).toBe(false);
@@ -121,7 +124,25 @@ describe("Hermes's clarify batch: the card goes to another open question as Tab 
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; onSent?: (key: string) => void }
+describe("Hermes's open-ended question in a batch", () => {
+  test("keeps the batch's steps, Back and Next, as Tab moves through it", () => {
+    const prompt = parseInteractivePrompt("hermes", hermes(1, [], HERMES_OPEN));
+    expect(prompt?.question).toBe("Name a fruit");
+    expect(prompt?.custom_option_index).toBe(0);
+    expect(prompt?.steps?.map((step) => [step.label, step.current])).toEqual([["Pick a colour", false], ["Name a fruit", true], ["Pick a shape", false]]);
+    expect(prompt).toMatchObject({ can_step_back: true, can_step_next: true });
+  });
+
+  test("while an answer is typed, Tab does nothing in Hermes: no move is offered", () => {
+    const prompt = parseInteractivePrompt("hermes", hermes(1, [], HERMES_OPEN, true));
+    expect(prompt?.question).toBe("Name a fruit");
+    expect(navigable(prompt)).toEqual([false, false, false]);
+    expect(prompt?.can_step_back ?? false).toBe(false);
+    expect(prompt?.can_step_next ?? false).toBe(false);
+  });
+});
+
+interface Pane { agent: string; screen: string; sent: string[]; onSent?: (key: string) => void; cwd?: string; omo?: { pid: number; path: string } }
 
 async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
@@ -138,9 +159,9 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       if (!input.includes("\n")) return;
       const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string } };
       const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
-      if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked" }], layouts: [] } });
+      if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd, ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: pane.screen } });
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
+      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
       for (const sent of request.params.keys ?? [`text:${request.params.text}`]) {
@@ -160,6 +181,28 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
     server.close();
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * An omo pane whose session holds the call behind omo(): an inert child gives the pane a real process environment
+ * (OMO_CODING_AGENT_DIR), read through /proc as for a live omo, so Linux only.
+ */
+async function withOmoPane(screen: string, run: (pane: Pane) => Promise<void>, record = OMO_SESSION_CALL): Promise<void> {
+  await withPane("pi", screen, async (pane) => {
+    const root = mkdtempSync(join(tmpdir(), "question-steps-omo-"));
+    const agentDir = join(root, "agent");
+    mkdirSync(join(agentDir, "sessions"), { recursive: true });
+    pane.cwd = root;
+    const path = join(agentDir, "sessions", "2026-11-01T00-00-00_qs-session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "qs-session", cwd: root, timestamp: new Date().toISOString() }) + "\n" + record + "\n");
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume()"], { cwd: root, stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { ...process.env, OMO_CODING_AGENT_DIR: agentDir } });
+    pane.omo = { pid: child.pid, path };
+    try { await run(pane); } finally {
+      child.kill();
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 }
 
 async function card(): Promise<InteractivePrompt> {
@@ -187,50 +230,75 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
 }
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
-  test("OmO: Next sends Tab, and the card that comes back is the next question, not answered", async () => {
-    await withPane("pi", omo(0), async (pane) => {
+  test.skipIf(process.platform !== "linux")("OmO: Next sends Tab, and the card that comes back is the next question, not answered", async () => {
+    await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
       const first = await card();
       expect(await move(first.id, { step_next: true, draft: { option_indices: [], custom_text: "" } })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab"]);
       const second = await card();
-      expect(second).toMatchObject({ title: "Question 2 of 3", question: "Which size?" });
+      expect(second).toMatchObject({ title: "Question 2 of 3", question: "Which size do you prefer?" });
       expect(second.steps?.map((step) => step.answered)).toEqual([false, false, false]);
     });
   });
 
-  test("OmO: a tapped step two questions on sends Tab twice; Back on the review sends Shift+Tab", async () => {
-    await withPane("pi", omo(0), async (pane) => {
+  test.skipIf(process.platform !== "linux")("OmO: a tapped step two questions on sends Tab twice; Back on the review sends Shift+Tab", async () => {
+    await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab", "tab"]);
-      expect((await card()).question).toBe("Which shape?");
+      expect((await card()).question).toBe("Which shape do you prefer?");
     });
-    await withPane("pi", omo(3), async (pane) => {
+    await withOmoPane(omo(3), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab", 3);
       expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["shift+tab"]);
-      expect((await card()).question).toBe("Which shape?");
+      expect((await card()).question).toBe("Which shape do you prefer?");
     });
   });
 
-  test("OmO: a form that does not move stops after its first key", async () => {
-    await withPane("pi", omo(0), async (pane) => {
+  test.skipIf(process.platform !== "linux")("OmO: a form that does not move stops after its first key", async () => {
+    await withOmoPane(omo(0), async (pane) => {
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });
 
-  test("OmO: another form drawn after the first Tab gets no second one", async () => {
+  test.skipIf(process.platform !== "linux")("OmO: a pi-ask form opened mid-move gets no further key", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "question-steps-pi-"));
+    const previous = process.env["PI_CODING_AGENT_DIR"];
+    process.env["PI_CODING_AGENT_DIR"] = agentDir;
+    try {
+      await withOmoPane(omo(0), async (pane) => {
+        let at = 0;
+        pane.onSent = (key) => {
+          if (key === "tab") at += 1;
+          pane.screen = omo(at);
+          // pi-ask's bridge opens a form for this pane's process: its socket, which cannot be confirmed as pi-ask's own
+          const bridge = join(agentDir, "herdr-web-ui-ask");
+          mkdirSync(bridge, { recursive: true, mode: 0o700 });
+          writeFileSync(join(bridge, `${pane.omo!.pid}.sock`), "");
+        };
+        expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(["tab"]);
+      });
+    } finally {
+      if (previous === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+      else process.env["PI_CODING_AGENT_DIR"] = previous;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== "linux")("OmO: another form drawn after the first Tab gets no second one", async () => {
     // the same labels, another call: omo asked again with other questions
-    const other = (at: number) => omo(at).replaceAll("Which shape?", "Which shape, again?").replace(" Ask user · 30m", " Ask user · 29m").replace("[Color] [Size] [Shape]", "[Colour] [Size] [Shape]").replace("→ Color", "→ Colour").replace("  Color", "  Colour");
-    await withPane("pi", omo(0), async (pane) => {
+    const other = (at: number) => omo(at).replaceAll("Which shape do you prefer?", "Which shape, again?").replace(" Ask user · 30m", " Ask user · 29m").replace("[Color] [Size] [Shape]", "[Colour] [Size] [Shape]").replace("→ Color", "→ Colour").replace("  Color", "  Colour");
+    await withOmoPane(omo(0), async (pane) => {
       pane.onSent = () => { pane.screen = other(1); };
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
     // and a screen that changed between the card and the move: no key at all
-    await withPane("pi", omo(0), async (pane) => {
+    await withOmoPane(omo(0), async (pane) => {
       const first = await card();
       pane.screen = other(0);
       expect((await move(first.id, { step_index: 2 })).status).toBe(409);
@@ -238,8 +306,8 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
-  test("OmO: an answer with the move, a step out of reach or the card's unsent edits send nothing", async () => {
-    await withPane("pi", omo(0), async (pane) => {
+  test.skipIf(process.platform !== "linux")("OmO: an answer with the move, a step out of reach or the card's unsent edits send nothing", async () => {
+    await withOmoPane(omo(0), async (pane) => {
       const first = await card();
       const refused = { status: 400, code: "invalid_answer" };
       expect(await move(first.id, { step_next: true, option_index: 0 })).toEqual(refused);
@@ -256,10 +324,10 @@ describe("the answer route moves between questions, one key at a time, each seen
       let at = 0;
       pane.onSent = (key) => { at = key === "right" ? Math.min(1, at + 1) : key === "left" ? Math.max(0, at - 1) : at; pane.screen = codex(at); };
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
-      expect((await card()).question).toBe("Which split?");
+      expect((await card()).question).toBe("Which size do you choose?");
       expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["right", "left"]);
-      expect((await card()).question).toBe("Which model?");
+      expect((await card()).question).toBe("Which color do you choose?");
     });
   });
 
@@ -269,6 +337,16 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab"]);
       expect((await card()).question).toBe("Pick a size");
+    });
+  });
+
+  test("Hermes: Next onto an open-ended question lands there, its steps kept", async () => {
+    await withPane("hermes", hermes(0, [], HERMES_OPEN), async (pane) => {
+      follows(pane, (at) => hermes(at, [], HERMES_OPEN), 3, "tab", "shift+tab");
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      const open = await card();
+      expect(open.question).toBe("Name a fruit");
+      expect(open.steps?.findIndex((step) => step.current)).toBe(1);
     });
   });
 

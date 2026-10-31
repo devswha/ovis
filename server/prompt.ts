@@ -704,6 +704,16 @@ async function ompOwnsInput(paneId: string): Promise<boolean> {
 
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
 class OmpNotInFront extends Error {}
+
+/**
+ * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
+ * and an omp stopped behind its shell since the read takes none either: the shell would. A stop between this
+ * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground.
+ */
+async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
+  if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
+  if (agent === "omp" && !(await ompOwnsInput(paneId))) throw new OmpNotInFront();
+}
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** An omp Ask card in the agent's own Markdown when its session's open ask call is the menu on screen (omp-ask.ts); else the card as drawn. */
@@ -1186,6 +1196,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       log.matched = true;
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
+      // Next goes on to another question and never answers this one: not with an answer in the same body, and not
+      // where the card has no keys of its own to move by (an OpenCode or pi-ask form would take it as its answer)
+      if (body.step_next === true && (!parsedPrompt?.nativeSteps || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
+        return badRequest("invalid_answer", "Next goes to another question and answers none.");
+      }
       if (parsedPrompt?.responder === "opencode-question" && parsedPrompt.openCodeForm) {
         const openCodeForm = parsedPrompt.openCodeForm;
         if (!openCodeForm.available) return jsonResponse({ error: { code: "service_unavailable", message: "OpenCode service is not available. Your answer has not been sent." } }, 502);
@@ -1351,10 +1366,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         try {
           const moved = await navigateNativeSteps(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            send: (key) => paneSendKeys(body.pane_id, [key]),
+            // the same guards as an answer's keys, inside the request's 4 s
+            send: async (key) => {
+              if (!active()) throw new PiAskFormOpen();
+              await beforeKey(body.pane_id, agent, deadline);
+              await paneSendKeys(body.pane_id, [key]);
+            },
             read: async () => {
               if (!active()) return null;
-              const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+              const reading = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+              reading.catch(() => undefined);
+              // a read that outlasts the deadline is no read
+              const live = await Promise.race([reading, Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => null)]);
+              if (!live || !active()) return null;
               const shown = !live.inputUnverified && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
               return shown?.agent === parsedPrompt.agent ? shown : null;
             },
@@ -1362,9 +1386,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (!moved) return promptChanged();
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
+        } catch (error) {
+          if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront) return promptChanged();
+          throw error;
         } finally { answersUnderWay.delete(body.pane_id); }
       }
-      if (body.step_next === true) return badRequest("invalid_answer", "This question has no next one to go to.");
 
       if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
         const { response, answered } = await answerPiAskUser(body.pane_id, parsedPrompt, body, deadline);
@@ -1545,11 +1571,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
-          // right before each key: a pi-ask form that opened since the read takes none of them
-          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
-          // and an omp stopped behind its shell since the read takes none either: the shell would. A stop between
-          // this look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground
-          if (agent === "omp" && !(await ompOwnsInput(body.pane_id))) throw new OmpNotInFront();
+          await beforeKey(body.pane_id, agent, deadline);
           const first = !move && !committed;
           if (!move) committed = true;
           try {

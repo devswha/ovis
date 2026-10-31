@@ -20,6 +20,9 @@ export const HERMES_HINT_RE = /^(\d+)\/(\d+) answered · /;
 
 const HERMES_ASK_RE = /^ask \d+ questions?$/;
 
+// the batch's hint while Tab moves the open question (ui-tui i18n/en/overlays.ts clarify.hint)
+const HERMES_SWITCH_RE = /· Tab\/Shift\+Tab switch question ·/;
+
 const HERMES_ROW_RE = /^(▸ )?(\[[ x]\] )?(\d+)\. (.+)$/;
 
 const HERMES_OTHER = "Other (type your answer)";
@@ -30,7 +33,7 @@ const HERMES_OTHER = "Other (type your answer)";
  * prompts.tsx), but an answered question shows `✓` even while Tab is on it, so nothing tells it
  * is there: the card goes only to open questions with none answered on the way.
  */
-function hermesNavigation(block: string[], base: number, current: number): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
+function hermesNavigation(block: string[], base: number, current: number, switches: boolean): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
   const indent = (line: string) => line.length - line.trimStart().length;
   const questions: { label: string; answered: boolean; current: boolean }[] = [];
   for (const [index, line] of block.entries()) {
@@ -41,6 +44,8 @@ function hermesNavigation(block: string[], base: number, current: number): Pick<
   }
   const at = questions.findIndex((question) => question.current);
   if (questions.length < 2 || at < 0) return {};
+  // while an answer is typed the hint drops "Tab/Shift+Tab switch question", and Tab does nothing
+  if (!switches) return { steps: questions };
   // every question from the open one to `to`, that one included, still open
   const reachable = (to: number) => to !== at && questions.slice(Math.min(at, to), Math.max(at, to) + 1).every((question) => !question.answered);
   return {
@@ -74,11 +79,15 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   // would join the answer: the line is emptied first, after the cursor and before it (its
   // TextInput's ctrl+k and ctrl+u, on every platform)
   const typed = (text: string): AnswerStep[] => [...keySteps(["ctrl+k", "ctrl+u"]), { text }, ...keySteps([KEY.enter])];
+  const switches = HERMES_SWITCH_RE.test(lines[hintIndex]!);
   if (member[0]?.startsWith(">")) {
+    const { nativeSteps, ...navigation } = hermesNavigation(block, base, at, switches);
     return finishPrompt("hermes", {
       kind: "question", title: own("Question"), question, body,
       options: [{ label: own("Type your answer"), description: null }], multi_select: false, custom_option_index: 0,
+      ...navigation,
     }, {
+      ...(nativeSteps ? { nativeSteps } : {}),
       responder: "hermes-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0,
       rejectWithEscapeIndex: null, customSteps: typed,
     });
@@ -98,7 +107,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   const multi = choices.every((row) => row.box);
   if (!multi && choices.some((row) => row.box)) return null;
   const checked = choices.flatMap((row, index) => row.checked ? [index] : []);
-  const { nativeSteps, ...navigation } = hermesNavigation(block, base, at);
+  const { nativeSteps, ...navigation } = hermesNavigation(block, base, at, switches);
   return finishPrompt("hermes", {
     kind: "question", title: own("Question"), question, body,
     options: choices.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: null })),

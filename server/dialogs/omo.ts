@@ -87,17 +87,19 @@ function omoSteps(tabs: OmoForm["tabs"], ask: OmoAsk | null): InteractivePrompt[
 /**
  * The card's steps as OmO's own keys move between its tabs, a question left unanswered: Tab on,
  * Shift+Tab back, through Submit (senpi ask-user-question-keys.js, 5.1.51). Only the tab bar on
- * screen says which tab shows, so a form cut off above it gets its steps and nothing to tap.
+ * screen says which tab shows, so a form cut off above it gets its steps and nothing to tap; and
+ * only the session's call names the form, so a form no call names gets nothing to tap either.
  */
 function omoNavigation(form: OmoForm | null, tabs: OmoForm["tabs"], index: number, ask: OmoAsk | null): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
   const steps = omoSteps(tabs, ask);
-  if (!form || !steps) return { steps };
+  // the form is the call's: a move needs it named, and named by every question and option it asks
+  if (!form || !steps || !ask?.id) return { steps };
   const at = form.reviewing ? tabs.length : index;
   return {
     steps: steps.map((step) => step.current ? step : { ...step, can_navigate: true }),
     can_step_back: at > 0,
     can_step_next: !form.reviewing,
-    nativeSteps: { identity: JSON.stringify([ask?.id ?? null, form.tabs.map((tab) => tab.label)]), index: at, count: tabs.length + 1, next: KEY.tab, previous: KEY.backtab },
+    nativeSteps: { identity: JSON.stringify([ask.id, ask.questions.map((question) => [question.header, question.question, question.multiSelect, question.options.map((option) => option.label)])]), index: at, count: tabs.length + 1, next: KEY.tab, previous: KEY.backtab },
   };
 }
 
