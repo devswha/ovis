@@ -49,6 +49,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   both app and Portal sessions when both exist; it does not sign out of the identity provider.
   Google or company login shows both callback addresses to register, including the short host.
   ([#2065](https://github.com/devswha/ovis/pull/2065) by @rabbitson87)
+- Chat shows the pictures in a GitHub Copilot CLI session: those attached to a prompt and those
+  its view tool read, from the bytes Copilot keeps in its own session file.
+  ([#2479](https://github.com/devswha/ovis/pull/2479))
+- Chat shows the picture attached to a Hermes prompt, from the local file Hermes names for it,
+  the way it shows a local image in Markdown; a picture it cannot read stays a link.
+  ([#2482](https://github.com/devswha/ovis/pull/2482))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
@@ -113,6 +119,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   reloads, within ten minutes. Nothing is sent again, and a message whose delivery was never
   confirmed stays unconfirmed.
   ([#2475](https://github.com/devswha/ovis/pull/2475) reported by @christso)
+- Chat no longer rebuilds every message when the pane's skill names load after its transcript, so
+  a decoded image no longer drops back to its loading slot as a chat opens.
+  ([#2490](https://github.com/devswha/ovis/pull/2490) by @nocstah)
+- A Copilot chat no longer splits a turn whose pictures fill the page window: the newest page
+  showed only the answer, and the older one the tool calls without their output.
+  ([#2483](https://github.com/devswha/ovis/pull/2483))
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
