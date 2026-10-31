@@ -499,8 +499,8 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const transcript = piFile("pi-trimmed");
     const f = await setup("pi-trimmed", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
-    // Pi's editor and interactive submit both trim what it records
-    const padded = " \tdictated message \t";
+    // Pi's editor expands a pasted tab to four spaces, and it trims what it records
+    const padded = " \tdictated\tmessage \t";
     f.socket.send({ type: "submit", id: 916, pane_id: f.pane, text: padded, payload: padded, delivery: "immediate" });
     expect((await f.socket.result(916)).ok).toBe(true);
     f.socket.send({ type: "submit", id: 917, pane_id: f.pane, text: "next", payload: "next", delivery: "immediate" });
@@ -512,7 +512,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
       for (const item of frame.removed ?? []) if (item.outcome === "consumed") consumed.add(item.id);
       return ids.every((id) => consumed.has(id));
     });
-    appendFileSync(transcript, piLine("u1", "a0", "user", "dictated message"));
+    appendFileSync(transcript, piLine("u1", "a0", "user", "dictated    message"));
     appendFileSync(transcript, piLine("u2", "u1", "user", "next"));
     await both;
   }, 20_000);

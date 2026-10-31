@@ -195,9 +195,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   };
   const piReceiptText = (identity: PendingIdentity, text: string): string | undefined => {
     if (identity.agent !== "pi") return undefined;
-    // Pi trims a prompt before recording it (pi-tui Editor.submitValue, interactive onSubmit), the
-    // space closeMention adds included: the receipt matches that record exactly (#2454)
-    try { return closeMention(pendingText(modelSwitchText(identity.agent, text))).trim(); }
+    // Pi's editor expands each pasted tab to four spaces (pi-tui Editor.normalizeText) and trims the
+    // prompt before recording it (Editor.submitValue, interactive onSubmit), the space closeMention
+    // adds included: the receipt matches that record exactly (#2454)
+    try { return closeMention(pendingText(modelSwitchText(identity.agent, text))).replace(/\t/g, "    ").trim(); }
     catch { return undefined; }
   };
   const piMessages = (paneId: string, owner: Client): PendingMessage[] => (piTyped.get(paneId) ?? [])
