@@ -17,8 +17,56 @@ const monitorCall = {
   name: "monitor", ok: true, args: { description: "refit done", command: "until test -f done; do sleep 1; done; printf 'READY\\n'", filter: "^READY$" },
   resultPreview: "Monitor started with ID: mon_FDXZMFR0QJTTRAD3",
 };
+const directMonitor = (id: string, description: string, monitorId: string, persistent = false) => [
+  { type: "message", timestamp: "2026-10-21T20:03:37.000Z", message: { role: "assistant", content: [{ type: "toolCall", id, name: "monitor", arguments: { description, command: "printf READY", persistent } }] } },
+  { type: "message", timestamp: "2026-10-21T20:03:38.401Z", message: { role: "toolResult", toolCallId: id, toolName: "monitor", content: [{ type: "text", text: `Monitor started with ID: ${monitorId}` }] } },
+];
 
 describe("omoJobsAfter", () => {
+  it("ends a direct monitor on its summary using its matching assistant call", () => {
+    // Given a direct call whose result contains no arguments.
+    const jobs = read(...directMonitor("call-1", "direct done", "mon_DIRECT", true));
+    expect(jobs.running[0]).toMatchObject({ title: "direct done", description: "direct done", persistent: true });
+    // When its summary carries a process id.
+    const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+      monitors: [{ id: "bash_2", description: "direct done", kinds: ["summary"] }],
+    }));
+    // Then the monitor ends.
+    expect(done.running).toEqual([]);
+    expect(done.ended.map((job) => [job.id, job.ended?.status])).toEqual([["mon_DIRECT", "completed"]]);
+  });
+
+  it("ends the right direct monitor when calls and results are interleaved", () => {
+    // Given two assistant calls followed by their results in reverse order.
+    const first = directMonitor("call-1", "first done", "mon_FIRST");
+    const second = directMonitor("call-2", "second done", "mon_SECOND");
+    const jobs = read(first[0], second[0], second[1], first[1]);
+    expect(omoJobCount(jobs, null)).toBe(2);
+    // When only the second monitor finishes.
+    const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+      monitors: [{ id: "bash_2", description: "second done", kinds: ["summary"] }],
+    }));
+    // Then toolCallId, not result order, selects its description.
+    expect(done.running.map((job) => [job.id, job.description])).toEqual([["mon_FIRST", "first done"]]);
+    expect(done.ended.map((job) => job.id)).toEqual(["mon_SECOND"]);
+    expect(omoJobCount(done, null)).toBe(1);
+  });
+
+  for (const count of [1, 2]) {
+    it(`falls back to an undescribed direct monitor only when unique (${count} live)`, () => {
+      // Given starts whose assistant calls are missing from the transcript.
+      const jobs = read(directMonitor("call-1", "first done", "mon_FIRST")[1],
+        ...count === 2 ? [directMonitor("call-2", "second done", "mon_SECOND")[1]] : []);
+      // When a summary has only a process id and description.
+      const done = omoJobsAfter(jobs, notice("senpi-monitor:notification", "2026-10-21T20:04:01.000Z", "watcher completed", {
+        monitors: [{ id: "bash_2", description: "first done", kinds: ["summary"] }],
+      }));
+      // Then ambiguous missing calls never end either monitor.
+      expect(done.running.length).toBe(count === 1 ? 0 : 2);
+      expect(done.ended.map((job) => job.id)).toEqual(count === 1 ? ["mon_FIRST"] : []);
+    });
+  }
+
   it("starts a background command and a monitor launched inside eval, titled by command and description", () => {
     // Given an eval answer that started both.
     const jobs = read(evalResult("2026-10-21T20:03:38.401Z", "[\"Command running in background with ID: bash_1\",\"Monitor started with ID: mon_FDXZMFR0QJTTRAD3\"]", [bashCall, monitorCall]));

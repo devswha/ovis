@@ -36,6 +36,8 @@ import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-
 import { DeviceStore } from "./devices.ts";
 import type { MachineEvent, MachineSettings } from "../shared/machines.ts";
 import { MAX_MUTED_PANES, type SharedPreferences } from "../shared/preferences.ts";
+import { OmoStatus } from "./omo-status.ts";
+import { omoJobTasks } from "./omo-jobs.ts";
 
 /**
  * Contract test for Ovis's HTTP + WS surface.
@@ -2196,6 +2198,47 @@ describe("workspace and discovery endpoints", () => {
 });
 
 describe("GET /api/pane/omo-tasks", () => {
+  it("merges running bash, monitor and eval jobs ahead of ended tasks and jobs", async () => {
+    // Given task records and the core tracker's transcript jobs for the same session.
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-omo-merged-tasks-"));
+    const now = new Date().toISOString();
+    const tasks = join(cwd, ".omo", "senpi-task", "tasks");
+    mkdirSync(tasks, { recursive: true });
+    for (const [id, status] of [["st_running", "running"], ["st_ended", "completed"]]) {
+      writeFileSync(join(tasks, `${id}.json`), JSON.stringify({
+        task_id: id, parent_session_id: "merged-session", host_pid: process.pid, status,
+        task_summary: id, started_at: now, terminal_at: now,
+      }));
+    }
+    const jobs = omoJobTasks({
+      running: [
+        { id: "bash_1", kind: "command", title: "bun test", at: Date.parse(now) },
+        { id: "mon_FIRST", kind: "monitor", title: "test completion", at: Date.parse(now) },
+        { id: "cell-1", kind: "cell", title: "run tests", at: Date.parse(now) },
+      ],
+      ended: [{ id: "bash_2", kind: "command", title: "bun build", at: Date.parse(now), ended: { at: Date.parse(now), status: "completed" } }],
+    }, null);
+    const session = spyOn(OmoStatus.prototype, "sessionOf").mockImplementation((paneId) => paneId === "merged-pane" ? { cwd, sessionId: "merged-session" } : null);
+    const background = spyOn(OmoStatus.prototype, "jobsOf").mockImplementation((paneId) => paneId === "merged-pane" ? jobs : []);
+    try {
+      // When the browser requests the merged list through HTTP.
+      const response = await fetch(`${base()}/api/pane/omo-tasks?pane_id=merged-pane`);
+      const body = await response.json() as { tasks: { id: string; category: string | null; status: string }[] };
+      // Then running jobs precede even the ended task record, and neither source is lost.
+      expect(response.status).toBe(200);
+      expect(body.tasks.map((task) => [task.id, task.status])).toEqual([
+        ["st_running", "running"], ["bash_1", "running"], ["mon_FIRST", "running"], ["cell-1", "running"],
+        ["st_ended", "completed"], ["bash_2", "completed"],
+      ]);
+      expect(body.tasks.slice(1, 4).map((task) => task.category)).toEqual(["bash", "monitor", "eval"]);
+      expect(background).toHaveBeenCalledWith("merged-pane");
+    } finally {
+      session.mockRestore();
+      background.mockRestore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("answers 400 without a pane, and no tasks for a pane that runs no OmO", async () => {
     const missing = await fetch(`${base()}/api/pane/omo-tasks`);
     expect(missing.status).toBe(400);

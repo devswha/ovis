@@ -35,6 +35,8 @@ export interface OmoJobs {
   running: readonly OmoJob[];
   /** newest last, at most ENDED_LIMIT */
   ended: readonly OmoJob[];
+  /** Direct monitor arguments waiting for their toolResult, keyed by toolCallId. */
+  monitorCalls?: readonly { id: string; title: string; description?: string; persistent: boolean }[];
 }
 
 export const NO_JOBS: OmoJobs = { running: [], ended: [] };
@@ -75,6 +77,7 @@ function ended(jobs: OmoJobs, match: (job: OmoJob) => boolean, at: number, statu
   if (index === -1) return jobs;
   const job = jobs.running[index]!;
   return {
+    ...jobs,
     running: jobs.running.filter((_, i) => i !== index),
     ended: [...jobs.ended, { ...job, ended: { at, status } }].slice(-ENDED_LIMIT),
   };
@@ -118,9 +121,14 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
         // Command-backed notifications carry a process id (bash_N), not the start's mon_X.
         if (typeof id === "string" && next.running.some((job) => job.kind === "monitor" && job.id === id)) {
           next = ended(next, (job) => job.kind === "monitor" && job.id === id, at, endStatus(word ?? "completed"));
-        } else if (typeof description === "string") {
-          const matches = next.running.filter((job) => job.kind === "monitor" && job.description === description);
+        } else {
+          const matches = next.running.filter((job) => job.kind === "monitor" && typeof description === "string" && job.description === description);
           if (matches.length === 1) next = ended(next, (job) => job === matches[0], at, endStatus(word ?? "completed"));
+          else if (matches.length === 0) {
+            // A truncated transcript may omit the assistant call that supplied the description.
+            const unknown = next.running.filter((job) => job.kind === "monitor" && job.description === undefined);
+            if (unknown.length === 1) next = ended(next, (job) => job === unknown[0], at, endStatus(word ?? "completed"));
+          }
         }
       }
     } else if (kind === "senpi-codemode:notification") {
@@ -135,7 +143,23 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
   }
   if (record["type"] !== "message") return jobs;
   const message = row(record["message"]);
-  if (message === null || message["role"] !== "toolResult") return jobs;
+  if (message === null) return jobs;
+  if (message["role"] === "assistant" && Array.isArray(message["content"])) {
+    let next = jobs;
+    for (const block of message["content"]) {
+      const call = row(block);
+      if (call?.["type"] !== "toolCall" || call["name"] !== "monitor" || typeof call["id"] !== "string") continue;
+      const args = row(call["arguments"]);
+      const description = args?.["description"];
+      next = { ...next, monitorCalls: [
+        ...(next.monitorCalls ?? []).filter((pending) => pending.id !== call["id"]),
+        { id: call["id"], title: words(description) ?? words(args?.["command"]) ?? fallbackTitle("monitor"),
+          ...(typeof description === "string" ? { description } : {}), persistent: args?.["persistent"] === true },
+      ].slice(-RUNNING_LIMIT) };
+    }
+    return next;
+  }
+  if (message["role"] !== "toolResult") return jobs;
   const tool = message["toolName"];
   const content = notificationText(message["content"]);
   let next = jobs;
@@ -156,7 +180,12 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
           { ...(description ? { description: args?.["description"] as string } : {}), ...(args?.["persistent"] === true ? { persistent: true } : {}) });
       }
     }
-  } else if (tool === "bash" || tool === "monitor" || tool === "kill_bash") {
+  } else if (tool === "monitor") {
+    const call = jobs.monitorCalls?.find((pending) => pending.id === message["toolCallId"]);
+    if (call) next = { ...next, monitorCalls: jobs.monitorCalls?.filter((pending) => pending !== call) };
+    next = fromAnswer(next, content, at, (kind) => call?.title ?? fallbackTitle(kind),
+      { ...(call?.description !== undefined ? { description: call.description } : {}), ...(call?.persistent ? { persistent: true } : {}) });
+  } else if (tool === "bash" || tool === "kill_bash") {
     next = fromAnswer(next, content, at, fallbackTitle);
   }
   return next;
