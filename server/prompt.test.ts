@@ -8,7 +8,7 @@ import type { InteractivePrompt } from "../shared/protocol.ts";
 import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
-import { parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
 
 const labels = (prompt: InteractivePrompt | null) => prompt?.options.map((option) => option.label);
 // Real omo-ai 5.1.30 pane.read captures at 120 and 45 columns, with the recorded open calls.
@@ -4177,6 +4177,8 @@ describe("an answer and the menu it was made for", () => {
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
+        // a pane whose scroll herdr does not report: a colored read counts when its text is the live screen's
+        if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
         if (request.method === "agent.get" && pane.agentUnanswered) return;
         if (request.method === "agent.get") return answer({ agent: pane.rollout ? { agent_session: { kind: "path", value: pane.rollout } } : {} });
         if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
@@ -4207,7 +4209,7 @@ describe("an answer and the menu it was made for", () => {
     return ((await (await handlePromptRequest(new Request(url), url, { codexHome }))!.json()) as { prompt: InteractivePrompt | null }).prompt;
   }
 
-  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
+  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
     const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
     const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome }))!;
     const body = await response.json() as { error?: { code: string } };
@@ -5662,7 +5664,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         };
       };
       expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
-      expect(reads).toBe(3);
+      // the failed read, the old question, then the next one: its whole tab bar read once more in
+      // color and the text read again after that (#2465)
+      expect(reads).toBe(4);
       expect((await card())!.question).toBe("Which problems do you see?");
       expect(pane.sent).toEqual(["enter"]);
     });
@@ -5808,6 +5812,76 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.onSent = (sent) => { if (sent === "enter") setTimeout(() => { pane.status = "working"; pane.screen = `⏺ User answered Claude's questions\n\n${rule}\n❯ \n${rule}\n`; }, 200); };
       expect(await answer((await card())!.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
       expect(await card()).toBeNull();
+    });
+  });
+
+  test("goes back between Claude's question tabs with ← only as the pane shows each tab, and stops when it does not", async () => {
+    // Claude Code 2.1.312 at 120 columns, colors kept: the active tab is drawn on a background (#2465)
+    const panel = (state: string) => readFileSync(new URL(`./fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
+    // the first question once both are answered, as the review's ← ← shows it
+    const states: Record<string, string> = {
+      review: panel("review"), symptoms: panel("review-back"),
+      device: panel("first-answered").replace("☐ Symptoms", "☒ Symptoms"),
+    };
+    const show = (pane: Pane, state: string) => { pane.viewport = states[state]!; pane.screen = states[state]!.replace(ANSI_RE, ""); };
+    const order = ["device", "symptoms", "review"];
+    const press = (pane: Pane, skip = false) => {
+      let at = 2;
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        at = Math.max(0, at - (skip ? 2 : 1));
+        setTimeout(() => show(pane, order[at]!), 100);
+      };
+    };
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      expect(review).toMatchObject({ title: "Review your answers", can_step_back: true });
+      expect(review.steps?.map((step) => step.can_navigate ?? false)).toEqual([true, true, false]);
+      // the tab it is on, or one past the last: nothing to press
+      for (const choice of [{ step_index: 2 }, { step_index: 3 }, { step_index: -1 }, { step_back: true, step_index: 0 }, { step_back: true, option_index: 0 }]) {
+        expect((await answer(review.id, choice)).status).toBe(400);
+      }
+      expect(pane.sent).toEqual([]);
+      press(pane);
+      expect(await answer(review.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left"]);
+      expect(await card()).toMatchObject({ question: "Which problems do you see?", can_step_back: true });
+    });
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      press(pane);
+      expect(await answer((await card())!.id, { step_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      const device = (await card())!;
+      expect(device).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
+      expect(device.can_step_back).toBeUndefined();
+    });
+    // a frame mid-redraw whose colors cannot be checked says nothing about the tab: the route looks again
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        pane.viewport = states.symptoms!.replace(ANSI_RE, "");
+        pane.screen = states.symptoms!.replace(ANSI_RE, "");
+        setTimeout(() => show(pane, "symptoms"), 150);
+      };
+      expect(await answer((await card())!.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left"]);
+    });
+    // the pane went two tabs for one ←: not the tab asked for, so no second key
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      press(pane, true);
+      expect(await answer((await card())!.id, { step_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["left"]);
+    });
+    // colors that do not say which tab is shown: no steps, and no key for a step
+    await withPane("claude", "blocked", states.review!.replace(ANSI_RE, ""), async (pane) => {
+      const review = (await card())!;
+      expect(review.steps).toBeUndefined();
+      expect((await answer(review.id, { step_back: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
     });
   });
 

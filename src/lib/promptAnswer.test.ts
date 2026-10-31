@@ -27,6 +27,8 @@ describe("a multi-select's checks and typed answer", () => {
     // pi's own tabs drop edits that were not sent, so the button waits for them
     expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
     expect(blocksStepNavigation({ ...card, drafts_saved: true }, new Set(), "typed")).toBe(false);
+    // so do Claude Code's question tabs: a move with ←/→ leaves what the card alone holds
+    expect(blocksStepNavigation({ ...card, agent: "claude" }, new Set(), "typed")).toBe(true);
   });
 });
 

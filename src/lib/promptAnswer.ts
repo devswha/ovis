@@ -127,9 +127,9 @@ export function sendsChecksWithText(prompt: InteractivePrompt): boolean {
   return prompt.multi_select && !prompt.fallback && (prompt.checks_with_text === true || prompt.agent === "opencode");
 }
 
-/** Pi switches native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
+/** Pi and Claude Code switch native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
 export function blocksStepNavigation(prompt: InteractivePrompt, selected: ReadonlySet<number>, custom: string): boolean {
-  if (prompt.agent !== "pi" || prompt.drafts_saved || !prompt.steps?.some(step => step.can_navigate)) return false;
+  if (prompt.agent !== "pi" && prompt.agent !== "claude" || prompt.drafts_saved || !prompt.steps?.some(step => step.can_navigate)) return false;
   return custom !== (prompt.default_custom_text ?? "") || prompt.multi_select
     && JSON.stringify([...selected].sort((a, b) => a - b)) !== JSON.stringify(prompt.default_option_indices ?? []);
 }

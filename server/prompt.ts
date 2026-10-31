@@ -882,8 +882,10 @@ async function readKnownPrompt(
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
     || /^\s*←.*✓ Submit\s*→$/m.test(screen) && /Enter to select · ↑\/↓ to navigate/.test(screen));
+  // Claude's question tabs, whole: only the bar's colors say which tab is shown (dialogs/claude.ts)
+  const claudeTabs = agent === "claude" && /^\s*\u2190\s+[\u2610\u2612\u2611\u2714].*\u2192\s*$/m.test(screen);
   let inputUnverified: true | undefined;
-  if (piTabs) {
+  if (piTabs || claudeTabs) {
     // Detection text has no styles. Background or neutral-vs-dim/green text identifies
     // the active tab, not answered boxes: verify the viewport before authorizing moves.
     const before = screen;
@@ -896,7 +898,9 @@ async function readKnownPrompt(
       .split(/\r?\n/).map(line => line.trimEnd()).join("\n").trimEnd();
     if (colors !== null && viewportShowsLive(scrollBefore, scrollAfter, colors, before, screen)
       && text(colors) === text(screen)) screen = colors;
-    else inputUnverified = true; // Plain-text labels remain readable, but authorize no input.
+    // Plain-text labels remain readable, but authorize no input. Claude's card answers as
+    // before from plain text: it only goes without its steps.
+    else if (piTabs) inputUnverified = true;
   }
   // omo's form reads its text from the session's call, the screen showing where the form stands
   const omoAsks = ["omo", "pi", "claude", ""].includes(agent) && pane.cwd && OMO_FORM_RE.test(screen)
@@ -1353,8 +1357,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
 
       if (body.step_back === true || body.step_index !== undefined) {
-        const native = parsedPrompt?.piAskForm;
-        if (!native || body.step_back === true && body.step_index !== undefined
+        // pi's tabs, or Claude's question tabs and their review (#2465): ←/→, each move seen before the next
+        const claude = parsedPrompt?.claudeTabs !== undefined;
+        const native = parsedPrompt?.piAskForm ?? parsedPrompt?.claudeTabs;
+        if (!parsedPrompt || !native || body.step_back === true && body.step_index !== undefined
           || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined) {
           return badRequest("invalid_answer", "Exactly one supported navigation action is required.");
         }
@@ -1382,15 +1388,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
             send: async key => {
-              if (await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
+              if (!claude && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
               await paneSendKeys(body.pane_id, [key]);
             },
             read: async () => {
               if (!active()) return null;
               const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
-              return !live.inputUnverified && live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-")) && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              const ours = claude ? live.agent === "claude"
+                : live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-"));
+              return !live.inputUnverified && ours && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
             },
-          });
+          }, claude ? (shown) => shown.claudeTabs : undefined);
           if (!moved) return promptChanged();
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
