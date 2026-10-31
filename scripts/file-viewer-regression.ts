@@ -32,6 +32,18 @@ const openFiles = async (page: import("playwright-core").Page) => {
   else await runMoreItem(page, "Browse files");
 };
 
+// A loaded or reloaded chat scrolls to its end once its conversation is measured; the chat frame
+// names its content only once it is presented there. Even then a link far above the end is no
+// steady target: scrolling it into view (a click, or the focus a key press needs) races a follow
+// to the end still on its way, which moves it between pointer down and up or takes its row and
+// the focus away, and nothing opens. Steps that check history and presentation, not pointer
+// targeting, wait for the chat and activate such a link where it is, without scrolling.
+const transcriptSettled = (page: Page) => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached" });
+const activateInTranscript = async (page: Page, link: Locator): Promise<void> => {
+  await transcriptSettled(page);
+  await link.dispatchEvent("click");
+};
+
 const root = mkdtempSync(join(tmpdir(), "ovis-file-back-"));
 const reportServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
   '<!doctype html><h1>Same-host report</h1><a href="#details">Report details</a><section id="details">Details</section>',
@@ -526,9 +538,7 @@ try {
   };
   // with Open files at its default, even text opens in the popup; Beside the pane is a choice
   await setFileOpen(null);
-  // Reloaded images can move the following transcript between pointer down and up. This checks
-  // presentation/history, not pointer targeting; activate the file by keyboard on its fresh node.
-  await notesLink.press("Enter");
+  await activateInTranscript(page, notesLink);
   await textPopup.getByText("File preview history regression", { exact: true }).waitFor();
   assert.equal(await panel.count(), 0, "text starts in the popup at 1280px by default");
   await textPopup.getByRole("button", { name: "Close file", exact: true }).click();
@@ -627,7 +637,7 @@ try {
   // the preview's entry, not step the frame back and leave the panel there (#1203)
   const contentsLink = page.getByRole("button", { name: "contents page", exact: true });
   for (const close of ["Close file", "Escape"]) {
-    await contentsLink.click();
+    await activateInTranscript(page, contentsLink);
     const framed = page.frameLocator(".file-viewer-page");
     await framed.getByText("contents ran", { exact: true }).waitFor();
     const opened = await page.evaluate(() => history.length);
@@ -1821,7 +1831,7 @@ try {
           await page.setViewportSize({ width: step === "narrow" ? 900 : 1280, height: 800 });
           if (await screen() === "web") await page.locator(step === "narrow" ? ".web-panel-popup" : ".web-panel").waitFor();
         } else if (step === "web") {
-          await page.getByRole("link", { name: "web report", exact: true }).click();
+          await activateInTranscript(page, page.getByRole("link", { name: "web report", exact: true }));
           await page.locator(".web-panel, .web-panel-popup").first().waitFor();
         } else if (step === "diff") {
           await openFiles(page);
@@ -1834,7 +1844,7 @@ try {
           await page.getByRole("dialog", { name: "notes.txt", exact: true }).getByRole("button", { name: "Show beside the pane", exact: true }).click();
           await page.locator("aside.file-panel").getByText("File preview history regression", { exact: true }).waitFor();
         } else {
-          await page.getByRole("button", { name: "notes", exact: true }).press("Enter");
+          await activateInTranscript(page, page.getByRole("button", { name: "notes", exact: true }));
           await page.locator(row.fileOpen === "popup" ? ".modal.file-viewer" : "aside.file-panel").getByText("File preview history regression", { exact: true }).waitFor();
         }
       }
