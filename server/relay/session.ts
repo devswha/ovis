@@ -139,6 +139,9 @@ export class RelaySession {
     options.channel.onClose(() => this.mux.carrierLost());
   }
 
+  /** A sign-in or pairing is being checked, or its AUTH_OK waits to be sent. */
+  get verifying(): boolean { return this.state === "verifying"; }
+
   get bufferedBytes(): number { return this.sourceBytes + this.mux.stats.bufferedBytes; }
 
   receive(data: string | ArrayBuffer): void {

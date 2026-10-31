@@ -17,7 +17,8 @@ const MAX_PENDING = 4;
 const MAX_PER_DEVICE = 4;
 /** A relay control message is a short JSON object (a sync names at most 8 ids). */
 const CONTROL_MESSAGE_BYTES = 4096;
-const CONTROL_MESSAGES_PER_SECOND = 64;
+/** A client whose sign-in or pairing is being verified at its deadline gets this long to finish. */
+const SIGN_IN_GRACE_MS = 5_000;
 
 export interface RelayLinkOptions {
   readonly relay: string;
@@ -33,12 +34,14 @@ export interface RelayLinkOptions {
 
 interface DataConnection {
   readonly socket: WebSocket;
-  readonly cancelTimeout: () => void;
+  cancelTimeout: () => void;
   readonly sockets: Set<Parameters<RelaySocketHandlers["open"]>[0]>;
   session?: RelaySession;
   cancelKeepalive?: () => void;
   /** Set once the client signed in or paired; until then the connection holds no session place. */
   deviceId?: string;
+  /** Sign-in order, for evicting a device's oldest session. */
+  signedIn?: number;
 }
 
 /** Physical relay I/O only: admission and dispatch remain in RelaySession. */
@@ -47,6 +50,7 @@ export class RelayLink {
   private readonly data = new Map<string, DataConnection>();
   private stopped = false;
   private attempts = 0;
+  private signIns = 0;
   private cancelRetry: (() => void) | undefined;
   private cancelKeepalive: (() => void) | undefined;
   private readonly clock: MuxClock;
@@ -79,8 +83,6 @@ export class RelayLink {
     this.control = socket;
     let proofAnswered = false;
     let lastPong = this.clock.now();
-    let windowStart = this.clock.now();
-    let windowMessages = 0;
     // An upgrade that never answers is also a lost relay.
     this.cancelKeepalive = this.clock.setTimeout(() => socket.close(), 15_000);
     socket.onopen = () => {
@@ -97,9 +99,8 @@ export class RelayLink {
     };
     socket.onmessage = (event) => {
       if (this.stopped || this.control !== socket || typeof event.data !== "string") return;
-      // Bounded before parsing: an oversized or flooding control socket is dropped and reconnected.
-      if (this.clock.now() - windowStart >= 1000) { windowStart = this.clock.now(); windowMessages = 0; }
-      if (event.data.length > CONTROL_MESSAGE_BYTES || ++windowMessages > CONTROL_MESSAGES_PER_SECOND) { socket.close(); return; }
+      // Bounded before parsing; no rate limit, since client arrivals and departures drive this traffic.
+      if (event.data.length > CONTROL_MESSAGE_BYTES) { socket.close(); return; }
       if (!proofAnswered) {
         proofAnswered = this.prove(socket, event.data, null);
         return;
@@ -162,7 +163,11 @@ export class RelayLink {
     // Runs until the client signs in or pairs, not just until the protected channel opens.
     const entry: DataConnection = {
       socket, sockets: new Set(),
-      cancelTimeout: this.clock.setTimeout(() => socket.close(), 15_000),
+      cancelTimeout: this.clock.setTimeout(() => {
+        // A pairing may already be saved: let its acknowledgment through once, then close regardless.
+        if (entry.session?.verifying) entry.cancelTimeout = this.clock.setTimeout(() => socket.close(), SIGN_IN_GRACE_MS);
+        else socket.close();
+      }, 15_000),
     };
     this.data.set(id, entry);
     let proofAnswered = false;
@@ -224,9 +229,10 @@ export class RelayLink {
     if (this.data.get(id) !== entry) return;
     entry.cancelTimeout();
     entry.deviceId = deviceId;
+    entry.signedIn = ++this.signIns;
     const signedIn = [...this.data.values()].filter((other) => other.deviceId);
     if (signedIn.length > MAX_SESSIONS) { entry.session?.close("resource_exhausted"); return; }
-    const own = signedIn.filter((other) => other.deviceId === deviceId);
+    const own = signedIn.filter((other) => other.deviceId === deviceId).sort((a, b) => a.signedIn! - b.signedIn!);
     for (const other of own.slice(0, Math.max(0, own.length - MAX_PER_DEVICE))) other.session?.close("resource_exhausted");
   }
 
