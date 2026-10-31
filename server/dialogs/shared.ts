@@ -142,6 +142,8 @@ export type ParsedPrompt = InteractivePrompt & {
   };
   /** Pi's active tab, from colors verified against the live detection screen by the caller. */
   piAskForm?: { identity: string; index: number };
+  /** Claude's AskUserQuestion tab shown, from the tab bar's colors (claude.ts claudeTabSteps); absent without them. */
+  claudeTabs?: { identity: string; index: number };
   /** @eko24ive/pi-ask's ask_user form, as the web UI's pi extension reports it (server/pi-ask-bridge.ts). */
   piAskUser?: PiAskUserForm;
   /** Pi's custom row owns the inline editor, rather than only a selected menu row. */

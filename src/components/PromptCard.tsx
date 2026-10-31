@@ -151,6 +151,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
   const openFile = useContext(OpenFileContext);
   const planFile = prompt.plan_file;
   const navigationBlocked = blocksStepNavigation(prompt, selected, custom);
+  // a typed answer waiting for Confirm is the card's alone: a step would drop it
+  const stepsHeld = navigationBlocked || typedAnswer?.option_index !== undefined;
 
   return (
     <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")}
@@ -165,7 +167,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
           <button
             type="button"
             className="btn btn-ghost prompt-card-back"
-            disabled={pending || navigationBlocked}
+            disabled={pending || stepsHeld}
             aria-label={t("Back")}
             title={t("Back")}
             onClick={(event) => void answer({ step_back: true, draft: { option_indices: [...selected], custom_text: custom } }, event)}
@@ -218,7 +220,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
                   <button
                     type="button"
                     className="prompt-card-step-button"
-                    disabled={pending || navigationBlocked}
+                    disabled={pending || stepsHeld}
                     aria-label={words.step(index)}
                     title={step.can_navigate ? words.step(index) : t("Back")}
                     onClick={(event) => void answer({ step_index: index, draft: { option_indices: [...selected], custom_text: custom } }, event)}
