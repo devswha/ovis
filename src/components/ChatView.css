@@ -52,8 +52,8 @@
 
 /* The view's edges keep the page's spacing (the chat's padding, which the virtual list sets inside
    the transcript from --chat-edge, and a file's margin: only its blocks take the scaled one), and
-   a finger's targets keep --touch-target: a meta row and a work block's head shrink under the
-   reach of their targets */
+   a finger's targets keep --touch-target: a meta row shrinks under the reach of its copy target,
+   and a work block's head keeps a --touch-target row on a touch screen */
 .chat-transcript,
 .file-viewer-markdown > * {
   --space-1: var(--chat-space-1);
@@ -1292,20 +1292,6 @@ ol.markdown-list {
 
   .chat-copy,
   .markdown-code-copy { width: var(--touch-target); }
-
-  /* a work block's head is one line among the prose: its row is --control-h, which follows the text, and its
-     --touch-target reaches down in a transparent border, over the space and the rule under it (a user turn's copy
-     reaches past its row the same way), its plate kept to the row. Not up: the answer's copies above reach into the
-     space between. Its rows keep the full height: stacked, a reach would take the next row's taps */
-  .work-block-head {
-    --reach: max(0px, calc(var(--touch-target) - var(--control-h)));
-    margin-bottom: calc(-1 * var(--reach));
-    border-bottom: var(--reach) solid transparent;
-    border-radius: var(--radius-sm) / var(--radius-sm) var(--radius-sm) calc(var(--radius-sm) + var(--reach)) calc(var(--radius-sm) + var(--reach));
-  }
-
-  .work-block-head,
-  .work-block-head:hover { background-clip: padding-box; }
 
   /* no hover on touch: the meta rows are always there, quietly */
   .chat-turn-meta { opacity: 1; pointer-events: auto; }

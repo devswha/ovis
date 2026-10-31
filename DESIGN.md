@@ -614,10 +614,9 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   Unlike Zed's preview, the view's edges keep the page's spacing (`--chat-edge`, which the virtual
   list's inset takes, and a file preview's margin), so the transcript stays on the composer's
   column, and `--touch-target` keeps its size: a meta row shrinks under its copy target's overhang,
-  a work block's head (a `--control-h` row) under a target that reaches down over the rule below it
-  in a transparent border, not up, where the answer's copies above reach, and a code block's header
-  stays that target's height. Stacked work rows keep the full target: a reach would take the next
-  row's taps.
+  while work block heads (folded or open), stacked work rows and code block headers keep a
+  `--touch-target` minimum row height on touch screens. A folded head keeps its full 44 px row,
+  without a transparent reach or negative margin, so the default chat size matches the page's spacing.
 
 ### Line breaking
 - The UI language is `<html lang>` (`lib/settings.ts`), and `src/styles.css` keys the breaking
