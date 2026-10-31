@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { bounded, deferred } from "../../../server/relay/test-helpers.ts";
 import { isRelayResourceTarget, relayResourcePath, relayResourceTarget } from "../../../shared/relay-mux.ts";
 import { fileUrl, projectFaviconUrl } from "../api.ts";
 import { toolGalleryImage, userGalleryImages } from "../chatImages.ts";
 import { readerHref } from "../fileReader.ts";
-import { relayResourceBlob, RELAY_BLOB_LIMIT, RelayResourceTooLargeError, relayResourceUrl } from "./resources.ts";
+import { relayResourceBlob, RELAY_BLOB_LIMIT, RelayResourceTooLargeError, relayResourceUrl, serveRelayResources } from "./resources.ts";
 import { nativeTransport } from "../transport.ts";
 
 const id = "ab".repeat(16);
@@ -132,5 +133,29 @@ describe("the service worker resource path", () => {
     // Then the page gets a blob, not the worker's scoped URL that serveRelayResources could never answer
     try { expect(url).toStartWith("blob:"); }
     finally { URL.revokeObjectURL(url); }
+  });
+
+  it("aborts the relay request when its body cannot be handed to the worker", async () => {
+    // Given a window serving the worker's resource requests, where transferring the body fails
+    const worker = {};
+    let receive: (event: MessageEvent) => void = () => {};
+    controlledBy(worker, { controller: worker, addEventListener: (_: string, listener: typeof receive) => { receive = listener; }, removeEventListener() {} });
+    const requested = deferred<AbortSignal>();
+    const transport = { ...nativeTransport, fetch: async (_: RequestInfo | URL, init?: RequestInit) => {
+      requested.resolve(init!.signal!);
+      return new Response(new ReadableStream({ pull() {} }), { headers: { "content-type": "image/png" } });
+    } };
+    const stop = serveRelayResources(transport, id, () => true);
+    const aborted = deferred<void>();
+    // When the worker asks for a file
+    const { port1, port2 } = new MessageChannel();
+    receive({ data: { type: "ovis-relay-resource", serverId: id, target: "/api/fs/file?path=a.png", headers: [] }, ports: [port1], source: worker } as unknown as MessageEvent);
+    const signal = await bounded(requested.promise);
+    signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+    if (signal.aborted) aborted.resolve();
+    // Then the relay request is aborted, not left holding its stream slot
+    await bounded(aborted.promise);
+    port2.close();
+    stop();
   });
 });

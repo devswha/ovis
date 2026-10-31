@@ -135,7 +135,8 @@ export function serveRelayResources(transport: Transport, serverId: string, conn
       }, { highWaterMark: 0 }) : null;
       port.postMessage({ available: true, status: response.status, headers, body }, body ? [body] : []);
       if (!body) finish();
-    }).catch(() => { port.postMessage({ available: false }); finish(); });
+    // a failed fetch or hand-off: abort the request, whose body (locked by `reader`) would otherwise hold its stream slot
+    }).catch(() => { abort.abort(); port.postMessage({ available: false }); finish(); });
   };
   workers.addEventListener("message", receive);
   return () => {
