@@ -34,7 +34,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, PORTAL_OIDC_SECRET_VARIABLE, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
-import type { PortalStatus } from "../shared/protocol.ts";
+import type { DeviceRole, PortalStatus } from "../shared/protocol.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
 import { updateRequestAllowed } from "./update-api.ts";
@@ -96,6 +96,8 @@ interface SavedState {
   pid: number | null;
   /** who may open the address, for a start that comes from this file (the boot's resume, a relaunch) */
   auth: PortalAuth;
+  /** Names and roles only, never the bearer links. Older state has none and defaults to watch. */
+  invites?: readonly { readonly name: string; readonly role: DeviceRole }[];
 }
 
 export interface PortalServiceOptions {
@@ -393,6 +395,7 @@ export class PortalService {
   private signInsRead: Probe<PortalSignIn[]> | null = null;
   /** who may open the address: the running Portal's, else the saved choice the next start uses */
   private auth: PortalAuth = NO_PORTAL_AUTH;
+  private invites: NonNullable<SavedState["invites"]> = [];
   /** the short host of the address being served (`shortReadyUrl`), reported only while `url` is */
   private shortUrl: string | null = null;
   /** the port this service represents; a service for another port must not change the owner's saved choice */
@@ -415,7 +418,7 @@ export class PortalService {
   /**
    * How long a stream of a visitor this Portal signed in (the terminal's WebSocket, the PCs' event stream) stays
    * open. Portal checks its sign-in on every request, so a link that expired, a sign-out or a list without the
-   * name ends a visitor's next request; a stream opened before that is one request, and would drive the
+   * name ends a visitor's next request; a stream opened before that is one request, and would watch the
    * terminals for as long as it stayed open. Closed after this, the page reconnects through Portal, which
    * lets it in again only while the sign-in still holds.
    */
@@ -477,6 +480,7 @@ export class PortalService {
     const saved = this.saved();
     this.relay = saved.relay;
     this.auth = saved.auth;
+    this.invites = saved.invites ?? [];
     this.serverPort = request.port;
     // a server on another port shares this state directory: what runs is its own
     if (saved.port !== null && saved.port !== request.port) return;
@@ -494,6 +498,7 @@ export class PortalService {
     const saved = this.saved();
     this.serverPort = request.port;
     if (saved.port !== null && saved.port !== request.port) return "state_in_use";
+    this.invites = saved.invites ?? [];
     this.phase = "starting";
     this.relay = request.relay;
     this.auth = request.auth ?? NO_PORTAL_AUTH;
@@ -512,6 +517,11 @@ export class PortalService {
    */
   vouches(given: string | null): boolean {
     return proofMatches(this.proof, given);
+  }
+
+  /** Only private links have invite records; every unrecorded Portal identity may watch. */
+  roleFor(user: string | null, method: string | null): DeviceRole {
+    return method === "credential" ? this.invites.find((invite) => invite.name === user)?.role ?? "watch" : "watch";
   }
 
   /**
@@ -535,7 +545,12 @@ export class PortalService {
         proc.exited,
       ]);
       const redeem = /^Redeem URL: (https:\/\/\S+)$/m.exec(out)?.[1];
-      if (code === 0 && redeem?.startsWith(`https://${host}/_portal/auth/login#credential=`)) return { redeem_url: redeem };
+      if (code === 0 && redeem?.startsWith(`https://${host}/_portal/auth/login#credential=`)) {
+        const invites: NonNullable<SavedState["invites"]> = [...this.invites.filter((invite) => invite.name !== name), { name, role: "watch" }];
+        this.save({ invites });
+        this.invites = invites;
+        return { redeem_url: redeem };
+      }
       const said = err.trim().split("\n").at(-1);
       return { failed: `Portal could not issue the link (exit ${code}).${said ? ` Portal said: ${said}` : ""}` };
     } catch (error) {
@@ -865,6 +880,18 @@ export class PortalService {
     // a file from before the choice existed has none: the app's own token or a paired device
     const auth = checkPortalAuth(value["auth"]);
     if ("problem" in auth) throw new Error("Saved Portal state is invalid.");
+    const invites: { name: string; role: DeviceRole }[] = [];
+    const rawInvites = value["invites"];
+    if (rawInvites !== undefined) {
+      if (!Array.isArray(rawInvites)) throw new Error("Saved Portal invites are invalid.");
+      for (const invite of rawInvites) {
+        if (!isJsonObject(invite) || typeof invite["name"] !== "string") throw new Error("Saved Portal invites are invalid.");
+        const name = checkEntry("credential", invite["name"]);
+        const role = invite["role"] ?? "watch";
+        if ("problem" in name || (role !== "drive" && role !== "watch") || invites.some((entry) => entry.name === name.entry)) throw new Error("Saved Portal invites are invalid.");
+        invites.push({ name: name.entry, role });
+      }
+    }
     if (typeof enabled !== "boolean"
       || (relay !== null && origin === null)
       || (port !== null && !(typeof port === "number" && Number.isSafeInteger(port) && port > 0 && port <= 65535))
@@ -872,7 +899,7 @@ export class PortalService {
       || (enabled && (origin === null || port === null || pid === null))) {
       throw new Error("Saved Portal state is invalid.");
     }
-    return { enabled, relay: origin, port: port as number | null, pid: pid as number | null, auth: auth.auth };
+    return { enabled, relay: origin, port: port as number | null, pid: pid as number | null, auth: auth.auth, ...(invites.length > 0 ? { invites } : {}) };
   }
 
   /** at once, not awaited: a stop and a start's own save never interleave */

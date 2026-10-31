@@ -266,7 +266,7 @@ describe("a Portal that signs its visitors in", () => {
       }
     };
     return {
-      server, main, owner, post,
+      server, main, owner, post, stateDir,
       /** starts Portal and returns the proof it was given, or "" when it was given none */
       async start(auth: unknown): Promise<string> {
         rmSync(noted, { force: true });
@@ -283,14 +283,16 @@ describe("a Portal that signs its visitors in", () => {
   /** what Portal sends with a visitor it vouches for: the visitor's Host kept, Forwarded-Proto https, the identity and the proof */
   const identity = { host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9", "x-portal-user": "alice", "x-portal-auth": "credential" };
   const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
-  const signedIn = { required: false, authenticated: true, via: "portal", role: "drive", portal: { user: "alice", method: "credential" } };
+  const signedIn = { required: false, authenticated: true, via: "portal", role: "watch", portal: { user: "alice", method: "credential" } };
   const refused = { authenticated: false, reason: "token_required" };
 
-  it("lets in what carries its Portal's proof, as a device that may drive, with no token", async () => {
+  it("lets an invited visitor watch with no token, while the owner's setup credential still drives", async () => {
     const portal = serving();
     const proof = await portal.start(credential);
+    expect((await portal.post("invite", { name: "alice", days: 30, role: "drive" })).status).toBe(200);
+    expect(JSON.parse(readFileSync(join(portal.stateDir, "portal", "state.json"), "utf8"))).toMatchObject({ invites: [{ name: "alice", role: "watch" }] });
     expect(proof).toMatch(/^[0-9a-f]{64}$/);
-    const vouched = { ...identity, "x-portal-proof": proof };
+    const vouched = { ...identity, "x-portal-proof": proof, "x-portal-role": "drive" };
     expect(await health(portal.main, vouched)).toEqual(signedIn);
     expect((await fetch(`${portal.main}/api/devices`, { headers: vouched })).status).toBe(200);
     // the proof is nowhere the app answers
@@ -298,7 +300,7 @@ describe("a Portal that signs its visitors in", () => {
       expect(await (await fetch(`${portal.main}${path}`, { headers: { ...portal.owner, ...vouched } })).text()).not.toContain(proof);
     }
     // the token still means the token, and without either it is refused
-    expect(await health(portal.main, { ...vouched, ...portal.owner })).toMatchObject({ via: "token" });
+    expect(await health(portal.main, { ...vouched, ...portal.owner })).toMatchObject({ via: "token", role: "drive" });
     expect(await health(portal.main, {})).toMatchObject(refused);
   });
 
@@ -375,21 +377,30 @@ describe("a Portal that signs its visitors in", () => {
     expect(await open(identity)).toBeNull();
     const socket = (await open({ ...identity, "x-portal-proof": proof }))!;
     expect(socket).not.toBeNull();
-    const frames: { type: string; id?: number }[] = [];
-    socket.onmessage = (event) => frames.push(JSON.parse(String(event.data)));
-    socket.send(JSON.stringify({ type: "ping", id: 7 }));
-    const deadline = Date.now() + 4_000;
-    while (!frames.some((frame) => frame.type === "pong")) {
-      if (Date.now() > deadline) throw new Error("Timed out: the pong");
-      await Bun.sleep(10);
+    const exchange = (sent: object, type: string) => new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => { socket.removeEventListener("message", receive); reject(new Error(`No ${type} frame`)); }, 4000);
+      const receive = (event: MessageEvent) => {
+        const frame = JSON.parse(String(event.data));
+        if (frame.type !== type || (type === "error" && frame.code !== "read_only")) return;
+        clearTimeout(timer);
+        socket.removeEventListener("message", receive);
+        resolve(frame);
+      };
+      socket.addEventListener("message", receive);
+      socket.send(JSON.stringify(sent));
+    });
+    try {
+      expect(await exchange({ type: "ping", id: 7 }, "pong")).toEqual({ type: "pong", id: 7 });
+      expect(await exchange({ type: "role", mode: "interact" }, "role-ack")).toMatchObject({ mode: "observe" });
+      expect(await exchange({ type: "input", pane_id: "not-a-real-pane", text: "whoami\n" }, "error")).toMatchObject({ code: "read_only" });
+    } finally {
+      socket.close();
     }
-    expect(frames.find((frame) => frame.type === "pong")).toEqual({ type: "pong", id: 7 });
-    socket.close();
   });
 
   it("ends a visitor's WebSocket after a while, so its reconnect meets Portal's sign-in again, and leaves the owner's open", async () => {
     // Portal checks its sign-in on each request, so a link that expires or a sign-out ends a visitor's HTTP at once;
-    // a socket opened before that would otherwise drive the terminals for as long as it stays open
+    // a socket opened before that would otherwise watch the terminals for as long as it stays open
     const portal = serving(300);
     const proof = await portal.start(credential);
     const port = new URL(portal.main).port;
@@ -417,6 +428,7 @@ describe("a Portal that signs its visitors in", () => {
   it("does not let a visitor it signed in use the app's controls to decide who else gets in or leave access behind, while the owner's token may", async () => {
     const portal = serving();
     const proof = await portal.start(credential);
+    expect((await portal.post("invite", { name: "alice", days: 30 })).status).toBe(200);
     const visitor = { ...identity, "x-portal-proof": proof, "x-herdr-update": "1", "x-herdr-machine": "1", "content-type": "application/json" };
     const send = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
       fetch(`${portal.main}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -431,18 +443,23 @@ describe("a Portal that signs its visitors in", () => {
       ["PATCH", "/api/devices/0123456789abcdef", { label: "mine" }],
       ["DELETE", "/api/devices/0123456789abcdef"],
       ["POST", "/api/push/subscribe", { subscription: { endpoint: "https://push.example/1", keys: { p256dh: "a", auth: "b" } } }],
+      ["POST", "/api/pane/input", { pane_id: "not-a-real-pane", text: "whoami\n" }],
+      ["POST", "/api/workspace/create", { cwd: portal.stateDir }],
+      ["POST", "/api/machines/local/pane/input", { pane_id: "not-a-real-pane", text: "whoami\n" }],
+      ["POST", "/api/machines/remote/pane/input", { pane_id: "not-a-real-pane", text: "whoami\n" }],
+      ["GET", "/api/fs/file?path=/etc/passwd"],
     ];
     for (const [method, path, body] of standing) {
       const refused = await send(method, path, visitor, body);
       expect(refused.status, `${method} ${path}`).toBe(403);
-      expect(await code(refused), `${method} ${path}`).toBe("owner_only");
+      expect(await code(refused), `${method} ${path}`).toBe(path === "/api/push/subscribe" ? "owner_only" : "read_only");
     }
-    // reading stays open, and so does redeeming a pairing code the owner handed over (a wrong one is the code's own refusal)
+    // Safe reads stay open, but a visitor cannot upgrade itself by redeeming a pairing code.
     expect((await send("GET", "/api/devices", visitor)).status).toBe(200);
     expect((await send("GET", "/api/portal", visitor)).status).toBe(200);
     const redeemed = await send("POST", "/api/devices/pair", visitor, { code: "000000" });
-    expect(redeemed.status).toBe(401);
-    expect(await code(redeemed)).toBe("invalid_code");
+    expect(redeemed.status).toBe(403);
+    expect(await code(redeemed)).toBe("read_only");
     // none of that touched Portal
     expect(((await (await send("GET", "/api/portal", portal.owner)).json()) as { phase: string }).phase).toBe("running");
     // the same requests without the proof are no visitor at all

@@ -1071,6 +1071,8 @@ describe("private links", () => {
         await invite(service, { name: "bob", days });
         expect(portal.issued()).toContain(`--expires=${hours}h`);
       }
+      expect(savedState(stateDir)).toMatchObject({ invites: [{ name: "Alice Smith", role: "watch" }, { name: "bob", role: "watch" }] });
+      expect(service.roleFor("Alice Smith", "credential")).toBe("watch");
       // the link is a bearer secret: no status, saved file, Portal output or log keeps it
       expect(JSON.stringify(await service.status(open))).not.toContain(LINK);
       expect(readFileSync(join(stateDir, "portal", "state.json"), "utf8")).not.toContain(LINK);
@@ -1081,6 +1083,26 @@ describe("private links", () => {
       service.stop();
       await bounded(service.shutdown(), "Portal shutdown settled");
     }
+  });
+
+  it("loads invitation roles across restarts without treating an unknown or legacy visitor as the owner", async () => {
+    const stateDir = mkdtempSync(join(root, "roles-"));
+    mkdirSync(join(stateDir, "portal"));
+    const path = join(stateDir, "portal", "state.json");
+    const state = { enabled: false, relay: RELAY, port: 7317, pid: null, auth: credential() };
+    writeFileSync(path, JSON.stringify({ ...state, invites: [{ name: "alice" }, { name: "owner-link", role: "drive" }] }));
+    const service = new PortalService({ stateDir });
+    await service.resume({ port: 7317, ...open });
+    expect(service.roleFor("alice", "credential")).toBe("watch");
+    expect(service.roleFor("unknown", "credential")).toBe("watch");
+    expect(service.roleFor("owner-link", "credential")).toBe("drive");
+    expect(service.roleFor("owner-link", "oidc")).toBe("watch");
+    writeFileSync(path, JSON.stringify(state));
+    const legacy = new PortalService({ stateDir });
+    await legacy.resume({ port: 7317, ...open });
+    expect(legacy.roleFor("owner-link", "credential")).toBe("watch");
+    writeFileSync(path, JSON.stringify({ ...state, invites: [{ name: "alice", role: "admin" }] }));
+    await expect(new PortalService({ stateDir }).resume({ port: 7317, ...open })).rejects.toThrow("Saved Portal invites are invalid");
   });
 
   it("issues only while Portal runs with the private-link sign-in and its address is known", async () => {

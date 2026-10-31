@@ -28,10 +28,9 @@
  *
  * Portal's own sign-in (a private link, an Ethereum wallet, an OIDC account) is one more way in,
  * and the one exception to "a token is required of everything but a paired device": a visitor it let
- * in is let in like a paired device that may drive, with no token asked, and the PC's owner chose that
- * when starting Portal with it. The app's own controls leave it no standing access: dispatch.ts refuses
- * it pairing, revoking, push subscriptions and Portal's own controls. That is no boundary against the
- * visitor, whose terminals are a shell as this PC's user (docs/guide.md). Its X-Portal-User and
+ * in may watch by default, with no token asked. The owner's app token and paired-device role still
+ * take precedence; a Portal identity alone does not identify the owner. Invites store their role
+ * server-side, never in a visitor-supplied header. Its X-Portal-User and
  * X-Portal-Auth are believed only with the proof Portal sends beside them (`portalLogin`).
  */
 import { BlockList, isIP } from "node:net";
@@ -79,6 +78,8 @@ export interface AccessInput {
     user: string | null;
     /** the request's X-Portal-Auth, as sent */
     auth: string | null;
+    /** the server's stored invitation role, never a request header; absent means watch */
+    role?: DeviceRole;
   };
 }
 
@@ -248,7 +249,7 @@ export function decideAccess(input: AccessInput): Access {
   if (input.device !== null) return { level: "full", via: "device", role: input.device.role, device: input.device };
   // before the token gate below, which holds every other way in: Portal's sign-in replaces the token
   const portal = portalLogin(input);
-  if (portal !== null) return { level: "full", via: "portal", role: "drive", portal };
+  if (portal !== null) return { level: "full", via: "portal", role: input.portal?.role ?? "watch", portal };
   // before the login header: a token must hold against a header a visitor can send through another proxy
   if (input.tokenConfigured) return { level: "none", reason: "token_required" };
   // the identity header is only worth something from the local tailscaled, never from a LAN client

@@ -63,7 +63,7 @@ export function PortalInvite({ auth }: { auth: PortalAuth }) {
         </form>
       ) : (
         <div className="portal-secret" role="status">
-          <p className="portal-warning">{t("This link opens this PC's terminals for anyone who has it, until it expires. Send it only to {name}. It is shown once and this app keeps no copy.", { name: issued.name })}</p>
+          <p className="portal-warning">{t("This link lets anyone who has it watch this PC's terminals until it expires, without typing or making changes. Send it only to {name}. It is shown once and this app keeps no copy.", { name: issued.name })}</p>
           <div className="phone-command">
             <input ref={linkRef} className="portal-link" readOnly value={issued.url} aria-label={t("Private link for {name}", { name: issued.name })} autoComplete="off" onFocus={(event) => event.currentTarget.select()} />
             <button type="button" className="btn" onClick={() => void copyText(issued.url, linkRef.current).then((ok) => { if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1600); } })}>{t(copied ? "Copied" : "Copy")}</button>

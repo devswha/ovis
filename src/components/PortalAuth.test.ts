@@ -55,13 +55,13 @@ describe("the Portal panel's choice of who may open the address", () => {
     expect(choice(status(), NO_PORTAL_AUTH, true)).toContain("<fieldset class=\"settings-item portal-auth\" disabled=\"\"");
   });
 
-  it("tells that a sign-in replaces the token, and what an empty list of link names means", () => {
-    expect(choice(status())).not.toContain("no access token is asked");
+  it("shows sign-in guidance and adds an empty-list hint only when no link names are allowed", () => {
+    const hints = (html: string): string[] => html.match(/<p class="settings-hint">[^<]+<\/p>/g) ?? [];
+    expect(hints(choice(status()))).toHaveLength(0);
     const credential = choice(status(), { method: "credential", allow: [], issuer: null, client_id: null });
-    expect(credential).toContain("no access token is asked");
-    expect(credential).toContain("every unexpired link you issue opens it");
+    expect(hints(credential)).toHaveLength(2);
     const named = choice(status(), { method: "credential", allow: ["alice"], issuer: null, client_id: null });
-    expect(named).not.toContain("every unexpired link you issue opens it");
+    expect(hints(named)).toEqual(hints(credential).slice(0, 1));
     expect(named).toContain("Remove alice");
   });
 

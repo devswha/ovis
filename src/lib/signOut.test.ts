@@ -48,9 +48,11 @@ describe("ending a sign-in", () => {
     }
   });
 
-  it("ends Portal's sign-in too when it is what the app's leaves behind", async () => {
-    left = "portal";
-    expect(await endSignIn("device")).toEqual({ reload: true });
-    expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health?scope=bridge", method: undefined }, { url: "/_portal/auth/logout", method: "POST" }]);
-  });
+  for (const via of ["token", "device"] as const) {
+    it(`ends Portal's sign-in too when it is what the ${via} session leaves behind`, async () => {
+      left = "portal";
+      expect(await endSignIn(via)).toEqual({ reload: true });
+      expect(calls).toEqual([{ url: "/api/auth", method: "DELETE" }, { url: "/api/health?scope=bridge", method: undefined }, { url: "/_portal/auth/logout", method: "POST" }]);
+    });
+  }
 });

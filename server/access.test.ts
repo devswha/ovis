@@ -165,7 +165,7 @@ describe("Portal's sign-in", () => {
 
   // a visitor can type X-Portal-User wherever Portal is not the one carrying the request; only Portal has the proof
   const cases: [string, Partial<AccessInput>, string][] = [
-    ["the identity of a request that carries the Portal's proof, like a device that may drive", through(), "portal"],
+    ["the identity of a request that carries the Portal's proof, like a device that may watch", through(), "portal"],
     ["whatever Host, forwarding headers or Tailscale login come with it: the proof is the only condition", through({}, { host: "anything.example", forwardedFor: "100.64.0.9", tailscaleLogin: "me@example.com", owner: "me@example.com", funnel: true }), "portal"],
     ["a request with no proof, from loopback, naming Portal's public host", through({ proven: false }), REFUSED],
     ["a request with no proof, from off this machine", through({ proven: false }, { loopback: false }), REFUSED],
@@ -192,14 +192,22 @@ describe("Portal's sign-in", () => {
     expect(via(input)).toBe(expected);
   });
 
-  it("says who signed in and how, and gives them the drive role", () => {
-    expect(decideAccess({ ...base, ...through({ user: WALLET, auth: "siwe" }) })).toEqual({ level: "full", via: "portal", role: "drive", portal: { user: WALLET, method: "siwe" } });
+  it("says who signed in and how, and defaults every Portal method to watch", () => {
+    for (const [user, method] of [["alice", "credential"], [WALLET, "siwe"], ["me@example.com", "oidc"]] as const) {
+      expect(decideAccess({ ...base, ...through({ user, auth: method }) })).toEqual({ level: "full", via: "portal", role: "watch", portal: { user, method } });
+    }
   });
 
   it("is believed after the token and a paired device, never before them", () => {
-    expect(via({ ...through(), tokenMatched: true })).toBe("token");
-    expect(via({ ...through(), device })).toBe("device");
+    expect(decideAccess({ ...base, ...through(), tokenMatched: true })).toMatchObject({ via: "token", role: "drive" });
+    expect(decideAccess({ ...base, ...through(), device })).toMatchObject({ via: "device", role: "drive" });
     expect(decideAccess({ ...base, ...through(), device: { ...device, role: "watch" } })).toMatchObject({ via: "device", role: "watch" });
+  });
+
+  it("uses a stored invitation role only with a proven Portal identity", () => {
+    expect(decideAccess({ ...base, ...through({ role: "watch" }) })).toMatchObject({ via: "portal", role: "watch" });
+    expect(decideAccess({ ...base, ...through({ role: "drive" }) })).toMatchObject({ via: "portal", role: "drive" });
+    expect(via(through({ role: "drive", proven: false }))).toBe(REFUSED);
   });
 
   it("changes nothing for a request that has no proof", () => {

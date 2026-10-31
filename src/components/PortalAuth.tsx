@@ -44,7 +44,7 @@ export function PortalAuthChoice({ status, draft, disabled, onChange }: { status
           );
         })}
       </div>
-      {method !== "none" && <p className="settings-hint">{t("Whoever gets through this sign-in is let in like a paired device: no access token is asked, and they can type into your terminals.")}</p>}
+      {method !== "none" && <p className="settings-hint">{t("Visitors can watch your terminals, but cannot type or change anything. Your app token or paired device keeps its existing access.")}</p>}
       {method === "credential" && (
         <AllowList method="credential" entries={draft.allow.credential} label={t("Allowed link names")} placeholder="alice"
           hint={draft.allow.credential.length === 0 ? t("With no names, every unexpired link you issue opens it. Add names to accept only links issued to them.") : undefined}

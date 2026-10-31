@@ -153,7 +153,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     ...identity,
     tokenConfigured: token !== "",
     gated: devices.gated,
-    portal: { proven: options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false, user: request.headers.get("x-portal-user"), auth: request.headers.get("x-portal-auth") },
+    portal: {
+      proven: options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false,
+      user: request.headers.get("x-portal-user"),
+      auth: request.headers.get("x-portal-auth"),
+      role: options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch",
+    },
   });
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
@@ -211,12 +216,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
-  // A visitor Portal's own sign-in let in (a link that expires, a wallet or account on a list) uses the
-  // app like a device that may drive, and the app's own controls leave nothing standing behind for it: only
-  // the link's expiry and Portal's list end that access, so no pairing code or revoking, no push subscription
-  // to alert a phone of theirs after it, no say over Portal itself. Redeeming a code the owner gave stays open.
-  // This is no boundary against the visitor: driving a terminal is a shell as this PC's user, which can read
-  // OVIS_TOKEN and Portal's identity (docs/guide.md says so); it keeps the app from handing out more by itself.
+  // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
+  // identity explicitly given drive in local state cannot use these controls to leave access
+  // behind: managing devices, push subscriptions and Portal requires the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || (pathname.startsWith("/api/devices/") && pathname !== "/api/devices/pair")
