@@ -55,6 +55,26 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Chat shows the picture attached to a Hermes prompt, from the local file Hermes names for it,
   the way it shows a local image in Markdown; a picture it cannot read stays a link.
   ([#2482](https://github.com/devswha/ovis/pull/2482))
+- Chat shows the pictures in a Grok CLI session: those sent with a prompt and those a tool read,
+  from the update log Grok keeps for the session.
+  ([#2481](https://github.com/devswha/ovis/pull/2481))
+- Chat draws a ```svg fence as the figure it is, in the theme's colors, with the same enlarge view
+  as a Mermaid diagram. The figure is shown as an image, so its markup never runs in the page; a
+  fence still streaming, one that does not draw, one past 256 KiB, or one holding a script, an
+  event handler or a reference outside the figure stays a code block.
+  ([#2477](https://github.com/devswha/ovis/pull/2477) reported by @affeek)
+- Chat draws math written with dollar signs: `$…$` inline, `$$…$$` and a ```math fence as display
+  math, beside `\(…\)` and `\[…\]`. A dollar sign reads as math only where a price or a shell
+  variable cannot: after no Latin letter or digit, with no space inside its ends, on one line,
+  before no Latin letter, digit or shell mark (`{ ( # @ *`), and not a number followed by a word,
+  so "$5 and $10", `$HOME/${PATH}` and `$(whoami)` stay as written while `$x$는` and
+  `$2 + 2 = 4$` are drawn. A formula KaTeX cannot draw shows as written.
+  ([#2498](https://github.com/devswha/ovis/pull/2498) reported by @kjohnsen)
+- Settings → Chat → Expand thinking opens the agent's reasoning in the chat instead of folding it
+  (#2346), and Collapse work starts a turn's work folded to its one header line, also while the
+  agent works; a block waiting on you still opens (#2228). Both are off by default and kept per
+  device, and a block you open or fold yourself stays that way for its message.
+  ([#2484](https://github.com/devswha/ovis/pull/2484) reported by @altgans and @Ploppy3)
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
@@ -125,6 +145,27 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - A Copilot chat no longer splits a turn whose pictures fill the page window: the newest page
   showed only the answer, and the older one the tool calls without their output.
   ([#2483](https://github.com/devswha/ovis/pull/2483))
+- Question cards keep terminal context and its caption above the question without overlapping
+  on short mobile screens.
+  ([#2494](https://github.com/devswha/ovis/pull/2494) by @todor-a)
+- At a small or large Chat font size, the space between and inside messages shrinks and grows with
+  the text instead of staying at the page's spacing; the view's edges and touch targets keep their
+  sizes. On a touch screen, a folded work block's head keeps a 44 px minimum row height, so the
+  default Chat font size keeps the same spacing as before.
+  ([#2491](https://github.com/devswha/ovis/pull/2491) by @nocstah)
+- A shared setting changed just before a reload or a closed tab is no longer lost. Show plan limits
+  no longer comes back on: the change is sent as the page goes, or is hidden.
+  ([#2487](https://github.com/devswha/ovis/pull/2487))
+- A settings change in one Ovis tab no longer undoes a change made meanwhile in another open tab
+  of the same browser. A tab now saves only the settings it changed.
+  ([#2486](https://github.com/devswha/ovis/pull/2486))
+- On Linux without `secret-tool`, Settings → Agents no longer calls a signed-in Antigravity CLI
+  "Not signed in": it says the sign-in cannot be read until `secret-tool` (libsecret-tools) is
+  installed, and finds the account on the next look once it is.
+  ([#2472](https://github.com/devswha/ovis/pull/2472) reported by @matiemer)
+- Starting Portal and reading remote access settings over a relay session now use this server's
+  listening port instead of the default port.
+  ([#2476](https://github.com/devswha/ovis/pull/2476))
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
