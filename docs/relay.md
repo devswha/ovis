@@ -110,8 +110,16 @@ the relay saw is therefore no use later, or with another PC.
 "this computer": only the phone's key does. A request through the relay keeps only a short list of
 headers ([below](#requests-through-the-mux)), never `Cookie`, `Authorization`, `Host`, `Origin` or
 forwarding headers, and signing in with the token answers 403 `device_key_required`. A phone on the
-relay can't show a relay QR code or reset the relay identity (403 `local_required`); like any paired
+relay can't start or stop the relay, show its QR code or reset its identity (403 `local_required`); like any paired
 device that can type, it can still start a pairing code under Devices.
+
+**Who controls the relay.** Start, stop, pairing offers and identity reset require drive access
+and a direct connection to the PC. A Portal
+visitor may read the state, but every relay mutation answers 403 `owner_only`: Settings shows
+a disabled switch, no offer and no reset. Use the owner's access token or a paired device instead.
+The hosted shell hides the group because mutations
+over the relay answer 403 `local_required`. While the relay is off an offer answers 409
+`relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.
 
 **What it may do.** A phone paired through the relay gets the same access as a device paired with a
 code: it can type into terminals and change settings. Every pairing, through the relay or not,
@@ -163,7 +171,8 @@ it, and the identity reset is refused.
    [the relay's side](../relay/README.md#what-it-answers)). The PC then sends a keepalive every 10 seconds
    and counts the relay gone after 30 seconds without an answer. It reconnects after 1 second, then
    1 second longer each time up to 30 seconds, each wait varied by up to 20%
-   ([`server/relay/link.ts`](../server/relay/link.ts)).
+   ([`server/relay/link.ts`](../server/relay/link.ts)). Control messages are limited to 4096
+   characters before parsing, with no control-message rate limit: arrivals and departures drive them.
    The challenge is `{"type":"server_challenge","public_key":"<ephemeral X25519 hex>","nonce":"<32 random bytes hex>"}`;
    the answer is `{"type":"server_proof","answer":"<HMAC-SHA256 hex>"}`. The MAC key is the raw
    X25519 shared secret, and the message is
@@ -186,7 +195,13 @@ it, and the identity reset is refused.
 4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the
    PC answers `WELCOME` with 32 fresh random bytes, its version and its limits, the phone sends `PAIR`
    (the first time, with the code) or `AUTH` (later, with its signature), and the PC answers
-   `AUTH_OK`. Nothing else is accepted before that.
+   `AUTH_OK`. Nothing else is accepted before that. The phone saves a new PC's key only on
+   `AUTH_OK`, so a link whose PC never admits it takes no PC's place on the phone. The PC closes a
+   connection that has not signed in or paired within 15 seconds of opening its data socket;
+   completing the protected handshake alone does not cancel that deadline. Verification already in progress gets at most 5 more seconds
+   to finish and send its acknowledgment. Only signed-in sessions count in Settings: at most eight
+   on the PC, with at most four for one device key. A fifth session for that device closes its oldest
+   by sign-in order with `resource_exhausted`, not by the order their sockets opened.
 5. **Requests.** Every request, event stream and WebSocket the app opens becomes a stream of the
    mux. The PC runs it through the same handler as a browser's request (`handleRequest` in
    [`server/dispatch.ts`](../server/dispatch.ts)), with the paired device as the one asking, so every
