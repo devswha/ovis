@@ -32,27 +32,39 @@ const HERMES_OTHER = "Other (type your answer)";
  * the question wrapped at its own indent. Tab and Shift+Tab move the open one (ui-tui
  * prompts.tsx), but an answered question shows `✓` even while Tab is on it, so nothing tells it
  * is there: the card goes only to open questions with none answered on the way.
+ *
+ * The batch is named by all it draws of itself: every question's text, which are answered and the
+ * answer drawn under each. Hermes draws a question's options only while it is open, so nothing on
+ * the screen names the options of the question a key moves to: a move is one key, and each one is
+ * asked for anew against the card it leaves (whose id holds the open question and its options).
  */
 function hermesNavigation(block: string[], base: number, current: number, switches: boolean): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
   const indent = (line: string) => line.length - line.trimStart().length;
   const questions: { label: string; answered: boolean; current: boolean }[] = [];
+  const drawn: string[][] = [];
   for (const [index, line] of block.entries()) {
-    if (indent(line) !== base) continue;
     const text = line.trim();
-    if (/^[▸·✓] /.test(text)) questions.push({ label: text.slice(2), answered: text.startsWith("✓"), current: index === current });
-    else if (questions.length > 0) questions.at(-1)!.label += ` ${text}`;
+    if (indent(line) !== base) {
+      // an answered question's answer, drawn under it; the open one's rows change as it moves
+      if (questions.at(-1)?.answered) drawn.at(-1)!.push(text);
+      continue;
+    }
+    if (/^[▸·✓] /.test(text)) {
+      questions.push({ label: text.slice(2), answered: text.startsWith("✓"), current: index === current });
+      drawn.push([]);
+    } else if (questions.length > 0) questions.at(-1)!.label += ` ${text}`;
   }
   const at = questions.findIndex((question) => question.current);
   if (questions.length < 2 || at < 0) return {};
   // while an answer is typed the hint drops "Tab/Shift+Tab switch question", and Tab does nothing
   if (!switches) return { steps: questions };
-  // every question from the open one to `to`, that one included, still open
-  const reachable = (to: number) => to !== at && questions.slice(Math.min(at, to), Math.max(at, to) + 1).every((question) => !question.answered);
+  // the question next to the open one, itself still open
+  const reachable = (to: number) => Math.abs(to - at) === 1 && questions[to] !== undefined && !questions[to].answered;
   return {
     steps: questions.map((question, index) => ({ ...question, ...(reachable(index) ? { can_navigate: true } : {}) })),
-    can_step_back: at > 0 && reachable(at - 1),
-    can_step_next: at < questions.length - 1 && reachable(at + 1),
-    nativeSteps: { identity: JSON.stringify(questions.map((question) => question.label)), index: at, count: questions.length, next: KEY.tab, previous: KEY.backtab },
+    can_step_back: reachable(at - 1),
+    can_step_next: reachable(at + 1),
+    nativeSteps: { identity: JSON.stringify(questions.map((question, index) => [question.label, question.answered, drawn[index]])), index: at, count: questions.length, next: KEY.tab, previous: KEY.backtab },
   };
 }
 

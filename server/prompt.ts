@@ -685,8 +685,11 @@ async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<b
   return await piAskActivity(paneId, signal) !== "absent";
 }
 
+/** The look before a key said no key may go: nothing more of the answer or move is sent (409 prompt_changed). */
+export class KeyRefused extends Error {}
+
 /** A pi-ask form opened under a key-driven answer: nothing more is sent. */
-class PiAskFormOpen extends Error {}
+class PiAskFormOpen extends KeyRefused {}
 
 /**
  * Whether omp itself holds the pane's input: one of its own processes is in the pane's foreground (herdr's
@@ -703,10 +706,10 @@ async function ompOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
-class OmpNotInFront extends Error {}
+class OmpNotInFront extends KeyRefused {}
 
 /** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
-class MoveLapsed extends Error {}
+class MoveLapsed extends KeyRefused {}
 
 /**
  * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
@@ -1116,6 +1119,10 @@ export interface PromptRequestOptions {
   openCodeState?: OpenCodePromptState;
   /** an answer reached the agent (a 2xx that sent it on, not a saved step or a navigation), for the daily active message's usage */
   onAnswered?: () => void;
+  /** how long an answer or a move may take, from its first read to its last key (ms); tests shorten it */
+  answerDeadlineMs?: number;
+  /** the look right before each key an answer or a move sends (beforeKey); tests stand in for it */
+  beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -1190,10 +1197,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     const response = await serialize(body.pane_id, async () => {
       // given up while it waited its turn: nothing is read, opened or sent for it
       if (request.signal.aborted) return promptChanged();
-      const deadlineAt = Date.now() + 4_000;
-      const deadline = AbortSignal.any([request.signal, AbortSignal.timeout(4_000)]);
+      const deadlineMs = options.answerDeadlineMs ?? 4_000;
+      const deadlineAt = Date.now() + deadlineMs;
+      const deadline = AbortSignal.any([request.signal, AbortSignal.timeout(deadlineMs)]);
+      const keyGuard = options.beforeKey ?? beforeKey;
       const openCodeState = options.openCodeState ?? defaultOpenCodeState;
-      const { prompt, agent, pane, panes, inputUnverified } = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+      // the first read is held to the same deadline as every key after it: past it, nothing is sent
+      const first = readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
+      first.catch(() => undefined);
+      const firstRead = await Promise.race([first, Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => null)]);
+      if (!firstRead || Date.now() > deadlineAt) return promptChanged();
+      const { prompt, agent, pane, panes, inputUnverified } = firstRead;
       // a plan card's id carries its plan file's revision: the file as it is now must match too
       if (inputUnverified || !prompt || (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
@@ -1374,11 +1388,14 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               const inTime = (): boolean => active() && Date.now() < deadlineAt;
               if (!inTime()) throw new MoveLapsed();
               // the guard itself may outlast the deadline: then no key at all
-              const guarded = await Promise.race([beforeKey(body.pane_id, agent, deadline).then(() => true), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
+              const guarded = await Promise.race([keyGuard(body.pane_id, agent, deadline).then(() => true), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
               if (!guarded) throw new MoveLapsed();
-              // asked again right before herdr writes the key: refused, it sends nothing (`cancelled`)
-              try { await paneSendKeys(body.pane_id, [key], undefined, inTime); }
-              catch (error) { throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error; }
+              // asked again right before herdr writes the key: refused, it sends nothing (`cancelled`). A reply that
+              // outlasts the deadline leaves the key perhaps pressed: the move ends there, and so does this asking
+              const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
+              sending.catch(() => undefined);
+              const sent = await Promise.race([sending.then(() => true, (error: unknown) => { throw error instanceof HerdrError && error.code === "cancelled" ? new MoveLapsed() : error; }), Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => false)]);
+              if (!sent) { askingEnded(body.pane_id); throw new MoveLapsed(); }
             },
             read: async () => {
               if (!active()) return null;
@@ -1395,7 +1412,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
         } catch (error) {
-          if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront || error instanceof MoveLapsed) return promptChanged();
+          if (error instanceof KeyRefused) return promptChanged();
           throw error;
         } finally { answersUnderWay.delete(body.pane_id); }
       }
@@ -1579,7 +1596,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
-          await beforeKey(body.pane_id, agent, deadline);
+          await keyGuard(body.pane_id, agent, deadline);
           const first = !move && !committed;
           if (!move) committed = true;
           try {
@@ -1678,7 +1695,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
-        if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront) return promptChanged();
+        if (error instanceof KeyRefused) return promptChanged();
         throw error;
       } finally {
         answersUnderWay.delete(body.pane_id);

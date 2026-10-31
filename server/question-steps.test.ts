@@ -4,7 +4,10 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
-import { handlePromptRequest, parseInteractivePrompt } from "./prompt.ts";
+import { handlePromptRequest, KeyRefused, parseInteractivePrompt, type PromptRequestOptions } from "./prompt.ts";
+
+/** A deadline a move that cannot finish reaches at once, so no test waits out the real 4 s */
+const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
 import { omoAskOf } from "./omo-questions.ts";
 import { type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
 
@@ -111,7 +114,8 @@ describe("Hermes's clarify batch: the card goes to another open question as Tab 
     const prompt = parseInteractivePrompt("hermes", hermes(0));
     expect(prompt?.question).toBe("Pick a colour");
     expect(prompt?.steps?.map((step) => [step.label, step.answered, step.current])).toEqual([["Pick a colour", false, true], ["Pick a size", false, false], ["Pick a shape", false, false]]);
-    expect(navigable(prompt)).toEqual([false, true, true]);
+    // one key at a time: Hermes draws no options for the questions past the next one, so nothing names them
+    expect(navigable(prompt)).toEqual([false, true, false]);
     expect(prompt).toMatchObject({ can_step_next: true });
     expect(prompt?.can_step_back ?? false).toBe(false);
   });
@@ -218,9 +222,9 @@ async function card(): Promise<InteractivePrompt> {
   return prompt!;
 }
 
-async function move(promptId: string, action: Omit<PromptAnswer, "pane_id" | "prompt_id">): Promise<{ status: number; code?: string }> {
+async function move(promptId: string, action: Omit<PromptAnswer, "pane_id" | "prompt_id">, options: PromptRequestOptions = {}): Promise<{ status: number; code?: string }> {
   const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
-  const response = (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...action }) }), url, {}))!;
+  const response = (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...action }) }), url, options))!;
   const body = await response.json() as { error?: { code: string } };
   return { status: response.status, code: body.error?.code };
 }
@@ -265,41 +269,24 @@ describe("the answer route moves between questions, one key at a time, each seen
 
   test.skipIf(process.platform !== "linux")("OmO: a form that does not move stops after its first key", async () => {
     await withOmoPane(omo(0), async (pane) => {
-      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(await move((await card()).id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });
 
-  test.skipIf(process.platform !== "linux")("OmO: a move's keys pass the answer's own guard: a pi-ask form opened before the next key takes none", async () => {
-    const agentDir = mkdtempSync(join(tmpdir(), "question-steps-pi-"));
-    const previous = process.env["PI_CODING_AGENT_DIR"];
-    process.env["PI_CODING_AGENT_DIR"] = agentDir;
-    try {
-      await withOmoPane(omo(0), async (pane) => {
-        let at = 0;
-        let infos = -1;
-        pane.onSent = (key) => {
-          if (key === "tab") at += 1;
-          pane.screen = omo(at);
-          infos = 0;
-        };
-        // After the first Tab each read asks for the pane's processes twice, the arrival's and then the look
-        // before the next key; the fifth ask is the second key's own guard. pi-ask's bridge opens a form for the
-        // pane's process right then, after the last read showed the form: a socket not proven pi-ask's own.
-        pane.onRpc = (method) => {
-          if (method !== "pane.process_info" || infos < 0 || ++infos !== 5) return;
-          const bridge = join(agentDir, "herdr-web-ui-ask");
-          mkdirSync(bridge, { recursive: true, mode: 0o700 });
-          writeFileSync(join(bridge, `${pane.omo!.pid}.sock`), "");
-        };
-        expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
-        expect(pane.sent).toEqual(["tab"]);
-      });
-    } finally {
-      if (previous === undefined) delete process.env["PI_CODING_AGENT_DIR"];
-      else process.env["PI_CODING_AGENT_DIR"] = previous;
-      rmSync(agentDir, { recursive: true, force: true });
-    }
+  test.skipIf(process.platform !== "linux")("OmO: a move's keys pass the answer's own guard, which may refuse the next one", async () => {
+    await withOmoPane(omo(0), async (pane) => {
+      follows(pane, omo, 4, "tab", "shift+tab");
+      // the look before each key (a pi-ask form, an omp behind its shell): the second one says no
+      const looked: string[] = [];
+      const beforeKey = async (paneId: string, agent: string): Promise<void> => {
+        looked.push(`${paneId} ${agent}`);
+        if (looked.length === 2) throw new KeyRefused();
+      };
+      expect(await move((await card()).id, { step_index: 2 }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(looked).toEqual(["p_1 pi", "p_1 pi"]);
+      expect(pane.sent).toEqual(["tab"]);
+    });
   });
 
   test.skipIf(process.platform !== "linux")("OmO: a new call asked under the move gets no second key, its tabs alike", async () => {
@@ -327,18 +314,13 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
-  test.skipIf(process.platform !== "linux")("OmO: a guard that outlasts the request's 4 s sends no further key", async () => {
+  test.skipIf(process.platform !== "linux")("OmO: a guard that outlasts the request's deadline sends no further key", async () => {
     await withOmoPane(omo(0), async (pane) => {
-      let at = 0;
-      let infos = -1;
-      pane.onSent = (key) => {
-        if (key === "tab") at += 1;
-        pane.screen = omo(at);
-        infos = 0;
-      };
-      // the second key's guard (the fifth process lookup after the first Tab, as above) waits on herdr past the deadline
-      pane.onRpc = (method) => method === "pane.process_info" && infos >= 0 && ++infos === 5 ? 4_500 : undefined;
-      expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+      follows(pane, omo, 4, "tab", "shift+tab");
+      // the second key's look waits on herdr past the deadline (300 ms here, 4 s in the server)
+      let looks = 0;
+      const beforeKey = async (): Promise<void> => { if (++looks === 2) await Bun.sleep(1_000); };
+      expect(await move((await card()).id, { step_index: 2 }, { ...SHORT, beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
   });
@@ -384,6 +366,45 @@ describe("the answer route moves between questions, one key at a time, each seen
       const open = await card();
       expect(open.question).toBe("Name a fruit");
       expect(open.steps?.findIndex((step) => step.current)).toBe(1);
+    });
+  });
+
+  test("Hermes: another batch with the same questions drawn after a Tab gets no second one", async () => {
+    // the same three questions, asked with other choices
+    const OTHER: readonly (readonly [string, readonly string[]])[] = HERMES.map(([question], index) => [question, index === 1 ? ["Tiny", "Huge"] : ["Red", "Blue"]]);
+    await withPane("hermes", hermes(0), async (pane) => {
+      let at = 0;
+      pane.onSent = (key) => {
+        if (key === "tab") at += 1;
+        pane.screen = hermes(at, [], OTHER);
+      };
+      expect((await move((await card()).id, { step_index: 2 })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+      // a single Next lands; the next move is asked against the card it shows
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["tab"]);
+      expect((await card()).options.map((option) => option.label)).toEqual(["Tiny", "Huge"]);
+    });
+  });
+
+  test("an answer whose first read outlasts the deadline sends nothing", async () => {
+    await withPane("hermes", hermes(0), async (pane) => {
+      const first = await card();
+      // herdr answers every read after the deadline
+      pane.onRpc = (method) => method === "pane.read" ? 600 : undefined;
+      expect(await move(first.id, { option_index: 1 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test.skipIf(process.platform !== "linux")("OmO: a key whose reply never comes ends the move at the deadline", async () => {
+    await withOmoPane(omo(0), async (pane) => {
+      follows(pane, omo, 4, "tab", "shift+tab");
+      const first = await card();
+      // herdr writes the key and holds its reply past any test's budget
+      pane.onRpc = (method) => method === "pane.send_keys" ? 60_000 : undefined;
+      expect(await move(first.id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["tab"]);
     });
   });
 
