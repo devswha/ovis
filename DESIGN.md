@@ -3575,14 +3575,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   state's `.boot-spinner` is the only thing that moves. Every screen names itself in
   `data-relay-state` on the `<main>` (`list`, `empty`, `confirm`, `connecting`, `pc-offline`,
   `pc-unresponsive`, `relay-unreachable`, `needs-update`, `revoked`, `identity-changed`,
-  `code-expired`, `bad-offer`) for the browser scripts. Which of the three silences a stalled
+  `forgotten`, `code-expired`, `bad-offer`) for the browser scripts. Which of the three silences a stalled
   connection is comes from the channel's phase (lib/relay/channel.ts): the relay that never
   assigned the connection (10 s) is unreachable, the PC that never answered once it had (15 s) is
   offline, and the PC that answered but never finished admitting the phone (10 s) is unresponsive;
   the last offers Try again and names restarting Ovis on the PC, never "start Ovis".
 - Brief. Primary action: on a pairing link **Pair** (a new PC is confirmed first, "Pair with
   {name}?", as paseo confirms a new host); after a failure **Try again**, or **Forget this PC**
-  (`.btn-danger`, since it discards a key) when the PC's identity changed; on the front page the
+  (`.btn-danger`, since it discards a key) when the PC's identity changed. Forget only forgets:
+  the link whose key failed the check is never paired with, and the `forgotten` screen says to
+  scan a new QR code on the PC itself (otherwise the same bad link would be pinned in two taps); on the front page the
   saved PCs themselves, one `--touch-target` row each with a chevron, the whole row the link to
   the PC's own scope (`/s/<server_id>/`). Priorities: the PC's name, what is happening, what to do
   next. Left out on purpose: a status badge, a stat tile, an illustration, a subtitle under the

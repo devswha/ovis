@@ -176,6 +176,13 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             </div>
           </>
         )}
+        {state.kind === "forgotten" && (
+          <>
+            <h1 className="relay-shell-title">{t("This phone forgot {name}", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("The link you opened carried a different key, so it is not used to pair again. To pair, scan a new QR code on the PC itself.")}</p>
+            {back && <div className="relay-shell-actions">{back}</div>}
+          </>
+        )}
         {state.kind === "failed" && state.failure === "code-expired" && (
           <>
             <h1 className="relay-shell-title">{t("That pairing code no longer works")}</h1>

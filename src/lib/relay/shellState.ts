@@ -36,6 +36,8 @@ export type RelayShellState =
   | { kind: "empty" }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }
+  /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
+  | { kind: "forgotten"; name: string | null }
   | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null };
 
 /** The page a shell load is: the PC its path names and the offer its fragment carried, if any. */

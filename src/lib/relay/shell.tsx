@@ -283,11 +283,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     toFront();
   };
 
+  // Forget only forgets: the link whose key failed the check is never paired with, here or by a
+  // later Pair, so pairing again takes a new QR code scanned from the PC itself
   const forget = (): void => {
+    const serverId = last?.offer.server_id ?? entry.serverId;
+    const name = last?.offer.name ?? null;
+    entry = { ...entry, offer: null };
+    last = null;
     void (async () => {
-      if (entry.serverId !== null) await store.remove(entry.serverId);
-      if (entry.offer !== null) pair();
-      else show({ kind: "empty" });
+      if (serverId !== null) await store.remove(serverId);
+      show({ kind: "forgotten", name });
     })();
   };
 
