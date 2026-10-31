@@ -86,6 +86,23 @@ describe("tab labels from the first message", () => {
     expect(currentTabLabels()).toEqual({ "w1:p2|term_old": "Old", "w1:p2|term_new": "New" });
   });
 
+  it("turning the setting off deletes this page's own labels, so none comes back when it is on again, nor with a send", () => {
+    const panes = [pc("local", [{ pane_id: "w8:p1", terminal_id: "term_s" }])];
+    const user = (text: string) => ({ role: "user" as const, ts: null, parts: [{ kind: "text" as const, text }] });
+    learnFromConversation("local", "w8:p1", { source: "codex-transcript", cursor: null, turns: [user("Read before off")] });
+    settleTabLabels(panes);
+    expect(shownTabLabels()).toEqual({ "w8:p1|term_s": "Read before off" });
+    learnFromConversation("local", "w8:p1", { source: "codex-transcript", cursor: null, turns: [user("Pending before off")] });
+    setTabLabelLearning(false, false);
+    expect(shownTabLabels()).toEqual({});
+    setTabLabelLearning(true, false);
+    settleTabLabels(panes);
+    learnFromSend("local", "w8:p1", "codex", "Sent after on");
+    settleTabLabels(panes);
+    expect(shownTabLabels()).toEqual({});
+    expect(currentTabLabels()).toEqual({});
+  });
+
   it("learns nothing while the setting is off", () => {
     setTabLabelLearning(false, false);
     learnTabLabel("local", "w1:p1", "Fix it");

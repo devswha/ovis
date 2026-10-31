@@ -123,6 +123,8 @@ export function shortTabLabel(text: string): string | null {
 export function setTabLabelLearning(setting: boolean, watching: boolean): void {
   learning = setting && !watching;
   if (!learning) pending.clear();
+  // the setting off deletes this page's own labels too (the server deletes the shared ones), so none comes back on, or with a send
+  if (!setting) setLocalLabels({});
 }
 
 /**
