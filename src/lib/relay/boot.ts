@@ -26,9 +26,10 @@ export function takeEntryUrl(page: Page): string {
   return href;
 }
 
-export function bootRelayShell(container: HTMLElement, renderApp: () => Root): void {
+/** `load` brings in the shell's chunk; tests hand in their own to see what boot did before it. */
+export function bootRelayShell(container: HTMLElement, renderApp: () => Root, load: typeof loadRelayShell = loadRelayShell): void {
   const entryUrl = takeEntryUrl(window);
-  void loadRelayShell().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp })).catch((error: unknown) => {
+  void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp })).catch((error: unknown) => {
     console.error("Ovis: the relay shell did not start", error);
     createRoot(container).render(createElement(AppCrash, { error }));
   });

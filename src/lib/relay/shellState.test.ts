@@ -1,14 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import type { Root } from "react-dom/client";
+import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import type { loadRelayShell } from "../relay.ts";
+import type { RelayShellMount } from "./shell.tsx";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { serverIdOfPath, serverScopePath, shellModeOf, shellServiceWorker } from "../shellMode.ts";
-import { takeEntryUrl } from "./boot.ts";
+import { bootRelayShell, takeEntryUrl } from "./boot.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { testOffer } from "./device.test.ts";
-import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
 
 const APP = "https://app.example";
 
@@ -30,6 +33,16 @@ describe("the shell's entry", () => {
     const other = encodeOffer(testOffer(), APP).replace(`/s/${"12".repeat(16)}/`, `/s/${"34".repeat(16)}/`);
     expect(shellEntry(other)).toMatchObject({ serverId: "34".repeat(16), offer: null, damaged: true });
     expect(shellEntry(`${APP}/s/not-an-id/#offer=abc`)).toEqual({ serverId: null, offer: null, damaged: true });
+  });
+
+  it("calls an offer forged when its key is not the one its PC's id is derived from", () => {
+    // Given a PC's real identity (server/relay/identity.ts) and a key of someone else's.
+    const own = generateKeyPair().publicKey;
+    const genuine = { ...testOffer(), server_id: deriveServerId(own), server_public_key: exportPublicKey(own) };
+    // Then only the PC's own key passes; another key under its id, or no key at all, is forged.
+    expect(forgedOffer(genuine)).toBe(false);
+    expect(forgedOffer({ ...genuine, server_public_key: exportPublicKey(generateKeyPair().publicKey) })).toBe(true);
+    expect(forgedOffer({ ...genuine, server_public_key: "not-a-key" })).toBe(true);
   });
 
   it("rebuilds a saved PC's offer without a code", () => {
@@ -154,18 +167,36 @@ describe("the offer fragment", () => {
     expect(without.replaced).toEqual([]);
   });
 
-  it("is taken off before boot awaits, imports or requests anything", () => {
-    const source = readFileSync(join(import.meta.dir, "boot.ts"), "utf8");
-    const body = source.slice(source.indexOf("export function bootRelayShell"));
-    const strip = body.indexOf("takeEntryUrl(window)");
-    expect(strip).toBeGreaterThan(-1);
-    for (const later of ["await ", "import(", "fetch(", "WebSocket", "loadRelayShell("]) {
-      const at = body.indexOf(later);
-      if (at !== -1) expect(at).toBeGreaterThan(strip);
+  it("is taken off before boot loads, requests or opens anything, and the shell gets it whole", async () => {
+    // Given a page loaded with an offer, and every way boot could reach out recorded in order.
+    const offer = encodeOffer(testOffer(), APP);
+    const loaded = page(offer);
+    const order: string[] = [];
+    const replace = loaded.history.replaceState;
+    loaded.history.replaceState = (data, unused, to) => { order.push("address"); return replace(data, unused, to); };
+    const saved = { window: globalThis.window, fetch: globalThis.fetch, WebSocket: globalThis.WebSocket };
+    const mounted = Promise.withResolvers<string>();
+    Object.assign(globalThis, {
+      window: loaded,
+      fetch: () => { order.push("fetch"); return new Promise(() => {}); },
+      WebSocket: function () { order.push("socket"); },
+    });
+    try {
+      // When boot runs, with the shell's chunk loading as lib/relay.ts loads it.
+      bootRelayShell({} as HTMLElement, () => ({}) as Root, () => {
+        order.push("load");
+        const shell = { mountRelayShell: async ({ entryUrl }: RelayShellMount) => { mounted.resolve(entryUrl); } };
+        return Promise.resolve(shell as Awaited<ReturnType<typeof loadRelayShell>>);
+      });
+      // Then the address changed first and synchronously, and the shell still got the offer.
+      expect(order).toEqual(["address", "load"]);
+      expect(loaded.replaced).toEqual([`/s/${"12".repeat(16)}/`]);
+      expect(await mounted.promise).toBe(offer);
+      expect(order).toEqual(["address", "load"]);
+    } finally {
+      Object.assign(globalThis, saved);
+      // Bun has no window of its own: leave none behind
+      if (saved.window === undefined) delete (globalThis as { window?: unknown }).window;
     }
-    // the helper itself does nothing asynchronous before the address changes
-    const helper = source.slice(source.indexOf("export function takeEntryUrl"), source.indexOf("export function bootRelayShell"));
-    expect(helper).not.toMatch(/await|import\(|fetch\(/);
-    expect(helper).toContain("history.replaceState");
   });
 });
