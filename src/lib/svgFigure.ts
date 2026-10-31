@@ -35,6 +35,31 @@ export function svgFigurePalette(read: (property: string) => string): SvgFigureP
   return palette;
 }
 
+/** The longest fence drawn as a figure (UTF-16 units); a longer one stays a code block. */
+export const SVG_FIGURE_MAX_LENGTH = 256 * 1024;
+
+/**
+ * Markup that could run code or load something if the figure were ever drawn outside an <img>:
+ * scripts, event handlers, foreignObject, a DOCTYPE (entities), a stylesheet import or link, an
+ * href or url() that leaves the figure (only `#id` stays inside), CSS image-set(), an animation of
+ * an href, and a CSS escape in a style (which could spell `url`). An image document already runs
+ * and fetches none of it; a figure holding any of it is not drawn, so the code block shows what
+ * the agent sent.
+ */
+const UNSAFE = [
+  /<\s*(?:[\w.-]+:)?(?:script|foreignObject)\b/i,
+  /\son[a-z]+\s*=/i,
+  /<!\s*(?:DOCTYPE|ENTITY)/i,
+  /<\?xml-stylesheet/i,
+  /@import/i,
+  /\bhref\s*=(?!\s*["']?\s*#)/i,
+  /\burl\((?!\s*["']?\s*#)/i,
+  /image-set\(/i,
+  /\battributeName\s*=\s*["']?\s*(?:[\w.-]+:)?href/i,
+  /\bstyle\s*=\s*(?:"[^"]*\\|'[^']*\\)/i,
+  /<\s*(?:[\w.-]+:)?style\b[^>]*>[^<]*\\/i,
+];
+
 /** `var(--name)` / `var(--name, fallback)`; the fallback may hold one level of parentheses (`rgb(…)`). */
 const VAR_REFERENCE = /var\(\s*--([\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g;
 /** The first `<svg …>` start tag (a namespace prefix allowed). */
@@ -44,16 +69,19 @@ const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE
 
 /**
  * A fence's source as a data: URL the chat draws as an image, or null while it is not a whole
- * figure yet (a reply still streaming, or not SVG at all), which keeps the fence a code block.
+ * figure yet (a reply still streaming, or not SVG at all), past the size cap, or holding markup
+ * that could run or load something (UNSAFE), which keeps the fence a code block.
  * Tokens become the palette's colors (an unknown name takes its fallback, else the text color).
  * The root gets what an image document cannot inherit from the page: `color` for `currentColor`,
  * a sans-serif `font-family`, the SVG namespace, and a size from its `viewBox` when it has none
  * (one unit is one CSS pixel), so the figure is not drawn at the 300×150 an unsized image gets.
  */
 export function svgFigureUrl(source: string, palette: SvgFigurePalette): string | null {
+  if (source.length > SVG_FIGURE_MAX_LENGTH) return null;
   const trimmed = source.trim();
   const root = ROOT_TAG.exec(trimmed);
   if (root === null || !CLOSE_TAG.test(trimmed)) return null;
+  if (UNSAFE.some((pattern) => pattern.test(trimmed))) return null;
   const fg = palette.fg ?? "currentColor";
   const lookup = palette as Record<string, string | undefined>;
   const resolved = trimmed.replace(VAR_REFERENCE, (_match, name: string, fallback: string | undefined) => lookup[name] ?? (fallback?.trim() || fg));
