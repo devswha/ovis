@@ -95,8 +95,9 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
     assert.equal(await scope.getByText("Prices stay prices: it costs $5 and $10, or $20 for both.", { exact: true }).count(), 1, `${width} ${theme}: the prices read as written`);
     const sources = await scope.locator(".katex-mathml annotation").allTextContents();
     assert.deepEqual(sources.map((source) => source.trim()).slice(0, 2), ["E = mc^2", "\\sum_{i=1}^n i = \\frac{n(n+1)}{2}"], `${width} ${theme}: the formulas are the ones written`);
-    const colors = await scope.locator(".markdown-math .katex").first().evaluate((katex) => ({ katex: getComputedStyle(katex).color, text: getComputedStyle(katex.closest("p")!).color }));
-    assert.equal(colors.katex, colors.text, `${width} ${theme}: a formula is drawn in the text color`);
+    const colors = await scope.locator(".katex").evaluateAll((formulas) => formulas.map((katex) => ({ katex: getComputedStyle(katex).color, text: getComputedStyle(katex.closest(".markdown")!).color })));
+    assert.equal(colors.length, 6);
+    for (const color of colors) assert.equal(color.katex, color.text, `${width} ${theme}: every formula is drawn in the reply's text color`);
 
     await scope.locator(".markdown-math-display").first().scrollIntoViewIfNeeded();
     if (evidence !== null) await page.screenshot({ path: join(evidence, `chat-math-codex-${theme}-${width}.png`) });

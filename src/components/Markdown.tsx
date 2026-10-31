@@ -53,7 +53,10 @@ function useKatex(): Katex | null {
  */
 function MathExpression({ value, displayMode = false, dollar = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; fallback?: ReactNode }) {
   const katex = useKatex();
-  const source = fallback ?? <span>{dollar ? (displayMode ? `$$${value}$$` : `$${value}$`) : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>;
+  // a $$ formula keeps its own lines, as written
+  const source = fallback ?? (dollar && displayMode
+    ? <span className="markdown-math-source">{`$$\n${value}\n$$`}</span>
+    : <span>{dollar ? `$${value}$` : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>);
   if (!katex || mathNestsTooDeep(value)) return source;
   try {
     // KaTeX escapes text and rejects untrusted commands by default, and an unknown command

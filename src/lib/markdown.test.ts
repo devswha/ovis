@@ -69,6 +69,9 @@ describe("parseMarkdown", () => {
     expect(parseMarkdown("before\n$$x^2$$\nafter").map((block) => block.type)).toEqual(["paragraph", "math", "paragraph"]);
     expect(parseMarkdown("$$unfinished\n\n# Still a heading").map((block) => block.type)).toEqual(["paragraph", "heading"]);
     expect(parseMarkdown("$$ a\n$$ b\n```\ncode\n```\n$$ c $$").map((block) => block.type)).toEqual(["paragraph", "paragraph", "code", "math"]);
+    // a formula left open does not hide one a later line opens and closes, with either delimiter
+    expect(parseMarkdown("$$oops\n\n# Heading\n\n$$x^2$$").map((block) => block.type)).toEqual(["paragraph", "heading", "math"]);
+    expect(parseMarkdown("\\[oops\n\n# Heading\n\n\\[x^2\\]").map((block) => block.type)).toEqual(["paragraph", "heading", "math"]);
     expect(parseMarkdown("```math\nx^2\n```")).toEqual([{ type: "code", language: "math", value: "x^2" }]);
   });
 
@@ -79,6 +82,9 @@ describe("parseMarkdown", () => {
     try {
       const draw = (source: string): string => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(Markdown, { children: source }) }));
       expect(draw("$x^2$ costs $5 and $10")).toMatch(/^(?:(?!katex).)*class="katex"(?:(?!class="katex").)*\$5 and \$10/s);
+      // one KaTeX cannot draw shows as written: a $$ formula on its own lines, a math fence as its code
+      expect(draw("$$\na \\unknowncommand\nb\n$$")).toContain('<span class="markdown-math-source">$$\na \\unknowncommand\nb\n$$</span>');
+      expect(draw("```math\n\\unknowncommand\n```")).toContain("<pre");
       for (const source of ["$$\nx^2\n$$", "```math\nx^2\n```"]) {
         const html = draw(source);
         expect(html).toContain("katex-display");
@@ -182,13 +188,14 @@ describe("inline markdown", () => {
     const text = (value: string): InlineNode[] => [{ type: "text", value }];
     for (const prose of [
       "costs $5 and $10 today", "$5 or $10", "from $5 to $10.", "I paid $5 for X$ and", "$20, $30 and $40",
-      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "${HOME} and ${PATH}", "$x$y",
+      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "Run $HOME/${PATH} now", "$5 or six$", "${HOME} and ${PATH}", "$x$y",
     ]) expect(parseInline(prose)).toEqual(text(prose));
     expect(parseInline("$x^2$ and $\\alpha$.")).toEqual([
       { type: "math", value: "x^2", dollar: true }, { type: "text", value: " and " }, { type: "math", value: "\\alpha", dollar: true }, { type: "text", value: "." },
     ]);
     expect(parseInline("solve $2x+1 = 0$")).toEqual([{ type: "text", value: "solve " }, { type: "math", value: "2x+1 = 0", dollar: true }]);
     expect(parseInline("($E=mc^2$)")).toEqual([{ type: "text", value: "(" }, { type: "math", value: "E=mc^2", dollar: true }, { type: "text", value: ")" }]);
+    expect(parseInline("$2 + 2 = 4$")).toEqual([{ type: "math", value: "2 + 2 = 4", dollar: true }]);
     expect(parseInline("$3$ apples")).toEqual([{ type: "math", value: "3", dollar: true }, { type: "text", value: " apples" }]);
     expect(parseInline("`$x$`")).toEqual([{ type: "code", value: "$x$" }]);
   });
