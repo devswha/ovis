@@ -105,6 +105,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   verify the replacement's live ownership. A stale descriptor cannot trigger
   a bundle installation or discard the prior server's reconnect guard.
   ([#2450](https://github.com/devswha/ovis/pull/2450) by @briantcl1992)
+- A Chat message to Pi that starts or ends with a space, holds a tab, or ends with an `@mention`
+  no longer stays "waiting for transcript" forever and holds every later send on the pane behind it.
+  ([#2474](https://github.com/devswha/ovis/pull/2474) by @BeerBelly69)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
