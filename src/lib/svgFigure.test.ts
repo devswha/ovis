@@ -88,7 +88,8 @@ it("keeps a figure no URL can carry, or whose root is not first, as code, and re
   expect(quoted).toMatch(/^<svg color="#eee"[^>]* width="900" height="560" data-note="a>b"/);
 });
 
-it("takes a token's fallback when its name is no palette entry, inherited ones included", () => {
+it("takes a token's fallback when its name is no palette entry, inherited ones included, however spaced", () => {
+  expect(decode(svgFigureUrl(`<svg viewBox="0 0 10 10"><rect fill="var( --nope ,${" ".repeat(500)}red )"/></svg>`, { fg: "#eee" }))).toContain('fill="red"');
   expect(decode(svgFigureUrl('<svg viewBox="0 0 10 10"><rect fill="var(--toString, red)"/></svg>', { fg: "#eee" }))).toContain('fill="red"');
 });
 

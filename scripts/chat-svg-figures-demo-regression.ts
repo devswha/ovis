@@ -105,7 +105,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
       assert.equal(await scope.locator("pre", { hasText: marker }).count(), 1, `${width} ${theme}: the fence with ${marker} stays a code block`);
     }
     assert.equal(await scope.locator(".markdown-mermaid img").count(), 1, `${width} ${theme}: only the safe fence is drawn`);
-    assert.equal(await page.evaluate(() => (window as unknown as { __svgRan?: boolean }).__svgRan === true), false, `${width} ${theme}: its script never ran`);
+    assert.equal(await page.evaluate(() => (window as unknown as { __svgRan?: string }).__svgRan), undefined, `${width} ${theme}: its script never ran`);
     assert.deepEqual(outside, [], `${width} ${theme}: nothing is fetched from outside the app`);
 
     await figure.scrollIntoViewIfNeeded();

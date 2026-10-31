@@ -92,29 +92,36 @@ function tagEnd(text: string): number {
   return -1;
 }
 
-/** Longest `var(--name, fallback)` fallback read; a longer one is left as written (and drawn as the browser reads it). */
+/** Most characters, spaces aside, a `var(--name, fallback)` fallback is read for; a longer one is left as written. */
 const MAX_FALLBACK = 200;
+const SPACE = /\s/;
 
 /**
  * `var(--name)` / `var(--name, fallback)` (the fallback may hold one level of parentheses,
- * `rgb(…)`) as `value(name, fallback)`. One pass, each reference read at most MAX_FALLBACK
- * characters past its name, so no input makes it slow.
+ * `rgb(…)`) as `value(name, fallback)`. One pass: spaces are stepped over, and each reference is
+ * read for at most MAX_FALLBACK other characters, so no input makes it slow.
  */
 function resolveTokens(text: string, value: (name: string, fallback: string) => string): string {
+  const skip = (index: number): number => { while (index < text.length && SPACE.test(text[index]!)) index += 1; return index; };
   let out = "";
   let from = 0;
   for (let start = text.indexOf("var(", from); start !== -1; start = text.indexOf("var(", from)) {
-    const name = /^var\(\s*--([\w-]{1,64})\s*([,)])/.exec(text.slice(start, start + 80));
-    if (name === null) { out += text.slice(from, start + 4); from = start + 4; continue; }
-    let end = start + name[0].length;
+    const nameAt = skip(start + 4);
+    const name = /^--([\w-]{1,64})/.exec(text.slice(nameAt, nameAt + 67));
+    const after = name === null ? -1 : skip(nameAt + name[0].length);
+    const separator = after === -1 ? "" : text[after];
+    if (name === null || (separator !== "," && separator !== ")")) { out += text.slice(from, start + 4); from = start + 4; continue; }
+    let end = after + 1;
     let fallback = "";
-    if (name[2] === ",") {
+    if (separator === ",") {
       let depth = 0;
       let close = -1;
-      for (let index = end; index < Math.min(text.length, end + MAX_FALLBACK); index += 1) {
-        const char = text[index];
+      let read = 0;
+      for (let index = end; index < text.length && read <= MAX_FALLBACK; index += 1) {
+        const char = text[index]!;
         if (char === "(") { depth += 1; if (depth > 1) break; }
         else if (char === ")") { if (depth === 0) { close = index; break; } depth -= 1; }
+        if (!SPACE.test(char)) read += 1;
       }
       if (close === -1) { out += text.slice(from, start + 4); from = start + 4; continue; }
       fallback = text.slice(end, close).trim();
