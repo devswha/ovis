@@ -1726,11 +1726,16 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           // before): a look that does not answer in time sends nothing. The answer as a whole may run past the request's
           // deadline (each key waits for its row), so that deadline alone would stop an answer half sent.
           // A cancelled request still finishes the keys it began with, as before: only the look's own window stops it.
-          const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
-          const guarding = guardKey(body.pane_id, agent, look);
-          guarding.catch(() => undefined);
-          const guarded = await Promise.race([guarding.then(() => true), Bun.sleep(agent === "pi" ? Math.max(0, deadlineAt - Date.now()) : SETTLE_MS).then(() => false)]);
-          if (!guarded) throw new KeyRefused();
+          // pi's look is as it was (pi-ask's own check, which takes the request's deadline): an answer past that
+          // deadline still sends where no pi-ask form refuses the keys.
+          if (agent === "pi") await guardKey(body.pane_id, agent, deadline);
+          else {
+            const look = AbortSignal.timeout(SETTLE_MS);
+            const guarding = guardKey(body.pane_id, agent, look);
+            guarding.catch(() => undefined);
+            const guarded = await Promise.race([guarding.then(() => true), Bun.sleep(SETTLE_MS).then(() => false)]);
+            if (!guarded) throw new KeyRefused();
+          }
           const first = !move && !committed;
           if (!move) committed = true;
           try {

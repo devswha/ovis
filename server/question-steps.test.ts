@@ -531,6 +531,20 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test.skipIf(process.platform !== "linux")("OmO: an answer whose look ends after the request's deadline still sends, as before", async () => {
+    await withOmoPane(omo(0), async (pane) => {
+      // pi's look before a key answers once the request's deadline has passed, as a slow look can
+      let looks = 0;
+      const beforeKey = (_paneId: string, _agent: string, deadline: AbortSignal): Promise<void> => {
+        looks += 1;
+        return new Promise((resolve) => deadline.addEventListener("abort", () => setImmediate(resolve), { once: true }));
+      };
+      expect(await move((await card()).id, { option_index: 0 }, { beforeKey, answerDeadlineMs: 300 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent.length).toBeGreaterThan(0);
+      expect(looks).toBeGreaterThan(0);
+    });
+  });
+
   test.skipIf(process.platform !== "linux")("OmO: a form that does not move stops after its first key", async () => {
     await withOmoPane(omo(0), async (pane) => {
       const first = await card();
