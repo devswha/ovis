@@ -118,7 +118,7 @@ export const FILES_KO: Record<string, string> = {
   "Browse folders in the palette": "팔레트에서 폴더 탐색",
   "Add a note on this line": "이 줄에 메모 추가",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "변경 내용 줄: 화살표 키로 줄을 고르고, Enter로 메모를 추가합니다",
-  "Note added. It goes first in the next message you send from this pane's Chat.": "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다.",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다(슬래시 명령, ! 줄, 질문에 대한 답변에는 들어가지 않습니다).",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "줄을 클릭하거나 탭하거나 화살표 키로 골라 메모를 추가하세요.",
   "Add a note": "메모 추가",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "이 메모를 넣으면 다음 메시지가 너무 길어집니다. 메모나 메시지를 줄이거나, 대기 중인 코멘트를 지우세요.",

@@ -31,8 +31,8 @@ const COMPOSER_LIMIT = 20_000;
 interface Submit { text: string; agent_only?: true }
 type Language = "en" | "ko";
 const WORDS = {
-  en: { added: "Added line 5", removed: "Removed line 4", unchanged: "Unchanged line 1", add: "Add a note", save: "Add to next message", done: "Note added. It goes first in the next message you send from this pane's Chat." },
-  ko: { added: "추가된 줄 5", removed: "삭제된 줄 4", unchanged: "변경 없는 줄 1", add: "메모 추가", save: "다음 메시지에 추가", done: "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다." },
+  en: { added: "Added line 5", removed: "Removed line 4", unchanged: "Unchanged line 1", add: "Add a note", save: "Add to next message", done: "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question)." },
+  ko: { added: "추가된 줄 5", removed: "삭제된 줄 4", unchanged: "변경 없는 줄 1", add: "메모 추가", save: "다음 메시지에 추가", done: "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다(슬래시 명령, ! 줄, 질문에 대한 답변에는 들어가지 않습니다)." },
 } as const;
 
 async function shot(page: Page, name: string, state: string): Promise<void> {

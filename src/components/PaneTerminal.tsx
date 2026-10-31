@@ -623,12 +623,13 @@ export function PaneTerminal({
   }, [connected, connectedBefore, active]);
 
   // what opens outside the pane (a diff's line notes) reads whether this window only watches it
+  const observingMount = useRef(Symbol("pane-terminal")).current;
   useEffect(() => {
     if (paneId === null) return;
     const key = paneStorageId(machineId, paneId);
-    paneObserving.set(key, observing);
-    return () => paneObserving.set(key, false);
-  }, [machineId, paneId, observing]);
+    paneObserving.set(key, observingMount, observing);
+    return () => paneObserving.set(key, observingMount, null);
+  }, [machineId, paneId, observing, observingMount]);
 
   useEffect(() => {
     if (active) onRoleAckRef.current?.(observing ? "observe" : "interact");

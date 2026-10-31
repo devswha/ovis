@@ -118,7 +118,7 @@ export const FILES_ZH: Record<string, string> = {
   "Browse folders in the palette": "在命令面板中浏览文件夹",
   "Add a note on this line": "为此行添加备注",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差异行：用方向键选择一行，按 Enter 为其添加备注",
-  "Note added. It goes first in the next message you send from this pane's Chat.": "已添加备注。它会放在你从此窗格的聊天发出的下一条消息最前面。",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "已添加备注。它会放在你从此窗格的聊天发出的下一条消息最前面（斜杠命令、! 行或对问题的回答不会带上它）。",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "点击或轻点一行，或用方向键选择，即可为其添加备注。",
   "Add a note": "添加备注",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "加上此备注后下一条消息会太长。请缩短备注或消息，或删除一条等待中的评论。",

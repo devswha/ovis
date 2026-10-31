@@ -118,7 +118,7 @@ export const FILES_JA: Record<string, string> = {
   "Browse folders in the palette": "パレットでフォルダを参照",
   "Add a note on this line": "この行にメモを追加",
   "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差分の行: 矢印キーで行を選び、Enterでメモを追加します",
-  "Note added. It goes first in the next message you send from this pane's Chat.": "メモを追加しました。このペインのチャットから送る次のメッセージの先頭に入ります。",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "メモを追加しました。このペインのチャットから送る次のメッセージの先頭に入ります(スラッシュコマンド、! の行、質問への回答には入りません)。",
   "Click or tap a line, or use the arrow keys, to add a note on it.": "行をクリックまたはタップするか、矢印キーで選んでメモを追加します。",
   "Add a note": "メモを追加",
   "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "このメモを入れると次のメッセージが長すぎます。メモかメッセージを短くするか、待機中のコメントを削除してください。",

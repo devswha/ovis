@@ -413,7 +413,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
           {...(note !== undefined && patch !== null && shown === null ? { tabIndex: 0, "aria-label": t("Diff lines: the arrow keys pick a line, Enter adds a note on it") } : {})}>{body}</div>
         {note !== undefined && patch !== null && shown === null && writing === null && <div className="repo-diff-line-bar">
           <p className="repo-diff-line-place" role="status">
-            {noteAdded ? t("Note added. It goes first in the next message you send from this pane's Chat.")
+            {noteAdded ? t("Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).")
               : blocked !== null ? blocked
               : pointed !== null ? matchPlace(t, pointed)
               : t("Click or tap a line, or use the arrow keys, to add a note on it.")}
