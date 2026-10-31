@@ -227,6 +227,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   // the user's Retry goes once even while the stream is lost; the send it starts clears this, and so
   // does an answer that leaves nothing unsent (a Retry pressed while a save was on its way)
   const userRetry = useRef(false);
+  // the change last sent in a request that outlives the page, so leaving does not send it twice
+  const outlives = useRef<string | null>(null);
   // the baseline is a ref: a document that changes nothing here still moves what is pending
   const [, setTaken] = useState(0);
 
@@ -335,13 +337,37 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     return () => { live.current = false; window.clearTimeout(retryTimer.current); window.clearTimeout(pauseTimer.current); };
   }, [enabled]);
   useEffect(() => {
-    if (!enabled || !loaded || off.current || readOnly.current || paused || pending === null || inFlight.current !== null) return;
+    if (!enabled || !loaded || off.current || readOnly.current || paused || pending === null) return;
+    // a reload or a closed tab ends the send wait below with the page (#2374), and a phone may kill a hidden
+    // one: what is unsent goes now, in a request that outlives the page. While a change is on its way (its
+    // request may not outlive the page), what is unsent, that change's values included, goes beside it,
+    // untracked: the same values, and last write wins.
+    let timer: number | undefined;
+    const leaving = (event: Event): void => {
+      if (event.type === "visibilitychange" && document.visibilityState !== "hidden") return;
+      if (inFlight.current !== null || timer === undefined) {
+        // a page that is hidden and then goes sends once: what already went out to outlive it stays as it is
+        if (outlives.current === pending) return;
+        outlives.current = pending;
+        savePreferences(JSON.parse(pending) as PreferencesChange, true).catch(() => undefined);
+        return;
+      }
+      window.clearTimeout(timer);
+      sendNow(true);
+    };
+    const listen = (): (() => void) => {
+      window.addEventListener("pagehide", leaving);
+      document.addEventListener("visibilitychange", leaving);
+      return () => { window.removeEventListener("pagehide", leaving); document.removeEventListener("visibilitychange", leaving); };
+    };
+    if (inFlight.current !== null) return listen();
     if ((streamLost || (streamClosed.current && refused.current !== null)) && !userRetry.current) return;
-    const timer = window.setTimeout(() => {
+    const sendNow = (keepalive: boolean): void => {
       userRetry.current = false;
       const body = JSON.parse(pending) as PreferencesChange;
       inFlight.current = body;
-      savePreferences(body).then((saved) => {
+      outlives.current = keepalive ? pending : null;
+      savePreferences(body, keepalive).then((saved) => {
         // the server took this change: an unsent edit made meanwhile goes over what arrived, as any does
         refused.current = null;
         // An older server silently drops new names. Acknowledge exactly what was sent, not
@@ -395,8 +421,14 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
           } else if (live.current && !streamLostRef.current && !streamClosed.current) retryTimer.current = window.setTimeout(() => setAttempt((count) => count + 1), RETRY_MS);
         }
       });
-    }, SEND_AFTER_MS);
-    return () => { window.clearTimeout(timer); window.clearTimeout(retryTimer.current); };
+    };
+    timer = window.setTimeout(() => sendNow(false), SEND_AFTER_MS);
+    const unlisten = listen();
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(retryTimer.current);
+      unlisten();
+    };
   }, [enabled, loaded, paused, streamLost, pending, attempt, absorb, settled, standDown]);
 
   return { receive, saveError, paused, retrying, retry, resubscribed, disconnected, closed };

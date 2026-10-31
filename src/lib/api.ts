@@ -224,9 +224,10 @@ export async function fetchPreferences(): Promise<SharedPreferences | null> {
   catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
 }
 
-export async function savePreferences(body: PreferencesChange): Promise<SharedPreferences> {
+/** `keepalive` lets the request finish after the page is gone (a reload, a closed tab) */
+export async function savePreferences(body: PreferencesChange, keepalive = false): Promise<SharedPreferences> {
   const url = "/api/preferences";
-  const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive });
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as SharedPreferences;
 }
