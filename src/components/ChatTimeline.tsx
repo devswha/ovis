@@ -209,11 +209,8 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     onLoad={() => { if (following.current) listRef.current?.scrollToEnd({ animated: false }); }}
     onItemSizeChanged={() => {
       if (!following.current || manualLayout.current) return;
-      // The browser's own glide yields to any scroll the reader or a jump makes next; the list's
-      // animated scroll keeps retrying toward the end and would pull them back.
-      const node = scroller.current;
-      if (smoothFollow && node !== null) node.scrollTo({ top: node.scrollHeight - node.clientHeight, behavior: "smooth" });
-      else listRef.current?.scrollToEnd({ animated: false });
+      // Wait for the list's measured endpoint: a DOM glide here races its anchoring.
+      listRef.current?.scrollToEnd({ animated: false });
     }}
   />;
 }
