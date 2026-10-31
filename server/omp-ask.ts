@@ -1,8 +1,34 @@
+import { createHash } from "node:crypto";
 import { askedQuestions } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
+
+/** A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves. */
+export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const form = parsed?.nativeSteps;
+  if (!parsed || !form) return prompt;
+  const call = open.length === 1 ? open[0] : undefined;
+  const questions = call ? askedQuestions("ask", call.args) : null;
+  const input = call?.args;
+  const rawQuestions = input !== null && typeof input === "object" && "questions" in input && Array.isArray(input.questions) ? input.questions : [];
+  const matches = questions && questions.length + 1 === form.count && questions.every((question, index) => {
+    const raw = rawQuestions[index];
+    const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
+    return (question.header?.trim() || id || `Q${index + 1}`) === parsed.steps?.[index]?.label;
+  });
+  const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
+  return publicPrompt({
+    ...parsed,
+    ...(identity ? { id: createHash("sha256").update(JSON.stringify([parsed.id, identity])).digest("hex").slice(0, 12) } : {}),
+    nativeSteps: identity ? { ...form, identity } : undefined,
+    steps: parsed.steps?.map(step => ({ ...step, can_navigate: identity ? step.can_navigate : false })),
+    can_step_back: identity ? parsed.can_step_back : false,
+    can_step_next: identity ? parsed.can_step_next : false,
+  });
+}
 
 /**
  * omp's Ask card in the agent's own Markdown (#1644). The terminal draws the call's text through
