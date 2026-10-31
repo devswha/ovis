@@ -11,7 +11,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, pa
 import { piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
-import { ompMarkdownPrompt, ompStepPrompt } from "./omp-ask.ts";
+import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -700,10 +700,22 @@ class PiAskFormOpen extends KeyRefused {}
  * has no job control and no foreground process group (process_info names only the shell there,
  * windows-processes.ts), so nothing can stand in front of a running omp: its panes are read as before.
  */
-async function ompOwnsInput(paneId: string): Promise<boolean> {
+async function ompOwnsInput(paneId: string, signal?: AbortSignal): Promise<boolean> {
   if (process.platform === "win32") return true;
-  const info = await paneProcessInfo(paneId).catch(() => undefined);
+  const info = await untilAborted(paneProcessInfo(paneId), signal);
   return agentProcesses(info?.foreground_processes ?? [], "omp").length > 0;
+}
+
+/** What a look gives back, or undefined once the signal aborts (or the look fails): a look past its deadline is no look. */
+function untilAborted<T>(look: Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
+  const settled = look.catch(() => undefined);
+  if (!signal) return settled;
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const stop = (): void => resolve(undefined);
+    signal.addEventListener("abort", stop, { once: true });
+    void settled.then((value) => { signal.removeEventListener("abort", stop); resolve(value); });
+  });
 }
 
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
@@ -719,14 +731,27 @@ class MoveLapsed extends KeyRefused {}
  */
 async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
   if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
-  if (agent === "omp" && !(await ompOwnsInput(paneId))) throw new OmpNotInFront();
+  if (agent === "omp" && !(await ompOwnsInput(paneId, deadline))) throw new OmpNotInFront();
+}
+
+/** omp asked again (or its call closed) since the card was read: nothing more is sent. */
+class OmpCallChanged extends KeyRefused {}
+
+/** Whether the card's open ask call (ompCallPrompt) is still the pane's one open ask call, looked at within the deadline. */
+async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadline: AbortSignal): Promise<boolean> {
+  if (!cwd) return false;
+  const open = await untilAborted((async () => {
+    const path = (await ompTranscriptPath(paneId, cwd)).path;
+    return ompOpenCall(ompAskReader.read(path), path);
+  })(), deadline);
+  return open === call;
 }
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** Bind omp tab moves to its open call, and optionally restore the call's Markdown (omp-ask.ts). */
 async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<InteractivePrompt> {
   const parsed = parsedByPublicPrompt.get(prompt);
-  if (parsed?.responder !== "omp-question" && !parsed?.nativeSteps) return prompt;
+  if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && !parsed?.nativeSteps) return prompt;
   let path = "";
   let open: OmoAsks = [];
   try {
@@ -737,7 +762,7 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
   } catch {
     // No session proved for the pane, or not written yet: ordinary answers remain usable.
   }
-  const bound = ompStepPrompt(prompt, open, path);
+  const bound = ompStepPrompt(ompCallPrompt(prompt, open, path), open, path);
   return markdown ? ompMarkdownPrompt(bound, open) : bound;
 }
 
@@ -1227,6 +1252,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       log.matched = true;
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
+      // before each key: the look the key needs (beforeKey), then, for an omp card read under an open ask call, that
+      // call is still the pane's one open call: omp asking again since the last read takes none of this card's keys
+      const ompCall = agent === "omp" ? parsedPrompt?.ompCall : undefined;
+      const guardKey = async (paneId: string, keyAgent: string, signal: AbortSignal): Promise<void> => {
+        await keyGuard(paneId, keyAgent, signal);
+        if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
+      };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
       // where the card has no supported move (OpenCode would take it as an answer). Pi tabs and the
       // owned pi-ask bridge have their own navigation metadata rather than nativeSteps.
@@ -1401,7 +1433,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           send: async (key: string): Promise<void> => {
             const inTime = (): boolean => active() && Date.now() < deadlineAt;
             if (!inTime()) throw new MoveLapsed();
-            const guarded = await Promise.race([keyGuard(body.pane_id, agent, deadline).then(() => true), Bun.sleep(left()).then(() => false)]);
+            const guarded = await Promise.race([guardKey(body.pane_id, agent, deadline).then(() => true), Bun.sleep(left()).then(() => false)]);
             if (!guarded || !inTime()) throw new MoveLapsed();
             const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
             sending.catch(() => undefined);
@@ -1665,7 +1697,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
-          await keyGuard(body.pane_id, agent, deadline);
+          // the look is held to the window of the read it follows (SETTLE_MS; pi's to the request's deadline, as
+          // before): a look that does not answer in time sends nothing. The answer as a whole may run past the request's
+          // deadline (each key waits for its row), so that deadline alone would stop an answer half sent.
+          // A cancelled request still finishes the keys it began with, as before: only the look's own window stops it.
+          const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
+          const guarding = guardKey(body.pane_id, agent, look);
+          guarding.catch(() => undefined);
+          const guarded = await Promise.race([guarding.then(() => true), Bun.sleep(SETTLE_MS).then(() => false)]);
+          if (!guarded) throw new KeyRefused();
           const first = !move && !committed;
           if (!move) committed = true;
           try {

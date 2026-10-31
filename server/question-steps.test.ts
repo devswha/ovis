@@ -357,6 +357,38 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test("omp: a card read under one call answers no other call drawn the same", async () => {
+    await withPane("omp", omp(0), async pane => {
+      const stale = await card();
+      // omp asks again with the same questions: the screen draws them alike
+      pane.ompCall?.("asked-again");
+      expect((await card()).id).not.toBe(stale.id);
+      expect(await move(stale.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(await move(stale.id, { step_next: true })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test.each(["answer", "move"] as const)("omp: a call that changes after the last read takes no key (%s)", async kind => {
+    await withPane("omp", omp(0), async pane => {
+      follows(pane, omp, 4, "tab", "shift+tab");
+      // the look right before the key, after every read: omp has asked again by then
+      const beforeKey = async (): Promise<void> => { pane.ompCall?.("asked-again"); };
+      const action = kind === "answer" ? { option_index: 0 } : { step_next: true };
+      expect(await move((await card()).id, action, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("omp: an answer's look before its key that never answers sends nothing", async () => {
+    await withPane("omp", omp(0), async pane => {
+      const prompt = await card();
+      const beforeKey = (): Promise<void> => new Promise(() => undefined);
+      expect(await move(prompt.id, { option_index: 0 }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
   test("omp: the card keeps its id whether or not the colours prove where the form stands", async () => {
     await withPane("omp", omp(0), async pane => {
       const proven = await card();
