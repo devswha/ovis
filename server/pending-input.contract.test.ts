@@ -466,7 +466,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
   }, 20_000);
 
-  it("tracks a maximum-length message with the space closing its file mention", async () => {
+  it("tracks a maximum-length message whose closing space Pi trims off its file mention", async () => {
     const transcript = piFile("pi-best-effort");
     const f = await setup("pi-best-effort", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
@@ -478,11 +478,11 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const receipt = sent.messages.find((item) => item.request_id === 914)!;
     expect(receipt.text).toBe(`${text} `);
     const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === receipt.id && item.outcome === "consumed") === true);
-    appendFileSync(transcript, piLine("u1", "a0", "user", `${text} `));
+    appendFileSync(transcript, piLine("u1", "a0", "user", text));
     await consumed;
   }, 20_000);
 
-  it("matches the exact Pi-facing text after closing a trailing file mention", async () => {
+  it("matches Pi's trimmed record after closing a trailing file mention (#2454)", async () => {
     const transcript = piFile("pi-facing-text");
     const f = await setup("pi-facing-text", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
@@ -491,8 +491,31 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 915));
     const receipt = sent.messages.find((item: PendingMessage) => item.request_id === 915);
     expect(receipt.text).toBe("inspect @file ");
-    appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file "));
+    appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file"));
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+
+  it("confirms a message Pi records trimmed, and the send queued behind it (#2454)", async () => {
+    const transcript = piFile("pi-trimmed");
+    const f = await setup("pi-trimmed", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    // Pi's editor expands a pasted tab to four spaces, and it trims what it records
+    const padded = " \tdictated\tmessage \t";
+    f.socket.send({ type: "submit", id: 916, pane_id: f.pane, text: padded, payload: padded, delivery: "immediate" });
+    expect((await f.socket.result(916)).ok).toBe(true);
+    f.socket.send({ type: "submit", id: 917, pane_id: f.pane, text: "next", payload: "next", delivery: "immediate" });
+    expect((await f.socket.result(917)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && [916, 917].every((id) => frame.messages.some((item: PendingMessage) => item.request_id === id)));
+    expect(sent.messages.find((item: PendingMessage) => item.request_id === 916).text).toBe(padded);
+    const ids = [916, 917].map((id) => sent.messages.find((item: PendingMessage) => item.request_id === id).id);
+    const consumed = new Set<string>();
+    const both = f.socket.event((frame) => {
+      for (const item of frame.removed ?? []) if (item.outcome === "consumed") consumed.add(item.id);
+      return ids.every((id) => consumed.has(id));
+    });
+    appendFileSync(transcript, piLine("u1", "a0", "user", "dictated    message"));
+    appendFileSync(transcript, piLine("u2", "u1", "user", "next"));
+    await both;
   }, 20_000);
 });
 
