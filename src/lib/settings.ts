@@ -7,7 +7,7 @@
 
 import type { TelemetrySettings } from "../../shared/telemetry.ts";
 import { mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
-import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type ThemeEntry } from "./themes.ts";
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
 import type { AlertPrefs, DoneAlerts } from "../../shared/notify-policy.ts";
@@ -636,7 +636,8 @@ export function loadSettings(): Settings {
   return { ...merged, uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts() };
 }
 
-export function saveSettings(settings: Settings): void {
+/** false where storage refused the write (private mode, a full quota) */
+export function saveSettings(settings: Settings): boolean {
   const mirrored = sanitizeSettings(settings);
   try {
     window.localStorage.setItem(THEMES_STORAGE_KEY, JSON.stringify({
@@ -650,8 +651,10 @@ export function saveSettings(settings: Settings): void {
     window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
     window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
+    return true;
   } catch {
     /* private mode: preferences last for the session */
+    return false;
   }
 }
 
@@ -709,12 +712,15 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(loadSettings);
+  // this tab's whole state at its last load or successful save: a value that differs from it is this tab's own, not yet stored
+  const stored = useRef<Settings>(settings);
   const [systemDark, setSystemDark] = useState(() => resolveTheme("system") === "dark");
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
       if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== null)) return;
       const { shortcutOverrides } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides };
       setSettings((current) => ({ ...current, shortcutOverrides }));
     };
     window.addEventListener("storage", onStorage);
@@ -750,7 +756,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((current) => {
       const next = sanitizeSettings({ ...current, ...patch });
-      saveSettings(next);
+      // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
+      const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
+      const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));
+      if (saveSettings(sanitizeSettings({ ...loadSettings(), ...changed }))) stored.current = next;
       return next;
     });
   }, []);
