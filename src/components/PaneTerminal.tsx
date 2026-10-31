@@ -68,7 +68,7 @@ import { useComposerSends } from "../lib/useComposerSends.ts";
 import { usePeekReturn } from "../lib/usePeekReturn.ts";
 import { useChatCallbacks } from "../lib/useChatCallbacks.ts";
 import { useTypedKeys } from "../lib/useTypedKeys.ts";
-import { paneObserving } from "../lib/paneObserving.ts";
+import { mountRole, paneObserving } from "../lib/paneObserving.ts";
 
 /** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
 const PASTE_GUIDANCE_MS = 6000;
@@ -627,9 +627,9 @@ export function PaneTerminal({
   useEffect(() => {
     if (paneId === null) return;
     const key = paneStorageId(machineId, paneId);
-    paneObserving.set(key, observingMount, observing);
+    paneObserving.set(key, observingMount, mountRole({ observing, inputReady }));
     return () => paneObserving.set(key, observingMount, null);
-  }, [machineId, paneId, observing, observingMount]);
+  }, [machineId, paneId, observing, inputReady, observingMount]);
 
   useEffect(() => {
     if (active) onRoleAckRef.current?.(observing ? "observe" : "interact");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { PaneObserving } from "./paneObserving.ts";
+import { mountRole, PaneObserving } from "./paneObserving.ts";
 
 describe("pane observing", () => {
   it("counts a pane as watched only while every mount of it watches, each mount on its own", () => {
@@ -22,5 +22,12 @@ describe("pane observing", () => {
     store.set("p", left, null);
     expect(store.has("p")).toBe(false);
     expect(heard).toBe(4);
+  });
+
+  it("knows a mount's role only once its connection says: observe acked, or input ready", () => {
+    expect(mountRole({ observing: true, inputReady: false })).toBe(true);
+    expect(mountRole({ observing: false, inputReady: true })).toBe(false);
+    // mounted and still connecting, or disconnected: nothing is known, so no note goes for it
+    expect(mountRole({ observing: false, inputReady: false })).toBeNull();
   });
 });

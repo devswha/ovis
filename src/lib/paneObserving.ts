@@ -29,6 +29,14 @@ export class PaneObserving {
   }
 }
 
+/**
+ * The role a mount reports, or null while its connection has not said (connecting, or gone): only
+ * an acknowledged observe watches, and only an attach ready for input types.
+ */
+export function mountRole({ observing, inputReady }: { observing: boolean; inputReady: boolean }): boolean | null {
+  return observing ? true : inputReady ? false : null;
+}
+
 export const paneObserving = new PaneObserving();
 
 /** "unknown" while no mount of the pane has reported (fail closed), else whether this page only watches it */
