@@ -1,6 +1,6 @@
 /** Grok's native update log, projected onto active history before the shared pager reads it. */
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { constants, closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ConversationPart, ConversationTurn, ConversationResponse } from "../shared/protocol.ts";
 import { imageType, inlineImageType } from "./codex-images.ts";
@@ -359,7 +359,8 @@ export async function grokImage(path: string, ref: string): Promise<{ mediaType:
   const digest = GROK_IMAGE_REF.exec(ref)?.[1];
   if (digest === undefined) return null;
   try {
-    const fd = openSync(path, "r");
+    if (realpathSync(path) !== path) return null;
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
     try {
       const { segments, revision } = grokProjection(path, statSync(path));
       // the file read is the one the projection checked, not one moved into its path since

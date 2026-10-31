@@ -101,6 +101,18 @@ describe("Grok native event adapter", () => {
     appendFileSync(own, JSON.stringify({ timestamp: 1700000000, method: "_x.ai/session/update", params: { sessionId: "01a19135-9ed8-7802-9f7f-c2c74a10a956", update: { sessionUpdate: "rewind_marker", target_prompt_index: 0 } } }) + "\n");
     expect(await grokImage(own, red)).toBeNull();
   });
+  test("serves a real session file's picture but not a symlinked session file's", async () => {
+    const recorded = readFileSync(new URL("./fixtures/grok/pictures-1.0.67.jsonl", import.meta.url), "utf8")
+      .replaceAll("01a19135-9ed8-7802-9f7f-c2c74a10a956", session);
+    const ref = "grok-image:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
+    const real = join(realpathSync(dirname(path)), "real.jsonl");
+    writeFileSync(real, recorded);
+    symlinkSync(real, path);
+    const image = await grokImage(real, ref);
+    expect(image?.mediaType).toBe("image/png");
+    expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("grok-image:".length));
+    expect(await grokImage(path, ref)).toBeNull();
+  });
   test("text chunks, hidden boundaries and synthetic prompts", () => {
     const turns = parseGrokTranscript(user(0, "hello ") + user(0, "world") + answer("one ") + answer("two") + user(1, "hidden", { hideFromScrollback: true }) + answer("separate answer") + user(2, "visible", { syntheticPrompt: true }));
     expect(turns.map((t) => t.parts)).toEqual([
