@@ -2616,6 +2616,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the message until the transcript proves it. Next-turn delivery and an explicit Send
   now action claim the same server ID. Connection loss never resumes automatic input. Previously
   held browser messages retain their explicit Send now/Discard recovery.
+  Any other follow-up's exact `sent` or `discarded` receipt is kept the same way (ten minutes, 1024,
+  same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
+  browser's reattach, or to that browser's already attached successor when the Enter's reply comes
+  after the reload. It settles only that exact ID's saved copy: an uncertain copy, which ages out as
+  `dismissed`, stays unconfirmed, and nothing is typed again (#2421).
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and
