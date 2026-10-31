@@ -6,6 +6,8 @@ import type { RelayIdentity } from "./identity.ts";
 import { RelaySession, relayClock } from "./session.ts";
 import type { RelaySocketHandlers } from "./virtual-socket.ts";
 import { version } from "../../package.json";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { answerServerChallenge, SERVER_PROOF_CLOSE } from "../../shared/relay-server-proof.ts";
 
 export interface RelayLinkOptions {
   readonly relay: string;
@@ -50,6 +52,8 @@ export class RelayLink {
     url.searchParams.set("server_id", this.options.identity.server_id);
     url.searchParams.set("role", "server");
     url.searchParams.set("v", "1");
+    url.searchParams.set("proof", "1");
+    url.searchParams.set("public_key", bytesToHex(importPublicKey(this.options.identity.public_key)));
     if (connectionId) url.searchParams.set("connection_id", connectionId);
     return (this.options.connect ?? ((address) => new WebSocket(address)))(url.href);
   }
@@ -61,6 +65,7 @@ export class RelayLink {
     try { socket = this.socket(); }
     catch { this.retry(); return; }
     this.control = socket;
+    let proofAnswered = false;
     let lastPong = this.clock.now();
     // An upgrade that never answers is also a lost relay.
     this.cancelKeepalive = this.clock.setTimeout(() => socket.close(), 15_000);
@@ -71,13 +76,17 @@ export class RelayLink {
       const heartbeat = () => {
         if (this.stopped || this.control !== socket) return;
         if (this.clock.now() - lastPong >= 30_000) { socket.close(); return; }
-        socket.send('{"type":"ping"}');
+        if (proofAnswered) socket.send('{"type":"ping"}');
         this.cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
       };
       this.cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
     };
     socket.onmessage = (event) => {
       if (this.stopped || this.control !== socket || typeof event.data !== "string") return;
+      if (!proofAnswered) {
+        proofAnswered = this.prove(socket, event.data, null);
+        return;
+      }
       let value: unknown;
       try { value = JSON.parse(event.data); } catch { socket.close(); return; }
       if (typeof value !== "object" || value === null || !("type" in value)) { socket.close(); return; }
@@ -94,12 +103,28 @@ export class RelayLink {
       } else socket.close();
     };
     socket.onerror = () => socket.close();
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.control !== socket) return;
       this.control = undefined;
       this.cancelKeepalive?.();
+      // The relay also uses 4401 for late answers. Only an explicit key mismatch is permanent.
+      if (event.code === SERVER_PROOF_CLOSE
+        && (event.reason === "server key does not match server_id" || event.reason === "invalid server key")) {
+        console.error(JSON.stringify({ event: "relay.server_proof.failed", code: event.code, reason: event.reason }));
+        this.options.onState("error", `Relay refused the server proof (${event.code}): ${event.reason}`);
+        return;
+      }
       if (!this.stopped) this.retry();
     };
+  }
+
+  private prove(socket: WebSocket, frame: unknown, connectionId: string | null): boolean {
+    const answer = answerServerChallenge(frame, importSecretKey(this.options.identity.secret_key), {
+      server_id: this.options.identity.server_id, role: connectionId === null ? "control" : "data", connection_id: connectionId,
+    });
+    if (!answer) { socket.close(4000, "invalid relay server challenge"); return false; }
+    socket.send(answer);
+    return true;
   }
 
   private retry(): void {
@@ -119,12 +144,17 @@ export class RelayLink {
       cancelTimeout: this.clock.setTimeout(() => socket.close(), 15_000),
     };
     this.data.set(id, entry);
+    let proofAnswered = false;
     const transport: Transport = {
       onmessage: null, onclose: null, onerror: null,
       send: (data) => { socket.send(data); },
       close: (code, reason) => socket.close(code, reason),
     };
     socket.onmessage = (event) => {
+      if (!proofAnswered) {
+        proofAnswered = this.prove(socket, event.data, id);
+        return;
+      }
       if (event.data === '{"type":"pong"}') return;
       if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
         transport.onmessage?.({ data: event.data, isBinary: typeof event.data !== "string" });
@@ -140,7 +170,7 @@ export class RelayLink {
     socket.onopen = () => {
       const heartbeat = () => {
         if (this.stopped || this.data.get(id) !== entry) return;
-        socket.send('{"type":"ping"}');
+        if (proofAnswered) socket.send('{"type":"ping"}');
         entry.cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
       };
       entry.cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
