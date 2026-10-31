@@ -86,7 +86,8 @@ again, and clients reconnect.
 `relay.ovis.sh` is deployed from CI only, never from a laptop: the Relay deploy workflow
 (`.github/workflows/relay-deploy.yml`) runs on a push to main that touches `relay/` once CI passes,
 and by hand from main. It runs `bun test ./relay`, then `bunx wrangler@4.156.0 deploy` in `relay/` with
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, then `curl -fsS https://relay.ovis.sh/health`.
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, then asks `https://relay.ovis.sh/health` up to
+5 times, 5 s apart (20 s each), and fails only when none of the answers is a 2xx.
 A deploy drops every socket; the PC and clients reconnect. Without the two secrets the job passes
 with a notice naming the missing one and deploys nothing. It needs the `ovis.sh` zone on the deploying
 account: the route in `wrangler.toml` makes `relay.ovis.sh` a custom domain of the Worker, and
