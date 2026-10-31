@@ -90,6 +90,8 @@ function readReferences(text: string): string {
 function unsafe(svg: string): boolean {
   const parts: string[] = [];
   let styled = false;
+  // a style element's text is read as one run: an element inside it would split a CSS token past the checks
+  let inStyle = false;
   let from = 0;
   for (let start = svg.indexOf("<"); start !== -1; start = svg.indexOf("<", from)) {
     parts.push(svg.slice(from, start));
@@ -107,11 +109,17 @@ function unsafe(svg: string): boolean {
     if (element === null || element[2] === undefined) return true;
     const name = localName(element[2]);
     if (!DRAWING_ELEMENTS.has(name)) return true;
+    if (inStyle && !(element[1] === "/" && name === "style")) return true;
     styled ||= name === "style";
     from = ELEMENT.lastIndex;
     for (;;) {
       TAG_END.lastIndex = from;
-      if (TAG_END.test(svg)) { from = TAG_END.lastIndex; break; }
+      const end = TAG_END.exec(svg);
+      if (end !== null) {
+        from = TAG_END.lastIndex;
+        if (name === "style") inStyle = element[1] !== "/" && end[1] !== "/";
+        break;
+      }
       if (element[1] === "/") return true;
       ATTRIBUTE.lastIndex = from;
       const attribute = ATTRIBUTE.exec(svg);
@@ -126,6 +134,7 @@ function unsafe(svg: string): boolean {
     }
     parts.push(svg.slice(start, from));
   }
+  if (inStyle) return true;
   parts.push(svg.slice(from));
   const read = readReferences(parts.join(""));
   return UNSAFE.some((pattern) => pattern.test(read)) || (styled && read.includes("\\"));

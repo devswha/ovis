@@ -62,6 +62,18 @@ it("keeps a figure that could run or load something as code", () => {
   for (const source of unsafe) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
 });
 
+it("keeps a style that holds an element as code, since the element would split a CSS token past the checks", () => {
+  const split = [
+    '<svg viewBox="0 0 10 10"><style>@im<g/>port "https://example.com/x.css";</style></svg>',
+    '<svg viewBox="0 0 10 10"><style>rect { fill: u<g/>rl(https://example.com/x) }</style></svg>',
+    '<svg viewBox="0 0 10 10"><style>rect { fill: image<g/>-set("https://example.com/x" 1x) }</style></svg>',
+    '<svg xmlns:é="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><é:style>@im<é:g/>port "https://example.com/x.css";</é:style></svg>',
+    '<svg viewBox="0 0 10 10"><style>rect { fill: red }',
+  ];
+  for (const source of split) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
+  expect(svgFigureUrl('<svg viewBox="0 0 10 10"><style>rect { fill: red }</style><rect width="1" height="1"/></svg>', { fg: "#eee" })).not.toBeNull();
+});
+
 it("draws a figure whose references stay inside it", () => {
   const svg = decode(svgFigureUrl(
     '<svg viewBox="0 0 10 10"><defs><linearGradient id="g"/><path id="p" d="M0 0"/></defs><rect fill="url(#g)" style="fill: url( \'#g\' )"/><use href="#p"/><use xlink:href = \' #p\'/></svg>',
