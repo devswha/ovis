@@ -476,7 +476,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
     expect(await f.socket.result(914)).toMatchObject({ ok: true });
     const sent = await f.socket.event((frame) => frame.messages.some((item) => item.request_id === 914));
     const receipt = sent.messages.find((item) => item.request_id === 914)!;
-    expect(receipt.text).toBe(text);
+    expect(receipt.text).toBe(`${text} `);
     const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === receipt.id && item.outcome === "consumed") === true);
     appendFileSync(transcript, piLine("u1", "a0", "user", text));
     await consumed;
@@ -490,7 +490,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
     expect((await f.socket.result(915)).ok).toBe(true);
     const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 915));
     const receipt = sent.messages.find((item: PendingMessage) => item.request_id === 915);
-    expect(receipt.text).toBe("inspect @file");
+    expect(receipt.text).toBe("inspect @file ");
     appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file"));
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
   }, 20_000);
@@ -506,6 +506,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
     f.socket.send({ type: "submit", id: 917, pane_id: f.pane, text: "next", payload: "next", delivery: "immediate" });
     expect((await f.socket.result(917)).ok).toBe(true);
     const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && [916, 917].every((id) => frame.messages.some((item: PendingMessage) => item.request_id === id)));
+    expect(sent.messages.find((item: PendingMessage) => item.request_id === 916).text).toBe(padded);
     const ids = [916, 917].map((id) => sent.messages.find((item: PendingMessage) => item.request_id === id).id);
     const consumed = new Set<string>();
     const both = f.socket.event((frame) => {
