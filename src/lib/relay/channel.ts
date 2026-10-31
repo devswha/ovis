@@ -176,10 +176,12 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         throw new MuxProtocolError("auth_failed", "AUTH_OK named a different device");
       }
       const admitted = await store.update(offer.server_id, (current) => {
-        if (!current || current.server_public_key !== device.server_public_key || current.public_spki !== device.public_spki) {
+        // a first pairing's key is saved only now that the PC has admitted it (device.ts getDevice)
+        const kept = current ?? (device.device_id === null ? device : undefined);
+        if (!kept || kept.server_public_key !== device.server_public_key || kept.public_spki !== device.public_spki) {
           throw new MuxProtocolError("auth_changed", "Stored relay identity changed during authentication");
         }
-        return { ...current, device_id: frame.payload.device_id };
+        return { ...kept, device_id: frame.payload.device_id };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.

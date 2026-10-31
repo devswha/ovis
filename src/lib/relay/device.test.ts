@@ -24,12 +24,17 @@ export function testOffer(): RelayOffer {
   return { v: 1, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
 }
 
+/** What channel.ts does once the PC admits the device: the key is saved with its device id. */
+function admit(store: MemoryDeviceStore, device: RelayDevice): Promise<RelayDevice> {
+  return store.update(device.server_id, (current) => ({ ...(current ?? device), device_id: "ab".repeat(8) }));
+}
+
 it("keeps the private key non-extractable and reuses the stored identity", async () => {
   // Given an empty device store.
   const store = new MemoryDeviceStore();
   const offer = testOffer();
-  // When a device is created and loaded again.
-  const first = await getDevice(offer, store);
+  // When a device is created, admitted, and loaded again.
+  const first = await admit(store, await getDevice(offer, store));
   const second = await getDevice(offer, store);
   // Then the same signing key survives, without a private export.
   expect(second.private_key).toBe(first.private_key);
@@ -61,7 +66,7 @@ it("refuses a changed server key without replacing the stored identity", async (
   // Given an existing pinned server.
   const store = new MemoryDeviceStore();
   const offer = testOffer();
-  const device = await getDevice(offer, store);
+  const device = await admit(store, await getDevice(offer, store));
   // When an offer reuses its id with a different key.
   const changed = { ...offer, server_public_key: testOffer().server_public_key };
   // Then a typed error leaves the old identity intact.
@@ -69,14 +74,14 @@ it("refuses a changed server key without replacing the stored identity", async (
   expect(await store.get(offer.server_id)).toBe(device);
 });
 
-it("atomically retains one key when two first connections race", async () => {
-  // Given concurrent first connections to one PC.
+it("saves no key for a PC before the PC admits the device", async () => {
+  // Given an empty device store.
   const store = new MemoryDeviceStore();
-  const offer = testOffer();
-  // When both generate a candidate.
-  const [a, b] = await Promise.all([getDevice(offer, store), getDevice(offer, store)]);
-  // Then neither connection uses a losing key.
-  expect(a.private_key).toBe(b.private_key);
+  // When a first connection makes its key.
+  const device = await getDevice(testOffer(), store);
+  // Then the key is not kept: a link whose PC never admits it takes no PC's slot.
+  expect(device.device_id).toBeNull();
+  expect(await store.list()).toEqual([]);
 });
 
 it("rejects malformed challenges before signing", async () => {

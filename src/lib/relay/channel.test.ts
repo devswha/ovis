@@ -283,6 +283,20 @@ it("calls a PC that answered the handshake but never finished admission unrespon
   expect(f.socket.closed).toBe(true);
 });
 
+it("keeps no key from a pairing link whose PC never admitted the phone", async () => {
+  // Given a pairing offer whose PC completes Noise and then never admits anyone.
+  jest.useFakeTimers();
+  const f = await fixture(true, "silence");
+  const outcome = settled(f.opening);
+  for (let i = 0; i < 200 && !f.trace.includes("client:HELLO"); i++) await Promise.resolve();
+  // When the admission deadline passes.
+  jest.advanceTimersByTime(ADMISSION_MS);
+  await flush();
+  // Then the attempt failed and this PC's slot is still empty: a later real QR pairs without a warning.
+  expect(outcome.get()?.error).toBeInstanceOf(RelayAdmissionTimeoutError);
+  expect(await f.store.list()).toEqual([]);
+});
+
 it("names a stall after WELCOME in the auth phase, within the same admission budget", async () => {
   // Given a real daemon that welcomes and then holds AUTH_OK.
   jest.useFakeTimers();
