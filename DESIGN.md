@@ -2899,6 +2899,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   quote over the input) for the gesture, and a code review's pending comments (collected, then sent
   together, one turn for the agent) for the rest; it differs in collecting several quotes in one chip
   instead of one quote at a time.
+- A note on a line of a file's diff (#1603, `.repo-diff-line-*`) waits in the same chip, which then
+  says "2 comments": a hovered row shows a `+` (`--accent`, in the diff package's gutter slot); a click
+  or tap on a row, or the arrow keys in the focused diff, pick a line (ringed as Find's match is) and a
+  bar under the rows names it with **Add a note** (`--touch-target` on a coarse pointer). Its editor
+  docks along the viewer's bottom edge: where the line is, its text behind a `2px` rule in the line's
+  diff color, a field, Cancel and **Add to next message** (Mod+Enter); Escape closes it while empty.
+  The quote names the PC, repository, path, side and one-based line, the comparison as read (full
+  commits, the branch's three commits, or HEAD and the patch's identity) and the line in a fence longer
+  than any backtick run in it. Only the diff's own pane takes it: none, closed, no agent or a watching
+  device disables Add a note with the reason in the bar. A note that would take the next message past
+  the composer's limit is refused in the editor; nothing is cut or replaced.
+- Precedent for the diff note: GitHub's and Codex's review gutter `+` on a diff line; it differs in
+  collecting the note for the next message instead of posting a review thread.
 
 ### Voice input
 - A mic button sits beside the add button in the composer and beside Send in the terminal input line; it

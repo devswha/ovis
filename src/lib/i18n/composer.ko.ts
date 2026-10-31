@@ -248,4 +248,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "Update this PC to send comments on a reply. Your message and comments stayed here.": "답변 코멘트를 보내려면 이 PC를 업데이트하세요. 메시지와 코멘트는 그대로 남아 있습니다.",
   "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.": "보내지 않음: 메시지가 터미널 입력 줄에 들어가 있습니다. 거기서 지우거나, 거기서 Enter를 눌러 보내세요.",
   "Not sent: no agent is running in this pane. Your message stayed here.": "보내지 않음: 이 패널에서 실행 중인 에이전트가 없습니다. 메시지는 그대로 남아 있습니다.",
+  "1 comment": "코멘트 1개",
+  "{count} comments": "코멘트 {count}개",
 };
