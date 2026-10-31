@@ -524,12 +524,34 @@ describe("a Claude bash-mode command on GET /api/pane/conversation", () => {
 });
 
 describe("usage API", () => {
+  it.each([false, true])("serializes missing_commands when Linux secret-tool availability is %s", async (installed) => {
+    // Given: no Antigravity credentials and an isolated command lookup.
+    const usageState = mkdtempSync(join(tmpdir(), "herdr-usage-missing-command-"));
+    const usage = new UsageService({
+      home: usageState, env: {}, platform: "linux", now: () => Date.parse("2026-10-06T00:00:00Z"),
+      keychain: async () => ({ status: "missing" }), run: async () => null,
+      has: (command) => command !== "secret-tool" || installed,
+      fetch: async () => { throw new Error("usage must not fetch without credentials"); },
+    }, USAGE_PROVIDERS.filter((provider) => provider.id === "antigravity"));
+    const app = createServer({ port: 0, stateDir: usageState, usage });
+    try {
+      // When
+      const response = await fetch(`http://localhost:${app.port}/api/usage`);
+      // Then
+      expect(response.status).toBe(200);
+      const report: UsageReport = await response.json();
+      expect(report.providers).toEqual([]);
+      if (installed) expect(report).not.toHaveProperty("missing_commands");
+      else expect(report.missing_commands).toEqual([{ provider: "antigravity", command: "secret-tool" }]);
+    } finally { app.stop(); rmSync(usageState, { recursive: true, force: true }); }
+  });
+
   it("returns OpenCode Go windows without exposing its credential", async () => {
     const usageState = mkdtempSync(join(tmpdir(), "herdr-opencode-contract-"));
     const token = "oc_sk_contract_only";
     const usage = new UsageService({
       home: usageState, env: { OPENCODE_API_KEY: token }, platform: "linux", now: () => Date.parse("2026-10-06T00:00:00Z"),
-      keychain: async () => ({ status: "missing" }), run: async () => null,
+      keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
       fetch: async (url, init) => {
         expect(url).toBe("https://opencode.ai/zen/go/v1/usage");
         expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${token}`);

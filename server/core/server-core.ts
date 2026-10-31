@@ -112,6 +112,8 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   return {
     sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage,
+    // The relay uses these same handlers with a SocketLike; websocket above remains Bun's boundary.
+    socketHandlers,
     /** once the server listens */
     start(): void {
       // ACKs can stop arriving entirely (a suspended tab). Bound the pause even then.

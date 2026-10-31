@@ -15,6 +15,7 @@ import { type MarkdownImagePreview } from "../lib/markdownImages.ts";
 import { imageSlotStyle, standaloneImage } from "../lib/imageBox.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { MermaidLightbox } from "./MermaidLightbox.tsx";
+import { svgFigurePalette, svgFigureUrl } from "../lib/svgFigure.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { lazyChunk } from "../lib/lazyChunk.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
@@ -46,10 +47,17 @@ function useKatex(): Katex | null {
   return katex;
 }
 
-function MathExpression({ value, displayMode = false }: { value: string; displayMode?: boolean }) {
+/**
+ * A formula drawn by KaTeX. Until KaTeX loads, or when it cannot draw the formula, `fallback`
+ * shows instead: by default the formula as the agent wrote it (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
+ */
+function MathExpression({ value, displayMode = false, dollar = false, oneLine = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; oneLine?: boolean; fallback?: ReactNode }) {
   const katex = useKatex();
-  const source = displayMode ? `\\[${value}\\]` : `\\(${value}\\)`;
-  if (!katex || mathNestsTooDeep(value)) return <span>{source}</span>;
+  // a $$ formula keeps its own lines, as written
+  const source = fallback ?? (dollar && displayMode
+    ? <span className="markdown-math-source">{oneLine ? `$$${value}$$` : `$$\n${value}\n$$`}</span>
+    : <span>{dollar ? `$${value}$` : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>);
+  if (!katex || mathNestsTooDeep(value)) return source;
   try {
     // KaTeX escapes text and rejects untrusted commands by default, and an unknown command
     // throws - the catch below then draws the source form. `trust` stays at its default, which
@@ -59,7 +67,7 @@ function MathExpression({ value, displayMode = false }: { value: string; display
     const html = katex.renderToString(value, { displayMode, strict: "ignore" });
     return <span className={displayMode ? "markdown-math-display" : "markdown-math"} dangerouslySetInnerHTML={{ __html: html }} />;
   } catch {
-    return <span>{source}</span>;
+    return source;
   }
 }
 
@@ -105,6 +113,47 @@ function MermaidDiagram({ value }: { value: string }) {
         <Maximize2 aria-hidden="true" />
       </button>
       {zoomed && <MermaidLightbox svg={svg} onClose={() => setZoomed(false)} />}
+    </div>
+  );
+}
+
+/** Counts changes to <html>'s theme attributes (`data-theme`, `data-palette`, inline colors), so a figure redraws in the new colors. */
+function useThemeRevision(): number {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setRevision((value) => value + 1));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette", "style", "class"] });
+    return () => observer.disconnect();
+  }, []);
+  return revision;
+}
+
+/**
+ * A ```svg fence drawn as the figure it is (lib/svgFigure.ts), as an image so its markup never
+ * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
+ * it shows as the code block it is.
+ */
+function SvgFigure({ value }: { value: string }) {
+  const t = useT();
+  const revision = useThemeRevision();
+  const [zoomed, setZoomed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  // `revision` is not read: a change to it may be a new theme, whose colors the palette reads again.
+  // The viewport also writes <html>'s style (lib/viewport.ts): the figure is drawn again only when
+  // a color it reads changed, so a keyboard or resize does not reparse every figure.
+  const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
+  const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
+  const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
+  if (src === null || failed === src) return <CodeBlock language="svg" value={value} />;
+  return (
+    <div className="markdown-mermaid-frame">
+      <div className="markdown-mermaid" onClick={() => setZoomed(true)}>
+        <img src={src} alt={t("Diagram")} draggable={false} onError={() => setFailed(src)} />
+      </div>
+      <button type="button" className="icon-button markdown-mermaid-zoom" onClick={() => setZoomed(true)} aria-label={t("Enlarge diagram")} title={t("Enlarge diagram")}>
+        <Maximize2 aria-hidden="true" />
+      </button>
+      {zoomed && <MermaidLightbox src={src} onClose={() => setZoomed(false)} />}
     </div>
   );
 }
@@ -249,7 +298,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
         if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <a key={key} className="markdown-code-link" href={node.value} target="_blank" rel="noopener noreferrer" onClick={webClick(node.value)}><code>{node.value}</code></a>;
         return open !== null && codeIsFilePath(node.value) ? <FilePathLink key={key} path={node.value} code open={open} /> : <code key={key}>{node.value}</code>;
       }
-      case "math": return <MathExpression key={key} value={node.value} />;
+      case "math": return <MathExpression key={key} value={node.value} dollar={node.dollar} />;
       case "image": {
         return <span key={key}>{imageResolver === null
           ? <Inline key={key} nodes={node.fallback} interactive={interactive} />
@@ -366,8 +415,13 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
       case "blockquote": return <blockquote key={key}><Blocks blocks={block.blocks} /></blockquote>;
       case "code": return block.language === "mermaid"
         ? <MermaidDiagram key={key} value={block.value} />
-        : <CodeBlock key={key} language={block.language} value={block.value} />;
-      case "math": return <MathExpression key={key} value={block.value} displayMode />;
+        : block.language.toLowerCase() === "svg"
+          ? <SvgFigure key={key} value={block.value} />
+          // a ```math fence (GitHub's form) is display math; one KaTeX cannot draw stays the code block it is
+          : block.language === "math"
+            ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
+            : <CodeBlock key={key} language={block.language} value={block.value} />;
+      case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} oneLine={block.oneLine} />;
       case "hr": return <hr key={key} />;
       case "table": return (
         <div className="markdown-table-wrap" key={key}>

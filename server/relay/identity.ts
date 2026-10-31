@@ -6,7 +6,7 @@
  * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
  */
 import { randomBytes } from "node:crypto";
-import { linkSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import nacl from "tweetnacl";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
@@ -40,6 +40,16 @@ export function loadRelayIdentity(stateDir: string): RelayIdentity {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new RelayIdentityError("the file cannot be read");
     return createIdentity(path);
   }
+  return loadExisting(path, text);
+}
+
+/** Makes a saved identity private again before parsing it, even if its content is corrupt. */
+function loadExisting(path: string, text: string): RelayIdentity {
+  if (process.platform !== "win32") {
+    try {
+      if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o600);
+    } catch { throw new RelayIdentityError("the file permissions cannot be checked or made private"); }
+  }
   return parseIdentity(text);
 }
 
@@ -66,7 +76,7 @@ function createIdentity(path: string, replace = false): RelayIdentity {
     try { linkSync(temporary, path); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-      return parseIdentity(readFileSync(path, "utf8"));
+      return loadExisting(path, readFileSync(path, "utf8"));
     }
   } finally {
     unlinkSync(temporary);

@@ -30,6 +30,7 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
   local: "You are on the PC itself.",
   tailscale: "You are in as this PC's Tailscale login.",
   device: "This is a paired device.",
+  relay: "This is a paired device.",
   token: "You are in with the access token.",
   portal: "You are in through Portal's sign-in.",
   open: "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.",

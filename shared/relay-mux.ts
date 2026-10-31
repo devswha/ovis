@@ -142,7 +142,7 @@ function base64url(value: unknown, bytes: number): string {
 }
 
 const HTTP_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-export function validateHeaders(value: unknown, kind: "request" | "response" | "trailers"): HeaderList {
+export function validateHeaders(value: unknown, kind: "request" | "response" | "trailers", filterRequestHeaders = false): HeaderList {
   requireProtocol(Array.isArray(value) && value.length <= 64, "Invalid header list");
   let bytes = 0;
   let contentLength: string | undefined;
@@ -154,7 +154,9 @@ export function validateHeaders(value: unknown, kind: "request" | "response" | "
     const val = text(pair[1], 12288);
     bytes += utf8Bytes(name) + utf8Bytes(val) + 4;
     requireProtocol(bytes <= 12288 && HTTP_TOKEN.test(name) && name === name.toLowerCase()
-      && !/[\r\n\0]/.test(val) && allowed.includes(name), "Forbidden or oversized header");
+      && !/[\r\n\0]/.test(val), "Forbidden or oversized header");
+    if (kind === "request" && filterRequestHeaders && !allowed.includes(name)) continue;
+    requireProtocol(allowed.includes(name), "Forbidden or oversized header");
     if (kind === "trailers") {
       requireProtocol(!["content-length", "content-range", "content-type", "content-disposition", "x-request-id"].includes(name), "Forbidden trailer");
     }
@@ -236,7 +238,7 @@ function envelope(type: unknown, flags: unknown, id: unknown, size: number): Fra
 }
 
 /** Only payload-local rules live here; ordering, reassembly and credit belong to the engine. */
-function metadata(type: FrameType, flags: number, stream_id: number, input: unknown): MuxFrame {
+function metadata(type: FrameType, flags: number, stream_id: number, input: unknown, filterRequestHeaders = false): MuxFrame {
   const v = object(input);
   const common = { flags, stream_id };
   switch (type) {
@@ -278,7 +280,7 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       const method = choice(v.method, ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
       const body = choice(v.body, ["none", "stream"]);
       requireProtocol((method !== "GET" && method !== "HEAD") || body === "none", "GET/HEAD body forbidden");
-      return { ...common, type, payload: { device_id: hex(v.device_id, 16), method, target: validateTarget(v.target), headers: validateHeaders(v.headers, "request"), body } };
+      return { ...common, type, payload: { device_id: hex(v.device_id, 16), method, target: validateTarget(v.target), headers: validateHeaders(v.headers, "request", filterRequestHeaders), body } };
     }
     case FrameType.HTTP_HEADERS: {
       const status = integer(v.status, 100, 599);
@@ -291,7 +293,7 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { trailers } };
     }
     case FrameType.WS_OPEN:
-      return { ...common, type, payload: { device_id: hex(v.device_id, 16), target: validateTarget(v.target), headers: validateHeaders(v.headers, "request"), protocols: list(v.protocols, 8, protocol) } };
+      return { ...common, type, payload: { device_id: hex(v.device_id, 16), target: validateTarget(v.target), headers: validateHeaders(v.headers, "request", filterRequestHeaders), protocols: list(v.protocols, 8, protocol) } };
     case FrameType.WS_ACCEPT:
       return { ...common, type, payload: { protocol: v.protocol === null ? null : protocol(v.protocol), headers: validateHeaders(v.headers, "response") } };
     case FrameType.WS_CLOSE: {
@@ -354,7 +356,7 @@ function parseMetadata(bytes: Uint8Array): unknown {
   }
 }
 
-export function decodeFrame(bytes: Uint8Array): MuxFrame {
+export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): MuxFrame {
   // These gates precede views, slices, UTF-8 decoding and JSON parsing.
   requireProtocol(bytes instanceof Uint8Array && bytes.byteLength >= ENVELOPE_BYTES && bytes.byteLength <= MAX_FRAME_BYTES, "Invalid frame length");
   if (bytes[0] !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", "Unsupported envelope version");
@@ -378,7 +380,7 @@ export function decodeFrame(bytes: Uint8Array): MuxFrame {
       requireProtocol(!start || payload.byteLength >= 4, "Missing START length");
       return { type, flags, stream_id, payload: wsFragment(flags, start ? payload.subarray(4) : payload, start ? view.getUint32(8) : undefined) };
     }
-    default: return metadata(type, flags, stream_id, parseMetadata(payload));
+    default: return metadata(type, flags, stream_id, parseMetadata(payload), filterRequestHeaders);
   }
 }
 

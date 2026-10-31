@@ -32,6 +32,18 @@ const openFiles = async (page: import("playwright-core").Page) => {
   else await runMoreItem(page, "Browse files");
 };
 
+// A loaded or reloaded chat scrolls to its end once its conversation is measured; the chat frame
+// names its content only once it is presented there. Even then a link far above the end is no
+// steady target for a pointer: a follow to the end still on its way moves it between pointer down
+// and up, or takes its row and the focus away before a key, and nothing opens. Not even a wheel
+// read back first holds still: the follow undid one in looped runs. Steps that check history and
+// presentation, not pointer targeting, wait for the chat and activate the link where it is.
+const transcriptSettled = (page: Page) => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached" });
+const activateInTranscript = async (page: Page, link: Locator): Promise<void> => {
+  await transcriptSettled(page);
+  await link.dispatchEvent("click");
+};
+
 const root = mkdtempSync(join(tmpdir(), "ovis-file-back-"));
 const reportServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
   '<!doctype html><h1>Same-host report</h1><a href="#details">Report details</a><section id="details">Details</section>',
@@ -193,7 +205,10 @@ try {
     record.longTasks = [];
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) record.longTasks.push(entry.duration); }).observe({ type: "longtask" });
   });
-  const frozen = async () => (await page.evaluate(() => (window as unknown as { longTasks?: number[] }).longTasks ?? [])).filter((duration) => duration >= 1_000);
+  // a freeze these guard lasts many seconds (the slow Markdown file highlighted on the page's own
+  // thread held it past a 10s click); a loaded CI runner stretches the app's ordinary work to just
+  // over 1s (1065ms seen on CI), which is no freeze
+  const frozen = async () => (await page.evaluate(() => (window as unknown as { longTasks?: number[] }).longTasks ?? [])).filter((duration) => duration >= 2_000);
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -526,9 +541,7 @@ try {
   };
   // with Open files at its default, even text opens in the popup; Beside the pane is a choice
   await setFileOpen(null);
-  // Reloaded images can move the following transcript between pointer down and up. This checks
-  // presentation/history, not pointer targeting; activate the file by keyboard on its fresh node.
-  await notesLink.press("Enter");
+  await activateInTranscript(page, notesLink);
   await textPopup.getByText("File preview history regression", { exact: true }).waitFor();
   assert.equal(await panel.count(), 0, "text starts in the popup at 1280px by default");
   await textPopup.getByRole("button", { name: "Close file", exact: true }).click();
@@ -627,7 +640,7 @@ try {
   // the preview's entry, not step the frame back and leave the panel there (#1203)
   const contentsLink = page.getByRole("button", { name: "contents page", exact: true });
   for (const close of ["Close file", "Escape"]) {
-    await contentsLink.click();
+    await activateInTranscript(page, contentsLink);
     const framed = page.frameLocator(".file-viewer-page");
     await framed.getByText("contents ran", { exact: true }).waitFor();
     const opened = await page.evaluate(() => history.length);
@@ -1035,7 +1048,7 @@ try {
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
   assert.ok((await virtualRows()) < 500, "8 MB of text is a bounded window of rows");
   assert.equal(await big.locator(".file-viewer-text").count(), 0, "not an element per line");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A text file past the source budget shows its first 8 MB as a window of rows, says so in its header and has no Copy");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
@@ -1382,7 +1395,7 @@ try {
   await many.getByRole("button", { name: "Show less", exact: true }).waitFor();
   assert.equal(await many.locator(".hl-line").count(), 0, "no element per line");
   assert.equal((await many.locator(".hl-code").innerText()).split("\n").length, 30_000);
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A chat code block of 30 000 lines opens as one text, and the page never freezes");
 
   // a Markdown file the highlighter is slow on: its Preview shows, and its source stays plain with a
@@ -1397,7 +1410,7 @@ try {
   assert.equal(await slow.locator(".hl-note").count(), 0, "the note is not repeated under the code");
   await slow.locator(".file-viewer-text .hl-line").first().waitFor();
   assert.equal(await slow.locator(".file-viewer-text code span:not(.hl-line)").count(), 0, "the source is plain");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A Markdown file the highlighter is slow on previews, its source stays plain, and the page never freezes");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
@@ -1434,7 +1447,7 @@ try {
   // its 65 536-line source is past an element per line: a window of rows
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
   assert.equal(await longList.locator(".file-viewer-markdown").count(), 0, "the Preview is not drawn");
-  assert.deepEqual(await frozen(), [], "no task held the page for a second");
+  assert.deepEqual(await frozen(), [], "no task held the page for two seconds");
   console.log("PASS A file of too many lines shows its first 200 000 as rows, a Markdown file of too many elements as its source, and the page never freezes");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
@@ -1821,7 +1834,7 @@ try {
           await page.setViewportSize({ width: step === "narrow" ? 900 : 1280, height: 800 });
           if (await screen() === "web") await page.locator(step === "narrow" ? ".web-panel-popup" : ".web-panel").waitFor();
         } else if (step === "web") {
-          await page.getByRole("link", { name: "web report", exact: true }).click();
+          await activateInTranscript(page, page.getByRole("link", { name: "web report", exact: true }));
           await page.locator(".web-panel, .web-panel-popup").first().waitFor();
         } else if (step === "diff") {
           await openFiles(page);
@@ -1834,7 +1847,7 @@ try {
           await page.getByRole("dialog", { name: "notes.txt", exact: true }).getByRole("button", { name: "Show beside the pane", exact: true }).click();
           await page.locator("aside.file-panel").getByText("File preview history regression", { exact: true }).waitFor();
         } else {
-          await page.getByRole("button", { name: "notes", exact: true }).press("Enter");
+          await activateInTranscript(page, page.getByRole("button", { name: "notes", exact: true }));
           await page.locator(row.fileOpen === "popup" ? ".modal.file-viewer" : "aside.file-panel").getByText("File preview history regression", { exact: true }).waitFor();
         }
       }

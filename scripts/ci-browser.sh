@@ -118,6 +118,7 @@ run_script scripts/claude-image-browser-qa.ts
 run_script scripts/chat-markdown-images-browser-qa.ts
 run_script scripts/pi-image-browser-qa.ts
 run_script scripts/omp-codex-image-browser-qa.ts
+run_script scripts/grok-image-browser-qa.ts
 run_script scripts/copilot-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
 run_script scripts/web-panel-mobile-regression.ts
@@ -138,6 +139,8 @@ run_script scripts/chat-local-send-follow-demo-regression.ts
 run_script scripts/reply-comments-demo-regression.ts
 run_script scripts/chat-tool-paths-demo-regression.ts
 run_script scripts/chat-list-markers-demo-regression.ts
+run_script scripts/chat-svg-figures-demo-regression.ts
+run_script scripts/chat-math-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
