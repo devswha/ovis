@@ -34,10 +34,10 @@ const openFiles = async (page: import("playwright-core").Page) => {
 
 // A loaded or reloaded chat scrolls to its end once its conversation is measured; the chat frame
 // names its content only once it is presented there. Even then a link far above the end is no
-// steady target: scrolling it into view (a click, or the focus a key press needs) races a follow
-// to the end still on its way, which moves it between pointer down and up or takes its row and
-// the focus away, and nothing opens. Steps that check history and presentation, not pointer
-// targeting, wait for the chat and activate such a link where it is, without scrolling.
+// steady target for a pointer: a follow to the end still on its way moves it between pointer down
+// and up, or takes its row and the focus away before a key, and nothing opens. Not even a wheel
+// read back first holds still: the follow undid one in looped runs. Steps that check history and
+// presentation, not pointer targeting, wait for the chat and activate the link where it is.
 const transcriptSettled = (page: Page) => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached" });
 const activateInTranscript = async (page: Page, link: Locator): Promise<void> => {
   await transcriptSettled(page);
@@ -205,7 +205,10 @@ try {
     record.longTasks = [];
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) record.longTasks.push(entry.duration); }).observe({ type: "longtask" });
   });
-  const frozen = async () => (await page.evaluate(() => (window as unknown as { longTasks?: number[] }).longTasks ?? [])).filter((duration) => duration >= 1_000);
+  // a freeze these guard lasts many seconds (the slow Markdown file highlighted on the page's own
+  // thread held it past a 10s click); a loaded CI runner stretches the app's ordinary work to just
+  // over 1s (1065ms seen on CI), which is no freeze
+  const frozen = async () => (await page.evaluate(() => (window as unknown as { longTasks?: number[] }).longTasks ?? [])).filter((duration) => duration >= 2_000);
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
