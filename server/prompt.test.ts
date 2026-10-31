@@ -5869,6 +5869,30 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(await answer((await card())!.id, { step_back: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["left"]);
     });
+    // → lights the next tab a moment before the question under it is redrawn: that frame is no
+    // finished move, so the second → waits for the question too
+    await withPane("claude", "blocked", "", async (pane) => {
+      const bar = (lit: number) => "← " + [" ☒ Device ", " ☒ Symptoms ", " ✔ Submit "]
+        .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
+      const lit = (screen: string, at: number) => screen.split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? bar(at) : line).join("\n");
+      const draw = (screen: string) => { pane.viewport = screen; pane.screen = screen.replace(ANSI_RE, ""); };
+      draw(states.device!);
+      let at = 0;
+      // the question drawn when each → went out
+      const under: string[] = [];
+      pane.onSent = (sent) => {
+        if (sent !== "right") return;
+        under.push(pane.screen.includes("Which problems do you see?") ? "symptoms" : "device");
+        at += 1;
+        const next = order[at]!;
+        draw(lit(at === 1 ? states.device! : states.symptoms!, at));
+        setTimeout(() => show(pane, next), 150);
+      };
+      expect(await answer((await card())!.id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["right", "right"]);
+      expect(under).toEqual(["device", "symptoms"]);
+      expect((await card())!.title).toBe("Review your answers");
+    });
     // the pane went two tabs for one ←: not the tab asked for, so no second key
     await withPane("claude", "blocked", "", async (pane) => {
       show(pane, "review");

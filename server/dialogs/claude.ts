@@ -199,8 +199,9 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
         { text }, ...keySteps(multiSelect ? [KEY.down, KEY.enter] : [KEY.enter]),
       ],
     } : {}),
-    // the id as a read without colors gives it: a poll whose colors could not be read is the same card
-  }, { title: englishOf(titleOf(open)), steps: undefined, can_step_back: undefined });
+    // the id reads the tab shown (its title names it and its place): two tabs asking the same are two
+    // cards. On the first question still open it is the title a read without colors gives too
+  }, { steps: undefined, can_step_back: undefined });
   return words === null ? parsed : { ...parsed, screen_words: words };
 }
 
