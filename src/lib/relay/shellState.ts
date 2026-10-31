@@ -4,7 +4,9 @@
  * channel's errors to a screen is tested without a browser; the screens themselves are
  * components/RelayShell.tsx, and lib/relay/shell.tsx drives them.
  */
+import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
@@ -38,6 +40,8 @@ export type RelayShellState =
   | { kind: "connecting"; name: string | null }
   /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
+  /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
+  | { kind: "forged"; name: string | null }
   | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null };
 
 /** The page a shell load is: the PC its path names and the offer its fragment carried, if any. */
@@ -56,6 +60,15 @@ export function shellEntry(url: string): ShellEntry {
   } catch {
     return { serverId, offer: null, damaged: true };
   }
+}
+
+/**
+ * An offer whose key is not the one its PC's id is derived from (server/relay/identity.ts): never
+ * that PC's own link, whatever it says, so it is refused like a changed identity, every time it is
+ * opened. A PC's own QR code always passes, so only a pairing from the PC itself gets through.
+ */
+export function forgedOffer(offer: RelayOffer): boolean {
+  try { return deriveServerId(importPublicKey(offer.server_public_key)) !== offer.server_id; } catch { return true; }
 }
 
 /** The offer a saved PC connects with again: what the pairing offer said, less its one-time code. */

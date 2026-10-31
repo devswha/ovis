@@ -26,6 +26,8 @@ export const RELAY_KO: Record<string, string> = {
   "Its pairing was revoked on the PC, so this phone's key for it is gone. To pair again, scan a new QR code on the PC.": "PC에서 페어링이 폐기되어 이 폰의 해당 키도 삭제되었습니다. 다시 페어링하려면 PC에서 새 QR 코드를 스캔하세요.",
   "{name} has a new identity": "{name}의 신원이 바뀌었습니다",
   "This phone forgot {name}": "이 폰이 {name}을(를) 잊었습니다",
+  "This link is not {name}'s": "이 링크는 {name}의 링크가 아닙니다",
+  "It carries a key that is not this PC's, so this phone will not pair with it. To pair, scan a new QR code on the PC itself.": "이 PC의 키가 아닌 키가 들어 있어 이 폰은 이 링크로 페어링하지 않습니다. 페어링하려면 PC 화면에서 새 QR 코드를 스캔하세요.",
   "The link you opened carried a different key, so it is not used to pair again. To pair, scan a new QR code on the PC itself.": "연 링크에 다른 키가 들어 있었으므로 그 링크로는 다시 페어링하지 않습니다. 페어링하려면 PC 화면에서 새 QR 코드를 스캔하세요.",
   "The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.": "PC의 릴레이 키가 이 폰이 페어링했던 키와 다르므로 저장된 페어링을 신뢰할 수 없습니다. 이 PC를 잊은 뒤 PC의 새 QR 코드로 다시 페어링하세요.",
   "That pairing code no longer works": "그 페어링 코드는 더 이상 쓸 수 없습니다",

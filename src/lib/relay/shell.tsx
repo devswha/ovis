@@ -21,7 +21,7 @@ import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
 import { indexedDeviceStore, indexedPendingPush } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
-import { failureOf, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
 import type { PcUpdate, RelayShellState } from "./shellState.ts";
 import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
@@ -298,6 +298,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   const arrived = (): boolean => {
     if (entry.damaged) { show({ kind: "failed", failure: "bad-offer", name: null, detail: null }); return true; }
+    // a link that puts another key under this PC's id is never paired with, before or after a
+    // Forget: it is no attempt (nothing retries it) and it touches no saved key
+    if (entry.offer !== null && forgedOffer(entry.offer)) {
+      show({ kind: "forged", name: entry.offer.name ?? null });
+      entry = { ...entry, offer: null };
+      return true;
+    }
     if (entry.offer !== null) { show({ kind: "confirm", offer: entry.offer }); return true; }
     return false;
   };
@@ -310,6 +317,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (next.offer === null && !next.damaged) return;
     opening?.abort();
     opening = null;
+    // the update screen's PC connection goes with its screen: nothing on the new one retries it
+    outdated = null;
+    transport?.close();
+    transport = null;
+    last = null;
     entry = next;
     arrived();
   });
@@ -318,6 +330,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (entry.serverId !== null) {
     const saved = await store.get(entry.serverId);
     if (saved === undefined) show({ kind: "empty" });
+    // a key saved from a forged link (an earlier build saved before admission): Forget removes it
+    else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null });
     else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null });
     return;
   }

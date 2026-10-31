@@ -3584,7 +3584,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   {name}?", as paseo confirms a new host); after a failure **Try again**, or **Forget this PC**
   (`.btn-danger`, since it discards a key) when the PC's identity changed. Forget only forgets:
   the link whose key failed the check is never paired with, and the `forgotten` screen says to
-  scan a new QR code on the PC itself (otherwise the same bad link would be pinned in two taps); on the front page the
+  scan a new QR code on the PC itself (otherwise the same bad link would be pinned in two taps). A
+  link whose key is not the one its PC's id is derived from is forged: it gets the same
+  `identity-changed` warning in its own words, every time it is opened, with only **Back** (no
+  key of its was saved, so there is nothing to forget); on the front page the
   saved PCs themselves, one `--touch-target` row each with a chevron, the whole row the link to
   the PC's own scope (`/s/<server_id>/`). Priorities: the PC's name, what is happening, what to do
   next. Left out on purpose: a status badge, a stat tile, an illustration, a subtitle under the

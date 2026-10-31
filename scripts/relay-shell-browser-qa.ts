@@ -63,7 +63,9 @@ const shot = async (page: Page, name: string): Promise<void> => { if (evidence) 
 
 /** The relay origin both sides are told; nothing listens there, the seam and the bridge do. */
 const RELAY = "wss://relay.test";
-const OTHER_ID = "fedcba9876543210fedcba9876543210";
+/** A second saved PC: a real identity, its id derived from its key as every PC's is. */
+const OTHER_KEY = generateKeyPair().publicKey;
+const OTHER_ID = deriveServerId(OTHER_KEY);
 
 function deferred<T>() {
   let resolve = (_value: T): void => {};
@@ -484,6 +486,8 @@ try {
   {
     const { context, page, bridge } = await open({ clock: true, theme: "light" });
     await pairFrom(page, await serverOffer());
+    // the pairing's own socket: taken here so the next one is the reopened page's
+    await bounded(bridge.next(), "the pairing socket");
     await inApp(page);
     await stopPcRelay();
     await page.goto(scope);
@@ -588,6 +592,48 @@ try {
     await context.close();
   }
 
+  // (g2) a forged link: this PC's id with another key (an attacker's link). Refused before any
+  // socket, every time it is opened, and the key saved from the PC's own pairing is left alone
+  {
+    const { context, page, bridge } = await open({ theme: "light" });
+    const forged: RelayOffer = { ...(await serverOffer()), server_public_key: exportPublicKey(generateKeyPair().publicKey) };
+    const refused = async (attempt: string): Promise<void> => {
+      await state(page, "identity-changed").waitFor();
+      await page.getByRole("heading", { name: "This link is not Desk PC's" }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Pair", exact: true }).count(), 0, `no Pair on a forged link (${attempt})`);
+      assert.equal(await page.getByRole("button", { name: "Forget this PC" }).count(), 0, `nothing to forget on a forged link (${attempt})`);
+      assert.deepEqual(bridge.sockets, [], `a forged link opens no socket (${attempt})`);
+    };
+    await page.goto(offerUrl(forged));
+    await refused("opened");
+    assert.equal(await saved(page, ID), null, "a forged link saves no key");
+    await shot(page, "forged");
+    // the same link again, pasted into the open tab: refused the same way
+    await page.evaluate((hash) => { location.hash = hash; }, new URL(offerUrl(forged)).hash);
+    // the shell takes the fragment off before anything else (boot.ts takeEntryUrl): this is the paste handled
+    await page.waitForFunction(() => location.hash === "");
+    await refused("pasted again");
+    // with the PC's own key saved: the forged link leaves it alone
+    await seed(page, [{ server_id: ID, server_public_key: identity.server_public_key, name: "Desk PC" }]);
+    // from another page, so the link is a fresh load and not a hash change on this one
+    await page.goto(`${origin}/`);
+    await state(page, "list").waitFor();
+    await page.goto(offerUrl(forged));
+    await refused("with the PC's key saved");
+    assert.notEqual(await saved(page, ID), null, "the key saved from the PC's own pairing stays");
+    // a key saved from a forged link by an earlier build: this PC's page warns instead of connecting, and Forget removes it
+    await seed(page, [{ server_id: ID, server_public_key: forged.server_public_key, name: "Desk PC", device_id: "forged-device" }]);
+    await page.goto(scope);
+    await state(page, "identity-changed").waitFor();
+    await page.getByRole("heading", { name: "Desk PC has a new identity" }).waitFor();
+    assert.deepEqual(bridge.sockets, [], "a forged saved key never connects");
+    await page.getByRole("button", { name: "Forget this PC" }).click();
+    await state(page, "forgotten").waitFor();
+    assert.equal(await saved(page, ID), null, "Forget removed the forged saved key");
+    note("forged link: PC id with another key -> identity-changed (own words), no Pair, no Forget, 0 sockets, nothing saved; pasted again -> the same; the PC's own saved key untouched; a forged saved key -> identity-changed, 0 sockets, Forget removes it");
+    await context.close();
+  }
+
   // (h) needs update: a PC that answers HELLO with unsupported_version
   {
     const pc = await scriptedPc("refuse", "Old PC");
@@ -627,14 +673,16 @@ try {
     const { context, page } = await open({ width: 1440, height: 900 });
     await page.goto(`${origin}/`);
     await state(page, "empty").waitFor();
-    await seed(page, [{ server_id: ID, server_public_key: identity.server_public_key, name: "Desk PC" }, { server_id: OTHER_ID, server_public_key: identity.server_public_key, name: "Laptop" }]);
+    await seed(page, [{ server_id: ID, server_public_key: identity.server_public_key, name: "Desk PC" }, { server_id: OTHER_ID, server_public_key: exportPublicKey(OTHER_KEY), name: "Laptop" }]);
     await page.reload();
     await state(page, "list").waitFor();
     const rows = page.locator(".relay-shell-pc");
     assert.equal(await rows.count(), 2);
-    assert.equal(await rows.nth(1).getAttribute("href"), `/s/${OTHER_ID}/`);
+    // the list is in IndexedDB key order: the saved PCs' ids, not when they were saved
+    const laptop = rows.filter({ hasText: "Laptop" });
+    assert.equal(await laptop.getAttribute("href"), `/s/${OTHER_ID}/`);
     await shot(page, "list");
-    await rows.nth(1).click();
+    await laptop.click();
     await page.waitForURL(scopeOf(OTHER_ID));
     await state(page, "connecting").waitFor();
     note("list: two saved PCs listed; a row opens /s/<id>/, which starts connecting by itself");

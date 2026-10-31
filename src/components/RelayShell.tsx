@@ -36,7 +36,8 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
   const t = useT();
   const name = state.kind === "confirm" ? state.offer.name ?? null : state.kind === "list" || state.kind === "empty" ? null : state.name;
   const pc = name ?? t("this PC");
-  const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind;
+  // a forged link is the identity-changed warning in its own words: there is no key of its to forget
+  const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
   const back = scoped ? <button type="button" className="btn" onClick={onBack}>{t("Back")}</button> : null;
   const progress = state.kind === "outdated" && state.update.phase === "installing" ? describeUpdate({ phase: "building", step: state.update.step }) : null;
   const retry = <button type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button>;
@@ -174,6 +175,13 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
               <button type="button" className="btn btn-danger" onClick={onForget}>{t("Forget this PC")}</button>
               {back}
             </div>
+          </>
+        )}
+        {state.kind === "forged" && (
+          <>
+            <h1 className="relay-shell-title">{t("This link is not {name}'s", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("It carries a key that is not this PC's, so this phone will not pair with it. To pair, scan a new QR code on the PC itself.")}</p>
+            {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}
         {state.kind === "forgotten" && (

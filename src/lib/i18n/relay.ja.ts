@@ -26,6 +26,8 @@ export const RELAY_JA: Record<string, string> = {
   "Its pairing was revoked on the PC, so this phone's key for it is gone. To pair again, scan a new QR code on the PC.": "PC側でペアリングが取り消されたため、このスマホのキーも削除されました。再度ペアリングするには、PCで新しいQRコードをスキャンしてください。",
   "{name} has a new identity": "{name}の識別情報が変わりました",
   "This phone forgot {name}": "このスマホは{name}を削除しました",
+  "This link is not {name}'s": "このリンクは{name}のものではありません",
+  "It carries a key that is not this PC's, so this phone will not pair with it. To pair, scan a new QR code on the PC itself.": "このPCのものではないキーが含まれているため、このスマホはこのリンクでペアリングしません。ペアリングするには、PC本体で新しいQRコードをスキャンしてください。",
   "The link you opened carried a different key, so it is not used to pair again. To pair, scan a new QR code on the PC itself.": "開いたリンクには別のキーが含まれていたため、そのリンクでは再ペアリングしません。ペアリングするには、PC本体で新しいQRコードをスキャンしてください。",
   "The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.": "PCのリレーキーがこのスマホがペアリングしたものと異なるため、保存されたペアリングは信頼できません。このPCを削除してから、PCの新しいQRコードで再度ペアリングしてください。",
   "That pairing code no longer works": "このペアリングコードはもう使えません",

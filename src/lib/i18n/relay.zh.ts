@@ -26,6 +26,8 @@ export const RELAY_ZH: Record<string, string> = {
   "Its pairing was revoked on the PC, so this phone's key for it is gone. To pair again, scan a new QR code on the PC.": "电脑上已撤销配对，此手机对应的密钥也已删除。要重新配对，请在电脑上扫描新的二维码。",
   "{name} has a new identity": "{name} 的身份已更改",
   "This phone forgot {name}": "此手机已忘记 {name}",
+  "This link is not {name}'s": "此链接不属于 {name}",
+  "It carries a key that is not this PC's, so this phone will not pair with it. To pair, scan a new QR code on the PC itself.": "此链接带有不属于这台电脑的密钥，因此此手机不会用它配对。要配对，请扫描电脑上新的二维码。",
   "The link you opened carried a different key, so it is not used to pair again. To pair, scan a new QR code on the PC itself.": "你打开的链接带有不同的密钥，因此不会用它重新配对。要配对，请扫描电脑上新的二维码。",
   "The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.": "电脑的中继密钥与此手机配对时的不同，已保存的配对不再可信。请忘记这台电脑，然后用电脑上新的二维码重新配对。",
   "That pairing code no longer works": "该配对码已失效",
