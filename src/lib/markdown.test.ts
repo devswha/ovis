@@ -72,6 +72,9 @@ describe("parseMarkdown", () => {
     // a formula left open does not hide one a later line opens and closes, with either delimiter
     expect(parseMarkdown("$$oops\n\n# Heading\n\n$$x^2$$").map((block) => block.type)).toEqual(["paragraph", "heading", "math"]);
     expect(parseMarkdown("\\[oops\n\n# Heading\n\n\\[x^2\\]").map((block) => block.type)).toEqual(["paragraph", "heading", "math"]);
+    // a blank line ends the search for a close (display math holds none), so a later formula on several lines is drawn
+    expect(parseMarkdown("$$ is the shell PID.\n\nLater:\n\n$$\na^2+b^2\n$$").map((block) => block.type)).toEqual(["paragraph", "paragraph", "math"]);
+    expect(parseMarkdown("\\[oops\n\n# Heading\n\n\\[\nx\n\\]").map((block) => block.type)).toEqual(["paragraph", "heading", "math"]);
     // a line that closes its formula and goes on in prose is prose, and takes nothing after it
     expect(parseMarkdown("$$E=mc^2$$ where E is energy\n\n## Units\n\n- joules\n\n$$\nE\n$$").map((block) => block.type)).toEqual(["paragraph", "heading", "list", "math"]);
     expect(parseMarkdown("```math\nx^2\n```")).toEqual([{ type: "code", language: "math", value: "x^2" }]);
@@ -191,7 +194,7 @@ describe("inline markdown", () => {
     const text = (value: string): InlineNode[] => [{ type: "text", value }];
     for (const prose of [
       "costs $5 and $10 today", "$5 or $10", "from $5 to $10.", "I paid $5 for X$ and", "$20, $30 and $40",
-      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "Run $HOME/${PATH} now", "Use $HOME/$? to inspect it", "cd $HOME/$(whoami)", "echo $A$!", "$5 or six$", "${HOME} and ${PATH}", "$x$y",
+      "a$b$c", "$x$5", "$ x$", "$x $", "\\$x$", "$$x$$ inline", "echo $HOME and $PATH", "Run $HOME/${PATH} now", "cd $HOME/$(whoami)", "echo $A$#", "$5 or six$", "${HOME} and ${PATH}", "$x$y",
     ]) expect(parseInline(prose)).toEqual(text(prose));
     expect(parseInline("$x^2$ and $\\alpha$.")).toEqual([
       { type: "math", value: "x^2", dollar: true }, { type: "text", value: " and " }, { type: "math", value: "\\alpha", dollar: true }, { type: "text", value: "." },
@@ -203,6 +206,8 @@ describe("inline markdown", () => {
     expect(parseInline("$x$는 실수이다")).toEqual([{ type: "math", value: "x", dollar: true }, { type: "text", value: "는 실수이다" }]);
     expect(parseInline("함수 $f(x)$를 보자").map((node) => node.type)).toEqual(["text", "math", "text"]);
     expect(parseInline("값은$x$이다").map((node) => node.type)).toEqual(["text", "math", "text"]);
+    // sentence punctuation after a formula ends the sentence, not the formula
+    for (const end of ["?", "!", ".", ","]) expect(parseInline(`What is $x$${end}`).map((node) => node.type)).toEqual(["text", "math", "text"]);
     expect(parseInline("$3$ apples")).toEqual([{ type: "math", value: "3", dollar: true }, { type: "text", value: " apples" }]);
     expect(parseInline("`$x$`")).toEqual([{ type: "code", value: "$x$" }]);
   });

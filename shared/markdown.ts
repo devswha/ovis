@@ -143,7 +143,7 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
   // rendering exactly as it appears in the terminal and native transcript.
   // a bare or <angle> http(s) URL is a link too; it stops at the first non-ASCII character,
   // so `…/pull/36에서` links the address and leaves the Korean after it as text
-  const marker = /(`[^`\n]+`|\\\(.+?\\\)|(?<![A-Za-z0-9\\$])\$(?:[^\s$\\]|[^\s$][^\n\r\u2028\u2029$]*[^\s$\\])\$(?![A-Za-z0-9_${?!#@*(])|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|(?<![\w.@/-])www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}\p{M}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
+  const marker = /(`[^`\n]+`|\\\(.+?\\\)|(?<![A-Za-z0-9\\$])\$(?:[^\s$\\]|[^\s$][^\n\r\u2028\u2029$]*[^\s$\\])\$(?![A-Za-z0-9_${#@*(])|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|(?<![\w.@/-])www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}\p{M}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|(?<!\*)\*[^*\n]+\*(?!\*)|(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
   // its last part alone, for a `__` that nothing closes as bold: one `_` may still close it
   const emphasis = /(?<![\p{L}\p{N}\p{M}_])_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_])/yu;
   // what any part of `marker` starts with
@@ -468,9 +468,10 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
         }
         body.push(part);
         next += 1;
-        // a fence ends the search, and so does a line that is a whole formula of its own: it is
-        // drawn as one, rather than closing this one or being hidden by it
-        if (next >= lines.length || /^\s{0,3}```/.test(lineAt(lines, next)) || wholeFormula(lineAt(lines, next))) break;
+        // a blank line (display math holds none) or a fence ends the search, and so does a line
+        // that is a whole formula of its own: it is drawn as one, rather than closing this one or
+        // being hidden by it
+        if (next >= lines.length || lineAt(lines, next).trim() === "" || /^\s{0,3}```/.test(lineAt(lines, next)) || wholeFormula(lineAt(lines, next))) break;
         part = lineAt(lines, next);
       }
       // An incomplete formula stays prose; later headings and fences still parse normally.
