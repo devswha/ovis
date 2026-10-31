@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm, open, symlink, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorizeDshTranscript, completeDshFrames, dshConversation as boundConversation, dshToolOutput as boundToolOutput, dshSessionsDirectory, forgetDshProcesses, projectDsh, resolveDshTranscript } from "./dsh.ts";
+import { authorizeDshTranscript, completeDshFrames, isDshProcess, dshConversation as boundConversation, dshToolOutput as boundToolOutput, dshSessionsDirectory, forgetDshProcesses, projectDsh, resolveDshTranscript } from "./dsh.ts";
 import { ConversationNotStarted, ConversationUnavailable, HistoryChanged } from "./conversation-shared.ts";
 import * as processProbe from "./omp-process.ts";
+import { processStartTicks } from "./omp-process.ts";
 import type { ConversationPage } from "./conversation-shared.ts";
 let home: string;
 let memory: ReturnType<typeof spyOn<typeof processProbe, "ompProcessMemory">>;
@@ -36,10 +37,12 @@ async function fixture(run: (path:string)=>Promise<void>) {
  try {await run(join(dir,"session.v4.jsonl.zstd"));} finally {await rm(root,{recursive:true,force:true});}
 }
 const linuxTest = process.platform === "linux" ? test : test.skip;
+/** What herdr reports for a TUI launched through the npm-installed launcher. */
+const DSH_ARGV = ["node", "/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js", "--profile", "tui"];
 describe("native dsh conversation",()=>{
  linuxTest("shows an unwritten new process as empty but does not guess a resumed session",async()=>{
- await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--profile","tui"]}]})).rejects.toBeInstanceOf(ConversationNotStarted);
- try {await resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh","--resume","missing"]}]});throw Error("unexpected binding");}catch(error){expect(error).toBeInstanceOf(ConversationUnavailable);expect(error).not.toBeInstanceOf(ConversationNotStarted);}
+ await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:DSH_ARGV}]},0n)).rejects.toBeInstanceOf(ConversationNotStarted);
+ try {await resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:[...DSH_ARGV,"--resume","missing"]}]},0n);throw Error("unexpected binding");}catch(error){expect(error).toBeInstanceOf(ConversationUnavailable);expect(error).not.toBeInstanceOf(ConversationNotStarted);}
  });
  test("shows human messages, reasoning and tools without runtime instructions",()=>{
  const p=projectDsh(log(event("user/message",message("hello"),0),event("user/message",{...message("hidden"),source:{kind:"agent-instructions"}},1),event("assistant/message",{message:{role:"assistant",content:[{type:"reasoning",text:"reason"},{type:"text",text:"answer"},{type:"tool-call",id:"t"}]}},2),event("tool/call",{callId:"t",name:"shell",arguments:"{}"},3),event("tool/result",{message:{toolCallId:"t",content:[{type:"text",text:"done"}]}},4),event("turn/end",{reason:{kind:"completed"}},5)),"inode",id);
@@ -89,7 +92,7 @@ describe("native dsh conversation",()=>{
  linuxTest("rejects two held session locks instead of choosing one",async()=>fixture(async first=>fixture(async second=>{
  await writeFile(first,Bun.zstdCompressSync(log()));await writeFile(second,Bun.zstdCompressSync(log()));
  const locks=await Promise.all([open(join(first,"..","session.lock"),"w"),open(join(second,"..","session.lock"),"w")]);
- try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["/bin/dsh"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);} finally {await Promise.all(locks.map(lock=>lock.close()));}
+ try {await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:DSH_ARGV}]})).rejects.toBeInstanceOf(ConversationUnavailable);} finally {await Promise.all(locks.map(lock=>lock.close()));}
  })));
  test("fetches long tool output by opaque reference",async()=>fixture(async path=>{
  await writeFile(path,Bun.zstdCompressSync(log(event("tool/call",{callId:"a",name:"shell",arguments:"{}"},0),event("tool/result",{message:{toolCallId:"a",content:[{type:"text",text:"x".repeat(5000)}]}},1))));
@@ -97,12 +100,12 @@ describe("native dsh conversation",()=>{
  }));
  linuxTest("binds only an exact held lock",async()=>fixture(async path=>{
  await writeFile(path,Bun.zstdCompressSync(log()));const lock=await open(join(path,"..","session.lock"),"w");
- const info={foreground_processes:[{pid:process.pid,argv:["node","/bin/dsh"]}]};
+ const info={foreground_processes:[{pid:process.pid,argv:DSH_ARGV}]};
  try {expect((await resolveDshTranscript(info)).path).toBe(path);expect((await boundConversation(await resolveDshTranscript(info))).turns).toHaveLength(0);await expect(resolveDshTranscript({foreground_processes:[{pid:process.pid,argv:["unrelated"]}]})).rejects.toBeInstanceOf(ConversationUnavailable);}finally{await lock.close();}
- await expect(resolveDshTranscript(info)).rejects.toBeInstanceOf(ConversationUnavailable);
+ // a process seen holding a lock is no new chat once it lets go, even when it started after this server
+ await expect(resolveDshTranscript(info,0n)).rejects.toBeInstanceOf(ConversationUnavailable);
  }));
 });
-
 
 linuxTest("resolves DSH_HOME like dsh-home-paths and refuses an unprovable relative home", () => {
   expect(dshSessionsDirectory(["HOME=/user"])).toBe("/user/.dsh/sessions");
@@ -122,7 +125,7 @@ linuxTest("rejects a held lock outside the configured store, including sibling-p
   const lock = await open(join(outside, "session.lock"), "w");
   try {
     expect(await authorizeDshTranscript(path, join(home, "sessions"))).toBeNull();
-    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
   } finally { await lock.close(); }
 });
 
@@ -152,7 +155,6 @@ test("rejects file replacement between binding and conversation or tool-output r
   await expect(boundToolOutput(original, "ref")).rejects.toBeInstanceOf(ConversationUnavailable);
 }));
 
-
 linuxTest("uses the foreground process DSH_HOME instead of the bridge environment", async () => fixture(async path => {
   await writeFile(path, Bun.zstdCompressSync(log()));
   const lockPath = join(path, "..", "session.lock");
@@ -165,7 +167,7 @@ linuxTest("uses the foreground process DSH_HOME instead of the bridge environmen
   const reader = child.stdout.getReader();
   try {
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n");
-    expect((await resolveDshTranscript({ foreground_processes: [{ pid: child.pid, argv: ["/bin/dsh"] }] })).path).toBe(path);
+    expect((await resolveDshTranscript({ foreground_processes: [{ pid: child.pid, argv: DSH_ARGV }] })).path).toBe(path);
   } finally {
     await reader.cancel();
     reader.releaseLock();
@@ -174,7 +176,6 @@ linuxTest("uses the foreground process DSH_HOME instead of the bridge environmen
   }
 }));
 
-
 for (const compressed of [false, true]) linuxTest(`rejects a held ${compressed ? "compressed" : "plain"} log outside the sessions root`, async () => {
   const outside = join(home, "outside", id);
   await mkdir(outside, { recursive: true });
@@ -182,7 +183,7 @@ for (const compressed of [false, true]) linuxTest(`rejects a held ${compressed ?
   await writeFile(path, compressed ? Bun.zstdCompressSync(log()) : log());
   const lock = await open(join(outside, "session.lock"), "w");
   try {
-    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
   } finally { await lock.close(); }
 });
 
@@ -192,6 +193,133 @@ linuxTest("rejects a held log symlink escaping the sessions root", async () => f
   await symlink(outside, path);
   const lock = await open(join(path, "..", "session.lock"), "w");
   try {
-    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: ["/bin/dsh"] }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
   } finally { await lock.close(); }
 }));
+
+test("matches only a dsh launcher that boots a chat profile", () => {
+  for (const argv of [
+    ["node", "/home/user/.nvm/versions/node/v24/bin/dsh", "--profile", "dsh-tui"],
+    ["node", "/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js", "--profile", "tui"],
+    ["node", "/usr/local/bin/dsh", "tui", "--resume", "1dacc7bc-68e8-4934-baec-ba181b8251f9"],
+    ["node", "/usr/local/bin/dsh", "--profile", "headless", "--session-id", "session-1", "continue"],
+    ["node", "/usr/local/bin/dsh", "--profile=tui"],
+    // what `dsh-tui` and `dsh-tui --resume` leave in front: dsh-tui's own host process, which holds the lock
+    ["/usr/bin/node", "/home/user/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui/lib/types/dsh-adapter/host-entry.js"],
+  ]) expect(isDshProcess(argv)).toBe(true);
+  for (const argv of [
+    ["vim", "dsh"],
+    // a program merely named dsh is no dsh launcher
+    ["node", "/srv/app/dsh", "--profile", "tui"],
+    ["/srv/app/dsh", "--profile", "tui"],
+    // Debian's distributed shell, and any launcher not run by node
+    ["/usr/bin/dsh", "--profile", "tui"],
+    ["/usr/bin/dsh", "-a", "uptime"],
+    ["node", "server.js", "dsh"],
+    ["node", "/srv/app/dsh-helper.js", "--profile", "tui"],
+    ["node", "/usr/local/bin/dsh"],
+    ["node", "/usr/local/bin/dsh", "plugin", "--profile", "tui", "add", "x"],
+    ["node", "/usr/local/bin/dsh", "--profile", "tui", "--dump-config"],
+    ["node", "/usr/local/bin/dsh", "--profile", "web"],
+    ["node", "/usr/local/bin/dsh", "acp"],
+    ["dsh", "-a", "-c", "uptime"],
+    // dsh-tui's launcher shims, which hold no session
+    ["node", "/usr/local/bin/dsh-tui"],
+    ["/usr/bin/node", "/home/user/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui/bin/dsh-tui.js"],
+    ["node", "/srv/app/lib/host-entry.js"],
+    [42, "/usr/local/bin/dsh", "--profile", "tui"],
+  ]) expect(isDshProcess(argv)).toBe(false);
+});
+
+linuxTest("binds a headless session directory named session-<uuid>", async () => {
+  const sessionId = `session-${id}`;
+  const dir = join(home, "sessions", "--workspace--", sessionId);
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "session.v4.jsonl.zstd");
+  await writeFile(path, Bun.zstdCompressSync(JSON.stringify({ ...header, id: sessionId }) + "\n"));
+  const lock = await open(join(dir, "session.lock"), "w");
+  try {
+    expect((await resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: [...DSH_ARGV.slice(0, 3), "headless", "--session-id", sessionId, "next"] }] })).path).toBe(path);
+  } finally { await lock.close(); }
+});
+
+linuxTest("treats headless --session-id and dsh-tui's resume variable as explicit resumes, not a new empty chat", async () => {
+  const refusal = (argv: string[]) => resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv }] }, 0n).then(() => null, (error: unknown) => error);
+  const explicit = async (argv: string[]) => {
+    const error = await refusal(argv);
+    expect(error).toBeInstanceOf(ConversationUnavailable);
+    expect(error).not.toBeInstanceOf(ConversationNotStarted);
+  };
+  await explicit([...DSH_ARGV.slice(0, 3), "headless", "--session-id", "session-x", "next"]);
+  memory.mockResolvedValue({ argv: [], environ: [`HOME=${home}`, `DSH_HOME=${home}`, "DSH_TUI_RESUME_SESSION=1dacc7bc-68e8-4934-baec-ba181b8251f9"] });
+  await explicit([...DSH_ARGV.slice(0, 3), "dsh-tui"]);
+  memory.mockResolvedValue({ argv: [], environ: [`HOME=${home}`, `DSH_HOME=${home}`, "DSH_TUI_RESUME_SESSION="] });
+  expect(await refusal([...DSH_ARGV.slice(0, 3), "dsh-tui"])).toBeInstanceOf(ConversationNotStarted);
+});
+
+/** Logs recorded from dsh 0.2.1-rc.5 (headless, then dsh-tui 0.17.0) through an OpenAI-compatible proxy; paths and the system prompt are replaced. */
+for (const [name, file, exchanges] of [["headless", "dsh-headless-0.2.1-rc.5.jsonl", 3], ["dsh-tui", "dsh-tui-0.17.0-dsh-0.2.1-rc.5.jsonl", 2]] as const) {
+  linuxTest(`reads a real ${name} session written as one zstd frame per append`, async () => {
+    const text = await Bun.file(join(import.meta.dir, "fixtures", file)).text();
+    const rows = text.trimEnd().split("\n");
+    const sessionId = JSON.parse(rows[0]!).id as string;
+    const dir = join(home, "sessions", "--workspace--", sessionId);
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, "session.v4.jsonl.zstd");
+    await writeFile(path, Buffer.concat(rows.map((row) => Bun.zstdCompressSync(row + "\n"))));
+    const lock = await open(join(dir, "session.lock"), "w");
+    try {
+      const page = await boundConversation(await resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] }));
+      expect(page.source).toBe("dsh-transcript");
+      expect(page.metadata).toEqual({ model: "claude-haiku-4-5-20251001", reasoning_effort: null });
+      expect(page.turns.map((turn) => turn.role)).toEqual(Array.from({ length: exchanges }, () => ["user", "assistant"] as const).flat());
+      expect(JSON.stringify(page.turns)).not.toContain("elided");
+      const tool = page.turns[1]!.parts.find((part) => part.kind === "tool");
+      expect(tool).toMatchObject({ state: "ok" });
+      expect(tool?.kind === "tool" && tool.output).toContain("alpha");
+      expect(page.turns[1]!.parts.at(-1)).toMatchObject({ kind: "text", phase: "final_answer" });
+      expect(page.turns[3]!.parts.at(-1)).toMatchObject({ kind: "text", text: expect.stringContaining("alpha"), phase: "final_answer" });
+    } finally { await lock.close(); }
+  });
+}
+
+linuxTest("rejects a held session whose log links to another session in the same store", async () => fixture(async path => {
+  const other = join(home, "sessions", "--workspace--", "87654321-4321-4321-4321-cba987654321");
+  await mkdir(other, { recursive: true });
+  await writeFile(join(other, "session.v4.jsonl.zstd"), Bun.zstdCompressSync(log()));
+  await symlink(join(other, "session.v4.jsonl.zstd"), path);
+  const lock = await open(join(path, "..", "session.lock"), "w");
+  try {
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await lock.close(); }
+}));
+
+linuxTest("falls back when two sessions are locked even if only one of them has a readable log", async () => fixture(async path => {
+  await writeFile(path, Bun.zstdCompressSync(log()));
+  const empty = join(home, "sessions", "--workspace--", "87654321-4321-4321-4321-cba987654321");
+  await mkdir(empty, { recursive: true });
+  const locks = await Promise.all([open(join(path, "..", "session.lock"), "w"), open(join(empty, "session.lock"), "w")]);
+  try {
+    await expect(resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] })).rejects.toBeInstanceOf(ConversationUnavailable);
+  } finally { await Promise.all(locks.map((lock) => lock.close())); }
+}));
+
+linuxTest("does not show a new empty chat for a lock-free dsh that started before this server", async () => {
+  // a TUI that went idle released its lock; after an Ovis restart nothing proves it never held one
+  const error = await resolveDshTranscript({ foreground_processes: [{ pid: process.ppid, argv: DSH_ARGV }] }).then(() => null, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ConversationUnavailable);
+  expect(error).not.toBeInstanceOf(ConversationNotStarted);
+});
+
+test("shows a turn that failed before any reply, as dsh records a provider error", () => {
+  const p = projectDsh(log(event("user/message", message("hello"), 0), event("turn/end", { turn: 1, reason: { kind: "error", error: { message: "429: rate limited" } } }, 1)), "inode");
+  expect(p.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+  expect(p.turns[1]!.parts).toEqual([{ kind: "notice", text: "Turn ended: error" }]);
+});
+
+linuxTest("treats a dsh that started in the same clock tick as this server as unproven, not new", async () => {
+  const sameTick = BigInt(processStartTicks(process.pid)!);
+  const error = await resolveDshTranscript({ foreground_processes: [{ pid: process.pid, argv: DSH_ARGV }] }, sameTick).then(() => null, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ConversationUnavailable);
+  expect(error).not.toBeInstanceOf(ConversationNotStarted);
+});

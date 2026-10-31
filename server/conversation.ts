@@ -37,7 +37,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
-import { resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
+import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
@@ -1358,13 +1358,21 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { shell_pid?: number; foreground_processes?: { argv?: unknown }[] } }>(
       "pane.process_info", { pane_id: paneId },
     ).catch(() => null);
-    const running = (info?.process_info?.foreground_processes ?? []).some((process) =>
-      isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
-    );
-    if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
+    const foreground = info?.process_info?.foreground_processes ?? [];
+    // a dsh TUI that does not report to herdr (dsh-tui-pi): its launcher in front, read from this same
+    // probe, which the dsh binding then reuses; the lock that process holds still picks the session
+    if (foreground.some((process) => Array.isArray(process.argv) && isDshProcess(process.argv))) {
+      agent = "dsh";
+      if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
+    } else {
+      const running = foreground.some((process) =>
+        isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
+      );
+      if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
+    }
   }
-  // a Muse or Letta pane's processes are asked for once, for omo and for its own binding
-  if ((agent === "muse" || agent === "letta") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
+  // a Muse, Letta or dsh pane's processes are asked for once, for omo and for its own binding
+  if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
     return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
@@ -1372,7 +1380,8 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // session headers name the one they run in
   const sessionCwd = typeof pane.foreground_cwd === "string" && pane.foreground_cwd.length > 0 ? pane.foreground_cwd : cwd;
   try {
-    if (agent === "dsh") return { source: "dsh-transcript", ...await resolveDshTranscript(known === undefined ? await paneProcessInfo(paneId).catch(() => null) : known) };
+    // dsh-tui reports itself to herdr as `dsh-tui`; the other dsh TUIs are found by their process above
+    if (agent === "dsh" || agent === "dsh-tui") return { source: "dsh-transcript", ...await resolveDshTranscript(known) };
     if (agent === "copilot") return { source: "copilot-transcript", ...await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
       const found = await resolveGrokStore(pane, grokHome);

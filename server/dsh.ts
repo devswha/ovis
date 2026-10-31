@@ -12,6 +12,12 @@ const unavailable = (): never => { throw new ConversationUnavailable("dsh_transc
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 const boundProcesses = new Set<string>();
+/**
+ * This server's own start, in the same clock ticks as a process's: a TUI idle long enough releases its lock, so
+ * a lock-free dsh that started before this server, or in the same clock tick, may have held one before we looked
+ * and is no proven new chat.
+ */
+const SERVER_START = BigInt(processStartTicks(process.pid) ?? "0");
 
 export type DshTranscript = { path: string; root: string; identity: string };
 
@@ -44,17 +50,59 @@ export async function authorizeDshTranscript(path: string, sessions: string): Pr
   } catch { return null; }
 }
 
+const NODE = /(?:^|\/)node$/;
+/** The npm bin link (`…/bin/dsh`) or the package entry it points at (`…/@deepseek-ai/dsh/lib/bin.js`); a file merely named dsh is not one. */
+const DSH_LAUNCHER = /\/bin\/dsh$|\/@deepseek-ai\/dsh\/lib\/bin\.js$/;
+/** dsh-tui's host process, which `dsh-tui` starts behind its two launcher shims and which holds the session lock. */
+const DSH_TUI_HOST = /\/@deepseek-harness-tui\/dsh-tui\/lib\/(?:[\w.-]+\/)*host-entry\.js$/;
+/** Shipped profiles that serve a browser or a protocol client, not a chat in this terminal. */
+const SERVICE_PROFILES = new Set(["web", "sdk", "sdk-minimal", "acp"]);
+/** Launcher modes that print or install and exit without booting a session. */
+const NOT_A_SESSION = new Set(["--dump-config", "--dump-default-config", "--dump-config-schema", "--help", "-h", "--version", "-V"]);
+
+/**
+ * The dsh launcher booting a chat profile, exactly as herdr reports it: `node <…/bin/dsh | …/@deepseek-ai/dsh/lib/bin.js>`,
+ * then `--profile <name>`, `--profile=<name>` or the profile name; or dsh-tui's host process
+ * (`node …/@deepseek-harness-tui/dsh-tui/lib/…/host-entry.js`). Another program that only
+ * mentions dsh, plugin management, a config dump and the web/SDK/ACP service profiles do not match.
+ */
+export function isDshProcess(argv: readonly unknown[]): boolean {
+  if (!argv.every((word) => typeof word === "string")) return false;
+  const words = argv as readonly string[];
+  // the npm launcher is a node script: herdr reports node in front of it, never the script alone
+  if (!NODE.test(words[0] ?? "")) return false;
+  if (DSH_TUI_HOST.test(words[1] ?? "")) return true;
+  if (!DSH_LAUNCHER.test(words[1] ?? "")) return false;
+  const rest = words.slice(2);
+  if (rest.some((word) => NOT_A_SESSION.has(word))) return false;
+  const profile = rest[0] === "--profile" ? rest[1] : rest[0]?.startsWith("--profile=") ? rest[0].slice(10) : rest[0];
+  return profile !== undefined && profile !== "plugin" && /^[A-Za-z0-9][\w.-]*$/.test(profile) && !SERVICE_PROFILES.has(profile);
+}
+
+/**
+ * A launch that names the session it continues: the TUIs' `--resume`/`--fork`, headless `--session-id`, or
+ * dsh-tui's launcher, which hands `dsh-tui --resume` over in DSH_TUI_RESUME_SESSION. Such a process is never
+ * shown as a new empty chat before its lock is seen.
+ */
+function explicitResume(argv: readonly unknown[], environ: readonly string[]): boolean {
+  return argv.some((word) => typeof word === "string" && /^(?:--resume|--fork|--session|--session-id|-r)(?:=|$)/.test(word))
+    || environ.some((word) => /^DSH_TUI_RESUME_SESSION=\S/.test(word));
+}
+
 /** Reset process history between independent fixture sessions. */
 export function forgetDshProcesses(): void { boundProcesses.clear(); }
 
 /** A held lock binds the foreground process to its session; modification times do not. */
-export async function resolveDshTranscript(info: Processes | null | undefined): Promise<DshTranscript> {
+/** `serverStart`: this server's start tick; a lock-free dsh counts as new only when it started strictly after it. */
+export async function resolveDshTranscript(info: Processes | null | undefined, serverStart: bigint = SERVER_START): Promise<DshTranscript> {
   if (process.platform !== "linux") return unavailable();
   const found = new Map<string, DshTranscript>();
+  /** every session a dsh process holds locked, readable or not: more than one is no binding */
+  const lockedSessions = new Set<string>();
   const fresh: string[] = [];
   let inspected = 0;
   for (const proc of info?.foreground_processes ?? []) {
-    if (!proc.pid || !Array.isArray(proc.argv) || !proc.argv.some((word) => typeof word === "string" && (basename(word) === "dsh" || /@deepseek-ai\/dsh\/.*bin\.js$/.test(word)))) continue;
+    if (!proc.pid || !Array.isArray(proc.argv) || !isDshProcess(proc.argv)) continue;
     const start = processStartTicks(proc.pid);
     if (!start) continue;
     try {
@@ -69,13 +117,15 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
       if (descriptors.length > 4096) return unavailable();
       for (const fd of descriptors) {
         const target = await readlink(`/proc/${proc.pid}/fd/${fd}`).catch(() => "");
-        if (basename(target) !== "session.lock" || !/^[0-9a-f-]{36}$/i.test(basename(dirname(target)))) continue;
+        if (basename(target) !== "session.lock" || !/^(?:session-)?[0-9a-f-]{36}$/i.test(basename(dirname(target)))) continue;
         held = true;
         const folder = dirname(await realpath(target));
+        lockedSessions.add(folder);
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
           const authorized = await authorizeDshTranscript(path, sessions);
-          if (authorized !== null) { candidates.push(authorized); break; }
+          // the log must be the locked session's own, not a link into another session of the store
+          if (authorized !== null && dirname(authorized.path) === folder) { candidates.push(authorized); break; }
         }
       }
       if (processStartTicks(proc.pid) === start) {
@@ -86,12 +136,12 @@ export async function resolveDshTranscript(info: Processes | null | undefined): 
           boundProcesses.add(identity);
         }
         for (const transcript of candidates) found.set(transcript.path, transcript);
-        if (!held && !boundProcesses.has(identity) && !proc.argv.some((word) => typeof word === "string" && /^(?:--resume|--fork|--session|-r)(?:=|$)/.test(word))) fresh.push(identity);
+        if (!held && !boundProcesses.has(identity) && BigInt(start) > serverStart && !explicitResume(proc.argv, memory.environ)) fresh.push(identity);
       }
     } catch { /* a process can exit during inspection */ }
   }
   if (found.size === 0 && inspected === 1 && fresh.length === 1) throw new ConversationNotStarted(fresh[0]!, "dsh-transcript", fresh[0]!);
-  if (found.size !== 1) return unavailable();
+  if (found.size !== 1 || lockedSessions.size !== 1) return unavailable();
   return [...found.values()][0]!;
 }
 
@@ -220,6 +270,8 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
       outputs.set(ref, output); trimOutput(tool, output, ref);
       tool.error = message.isError === true; tool.state = tool.error ? "error" : "ok";
     } else if (row.type === "turn/end") {
+      // a turn that failed before any reply (a provider error) still says so
+      if (!assistant && data?.reason?.kind !== "completed" && turns.at(-1)?.role === "user") ensureAssistant(row);
       if (assistant) {
         const ts = time(row); if (ts) assistant.end_ts = ts;
         if (data?.reason?.kind === "completed") {
