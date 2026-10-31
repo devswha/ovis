@@ -3,6 +3,7 @@
   "compilerOptions": {
     "noEmit": true
   },
+  "references": [{ "path": "./shared/vendor/paseo-e2ee" }],
   "files": [
     "integrations/gjc.ts",
     "integrations/gjc.test.ts",

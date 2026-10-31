@@ -25,7 +25,7 @@
  * waiting in `sync`.
  */
 
-import { SERVER_PROOF_CLOSE, SERVER_PROOF_MS, SERVER_PROOF_REQUIRED, deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../shared/relay-server-proof.ts";
+import { SERVER_KEY_INVALID, SERVER_KEY_MISMATCH, SERVER_PROOF_CLOSE, SERVER_PROOF_MS, SERVER_PROOF_REQUIRED, deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../shared/relay-server-proof.ts";
 
 /** the wire version this relay speaks, `v=` in the socket URL */
 export const WIRE_VERSION = "1";
@@ -252,13 +252,13 @@ export class Room<S extends object> {
     // a PC socket: nothing of the room until it proves it holds the key this server_id derives from
     if (request.proof !== "1") return this.end(socket, CLOSE.SERVER_PROOF, SERVER_PROOF_REQUIRED);
     const key = proofKey(request.public_key);
-    if (!key || deriveServerId(key) !== request.server_id) return this.end(socket, CLOSE.SERVER_PROOF, "server key does not match server_id");
+    if (!key || deriveServerId(key) !== request.server_id) return this.end(socket, CLOSE.SERVER_PROOF, SERVER_KEY_MISMATCH);
     const proving = this.peers(true).filter((peer) => peer.info.proof).sort((a, b) => a.info.proof!.expires - b.info.proof!.expires);
     // the oldest challenge gives way, so silent sockets cannot keep the PC itself from proving
     for (const peer of proving.slice(0, Math.max(0, proving.length - MAX_PROVING + 1))) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many server proofs pending");
     let challenge: ReturnType<typeof serverChallenge>;
     try { challenge = serverChallenge(key, { server_id: request.server_id, role: request.role, connection_id: request.connection_id }); }
-    catch { return this.end(socket, CLOSE.SERVER_PROOF, "invalid server key"); } // a low-order X25519 point
+    catch { return this.end(socket, CLOSE.SERVER_PROOF, SERVER_KEY_INVALID); } // a low-order X25519 point
     const now = this.host.now();
     const expires = now + SERVER_PROOF_MS;
     this.host.setInfo(socket, { role: request.role, connection_id: request.connection_id, seen: now, buffered: false, proof: { expected: challenge.expected, expires } });
