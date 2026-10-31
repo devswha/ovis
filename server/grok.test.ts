@@ -22,7 +22,8 @@ const update = (output: string, id = "call-1") => event({ sessionUpdate: "tool_c
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 let root: string, path: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "herdr-grok-unit-"));
+  // canonical, as grokImage requires of a session path (macOS tmpdir() is under the /var link)
+  root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-grok-unit-")));
   path = join(root, "sessions", "%2Ffiction", session, "updates.jsonl");
   mkdirSync(join(path, ".."), { recursive: true });
   forgetTranscriptState();

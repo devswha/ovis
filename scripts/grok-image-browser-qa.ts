@@ -2,7 +2,7 @@
  * thumbnail and the read_file tool's work line -> <img> bytes read back by grokImage, as the image
  * endpoint reads them. */
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
@@ -11,7 +11,8 @@ import { grokImage } from "../server/grok.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
 
-const root = mkdtempSync(join(tmpdir(), "herdr-grok-image-browser-"));
+// canonical: grokImage serves only a session file by its real path, and macOS tmpdir() is under /var, a link
+const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-grok-image-browser-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 // the recorded session: a red 48x48 picture sent with the prompt, a blue one read_file read
