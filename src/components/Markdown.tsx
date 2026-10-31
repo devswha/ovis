@@ -131,8 +131,11 @@ function SvgFigure({ value }: { value: string }) {
   const revision = useThemeRevision();
   const [zoomed, setZoomed] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  // `revision` is not read: a change to it is a new theme, whose colors the palette reads again
-  const palette = useMemo(() => svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property)), [revision]);
+  // `revision` is not read: a change to it may be a new theme, whose colors the palette reads again.
+  // The viewport also writes <html>'s style (lib/viewport.ts): the figure is drawn again only when
+  // a color it reads changed, so a keyboard or resize does not reparse every figure.
+  const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
+  const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
   const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
   if (src === null || failed === src) return <CodeBlock language="svg" value={value} />;
   return (
