@@ -1,6 +1,6 @@
 /** Real ChatView with an unavailable conversation and a stalled optional terminal. */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -279,6 +279,36 @@ try {
     await live.waitFor({ state: "detached" });
     console.log("PASS words and runs of work keep the agent's order, settled and live");
   }
+  for (const viewport of [{ width: 390, height: 844 }, { width: 390, height: 420 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    prompt = parseInteractivePrompt("claude", readFileSync(join(repo, "server/fixtures/claude-question-words-2.1.311-40.txt"), "utf8"))!;
+    assert.ok(prompt.screen_words, "the recorded question includes Claude's preceding words");
+    await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
+    const card = page.locator(".prompt-card");
+    await card.locator(".prompt-card-words").waitFor({ state: "attached" });
+    const layout = await card.evaluate(node => {
+      const words = node.querySelector(".prompt-card-words")!.getBoundingClientRect();
+      const text = node.querySelector(".prompt-card-words-text")!.getBoundingClientRect();
+      const caption = node.querySelector(".prompt-card-words .prompt-card-hint")!.getBoundingClientRect();
+      const question = node.querySelector(".prompt-card-question")!.getBoundingClientRect();
+      return { wordsBottom: words.bottom, textBottom: text.bottom, captionTop: caption.top, captionBottom: caption.bottom, questionTop: question.top };
+    });
+    assert.ok(layout.textBottom <= layout.captionTop, "terminal context and its caption do not overlap");
+    assert.ok(layout.captionBottom <= layout.wordsBottom, "the context wrapper contains its caption even in a short viewport");
+    assert.ok(layout.wordsBottom <= layout.questionTop, "terminal context stays above the question");
+    if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `claude-question-context-${viewport.width}-${viewport.height}.png`) });
+    await card.locator("input.input").scrollIntoViewIfNeeded();
+    const answerInView = await card.evaluate(node => {
+      const bounds = node.getBoundingClientRect();
+      const input = node.querySelector("input.input")!.getBoundingClientRect();
+      return input.top >= bounds.top && input.bottom <= bounds.bottom;
+    });
+    assert.equal(answerInView, true, "the custom answer remains reachable by scrolling the card");
+    prompt = null;
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    await card.waitFor({ state: "detached" });
+  }
+  console.log("PASS Claude's recorded terminal context, caption and question do not overlap at desktop, mobile and short mobile sizes");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     prompt = parseInteractivePrompt("pi", piNavigation["custom-empty"])!;
