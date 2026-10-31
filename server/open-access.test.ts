@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, setSystemTime } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -250,9 +250,17 @@ describe("a Portal that signs its visitors in", () => {
   const credential = { method: "credential", allow: [] };
 
   /** a server whose Portal can be started on a sign-in, and asked for the proof it was given */
-  function serving(recheckMs?: number) {
+  function serving(recheckMs?: number, savedDrive = false) {
     const stateDir = mkdtempSync(join(root, "portal-"));
-    const server = createServer({ port: 0, stateDir, token: TOKEN, portal: new PortalService({ stateDir, bin, fetch: relay, ...(recheckMs === undefined ? {} : { recheckMs }) }) });
+    if (savedDrive) {
+      mkdirSync(join(stateDir, "portal"));
+      writeFileSync(join(stateDir, "portal", "state.json"), JSON.stringify({
+        enabled: false, relay: "relay.example", port: null, pid: null, auth: credential,
+        invites: [{ name: "alice", role: "drive" }],
+      }));
+    }
+    const service = new PortalService({ stateDir, bin, fetch: relay, ...(recheckMs === undefined ? {} : { recheckMs }) });
+    const server = createServer({ port: 0, stateDir, token: TOKEN, portal: service });
     servers.push(server);
     const main = `http://127.0.0.1:${server.port}`;
     const owner = { authorization: `Bearer ${TOKEN}` };
@@ -266,7 +274,7 @@ describe("a Portal that signs its visitors in", () => {
       }
     };
     return {
-      server, main, owner, post, stateDir,
+      server, main, owner, post, stateDir, service,
       /** starts Portal and returns the proof it was given, or "" when it was given none */
       async start(auth: unknown): Promise<string> {
         rmSync(noted, { force: true });
@@ -285,6 +293,64 @@ describe("a Portal that signs its visitors in", () => {
   const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
   const signedIn = { required: false, authenticated: true, via: "portal", role: "watch", portal: { user: "alice", method: "credential" } };
   const refused = { authenticated: false, reason: "token_required" };
+
+  it("does not consult invitation roles for an unproven identity", async () => {
+    const portal = serving();
+    const roles = spyOn(portal.service, "roleFor");
+    try {
+      expect(await health(portal.main, { ...identity, "x-portal-proof": "forged" })).toMatchObject(refused);
+      expect(roles).not.toHaveBeenCalled();
+    } finally {
+      roles.mockRestore();
+    }
+  });
+
+  it("refuses pairing redemption by a saved-drive visitor without creating a device or spending the owner's code", async () => {
+    const portal = serving(undefined, true);
+    const visitor = { ...identity, "x-portal-proof": await portal.start(credential) };
+    expect(await health(portal.main, visitor)).toMatchObject({ via: "portal", role: "drive" });
+    const start = () => fetch(`${portal.main}/api/devices/pair/start`, {
+      method: "POST", headers: { ...portal.owner, "x-herdr-machine": "1" },
+    });
+    const issued = await start();
+    expect(issued.status).toBe(200);
+    const { code } = await issued.json() as { code: string };
+    const redeem = (headers: Record<string, string>, code: string) => fetch(`${portal.main}/api/devices/pair`, {
+      method: "POST", headers: { ...headers, origin: `https://${HOST}`, "content-type": "application/json" }, body: JSON.stringify({ code }),
+    });
+    const denied = await redeem(visitor, code);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
+    expect(denied.headers.get("set-cookie")).toBeNull();
+    const listed = await fetch(`${portal.main}/api/devices`, { headers: portal.owner });
+    expect(await listed.json()).toMatchObject({ devices: [] });
+    // The same Portal headers do not restrict a request authenticated by the owner's token.
+    const owner = await redeem({ ...visitor, ...portal.owner }, code);
+    expect(owner.status).toBe(204);
+    const cookie = owner.headers.getSetCookie().find((value) => value.startsWith("ovis_device="))?.split(";")[0];
+    expect(cookie).toBeDefined();
+    if (!cookie) throw new Error("Pairing did not return a device cookie");
+    // A paired driving device takes precedence too.
+    const next = await start();
+    expect(next.status).toBe(200);
+    const nextCode = await next.json() as { code: string };
+    expect((await redeem({ ...visitor, cookie }, nextCode.code)).status).toBe(204);
+  });
+
+  it("refuses push status before handling a Portal visitor's subscription", async () => {
+    const portal = serving();
+    const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
+    const status = (headers: Record<string, string>) => fetch(`${portal.main}/api/push/status`, {
+      method: "POST", headers, body: "{}",
+    });
+    const denied = await status(visitor);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
+    // The owner still reaches input validation in the push handler.
+    const owner = await status({ ...visitor, ...portal.owner });
+    expect(owner.status).toBe(400);
+    expect(await owner.json()).toMatchObject({ error: { code: "invalid_subscription" } });
+  });
 
   it("lets an invited visitor watch with no token, while the owner's setup credential still drives", async () => {
     const portal = serving();

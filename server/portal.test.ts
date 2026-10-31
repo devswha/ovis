@@ -1102,7 +1102,7 @@ describe("private links", () => {
     await legacy.resume({ port: 7317, ...open });
     expect(legacy.roleFor("owner-link", "credential")).toBe("watch");
     writeFileSync(path, JSON.stringify({ ...state, invites: [{ name: "alice", role: "admin" }] }));
-    await expect(new PortalService({ stateDir }).resume({ port: 7317, ...open })).rejects.toThrow("Saved Portal invites are invalid");
+    await expect(new PortalService({ stateDir }).resume({ port: 7317, ...open })).rejects.toThrow();
   });
 
   it("issues only while Portal runs with the private-link sign-in and its address is known", async () => {

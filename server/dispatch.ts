@@ -145,6 +145,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   const requestShape = { loopback, forwarded, funnel, tailscaleLogin, forwardedFor, serveOnly };
   const identity = await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && (pathname === "/ws" || pathname.startsWith("/api/")), requestHost);
+  const portalProven = options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false;
   const access = decideAccess({
     ...requestShape,
     host: requestHost,
@@ -154,10 +155,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     tokenConfigured: token !== "",
     gated: devices.gated,
     portal: {
-      proven: options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false,
-      user: request.headers.get("x-portal-user"),
-      auth: request.headers.get("x-portal-auth"),
-      role: options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch",
+      proven: portalProven,
+      user: portalProven ? request.headers.get("x-portal-user") : null,
+      auth: portalProven ? request.headers.get("x-portal-auth") : null,
+      role: portalProven ? options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch" : "watch",
     },
   });
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
@@ -218,11 +219,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
   // identity explicitly given drive in local state cannot use these controls to leave access
-  // behind: managing devices, push subscriptions and Portal requires the owner's app credential.
+  // behind: device changes (including redeeming a pairing code), push subscriptions and their
+  // status, and Portal controls require the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
-    || (pathname.startsWith("/api/devices/") && pathname !== "/api/devices/pair")
-    || (request.method === "POST" && pathname === "/api/push/subscribe")
+    || pathname.startsWith("/api/devices/")
+    || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
   );
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
