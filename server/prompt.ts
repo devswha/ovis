@@ -532,7 +532,8 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
  * a terminal and asked again between two reads, by an agent that reports no work in between)
  * two askings cannot be told apart from the screen.
  */
-interface Asking { content: string | null; n: number; queued: boolean }
+/** `call`: the omp ask call the asking's card was read under (omp-ask.ts ompCallPrompt), once a read proved one */
+interface Asking { content: string | null; n: number; queued: boolean; call?: string }
 const askings = new Map<string, Asking>();
 /** counted across panes and never reused: a pane forgotten here starts no asking over */
 let askingCount = 0;
@@ -564,11 +565,14 @@ function asked(paneId: string, prompt: InteractivePrompt | null, turns: number):
       if (asking) asking.content = null;
       return null;
     }
-    if (asking?.content !== prompt.id) {
+    const call = parsedByPublicPrompt.get(prompt)?.ompCall;
+    // the same drawing under another ask call is another asking: omp asked again with the same questions
+    if (asking?.content !== prompt.id || call !== undefined && asking.call !== undefined && asking.call !== call) {
       // kept until its pane closes (readPrompt): a live asking is never dropped to make room
       asking = { content: prompt.id, n: askingCount += 1, queued: prompt.queued !== undefined };
       askings.set(paneId, asking);
     }
+    if (call !== undefined) asking.call = call;
   }
   if (prompt === null) return null;
   prompt.id = createHash("sha256").update(JSON.stringify([prompt.id, SERVER_RUN, asking?.n ?? 0])).digest("hex").slice(0, 12);
@@ -1329,7 +1333,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           : await Promise.race([guarding.then(() => true), Bun.sleep(Math.max(0, guardUntil - Date.now())).then(() => false)]);
         if (!guarded) throw new KeyRefused();
         const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, openCodeState,
-          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), false, !screenOnly);
+          // the card as the answer's first read drew it (readPrompt: omp's own Markdown), so its question compares alike
+          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), true, !screenOnly);
         reading.catch(() => undefined);
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
@@ -1780,6 +1785,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const sameQuestion = (shown: ParsedPrompt | null, screen: string): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
           if (responder === "pi-question" || responder === "pi-confirm") return parsePiDialog(screen, true)?.id === parsed.id;
+          // a fallback card is the screen's own (readPrompt draws it when no reader knows the screen): the same card by
+          // what it asks and offers, whatever else ticked on the screen since (a spinner, a timer, a token count)
+          if (responder.startsWith("fallback")) return parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen))?.id === parsed.id;
           return shown?.id === parsed.id && shown.question === parsed.question && shown.ompCall === parsed.ompCall
             && shown.nativeSteps?.index === parsed.nativeSteps?.index;
         };
@@ -1804,7 +1812,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (!committed) {
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS, sameQuestion, () => ({ written: write() }),
-              interaction !== undefined || responder === "pi-question" || responder === "pi-confirm");
+              interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
             // after it the screen has left the question (an editor, the next question): the path's own checks above stand

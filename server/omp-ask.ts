@@ -10,9 +10,11 @@ export function ompOpenCall(open: OmoAsks, session: string): string | null {
 }
 
 /**
- * An omp card read under the pane's one open ask call names that call in its id: omp asking again with the same
- * questions draws them alike, and a card read under the first call must not answer the next one. With no call proved
- * (none open, or more than one) the id stays as read, and nothing tells such cards apart but the screen.
+ * An omp card read under the pane's one open ask call names that call (`ompCall`): omp asking again with the same
+ * questions draws them alike, and a card read under the first call must not answer the next one, so another call
+ * starts another asking (prompt.ts asked). The id stays the screen's, so a read that proves no call (it was answered,
+ * a lookup failed) and the same call read again keep the card's id. With no call proved, nothing tells such cards
+ * apart but the screen.
  *
  * A question omp cut short binds no call: its first rows may be another call's as well.
  *
@@ -34,7 +36,7 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const at = parsed.nativeSteps?.index;
   if (shown.length > 1 && (at === undefined || !shown.includes(at))) return { prompt, unverified: true };
   const position = shown.length > 1 ? `@${at}` : "";
-  return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}~${Bun.hash(call).toString(36)}${position}`, ompCall: call }) };
+  return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}${position}`, ompCall: call }) };
 }
 
 /**
