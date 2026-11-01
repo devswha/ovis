@@ -438,6 +438,19 @@ describe("conversation peek", () => {
     expect(peekPaneConversation(pane, "local", 10)?.history_id).toBe("session-b");
   });
 
+  it("reads again once for a session a pane moved to, however often its PC says its panes changed meanwhile", async () => {
+    let reads = 0;
+    globalThis.fetch = (async (_url: string) => {
+      reads += 1;
+      // every answer comes after another event from its PC
+      paneSessionsMoving("busy-pc");
+      return Response.json({ source: "claude-transcript", history_id: "h", cursor: null, turns: [] }, { headers: { etag: '"h"' } });
+    }) as typeof fetch;
+    await fetchPaneConversation("peek:busy", "busy-pc", { prompts: 10 });
+    expect(reads).toBe(2);
+    expect(peekPaneConversation("peek:busy", "busy-pc", 10)).toBeUndefined();
+  });
+
   it("draws no page a replaced herdr's pane of the same ID read, nor one of a pane the roster stopped listing", async () => {
     globalThis.fetch = (async (_url: string) => Response.json({ source: "claude-transcript", history_id: "h", cursor: null, turns: [] }, { headers: { etag: '"h"' } })) as typeof fetch;
     const roster = (lifetime: string, panes: string[]) => observePaneSessions([{ id: "local", snapshot: { herdr_lifetime: lifetime, panes: panes.map((pane_id) => ({ pane_id, agent: "claude", agent_session: null })) } }]);

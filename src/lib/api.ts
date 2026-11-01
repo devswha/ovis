@@ -610,6 +610,11 @@ export function prefetchPaneConversation(paneId: string, machineId: string, prom
 
 /** GET /api/pane/conversation: structured turns, or scrollback fallback; `page` as ConversationResponse.cursor describes. */
 export async function fetchPaneConversation(paneId: string, machineId = "local", page: ConversationPageQuery = {}): Promise<ConversationResponse> {
+  return readPaneConversation(paneId, machineId, page, false);
+}
+
+/** fetchPaneConversation; `retried`: this is the one read again for a session the pane moved to, which is not read a third time. */
+async function readPaneConversation(paneId: string, machineId: string, page: ConversationPageQuery, retried: boolean): Promise<ConversationResponse> {
   const url = conversationUrl(paneId, machineId, page);
   const pane = paneKey(paneId, machineId);
   const session = sessionNow(pane);
@@ -635,6 +640,9 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
     if (!response.ok) throw await errorFrom(url, response);
     return { response, body: (await response.json()) as ConversationResponse };
   }, chatReadDeadlineMs(machineId)).catch((cause: unknown) => {
+    // a failed read gives up what it held of the pages' order: a later read is the newest again
+    if (polled && lastNewestRead.get(url) === read) lastNewestRead.delete(url);
+    if (plain !== undefined && lastNewestRead.get(plain) === read) lastNewestRead.delete(plain);
     // a rejected history is the pane's, whatever page size it was read at: none of its pages may draw again
     // (unless the pane has moved on to another session since: that one's pages are not the rejected history's)
     if (cause instanceof ApiError && cause.status === 409 && sessionNow(pane) === session) {
@@ -650,8 +658,9 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   if (ownsUrl) lastNewestRead.delete(url);
   // the pane went to another session while this read was out: its answer is the session left behind,
   // so the newest page is read again for the session the pane is on now, whether or not a newer read
-  // owns the cache; it is never the cache's
-  if (sessionNow(pane) !== session) return polled ? fetchPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true }) : body;
+  // owns the cache; it is never the cache's. Once only: a PC whose panes keep changing is caught up by the chat's
+  // next read (a push, the backstop, the roster naming the session), not by a chain of reads
+  if (sessionNow(pane) !== session) return polled && !retried ? readPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true }, true) : body;
   if (polled && !ownsUrl) return body;
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
