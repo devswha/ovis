@@ -1178,14 +1178,19 @@ export const claudeSubagents = (parentPath: string, live: boolean, now = Date.no
 
 /**
  * The list as a file thread gives it (`file-tasks.ts`): the thread's caches start cold, and it runs
- * off the event loop under the long-task deadline, so it reads on, a budget at a time, until no
- * agent file is left behind. Its first answer then has the counts a warm read has. Each pass reads
- * something, so the loop ends.
+ * off the event loop under the long-task deadline, so it reads on, a budget at a time, until neither
+ * an agent file nor the transcript is left behind. Its first answer then has the counts a warm read
+ * has. It reads on only while a pass read something, so the loop ends; and only until `until` (by
+ * `clock`), so a huge session answers with what it read so far inside its deadline.
  */
-export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): OmoTask[] {
-  let state = claudeSubagentState(parentPath, live, now, since);
-  while (state.behind) state = claudeSubagentState(parentPath, live, now, since);
-  return state.tasks;
+export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, until = Infinity, clock: () => number = Date.now): OmoTask[] {
+  for (;;) {
+    const from = parents.get(parentPath)?.offset;
+    const state = claudeSubagentState(parentPath, live, now, since);
+    const parent = parents.get(parentPath);
+    const parentBehind = parent !== undefined && parent.behind && parent.offset !== from;
+    if (!(state.behind || parentBehind) || clock() >= until) return state.tasks;
+  }
 }
 
 /** Forget every read kept between calls (tests compare against a cold read). */

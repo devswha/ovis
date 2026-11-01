@@ -168,20 +168,34 @@ describe("file threads", () => {
     for (const commands of await Promise.all([...scans, third])) expect(names(commands)).toContain("listed");
   });
 
-  it("counts Claude task-list scans apart from commands scans, so neither kind keeps the other waiting", async () => {
-    setUp({ workers: 3, waiting: 2, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 1, taskScans: 1 });
-    const tasks = (): FileTask => ({ op: "claude-tasks", path: join(root, "session.jsonl"), live: true, since: null });
-    for (const [first, other] of [[tasks, scan], [scan, tasks]] as const) {
-      const hold = gate();
-      // one kind takes every thread it may: a second of that kind waits
-      const holding = [fileTask(held(first(), hold.buffer)), fileTask(first())];
-      expect(filePoolSize().waiting).toBe(1);
-      // the other kind still takes a thread of its own at once
-      const running = fileTask(held(other(), hold.buffer));
-      expect(filePoolSize().waiting).toBe(1);
-      hold.release();
-      await Promise.all([...holding, running]);
-    }
+  /** A Claude task list scanned on a file thread (`root` holds no session: the scan answers at once) */
+  const tasks = (): FileTask => ({ op: "claude-tasks", path: join(root, "session.jsonl"), live: true, since: null });
+
+  it("runs one Claude task-list scan at a time, and a stuck one leaves commands scans a thread", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
+    const hold = gate();
+    const stuck = fileTask(held(tasks(), hold.buffer));
+    const second = fileTask(tasks());
+    expect(filePoolSize()).toEqual({ threads: 1, idle: 0, waiting: 1 });
+    // the commands scan takes the other scan thread at once
+    const commands = fileTask(held(scan(), hold.buffer));
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 1 });
+    hold.release();
+    await Promise.all([stuck, second, commands]);
+  });
+
+  it("counts scans of both kinds against `scans` together, so file tasks always keep two of four threads", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
+    const hold = gate();
+    const running = [fileTask(held(scan(), hold.buffer)), fileTask(held(scan(), hold.buffer))];
+    // two commands scans hold both scan threads: a task-list scan waits with the third commands scan
+    const waiting = [fileTask(tasks()), fileTask(scan())];
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 2 });
+    // two file tasks at once still each take a thread of their own
+    await Promise.all([fileTask({ op: "info", path: file }), fileTask({ op: "info", path: file })]);
+    expect(filePoolSize()).toEqual({ threads: 4, idle: 2, waiting: 2 });
+    hold.release();
+    await Promise.all([...running, ...waiting]);
   });
 
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {

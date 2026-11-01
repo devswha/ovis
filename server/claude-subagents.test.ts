@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 
 import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
-import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, readLines, remember, subagentDetails, taskNotification, validDetailId, within } from "./claude-subagents.ts";
+import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, readLines, remember, subagentDetails, taskNotification, validDetailId, wholeClaudeSubagents, within } from "./claude-subagents.ts";
 import { runFileTask } from "./file-tasks.ts";
 
 const roots: string[] = [];
@@ -1597,6 +1597,29 @@ describe("claudeSubagents, background commands", () => {
 
 describe("claudeSubagents, before the files are read through", () => {
   const body = (id: string, minute: number, stop: string | null) => json({ type: "assistant", timestamp: at(minute), message: { id, model: "claude-haiku-4-5", stop_reason: stop, usage: { output_tokens: 7 }, content: [{ type: "text", text: "x" }], pad: "p".repeat(1000) } });
+
+  it("reads a whole list on through a transcript appended past what a call reads (#2511)", () => {
+    const s = session();
+    expect(wholeClaudeSubagents(s.path, true, NOW)).toEqual([]);
+    // more than a call reads of the transcript (its 16 MiB window, in 8 MiB reads: at most 24 MiB), then a command sent to the background
+    const filler = json({ type: "user", timestamp: at(1), message: { role: "user", content: "x".repeat(1024) } }).repeat(1024);
+    for (let mib = 0; mib < 26; mib++) appendFileSync(s.path, filler);
+    s.bash("cmd", 2);
+    expect(wholeClaudeSubagents(s.path, true, NOW).map((task) => task.id)).toEqual(["cmd"]);
+  });
+
+  it("stops reading a whole list on once its time is up, and answers with what it read (#2511)", () => {
+    const s = session();
+    // two agents of 5.5 MB each: more than one call reads
+    const big = json({ type: "user", timestamp: at(1), message: { role: "user", content: "go" } }) + Array.from({ length: 5000 }, (_, i) => body(`m${i}`, 2, null)).join("");
+    for (const id of ["a", "b"]) writeFileSync(s.agent(id, { steps: [] }), big);
+    // a clock already at the end of its time: one call's read, no more
+    const cut = wholeClaudeSubagents(s.path, true, NOW, null, 1, () => 1);
+    expect(cut.map((task) => task.id).sort()).toEqual(["a", "b"]);
+    expect(cut.some((task) => task.turns === null)).toBe(true);
+    forgetSubagents();
+    expect(wholeClaudeSubagents(s.path, true, NOW).every((task) => task.turns !== null)).toBe(true);
+  });
 
   it("tells the status of every agent on the first call, whatever the budget has reached", () => {
     const s = session();

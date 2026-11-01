@@ -9,6 +9,12 @@ import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pag
 import { walkFiles } from "./files.ts";
 
 /**
+ * How long a Claude task list reads on before it answers with what it read so far: well inside the
+ * long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s), so its one scan thread is free by then.
+ */
+const CLAUDE_TASKS_READ_MS = 10_000;
+
+/**
  * What a file thread (`file-pool.ts`) does: each synchronous filesystem step of the file routes,
  * named so that a request can ask for it and wait without holding the server's thread.
  */
@@ -65,7 +71,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "within": return within(task.paths, task.folder);
     case "describe": return describeWithin(task.path, task.folder, task.opened);
     case "walk": return walkFiles(task.cwd);
-    case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since);
+    case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);
     case "open": return open(task.path, task.get, task.opened, task.fastDiskMs ?? FAST_DISK_MS, task.within ?? null);
