@@ -751,14 +751,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const page = requester === null ? undefined : [...clients].find((client) => client.data.connectionId === requester && present(client));
     const message = await serialize(paneId, async () => {
       // bound to the terminal and the kind launched there, and to the process the launch left in front when
-      // it is not the shell: a replacement of the same kind is not what the message was sent to. Right after
-      // a launch herdr may name no agent yet; that binding is completed when it does (bindLaunched)
+      // it runs that kind's program: a replacement of the same kind is not what the message was sent to. Right
+      // after a launch herdr may name no agent yet, and what is in front may be a child the agent runs as it
+      // starts (Claude Code's git and gh); that binding is completed when herdr names it (learn, bindLaunched)
       const { pane, identity, shellPid, processes } = await currentIdentity(paneId, launchedPid);
       // The launch's own word wins: a shell-started agent's launch says which process it came up as, which
       // may have ended already, and then an agent the user starts later is not the one launched
       const launchedProcess = launchedPid !== null
         ? { processPid: launchedPid, processBirth: identity.processPid === launchedPid ? identity.processBirth : await processStartedAtAsync(launchedPid) }
         : identity.processPid !== null && identity.processPid !== undefined && identity.processPid !== shellPid
+          && runsAgentProgram(processes?.foreground_processes?.find((entry) => entry.pid === identity.processPid) ?? {}, kind)
           ? { processPid: identity.processPid, processBirth: identity.processBirth } : {};
       // and to the sessions herdr, OmO or Claude's own record already name for that agent: a /resume
       // before the message went is another session

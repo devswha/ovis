@@ -430,6 +430,38 @@ it.each([
   expect(calls).toEqual([]);
 });
 
+// a child the agent runs as it starts (Claude Code's git, gh): herdr lists it in front before it names the agent
+const CHILD = 4_194_003, REPLACEMENT = 4_194_004;
+it.each([
+  ["a child it runs as it starts, binds the agent herdr names next", [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], AGENT, "codex", "first_message_unattended"],
+  ["a child it runs as it starts, still waits once that child ends before herdr names the agent", [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], AGENT, null, "first_message_unattended"],
+  ["its agent, stays bound to it: a replacement of its kind gets it held", [{ pid: AGENT, name: "codex" }], REPLACEMENT, "codex", "pending_target_changed"],
+] as const)("a first message queued before herdr names its agent, with in front %s", async (_case, front, next, later, code) => {
+  let named: string | null = null;
+  const frames: ServerMessage[] = [];
+  const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0,
+    send: (value: string) => { frames.push(JSON.parse(value)); return 1; } } as Client;
+  owner.data.attached.set("L", { keepSize: false });
+  let queue = Promise.resolve<unknown>(undefined);
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = queue.catch(() => {}).then(task); queue = run; return run; };
+  const delivery = createPendingDelivery({
+    options: {}, clients: new Set([owner]), attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: (): TerminalSighting => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }),
+    submitText: async (pane) => { calls.push(`submit ${pane}`); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "working" }] }) as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  // queued with no page, so held as unattended from the start: only a later reason can replace that one
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [...front] });
+  await delivery.queueFirstMessage("L", "FIRST", "codex");
+  // the child has ended, and herdr names the agent (or not yet)
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [{ pid: next, name: "codex" }] }); named = later;
+  delivery.drainPending("L");
+  await serialize("L", () => {});
+  expect(frames.flatMap((frame) => frame.type === "pending-messages" && frame.pane_id === "L" ? frame.messages.map((item) => item.error?.code) : []).at(-1)).toBe(code);
+});
+
 it("keeps the owner's held row sendable when its own Send now fails before anything is typed", async () => {
   const output: ServerMessage[] = [];
   const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
