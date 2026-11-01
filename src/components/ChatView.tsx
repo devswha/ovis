@@ -2343,6 +2343,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // the card stays, waiting, until the read below shows what the screen asks next: it never goes
       // and comes back between two questions of one form
       setAnsweredPrompt(prompt.id);
+      // and is not drawn again as open if the chat mounts again before that read (lastPrompts)
+      lastPrompts.delete(paneStorageId(machineId, paneId));
       // a form of several questions goes on to its next one: read it now, not at the next poll
       if (prompt.steps) setPromptPollKey((key) => key + 1);
       // Refresh conversation and input state after an answer.
