@@ -2,7 +2,7 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, us
 import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
 
 import type { HerdrPane } from "../shared/protocol.ts";
-import { authenticate, createTab, moveTabToWorkspace, shareSeen, swapPaneWith } from "./lib/api.ts";
+import { authenticate, createTab, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
 import { layoutActions } from "./lib/layoutActions.ts";
 import { displayPaneTitle, storedWorktreeCollapsed, tabPaneTitle } from "./components/Sidebar.tsx";
 import { endSignIn } from "./lib/signOut.ts";
@@ -902,6 +902,7 @@ export function App() {
                         restoreError={item?.restore_error ?? null}
                         agent={item?.agent ?? null}
                         agentStatus={item?.agent_status}
+                        agentSession={item ? paneSessionKey(item) : null}
                         backgroundTasks={item?.background_tasks ?? 0}
                         // an offline PC's cached plan cannot be read
                         plan={machine?.state === "connected" ? (item as HerdrPane | undefined)?.plan ?? null : null}

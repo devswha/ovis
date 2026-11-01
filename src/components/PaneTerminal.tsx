@@ -96,6 +96,8 @@ export interface PaneTerminalProps {
   agent?: string | null;
   /** the pane's live agent status: `working` turns composer sends into the queue */
   agentStatus?: AgentStatus;
+  /** the pane's session as the roster names it (api.ts paneSessionKey): the chat reads again when it changes */
+  agentSession?: string | null;
   /** an OmO pane's running background tasks: the composer's status line offers their list */
   backgroundTasks?: number;
   /** the plan the pane's agent keeps (null on an offline PC): the composer's chip opens it */
@@ -167,6 +169,7 @@ export function PaneTerminal({
   agent = null,
   title = null,
   agentStatus,
+  agentSession = null,
   backgroundTasks = 0,
   plan = null,
   backgroundWait = false,
@@ -1199,6 +1202,7 @@ export function PaneTerminal({
             ended={ended}
             agent={agent}
             agentStatus={agentStatus}
+            agentSession={agentSession}
             onMetadata={onChatMetadata}
             onRead={onChatRead}
             greeted={greeted || sending}
