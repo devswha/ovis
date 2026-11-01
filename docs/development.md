@@ -701,7 +701,7 @@ or `build.json`, deploys it with
 until `https://app.ovis.sh/build.json` answers 2xx with the tag's commit as its `revision`. The
 `shell-attach` job, the only one that may write, then attaches the `dist-shell.tar.gz` and
 `dist-shell.tar.gz.sha256` it packed to the release, so anyone can compare
-what app.ovis.sh serves with what the tag builds. Nothing else deploys the shell: never from a
+what app.ovis.sh serves with what the tag builds. Nothing else deploys app.ovis.sh: never from a
 branch or a developer machine. Until the owner setup below is done the job passes with a notice
 naming the missing secrets, still attaches the tarball, and app.ovis.sh stays as it was.
 
@@ -716,6 +716,15 @@ One-time owner setup for the shell deploy:
    an approval on the Release run.
 4. Keep the account on the Workers Paid plan (the relay needs it) and set a billing alert at
    $20 a month.
+
+To try the relay from a phone before a release, without Tailscale, deploy main to the Pages preview:
+**Actions → Shell preview → Run workflow** on `main`, approve the `production` environment, then open
+<https://preview.ovis-app.pages.dev>. The workflow (`.github/workflows/shell-preview.yml`, run by hand
+only) builds the shell from main on a GitHub-hosted runner, fails if `dist-shell/` lacks `index.html`
+or `build.json`, deploys it with `--branch preview` (never `main`, so app.ovis.sh keeps the release's
+build) and waits until the preview's `build.json` names main's commit. Run the PC's Ovis from the same
+main with `OVIS_RELAY_APP_URL=https://preview.ovis-app.pages.dev`, so its QR codes open the preview
+instead of app.ovis.sh. It uses the same secrets and approval as the release deploy.
 
 Remote-PC runtime bundles are published by a `remote-vN` tag, and an app release requires the bundle
 that matches its server (step 3). See [remote PCs](remote-pcs.md).

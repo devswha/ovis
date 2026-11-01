@@ -1,0 +1,76 @@
+name: Shell preview
+# Deploys the hosted shell built from main to the `preview` branch of the Pages project ovis-app,
+# https://preview.ovis-app.pages.dev/, so the relay can be tried from a phone before a release. Run by
+# hand from main only; it waits in the `production` environment for the maintainer's approval, and
+# never touches https://app.ovis.sh/ (the production branch, `main`, which only release.yml deploys).
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shell-preview
+  cancel-in-progress: false
+jobs:
+  shell-preview:
+    if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'
+    # GitHub-hosted only: the Cloudflare token never reaches the shared self-hosted runners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://preview.ovis-app.pages.dev/
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - run: bun install --frozen-lockfile
+      - name: Build the shell
+        run: bun run build:shell
+      - name: Require the built shell
+        run: |
+          for file in index.html build.json; do
+            test -s "dist-shell/$file" || { echo "::error::bun run build:shell left no dist-shell/$file." >&2; exit 1; }
+          done
+      - name: Require the Cloudflare secrets
+        env:
+          HAS_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::These secrets are not set in the production environment:$missing (docs/development.md#releasing)." >&2
+            exit 1
+          fi
+      # a fixed branch that is not the project's production branch: this deploy never reaches app.ovis.sh
+      - name: Deploy the shell to the Pages preview branch
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler@4.156.0 pages deploy dist-shell --project-name ovis-app --branch preview
+      - name: Verify the preview serves this revision
+        env:
+          SHELL_BUILD_URL: https://preview.ovis-app.pages.dev/build.json
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          # a redirect or an error page is not the shell: only a 2xx whose build.json names this commit passes
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code=$(curl -sS -o "$RUNNER_TEMP/build.json" -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$SHELL_BUILD_URL?rev=$EXPECTED_REVISION") || code=000
+            # the top-level "revision" field, parsed, not a substring of the response; anything unparsable reads as empty
+            # shellcheck disable=SC2016 # JavaScript, not shell
+            revision=$(bun -e 'const body = JSON.parse(await Bun.file(process.argv[1]).text()); if (typeof body?.revision === "string") console.log(body.revision)' "$RUNNER_TEMP/build.json" 2>/dev/null) || revision=""
+            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && [ "$revision" = "$EXPECTED_REVISION" ]; then
+              echo "preview.ovis-app.pages.dev serves $EXPECTED_REVISION"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code, not revision $EXPECTED_REVISION yet" >&2
+            sleep 5
+          done
+          echo "::error::$SHELL_BUILD_URL did not serve revision $EXPECTED_REVISION (last HTTP $code)." >&2
+          exit 1

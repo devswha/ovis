@@ -495,7 +495,8 @@ is always up.
   drops every connection; PCs and phones reconnect by themselves, and nothing is sent again. Workers
   Logs are off and the relay stores nothing ([relay/README.md](../relay/README.md#deploy)).
 - **`app.ovis.sh`** is a Cloudflare Pages project. The Release workflow deploys it from each release
-  tag, and [Releasing](development.md#releasing) has its one-time setup.
+  tag, and [Releasing](development.md#releasing) has its one-time setup. A build of main can be
+  deployed by hand to `preview.ovis-app.pages.dev` to try before a release; it never changes `app.ovis.sh`.
 - To report abuse that goes through `relay.ovis.sh`, see [SECURITY.md](../SECURITY.md#the-ovis-relay).
 
 A relay you run with Bun limits connections by default: 120 a minute from one address, 600 a minute
