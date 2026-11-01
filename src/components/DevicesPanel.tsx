@@ -6,6 +6,7 @@ import "./DevicesPanel.css";
 import { ApiError, fetchDevices, renameDevice, revokeAllDevices, revokeDevice, startPairing } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { methodName } from "../lib/portalAuth.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT } from "../lib/useRelay.ts";
 import type { HealthAuth, PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -30,7 +31,7 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
   local: "You are on the PC itself.",
   tailscale: "You are in as this PC's Tailscale login.",
   device: "This is a paired device.",
-  relay: "This is a paired device.",
+  relay: "This is a paired device, reaching the PC through the Ovis relay.",
   token: "You are in with the access token.",
   portal: "You are in through Portal's sign-in.",
   open: "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.",
@@ -91,6 +92,16 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
   }, [t]);
   useEffect(() => { void load(); }, [load]);
 
+  // the relay panel's New code replaced the one shown here: the server keeps one pending code, so this follows it
+  useEffect(() => {
+    const onCode = (event: Event) => {
+      const fresh = (event as CustomEvent<PairingCode>).detail;
+      setCode((shown) => shown === null || shown.code === fresh.code ? shown : fresh);
+    };
+    window.addEventListener(PAIRING_CODE_EVENT, onCode);
+    return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
+  }, []);
+
   // while a code is out: count it down, and watch for the device it lets in
   useEffect(() => {
     if (code === null) return;
@@ -108,7 +119,12 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
   const pair = async () => {
     setJustPaired(null);
     setRevokedAll(false);
-    try { setCode(await startPairing()); setError(null); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try {
+      const fresh = await startPairing();
+      setCode(fresh);
+      setError(null);
+      announcePairingCode(fresh);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   /** an "open" browser pairs itself: a code, used at once, so the gate closes to everyone else */
   const pairSelf = async () => {
@@ -211,7 +227,7 @@ export function DevicesPanel({ pairUrl, auth, onPaired, onRevokedAll }: DevicesP
               ) : (
                 <>
                   <div className="devices-name">
-                    <span className="settings-label">{d.label}{d.current && <span className="devices-current">{t("this device")}</span>}</span>
+                    <span className="settings-label">{d.label}{d.current && <span className="devices-current">{t("this device")}</span>}{d.via_relay && <span className="devices-via-relay">{t("via relay")}</span>}</span>
                     <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>
                   </div>
                   {!guest && (

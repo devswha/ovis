@@ -1,9 +1,9 @@
 /**
  * Korean for the keys only the devices files use:
  * components/DevicesPanel.tsx (with VIA), components/PhonePanel.tsx, components/PortalPanel.tsx,
- * components/PortalAuth.tsx, components/PortalInvite.tsx, components/PushTestControls.tsx,
- * components/AccessGate.tsx, components/LanExposureNotice.tsx, lib/install.ts, lib/portalAuth.ts,
- * and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
+ * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
+ * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const DEVICES_KO: Record<string, string> = {
@@ -153,4 +153,30 @@ export const DEVICES_KO: Record<string, string> = {
   "Allow notifications to test alerts on this device.": "이 기기에서 알림을 테스트하려면 알림을 허용하세요.",
   "Could not send the test notification. Try again.": "테스트 알림을 보내지 못했습니다. 다시 시도하세요.",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "마지막 알림이 이 기기에 닿지 않았습니다. 다음 알림은 평소처럼 다시 보냅니다. 테스트를 보내 확인하세요.",
+  "Remote access through Ovis relay": "Ovis 릴레이를 통한 원격 접속",
+  "Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.": "Tailscale 없이 어디서든 폰으로 Ovis를 쓰세요. 트래픽은 종단 간 암호화되며, 릴레이는 언제 얼마나 오가는지만 봅니다.",
+  "Ovis relay": "Ovis 릴레이",
+  "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "릴레이는 PC 소유자만 직접 연결해서 제어할 수 있습니다. PC에서 Ovis를 열거나 PC의 직접 주소로 접속하세요.",
+  "Turning it on closes the device gate: a new browser then needs a pairing code or the access token.": "켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
+  "Reset relay identity": "릴레이 신원 재설정",
+  "This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.": "이 PC가 새 릴레이 신원을 받습니다. 릴레이로 페어링된 폰은 페어링이 풀리고 새 코드가 필요합니다.",
+  "Reset": "재설정",
+  "Reset the relay identity?": "릴레이 신원을 재설정할까요?",
+  "Phones paired through the relay will need to scan a new code.": "릴레이로 페어링된 폰은 새 코드를 다시 스캔해야 합니다.",
+  "Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.": "차단됨: OVIS_TAILSCALE_SERVE_ONLY가 tailscale serve를 유일한 접속 경로로 정하고 있습니다. 이 PC에서 해제하고 앱을 다시 시작하세요.",
+  "Blocked: this PC's relay identity cannot be read. Reset it below to use the relay again.": "차단됨: 이 PC의 릴레이 신원을 읽을 수 없습니다. 아래에서 재설정하면 릴레이를 다시 쓸 수 있습니다.",
+  "Off. Nothing goes through the relay.": "꺼짐. 릴레이로는 아무것도 오가지 않습니다.",
+  "Online. No phone connected.": "온라인. 연결된 폰이 없습니다.",
+  "Online. 1 phone connected.": "온라인. 폰 1대가 연결되어 있습니다.",
+  "Online. {n} phones connected.": "온라인. 폰 {n}대가 연결되어 있습니다.",
+  "Error: {message}": "오류: {message}",
+  "Could not reach the relay.": "릴레이에 연결할 수 없습니다.",
+  "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
+  "QR code that pairs a phone through the relay": "릴레이를 통해 폰을 페어링하는 QR 코드",
+  "Scan it with the phone's camera": "폰 카메라로 스캔하세요",
+  "It opens Ovis on the phone and pairs it with this PC.": "폰에서 Ovis가 열리고 이 PC와 페어링됩니다.",
+  "This code expired.": "이 코드는 만료되었습니다.",
+  "Getting a code…": "코드 받는 중…",
+  "This is a paired device, reaching the PC through the Ovis relay.": "Ovis 릴레이를 통해 PC에 접속한 페어링된 기기입니다.",
+  "via relay": "릴레이 경유",
 };
