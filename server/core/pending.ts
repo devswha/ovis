@@ -53,7 +53,8 @@ export type PendingOwner = Client | FirstMessageOwner;
 const isClient = (owner: PendingOwner): owner is Client => owner !== FIRST_MESSAGE_OWNER;
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
 type PendingItem = PendingRecord<PendingOwner, PendingLease | null>;
-type SubmitReply = { ok: boolean; pending?: PendingMessage; code?: string; message?: string };
+/** `refusal`: a queued request's own input_draft refusal, kept for its submit-result's draft actions; never sent as is */
+type SubmitReply = { ok: boolean; pending?: PendingMessage; code?: string; message?: string; refusal?: { draft: string | null; box: string | null; identity: PendingIdentity } };
 type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessage; match: string; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
 /** a first message refused before anything was typed because its connection could not type it yet stays queued for its next attach or turn */
 const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_lost", "disconnected", "read_only"]);
@@ -550,7 +551,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   async function dispatchPendingText(owner: Client, paneId: string, text: string, lease: PendingLease, identity: PendingIdentity,
     automatic: boolean, arrivedAt: number, committing: (working: boolean, restarting?: boolean) => void = () => {}, interruptWorkingCodex = false,
-    requestId = 0, agentOnly = false): Promise<SubmitReply> {
+    requestId = 0, agentOnly = false, queued = false): Promise<SubmitReply> {
     let wrote = false;
     // a message for an agent alone pasted and then refused its Enter (#511): its text may sit in the input line, so it is
     // held for the user and never pasted again automatically
@@ -579,7 +580,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
       // The box is the live screen's; only the viewport read tells Claude's grey text from a draft. The live
       // read comes after the colors, so text typed between the two is in the box and holds the message.
-      if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS));
+      if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS), automatic || queued)
+        .catch((error: unknown) => { throw error instanceof InputDraftError ? new InputDraftError(error.draft, context.identity, error.box) : error; });
       else if (context.identity.agent === "hermes") context.screen = await freeHermesInput(paneId, context.identity);
       // OpenCode v2 attaches a skill only through its autocomplete, never from a paste. A first message
       // goes before any Chat read the pane's catalog: the cold send's catalog (bounded reads, within the
@@ -693,6 +695,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error)
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
       if (automatic && !wrote && fault.code === "agent_blocked") pending.observe(paneId, "blocked", mark);
+      // a queued request typed at once is refused as an immediate send is: with the draft (or box) its actions need
+      if (queued && !wrote && error instanceof InputDraftError && error.identity) return { ok: false, ...fault, refusal: { draft: error.draft, box: error.box, identity: error.identity } };
       return { ok: false, ...fault };
     } finally { piCapacity.release(piReservation); }
   }
@@ -984,8 +988,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const pendingFrames = {
     async submit(client: Client, message: Frame<"submit">): Promise<void> {
       // every submit is answered: the composer keeps its text until it hears back
-      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null) => send(client, {
-        type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(code ? { code, message: text } : {}),
+      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false) => send(client, {
+        type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
         ...(draft ? { draft } : {}), ...(!draft && typeof box === "string" ? { box } : {}),
       });
       if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id
@@ -1066,7 +1070,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               // paste + Enter; agent.prompt commits its key inside herdr. With a message
               // already waiting its turn here, this one takes its place behind it instead.
               // A held message is never typed by arriving after the turn: it waits for Send now.
-              if (message.delivery === "queue" && !pending.waiting(message.pane_id)) return dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly);
+              // Queued, it never clears a stopped send Claude put back in its box, as the drain does not (#2546).
+              if (message.delivery === "queue" && !pending.waiting(message.pane_id)) return dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly, true);
             }
             pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
@@ -1076,7 +1081,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const answer = await reply;
           const accepted = answer.pending ? pending.get(client, message.pane_id, answer.pending.id)?.message : undefined;
           if (answer.pending && !accepted) replayPendingOutcome(client, message.pane_id, answer.pending.id);
-          result(answer.ok, answer.code, answer.message, accepted);
+          // refused over a draft as the immediate path is: confirmed for Clear it and send, or Send anyway
+          const refusal = answer.refusal;
+          if (refusal && (refusal.draft || refusal.box !== null)) {
+            let confirmations = draftConfirmations.get(client);
+            if (!confirmations) { confirmations = new Map(); draftConfirmations.set(client, confirmations); }
+            confirmations.set(message.pane_id, refusal);
+          }
+          // typed by this very request: a replayed id, or a row gone since (sent or discarded), answers without it
+          result(answer.ok, answer.code, answer.message, accepted, refusal?.draft ?? null, refusal && refusal.box !== null ? shownInputBox(refusal.box) : null,
+            !previous && answer.ok && answer.pending === undefined);
           drainPending(message.pane_id);
           return;
         }
@@ -1101,12 +1115,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         };
         if (message.resend_id !== undefined) {
           authorizeSocket(client);
+          // typed by this request: a replayed id, or a copy another connection sent, runs no dispatch here
+          let typedNow = false;
           const answer = await serialize(message.pane_id, () => pending.resend(message.pane_id, message.resend_id!,
             new Bun.CryptoHasher("sha256").update(framed.text).digest("hex"), async () => {
-              try { await dispatch(); return { ok: true }; }
+              try { await dispatch(); typedNow = true; return { ok: true }; }
               catch (error) { return { ok: false, ...pendingFault(error) }; }
             }, message.resend_generation));
-          result(answer.ok, answer.code, answer.message);
+          result(answer.ok, answer.code, answer.message, undefined, undefined, undefined, answer.ok && typedNow);
           return;
         }
         await serialize(message.pane_id, dispatch);

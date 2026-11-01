@@ -1470,6 +1470,9 @@ export function Composer({
               aria-label={t("Stop agent")}
               title={t("Stop agent")}
               disabled={!connected}
+              // focus stays in the text box, as for Send: this button turns into a disabled Send in
+              // the same node when the turn stops, and a focused node that is disabled drops focus
+              onPointerDown={(event) => event.preventDefault()}
               onClick={onAbort}
             >
               <Square aria-hidden="true" />
