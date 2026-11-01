@@ -370,7 +370,9 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     await pocketVisibility(true);
     const pocketFrames = async () => (await framesOf(pocket)).filter((f) => f.dir === "out");
     assert.ok((await pocketFrames()).some((f) => f.type === "detach"), "a hidden phone detaches before any timer runs");
-    assert.ok((await pocketFrames()).some((f) => f.type === "watch"), "a hidden phone watches the pane it let go of");
+    // A frozen page cannot parse a read-only view: its frames would queue and arrive as one
+    // burst on the way back. It returns by attaching afresh instead (the hidden-watch freeze).
+    assert.ok(!(await pocketFrames()).some((f) => f.type === "watch"), "a hidden phone does not watch the pane it let go of");
     const pocketAttaches = (await pocketFrames()).filter((f) => f.type === "attach").length;
     await pocketVisibility(false);
     await pocket.clock.resume();
