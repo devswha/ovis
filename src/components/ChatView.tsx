@@ -70,7 +70,7 @@ import { LINE_IMAGES_SHOWN, LINE_IMAGES_SHOWN_TOUCH, lineImages, linePictures, p
 import { shouldFoldUserMessage } from "../lib/userMessageFold.ts";
 import { rewindOffer } from "../lib/rewindAction.ts";
 import { invalidatePaneCommands } from "../lib/paneCommandCache.ts";
-import { leftBehind, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows, type OutcomeState } from "../lib/outcomeChip.ts";
+import { afterMove, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows, type OutcomeState } from "../lib/outcomeChip.ts";
 import { typedTerminalCommand } from "../lib/compose.ts";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { commandScreenClosed, sentOutcome, type TerminalPeek } from "../lib/terminalPeek.ts";
@@ -1278,8 +1278,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [outcomes, setOutcomes] = useState<CommandOutcome[]>([]);
   const outcomesNow = useRef(outcomes);
   outcomesNow.current = outcomes;
-  /** the outcomes a move to another history left behind, hidden while that history shows */
-  const [leftOutcomes, setLeftOutcomes] = useState<{ history: string | undefined; ids: ReadonlySet<string> } | null>(null);
+  /** a move to another history: the outcomes held when the chat saw it, and the first list after it (lib/outcomeChip.ts afterMove) */
+  const [moved, setMoved] = useState<{ history: string | undefined; held: CommandOutcome[] } | null>(null);
+  const firstAfterMove = useRef<CommandOutcome[] | undefined>(undefined);
   const onOutcomesRef = useRef(onOutcomes);
   onOutcomesRef.current = onOutcomes;
   /** the outcomes whose catalog change this chat has already answered with a fresh command read */
@@ -1513,7 +1514,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
               navigated();
               // the sends to the history left behind are no receipts of this one: the last prompt poll holds them,
               // and the server lists them until herdr names the new session, which can be a poll after this read
-              setLeftOutcomes({ history: conversation.history_id, ids: leftBehind(outcomesNow.current) });
+              firstAfterMove.current = undefined;
+              setMoved({ history: conversation.history_id, held: outcomesNow.current });
             }
             dropOlder();
           }
@@ -2104,7 +2106,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const rowMemories = useMemo(() => new Map<string, ChatRowMemory>(), [timelineScope]);
   // the turns with the commands sent from here: a chip on the turn that records one, a provisional
   // sent row for one no turn records (yet), placed by send time (lib/outcomeChip.ts)
-  const withOutcomes = useMemo(() => outcomeRows(shownTurns, leftOutcomes !== null && leftOutcomes.history === historyId ? outcomes.filter((outcome) => !leftOutcomes.ids.has(outcome.id)) : outcomes, { restored, beginningLoaded: olderCursor === null }), [shownTurns, outcomes, leftOutcomes, historyId, restored, olderCursor]);
+  const shownOutcomes = useMemo(() => {
+    if (moved === null || moved.history !== historyId) return outcomes;
+    if (outcomes !== moved.held) firstAfterMove.current ??= outcomes;
+    return afterMove(outcomes, moved.held, firstAfterMove.current);
+  }, [outcomes, moved, historyId]);
+  const withOutcomes = useMemo(() => outcomeRows(shownTurns, shownOutcomes, { restored, beginningLoaded: olderCursor === null }), [shownTurns, shownOutcomes, restored, olderCursor]);
   const timelineRows = useMemo((): ChatRow[] => {
     const rows = withOutcomes.map((row): ChatRow => {
       if (row.kind === "sent") return { key: `outcome:${row.outcome.id}`, turn: null, outcome: row.outcome, beforeUser: false };

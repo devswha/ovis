@@ -144,13 +144,19 @@ export function outcomeResultText(outcome: CommandOutcome, dismissed: boolean): 
 const SESSION_CHANGE = /^\/(?:clear|new|reset|resume)(?:\s|$)/iu;
 
 /**
- * The ids of the outcomes a move to another conversation leaves behind: no receipts of the new one.
- * The newest /clear, /new, /reset or /resume made the move: it and the sends after it stay.
+ * The outcomes of a conversation the chat moved to, without the sends to the one it left. `held` is the
+ * list the chat held when it saw the move, `first` the first other list after it (the caller keeps it).
+ * The newest /clear, /new, /reset or /resume in the held list, or in `first` once the list changed, made
+ * the move: a later one did not move the chat. Every send before it, by the server's send times, is the
+ * old conversation's, also one a later poll lists first. With no such command (a /clear typed in the
+ * terminal), the held list is all the old conversation's, and a later list stands: it tells no old send
+ * from a new one.
  */
-export function leftBehind(outcomes: readonly CommandOutcome[]): Set<string> {
-  const ordered = [...outcomes].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  const change = ordered.map((outcome) => SESSION_CHANGE.test(outcome.text.trim())).lastIndexOf(true);
-  return new Set(ordered.slice(0, change < 0 ? undefined : change).map((outcome) => outcome.id));
+export function afterMove(outcomes: readonly CommandOutcome[], held: readonly CommandOutcome[], first = outcomes): readonly CommandOutcome[] {
+  const moves = (outcomes === held ? held : first).filter((outcome) => SESSION_CHANGE.test(outcome.text.trim()));
+  if (moves.length === 0) return outcomes === held ? [] : outcomes;
+  const move = Math.max(...moves.map((outcome) => Date.parse(outcome.created_at)));
+  return outcomes.filter((outcome) => Date.parse(outcome.created_at) >= move);
 }
 
 /** Calls `invalidate` for each outcome that changed the agent's command list, once: `noted` keeps the ids already acted on. */
