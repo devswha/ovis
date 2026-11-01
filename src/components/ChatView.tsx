@@ -690,8 +690,8 @@ function ThinkingRow({ text, stateKey, defaultOpen }: { text: string; stateKey: 
  * the first row draws takes its place without a change of look; nothing to open yet, so its caret
  * holds only the room.
  */
-function PendingWorkHead({ title, className = "" }: { title: string; className?: string }) {
-  return <div className={`work-block is-live is-pending ${className}`} role="status">
+function PendingWorkHead({ title, className = "", reserved = false }: { title: string; className?: string; reserved?: boolean }) {
+  return <div className={`work-block is-live is-pending ${className}`} role="status" aria-hidden={reserved || undefined}>
     <div className="work-block-head"><span className="work-row-caret" aria-hidden="true" /><span className="work-block-title">{title}</span></div>
   </div>;
 }
@@ -2172,6 +2172,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     return () => window.clearTimeout(timer);
   }, [answerTurn, paneId]);
   const answerLagOut = answerTurn !== null && lagOutFor === answerTurn;
+  // while it waits the head keeps its place, unseen: showing it later moves nothing a reader is
+  // selecting or reading, as the chat is laid out the same from the answer's first frame
+  const activityReserved = afterAnswer && !answerLagOut;
+  const activityClass = activityReserved ? "chat-activity-reserved" : "chat-activity";
   const empty = state.source === "conversation" ? turns.length === 0 : agent === null && state.messages.length === 0;
   const blank = !ended && chatIsBlank({ loaded, failed: error !== null, transcript: state.source === "conversation", turns: turns.length, older: typeof olderCursor === "string", abandoned: abandoned?.count ?? 0, prompt: prompt !== null, agent });
   // the scrollback standing in says nothing of the conversation: it has no history to compare
@@ -2358,15 +2362,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           tool row (Claude Code's spinner writes nothing to the transcript), and while a native turn
           thinks (a work block's head says Working). Without native activity the pane status stands
           in. One Working at a time, so none before the first read: its rows may hold the running
-          turn's own head. None under an answer while the status may still be catching up with it. */}
-      {connected && loaded && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && (activity === "thinking" || !workBlockLive) && (!afterAnswer || answerLagOut) && (workBlockLive
+          turn's own head. None seen under an answer while the status may still be catching up with it. */}
+      {connected && loaded && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && (activity === "thinking" || !workBlockLive) && (workBlockLive
         // under the running turn's own head, a second head would read as a second block
-        ? <p className="chat-activity chat-activity-line" role="status"><CircleDot aria-hidden="true" />{t("Thinking…")}</p>
+        ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{t("Thinking…")}</p>
         // under a running turn's words: removing a line below them moves nothing when it ends
         : answerOnlyLive
-          ? <p className="chat-activity chat-activity-line" role="status"><CircleDot aria-hidden="true" />{activity === "thinking" ? t("Thinking…") : t("Working…")}</p>
+          ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{activity === "thinking" ? t("Thinking…") : t("Working…")}</p>
           // before the turn has a row at all, where its work block will be drawn
-          : <PendingWorkHead className="chat-activity" title={activity === "thinking" ? t("Thinking…") : t("Working…")} />)}
+          : <PendingWorkHead className={activityClass} reserved={activityReserved} title={activity === "thinking" ? t("Thinking…") : t("Working…")} />)}
       {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentMark agent={agent ?? "agent"} size={32} /><p>{t("No conversation yet — say something below")}</p></div>}
       {ended && <p className="chat-endcap">{t("terminal ended")}</p>}
   </>;

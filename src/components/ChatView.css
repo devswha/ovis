@@ -1237,6 +1237,9 @@ ol.markdown-list {
 
 .chat-activity-line svg { width: 1em; height: 1em; flex: none; }
 
+/* the Working head while herdr's status may still trail an answer: its place is kept, unseen */
+.chat-activity-reserved { visibility: hidden; }
+
 /* a pending block's head opens nothing until its rows are drawn */
 .work-block.is-pending .work-block-head,
 .work-block.is-pending .work-block-head:hover {
