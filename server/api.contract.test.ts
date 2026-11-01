@@ -2012,6 +2012,17 @@ describe("workspace and discovery endpoints", () => {
     expect(git("commit", "-q", "-m", "fixture").exitCode).toBe(0);
     const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     const owned: string[] = [];
+    // until no session-changed comes for 700 ms: the collector's debounced one (500 ms after herdr's event) is not the next create's
+    const quiet = async (): Promise<void> => {
+      const changes = () => socket.seen.filter((frame) => frame.type === "session-changed").length;
+      const deadline = Date.now() + 10_000;
+      let count = changes(), since = Date.now();
+      while (Date.now() - since < 700) {
+        if (Date.now() > deadline) throw new Error("session-changed frames did not stop within 10s");
+        await Bun.sleep(25);
+        if (changes() !== count) { count = changes(); since = Date.now(); }
+      }
+    };
     // ms from the answer to the first session-changed after the request: the collector's comes 500 ms late
     const pushedOnAnswer = async (path: string, body: unknown): Promise<number> => {
       const before = new Set(socket.seen);
@@ -2021,15 +2032,14 @@ describe("workspace and discovery endpoints", () => {
       expect(response.status).toBe(200);
       owned.push(((await response.json()) as WorkspaceCreated).workspace_id);
       const pushed = await changed - answered;
-      // the collector's frame for this create is not the next one's
-      await Bun.sleep(1_000);
+      await quiet();
       return pushed;
     };
     try {
       const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-create-push" });
       owned.push(parent.workspace.workspace_id);
       await socket.waitFor((frame) => frame.type === "session-changed", "session-changed after setup", 5_000);
-      await Bun.sleep(1_000);
+      await quiet();
       expect(await pushedOnAnswer("/api/tab/create", { workspace_id: parent.workspace.workspace_id })).toBeLessThan(250);
       expect(await pushedOnAnswer("/api/workspace/create", { cwd: repo, label: "ovis-test-create-push-2" })).toBeLessThan(250);
       const checkout = join(`${repo}-checkouts`, "feature");
