@@ -191,13 +191,17 @@ try {
     await page.getByText("REVISION-0", { exact: true }).waitFor();
     await page.evaluate((narrow) => window.chatQa.resize(543, narrow ? 478 : undefined), width > 478);
     await page.evaluate(() => { window.chatQa.status("idle"); window.chatQa.machine("long"); });
+    const unasked = setTimeout(() => longRead.asked.reject(new Error("the long chat never asked for its conversation")), 15_000);
     await longRead.asked.promise;
+    clearTimeout(unasked);
     await page.evaluate(async () => {
       const frames: { gap: number; newestInView: boolean }[] = [];
       Object.assign(window, { longLanding: new Promise((resolve) => {
-        // settled: the view and the transcript's height unchanged for 20 frames once the rows show
-        let last = "", same = 0;
+        // settled: the view and the transcript's height unchanged for 20 frames once the rows show;
+        // 600 frames at most, rows or not
+        let last = "", same = 0, ticks = 0;
         const sample = () => {
+          ticks++;
           const node = document.querySelector<HTMLElement>(".chat-view");
           const end = [...node?.querySelectorAll("p") ?? []].find((p) => p.textContent === "LONG-CHAT-END");
           if (node && node.querySelector("[data-chat-row]")) {
@@ -207,7 +211,7 @@ try {
             same = now === last ? same + 1 : 0;
             last = now;
           }
-          if (same >= 20 || frames.length >= 600) resolve(frames);
+          if (same >= 20 || ticks >= 600) resolve(frames);
           else requestAnimationFrame(sample);
         };
         requestAnimationFrame(sample);
