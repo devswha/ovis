@@ -1707,7 +1707,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   watches the three hidden ones; a phone (a coarse pointer or a viewport up to 768px) only the tab
   before the current one, to save its battery, and its older tabs show their last screen until the
   attach, as before. It cannot take input, focus or the clipboard (OSC 52).
-  Leaving the window or eviction stops the view, and coming back to the window starts it again;
+  Leaving the window, hiding the page or eviction stops the view, and coming back starts it again;
+  a hidden page attaches afresh instead of parsing a view queued while it could not draw.
   **Use alongside herdr's own window** stops it at the next of those. A reconnect resumes the views
   the connection had, never a hidden attach. This follows Zed's multiple
   terminal tabs (https://zed.dev/docs/terminal), with a bounded browser cache rather than
