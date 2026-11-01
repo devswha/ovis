@@ -60,4 +60,11 @@
   .phone-address {
     flex-direction: column;
   }
+
+  /* a phone has no room to scroll a hidden line: the whole command shows, wrapped where it must */
+  .phone-command code {
+    overflow-x: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

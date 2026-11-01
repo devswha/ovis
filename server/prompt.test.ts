@@ -138,7 +138,8 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
     expect(answerKeys(plan!, { custom_text: "Keep the existing introduction" })).toEqual([
       { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] },
       { text: "Keep the existing introduction" },
-      { keys: ["shift+tab"] },
+      // Enter keeps planning: shift+tab approves the plan with the feedback
+      { keys: ["enter"] },
     ]);
   });
 

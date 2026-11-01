@@ -1,9 +1,9 @@
 /**
  * Japanese for the keys only the devices files use:
  * components/DevicesPanel.tsx (with VIA), components/PhonePanel.tsx, components/PortalPanel.tsx,
- * components/PortalAuth.tsx, components/PortalInvite.tsx, components/PushTestControls.tsx,
- * components/AccessGate.tsx, components/LanExposureNotice.tsx, lib/install.ts, lib/portalAuth.ts,
- * and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
+ * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
+ * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const DEVICES_JA: Record<string, string> = {
@@ -153,4 +153,30 @@ export const DEVICES_JA: Record<string, string> = {
   "Allow notifications to test alerts on this device.": "このデバイスで通知をテストするには、通知を許可してください。",
   "Could not send the test notification. Try again.": "テスト通知を送信できませんでした。もう一度お試しください。",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "最後の通知はこのデバイスに届きませんでした。次の通知は通常どおり送られます。テストを送って確認してください。",
+  "Remote access through Ovis relay": "Ovis リレー経由のリモートアクセス",
+  "Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.": "Tailscale なしで、どこからでもスマートフォンから Ovis を使えます。通信は端末間で暗号化され、リレーにはいつ・どれだけ通ったかしか分かりません。",
+  "Ovis relay": "Ovis リレー",
+  "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "リレーを操作できるのは、PC に直接接続した所有者だけです。PC 上で Ovis を開くか、PC の直接のアドレスにアクセスしてください。",
+  "Turning it on closes the device gate: a new browser then needs a pairing code or the access token.": "オンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
+  "Reset relay identity": "リレー ID をリセット",
+  "This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.": "この PC は新しいリレー ID を受け取ります。リレー経由でペアリングしたスマートフォンはペアリングが解除され、新しいコードが必要になります。",
+  "Reset": "リセット",
+  "Reset the relay identity?": "リレー ID をリセットしますか？",
+  "Phones paired through the relay will need to scan a new code.": "リレー経由でペアリングしたスマートフォンは、新しいコードを読み取り直す必要があります。",
+  "Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.": "ブロック中: OVIS_TAILSCALE_SERVE_ONLY により tailscale serve が唯一の入口になっています。この PC で解除し、アプリを再起動してください。",
+  "Blocked: this PC's relay identity cannot be read. Reset it below to use the relay again.": "ブロック中: この PC のリレー ID を読み取れません。下でリセットすると、リレーを再び使えます。",
+  "Off. Nothing goes through the relay.": "オフ。リレーを通る通信はありません。",
+  "Online. No phone connected.": "オンライン。接続中のスマートフォンはありません。",
+  "Online. 1 phone connected.": "オンライン。スマートフォン 1 台が接続中です。",
+  "Online. {n} phones connected.": "オンライン。スマートフォン {n} 台が接続中です。",
+  "Error: {message}": "エラー: {message}",
+  "Could not reach the relay.": "リレーに接続できませんでした。",
+  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
+  "QR code that pairs a phone through the relay": "リレー経由でスマートフォンをペアリングする QR コード",
+  "Scan it with the phone's camera": "スマートフォンのカメラで読み取ってください",
+  "It opens Ovis on the phone and pairs it with this PC.": "スマートフォンで Ovis が開き、この PC とペアリングされます。",
+  "This code expired.": "このコードは期限切れです。",
+  "Getting a code…": "コードを取得しています…",
+  "This is a paired device, reaching the PC through the Ovis relay.": "Ovis リレー経由で PC に接続しているペアリング済みデバイスです。",
+  "via relay": "リレー経由",
 };

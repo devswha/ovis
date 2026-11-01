@@ -73,7 +73,8 @@ export class RelayService {
   }
 
   private failed(error: unknown): void {
-    this.phase = "error";
+    // without a link nothing retries: the relay is off, and the error says why
+    this.phase = this.link ? "error" : "off";
     this.error = error instanceof RelayIdentityError ? error.message : "Could not start the relay.";
     if (error instanceof RelayIdentityError) this.blocked = "identity_unreadable";
   }
