@@ -1,9 +1,9 @@
 /**
- * The built-ins the app calls that are newer than the browsers it is built for (vite.config.ts
- * targets Safari 14), filled in where the browser lacks them (#2513). Imported first by main.tsx,
- * before any module that may call one as it loads, and by the app's own workers, which main.tsx
- * does not reach. The diff package's worker is its own entry and is not covered: it needs Safari 15.4. A real module, not an inline script: the
- * Content-Security-Policy allows only the app's own files.
+ * The built-ins the app calls that are newer than the oldest Safari it runs on, filled in where the
+ * browser lacks them (#2513). That Safari is 16.4: the app's regular expressions look behind,
+ * which no earlier one parses, so an iPhone 8 or X (capped at iOS 16) runs the app from iOS 16.4.
+ * Imported first by main.tsx, before any module that may call one as it loads. A real module, not
+ * an inline script: the Content-Security-Policy allows only the app's own files.
  */
 
 const define = (owner: object, name: string, value: unknown): void => {
@@ -19,28 +19,8 @@ define(Promise, "withResolvers", function withResolvers<T>(this: PromiseConstruc
   return { promise, resolve, reject };
 });
 
-// Safari 15.4
-define(Object, "hasOwn", (target: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(Object(target), key));
-
-// Safari 15.4: arrays, strings and typed arrays
-function at(this: ArrayLike<unknown>, index: number): unknown {
-  const length = this.length;
-  const whole = Math.trunc(index) || 0;
-  const position = whole < 0 ? length + whole : whole;
-  return position < 0 || position >= length ? undefined : this[position];
-}
-define(Array.prototype, "at", at);
-define(String.prototype, "at", function (this: string, index: number) { return at.call(String(this), index); });
-define(Object.getPrototypeOf(Int8Array.prototype) as object, "at", at);
-
+// Safari 17.4
 if (typeof AbortSignal !== "undefined") {
-  // Safari 16
-  define(AbortSignal, "timeout", (ms: number): AbortSignal => {
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
-    return controller.signal;
-  });
-  // Safari 17.4
   define(AbortSignal, "any", (signals: Iterable<AbortSignal>): AbortSignal => {
     const controller = new AbortController();
     const all = [...signals];
@@ -58,7 +38,7 @@ if (typeof AbortSignal !== "undefined") {
   });
 }
 
-// Safari 15.4, and never on a plain-http address (not a secure context); getRandomValues is
+// never on a plain-http address (not a secure context), whatever the browser; getRandomValues is
 if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
   define(crypto, "randomUUID", (): string => {
     const bytes = crypto.getRandomValues(new Uint8Array(16));

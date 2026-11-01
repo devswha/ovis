@@ -1,7 +1,7 @@
 /**
- * The app on a browser older than the APIs it calls (#2513): the build targets Safari 14, so every
- * newer built-in it uses must be there by the time a module runs (src/lib/builtins.ts). Each page
- * here loses those built-ins before the app's script runs, as Safari 17.3 and older lack them, and a chat
+ * The app on a browser older than the built-ins it calls (#2513): it runs from Safari 16.4, so each
+ * newer one it uses must be there by the time a module runs (src/lib/builtins.ts). Each page here
+ * loses those built-ins before the app's script runs, as Safari 16.4 to 17.3 lacks them, and a chat
  * pane and a terminal pane must both draw with no "can't be shown" and no uncaught error. No herdr
  * session and no user state: the demo build on a loopback server on port 0 under the app's
  * Content-Security-Policy, and a temporary directory removed at the end.
@@ -24,13 +24,12 @@ const app = mkdtempSync(join(tmpdir(), "herdr-old-safari-"));
 
 /**
  * What each browser lacks of the built-ins the app calls. iOS 16 (the last on an iPhone 8) lacks
- * only the two that came in Safari 17.4. Safari 14, the build's target, also lacks those of 15.4
- * (Object.hasOwn, .at(), crypto.randomUUID) and AbortSignal.timeout of 16; randomUUID is also
- * missing on any plain-http address, whatever the browser.
+ * the two that came in Safari 17.4; on a plain-http address, which is no secure context, any
+ * browser also lacks crypto.randomUUID.
  */
 const BROWSERS = [
   { name: "ios-16", gone: ["Promise.withResolvers", "AbortSignal.any"] },
-  { name: "safari-14", gone: ["Promise.withResolvers", "AbortSignal.any", "AbortSignal.timeout", "Object.hasOwn", "Array.prototype.at", "String.prototype.at", "TypedArray.prototype.at", "Crypto.prototype.randomUUID"] },
+  { name: "ios-16-plain-http", gone: ["Promise.withResolvers", "AbortSignal.any", "Crypto.prototype.randomUUID"] },
 ];
 const PANES = [
   { name: "chat", pane: panes.omp, drawn: ".pane-frame.is-current .chat-turn" },
@@ -46,8 +45,7 @@ try {
   // the built-ins go after the demo's transport, which needs randomUUID as it loads, and before the
   // app: a file of the page's own, as the Content-Security-Policy allows no inline script
   writeFileSync(join(app, "old-browser.js"), `{
-    const owners = { Promise, AbortSignal, Object, "Array.prototype": Array.prototype, "String.prototype": String.prototype,
-      "TypedArray.prototype": Object.getPrototypeOf(Int8Array.prototype), "Crypto.prototype": Crypto.prototype };
+    const owners = { Promise, AbortSignal, "Crypto.prototype": Crypto.prototype };
     for (const path of window.oldBrowserLacks) {
       const dot = path.lastIndexOf(".");
       delete owners[path.slice(0, dot)][path.slice(dot + 1)];
