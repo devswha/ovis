@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import terminalFixture from "../site/demo/fixtures/terminal.json";
 
 interface Fixture {
   sent: Array<{ type: string; pane_id?: string }>;
@@ -83,8 +84,13 @@ try {
       const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe } | null)?.outputProbe?.();
       return probe !== undefined && probe.inFlight === 0 && probe.queued === 0;
     }, undefined, { timeout: 10_000 });
-    // the demo's own screen for the attach comes first; a mark pushed before it would be cleared by it
-    await page.waitForFunction((pane) => (document.querySelector(`[data-layout-pane="${pane}"] .xterm-rows`)?.textContent ?? "").trim() !== "", pane, { timeout: 10_000 });
+    // the demo's shell replays a recording on attach, frame by frame: a mark pushed before its last
+    // frame would be drawn over by the rest of it, so the mark waits until that frame was written
+    const lastFrame = terminalFixture.frames.at(-1)!.data.slice(-512);
+    await page.waitForFunction((tail) => {
+      const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe & { written: string } } | null)?.outputProbe?.();
+      return probe !== undefined && probe.written.endsWith(tail);
+    }, lastFrame, { timeout: 10_000 });
     await settled();
     // the attach draws a screen the test can recognise
     await page.evaluate(({ pane, data }) => {
