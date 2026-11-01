@@ -718,6 +718,10 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
   it or resized it: the app's window, or your phone once you type or open it there.
+- **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
+  not kept current behind your back. A recent tab you switch away from keeps its last screen until
+  you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
+  window, and after a reconnect a tab attaches again at once.
 - **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
   empty input box reads as typed text, and a send waits for you to confirm it.
 - **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
