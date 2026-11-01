@@ -1203,6 +1203,8 @@ export interface ClaudeSubagentDeps {
 
 /** `sig`: what the files looked like when the count was last worked out from them in full */
 interface Tracked {
+  /** Opaque lifetime of an asynchronous task-list read, renewed on a proven replacement. */
+  read: number;
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
@@ -1215,6 +1217,9 @@ interface Tracked {
   /** every observed agent, whose own file can end or resume its turn */
   watch: string[];
 }
+
+/** Unique across trackers too: several servers in one process share the file worker pool. */
+let taskReadSequence = 0;
 
 /**
  * What says a Claude pane's session may have begun a turn its transcript does not show yet: herdr
@@ -1363,9 +1368,9 @@ export class ClaudeSubagentStatus {
   }
 
   /** The transcript of the Claude session the pane holds, or last held, whether it still runs Claude, and when that process started. */
-  sessionOf(paneId: string): { path: string; live: boolean; startedAt: number | null } | null {
+  sessionOf(paneId: string): { path: string; live: boolean; startedAt: number | null; read?: number } | null {
     const tracked = this.panes.get(paneId);
-    return tracked?.path ? { path: tracked.path, live: tracked.live, startedAt: tracked.startedAt } : null;
+    return tracked?.path ? { path: tracked.path, live: tracked.live, startedAt: tracked.startedAt, read: tracked.read } : null;
   }
 
   /** Finds the Claude panes of a snapshot and their transcripts; a lookup costs process calls, so a known one is not repeated. */
@@ -1433,7 +1438,7 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1448,6 +1453,7 @@ export class ClaudeSubagentStatus {
     this.deps.onReset?.(pane.pane_id);
     const tracked = this.panes.get(pane.pane_id);
     if (!tracked) return;
+    tracked.read = ++taskReadSequence;
     tracked.live = false;
     tracked.reset = true;
     // Leaving Claude retains the old transcript for the lost-task list, but a new Claude session cannot read it.

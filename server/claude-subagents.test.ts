@@ -577,6 +577,34 @@ describe("taskNotification", () => {
 describe("ClaudeSubagentStatus", () => {
   const pane = (id: string, agent: string | null, session = "s1"): HerdrPane => ({ pane_id: id, agent, agent_session: { agent: agent ?? "", kind: "id", source: "hook", value: session }, cwd: "/work", agent_status: "idle", focused: false, revision: 1 }) as HerdrPane;
 
+  it("keeps task-list reads bound to a pane lifetime across process replacement and close/reopen", async () => {
+    const s = session();
+    let pid = 1;
+    let now = NOW;
+    const status = new ClaudeSubagentStatus({
+      resolve: async () => ({ path: s.path, startedAt: null, pid }), pid: async () => pid,
+      onChange: () => undefined, now: () => now, refreshMs: 1000,
+    });
+    await status.refresh([pane("p1", "claude")]);
+    const first = status.sessionOf("p1")!.read;
+    expect(typeof first).toBe("number");
+    now += 1000;
+    await status.refresh([pane("p1", "claude")]);
+    expect(status.sessionOf("p1")!.read).toBe(first);
+    // A new process can resume the same transcript with no known start time.
+    pid++;
+    now += 1000;
+    await status.refresh([pane("p1", "claude")]);
+    const replaced = status.sessionOf("p1")!.read;
+    expect(replaced).not.toBe(first);
+    await status.refresh([]);
+    await status.refresh([pane("p1", "claude")]);
+    expect(status.sessionOf("p1")!.read).not.toBe(replaced);
+    const reopened = status.sessionOf("p1")!.read;
+    await status.refresh([pane("p1", "claude", "s2")]);
+    expect(status.sessionOf("p1")!.read).not.toBe(reopened);
+  });
+
   it("adopts a delayed transcript without losing the observed rest or renewing its deadline", async () => {
     for (const order of ["early", "late", "baseline", "expired"] as const) {
       const s = session();
@@ -768,10 +796,10 @@ describe("ClaudeSubagentStatus", () => {
     const told: [string, number][] = [];
     const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: (paneId, running) => told.push([paneId, running]), now: () => NOW });
     await status.refresh([pane("p1", "claude")]);
-    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: true, startedAt: null });
+    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: true, startedAt: null });
     await status.refresh([pane("p1", null)]);
     expect(told).toEqual([["p1", 1], ["p1", 0]]);
-    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: false, startedAt: null });
+    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: false, startedAt: null });
     // gone with the pane
     await status.refresh([]);
     expect(status.sessionOf("p1")).toBeNull();
@@ -1006,7 +1034,7 @@ describe("ClaudeSubagentStatus upkeep", () => {
     const told: number[] = [];
     const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: 42 }), onChange: (_, running) => told.push(running), now: () => now });
     await status.refresh([pane("claude")]);
-    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: true, startedAt: 42 });
+    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: true, startedAt: 42 });
     status.poll();
     expect(told).toEqual([]);
     // a message to it was written before, and the session is idle: only its own file moves

@@ -21,8 +21,8 @@ import type { FileTask, FileTaskResult } from "./file-tasks.ts";
 export const FILE_TASK_DEADLINE_MS = 3_000;
 /**
  * A task of many calls rather than one: a page rendered with its own files (work for the processor
- * too), or a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
- * slow). It may take longer.
+ * too), a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
+ * slow), or a Claude task list scanned from its agent session's history. It may take longer.
  */
 export const FILE_LONG_TASK_DEADLINE_MS = 15_000;
 /**
@@ -45,7 +45,7 @@ interface PoolOptions {
   longDeadlineMs: number;
   scanDeadlineMs: number;
   /**
-   * At most this many threads run a commands scan at once: a scan can hold its thread for many
+   * At most this many threads run commands or Claude task-list scans at once: a scan can hold its thread for many
    * seconds, and the file routes keep the others. A scan past that waits, and the tasks behind it
    * still take a free thread.
    */
@@ -157,7 +157,7 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   // failed or was ended mid-task) can still be closed (`abandon`)
   if (task.op === "open" || task.op === "describe") task = { ...task, opened: openedCell() };
   return new Promise<T>((done, fail) => {
-    const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" ? options.longDeadlineMs : options.deadlineMs;
+    const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" || task.op === "claude-tasks" ? options.longDeadlineMs : options.deadlineMs;
     const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending, "the file system did not answer in time"), deadline), ...(onRun ? { onRun } : {}) };
     if (signal !== undefined) {
       const cancel = () => expire(pending, "the request was cancelled");
@@ -171,11 +171,13 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   });
 }
 
+const isScan = (task: FileTask): boolean => task.op === "commands" || task.op === "claude-tasks";
+
 /** A scan only while fewer than `scans` threads run one (a scan past its deadline keeps its thread, and counts, until it returns); any other task always. */
 function mayRun(task: FileTask): boolean {
-  if (task.op !== "commands") return true;
+  if (!isScan(task)) return true;
   let scanning = 0;
-  for (const thread of threads) if (thread.pending?.task.op === "commands") scanning += 1;
+  for (const thread of threads) if (thread.pending !== null && isScan(thread.pending.task)) scanning += 1;
   return scanning < options.scans;
 }
 
