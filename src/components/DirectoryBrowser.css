@@ -31,8 +31,31 @@
   font-size: var(--fs-xs);
 }
 
-.dir-browser-search {
+/* a pressed eye shows that hidden entries are included */
+.dir-browser-bar .icon-button[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* a folder picker's search and confirm share one compact row */
+.dir-browser-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.dir-browser-filter {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.dir-browser-filter .input {
+  width: 100%;
+}
+
+.dir-browser-tools .btn {
+  flex: none;
 }
 
 /* New folder's name field, under the bar it was opened from */

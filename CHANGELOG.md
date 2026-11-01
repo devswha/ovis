@@ -172,8 +172,17 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   window's height (60% on a phone), and a diagram may now grow to the same height instead of
   24 rem. A small icon stays its own size, and a tap still opens the image viewer.
   ([#2539](https://github.com/devswha/ovis/pull/2539))
+- Connect a phone makes it plain that a phone can connect without Tailscale: the ways to connect are
+  three cards with a one-line hint each (Ovis relay: from anywhere, nothing to install; Tailscale;
+  Pairing code), and the Phone row names the relay beside the Tailscale address. The dialog opens on
+  the relay whenever it is on or Tailscale is not set up; on a tailnet with the relay off it opens on
+  Tailscale, with the relay's switch right on its card. The relay still starts off.
+  ([#2567](https://github.com/devswha/ovis/pull/2567))
 
 ### Fixed
+- New workspace's folder picker puts **Use this folder** and the folder filter on one compact row, and
+  moves Show hidden into the path bar, leaving more room for the folder list on phones and desktops.
+  ([#2555](https://github.com/devswha/ovis/pull/2555) by @iwangjie)
 - An answer to one of Claude Code's questions (AskUserQuestion) comes back once the terminal shows
   the next question, the review or nothing. The question just answered, or a generic card from a
   half-drawn screen, no longer comes back for two seconds after the answer.

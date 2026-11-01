@@ -18,7 +18,7 @@
         "On phones, same-host links can open in a popup inside the app.",
         "Claude question cards list each question as a step, with Back.",
         "OmO, Codex and Hermes cards go between questions with Back and Next.",
-        "Connect a phone from one dialog: Ovis relay, Tailscale or a code.",
+        "Connect a phone through the Ovis relay, no Tailscale needed, or Tailscale or a code.",
         "Chat shows pictures whole, up to the width of the column."
       ],
       "fixed": [
@@ -50,7 +50,7 @@
         "휴대폰에서 같은 호스트의 링크를 앱 안의 팝업으로 엽니다.",
         "Claude 질문 카드가 질문을 단계로 보여 주고 뒤로 갈 수 있습니다.",
         "OmO, Codex, Hermes 질문 카드에서 뒤로·다음으로 질문 사이를 오갑니다.",
-        "Ovis 릴레이, Tailscale, 코드 중 하나로 한 대화상자에서 휴대폰을 연결합니다.",
+        "Tailscale 없이 Ovis 릴레이로, 또는 Tailscale이나 코드로 휴대폰을 연결합니다.",
         "Chat이 그림을 열 너비까지 잘리지 않고 온전히 보여 줍니다."
       ],
       "fixed": [
@@ -82,7 +82,7 @@
         "スマートフォンでは、同じホストのリンクをアプリ内のポップアップで開けます。",
         "Claude の質問カードが質問をステップで示し、「戻る」で戻れます。",
         "OmO、Codex、Hermes の質問カードで、「戻る」「次へ」で質問間を移動できます。",
-        "Ovis リレー、Tailscale、コードのいずれかで、ひとつのダイアログからスマートフォンを接続できます。",
+        "Tailscale なしで Ovis リレーから、または Tailscale かコードでスマートフォンを接続できます。",
         "チャットが画像を列の幅まで切らずに表示します。"
       ],
       "fixed": [
@@ -114,7 +114,7 @@
         "在手机上，同主机链接可在应用内的弹窗中打开。",
         "Claude 的提问卡片会把问题列为步骤，并可返回上一步。",
         "OmO、Codex 和 Hermes 的提问卡片可用“返回”和“下一步”在问题间切换。",
-        "在一个对话框中用 Ovis 中继、Tailscale 或配对码连接手机。",
+        "无需 Tailscale 即可通过 Ovis 中继连接手机，也可用 Tailscale 或配对码。",
         "聊天会完整显示图片，最宽到栏宽。"
       ],
       "fixed": [

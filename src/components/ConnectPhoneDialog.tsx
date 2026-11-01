@@ -17,7 +17,7 @@ import type { PairingCode } from "../../shared/protocol.ts";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, RelayPairing, statusText } from "./RelayPanel.tsx";
-import { Segmented } from "./SettingsControls.tsx";
+import { Toggle } from "./SettingsControls.tsx";
 
 const README_PHONE = "https://github.com/devswha/ovis#on-your-phone";
 const README_SAFETY = "https://github.com/devswha/ovis#access-and-safety";
@@ -27,10 +27,20 @@ export type ConnectRoute = "relay" | "tailscale" | "code";
 /** whether the relay can be offered here at all: a server with the route, a direct page, not the hosted shell */
 export const relayOffered = (relay: RelayState): boolean => !relay.unsupported && relay.status !== null && !inRelayShell();
 
-/** the way the dialog opens on: Tailscale once it already works, else the relay, which needs nothing installed */
+/** Tailscale already gives a phone an address for this PC */
+const tailscaleWorks = (plan: PhonePlan): boolean => plan.kind === "here" || plan.kind === "served";
+
+/** the relay is on: connecting or online, nothing blocking it (RelayPanel's switch reads the same) */
+const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
+
+/**
+ * The way the dialog opens on: the relay whenever it is offered, since it needs nothing installed,
+ * except when it is off and Tailscale already works; then Tailscale, with the relay's switch on its
+ * choice so it can be turned on right there.
+ */
 export function defaultRoute(plan: PhonePlan, relay: RelayState): ConnectRoute {
-  if (plan.kind === "here" || plan.kind === "served") return "tailscale";
-  return relayOffered(relay) ? "relay" : "tailscale";
+  if (!relayOffered(relay)) return "tailscale";
+  return !relayOn(relay) && tailscaleWorks(plan) ? "tailscale" : "relay";
 }
 
 export interface ConnectPhoneDialogProps {
@@ -53,8 +63,9 @@ export interface ConnectPhoneDialogProps {
 }
 
 /**
- * Settings → Phone & devices → Connect a phone: the ways a phone reaches this PC, one at a time,
- * and the QR codes, which show only here. The Ovis relay (from anywhere, nothing to install),
+ * Settings → Phone & devices → Connect a phone: the ways a phone reaches this PC as choices at the
+ * top, each with its one-line hint, then the chosen one's details, and the QR codes, which show only
+ * here. The Ovis relay (from anywhere, nothing to install),
  * Tailscale (the PC's tailnet address, or the command that publishes it) and a pairing code (a
  * phone that can already open this address: the same Wi-Fi, a tunnel, a proxy). The settings page
  * keeps the relay's switch and the device list; the long explanations wait behind How it works.
@@ -62,7 +73,10 @@ export interface ConnectPhoneDialogProps {
 export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, pairUrl, relay, readOnly, closesGate, canPair, startCode = false, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
-  const [route, setRoute] = useState<ConnectRoute>(initial);
+  // until a way is picked, the dialog follows the default as the relay's and Tailscale's answers arrive, so a
+  // dialog opened before they did does not stay on the way it guessed; a caller's own route (Pair a device) is a pick
+  const [picked, setRoute] = useState<ConnectRoute | null>(initial === defaultRoute(plan, relay) && !startCode ? null : initial);
+  const route = picked ?? defaultRoute(plan, relay);
   const surface = useFocusTrap<HTMLDivElement>(true);
   useSheetSwipe(surface, onClose);
   usePhoneSheetBack(() => { onClose(); });
@@ -78,12 +92,26 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
   }, [onClose, surface]);
 
   const offered = relayOffered(relay);
-  const routes: { value: ConnectRoute; label: string }[] = [
-    ...(offered ? [{ value: "relay" as const, label: t("Ovis relay") }] : []),
-    { value: "tailscale", label: "Tailscale" },
-    ...(canPair ? [{ value: "code" as const, label: t("Pairing code") }] : []),
+  // with Tailscale already working the dialog opens there, so the relay's choice carries its switch
+  const switchOnChoice = offered && tailscaleWorks(plan) && !readOnly && relay.status?.blocked === null;
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  // a failed switch's reason goes once the relay is on, however it came on (the page's own switch shares this state)
+  const on = relayOn(relay);
+  useEffect(() => { if (on) setSwitchError(null); }, [on]);
+  const routes: { value: ConnectRoute; label: string; hint: string }[] = [
+    ...(offered ? [{ value: "relay" as const, label: t("Ovis relay"), hint: t("From anywhere. Nothing to install.") }] : []),
+    // on this page's own HTTPS address (maybe not Tailscale's), the hint names the address, not the app
+    { value: "tailscale", label: "Tailscale", hint: plan.kind === "here" ? t("At this page's HTTPS address.") : t("With the Tailscale app on the phone.") },
+    ...(canPair ? [{ value: "code" as const, label: t("Pairing code"), hint: t("On the same Wi-Fi, or through a tunnel.") }] : []),
   ];
   const shown = routes.some((option) => option.value === route) ? route : routes[0]!.value;
+  const switchRelay = async (next: boolean) => {
+    setSwitchError(null);
+    // the switch picks the relay: turned on, its details follow (its state, then its QR code once it is online),
+    // and turned off they stay, rather than the default moving back to Tailscale under the hand that switched it
+    setRoute("relay");
+    try { await relay.request(next ? "start" : "stop"); } catch (reason) { setSwitchError(failureText(reason)); }
+  };
 
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -93,10 +121,27 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
           <button type="button" className="icon-button" aria-label={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         <div className="modal-body connect-phone-body">
-          {routes.length > 1 && <Segmented label={t("How the phone connects")} value={shown} options={routes} onChange={setRoute} />}
+          {routes.length > 1 && (
+            <div className="connect-phone-choices" role="group" aria-label={t("How the phone connects")}>
+              {routes.map((option) => (
+                <div key={option.value} className="connect-phone-choice">
+                  <button type="button" className="connect-phone-choice-button" aria-pressed={shown === option.value}
+                    aria-labelledby={`${id}-${option.value}`} aria-describedby={`${id}-${option.value}-hint`} onClick={() => setRoute(option.value)}>
+                    <span className="connect-phone-choice-label" id={`${id}-${option.value}`}>{option.label}</span>
+                    <span className="connect-phone-choice-hint" id={`${id}-${option.value}-hint`}>{option.hint}</span>
+                  </button>
+                  {option.value === "relay" && switchOnChoice && (
+                    <Toggle label={t("Ovis relay")} checked={on} describedBy={closesGate && !on ? `${id}-gate` : undefined} onChange={(next) => { if (!relay.pending) void switchRelay(next); }} />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {switchOnChoice && closesGate && !on && <p className="settings-condition connect-phone-gate" id={`${id}-gate`}>{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+          {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
           {/* every way stays mounted while the dialog is up, the others hidden: the relay's QR and the pairing
               code follow each other's New code (the server keeps one pending code), as they did side by side */}
-          {offered && <div className="connect-phone-route" data-route="relay" hidden={shown !== "relay"}><RelayRoute relay={relay} readOnly={readOnly} closesGate={closesGate} recommended={plan.kind !== "here" && plan.kind !== "served"} /></div>}
+          {offered && <div className="connect-phone-route" data-route="relay" hidden={shown !== "relay"}><RelayRoute relay={relay} readOnly={readOnly} closesGate={closesGate} switchOnChoice={switchOnChoice} /></div>}
           <div className="connect-phone-route" data-route="tailscale" hidden={shown !== "tailscale"}><PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} /></div>
           {canPair && <div className="connect-phone-route" data-route="code" hidden={shown !== "code"}><CodeRoute pairUrl={pairUrl} startAtOnce={startCode && initial === "code"} /></div>}
           <details className="settings-details connect-phone-how">
@@ -113,8 +158,11 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
   );
 }
 
-/** The relay's way: turn it on here when it is off, then its pairing QR code once it is online. */
-function RelayRoute({ relay, readOnly, closesGate, recommended }: { relay: RelayState; readOnly: boolean; closesGate: boolean; recommended: boolean }) {
+/**
+ * The relay's way: turn it on here when it is off, then its pairing QR code once it is online. With
+ * the switch on its choice above (`switchOnChoice`), that switch and its gate note turn it on instead.
+ */
+function RelayRoute({ relay, readOnly, closesGate, switchOnChoice }: { relay: RelayState; readOnly: boolean; closesGate: boolean; switchOnChoice: boolean }) {
   const t = useT();
   const { status, pending, request } = relay;
   const [error, setError] = useState<string | null>(null);
@@ -126,11 +174,10 @@ function RelayRoute({ relay, readOnly, closesGate, recommended }: { relay: Relay
   };
   return (
     <div className="connect-phone-relay">
-      {recommended && <p className="settings-description">{t("Recommended: works from anywhere, with nothing to install on the phone.")}</p>}
       <p className="relay-status" role="status">{statusText(t, status)}</p>
       {readOnly && <p className="settings-condition">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</p>}
       {notStarted && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: status.error })}</p>}
-      {!readOnly && status.blocked === null && status.phase === "off" && (
+      {!readOnly && !switchOnChoice && status.blocked === null && status.phase === "off" && (
         <>
           {closesGate && <p className="settings-condition">{t("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
           <div className="phone-actions">

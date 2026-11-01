@@ -345,5 +345,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.": "このブラウザーのリクエストは、Ovis リレー経由でペアリングしたスマートフォンから端末間暗号化で届きました。リレーは内容を読めません。",
   "Ready through the Ovis relay.": "Ovis リレー経由で接続できます。",
   "Ready at {url}.": "{url} で開けます。",
-  "Use the Ovis relay, Tailscale or a pairing code.": "Ovis リレー、Tailscale、またはペアリングコードで接続します。",
+  "Ready at {url}. Or use the Ovis relay, no Tailscale needed.": "{url} で開けます。Tailscale なしで Ovis リレーも使えます。",
+  "The Ovis relay works from anywhere with nothing to install, or use Tailscale.": "Ovis リレーならどこからでも、インストール不要で使えます。Tailscale も使えます。",
+  "Use Tailscale or a pairing code.": "Tailscale またはペアリングコードで接続します。",
 };

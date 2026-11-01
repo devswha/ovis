@@ -7,7 +7,10 @@
  * code are one and the same both ways (the server keeps one pending code and the offer reuses it), the identity reset
  * gives the PC a new server id, the switch turns the relay off and the row says Off; a device
  * paired through the relay wears the via relay pill; a serve-only install disables the switch
- * with the reason. All on pages the PC serves: that the hosted shell's Settings has no relay
+ * with the reason. The dialog opens on the relay whenever it is offered, except with the relay off
+ * and Tailscale already serving the PC: then it opens on Tailscale, and the relay's choice carries its
+ * own switch, which turns the relay on there and shows its QR code. GET /api/access is pinned per
+ * context, so what Tailscale does on the PC running this never changes the outcome. All on pages the PC serves: that the hosted shell's Settings has no relay
  * group is checked where the app really runs under the shell, in relay-shell-browser-qa.ts (a
  * page of the PC's own build given the shell's meta boots the shell, not the app). Imported by
  * ui-regression.ts; `startRelayFixture` also serves the manual QA script.
@@ -21,7 +24,7 @@ import { startBunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { UsageService } from "../server/usage.ts";
-import type { PairedDevice, PairingCode, RelayStatus } from "../shared/protocol.ts";
+import type { PairedDevice, PairingCode, RelayStatus, RemoteAccess } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
@@ -61,9 +64,14 @@ export function startRelayFixture(options: { serveOnly?: boolean } = {}): RelayF
   };
 }
 
-const englishContext = async (browser: Browser, viewport = { width: 1280, height: 800 }): Promise<BrowserContext> => {
-  const context = await browser.newContext({ viewport, locale: "en-US" });
+/** What GET /api/access answers in a context: Tailscale missing (the relay's case), or serving the PC on a tailnet. */
+const NO_TAILSCALE: RemoteAccess = { port: 0, tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } };
+const TAILNET: RemoteAccess = { port: 0, tailscale: { state: "running", dns_name: "pc.tail0000.ts.net", serving_url: "https://pc.tail0000.ts.net", serve_command: null, serve_url: null } };
+
+const englishContext = async (browser: Browser, access: RemoteAccess = NO_TAILSCALE): Promise<BrowserContext> => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+  await context.route("**/api/access", (route) => route.fulfill({ json: access }));
   return context;
 };
 
@@ -112,9 +120,13 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal((await relayState()).phase, "off");
     const closesGate = group.getByText("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true });
     assert.equal(await closesGate.isVisible(), true, "with no token and nothing paired, the row says turning the relay on closes the gate");
-    // off, the dialog's relay route offers to turn it on and shows no offer
+    // off with no Tailscale, the dialog opens on the relay, which offers to turn it on and shows no offer
     await connect.click();
-    await sheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
+    const relayChoice = sheet.getByRole("button", { name: "Ovis relay", exact: true });
+    await relayChoice.waitFor();
+    assert.equal(await relayChoice.getAttribute("aria-pressed"), "true", "with no Tailscale the dialog opens on the relay, even while it is off");
+    assert.equal(await relayRoute.isVisible(), true, "the relay's details are the ones shown");
+    assert.equal(await sheet.getByRole("switch").count(), 0, "opened on the relay, its own Turn on button stands in for a switch on its choice");
     await relayRoute.getByRole("button", { name: "Turn on the relay", exact: true }).waitFor();
     assert.equal(await qr.count(), 0, "no offer while the relay is off");
     await closeSheet();
@@ -266,6 +278,83 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await qr.count(), 0, "no offer while the relay is off");
     assert.equal(await relayRoute.getByRole("button", { name: "New code", exact: true }).count(), 0, "no New code while the relay is off");
     await closeSheet();
+
+    // on a tailnet with the relay off, the dialog opens on Tailscale, and the relay's choice carries its own switch:
+    // it turns the relay on right there and shows the relay's QR code; on, the next opening is on the relay
+    // its own server: the gate is still open there (the phone paired above closed this one's), so the note shows
+    const tailnetFixture = startRelayFixture();
+    fixtures.push(tailnetFixture);
+    const tailnetRelay = async (): Promise<RelayStatus> => (await fetch(`${tailnetFixture.origin}/api/relay`)).json() as Promise<RelayStatus>;
+    const tailnetContext = await englishContext(browser, TAILNET);
+    contexts.push(tailnetContext);
+    const tailnet = await tailnetContext.newPage();
+    tailnet.setDefaultTimeout(15_000);
+    tailnet.on("pageerror", (error) => pageErrors.push(error.message));
+    await openPhoneSettings(tailnet, tailnetFixture.origin);
+    const tailnetDialog = tailnet.locator(".settings-dialog");
+    await tailnetDialog.locator('[data-section="relay"] .relay-status').filter({ hasText: "Off." }).waitFor();
+    const tailnetSummary = tailnetDialog.locator(".connect-phone-summary");
+    await tailnetSummary.filter({ hasText: "Ready at https://pc.tail0000.ts.net." }).waitFor();
+    assert.match(await tailnetSummary.innerText(), /Ovis relay/, "the settings row names the relay beside the Tailscale address");
+    const tailnetConnect = tailnetDialog.locator('[data-section="phone"]').getByRole("button", { name: "Connect", exact: true });
+    const tailnetSheet = tailnet.getByRole("dialog", { name: "Connect a phone", exact: true });
+    await tailnetConnect.click();
+    const tailscaleChoice = tailnetSheet.getByRole("button", { name: "Tailscale", exact: true });
+    await tailscaleChoice.waitFor();
+    assert.equal(await tailscaleChoice.getAttribute("aria-pressed"), "true", "Tailscale already working and the relay off, the dialog opens on Tailscale");
+    const inlineSwitch = tailnetSheet.getByRole("switch", { name: "Ovis relay", exact: true });
+    assert.equal(await inlineSwitch.getAttribute("aria-checked"), "false", "the relay's choice carries its switch, off");
+    assert.equal(await tailnetSheet.getByText("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true }).isVisible(), true,
+      "the switch keeps the gate note beside it");
+    const tailnetRelayRoute = tailnetSheet.locator('[data-route="relay"]');
+    assert.equal(await tailnetRelayRoute.getByRole("button", { name: "Turn on the relay", exact: true }).count(), 0, "one way to turn it on: the switch");
+    assert.equal((await tailnetRelay()).phase, "off", "opening the dialog turns nothing on");
+    await inlineSwitch.click();
+    await tailnetRelayRoute.locator(".relay-status").filter({ hasText: "Online. No phone connected." }).waitFor();
+    assert.equal((await tailnetRelay()).phase, "online", "the inline switch turned the server's relay on");
+    assert.equal(await inlineSwitch.getAttribute("aria-checked"), "true");
+    assert.equal(await tailnetSheet.getByRole("button", { name: "Ovis relay", exact: true }).getAttribute("aria-pressed"), "true", "turned on, the dialog shows the relay's details");
+    await tailnetRelayRoute.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).waitFor();
+    await tailnet.keyboard.press("Escape");
+    await tailnetSheet.waitFor({ state: "detached" });
+    await tailnetSummary.filter({ hasText: "Ready through the Ovis relay." }).waitFor();
+    await tailnetConnect.click();
+    const reopened = tailnetSheet.getByRole("button", { name: "Ovis relay", exact: true });
+    await reopened.waitFor();
+    assert.equal(await reopened.getAttribute("aria-pressed"), "true", "with the relay on, the dialog opens on it even on a tailnet");
+    await inlineSwitch.click();
+    await tailnetRelayRoute.locator(".relay-status").filter({ hasText: "Off." }).waitFor();
+    assert.equal((await tailnetRelay()).phase, "off", "the inline switch turns the relay off too");
+    await tailnet.keyboard.press("Escape");
+    await tailnetSheet.waitFor({ state: "detached" });
+    await tailnetContext.close();
+
+    // a dialog opened before /api/access answers follows the default as the answer arrives: on the relay while
+    // Tailscale is not known to work, then on Tailscale once it is (the relay off), with no pick made in between
+    const lateContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+    contexts.push(lateContext);
+    await lateContext.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    let releaseAccess: () => void = () => {};
+    const accessHeld = new Promise<void>((resolve) => { releaseAccess = resolve; });
+    await lateContext.route("**/api/access", async (route) => { await accessHeld; await route.fulfill({ json: TAILNET }); });
+    const late = await lateContext.newPage();
+    late.setDefaultTimeout(15_000);
+    late.on("pageerror", (error) => pageErrors.push(error.message));
+    await openPhoneSettings(late, tailnetFixture.origin);
+    const lateDialog = late.locator(".settings-dialog");
+    await lateDialog.locator('[data-section="relay"] .relay-status').filter({ hasText: "Off." }).waitFor();
+    await lateDialog.locator('[data-section="phone"]').getByRole("button", { name: "Connect", exact: true }).click();
+    const lateSheet = late.getByRole("dialog", { name: "Connect a phone", exact: true });
+    const lateRelay = lateSheet.getByRole("button", { name: "Ovis relay", exact: true });
+    await lateRelay.waitFor();
+    assert.equal(await lateRelay.getAttribute("aria-pressed"), "true", "Tailscale not yet known, the dialog opens on the relay");
+    releaseAccess();
+    await lateSheet.locator('button[aria-pressed="true"]', { hasText: "Tailscale" }).waitFor();
+    assert.equal(await lateRelay.getAttribute("aria-pressed"), "false", "once Tailscale is found to work with the relay off, the dialog moves to Tailscale");
+    await lateSheet.getByRole("switch", { name: "Ovis relay", exact: true }).waitFor();
+    await late.keyboard.press("Escape");
+    await lateSheet.waitFor({ state: "detached" });
+    await lateContext.close();
 
     // a device paired through the relay wears the pill: the Devices group of the PC's page lists one (the
     // real pairing of a phone through the relay is relay-shell-browser-qa.ts's)

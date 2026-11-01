@@ -3074,17 +3074,30 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   setup dialog and closes Settings behind it; when that dialog closes, focus lands on the header's
   workspace-list toggle. Under the row, once the server has answered, the bridge auto-update switch.
 - Connect a phone (`components/ConnectPhoneDialog.tsx`) is the Phone group's first row: its
-  sentence says where a phone stands in a few words (ready through the Ovis relay, ready at the
-  Tailscale address, or the three ways), and its one primary **Connect** button opens a `.modal`
+  sentence says where a phone stands in a few words, and names the relay as well as Tailscale
+  wherever the relay is offered, so a user on a tailnet still learns a phone needs no Tailscale
+  (ready through the Ovis relay; ready at the Tailscale address, or the relay with no Tailscale;
+  the relay from anywhere, or Tailscale; Tailscale or a pairing code where no relay is offered),
+  and its one primary **Connect** button opens a `.modal`
   (a bottom sheet on a phone) titled **Connect a phone**. The settings page itself shows no QR
-  code; every QR code is in this dialog. A segmented control picks one way at a time: **Ovis
-  relay** (where the server has the route and this is not the hosted shell), **Tailscale** and
-  **Pairing code** (not for a Portal visitor). It opens on Tailscale once Tailscale already
-  serves this PC or the page is on its HTTPS address, or the relay is not offered here, otherwise
-  on the relay, whose route then
-  starts with one line saying it is recommended (works from anywhere, nothing to install on the
-  phone). The relay route is the relay's state sentence, the gate condition, **Turn on the relay**
-  (or **Try again** after a start that failed) while it is off, and the pairing offer once it is
+  code; every QR code is in this dialog. The ways are choice cards at the top
+  (`.connect-phone-choices`: a grid, one column on a phone), each a pressed/unpressed button with
+  its name and a one-line hint read as its description, the chosen one in the accent: **Ovis
+  relay** ("From anywhere. Nothing to install."; where the server has the route and this is not the
+  hosted shell), **Tailscale** and **Pairing code** (not for a Portal visitor). A tab row hid the
+  relay: an owner who saw Tailscale first took it for the only way. No reference app offers more
+  than one way to reach its host (Paseo's pairing flow has one), so there is no precedent for the
+  choice itself; cards that say in one line what each way needs are the plainest way to show all
+  three at once. It opens on the relay whenever
+  the relay is offered, except with the relay off and Tailscale already serving this PC (or the page
+  on its HTTPS address): then on Tailscale. Until a card is picked the dialog follows that default
+  as the relay's and Tailscale's answers arrive, so one opened before they did does not stay on its
+  guess; using the relay's switch picks the relay. Wherever Tailscale already serves, the relay's card
+  carries the relay's own switch in its corner (for the owner; the gate condition under the cards
+  while it is off), so it is turned on right there and the dialog moves to the relay's details;
+  with no relay offered, the dialog opens on Tailscale. The relay route is the
+  relay's state sentence, the gate condition and **Turn on the relay** (or **Try again** after a
+  start that failed) while it is off and its card has no switch, and the pairing offer once it is
   online; the Tailscale route is the address and QR code, or the command to run (plain, in
   `.phone-command`, with no accent rail: a rail read as a focus ring there) with **Check again**;
   the pairing code route is one sentence (a phone that can already open this address: the same
