@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -57,14 +57,14 @@ const QUESTIONS: readonly (readonly [string, string, readonly string[]])[] = [
 ];
 
 /** omp 18.13.2 Ask: TabBar's active cell has selectedBg; inactive cells have muted foreground. */
-function omp(at: number, wrapped = false): string {
-  const tabs = [...QUESTIONS.map(([header]) => header), "Submit"].map((label, index) =>
+function omp(at: number, wrapped = false, questions = QUESTIONS): string {
+  const tabs = [...questions.map(([header]) => header), "Submit"].map((label, index) =>
     index === at ? `\x1b[1m\x1b[48;2;40;49;58m\x1b[38;2;240;240;240m ${label} \x1b[0m`
       : `\x1b[38;2;130;130;130m ${label} \x1b[39m`);
   const header = wrapped ? tabs.map(tab => `│ ${tab} │`).join("\n") : `│ ${tabs.join("  ")} │`;
   const body = at === 3
     ? `│ Review answers │\n├────────────────────────────────────┤\n│ 3 unanswered questions; Enter still submits. │\n│ 1. Color: unanswered │\n│ 2. Size: unanswered │\n│ 3. Shape: unanswered │\n│ ❯ Submit │\n├────────────────────────────────────┤\n│ ⏎ submit · ↑/↓ scroll · ⎋ cancel │`
-    : `│ ${QUESTIONS[at]?.[1]} │\n├────────────────────────────────────┤\n│ ❯ ○ ${QUESTIONS[at]?.[2][0]} │\n│   ○ ${QUESTIONS[at]?.[2][1]} │\n│   ○ Other (type your own) │\n├────────────────────────────────────┤\n│ ⏎ select · n note · ↑/↓ move · ⇥/←/→ question · ⎋ cancel │`;
+    : `│ ${questions[at]?.[1]} │\n├────────────────────────────────────┤\n│ ❯ ○ ${questions[at]?.[2][0]} │\n│   ○ ${questions[at]?.[2][1]} │\n│   ○ Other (type your own) │\n├────────────────────────────────────┤\n│ ⏎ select · n note · ↑/↓ move · ⇥/←/→ question · ⎋ cancel │`;
   return `╭─ Ask ──────────────────────────────╮\n${header}\n${body}\n╰────────────────────────────────────╯`;
 }
 
@@ -213,7 +213,7 @@ describe("Hermes's open-ended question in a batch", () => {
 
 interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
-async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
+async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>, questions = QUESTIONS): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
   const path = join(root, "herdr.sock");
   const pane: Pane = { agent, screen, sent: [] };
@@ -221,7 +221,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
   if (agent === "omp") {
     pane.ompCall = (id, changed) => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
       type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: {
-        questions: QUESTIONS.map(([header, question, options], index) => ({ id: header, header,
+        questions: questions.map(([header, question, options], index) => ({ id: header, header,
           question: changed === "question" && index === 0 ? "A different question?" : question,
           options: options.map((label, option) => ({ label: changed === "option" && index === 0 && option === 0 ? "Orange" : label })) })),
       } }] },
@@ -419,6 +419,52 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test("omp: a card read on one of two questions drawn alike answers and moves neither once the form is on the other", async () => {
+    const alike = [["First", "Proceed?", ["Yes", "No"]], ["Second", "Proceed?", ["Yes", "No"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
+    await withPane("omp", omp(0, false, alike), async pane => {
+      const first = await card();
+      // the terminal moves on to the second question, drawn as the first was
+      pane.screen = omp(1, false, alike);
+      expect((await card()).id).not.toBe(first.id);
+      expect(await move(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(await move(first.id, { step_next: true })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    }, alike);
+  });
+
+  test("omp: where the strip cannot say which of two questions drawn alike is shown, no key is sent", async () => {
+    const alike = [["First", "Proceed?", ["Yes", "No"]], ["Second", "Proceed?", ["Yes", "No"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
+    await withPane("omp", omp(0, false, alike), async pane => {
+      // the colours read prove no tab
+      pane.visible = omp(1, false, alike).replace(/\x1b\[[0-9;]*m/g, "");
+      expect(await move((await card()).id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    }, alike);
+  });
+
+  test("omp: a screen that leaves the question while the look before Tab runs takes no Tab", async () => {
+    await withPane("omp", omp(0), async pane => {
+      // the review comes up between the move's last read and its key
+      const beforeKey = async (): Promise<void> => { pane.screen = omp(3); };
+      expect(await move((await card()).id, { step_next: true }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("omp: a question clipped to a prefix the open call shares binds nothing", async () => {
+    // omp cut the shown question at four rows; the open call asks a longer question that starts the same way
+    const clipped = "Should the export button │\n│ wait for the running │\n│ export to finish before │\n│ it starts another …";
+    const open = [["Export", "Should the export button wait for the running export to finish before it starts another one, or cancel it?", ["Red", "Blue"]], ["Size", "Which size?", ["Small", "Large"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
+    const shown = [["Export", clipped, ["Red", "Blue"]], ...open.slice(1)] as const;
+    const screen = omp(0, false, shown).replace("⏎ select · ", "⏎ select · ctrl+o expand · ");
+    await withPane("omp", screen, async pane => {
+      const prompt = await card();
+      expect(prompt.steps?.some(step => step.can_navigate) ?? false).toBe(false);
+      expect((await move(prompt.id, { step_next: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
+    }, open);
+  });
+
   test("omp: the review keeps its id whether or not the colours prove where the form stands", async () => {
     await withPane("omp", omp(3), async pane => {
       const proven = await card();
@@ -533,13 +579,19 @@ describe("the answer route moves between questions, one key at a time, each seen
 
   test.skipIf(process.platform !== "linux")("OmO: an answer whose look ends after the request's deadline still sends, as before", async () => {
     await withOmoPane(omo(0), async (pane) => {
-      // pi's look before a key answers once the request's deadline has passed, as a slow look can
+      // pi's look before a key answers once the request's deadline has passed, as a slow look can: the clock is moved
+      // past the deadline from inside the look, so nothing before it depends on how fast this machine is
       let looks = 0;
-      const beforeKey = (_paneId: string, _agent: string, deadline: AbortSignal): Promise<void> => {
+      const beforeKey = async (): Promise<void> => {
         looks += 1;
-        return new Promise((resolve) => deadline.addEventListener("abort", () => setImmediate(resolve), { once: true }));
+        // only while the look runs: what the answer records after it is at the real time
+        setSystemTime(new Date(Date.now() + 120_000));
+        try {
+          // the look answers after the route's own timers have had their turn
+          await new Promise((resolve) => setImmediate(resolve));
+        } finally { setSystemTime(); }
       };
-      expect(await move((await card()).id, { option_index: 0 }, { beforeKey, answerDeadlineMs: 300 })).toEqual({ status: 200, code: undefined });
+      expect(await move((await card()).id, { option_index: 0 }, { beforeKey, answerDeadlineMs: 60_000 })).toEqual({ status: 200, code: undefined });
       expect(pane.sent.length).toBeGreaterThan(0);
       expect(looks).toBeGreaterThan(0);
     });

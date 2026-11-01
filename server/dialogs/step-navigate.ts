@@ -55,7 +55,8 @@ export function draftKept(prompt: ParsedPrompt, draft: PromptAnswer["draft"]): b
  */
 export async function navigateNativeSteps(initial: ParsedPrompt, target: number, io: {
   read(): Promise<ParsedPrompt | null>;
-  send(key: string): Promise<void>;
+  /** sends the key once `still` (the stop it moves from, read again after the key's own look) says yes */
+  send(key: string, still: () => Promise<boolean>): Promise<void>;
   active(): boolean;
   deadline: number;
 }): Promise<ParsedPrompt | null> {
@@ -68,7 +69,12 @@ export async function navigateNativeSteps(initial: ParsedPrompt, target: number,
     if (!before || before.nativeSteps?.identity !== form.identity || before.nativeSteps.index !== index
       || before.id !== previous.id || !io.active()) return null;
     const direction = target > index ? 1 : -1;
-    await io.send(direction === 1 ? form.next : form.previous);
+    const at = index;
+    const from = previous;
+    await io.send(direction === 1 ? form.next : form.previous, async () => {
+      const again = await io.read();
+      return !!again && again.nativeSteps?.identity === form.identity && again.nativeSteps.index === at && again.id === from.id && io.active();
+    });
     const expected = index + direction;
     let moved = false;
     while (io.active() && Date.now() < io.deadline) {

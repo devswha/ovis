@@ -13,19 +13,28 @@ export function ompOpenCall(open: OmoAsks, session: string): string | null {
  * An omp card read under the pane's one open ask call names that call in its id: omp asking again with the same
  * questions draws them alike, and a card read under the first call must not answer the next one. With no call proved
  * (none open, or more than one) the id stays as read, and nothing tells such cards apart but the screen.
+ *
+ * A question omp cut short binds no call: its first rows may be another call's as well.
+ *
+ * Two of the call's questions drawn alike (other headers, the same text and options) are told apart only by the strip:
+ * the id then carries the question the strip proves is shown, and without that proof the read authorizes no key.
  */
-export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
+export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt; unverified?: true } {
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
-  if (!parsed || call === null) return prompt;
+  if (!parsed || call === null) return { prompt };
   // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the
   // review's rows, which omp draws whatever the strip's colours prove
   const asked = askedQuestions("ask", open[0]!.args) ?? [];
+  const shown = parsed.responder === "omp-submit" ? [] : asked.flatMap((question, index) => questionShown(prompt, question, false) ? [index] : []);
   const drawn = parsed.responder === "omp-submit"
     ? JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify((parsed.answers ?? []).map(answer => answer.question))
-    : asked.some(question => questionShown(prompt, question, parsed.ompQuestionCut === true));
-  if (!drawn) return prompt;
-  return publicPrompt({ ...parsed, id: `${parsed.id}~${Bun.hash(call).toString(36)}`, ompCall: call });
+    : shown.length > 0;
+  if (!drawn) return { prompt };
+  const at = parsed.nativeSteps?.index;
+  if (shown.length > 1 && (at === undefined || !shown.includes(at))) return { prompt, unverified: true };
+  const position = shown.length > 1 ? `@${at}` : "";
+  return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}~${Bun.hash(call).toString(36)}${position}`, ompCall: call }) };
 }
 
 /**
@@ -42,7 +51,7 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const active = questions?.[form.index];
   const labels = questions ? callLabels(call!.args, questions) : null;
   const matches = labels && labels.length + 1 === form.count && labels.every((label, index) => label === parsed.steps?.[index]?.label)
-    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, parsed.ompQuestionCut === true);
+    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, false);
   const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
   return publicPrompt({
     ...parsed,

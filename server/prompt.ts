@@ -783,8 +783,9 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
       unverified = true;
     }
   }
-  const bound = ompStepPrompt(ompCallPrompt(prompt, open, path), open, path);
-  return { prompt: markdown ? ompMarkdownPrompt(bound, open) : bound, unverified };
+  const called = ompCallPrompt(prompt, open, path);
+  const bound = ompStepPrompt(called.prompt, open, path);
+  return { prompt: markdown ? ompMarkdownPrompt(bound, open) : bound, unverified: unverified ?? called.unverified };
 }
 
 async function readKnownPrompt(
@@ -1455,11 +1456,16 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const left = (): number => Math.max(0, deadlineAt - Date.now());
         return {
           pressed: (): boolean => pressed,
-          send: async (key: string): Promise<void> => {
+          /** `still`: the screen, read again after the look, still shows the stop the key moves from */
+          send: async (key: string, still?: () => Promise<boolean>): Promise<void> => {
             const inTime = (): boolean => active() && Date.now() < deadlineAt;
             if (!inTime()) throw new MoveLapsed();
             const guarded = await Promise.race([guardKey(body.pane_id, agent, deadline).then(() => true), Bun.sleep(left()).then(() => false)]);
             if (!guarded || !inTime()) throw new MoveLapsed();
+            if (still) {
+              const checked = await Promise.race([still(), Bun.sleep(left()).then(() => false)]);
+              if (!checked || !inTime()) throw new MoveLapsed();
+            }
             const sending = paneSendKeys(body.pane_id, [key], undefined, inTime);
             sending.catch(() => undefined);
             let sent: boolean;
