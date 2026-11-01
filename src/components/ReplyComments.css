@@ -44,19 +44,28 @@
   color: var(--text-strong);
 }
 
-/* Comment is the second action: an icon after a divider, dimmer than Quote */
+/* Comment is the second action: an icon after a divider, dimmer than Quote (alone under a secret prompt) */
 .reply-comment-offer {
   justify-content: center;
   min-width: var(--control-h);
   padding: 0 var(--space-2);
-  border-left: var(--hairline) solid var(--border);
   color: var(--text-dim);
+}
+
+.selection-quote + .reply-comment-offer {
+  border-left: var(--hairline) solid var(--border);
 }
 
 .selection-quote:hover,
 .reply-comment-offer:hover {
   background: var(--bg-hover);
   color: var(--text-strong);
+}
+
+.selection-quote:disabled {
+  background: transparent;
+  color: var(--text-dim);
+  cursor: not-allowed;
 }
 
 .selection-quote:focus-visible,

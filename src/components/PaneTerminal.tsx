@@ -1215,6 +1215,7 @@ export function PaneTerminal({
             onCommandScreenClosed={onCommandScreenClosed}
             onOutcomes={onChatOutcomes}
             interactive={!observing && role === "interact"}
+            quotable={!secretActive}
             onRewindInTerminal={onOpenTerminal ? rewindInTerminal : undefined}
             cwd={cwd}
           />

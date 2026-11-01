@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
 import { MessageSquarePlus, MessageSquareQuote, Quote, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
-import { quoteIntoComposer } from "../lib/chatQuote.ts";
+import { quoteFits, quoteIntoComposer } from "../lib/chatQuote.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import "./ReplyComments.css";
@@ -42,7 +42,7 @@ interface Placed { quote: string; left: number; top: number }
  * released, on a touch screen below the selection. Quote, first, puts the words in the composer as a
  * `> ` quote (lib/chatQuote.ts); Comment (#511) opens a form that saves a comment for the next message.
  */
-export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string; paneKey: string }) {
+export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string; paneKey: string | null }) {
   const t = useT();
   const layer = useRef<HTMLDivElement>(null);
   const [offer, setOffer] = useState<Placed | null>(null);
@@ -120,10 +120,14 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   };
   const quote = (placed: Placed) => {
     pressing.current = false;
+    if (paneKey === null || !quoteFits(paneKey, placed.quote)) return;
     setOffer(null);
+    // cleared before the composer takes the keyboard: clearing after would take its caret too
     getSelection()?.removeAllRanges();
     quoteIntoComposer(paneKey, placed.quote);
   };
+  // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
+  const fits = offer !== null && paneKey !== null && quoteFits(paneKey, offer.quote);
   const close = () => { setForm(null); setComment(""); };
   const save = () => {
     if (form === null || comment.trim() === "") return;
@@ -143,9 +147,10 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
       onPointerCancel={() => { pressing.current = false; }}>
-      <button type="button" className="selection-quote" title={t("Quote it in your message")} onClick={() => quote(offer)}>
+      {paneKey !== null && <button type="button" className="selection-quote" disabled={!fits}
+        title={fits ? t("Quote it in your message") : t("Too long to quote: shorten the message or the selection.")} onClick={() => quote(offer)}>
         <Quote aria-hidden="true" />{t("Quote")}
-      </button>
+      </button>}
       <button type="button" className="reply-comment-offer" aria-label={t("Comment")} title={t("Comment")} onClick={() => open(offer)}>
         <MessageSquarePlus aria-hidden="true" />
       </button>

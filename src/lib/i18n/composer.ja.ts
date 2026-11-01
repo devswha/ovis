@@ -236,6 +236,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Quote": "引用",
   "Quote it in your message": "メッセージに引用",
   "Selection": "選択したテキスト",
+  "Too long to quote: shorten the message or the selection.": "長すぎて引用できません。メッセージか選択を短くしてください。",
   // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "返答にコメント",
   "Add a comment": "コメントを追加",

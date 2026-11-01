@@ -236,6 +236,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Quote": "引用",
   "Quote it in your message": "引用到消息中",
   "Selection": "所选文本",
+  "Too long to quote: shorten the message or the selection.": "太长，无法引用：请缩短消息或所选内容。",
   // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "评论回复",
   "Add a comment": "添加评论",
