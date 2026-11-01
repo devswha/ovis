@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the devices files use:
- * components/DevicesPanel.tsx (with VIA), components/PhonePanel.tsx, components/PortalPanel.tsx,
+ * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
  * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
@@ -179,4 +179,10 @@ export const DEVICES_KO: Record<string, string> = {
   "Getting a code…": "코드 받는 중…",
   "This is a paired device, reaching the PC through the Ovis relay.": "Ovis 릴레이를 통해 PC에 접속한 페어링된 기기입니다.",
   "via relay": "릴레이 경유",
+  "How the phone connects": "폰 연결 방법",
+  "How it works": "작동 방식",
+  "Recommended: works from anywhere, with nothing to install on the phone.": "추천: 어디서나 되고, 폰에 따로 설치할 것이 없습니다.",
+  "Turn on the relay": "릴레이 켜기",
+  "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "이 주소를 이미 열 수 있는 폰용입니다. 같은 Wi-Fi에 있거나 터널이나 프록시를 거치는 경우입니다.",
+  "Get a pairing code": "페어링 코드 받기",
 };
