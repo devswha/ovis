@@ -1047,12 +1047,13 @@ const time = (value: string | null): number => value === null ? 0 : Date.parse(v
  * that does not leaves what was running as lost, ended when last heard of. `since`: when the
  * Claude process there started, when known; an agent last written before it died with the
  * process before (a resumed session appends to the same files). `settled`: nothing was left
- * unread, so the same answer stands until a file changes.
+ * unread, so the same answer stands until a file changes. `behind`: an agent file was left unread
+ * for the read budget while this call read on, so another call reads further.
  */
 /** what each session's last read said of each agent: kept while the transcript is read in parts */
 const previous = new Map<string, Map<string, OmoTask>>();
 
-export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
+export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
   const files = agentIds(parentPath).flatMap((id) => {
     const stat = plain(join(dir, `agent-${id}.jsonl`));
@@ -1061,8 +1062,9 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
-  if (parent === null && files.length === 0) return { tasks: [], settled: true, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
+  if (parent === null && files.length === 0) return { tasks: [], settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   const budget = { left: READ_BUDGET };
+  let behind = false;
   const running: OmoTask[] = [];
   const ended: OmoTask[] = [];
   const promptAt = parent?.promptAt ?? null;
@@ -1075,6 +1077,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   for (const { id, stat } of files) {
     const meta = readMeta(join(dir, `agent-${id}.meta.json`));
     const work = scanWork(join(dir, `agent-${id}.jsonl`), budget);
+    if (work?.behind) behind = true;
     if (work !== null) sources.push(work.commands);
     // a file caught while it is written says nothing yet, and what was worked out without it is not final
     if (meta === null || work === null) { settled = false; continue; }
@@ -1156,7 +1159,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   ended.sort((a, b) => last(b) - last(a));
   // read to its end only: a part not read yet may hold the next turn
   const resting = parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
-  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
+  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
 
   function keep(task: OmoTask, dispatched = time(task.started_at)): void {
     all.set(task.id, task);
@@ -1172,6 +1175,18 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
 }
 
 export const claudeSubagents = (parentPath: string, live: boolean, now = Date.now(), since: number | null = null): OmoTask[] => claudeSubagentState(parentPath, live, now, since).tasks;
+
+/**
+ * The list as a file thread gives it (`file-tasks.ts`): the thread's caches start cold, and it runs
+ * off the event loop under the long-task deadline, so it reads on, a budget at a time, until no
+ * agent file is left behind. Its first answer then has the counts a warm read has. Each pass reads
+ * something, so the loop ends.
+ */
+export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): OmoTask[] {
+  let state = claudeSubagentState(parentPath, live, now, since);
+  while (state.behind) state = claudeSubagentState(parentPath, live, now, since);
+  return state.tasks;
+}
 
 /** Forget every read kept between calls (tests compare against a cold read). */
 export function forgetSubagents(): void {

@@ -39,7 +39,7 @@ function holdScans() {
   cells[1] = -1;
   const release = () => { Atomics.store(cells, 0, 1); Atomics.notify(cells, 0); };
   releases.push(release);
-  pool.setFilePoolOptions({ worker: new URL("./file-worker.fake.ts", import.meta.url), workers: 2, scans: 1, waiting: 2, longDeadlineMs: 10_000 });
+  pool.setFilePoolOptions({ worker: new URL("./file-worker.fake.ts", import.meta.url), workers: 2, taskScans: 1, waiting: 2, longDeadlineMs: 10_000 });
   const run = pool.fileTask;
   const tasks: FileTask[] = [];
   const spy = spyOn(pool, "fileTask").mockImplementation(function<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal, onRun?: () => void): Promise<T> {

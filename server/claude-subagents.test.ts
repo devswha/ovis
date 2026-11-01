@@ -3,9 +3,10 @@ import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSyn
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import type { HerdrPane } from "../shared/protocol.ts";
+import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
 import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, readLines, remember, subagentDetails, taskNotification, validDetailId, within } from "./claude-subagents.ts";
+import { runFileTask } from "./file-tasks.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -181,6 +182,17 @@ describe("claudeSubagents", () => {
     // a count that is not the whole is not shown as one
     expect(first).toBeNull();
     expect(claudeSubagents(s.path, true, NOW)[0]!.turns).toBe(10_000);
+  });
+
+  it("reads a subagent file past one read's budget whole on a file thread, so its first answer has the counts", () => {
+    const s = session();
+    const file = s.agent("big", { steps: [] });
+    const line = json({ type: "assistant", timestamp: at(1), message: { id: "x", model: "claude-opus-5", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "tool_use", id: "t", name: "Read", input: {} }], padding: "p".repeat(1000) } });
+    // 10 MB of lines, each a request of its own: more than one read's budget
+    writeFileSync(file, Array.from({ length: 10_000 }, (_, n) => line.replace('"id":"x"', `"id":"m${n}"`)).join(""));
+    // a file thread's caches start cold: its first answer is all it gives
+    const [task] = runFileTask({ op: "claude-tasks", path: s.path, live: true, since: null }) as OmoTask[];
+    expect([task!.turns, task!.tool_calls, task!.tokens, task!.model]).toEqual([10_000, 10_000, 2, "claude-opus-5"]);
   });
 
   it("does not take an agent for running when the part of the transcript read starts after it went quiet", () => {
@@ -796,10 +808,10 @@ describe("ClaudeSubagentStatus", () => {
     const told: [string, number][] = [];
     const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: (paneId, running) => told.push([paneId, running]), now: () => NOW });
     await status.refresh([pane("p1", "claude")]);
-    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: true, startedAt: null });
+    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: true, startedAt: null, read: expect.any(Number) });
     await status.refresh([pane("p1", null)]);
     expect(told).toEqual([["p1", 1], ["p1", 0]]);
-    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: false, startedAt: null });
+    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: false, startedAt: null, read: expect.any(Number) });
     // gone with the pane
     await status.refresh([]);
     expect(status.sessionOf("p1")).toBeNull();
@@ -1034,7 +1046,7 @@ describe("ClaudeSubagentStatus upkeep", () => {
     const told: number[] = [];
     const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: 42 }), onChange: (_, running) => told.push(running), now: () => now });
     await status.refresh([pane("claude")]);
-    expect(status.sessionOf("p1")).toMatchObject({ path: s.path, live: true, startedAt: 42 });
+    expect(status.sessionOf("p1")).toEqual({ path: s.path, live: true, startedAt: 42, read: expect.any(Number) });
     status.poll();
     expect(told).toEqual([]);
     // a message to it was written before, and the session is idle: only its own file moves

@@ -168,6 +168,22 @@ describe("file threads", () => {
     for (const commands of await Promise.all([...scans, third])) expect(names(commands)).toContain("listed");
   });
 
+  it("counts Claude task-list scans apart from commands scans, so neither kind keeps the other waiting", async () => {
+    setUp({ workers: 3, waiting: 2, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 1, taskScans: 1 });
+    const tasks = (): FileTask => ({ op: "claude-tasks", path: join(root, "session.jsonl"), live: true, since: null });
+    for (const [first, other] of [[tasks, scan], [scan, tasks]] as const) {
+      const hold = gate();
+      // one kind takes every thread it may: a second of that kind waits
+      const holding = [fileTask(held(first(), hold.buffer)), fileTask(first())];
+      expect(filePoolSize().waiting).toBe(1);
+      // the other kind still takes a thread of its own at once
+      const running = fileTask(held(other(), hold.buffer));
+      expect(filePoolSize().waiting).toBe(1);
+      hold.release();
+      await Promise.all([...holding, running]);
+    }
+  });
+
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {
     setUp({ workers: 2, waiting: 0, deadlineMs: 150, longDeadlineMs: 150, scanDeadlineMs: 30_000 });
     const hold = gate();

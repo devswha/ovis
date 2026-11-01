@@ -45,11 +45,16 @@ interface PoolOptions {
   longDeadlineMs: number;
   scanDeadlineMs: number;
   /**
-   * At most this many threads run commands or Claude task-list scans at once: a scan can hold its thread for many
+   * At most this many threads run a commands scan at once: a scan can hold its thread for many
    * seconds, and the file routes keep the others. A scan past that waits, and the tasks behind it
    * still take a free thread.
    */
   scans: number;
+  /**
+   * The same for Claude task-list scans (`claude-tasks`), counted apart from commands scans: slow
+   * or stuck ones of either kind never keep the other kind waiting.
+   */
+  taskScans: number;
   /** the module a thread runs (a stand-in, in tests) */
   worker: URL;
   /** run each task on the calling thread instead (tests that set `pageFileHooks`, which a thread cannot see) */
@@ -63,6 +68,7 @@ const DEFAULTS: PoolOptions = {
   longDeadlineMs: FILE_LONG_TASK_DEADLINE_MS,
   scanDeadlineMs: FILE_SCAN_DEADLINE_MS,
   scans: 2,
+  taskScans: 1,
   worker: new URL("./file-worker.ts", import.meta.url),
   inline: null,
 };
@@ -171,14 +177,16 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   });
 }
 
-const isScan = (task: FileTask): boolean => task.op === "commands" || task.op === "claude-tasks";
-
-/** A scan only while fewer than `scans` threads run one (a scan past its deadline keeps its thread, and counts, until it returns); any other task always. */
+/**
+ * A scan only while fewer threads than its kind's limit (`scans`, `taskScans`) run one of its kind (a
+ * scan past its deadline keeps its thread, and counts, until it returns); any other task always.
+ */
 function mayRun(task: FileTask): boolean {
-  if (!isScan(task)) return true;
+  const limit = task.op === "commands" ? options.scans : task.op === "claude-tasks" ? options.taskScans : null;
+  if (limit === null) return true;
   let scanning = 0;
-  for (const thread of threads) if (thread.pending !== null && isScan(thread.pending.task)) scanning += 1;
-  return scanning < options.scans;
+  for (const thread of threads) if (thread.pending?.task.op === task.op) scanning += 1;
+  return scanning < limit;
 }
 
 /** The first waiting task that may run now, taken out of the queue. */
