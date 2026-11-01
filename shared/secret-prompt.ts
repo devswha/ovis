@@ -29,14 +29,14 @@ const KEY_SHAPES = [
 
 /**
  * Whether text holds what looks like an API key or token (#2523): a vendor's shape, or a long run
- * mixing upper and lower case letters with digits, or 40 characters long without them. A `/` is
+ * mixing upper and lower case letters (and `_`) with digits, or 40 characters long without them. A `/` is
  * taken as part of a key only in a run of exactly 40 (an AWS secret key's length): anything else
  * with one is a path or a URL. A run holding a word (eight lower case letters in a row) is a name,
  * and hex alone is no key: commit hashes and image digests are kept as typed.
  */
 export function looksLikeKey(text: string): boolean {
   if (KEY_SHAPES.some((shape) => shape.test(text))) return true;
-  return (text.match(/[A-Za-z0-9/+]{24,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && !/[a-z]{8}/.test(run)
+  return (text.match(/[A-Za-z0-9/+_]{24,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && !/[a-z]{8}/.test(run)
     && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
 }
 

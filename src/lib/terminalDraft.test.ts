@@ -87,7 +87,7 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
   writeTerminalDraft(owner, "git status");
   expect(data.get("ovis:terminal-line:" + owner)).toBe("git status");
   for (const key of [SK, "sk-ant-api03-Zx9_yQ7wV5uT3sR1qP-oN8mL6kJ4", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
-    "AKIAIOSFODNN7EXAMPLE", "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMn", "Xq7Lm2Pz9Rt4Vb8Nc3Kd6Wf1Hs5Jg0Ya"]) {
+    "AKIAIOSFODNN7EXAMPLE", "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMn", "Xq7Lm2Pz9Rt4Vb8Nc3Kd6Wf1Hs5Jg0Ya", "Xq7Lm2Pz9Rt4Vb8N_c3Kd6Wf1Hs5Jg0Ya"]) {
     writeTerminalDraft(owner, "git status");
     writeTerminalDraft(owner, key);
     expect(readTerminalDraft(owner)).toBe(key);
@@ -100,7 +100,7 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
   expect(written.some((value) => value.includes("sk-0f3c") || value.includes("AKIAIOSF"))).toBe(false);
   // words, paths, IDs and hashes are not keys: they are kept
   for (const line of ["git checkout fix/input-line-key-storage", "cat /home/devswha/projects/ovis/src/lib/terminalDraft.ts", "echo 123e4567-e89b-12d3-a456-426614174000",
-    "skip-worktree", "git clone https://github.com/VeryLongOrganizationName123/SomeRepository", "git clone https://github.com/SomeOrg123/SomeRepoName", "cd ~/Src/MyApp2/Lib/UiKit/Views3", "git show 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "docker pull image@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"]) {
+    "skip-worktree", "git clone https://github.com/VeryLongOrganizationName123/SomeRepository", "git clone https://github.com/SomeOrg123/SomeRepoName", "cd ~/Src/MyApp2/Lib/UiKit/Views3", "python manage.py runserver --settings=MyApp_Settings2_Production", "git show 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "docker pull image@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"]) {
     writeTerminalDraft(owner, line);
     expect(data.get("ovis:terminal-line:" + owner)).toBe(line);
   }
