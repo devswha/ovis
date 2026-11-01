@@ -199,9 +199,12 @@ it, and the identity reset is refused.
    A phone takes one of eight answered-client slots only when the PC's data socket sends its first
    non-keepalive frame. Up to four unanswered phones may wait; a fifth displaces the oldest with
    `1013`. A waiting phone closes `1013` after 15 seconds in which the PC could answer, reset when
-   its data socket attaches. Without a control or data socket its deadline pauses until the PC
-   returns. Lost buffered frames after a relay eviction close the phone `1012` when its data
-   socket attaches or the phone sends again.
+   its data socket attaches. While no PC is connected, it instead waits at most 30 seconds
+   from its arrival or the PC leaving, keepalives or not, then closes `1013` with
+   `the server is not connected`. That deadline survives a relay eviction. A PC returning in
+   time gives it the full 15-second answer deadline again; answered clients have no such deadline.
+   Lost buffered frames after a relay eviction close the phone `1012` when its data socket
+   attaches or the phone sends again.
 3. **Handshake.** The phone and the PC run the Noise NK handshake over those sockets, with the PC's
    public key from the QR code.
 4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the

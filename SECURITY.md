@@ -99,7 +99,10 @@ identity failure. The PC retries transient refusals with backoff and stops only 
 challenge closes locally with retryable `4000`. A 17th pending proof displaces the oldest with
 `1013`. Only clients the PC has answered occupy the eight client slots; at most four unanswered
 clients wait, with oldest-first eviction and a 15-second answer deadline while the PC can answer.
-These client limits close `1013`; lost buffered frames after eviction close `1012`.
+While no PC is connected, an unanswered client waits at most 30 seconds from its arrival or the
+PC leaving, even with keepalives and across relay evictions. A PC returning in time gives it
+the full 15-second answer deadline again. These client limits close `1013`; lost buffered frames
+after eviction close `1012`.
 
 To report abuse that goes through `relay.ovis.sh`, such as traffic that isn't Ovis's or a flood of
 connections for one PC, write to devswha@gmail.com with the `server_id` involved and when it
