@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
-import { appendChatRowSlots, continuesHistory, createChatRowSlots, insertChatRowSlots, prependChatRowSlots } from "./chatRows.ts";
+import { appendChatRowSlots, continuesHistory, createChatRowSlots, insertChatRowSlots, insertedTurns, prependChatRowSlots } from "./chatRows.ts";
 
 const scope = { machineId: "local", paneId: "pane-a", historyId: "history-a", incarnation: 0 };
 const keys = (rows: readonly { readonly key: string }[]) => rows.map((row) => row.key);
@@ -106,5 +106,20 @@ describe("continuesHistory", () => {
     expect(continuesHistory(page([]), shown)).toBeFalse();
     const untimed = page([turn("user", null), turn("assistant", null)]);
     expect(continuesHistory(untimed, untimed)).toBeFalse();
+  });
+});
+
+describe("insertedTurns", () => {
+  it("finds a notice Claude Code wrote before the turn at work, so the turn keeps its row", () => {
+    // noticeAt (server/claude-transcript.ts): a notice or a subagent's result goes before the running turn
+    expect(insertedTurns(["u1", "a1", "u2", "a2"], ["u1", "a1", "u2", "notice", "a2"])).toEqual([3]);
+    expect(insertedTurns(["u1", "a1"], ["u1", "result-1", "result-2", "a1"])).toEqual([1, 2]);
+  });
+
+  it("inserts nothing for turns appended after the last one shown, or for a turn changed in place", () => {
+    expect(insertedTurns(["u1", "a1"], ["u1", "a1", "u2", "a2"])).toEqual([]);
+    // a cancelled prompt replaced by its re-send, a notice joined with the next line: same place, new words
+    expect(insertedTurns(["u1", "a1", "u2"], ["u1", "a1", "u2-again", "a2"])).toEqual([]);
+    expect(insertedTurns([], ["u1", "a1"])).toEqual([]);
   });
 });

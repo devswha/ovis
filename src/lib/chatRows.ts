@@ -57,6 +57,24 @@ export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowS
 }
 
 /**
+ * Where turns were written between turns already shown, by their index in `after`: a notice or a
+ * subagent's result Claude Code records while a turn is at work goes before that turn
+ * (server/claude-transcript.ts noticeAt), and the turns after it must keep their rows. Each list
+ * names its turns (chatTurnAnchor); a turn shown before that is not found later stays where it is
+ * (a turn rewritten in place), and turns past the last one shown are appended, not inserted.
+ */
+export function insertedTurns(before: readonly string[], after: readonly string[]): number[] {
+  const inserted: number[] = [];
+  let shown = 0;
+  for (let index = 0; index < after.length && shown < before.length; index++) {
+    if (after[index] === before[shown]) shown++;
+    else if (after.indexOf(before[shown]!, index + 1) !== -1) inserted.push(index);
+    else shown++;
+  }
+  return inserted;
+}
+
+/**
  * Whether a gjc answer under a new history ID goes on with the turns shown. gjc writes its whole
  * session anew and renames it over the old file (its first save, trimmed tool outputs), so the server
  * names it as another history. When the newest page still opens with every turn shown, in the same

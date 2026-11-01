@@ -535,7 +535,16 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   if (etag !== null) {
     const bytes = conversationAnswerBytes(body, response.headers.get("content-length"), response.headers.get("content-encoding"));
     if (bytes <= CONVERSATION_ANSWER_MAX_BYTES) {
-      conversationAnswers.set(url, { etag, body, bytes, pane: paneKey(paneId, machineId) });
+      const answer = { etag, body, bytes, pane: paneKey(paneId, machineId) };
+      conversationAnswers.set(url, answer);
+      // a chat that holds its newest turns from a cursor (`from`) reads no other newest page: a chat
+      // opened again draws this answer first (peekPaneConversation), not the one from before it held.
+      // Its ETag is never the plain page's, so the mount read still gets the plain page whole.
+      if (page.from !== undefined) {
+        const plain = conversationUrl(paneId, machineId, page.prompts === undefined ? {} : { prompts: page.prompts });
+        conversationAnswers.delete(plain);
+        conversationAnswers.set(plain, answer);
+      }
       trimConversationAnswers(url);
     }
   }
