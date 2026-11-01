@@ -466,6 +466,11 @@ bun relay/bun.ts --port 8787 --hostname 127.0.0.1
 
 It listens on plain HTTP, so put it behind a TLS proxy (Caddy, nginx, `tailscale serve`): the PC and phones connect to it only over `wss://`. Then set `OVIS_RELAY_URL` on the PC to its `wss://` address (see [Configuration](#configuration)) and restart Ovis. Out of the box it takes 120 new connections a minute from one address and 600 in all; behind a proxy every connection comes from the proxy's address, so raise those limits for it ([the relay's limits](relay.md#operations)). The app at `app.ovis.sh` works with it as is, since it connects to whichever relay the QR code names. A phone keeps the relay it paired through, so on a phone paired before the change, choose **Forget this PC** in the app's Settings and scan a new QR code, then revoke its old entry under **Phone & devices** on the PC. [relay/README.md](../relay/README.md#running-your-own) also covers running the relay as a Cloudflare Worker on your own account.
 
+The Bun relay also caps open sockets at 64 per address, including sockets waiting, connected or
+still upgrading. Set `--max-sockets-per-address` or `RELAY_MAX_SOCKETS_PER_ADDRESS` to size that
+cap for your deployment; behind a local TLS proxy all users share it. A new socket past the cap
+gets `429` and `Retry-After: 60`, without closing sockets already open.
+
 To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis.
 
 ### Through Tailscale
