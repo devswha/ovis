@@ -2229,7 +2229,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   row again: `--text-dim`, `--fs-sm`. A run before the head has the agent's words after it, so it
   is settled while the turn still runs, and its narration is quiet already.
 - Only the running turn's head block is open (working or blocked); the runs before it fold as a
-  settled turn's do. A settled turn folds to its header
+  settled turn's do. A turn that ended on its final answer stays settled while the agent works
+  again: a turn the agent began by itself (a background task ended) or from the terminal has no
+  row yet, and the pending `Working…` head under the rows stands for it, as after a send. That
+  head waits 800 ms first: at a turn's end herdr's status trails the answer by 100–400 ms, and a
+  head under each answer would flash. While it waits it keeps its place unseen, so showing it moves
+  nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. Before
+  the chat's first read, `Loading conversation…` is the only line: the rows read may hold the
+  running turn's own head. A settled turn folds to its header
   with a hairline under it, and the header reads as a footnote: `--text-dim`, regular weight (the
   live one keeps medium weight and its state color). The answer is outside the fold. A settled
   turn stays open when its work holds text the answer does not end on: text with no answer at all

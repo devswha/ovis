@@ -34,7 +34,7 @@ import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import { toTranscriptMessages, type TranscriptMessage } from "../lib/transcript.ts";
-import { isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, runNames, splitTurn, turnSegments, type WorkSegment, todoGroups, visibleWorkParts, workBlockStartsOpen, workFailed, workSummary, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
+import { endedOnAnswer, isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, runNames, splitTurn, turnSegments, type WorkSegment, todoGroups, visibleWorkParts, workBlockStartsOpen, workFailed, workSummary, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
 import { phaseRows, planRows, taskRows, todoRows, type ChecklistRow } from "../lib/checklist.ts";
 import { isTodoTool, parseTodoAnswer, todoCallSummary, type TodoItem, type TodoStatus } from "../lib/todos.ts";
 import { formatGoalTime, turnGoal, type GoalState, type GoalStatus } from "../lib/goals.ts";
@@ -132,6 +132,12 @@ function FailureLine({ action, failure, onRetry }: { action: string; failure: Us
 
 const TRANSCRIPT_LINES = 400;
 const PROMPT_POLL_MS = 2000;
+/**
+ * How long herdr's status may still say working after a turn's final answer is drawn: it trailed the
+ * transcript by 100–400 ms at the Claude Code turn ends measured. Twice the longest, and still short
+ * enough that a turn the agent begins by itself shows its Working head within a second.
+ */
+const ANSWER_STATUS_LAG_MS = 800;
 // failed prompt reads in a row before the card says it may be out of date: one is a hiccup
 const PROMPT_STALE_READS = 2;
 /** The prompt each pane's chat last read (by paneStorageId): a chat drawn again (back from the
@@ -684,8 +690,8 @@ function ThinkingRow({ text, stateKey, defaultOpen }: { text: string; stateKey: 
  * the first row draws takes its place without a change of look; nothing to open yet, so its caret
  * holds only the room.
  */
-function PendingWorkHead({ title, className = "" }: { title: string; className?: string }) {
-  return <div className={`work-block is-live is-pending ${className}`} role="status">
+function PendingWorkHead({ title, className = "", reserved = false }: { title: string; className?: string; reserved?: boolean }) {
+  return <div className={`work-block is-live is-pending ${className}`} role="status" aria-hidden={reserved || undefined}>
     <div className="work-block-head"><span className="work-row-caret" aria-hidden="true" /><span className="work-block-title">{title}</span></div>
   </div>;
 }
@@ -2152,6 +2158,24 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const workBlockLive = lastSplit !== null && (visibleWorkParts(lastSplit.work, settings.showThinking).length > 0 || lastSplit.answer.length === 0);
   // a running turn with words and no work rows: the activity is a line under its words, as before
   const answerOnlyLive = lastSplit !== null && !workBlockLive;
+  // working over a turn that ended on its answer: the status trailing that answer, or a turn the agent
+  // began by itself with no row yet. The next turn's head waits out the lag, so none flashes under
+  // each answer. A send from here has its turn on the way, and its head shows at once.
+  const afterAnswer = workStatus === "working" && lastShownTurn?.role === "assistant" && lastShownTurn !== finishedBeforeSend && endedOnAnswer(lastShownTurn);
+  // the wait runs for that finished turn, named by its start (no later read of it changes that): a new
+  // turn read in already finished waits its own, and the frame it first shows in draws no head
+  const answerTurn = afterAnswer && lastShownTurn !== undefined ? lastShownTurn.ts ?? chatTurnAnchor(lastShownTurn) : null;
+  const [lagOutFor, setLagOutFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (answerTurn === null) { setLagOutFor(null); return; }
+    const timer = window.setTimeout(() => setLagOutFor(answerTurn), ANSWER_STATUS_LAG_MS);
+    return () => window.clearTimeout(timer);
+  }, [answerTurn, paneId]);
+  const answerLagOut = answerTurn !== null && lagOutFor === answerTurn;
+  // while it waits the head keeps its place, unseen: showing it later moves nothing a reader is
+  // selecting or reading, as the chat is laid out the same from the answer's first frame
+  const activityReserved = afterAnswer && !answerLagOut;
+  const activityClass = activityReserved ? "chat-activity-reserved" : "chat-activity";
   const empty = state.source === "conversation" ? turns.length === 0 : agent === null && state.messages.length === 0;
   const blank = !ended && chatIsBlank({ loaded, failed: error !== null, transcript: state.source === "conversation", turns: turns.length, older: typeof olderCursor === "string", abandoned: abandoned?.count ?? 0, prompt: prompt !== null, agent });
   // the scrollback standing in says nothing of the conversation: it has no history to compare
@@ -2337,15 +2361,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       {/* The agent's activity, where no open work block says it: before the turn has an assistant or
           tool row (Claude Code's spinner writes nothing to the transcript), and while a native turn
           thinks (a work block's head says Working). Without native activity the pane status stands
-          in. One Working at a time. */}
-      {connected && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && (activity === "thinking" || !workBlockLive) && (workBlockLive
+          in. One Working at a time, so none before the first read: its rows may hold the running
+          turn's own head. None seen under an answer while the status may still be catching up with it. */}
+      {connected && loaded && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && (activity === "thinking" || !workBlockLive) && (workBlockLive
         // under the running turn's own head, a second head would read as a second block
-        ? <p className="chat-activity chat-activity-line" role="status"><CircleDot aria-hidden="true" />{t("Thinking…")}</p>
+        ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{t("Thinking…")}</p>
         // under a running turn's words: removing a line below them moves nothing when it ends
         : answerOnlyLive
-          ? <p className="chat-activity chat-activity-line" role="status"><CircleDot aria-hidden="true" />{activity === "thinking" ? t("Thinking…") : t("Working…")}</p>
+          ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{activity === "thinking" ? t("Thinking…") : t("Working…")}</p>
           // before the turn has a row at all, where its work block will be drawn
-          : <PendingWorkHead className="chat-activity" title={activity === "thinking" ? t("Thinking…") : t("Working…")} />)}
+          : <PendingWorkHead className={activityClass} reserved={activityReserved} title={activity === "thinking" ? t("Thinking…") : t("Working…")} />)}
       {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentMark agent={agent ?? "agent"} size={32} /><p>{t("No conversation yet — say something below")}</p></div>}
       {ended && <p className="chat-endcap">{t("terminal ended")}</p>}
   </>;
