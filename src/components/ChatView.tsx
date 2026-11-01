@@ -60,8 +60,8 @@ import { workRowLabel } from "../lib/workRowLabel.ts";
 import { machinePath, paneStorageId } from "../../shared/machines.ts";
 import { chatRestoreIndex, chatTurnAnchor, readChatPosition, rememberChatPosition, type ChatPosition } from "../lib/chatScrollMemory.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
-import { useSkillMatcher } from "../lib/useSkillMatcher.ts";
-import type { SkillMatcher } from "../lib/skillMentions.ts";
+import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { createSkillMatcher, type SkillMatcher } from "../lib/skillMentions.ts";
 import { lineDiff } from "../lib/diff.ts";
 import { endsWithTurn, formatTokens, stoppedTurn, type TurnIdentity } from "../lib/compose.ts";
 import { formatElapsed, taskCallItems, taskResultMarkdown } from "../lib/omoTasks.ts";
@@ -1227,8 +1227,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     pinPaneConversation(paneId, machineId);
     return () => unpinPaneConversation(paneId, machineId);
   }, [paneId, machineId]);
-  const skillMatcher = useSkillMatcher(paneId, agent);
   const commands = usePaneCommands(paneId, agent);
+  // the pane's skill names, from the same list: a chat opened again chips them in its first frame
+  const skillMatcher = useMemo(() => createSkillMatcher(commands, skillSyntax(agent)), [commands, agent]);
   // polls pause while the page or the pane is hidden and pick up at once when it is back
   const pageVisible = usePageVisible();
   const visible = paneVisible && pageVisible;
