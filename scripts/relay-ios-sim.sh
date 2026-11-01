@@ -248,7 +248,12 @@ xcrun simctl install "$udid" "$r/dd/Build/Products/Debug-iphonesimulator/App.app
 codesign -dv "$r/dd/Build/Products/Debug-iphonesimulator/App.app" 2>&1 | grep -E '^Signature=' >&2 || true
 echo "BUILT $udid"
 
-git clone -q --depth 1 https://github.com/appium/WebDriverAgent "$r/wda"
+# WebDriverAgent v16.15.3, pinned to its commit: fetched by that exact id and checked before it builds
+wda_commit=02cb92f0e93c8b021443bcbb8eeb80932c113220
+git init -q "$r/wda"
+git -C "$r/wda" fetch -q --depth 1 https://github.com/appium/WebDriverAgent "$wda_commit"
+git -C "$r/wda" -c advice.detachedHead=false checkout -q FETCH_HEAD
+[ "$(git -C "$r/wda" rev-parse HEAD)" = "$wda_commit" ] || { echo "ENDED WebDriverAgent is not commit $wda_commit"; exit 1; }
 port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 mkfifo "$r/wda.ready"
 # WebDriverAgent prints ServerURLHere once it listens: awk reports that line (or the end of the run
