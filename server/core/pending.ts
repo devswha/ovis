@@ -76,6 +76,17 @@ function runsAgentProgram(entry: { name?: string | null; argv0?: string | null; 
   if (agent === "claude") return isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined });
   return agent === "pi" && isPiProcess(entry.argv ?? []);
 }
+/**
+ * `entry` is known to run another program than `agent`'s: its argv (or argv0) shows one, or its name is a program's
+ * (a child such as git, gh or security) rather than a runtime's. A listing with no argv and only a runtime's name, or
+ * none, does not say what it runs.
+ */
+function runsOtherProgram(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }, agent: string | null): boolean {
+  if (runsAgentProgram(entry, agent)) return false;
+  if ((entry.argv?.length ?? 0) > 0 || entry.argv0) return true;
+  const name = entry.name?.trim() ?? "";
+  return name !== "" && !["node", "bun", "python", "python3"].includes(name);
+}
 const agentRuns = (identity: PendingIdentity, recognized: boolean): boolean => identity.agent !== null && identity.processPid !== null && recognized;
 /** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
@@ -803,12 +814,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     item.identity.session ??= identity.session;
     // the shell itself is never the launched process: with it still in front, the launch is not known yet
     if (identity.processPid !== shellPid) {
-      // nor is a process that runs another program while something else is in front too: a child the agent runs as it
-      // starts (#2525), learned at a later event once the agent's own program is seen or it is alone in front
+      // nor is a process known to run another program while something else is in front too: a child the agent runs as
+      // it starts (#2525), learned at a later event once the agent's own program is seen or it is alone in front. The
+      // process picked for the agent herdr names is trusted when its listing does not say what it runs (no argv)
       const foreground = (processes?.foreground_processes ?? []).filter((entry) => entry.pid !== shellPid);
       const entry = foreground.find((candidate) => candidate.pid === identity.processPid);
       if (identity.processPid == null || held?.pid === identity.processPid
-        || (entry !== undefined && (foreground.length === 1 || runsAgentProgram(entry, item.identity.agent)))) {
+        || (entry !== undefined && (foreground.length === 1 || !runsOtherProgram(entry, item.identity.agent)))) {
         item.identity.processPid ??= identity.processPid;
         item.identity.processBirth ??= identity.processBirth;
       }

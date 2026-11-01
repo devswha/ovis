@@ -473,6 +473,9 @@ it.each([
   ["codex behind a child, unnamed, then replaced", "codex", null, [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], { pid: REPLACEMENT, name: "codex" }, "pending_target_changed"],
   ["macOS native Claude behind a child, named, then replaced", "claude", "claude", [{ pid: CHILD, name: "security" }, MAC_CLAUDE(AGENT)], MAC_CLAUDE(REPLACEMENT), "pending_target_changed"],
   ["dsh-tui's host, unnamed, then replaced", "dsh-tui", null, [DSH_HOST], { pid: REPLACEMENT, name: "dsh-tui" }, "pending_target_changed"],
+  // herdr names the agent, whose listing has no argv to show its program, beside a child: the pick is still the agent
+  ["codex named, listed without argv beside a child, stays in front", "codex", "codex", [{ pid: AGENT, name: "node" }, { pid: CHILD, name: "git" }], { pid: AGENT, name: "node" }, "sent"],
+  ["codex named, listed without argv beside a child, then replaced", "codex", "codex", [{ pid: AGENT, name: "node" }, { pid: CHILD, name: "git" }], { pid: REPLACEMENT, name: "codex" }, "pending_target_changed"],
 ] as const)("a first message queued with in front %s: %s", async (_case, kind, namedAtQueue, front, next, outcome) => {
   // dsh-tui is a shell-started agent once DeepSeek Harness can be started (#2524); its own test is what knows its host
   const registered = Object.hasOwn(SHELL_AGENTS, "dsh-tui");
