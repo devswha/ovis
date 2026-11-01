@@ -1216,6 +1216,27 @@ describe("connection-owned pending input", () => {
     await f.waitBytes(`${paste("queued message")}\r`);
   }, 30_000);
 
+  it("holds a queued message rather than clearing the stopped chat message Claude put back in its box", async () => {
+    const f = await setup("restored");
+    const rule = "\u2500".repeat(60);
+    const footer = "[Haiku 4.5] \u2502 project";
+    // the chat's own message, typed at a turn's end: what a copy in Claude's box is compared against
+    const sent = await f.queue(1, "write a story about a gardener");
+    await f.state("idle"); await f.removed(sent.id);
+    await f.waitBytes(`${paste("write a story about a gardener")}\r`);
+    await f.state("working");
+    const message = await f.queue(2, "then reply PONG");
+    // Stop before Claude answered: Claude drops that turn and puts the message back in its box, typed
+    await f.showScreen(`  \u273b Cooked for 1s\n${rule}\n\u276f write a story about a gardener\n${rule}\n  ${footer}\n`, footer);
+    const before = f.bytes();
+    await f.state("idle");
+    const held = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.id === message.id && item.state === "held"));
+    expect(held.messages.find((item: PendingMessage) => item.id === message.id).error.code).toBe("input_draft");
+    // no Esc cleared the copy: the composer takes it back from its next prompt read
+    expect(f.bytes()).toBe(before);
+  }, 30_000);
+
   it("takes no colors from a scrolled viewport: an older grey box with the typed words holds the message", async () => {
     const f = await setup("draft-scrolled");
     const rule = "\u2500".repeat(60);

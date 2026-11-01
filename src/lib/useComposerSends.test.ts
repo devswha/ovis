@@ -146,7 +146,7 @@ it.each([
   ["confirmed", { ok: true } as const],
 ])("Send now of a held copy the bridge answered %s removes its recovery row only on a receipt", async (kind, answer) => {
   const saved = savedStorage();
-  const pane = `legacy-held-${kind}`, owner = paneStorageId("local", pane), shown: string[] = [];
+  const pane = `legacy-held-${kind}`, owner = paneStorageId("local", pane), key = waitingKey("local", pane), shown: string[] = [];
   const message = { id: `held-${kind}`, request_id: 1, text: "held follow-up", state: "held" as const, created_at: "2026-10-28T00:00:00Z" };
   try {
     // a copy kept since a connection that held it: this one sends it again by its id
@@ -157,11 +157,15 @@ it.each([
       expect(pendingMessages.read(owner)).toMatchObject([{ id: message.id, text: "held follow-up", state: "uncertain", error: { code: "submit_unconfirmed" } }]);
       expect(new PendingMessageStore(() => saved.storage).read(owner)).toMatchObject([{ id: message.id, state: "uncertain" }]);
       expect(shown).toEqual([]);
+      expect(currentWaitingSends(key)).toEqual([]);
     } else {
       expect(pendingMessages.read(owner)).toEqual([]);
       expect(shown).toEqual(["held follow-up"]);
+      // the row went: the chat shows the message as waiting until its turn is read
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "held follow-up" }]);
     }
   } finally {
+    forgetWaitingSends(key);
     pendingMessages.removeCopy(owner, message.id);
     saved.restore();
   }
@@ -193,6 +197,24 @@ it("records a confirmed send for its original pane after navigation without foll
     expect(await result).toBe(true);
     expect(currentWaitingSends(key)).toMatchObject([{ text: "from original pane" }]);
     expect(follow).toBe(0);
+  } finally { forgetWaitingSends(key); }
+});
+
+// the bridge types a queued follow-up at once when the turn ended before it arrived: its receipt
+// names no pending row, and the box lets the message go as for a send at once
+it("a queued follow-up the bridge typed at once waits in the chat and follows it, as a send at once", async () => {
+  const pane = "queued-typed-at-once", key = waitingKey("local", pane), shown: string[] = [];
+  let follows = 0;
+  const actions = sends(pane, { ok: true }, shown, {
+    agentStatus: "working", inputAtRest: () => false, settings: { autoSendQueued: true },
+    setChatLocalSend: () => { follows++; },
+    submitComposerMessage: (_text, delivery) => { expect(delivery).toBe("queue"); return Promise.resolve({ ok: true }); },
+  });
+  try {
+    expect(await actions.composerSend("then list the tests")).toBe(true);
+    expect(currentWaitingSends(key)).toMatchObject([{ text: "then list the tests" }]);
+    expect(follows).toBe(1);
+    expect(shown).toEqual(["then list the tests"]);
   } finally { forgetWaitingSends(key); }
 });
 

@@ -145,14 +145,15 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         if (!answer.ok) return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
         // an older bridge took it with no receipt: the box lets it go, a row keeps it as not confirmed
         if (answer.unconfirmed && pane !== null) pendingMessages.keepUnconfirmed(paneStorageId(machineId, pane), text);
-        // A confirmed send belongs to the original pane even if navigation outruns its receipt.
-        if (delivery === "immediate" && answer.pending === undefined && !answer.unconfirmed) {
+        // A confirmed send belongs to the original pane even if navigation outruns its receipt. No `pending`
+        // means typed now: a queued follow-up too, when the turn had ended before it arrived
+        if (answer.pending === undefined && !answer.unconfirmed) {
           if (paneRef.current === pane && socketRef.current === socket && sessionRef.current === session) {
             setChatLocalSend((current) => ({ key: current.key + 1, navigationGeneration: navigation }));
           }
           if (pane !== null) rememberWaitingSend(waitingKey(machineId, pane), text, sentAt, sentAfter);
         }
-        if (pane !== null && delivery === "immediate" && answer.pending === undefined && !answer.unconfirmed) showSentCommand(pane, text, known, seen);
+        if (pane !== null && answer.pending === undefined && !answer.unconfirmed) showSentCommand(pane, text, known, seen);
         return true;
       });
     },
@@ -230,6 +231,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           }
           const known = knownOutcomes(pane);
           const seen = inputRowNow() === "ready";
+          const sentAt = Date.now(), sentAfter = waitingBaseline(waitingKey(machineId, pane));
           const result = submitComposerMessage(message.text, "immediate", undefined, false, id, message.resendGeneration ?? 0, message.agent_only === true);
           if (!result) {
             pendingMessages.fail(owner, id, { code: "not_transmitted", message: "the connection dropped before this message was sent" }, false);
@@ -240,7 +242,10 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           if (answer.ok && answer.unconfirmed) pendingMessages.fail(owner, id, UNCONFIRMED_SEND, true, message.resendGeneration ?? 0);
           else if (answer.ok) {
             pendingMessages.removeCopy(owner, id);
-            if (answer.pending === undefined) showSentCommand(pane, message.text, known, seen);
+            if (answer.pending === undefined) {
+              rememberWaitingSend(waitingKey(machineId, pane), message.text, sentAt, sentAfter);
+              showSentCommand(pane, message.text, known, seen);
+            }
           }
           // A concurrent Edit can remove storage while this copy is busy. Its exact
           // withdrawal refusal settles that copy instead of recreating a held row.

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { PendingMessage, ServerMessage } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { greetingMemory } from "./greeting.ts";
 import { MachineSession, MachineSessionRegistry } from "./machineSession.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { PendingMessageStore, pendingMessages } from "./pendingMessages.ts";
+import { currentWaitingSends, forgetWaitingSends, waitingKey } from "./sentWaiting.ts";
 import type { HerdrSocket } from "./ws.ts";
 
 type FeaturesFrame = Extract<ServerMessage, { type: "features" }>;
@@ -265,6 +266,28 @@ describe("PC connection ownership", () => {
     session.acceptPending("w1:p1", message("p1"), session.epoch);
     expect(store.read(owner)).toEqual([]);
     session.close();
+  });
+
+  // a queued row typed by the turn end's drain or Send now leaves the row list before the transcript
+  // holds its turn: the chat shows it as the user's waiting message meanwhile, as a composer send
+  it("keeps a typed row in the chat as a waiting message, timed from when it went out", () => {
+    const { session, socket } = setup("drain-pc");
+    const key = waitingKey("drain-pc", "w1:p1");
+    const clock = spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      clock.mockReturnValue(3000);
+      const removal: ServerMessage = { type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] };
+      socket.receive(removal);
+      socket.receive(removal);
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 1000 }]);
+      // a discarded row was never typed
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p2")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p2", outcome: "discarded" }] });
+      expect(currentWaitingSends(key)).toHaveLength(1);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
   });
 
   it("accepts an unmounted pane's submit receipt on its captured live connection", () => {

@@ -11,8 +11,9 @@ import { chromePath } from "./chrome-path.ts";
 // A cancelled send the agent put back in its input box (`restored` on GET /api/pane/prompt), on
 // the unmodified app over the demo's fixture transport: the composer takes the text back without
 // taking the focus, the chat keeps the turn that send made out of view while they match, and
-// typing or editing over the fill is never replaced or cleared. All files and HTTP traffic stay
-// in this disposable, loopback-only app; no herdr session is opened.
+// typing or editing over the fill is never replaced or cleared. A message sent over the fill keeps
+// that turn out too, until a read brings the new turn. All files and HTTP traffic stay in this
+// disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-restored-draft-demo-"));
 
 // playwright-core's bundle lazily requires packages the lockfile does not carry (chromium-bidi):
@@ -81,6 +82,10 @@ try {
     window.extraTurn = null;
     window.extraServed = 0;
     window.promptReads = 0;
+    // while set, a conversation read waits for window.releaseReads, then is served as the transcript is then
+    window.holdReads = false;
+    const heldReads = [];
+    window.releaseReads = () => { window.holdReads = false; for (const release of heldReads.splice(0)) release(); };
     // the demo's sockets, so a transcript change can be announced on them as the bridge does
     const DemoSocket = window.WebSocket;
     const sockets = new Set();
@@ -106,6 +111,7 @@ try {
         window.promptReads += 1;
         return json({ prompt: null, suggestion: null, restored: window.restoredText });
       }
+      if (url.pathname === "/api/pane/conversation" && window.holdReads) return new Promise((resolve) => heldReads.push(() => resolve(window.fetch(input, init))));
       if (url.pathname === "/api/pane/conversation" && window.extraTurn !== null && !url.searchParams.has("before") && !url.searchParams.has("from")) {
         return Promise.resolve(demo(input, init)).then(async (response) => {
           if (!response.ok) return response;
@@ -215,6 +221,33 @@ try {
         await feed(page, null, null);
         await boxValue(page, "@/tmp/notes.txt ");
         console.log("PASS a path that waited on a restored /command goes in once the fill is cleared");
+
+        // the fill replaced by a new message and sent: the send empties the agent's box, so the next
+        // prompt read answers no restored send while the transcript still ends with the cancelled
+        // turn (the agent has not written the new one yet). That turn stays out until a read brings
+        // the new one, which leaves it off the transcript's active chain
+        await composer.fill("");
+        const served = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
+        await feed(page, RESTORED, extraTurn());
+        await boxValue(page, RESTORED);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count, served, { timeout: 10_000 });
+        await announce(page);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count + 1, served, { timeout: 10_000 });
+        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the restored send's turn is out of view");
+        const next = "Reply with one word";
+        await composer.fill(next);
+        // the box empties as the message goes, in one task: no prompt read answers between the two
+        await page.evaluate(() => {
+          Object.assign(window, { holdReads: true, restoredText: null });
+          document.querySelector<HTMLButtonElement>(".composer-send")!.click();
+        });
+        await page.locator(".chat-sent-waiting-list", { hasText: next }).waitFor({ timeout: 10_000 });
+        await promptReadsPast(page, await promptReads(page) + 1);
+        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the cancelled turn stays out after the send");
+        await page.evaluate(() => { const view = window as unknown as { extraTurn: unknown; releaseReads: () => void }; view.extraTurn = null; view.releaseReads(); });
+        await page.locator(".chat-turn", { hasText: next }).waitFor({ timeout: 10_000 });
+        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the new turn's read leaves the cancelled one out");
+        console.log("PASS a message sent over a restored send keeps that send's turn out until the new turn is read");
 
         assert.deepEqual(errors, []);
       } finally { await desktop.close(); }
