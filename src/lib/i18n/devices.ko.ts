@@ -171,6 +171,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Online. {n} phones connected.": "온라인. 폰 {n}대가 연결되어 있습니다.",
   "Error: {message}": "오류: {message}",
   "Could not reach the relay.": "릴레이에 연결할 수 없습니다.",
+  "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
   "QR code that pairs a phone through the relay": "릴레이를 통해 폰을 페어링하는 QR 코드",
   "Scan it with the phone's camera": "폰 카메라로 스캔하세요",
   "It opens Ovis on the phone and pairs it with this PC.": "폰에서 Ovis가 열리고 이 PC와 페어링됩니다.",

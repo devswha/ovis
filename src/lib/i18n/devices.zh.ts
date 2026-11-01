@@ -171,6 +171,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Online. {n} phones connected.": "在线。已连接 {n} 部手机。",
   "Error: {message}": "错误：{message}",
   "Could not reach the relay.": "无法连接中继。",
+  "The relay did not start: {message}": "中继未能启动：{message}",
   "QR code that pairs a phone through the relay": "通过中继配对手机的二维码",
   "Scan it with the phone's camera": "用手机相机扫描",
   "It opens Ovis on the phone and pairs it with this PC.": "手机上会打开 Ovis 并与此 PC 配对。",

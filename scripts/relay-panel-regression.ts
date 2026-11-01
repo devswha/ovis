@@ -12,7 +12,7 @@
  * ui-regression.ts; `startRelayFixture` also serves the manual QA script.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright-core";
@@ -27,6 +27,7 @@ import { openSettingsPage } from "./settings-page.ts";
 export interface RelayFixture {
   readonly origin: string;
   readonly relayPort: number;
+  readonly stateDir: string;
   stop(): Promise<void>;
 }
 
@@ -49,6 +50,7 @@ export function startRelayFixture(options: { serveOnly?: boolean } = {}): RelayF
   return {
     origin: `http://127.0.0.1:${server.port}`,
     relayPort: relay.port,
+    stateDir,
     async stop() {
       await service.shutdown();
       server.stop();
@@ -221,6 +223,30 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await openPhoneSettings(page, fixture.origin);
     const row = page.locator(".devices-row").filter({ hasText: "Pixel 9" });
     await row.locator(".devices-via-relay", { hasText: "via relay" }).waitFor();
+
+    // a start that fails before the link exists (the saved choice cannot be written): the switch stays off,
+    // the reason shows, and Try again starts it once the cause is gone
+    const unwritable = startRelayFixture();
+    fixtures.push(unwritable);
+    const savedChoice = join(unwritable.stateDir, "relay", "state.json");
+    mkdirSync(savedChoice, { recursive: true });
+    const failedContext = await englishContext(browser);
+    contexts.push(failedContext);
+    const failedPage = await failedContext.newPage();
+    failedPage.setDefaultTimeout(15_000);
+    failedPage.on("pageerror", (error) => pageErrors.push(error.message));
+    await openPhoneSettings(failedPage, unwritable.origin);
+    const failedGroup = failedPage.locator('.settings-dialog [data-section="relay"]');
+    const failedToggle = failedGroup.getByRole("switch", { name: "Ovis relay", exact: true });
+    await failedToggle.click();
+    await failedGroup.getByRole("alert").filter({ hasText: "The relay did not start: Could not start the relay." }).waitFor();
+    assert.equal(await failedToggle.getAttribute("aria-checked"), "false", "a start that failed leaves the switch off");
+    await failedGroup.locator(".relay-status").filter({ hasText: "Off." }).waitFor();
+    rmSync(savedChoice, { recursive: true });
+    await failedGroup.getByRole("button", { name: "Try again", exact: true }).click();
+    await failedGroup.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
+    assert.equal(await failedToggle.getAttribute("aria-checked"), "true", "Try again turned the relay on");
+    assert.equal(await failedGroup.getByRole("button", { name: "Try again", exact: true }).count(), 0, "no retry once it runs");
 
     // serve-only: the switch is there and disabled, with the reason in the row
     const serveOnly = startRelayFixture({ serveOnly: true });

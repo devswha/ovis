@@ -33,6 +33,8 @@ export function RelayPanel({ readOnly = false, closesGate = false }: RelayPanelP
   const [confirmingReset, setConfirmingReset] = useState(false);
   if (unsupported || status === null || inRelayShell()) return null;
   const on = status.blocked === null && status.phase !== "off";
+  // a start that failed before the link existed: the relay is off and nothing retries it (server/relay/service.ts)
+  const notStarted = status.blocked === null && status.phase === "off" && status.error !== null;
 
   const toggle = async (next: boolean) => {
     setError(null);
@@ -48,6 +50,16 @@ export function RelayPanel({ readOnly = false, closesGate = false }: RelayPanelP
       </>}>
         <Toggle label={t("Ovis relay")} checked={on} disabled={readOnly || pending || status.blocked !== null} onChange={(next) => void toggle(next)} />
       </SettingsRow>
+      {notStarted && (
+        <div className="settings-item relay-not-started">
+          <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: status.error })}</p>
+          {!readOnly && (
+            <div className="phone-actions">
+              <button type="button" className="btn" disabled={pending} onClick={() => void toggle(true)}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
+            </div>
+          )}
+        </div>
+      )}
       {status.phase === "online" && !readOnly && <Pairing />}
       {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
       {!readOnly && status.blocked !== "serve_only" && (

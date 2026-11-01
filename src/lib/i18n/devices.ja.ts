@@ -171,6 +171,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Online. {n} phones connected.": "オンライン。スマートフォン {n} 台が接続中です。",
   "Error: {message}": "エラー: {message}",
   "Could not reach the relay.": "リレーに接続できませんでした。",
+  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
   "QR code that pairs a phone through the relay": "リレー経由でスマートフォンをペアリングする QR コード",
   "Scan it with the phone's camera": "スマートフォンのカメラで読み取ってください",
   "It opens Ovis on the phone and pairs it with this PC.": "スマートフォンで Ovis が開き、この PC とペアリングされます。",
