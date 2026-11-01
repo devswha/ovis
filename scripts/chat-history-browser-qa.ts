@@ -442,6 +442,22 @@ try {
   await page.getByText("session B", { exact: true }).waitFor();
   assert.ok((await page.evaluate(() => window.qa.commits)).every((turns) => !turns.some((turn) => turn.includes("session A"))), "a chat opened on session B never drew the press read of session A");
   console.log("PASS a press read of the session herdr left is neither drawn nor taken by the chat it opens");
+  // The usual timing: the roster naming the new session comes after the click, so the chat opened on the
+  // press read of the old one; once the roster names the new one, the chat reads it without waiting for a push.
+  await select("a", "local");
+  await page.getByText("history local/a", { exact: true }).waitFor();
+  switchSession = "C";
+  await page.evaluate(() => { window.qa.session("switch", "c"); window.qa.press("switch"); });
+  await page.waitForFunction(() => window.qa.answered.filter((key) => key === "local/switch").length >= 3);
+  await select("switch", "local", "claude");
+  await page.getByText("session C", { exact: true }).waitFor();
+  // right after one of the chat's 2 s polls, so only the read the roster change starts can show D in time
+  const polled = await page.evaluate(() => window.qa.answered.filter((key) => key === "local/switch").length);
+  await page.waitForFunction((count) => window.qa.answered.filter((key) => key === "local/switch").length > count, polled);
+  switchSession = "D";
+  await page.evaluate(() => window.qa.session("switch", "d"));
+  await page.getByText("session D", { exact: true }).waitFor({ timeout: 1_000 });
+  console.log("PASS a chat open when the roster names its pane's next session reads that session at once");
   assert.deepEqual(errors, []);
   console.log("PASS synthetic Devin bubbles and tools render; switching to Claude clears Devin history");
   console.log("PASS product pane commits across A→B→A, another PC, and late or failed answers");
