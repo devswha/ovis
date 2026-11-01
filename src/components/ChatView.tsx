@@ -41,7 +41,7 @@ import { formatGoalTime, turnGoal, type GoalState, type GoalStatus } from "../li
 import { useSettings } from "../lib/settings.ts";
 import { learnFromConversation } from "../lib/tabLabels.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
-import { followGlides } from "../lib/followScroll.ts";
+import { dropPendingListScroll, followGlides } from "../lib/followScroll.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { statusEdgeRead } from "../lib/status.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
@@ -128,18 +128,6 @@ function FailureLine({ action, failure, onRetry }: { action: string; failure: Us
       {failure.detail !== null && <code>{failure.detail}</code>}
     </details>}
   </div>;
-}
-
-// No row is this object, so the list finds nothing to scroll to.
-const NO_ROW = Object.freeze({});
-/**
- * The list's scrollToEnd does not scroll at once: it waits for the list's next commit, and then
- * for the layout to settle after a data change (up to 800 ms). A follow asked for while the reader
- * was at the end can so land after the reader paged or scrolled away, and pull them back. Any newer
- * scroll request supersedes a waiting one; a request for no row supersedes it without moving.
- */
-function dropPendingListScroll(list: LegendListRef | null): void {
-  void list?.scrollToItem({ item: NO_ROW, animated: false });
 }
 
 const TRANSCRIPT_LINES = 400;
@@ -1780,7 +1768,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // conversation that rewraps inside an unchanged view: its width or its type changed
   // (Settings → Chat width, Chat font size, Chat font). One that only grew taller did so under
   // the reader's hand (a folded block opened, a whole output asked for): following the end there
-  // would jump past what was just opened. New messages follow in the layout effect above.
+  // would jump past what was just opened. New messages follow in the layout effect above, and a
+  // footer that grew (a sent message's bubble) in ChatTimeline.
   useEffect(() => {
     const node = scroller.current;
     if (node === null) return;
