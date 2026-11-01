@@ -52,6 +52,8 @@ try {
   page.on("pageerror", (error) => { errors.push(error.message); console.error(error.stack); });
   let epoch = "one", newest = "old newest", before: string | null = "one:100";
   let holdOlder = false;
+  /** a notice Claude Code wrote before the turn at work (server/claude-transcript.ts noticeAt) */
+  let notice = false;
   /** the cursor an older page answers with: null ends the history there */
   let olderNext: string | null = null;
   let product = false;
@@ -126,8 +128,10 @@ try {
       if (holdOlder) await new Promise<void>((resolve) => releases.push(resolve));
       await route.fulfill({ json: { source: "omp-transcript", history_id: captured, cursor: olderNext ?? url.searchParams.get("since"), turns: [user("old earlier")] } });
     } else {
-      const tool = { role: "assistant", ts: "reused", parts: [{ kind: "tool", name: "Read", summary: "same", input: "{}", output: "preview", output_ref: "reused", output_size: 9000 }] };
-      await route.fulfill({ json: { source: "omp-transcript", history_id: epoch, cursor: before, turns: newest ? [user(newest), tool] : [] } });
+      // with the notice, the tool's result changes too: what names the turn's row stays the same
+      const tool = { role: "assistant", ts: "reused", parts: [{ kind: "tool", name: "Read", summary: "same", input: "{}", output: notice ? "preview, read again" : "preview", output_ref: "reused", output_size: 9000 }] };
+      const held = { role: "user", ts: "held", parts: [{ kind: "notice", text: "Message held", source: "informational" }] };
+      await route.fulfill({ json: { source: "omp-transcript", history_id: epoch, cursor: before, turns: newest ? [user(newest), ...(notice ? [held] : []), tool] : [] } });
     }
   });
   await page.goto(`http://127.0.0.1:${server.port}/`);
@@ -233,6 +237,21 @@ try {
   await page.evaluate((i) => window.qa.requests[i].reject(), remoteIndex);
   await page.getByText(newest, { exact: true }).waitFor();
   assert.equal(await page.getByText("Couldn't load the whole output — retry", { exact: true }).count(), 0);
+  // A notice written before the last turn takes a row of its own: that turn keeps its row, and
+  // what the reader opened in it stays open.
+  epoch = "notice"; newest = "before a notice"; before = null;
+  await page.evaluate(() => window.qa.chat("notice"));
+  await page.getByText(newest, { exact: true }).waitFor();
+  await page.locator(".work-block-head").click();
+  await page.locator(".work-row-head").click();
+  const openedWork = await page.locator(".work-block-head").elementHandle();
+  notice = true;
+  await refresh();
+  await page.locator(".chat-notice").waitFor();
+  assert.equal(await openedWork!.evaluate((node) => node.isConnected), true, "a notice before the last turn keeps that turn mounted");
+  assert.equal(await page.locator(".work-row-head").getAttribute("aria-expanded"), "true", "a notice before the last turn keeps its opened tool details");
+  notice = false;
+  console.log("PASS a notice written before the last turn keeps that turn's row and what the reader opened");
   // Already loaded older history must be discarded when a held cursor gets 409.
   epoch = "four"; newest = "loaded history newest"; before = "four:100"; holdOlder = false;
   await page.evaluate(() => window.qa.chat("b"));
@@ -240,8 +259,20 @@ try {
   await page.locator(".chat-older").click();
   await page.getByText("old earlier", { exact: true }).waitFor();
   epoch = "five"; newest = "after held cursor reset"; before = null;
-  await refresh();
-  await page.getByText(newest, { exact: true }).waitFor();
+  // every commit until the new history shows: the old turns stay until it replaces them (a /clear)
+  const between = await page.evaluate((text) => new Promise<string[]>((resolve) => {
+    const seen: string[] = [];
+    const observer = new MutationObserver(() => {
+      const shown = document.body.textContent ?? "";
+      if (shown.includes("Loading conversation…")) seen.push("Loading conversation…");
+      else if (document.querySelectorAll(".chat-turn").length === 0) seen.push("no turns");
+      if (shown.includes(text)) { observer.disconnect(); resolve(seen); }
+    });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    setTimeout(() => resolve([...seen, "timeout"]), 10_000);
+    window.qa.refresh();
+  }), newest);
+  assert.deepEqual(between, [], "a held cursor's 409 shows no empty or loading chat before the new history");
   assert.equal(await page.getByText("old earlier", { exact: true }).count(), 0);
   assert.equal(await page.locator(".chat-older").count(), 0);
 

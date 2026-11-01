@@ -40,6 +40,12 @@ and a revoked device keeps it) is not enough to take the PC's place. At most 16 
 `server_id` wait to answer at once; a 17th closes the oldest `1013`, so pushing the PC's own socket
 out takes 16 arrivals within its one round trip.
 
+The PC retries transient refusals, including `4401` with `server proof timed out` or the
+ambiguous `invalid or expired server proof`, with its normal backoff. Only a control-socket
+`4401` with `server key does not match server_id` or `invalid server key` stops retries and
+reports the reason in relay status. An invalid or out-of-order first challenge is closed by
+the PC with `4000` and retried. Refusing a data socket does not stop the control link.
+
 - A client's first frame is `{"type":"assigned","connection_id":"<32 hex>"}`, its random 128-bit id.
 - The control socket hears `{"type":"sync","connection_ids":[...]}` when it opens (the clients
   still waiting for a data socket), `{"type":"connected","connection_id":"..."}` when a client
