@@ -26,10 +26,12 @@ const WAIT = { timeout: 10_000 } as const;
 
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
-/** The last reply's last paragraph: its words, and where a drag starts and goes past its end. */
+/**
+ * The last block (a paragraph, a list) of the last reply whose words end just before its copy row (no
+ * work block after them): its words, and where a drag starts and goes past its end.
+ */
 const lastParagraph = (page: Page) => page.evaluate(() => {
-  const paragraphs = [...document.querySelectorAll(".chat-turn-agent .markdown p")];
-  const paragraph = paragraphs[paragraphs.length - 1]!;
+  const paragraph = [...document.querySelectorAll(".chat-turn-agent")].map((turn) => [...turn.children].filter((child) => !child.matches(".chat-turn-meta")).at(-1)).filter((last): last is Element => last?.matches(".markdown") === true && last.textContent!.trim() !== "").at(-1)!.lastElementChild!;
   const rects = [...paragraph.getClientRects()];
   const lines = [...(() => { const range = document.createRange(); range.selectNodeContents(paragraph); return range.getClientRects(); })()].filter((rect) => rect.width > 0);
   const first = lines[0]!, last = lines.at(-1)!;
@@ -43,8 +45,7 @@ async function tripleClick(page: Page, mouse: boolean): Promise<void> {
     const box = await lastParagraph(page);
     await page.mouse.click(box.x0 + 4, box.y0, { clickCount: 3 });
   } else await page.evaluate(() => {
-    const paragraphs = [...document.querySelectorAll(".chat-turn-agent .markdown p")];
-    const paragraph = paragraphs[paragraphs.length - 1]!;
+    const paragraph = [...document.querySelectorAll(".chat-turn-agent")].map((turn) => [...turn.children].filter((child) => !child.matches(".chat-turn-meta")).at(-1)).filter((last): last is Element => last?.matches(".markdown") === true && last.textContent!.trim() !== "").at(-1)!.lastElementChild!;
     const range = document.createRange();
     range.setStart(paragraph, 0);
     range.setEnd(paragraph.closest(".markdown")!.nextElementSibling!, 0);
@@ -63,8 +64,7 @@ async function dragPastEnd(page: Page, mouse: boolean): Promise<void> {
     await page.mouse.move(box.x1, box.y1, { steps: 6 });
     await page.mouse.up();
   } else await page.evaluate(() => {
-    const paragraphs = [...document.querySelectorAll(".chat-turn-agent .markdown p")];
-    const paragraph = paragraphs[paragraphs.length - 1]!;
+    const paragraph = [...document.querySelectorAll(".chat-turn-agent")].map((turn) => [...turn.children].filter((child) => !child.matches(".chat-turn-meta")).at(-1)).filter((last): last is Element => last?.matches(".markdown") === true && last.textContent!.trim() !== "").at(-1)!.lastElementChild!;
     const turn = paragraph.closest(".chat-turn-agent")!;
     const range = document.createRange();
     range.setStart(paragraph, 0);
@@ -74,10 +74,24 @@ async function dragPastEnd(page: Page, mouse: boolean): Promise<void> {
   });
 }
 
-/** A range from the user's last message, or the reply before the last one, into the last reply's words; false: no reply before it. */
-async function reaching(page: Page, from: "user" | "reply"): Promise<boolean> {
+/**
+ * A range from the user's last message, or the reply before the last one, into the last reply's
+ * words, or from a reply's words into the work block after them; false: the chat has no such place.
+ */
+async function reaching(page: Page, from: "user" | "reply" | "work"): Promise<boolean> {
   return page.evaluate((kind) => {
     const words = (root: Element): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) if ((node as Text).data.trim() !== "") nodes.push(node as Text); return nodes; };
+    if (kind === "work") {
+      const reply = [...document.querySelectorAll(".chat-turn-agent > .markdown")].filter((markdown) => markdown.nextElementSibling?.querySelector(".work-block-title")).at(-1);
+      if (reply === undefined) return false;
+      const title = words(reply.nextElementSibling!.querySelector(".work-block-title")!)[0]!;
+      const range = document.createRange();
+      range.setStart(words(reply)[0]!, 0);
+      range.setEnd(title, Math.min(3, title.data.length));
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(range);
+      return true;
+    }
     const replies = [...document.querySelectorAll(".chat-turn-agent .markdown")];
     if (kind === "reply" && replies.length < 2) return false;
     const start = kind === "user" ? words([...document.querySelectorAll(".chat-turn-user")].at(-1)!)[0]! : words(replies.at(-2)!).at(-1)!;
@@ -129,7 +143,7 @@ try {
           page.on("pageerror", (error) => errors.push(error.message));
           page.setDefaultTimeout(WAIT.timeout);
           await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}`);
-          await page.locator(".chat-turn-agent .markdown p").last().waitFor({ state: "attached", ...WAIT });
+          await page.locator(".chat-turn-agent > .markdown").last().waitFor({ state: "attached", ...WAIT });
           await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
           await appFaces(page);
           await frames(page);
@@ -167,12 +181,12 @@ try {
           await composer.fill("");
           await composer.blur();
           let refused = 0;
-          for (const from of ["user", "reply"] as const) {
+          for (const from of ["user", "reply", "work"] as const) {
             if (!await reaching(page, from)) continue;
             refused++;
             await frames(page);
             await frames(page);
-            assert.equal(await page.locator(".selection-offer").count(), 0, `${label}: nothing offered for a selection from the ${from === "user" ? "user's message" : "reply before"}`);
+            assert.equal(await page.locator(".selection-offer").count(), 0, `${label}: nothing offered for a selection ${from === "user" ? "from the user's message" : from === "reply" ? "from the reply before" : "into a work block"}`);
             await page.evaluate(() => getSelection()?.removeAllRanges());
           }
           assert.deepEqual(errors, [], `${label}: no page errors`);

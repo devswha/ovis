@@ -56,7 +56,7 @@ function fromDom(node: Node): ClipboardNode {
  * `read` learns whether any label grew. A label the page hides (a chat under a terminal peek, one not
  * rendered at all) is not what the reader selected and stays as it is.
  */
-function withRawToolPaths<T>(selection: SelectionLike, scope: ParentNode, read: (grew: boolean) => T): T {
+function withRawToolPaths<T>(selection: Selection, scope: ParentNode, read: (grew: boolean) => T): T {
   const grown: { text: Text; head: number }[] = [];
   try {
     for (const label of scope.querySelectorAll<HTMLElement>("[data-raw-path]")) {
@@ -85,10 +85,7 @@ function withRawToolPaths<T>(selection: SelectionLike, scope: ParentNode, read: 
  * claim is the browser's plain text alone: rebuilding HTML from the whole page would carry what
  * the plain text leaves out (a composer's unsent draft, a hidden chat).
  */
-/** What these read of a Selection: a reply's words read past a selection's end are a range shaped as one (components/ReplyComments.tsx). */
-export type SelectionLike = Pick<Selection, "isCollapsed" | "rangeCount" | "getRangeAt" | "toString">;
-
-export function chatSelectionClipboardPayload(selection: SelectionLike, root: Element): ClipboardPayload | null {
+export function chatSelectionClipboardPayload(selection: Selection, root: Element): ClipboardPayload | null {
   if (selection.isCollapsed || selection.rangeCount === 0) return null;
   for (let index = 0; index < selection.rangeCount; index++) {
     const range = selection.getRangeAt(index);
@@ -102,7 +99,7 @@ export function chatSelectionClipboardPayload(selection: SelectionLike, root: El
   return withRawToolPaths(selection, root, () => selectionPayload(selection));
 }
 
-function selectionPayload(selection: SelectionLike): ClipboardPayload | null {
+function selectionPayload(selection: Selection): ClipboardPayload | null {
   const nodes: ClipboardNode[] = [];
   for (let index = 0; index < selection.rangeCount; index++) {
     const range = selection.getRangeAt(index);
