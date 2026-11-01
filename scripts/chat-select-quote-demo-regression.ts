@@ -214,7 +214,8 @@ try {
           assert.equal(await page.locator(".selection-quote").getAttribute("aria-disabled"), "true", `${label}: Quote refuses a quote past the limit`);
           assert.equal((await page.locator(".selection-note").textContent())?.trim(), "Too long to quote: shorten the message or the selection.", `${label}: it says why`);
           await shot("3-too-long");
-          await page.locator(".selection-quote").click();
+          // aria-disabled stays pressable (Playwright counts it as not enabled): the press must change nothing
+          await page.locator(".selection-quote").click({ force: true });
           await frames(page);
           assert.equal(await composer.inputValue(), full, `${label}: the draft stays whole`);
           assert.deepEqual(errors, [], `${label}: no page errors`);

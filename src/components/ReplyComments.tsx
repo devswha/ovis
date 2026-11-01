@@ -156,11 +156,12 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
         aria-describedby={fits ? undefined : quoteNote} title={fits ? t("Quote it in your message") : undefined} onClick={() => quote(offer)}>
         <Quote aria-hidden="true" />{t("Quote")}
       </button>}
-      {paneKey !== null && !fits && <span id={quoteNote} className="selection-note" role="status">{t("Too long to quote: shorten the message or the selection.")}</span>}
       <button type="button" className="reply-comment-offer" aria-label={t("Comment")} title={t("Comment")} onClick={() => open(offer)}>
         <MessageSquarePlus aria-hidden="true" />
       </button>
     </div>}
+    {/* outside the pill, docked over the message box like the form on a phone: never clipped, never a press on the pill */}
+    {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className="selection-note" role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
     {form !== null && <ReplyCommentForm form={form} comment={comment} onComment={setComment} onKeyDown={keyDown} onSave={save} onCancel={close} />}
   </div>;
 }

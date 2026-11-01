@@ -62,15 +62,21 @@
   color: var(--text-strong);
 }
 
-.selection-note {
-  display: inline-flex;
-  align-items: center;
-  max-width: 16rem;
-  padding: 0 var(--space-3);
-  border-left: var(--hairline) solid var(--border);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  white-space: normal;
+.reply-comment-layer > .selection-note {
+  position: absolute;
+  right: var(--space-2);
+  bottom: calc(var(--space-2) + var(--composer-over, 0px));
+  left: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  text-align: center;
+  pointer-events: none;
 }
 
 .selection-quote[aria-disabled="true"] {
