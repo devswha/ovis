@@ -52,10 +52,15 @@ function utf8Length(text: string): number {
   return bytes;
 }
 
-/** A body's size when it is known without reading it. */
+/** A body's size, or for a form the least its encoding can take, when it is known without reading it. */
 function knownSize(body: BodyInit | null | undefined): number | undefined {
   if (typeof body === "string") return utf8Length(body);
   if (body instanceof Blob) return body.size;
+  if (body instanceof FormData) {
+    let size = 0;
+    for (const [name, value] of body) size += utf8Length(name) + (typeof value === "string" ? utf8Length(value) : value.size);
+    return size;
+  }
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
   return undefined;
 }

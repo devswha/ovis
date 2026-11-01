@@ -247,6 +247,11 @@ it("refuses a Firefox request body without reading it when no carrier is up or i
   // a string's UTF-8 size: "\u00e9" is two bytes
   const text = "\u00e9".repeat(LIMITS_V1.max_request_body_bytes / 2 + 1);
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: text })).rejects.toBeInstanceOf(TypeError);
+  // a form (a voice upload) whose file and text field are together over the limit, neither alone
+  const form = new FormData();
+  form.append("audio", new File([new Uint8Array(LIMITS_V1.max_request_body_bytes / 2)], "voice.webm"));
+  form.append("note", "x".repeat(LIMITS_V1.max_request_body_bytes / 2));
+  await expect(f.transport.fetch("/api/upload", { method: "POST", body: form })).rejects.toBeInstanceOf(TypeError);
   await f.drop();
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: "small" })).rejects.toBeInstanceOf(TypeError);
   // Then no body was copied into a request or read, and no request reached the PC
