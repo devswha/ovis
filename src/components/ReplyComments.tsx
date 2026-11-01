@@ -146,8 +146,8 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   };
 
   return <div className="reply-comment-layer" ref={layer}>
-    {/* outside the pill, along the chat's top edge, clear of the jump control at its foot; drawn first, so the pill stays over it */}
-    {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className="selection-note" role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
+    {/* outside the pill, on the chat's far side from it (at the foot, over the jump control's room); drawn first, so the pill stays over it */}
+    {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className={`selection-note${offer.top < (layer.current?.clientHeight ?? 0) / 2 ? " is-below" : ""}`} role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
     {offer !== null && form === null && <div className="selection-offer" role="group" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
       // a mouse press keeps the selection; a touch's is read from the offer it showed
       onMouseDown={(event) => event.preventDefault()}

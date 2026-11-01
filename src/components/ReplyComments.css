@@ -79,6 +79,12 @@
   pointer-events: none;
 }
 
+/* the pill stands in the upper half: the note goes to the foot, above the jump control's room */
+.reply-comment-layer > .selection-note.is-below {
+  top: auto;
+  bottom: calc(var(--composer-over, 0px) + var(--touch-target) + 2 * var(--space-2));
+}
+
 .selection-quote[aria-disabled="true"] {
   background: transparent;
   color: var(--text-dim);
