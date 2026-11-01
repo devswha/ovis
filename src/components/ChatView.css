@@ -1646,7 +1646,7 @@ ol.markdown-list {
 
 .chat-user-image:has(> .image-slot.is-loading, > .image-slot.is-failed) { width: 100%; }
 
-.chat-user-images:has(> :nth-child(2)) > .chat-user-image:has(> .image-slot.is-loading, > .image-slot.is-failed) {
+:is(.chat-user-images, .chat-tool-images):has(> :nth-child(2)) > .chat-user-image:has(> .image-slot.is-loading, > .image-slot.is-failed) {
   width: calc((100% - var(--space-2)) / 2);
 }
 
