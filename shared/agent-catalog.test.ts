@@ -41,7 +41,7 @@ describe("agent catalog", () => {
         if (!source.url.startsWith("https://")) at(`source ${source.url} over HTTPS`);
         if (!DATE.test(source.checked) || Number.isNaN(Date.parse(source.checked))) at(`source date ${source.checked}`);
       }
-      if (entry.detect.binaries.length === 0 || entry.detect.binaries.some((binary) => !/^[a-z0-9][a-z0-9._-]*$/.test(binary))) at("plain binary names");
+      if (entry.detect.binaries.length === 0 || [...entry.detect.binaries, ...entry.detect.needs ?? []].some((binary) => !/^[a-z0-9][a-z0-9._-]*$/.test(binary))) at("plain binary names");
       if (entry.detect.version_args.length === 0) at("a version flag");
       const limit = entry.detect.version_timeout_ms;
       if (limit !== undefined && !(Number.isInteger(limit) && limit > 5_000 && limit <= 30_000)) at(`a version-flag limit above the 5 s default and at most 30 s, not ${limit}`);
