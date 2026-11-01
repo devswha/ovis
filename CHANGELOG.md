@@ -95,13 +95,25 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   cannot reach it directly both dial out, carrying only end-to-end encrypted frames it has no key
   for and keeping no logs. A PC must prove it holds its key to serve its `server_id`. It runs as a
   Cloudflare Worker deployed from CI with the maintainer's approval, or as a plain Bun server. Ovis
-  does not use it yet.
+  uses it only once a PC's relay link (below) is started.
   ([#2499](https://github.com/devswha/ovis/pull/2499))
 - The PC side of the Ovis relay: a link from this PC to the relay that answers the relay's server
   proof, with `/api/relay` routes to start and stop it that only the owner may use, and only over a
   direct connection to the PC. `plugin pair` prints a relay QR when the relay is online. It is off
   by default: nothing connects until it is started, and there is no Settings switch for it yet.
   ([#2504](https://github.com/devswha/ovis/pull/2504))
+- The phone side of the Ovis relay: a hosted shell (`bun run build:shell`) that pairs from the PC's
+  relay QR, keeps a device key the browser cannot export, and opens the full app through the relay,
+  end-to-end encrypted: terminals, chat, event streams and push alerts. A shell and PC on different
+  versions reload onto the newer shell or ask for the PC's update. Like the PC side it is off by
+  default: nothing connects until the PC's relay is started, and there is no Settings switch yet.
+  ([#2509](https://github.com/devswha/ovis/pull/2509))
+- Files and chat images load through the Ovis relay, including PDFs, rendered HTML pages and
+  seekable videos in browsers. Clients without a service worker open files up to 64 MiB and
+  explain when a file needs to be downloaded on the PC. Copied file links reopen the paired PC's
+  reader, and rendered pages remain isolated from the app and its stored device keys. Like the
+  rest of the relay it is off by default.
+  ([#2509](https://github.com/devswha/ovis/pull/2509))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
@@ -200,6 +212,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   waits until the screen shows the question it moved to. If the screen shows anything else, the
   card stops and sends nothing more.
   ([#2506](https://github.com/devswha/ovis/pull/2506))
+- The iOS and Android apps no longer show the hosted shell's Safari home-screen pairing hint (the
+  relay is off by default).
+  ([#2509](https://github.com/devswha/ovis/pull/2509))
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
