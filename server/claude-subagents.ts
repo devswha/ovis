@@ -24,8 +24,9 @@ import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/pr
  * each subagent file are read only from where the last read stopped, at most READ_BUDGET bytes
  * per file per call (the first read of a parent covers its last PARENT_WINDOW bytes); a file whose
  * size did not change is not opened; the folder listing is kept until the folder changes; only
- * files touched in the last day are looked at, at most MAX_AGENTS of them; only plain files are
- * read; ids that become paths are plain words. Prompts and answers stay here.
+ * files touched in the last day are looked at, at most MAX_AGENTS of them, and one found older is
+ * checked again only every STALE_RECHECK_MS (a long-lived session keeps thousands, #2510); only
+ * plain files are read; ids that become paths are plain words. Prompts and answers stay here.
  *
  * `tokens` is the total Claude's own footer shows for a subagent: what its last request held,
  * input + cache read + cache creation + output tokens of the last assistant entry (checked
@@ -47,6 +48,8 @@ const MAX_AGENTS = 200;
 const MAX_NAMES = 5000;
 const RECENT_MS = 24 * 60 * 60 * 1000;
 const RECENT_LIMIT = 10;
+/** how often an agent file last written more than RECENT_MS ago is checked again: only a write to it can bring it back */
+const STALE_RECHECK_MS = 60_000;
 /** how much of the end of an agent's file tells its status, whatever else has been read of it */
 const TAIL_BYTES = 64 * 1024;
 /** a process's start is known to the second, and the clock can step: only an agent quiet this long before the start is taken for another process's */
@@ -678,14 +681,26 @@ function agentIds(parentPath: string): string[] {
   return ids;
 }
 
+/**
+ * Per subagents folder, the agents whose file was last written more than RECENT_MS ago when
+ * checked `at`: they are not checked again until STALE_RECHECK_MS later, so a poll does not
+ * stat thousands of old files. A file not there (yet) or not plain is never one of them.
+ */
+const staleAgents = new Map<string, { at: number; ids: Set<string> }>();
+const staleFresh = (known: { at: number } | undefined, now: number): boolean => known !== undefined && now >= known.at && now - known.at < STALE_RECHECK_MS;
+
 /** What changes when a session's subagents may have: the folder, parent transcript and every watched agent's own file. */
 export function subagentsSignature(parentPath: string, watch: readonly string[] = [], now = Date.now()): { sig: string; latestMs: number } {
   const dir = subagentsDir(parentPath);
   const folder = folderVersion(dir);
   // A file may grow in the same coarse mtime tick, or be replaced with one of the same size.
   const watched = [plain(parentPath), ...watch.map((id) => plain(join(dir, `agent-${id}.jsonl`)))];
+  // which check of the old agents a read relied on: another pane's recheck, an evicted entry or one
+  // due again (an old agent may have been resumed) is a change for every pane of the session
+  const stale = staleAgents.get(dir);
+  const old = stale === undefined ? "-" : stale.ids.size === 0 ? "0" : staleFresh(stale, now) ? `${stale.at}` : "due";
   return {
-    sig: `${folder.sig}:${watch.join(",")}:${watched.map((stat, index) => stat ? `${stat.id}:${stat.size}:${stat.mtimeMs}:${index > 0 && now - stat.mtimeMs > RECENT_MS}` : "-").join(",")}`,
+    sig: `${folder.sig}:${old}:${watch.join(",")}:${watched.map((stat, index) => stat ? `${stat.id}:${stat.size}:${stat.mtimeMs}:${index > 0 && now - stat.mtimeMs > RECENT_MS}` : "-").join(",")}`,
     latestMs: Math.max(folder.latestMs, ...watched.map((stat) => stat?.mtimeMs ?? 0)),
   };
 }
@@ -1055,10 +1070,16 @@ const previous = new Map<string, Map<string, OmoTask>>();
 
 export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
+  const known = staleAgents.get(dir);
+  const skip = staleFresh(known, now) ? known!.ids : null;
+  const stale = new Set<string>();
   const files = agentIds(parentPath).flatMap((id) => {
+    if (skip?.has(id)) { stale.add(id); return []; }
     const stat = plain(join(dir, `agent-${id}.jsonl`));
+    if (stat !== null && now - stat.mtimeMs > RECENT_MS) stale.add(id);
     return stat !== null && now - stat.mtimeMs <= RECENT_MS ? [{ id, mtimeMs: stat.mtimeMs, stat }] : [];
   }).sort((a, b) => Number(works.get(join(dir, `agent-${b.id}.jsonl`))?.hungry ?? false) - Number(works.get(join(dir, `agent-${a.id}.jsonl`))?.hungry ?? false) || b.mtimeMs - a.mtimeMs).slice(0, MAX_AGENTS);
+  remember(staleAgents, dir, { at: skip !== null ? known!.at : now, ids: stale }, 256);
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
@@ -1200,6 +1221,7 @@ export function forgetSubagents(): void {
   works.clear();
   tails.clear();
   listings.clear();
+  staleAgents.clear();
   previous.clear();
 }
 

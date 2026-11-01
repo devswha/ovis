@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
@@ -1653,5 +1654,69 @@ describe("claudeSubagents, before the files are read through", () => {
     // read through, it ended
     for (let call = 0; call < 3; call++) ids(s.path);
     expect(ids(s.path)).toEqual(["long:completed"]);
+  });
+});
+
+describe("claudeSubagents, a long-lived session's old history (#2510)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const age = (file: string, at: number) => utimesSync(file, at / 1000, at / 1000);
+  const pane = { pane_id: "p1", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "hook", value: "s1" }, cwd: "/work", agent_status: "idle", focused: false, revision: 1 } as HerdrPane;
+
+  it("checks an agent file last written over a day ago again only once a minute, and lists one written since then", () => {
+    const s = session();
+    const files = Array.from({ length: 50 }, (_, i) => s.agent(`old${i}`));
+    for (const file of files) age(file, NOW - 2 * DAY);
+    s.agent("new1");
+    expect(ids(s.path)).toEqual(["new1:running"]);
+    const stats = spyOn(fs, "lstatSync");
+    try {
+      // resumed, and one whose transcript comes after its meta file: neither is taken for old history
+      s.work("old7", 50, 5);
+      writeFileSync(join(dirname(files[0]!), "agent-late.meta.json"), JSON.stringify({ agentType: "reviewer", description: "task late" }));
+      claudeSubagents(s.path, true, NOW + 1000);
+      s.work("late", 51, 5);
+      expect(claudeSubagents(s.path, true, NOW + 2000).map((task) => task.id)).toEqual(expect.arrayContaining(["late", "new1"]));
+      expect(stats.mock.calls.filter(([path]) => basename(String(path)).startsWith("agent-old"))).toEqual([]);
+      expect(claudeSubagents(s.path, true, NOW + 60_000).map((task) => `${task.id}:${task.status}`)).toContain("old7:running");
+    } finally { stats.mockRestore(); }
+  });
+
+  it("counts an old agent resumed while the session's transcript stays quiet, once its minute is up", async () => {
+    const s = session();
+    const old = s.agent("old1");
+    s.agent("new1");
+    // a clock past every write, so a poll that finds nothing changed reads nothing
+    let clock = Date.now() + 5000;
+    age(old, clock - 2 * DAY);
+    const status = new ClaudeSubagentStatus({ resolve: () => Promise.resolve({ path: s.path, startedAt: null }), onChange: () => undefined, now: () => clock });
+    await status.refresh([pane]);
+    // the next pass finds the first read whole: what it read stands until an input changes
+    status.poll();
+    expect(status.countOf("p1")).toBe(1);
+    s.work("old1", 50, 5);
+    age(old, clock - 1000);
+    clock += 60_000;
+    status.poll();
+    expect(status.countOf("p1")).toBe(2);
+  });
+
+  it("counts a resumed old agent on every pane of the session, whichever pane rechecked it first", async () => {
+    const s = session();
+    const old = s.agent("old1");
+    s.agent("new1");
+    let clock = Date.now() + 5000;
+    age(old, clock - 2 * DAY);
+    const status = new ClaudeSubagentStatus({ resolve: () => Promise.resolve({ path: s.path, startedAt: null }), onChange: () => undefined, now: () => clock });
+    const second = { ...pane, pane_id: "p2", agent_session: { ...pane.agent_session!, value: "s2" } } as HerdrPane;
+    await status.refresh([pane, second]);
+    status.poll();
+    expect([status.countOf("p1"), status.countOf("p2")]).toEqual([1, 1]);
+    s.work("old1", 50, 5);
+    age(old, clock - 1000);
+    clock += 60_000;
+    // the first pane's recheck finds it; the second must not keep its certified answer
+    status.poll("p1");
+    status.poll("p2");
+    expect([status.countOf("p1"), status.countOf("p2")]).toEqual([2, 2]);
   });
 });
