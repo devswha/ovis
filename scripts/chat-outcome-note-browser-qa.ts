@@ -1,6 +1,7 @@
 /**
  * Real ChatView for an OpenCode pane whose `@effect` send went as plain text: the outcome chip says
  * "Runs in the terminal", and under it the note names the skill that was not attached, at 1280 and 390 px, light and dark. All traffic stays on this loopback fixture server.
+ * Then /compact and /clear: the new conversation shows no row of a send to the one it left.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -24,16 +25,17 @@ try {
   writeFileSync(join(root, "index.html"), '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/fixture.tsx"></script></body></html>');
   await viteBuild({ configFile: join(repo, "vite.config.ts"), root, publicDir: false, logLevel: "warn", build: { outDir: output, emptyOutDir: true } });
   const sentAt = new Date(Date.now() - 60_000).toISOString();
-  const turns: ConversationTurn[] = [{ role: "assistant", ts: new Date(Date.now() - 120_000).toISOString(), parts: [{ kind: "text", text: "Ready when you are." }] }];
+  let turns: ConversationTurn[] = [{ role: "assistant", ts: new Date(Date.now() - 120_000).toISOString(), parts: [{ kind: "text", text: "Ready when you are." }] }];
   const outcome: CommandOutcome = {
     id: "outcome-note-1", pane_id: "opencode-pane", text: "@effect apply it to the parser", state: "terminal-required", evidence: [],
     note: "OpenCode did not attach @effect; it was sent as plain text", unattached_skills: ["effect"], created_at: sentAt, updated_at: sentAt,
   };
+  let outcomes = [outcome], history: string | undefined;
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/pane/prompt") return Response.json({ prompt: null, outcomes: [outcome] });
+    if (url.pathname === "/api/pane/prompt") return Response.json({ prompt: null, outcomes });
     if (url.pathname === "/api/pane/commands") return Response.json({ commands: [{ name: "effect", description: "Apply Effect", source: "skill", trigger: "@", provenance: { transport: "native", verified: true } }] });
-    if (url.pathname === "/api/pane/conversation") return Response.json({ source: "opencode-transcript", cursor: null, turns });
+    if (url.pathname === "/api/pane/conversation") return Response.json({ source: "opencode-transcript", history_id: history, cursor: null, turns });
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
     return new Response(Bun.file(join(output, url.pathname === "/" ? "index.html" : url.pathname.slice(1))), { headers: { "content-security-policy": CONTENT_SECURITY_POLICY } });
   } });
@@ -68,6 +70,31 @@ try {
     }
   }
   console.log(`PASS outcome note: ${RUNS.length} runs; screenshots in ${evidence}`);
+
+  // /compact, then /clear: the server lists the /compact send until herdr names the new session,
+  // which can be after the chat has read the new, empty conversation
+  const at = (seconds: number) => new Date(Date.now() - 50_000 + seconds * 1000).toISOString();
+  const compact: CommandOutcome = { id: "compact-1", pane_id: "opencode-pane", text: "/compact", state: "result-observed", evidence: [{ kind: "transcript", at: at(1) }], created_at: at(0), updated_at: at(1) };
+  outcomes = [compact]; history = "before-clear";
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    const page = await context.newPage();
+    page.setDefaultTimeout(10_000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.port}`);
+    const row = (text: string) => page.locator("[data-chat-row]", { hasText: text });
+    await row("/compact").waitFor();
+    turns = []; history = "after-clear";
+    outcomes = [compact, { ...compact, id: "clear-1", text: "/clear", state: "accepted", evidence: [], created_at: at(5), updated_at: at(5) }];
+    await page.getByText("Ready when you are.", { exact: true }).waitFor({ state: "detached" });
+    await row("/clear").waitFor();
+    assert.equal(await row("/compact").count(), 0, "the cleared chat shows no /compact row");
+    assert.deepEqual(errors, [], "page errors after /clear");
+    console.log("PASS after /clear the new conversation shows no row of a send to the one it left, and /clear keeps its own");
+  } finally {
+    await context.close();
+  }
 } finally {
   await browser?.close();
   server?.stop();

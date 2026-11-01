@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { CommandOutcome, ConversationTurn } from "../../shared/protocol.ts";
 import { translate } from "./i18n.ts";
-import { noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows } from "./outcomeChip.ts";
+import { leftBehind, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows } from "./outcomeChip.ts";
 
 const en = (key: string, vars?: Record<string, string | number>): string => translate("en", key, vars);
 
@@ -77,6 +77,18 @@ describe("noteCatalogChanges", () => {
     expect(calls).toBe(1);
     noteCatalogChanges([{ ...changed, id: "c" }], noted, () => { calls += 1; });
     expect(calls).toBe(2);
+  });
+});
+
+describe("leftBehind", () => {
+  test("leaves every send before the newest /clear, /new or /resume behind, and keeps that one and the sends after it", () => {
+    const sent = (id: string, text: string, second: number) => outcome({ id, text, created_at: `2026-10-20T10:00:${String(second).padStart(2, "0")}.000Z` });
+    const compact = sent("compact", "/compact", 1), clear = sent("clear", "/clear", 3), after = sent("after", "hello", 4);
+    expect([...leftBehind([after, clear, compact])]).toEqual(["compact"]);
+    expect([...leftBehind([compact, sent("new", "/new", 2), clear])]).toEqual(["compact", "new"]);
+    // no move among them (a /clear typed in the terminal has no outcome; /clearly is another command): all stay behind
+    expect([...leftBehind([compact, sent("clearly", "/clearly", 2)])]).toEqual(["compact", "clearly"]);
+    expect(leftBehind([]).size).toBe(0);
   });
 });
 
