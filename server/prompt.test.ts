@@ -5667,6 +5667,36 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  // live on Claude Code 2.1.316: herdr says blocked a moment before Claude draws its permission panel, and for a
+  // moment after it closes; a poll then got a "Waiting for input" card [Enter, Esc] made of Claude's own input box
+  test("shows no fallback card while Claude's own input box is still the screen", async () => {
+    const rule = "─".repeat(80);
+    const box = `\n\n                                     Tip: run /help for help\n${rule}\n❯ Use the Bash tool to run touch made.txt\n${rule}\n  user@host /tmp/garden\n  ⏸ manual mode on\n`;
+    await withPane("claude", "blocked", box, async (pane) => {
+      const first = await card();
+      expect(first === null ? null : { title: first.title, question: first.question, options: first.options.map((option) => option.label) }).toBeNull();
+      pane.screen = `● Bash(touch made.txt)\n${rule}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n`;
+      expect((await card())?.title).toBe("Bash command");
+    });
+  });
+
+  test("still offers the fallback card for a Claude dialog no reader knows, drawn between two rules", async () => {
+    const rule = "─".repeat(80);
+    await withPane("claude", "blocked", `● Earlier output\n${rule}\n New MCP server found in .mcp.json: tools\n Use this server?\n${rule}\n Enter to confirm · Esc to cancel\n`, async () => {
+      expect((await card())?.title).toBe("Waiting for input");
+    });
+  });
+
+  // a list's cursor row between two rules, or a dialog drawn under a box, is no input box ending the screen
+  test.each([
+    ["its options between two rules", `● Earlier output\n Some new Claude dialog\n${"─".repeat(80)}\n ❯ 1. Allow\n   2. Deny\n${"─".repeat(80)}\n Enter to confirm · Esc to cancel\n`],
+    ["drawn under an input box", `● Earlier output\n${"─".repeat(80)}\n❯ \n${"─".repeat(80)}\n Some new dialog under the box\n ❯ 1. Allow\n   2. Deny\n Enter to confirm · Esc to cancel\n`],
+  ])("still offers the fallback card for a Claude dialog no reader knows, %s", async (_name, screen) => {
+    await withPane("claude", "blocked", screen, async () => {
+      expect((await card())?.options.map((option) => option.label)).toEqual(["Allow", "Deny", "Enter", "Esc"]);
+    });
+  });
+
   test("keeps waiting for Claude's next question through a failed read after answering", async () => {
     const screen = (question: string) => `←  ☐ Device  ☐ Symptoms  ✔ Submit  →\n\n${question}\n\n❯ 1. Phone\n  2. Desktop browser\n  3. Type something.\n${"─".repeat(80)}\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n`;
     await withPane("claude", "blocked", screen("Which device do you use?"), async (pane) => {
@@ -5829,6 +5859,44 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.onSent = (sent) => { if (sent === "enter") setTimeout(() => { pane.status = "working"; pane.screen = `⏺ User answered Claude's questions\n\n${rule}\n❯ \n${rule}\n`; }, 200); };
       expect(await answer((await card())!.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
       expect(await card()).toBeNull();
+    });
+  });
+
+  // #2464's wait covered Claude's question tabs only; its other dialogs close a moment after the key too (live on
+  // Claude Code 2.1.316: the trust check read again right after its answer, under a new id; the plan read again
+  // after its feedback, the feedback drawn in its last row and read as a plain option)
+  const rows = (labels: string[], at: number, numbered: boolean, indent = " ") => labels.map((label, index) => `${indent}${index === at ? "❯" : " "} ${numbered ? `${index + 1}. ` : ""}${label}`).join("\n");
+  test.each([
+    ["a tool approval", (at: number) => `● Bash(touch made.txt)\n${"─".repeat(80)}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n${rows(["Yes", "Yes, and always allow access to /tmp/x from this project", "No"], at, true)}\n Esc to cancel · Tab to amend\n`, { option_index: 0 }],
+    ["the folder-trust check", (at: number) => ` Accessing workspace:\n\n /tmp/garden\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team).\n\n${rows(["No, exit", "Yes, I trust this folder"], at, false)}\n\n Enter to confirm · Esc to cancel\n`, { option_index: 1 }],
+    ["a plan, with feedback", (at: number, typed = "Tell Claude what to change") => `Ready to code?\n\nHere is Claude's plan:\nAdd a heading to the README file.\n\nClaude has written up a plan and is ready to execute. Would you like to proceed?\n\n${rows(["Yes, auto-accept edits", "Yes, manually approve edits", typed], at, true, "")}\n     shift+tab to approve with this feedback\n`, { custom_text: "Keep the intro" }],
+  ] as const)("answers %s only once Claude has closed it, so the read right after gets no card", async (_name, dialog, choice) => {
+    await withPane("claude", "blocked", dialog(0), async (pane) => {
+      let at = 0;
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = dialog(++at);
+        // the plan's typed feedback shows in its row before the key that sends it, as Claude draws it
+        if (sent.startsWith("text:")) pane.screen = dialog(at, sent.slice(5));
+        // the panel gives way to Claude's input box 200 ms after the key, while herdr still says blocked
+        if (sent === "enter" || sent === "shift+tab") setTimeout(() => { pane.screen = `✻ Working… (esc to interrupt)\n${"─".repeat(80)}\n❯ \n${"─".repeat(80)}\n`; }, 200);
+      };
+      const before = (await card())!;
+      expect(await answer(before.id, choice)).toEqual({ status: 200, code: undefined });
+      // the card's read right after the answer: neither the dialog just answered, under a new id, nor a fallback card
+      const after = await card();
+      expect(after === null ? null : { title: after.title, options: after.options.map((option) => option.label), sameId: after.id === before.id }).toBeNull();
+    });
+  });
+
+  test("an answer to a Claude approval that does not close waits about a second, however slow the reads", async () => {
+    const approval = `● Bash(touch made.txt)\n${"─".repeat(80)}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n`;
+    await withPane("claude", "blocked", approval, async (pane) => {
+      const before = (await card())!;
+      pane.readDelay = 100;
+      const started = performance.now();
+      expect(await answer(before.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      // 20 reads of 100 ms and more took over 3 s; the wait's own deadline is 1 s, plus the read in flight
+      expect(performance.now() - started).toBeLessThan(2_000);
     });
   });
 
