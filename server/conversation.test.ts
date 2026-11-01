@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
+import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import * as fs from "node:fs";
@@ -21,7 +23,8 @@ import { DevinHistoryChanged } from "./devin.ts";
 import * as omo from "./omo.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, readCommandTranscript, toolOutput, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES, type ManagedOmoProbeContext } from "./conversation.ts";
+import type { ManagedOmoProcess, ManagedOmoSystem } from "./managed-omo.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -180,14 +183,75 @@ describe("pane process roots", () => {
 });
 
 let mockedPanes: HerdrPane[] = [];
-let mockedProcesses: { argv?: unknown }[] = [];
+let mockedProcesses: { argv?: unknown; pid?: number; cwd?: string | null }[] = [];
+let onConversationProcessInfo: (() => void) | null = null;
+
+async function managedOmoConversationFixture(): Promise<{
+  root: string; server: Server; pane: HerdrPane; processes: Map<number, ManagedOmoProcess>;
+  context: ManagedOmoProbeContext; sessionPath: string;
+}> {
+  const root = mkdtempSync(join(tmpdir(), "managed-omo-conversation-"));
+  const dir = (path: string) => { mkdirSync(path, { recursive: true, mode: 0o700 }); chmodSync(path, 0o700); return path; };
+  const uid = process.getuid!();
+  const nonce = "0123456789abcdef0123456789abcdef";
+  const namespace = dir(join(root, "managed"));
+  const sessionDir = dir(join(namespace, `${nonce}.sessions`));
+  const sessionId = "session-1";
+  const holderDir = dir(join(sessionDir, "session-holders", sessionId));
+  const holderPath = join(holderDir, "30.json");
+  const cwd = dir(join(root, "project"));
+  const configDir = dir(join(root, "config"));
+  const serverSocket = join(dir(join(configDir, "herdr", "sessions", "phase1")), "herdr.sock");
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(serverSocket, resolve); });
+  const manager = dir(join(root, "manager"));
+  const script = join(manager, "managed_pty.py"); writeFileSync(script, "manager", { mode: 0o600 });
+  const exe = join(root, "bun"); writeFileSync(exe, "engine", { mode: 0o700 });
+  const entry = join(root, "omo.mjs"); writeFileSync(entry, "engine", { mode: 0o600 });
+  const sessionPath = join(sessionDir, "session.jsonl"); writeFileSync(sessionPath, `${JSON.stringify({ type: "session", cwd })}\n`, { mode: 0o600 });
+  const sessionStat = statSync(sessionPath);
+  const recordPath = join(namespace, `${nonce}.json`);
+  const argv = [exe, entry, "--session-dir", sessionDir];
+  const group = `/user.slice/herdr-agent-${nonce}.service`;
+  const python = realpathSync("/usr/bin/python3");
+  const base = (pid: number, processExe: string, cgroup: string, parentPid: number, processArgv: string[]): ManagedOmoProcess =>
+    ({ pid, exe: processExe, cwd, cgroup, parentPid, argv: processArgv, starttime: `${pid}000`, boot: "boot" });
+  const processes = new Map<number, ManagedOmoProcess>([
+    [10, base(10, python, "/server", 1, [python])],
+    [20, base(20, python, group, 1, ["/usr/bin/python3", script, "serve", "--record", recordPath])],
+    [30, base(30, exe, group, 20, argv)],
+    [40, base(40, python, "/pane", 1, ["/usr/bin/python3", script, "attach", "--record", recordPath, "--generation", "1", "--terminal", "term"])],
+  ]);
+  const pin = (pid: number) => {
+    const entry = processes.get(pid)!;
+    return { pid, starttime: entry.starttime, boot: entry.boot, cwd: entry.cwd, cgroup: entry.cgroup, exe: entry.exe };
+  };
+  const fingerprint = (path: string) => `${realpathSync(path)}:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const record: Record<string, unknown> = {
+    schema: 2, nonce, harness: "omo", launcher_harness: "omo", generation: 1, engine_generation: 1,
+    broker_fork_generation: 1, state: "ready", desired_state: "running", pane_id: "w:p1", workspace_id: "w",
+    terminal_id: "term", cwd, argv, server_session: "phase1", server: pin(10), broker: pin(20), child: pin(30),
+    session_id: sessionId, session_file: sessionPath, session_dir: sessionDir,
+    file_identity: { dev: sessionStat.dev, ino: sessionStat.ino }, socket: `/run/user/${uid}/herdr-managed/${nonce}.sock`,
+    runtime: { [exe]: fingerprint(exe), [entry]: fingerprint(entry), [script]: fingerprint(script) },
+  };
+  writeFileSync(recordPath, JSON.stringify(record), { mode: 0o600 });
+  writeFileSync(holderPath, JSON.stringify({ pid: 30, cwd, bootAtMs: 100000, processStartedAtMs: 110000 }), { mode: 0o600 });
+  const pane = { pane_id: "w:p1", workspace_id: "w", terminal_id: "term", cwd, agent: "devin",
+    agent_status: "working", focused: false, revision: 1, tab_id: "tab",
+    tokens: { hm_managed_session: nonce, hm_managed_generation: "1" } } as HerdrPane;
+  const system: ManagedOmoSystem = { platform: "linux", uid, process: (pid) => processes.get(pid) ?? null,
+    socketOwnedBy: (_socket, pid) => pid === 10, bootAt: () => 100000, startedAt: () => 110000 };
+  return { root, server, pane, processes, sessionPath, context: { namespace, socket: serverSocket, configDir, system } };
+}
 
 describe("Devin pane identity", () => {
   const restores: Array<() => void> = [];
   beforeEach(() => {
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string, params?: { pane_id?: string }) => {
       if (method !== "pane.process_info") throw new Error(`unexpected conversation fixture RPC: ${method}`);
-      return { process_info: { foreground_processes: mockedProcesses } } as never;
+      onConversationProcessInfo?.();
+      return { process_info: { pane_id: params?.pane_id ?? "pane-a", foreground_processes: mockedProcesses } } as never;
     });
     restores.push(() => rpc.mockRestore());
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: mockedPanes } as SessionSnapshot));
@@ -197,6 +261,7 @@ describe("Devin pane identity", () => {
     for (const restore of restores.splice(0)) restore();
     mockedPanes = [];
     mockedProcesses = [];
+    onConversationProcessInfo = null;
     forgetTranscriptState();
   });
   const pane = { pane_id: "pane-a", cwd: "/synthetic/work", agent: "devin" } as HerdrPane;
@@ -247,13 +312,21 @@ describe("Devin pane identity", () => {
       await expect(paneConversation(pane.pane_id, undefined, {}, dbPath)).rejects.toThrow(ConversationUnavailable);
       mockedProcesses = [{ argv: ["/usr/local/bin/devin"] }];
       mockedPanes = [{ ...pane, agent_session: undefined }];
-      await expect(paneConversation(pane.pane_id, undefined, {}, dbPath)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+      await expect(paneConversation(pane.pane_id, undefined, {}, dbPath)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "devin_current_session_unverified" });
       mockedProcesses = [{ argv: ["/usr/local/bin/devin", "--resume=one"] }];
       expect((await paneConversation(pane.pane_id, undefined, {}, dbPath)).turns).toEqual(answer.turns);
     } finally {
       mockedPanes = [];
       mockedProcesses = [];
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("diagnoses fresh and continue sessions without guessing from same-directory peers", async () => {
+    mockedPanes = [pane, peer];
+    for (const argv of [["/usr/local/bin/devin"], ["/usr/local/bin/devin", "--continue"]]) {
+      mockedProcesses = [{ argv }, { argv: ["/usr/local/bin/devin", "acp"] }];
+      await expect(paneTranscript(pane.pane_id, undefined, { panes: mockedPanes } as SessionSnapshot, "/missing/sessions.db"))
+        .rejects.toMatchObject({ name: "ConversationUnavailable", message: "devin_current_session_unverified" });
     }
   });
   it("does not render Devin for a shell with a stale Devin session report", async () => {
@@ -307,6 +380,80 @@ describe("Devin pane identity", () => {
       session.mockRestore();
       mockedPanes = [];
       mockedProcesses = [];
+    }
+  });
+  it.skipIf(process.platform !== "linux")("uses one verified managed OMO identity for pane routing and its transcript path", async () => {
+    const fixture = await managedOmoConversationFixture();
+    mockedPanes = [fixture.pane];
+    mockedProcesses = [{ pid: 40, argv: ["/usr/bin/python3", join(fixture.root, "manager", "managed_pty.py"), "attach",
+      "--record", join(fixture.context.namespace!, "0123456789abcdef0123456789abcdef.json"), "--generation", "1", "--terminal", "term"], cwd: fixture.pane.cwd }];
+    try {
+      const native = await paneTranscript(fixture.pane.pane_id, undefined, { panes: [fixture.pane] } as SessionSnapshot,
+        undefined, undefined, undefined, undefined, undefined, undefined, fixture.context);
+      expect(native).toMatchObject({ source: "omo-transcript", path: fixture.sessionPath });
+      const answer = await paneConversation(fixture.pane.pane_id, undefined, {}, undefined, undefined, undefined, undefined, undefined, fixture.context);
+      expect(answer).toMatchObject({ source: "omo-transcript", turns: [] });
+    } finally {
+      await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(process.platform !== "linux")("invalidates a managed OMO conversation if the pane wrapper changes after the read", async () => {
+    const fixture = await managedOmoConversationFixture();
+    mockedPanes = [fixture.pane];
+    mockedProcesses = [{ pid: 40, argv: ["/usr/bin/python3", join(fixture.root, "manager", "managed_pty.py"), "attach",
+      "--record", join(fixture.context.namespace!, "0123456789abcdef0123456789abcdef.json"), "--generation", "1", "--terminal", "term"], cwd: fixture.pane.cwd }];
+    let probes = 0;
+    onConversationProcessInfo = () => {
+      if (++probes === 3) fixture.processes.get(40)!.starttime = "40001";
+    };
+    try {
+      await expect(paneConversation(fixture.pane.pane_id, undefined, {}, undefined, undefined, undefined, undefined, undefined, fixture.context))
+        .rejects.toThrow(ConversationUnavailable);
+    } finally {
+      onConversationProcessInfo = null;
+      await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(process.platform !== "linux")("revalidates managed command reads on both cold and cached paths", async () => {
+    const fixture = await managedOmoConversationFixture();
+    mockedPanes = [fixture.pane];
+    mockedProcesses = [{ pid: 40, argv: ["/usr/bin/python3", join(fixture.root, "manager", "managed_pty.py"), "attach",
+      "--record", join(fixture.context.namespace!, "0123456789abcdef0123456789abcdef.json"), "--generation", "1", "--terminal", "term"], cwd: fixture.pane.cwd }];
+    const read = () => readCommandTranscript(fixture.pane.pane_id, undefined, { managedOmoContext: fixture.context });
+    try {
+      let probes = 0;
+      onConversationProcessInfo = () => { if (++probes === 3) fixture.processes.get(40)!.starttime = "changed"; };
+      expect(await read()).toBeNull();
+      fixture.processes.get(40)!.starttime = "40000";
+      onConversationProcessInfo = null;
+      expect(await read()).not.toBeNull();
+      probes = 0;
+      onConversationProcessInfo = () => { if (++probes === 3) fixture.processes.get(40)!.starttime = "changed"; };
+      expect(await read()).toBeNull();
+    } finally {
+      onConversationProcessInfo = null;
+      await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(process.platform !== "linux")("routes managed tool output and refuses changed ownership", async () => {
+    const fixture = await managedOmoConversationFixture();
+    mockedPanes = [fixture.pane];
+    mockedProcesses = [{ pid: 40, argv: ["/usr/bin/python3", join(fixture.root, "manager", "managed_pty.py"), "attach",
+      "--record", join(fixture.context.namespace!, "0123456789abcdef0123456789abcdef.json"), "--generation", "1", "--terminal", "term"], cwd: fixture.pane.cwd }];
+    appendFileSync(fixture.sessionPath, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "fixture output" }] } }) + "\n");
+    const read = () => toolOutput(fixture.pane.pane_id, "call_1", undefined, undefined, undefined, undefined, undefined, fixture.context);
+    try {
+      expect(await read()).toBe("fixture output");
+      let probes = 0;
+      onConversationProcessInfo = () => { if (++probes === 3) fixture.processes.get(40)!.starttime = "changed"; };
+      expect(await read()).toBeNull();
+    } finally {
+      onConversationProcessInfo = null;
+      await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+      rmSync(fixture.root, { recursive: true, force: true });
     }
   });
   it("forgets a pane's Devin history cache on pane teardown and test-suite reset", async () => {
@@ -2389,9 +2536,73 @@ describe("a cut tool output and the whole of it", () => {
       const omp = join(dir, "omp.jsonl");
       writeFileSync(omp, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: long }] } }));
       expect(transcriptToolOutput("omp-transcript", omp, "call_1")).toBe(long);
+      expect(transcriptToolOutput("omo-transcript", omp, "call_1")).toBe(long);
+      appendFileSync(omp, `\n${JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "x".repeat(17 * 1024 * 1024) }] } })}\n`);
+      expect(transcriptToolOutput("omo-transcript", omp, "call_2")).toBeNull();
       const codex = join(dir, "codex.jsonl");
       writeFileSync(codex, JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "call_x", output: long } }));
       expect(transcriptToolOutput("codex-transcript", codex, "call_x")).toBe(long);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("returns the exact OMO output budget across decoded chunks and content blocks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-output-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, content: { type: string; text: string }[]) =>
+      JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content } }) + "\n";
+    try {
+      writeFileSync(path, record("single", [{ type: "text", text: "x".repeat(3_000_000) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "single")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+      const first = "한\\\n".repeat(300_000);
+      const second = "z".repeat(1_500_000);
+      const whole = first + second;
+      writeFileSync(path, record("large", [{ type: "text", text: first }, { type: "text", text: second }]));
+      expect(transcriptToolOutput("omo-transcript", path, "large")).toBe(`${whole.slice(0, 2_000_000)}\n… trimmed`);
+      writeFileSync(path, record("exact", [{ type: "text", text: "x".repeat(2_000_000) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "exact")).toBe("x".repeat(2_000_000));
+      writeFileSync(path, record("over", [{ type: "text", text: "x".repeat(2_000_001) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "over")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("ignores records outside the OMO tail and resets output on context clear", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-tail-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, text: string) => JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } }) + "\n";
+    try {
+      writeFileSync(path, record("old", "old output") + record("huge", "x".repeat(17 * 1024 * 1024)) + record("recent", "recent output"));
+      expect(transcriptToolOutput("omo-transcript", path, "old")).toBeNull();
+      expect(transcriptToolOutput("omo-transcript", path, "huge")).toBeNull();
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("recent output");
+      appendFileSync(path, JSON.stringify({ type: "custom", customType: "context_clear" }) + "\n");
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBeNull();
+      appendFileSync(path, record("recent", "after clear"));
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("after clear");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("bounds total OMO output reads to the transcript tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-io-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, text: string) => JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } }) + "\n";
+    try {
+      writeFileSync(path, record("old", "outside"));
+      fs.truncateSync(path, 128 * 1024 * 1024);
+      appendFileSync(path, "\n" + record("recent", "inside"));
+      const original = fs.readSync;
+      let bytes = 0;
+      const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+        const got = original(...args); bytes += got; return got;
+      }) as typeof fs.readSync);
+      try {
+        expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("inside");
+        expect(bytes).toBeGreaterThan(0);
+        expect(bytes).toBeLessThanOrEqual(2 * TRANSCRIPT_WINDOW_BYTES + 1024);
+        bytes = 0;
+        expect(transcriptToolOutput("omo-transcript", path, "old")).toBeNull();
+        expect(bytes).toBeGreaterThan(0);
+        expect(bytes).toBeLessThanOrEqual(2 * TRANSCRIPT_WINDOW_BYTES + 1024);
+      } finally { reads.mockRestore(); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

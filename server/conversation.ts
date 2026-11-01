@@ -37,12 +37,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { readStatuslineContext } from "./statusline.ts";
-import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
+import nodePath, { basename, dirname, join, relative, sep, type PlatformPath } from "node:path";
 import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
+import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
 import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
@@ -84,6 +84,7 @@ import { copilotSetAside } from "./copilot.ts";
 import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 import { userHome } from "./user-home.ts";
 import { kiroCodexProcess } from "./kiro-terminal.ts";
+import { inspectManagedOmoEvidence, revalidateManagedOmoEvidence, type ManagedOmoEvidence, type ManagedOmoSystem } from "./managed-omo.ts";
 
 export { isOmoProcess } from "./omo.ts";
 export { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
@@ -1004,20 +1005,75 @@ export async function gjcTranscriptPath(paneId: string, cwd: string, home?: stri
  */
 type KnownProcesses = ProcessInfo | null | undefined;
 
+/** Inputs that vary by installation; the optional system seam keeps route fixtures out of /proc. */
+export interface ManagedOmoProbeContext {
+  namespace?: string;
+  socket?: string;
+  configDir?: string;
+  system?: ManagedOmoSystem;
+}
+
+type ManagedOmoInspection = ReturnType<typeof inspectManagedOmoEvidence>;
+interface ManagedOmoLookup {
+  readonly socket: string;
+  read(processInfo: KnownProcesses): Promise<ManagedOmoInspection>;
+}
+
+function managedOmoPaths(context: ManagedOmoProbeContext = {}): Required<Pick<ManagedOmoProbeContext, "namespace" | "socket" | "configDir">> {
+  const home = userHome();
+  return {
+    namespace: context.namespace ?? process.env.HERDR_MANAGED_NAMESPACE ?? join(home, "dev", "agents", "herdr_manager", "state", "managed-sessions"),
+    socket: context.socket ?? herdrSocketPath(),
+    configDir: context.configDir ?? process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
+  };
+}
+
+function managedOmoLookup(pane: HerdrPane, context: ManagedOmoProbeContext = {}): ManagedOmoLookup {
+  const paths = managedOmoPaths(context);
+  let pending: Promise<ManagedOmoInspection> | undefined;
+  return {
+    socket: paths.socket,
+    read: (processInfo) => pending ??= Promise.resolve(inspectManagedOmoEvidence({
+      pane, processInfo: processInfo ?? null, ...paths,
+    }, context.system)),
+  };
+}
+
+async function revalidateManagedOmoRoute(paneId: string, evidence: ManagedOmoEvidence, context: ManagedOmoProbeContext = {}): Promise<boolean> {
+  const paths = managedOmoPaths(context);
+  try {
+    const [snapshot, processInfo] = await Promise.all([
+      sessionSnapshot(paths.socket), paneProcessInfo(paneId, paths.socket),
+    ]);
+    const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
+    return pane !== undefined && revalidateManagedOmoEvidence(evidence, {
+      pane, processInfo: processInfo ?? null, ...paths,
+    }, context.system);
+  } catch { return false; }
+}
+
 /**
  * Is omo the agent in this pane, whatever herdr currently labels it? A probe
  * failure answers "no": the caller then reports why the labelled store failed,
  * which is the more useful error.
  */
-export async function paneRunsOmo(paneId: string, known?: KnownProcesses): Promise<boolean> {
+export async function paneRunsOmo(paneId: string, known?: KnownProcesses, managedLookup?: ManagedOmoLookup): Promise<boolean> {
   // pane.process_info wants `pane_id`; given `target` herdr answers for the
   // FOCUSED pane instead of erroring (live-verified 2026-09-21).
   const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown; cwd?: unknown }[] } }>(
     "pane.process_info",
     { pane_id: paneId },
+    managedLookup?.socket,
   ).catch(() => null);
+  const processInfo = (info?.process_info ?? null) as ProcessInfo | null;
+  if (managedLookup) {
+    const managed = await managedLookup.read(processInfo);
+    if (managed.evidence !== null) return true;
+    // A pane reported over another session's socket has remote PIDs; never check them in local /proc.
+    if (managed.reason === "socket_path" || managed.reason === "socket_identity") return false;
+  }
   const home = userHome();
-  return (info?.process_info?.foreground_processes ?? []).some((process) =>
+  return (processInfo?.foreground_processes ?? []).some((process) =>
     // a pid herdr does not report keeps the argv-only proof and fails the custom one closed
     omoProcessIdentity({
       pid: typeof process.pid === "number" ? process.pid : -1,
@@ -1406,7 +1462,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
 type ResolvedTranscript =
-  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null; letta?: { store: string; agent: string; conversation: string } } & (
+  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null; letta?: { store: string; agent: string; conversation: string }; managedOmo?: ManagedOmoEvidence } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -1427,7 +1483,7 @@ export type NativeTranscript =
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, managedLookup?: ManagedOmoLookup): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
@@ -1436,8 +1492,9 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // a process-table read on Windows), and a gjc below another agent would take its chat.
   if (!pane.agent) {
     const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { shell_pid?: number; foreground_processes?: { argv?: unknown }[] } }>(
-      "pane.process_info", { pane_id: paneId },
+      "pane.process_info", { pane_id: paneId }, managedLookup?.socket,
     ).catch(() => null);
+    if (known === undefined && info !== null) known = (info.process_info as KnownProcesses) ?? null;
     const foreground = info?.process_info?.foreground_processes ?? [];
     const running = foreground.some((process) =>
       isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
@@ -1453,9 +1510,12 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     else if (await kiroCodexProcess(info?.process_info as ProcessInfo | undefined) !== null) agent = "codex";
   }
   // a Muse, Letta or dsh pane's processes are asked for once, for omo and for its own binding
-  if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
-  if (await paneRunsOmo(paneId, known)) {
-    return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
+  if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui") && known === undefined) known = (await paneProcessInfo(paneId, managedLookup?.socket).catch(() => undefined)) ?? null;
+  if (await paneRunsOmo(paneId, known, managedLookup)) {
+    const managed = managedLookup ? (await managedLookup.read(known)).evidence : null;
+    return managed
+      ? { source: "omo-transcript", path: managed.sessionPath, managedOmo: managed }
+      : { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
   // omp and GJC can change their own cwd without changing the pane's shell directory; their
   // session headers name the one they run in
@@ -1539,8 +1599,11 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     throw new ConversationUnavailable("no_recognized_transcript");
   } catch (error) {
     if (error instanceof AgyUnavailable) throw new ConversationUnavailable("transcript_missing");
-    if (!(error instanceof ConversationUnavailable) || !(await paneRunsOmo(paneId, known))) throw error;
-    return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
+    if (!(error instanceof ConversationUnavailable) || !(await paneRunsOmo(paneId, known, managedLookup))) throw error;
+    const managed = managedLookup ? (await managedLookup.read(known)).evidence : null;
+    return managed
+      ? { source: "omo-transcript", path: managed.sessionPath, managedOmo: managed }
+      : { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
 }
 
@@ -1555,18 +1618,19 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
  * Resolve the native live file or database session without reading conversation turns. `known`: herdr's
  * `pane.process_info` for this pane that the caller read for this same look, so it is not asked again.
  */
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<NativeTranscript> {
-  const panes = (snapshot ?? await sessionSnapshot()).panes;
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, managedOmoContext?: ManagedOmoProbeContext): Promise<NativeTranscript> {
+  const panes = (snapshot ?? await sessionSnapshot(managedOmoPaths(managedOmoContext).socket)).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined) throw new ConversationUnavailable("pane_not_found");
   // an agent pane without a folder is a failure to diagnose, not a shell's expected scrollback
   if (typeof pane.cwd !== "string" || pane.cwd.length === 0) throw new ConversationUnavailable("no_recognized_transcript", undefined, pane.agent ? "agent_cwd_missing" : undefined);
+  const lookupManagedOmo = managedOmoLookup(pane, managedOmoContext);
 
-  if (pane.agent === "devin" && !(await paneRunsOmo(paneId, known))) {
+  if (pane.agent === "devin" && !(await paneRunsOmo(paneId, known, lookupManagedOmo))) {
     const cwd = pane.foreground_cwd || pane.cwd;
     const storePath = devinDbPath ?? defaultDevinDbPath();
     const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { foreground_processes?: { argv?: unknown }[] } }>(
-      "pane.process_info", { pane_id: paneId },
+      "pane.process_info", { pane_id: paneId }, lookupManagedOmo.socket,
     ).catch(() => null);
     const processes = (info?.process_info?.foreground_processes ?? []).filter((process) =>
       Array.isArray(process.argv) && process.argv.every((arg) => typeof arg === "string") &&
@@ -1581,7 +1645,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known);
+  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, lookupManagedOmo);
 }
 
 /**
@@ -1616,8 +1680,8 @@ async function bottomViewport(paneId: string): Promise<string> {
  * shows the pages before it. A cursor from another file throws HistoryChanged.
  * `opencodeDb` is OpenCode's store, unset where OpenCode itself would find it.
  */
-export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
-  const snapshot = await sessionSnapshot();
+export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, managedOmoContext?: ManagedOmoProbeContext): Promise<RecognizedConversation> {
+  const snapshot = await sessionSnapshot(managedOmoPaths(managedOmoContext).socket);
   let resolved: NativeTranscript;
 
   // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
@@ -1648,7 +1712,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   };
 
   try {
-    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
+    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData, undefined, managedOmoContext);
     launchedAgents.forget(paneId);
   } catch (error) {
     if (error instanceof ConversationNotStarted) { launchedAgents.forget(paneId); return await onNotStarted(error); }
@@ -1805,6 +1869,11 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       || copilotHistoryIdentity(resolved.path) !== history) throw new HistoryChanged();
     return bindCopilotAnswer(answer, prefix);
   }
+  const managedEvidence = "managedOmo" in resolved ? resolved.managedOmo : undefined;
+  if (managedEvidence && !(await revalidateManagedOmoRoute(paneId, managedEvidence, managedOmoContext))) {
+    if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
+    throw new ConversationUnavailable("no_session_path");
+  }
   return answer;
 }
 
@@ -1858,8 +1927,8 @@ const commandTranscripts = new Map<string, {
 const REMEMBERED_BRANCHES = 8;
 
 /** `look`: the snapshot and herdr's `pane.process_info` the caller's poll already read, so neither is asked again. */
-export async function readCommandTranscript(paneId: string, codexHome?: string, look: { snapshot?: SessionSnapshot; processes?: KnownProcesses } = {}): Promise<CommandTranscript | null> {
-  const resolved = await paneTranscript(paneId, codexHome, look.snapshot, undefined, undefined, undefined, undefined, undefined, look.processes);
+export async function readCommandTranscript(paneId: string, codexHome?: string, look: { snapshot?: SessionSnapshot; processes?: KnownProcesses; managedOmoContext?: ManagedOmoProbeContext } = {}): Promise<CommandTranscript | null> {
+  const resolved = await paneTranscript(paneId, codexHome, look.snapshot, undefined, undefined, undefined, undefined, undefined, look.processes, look.managedOmoContext);
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
@@ -1868,7 +1937,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const signature = `${source}\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
   const cached = commandTranscripts.get(path);
   rememberPaneRead(paneId, path);
-  if (cached?.signature === signature) return cached.answer;
+  if (cached?.signature === signature) return resolved.managedOmo && !(await revalidateManagedOmoRoute(paneId, resolved.managedOmo, look.managedOmoContext)) ? null : cached.answer;
   // Do not call transcriptStream here: building a cold pi index can read the entire file.
   // The same read supplies validation bytes AND new bytes, so their total stays in budget.
   // Every byte is read over (a short read gives up), so it need not be zeroed first.
@@ -1942,6 +2011,7 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const cleared = current.reduce((last, { entry }, index) => isContextClear(entry, source) ? index : last, 0);
   const answer = branch === "unresolved" ? null
     : { identity: `${identity}\0${branch}`, records: cleared > 0 ? current.slice(cleared) : current };
+  if (resolved.managedOmo && !(await revalidateManagedOmoRoute(paneId, resolved.managedOmo, look.managedOmoContext))) return null;
   remember(commandTranscripts, path, { signature, file, start, end: stat.size, digests, partialStart, records, identity, branch, leaf, answer, branches }, 4);
   return answer;
 }
@@ -2445,14 +2515,15 @@ const TOOL_REF = /^[A-Za-z0-9_:.-]{1,128}$/;
 const TOOL_OUTPUT_MAX = 2_000_000;
 
 /** The whole output of a tool call whose page output was cut, by its id; null when there is none. */
-export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<string | null> {
+export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, managedOmoContext?: ManagedOmoProbeContext): Promise<string | null> {
   if (!TOOL_REF.test(ref) && !/^cp[0-9a-f]{16}\.[A-Za-z0-9_:.-]{1,128}(?:@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32})?$/.test(ref)) return null;
-  const snapshot = await sessionSnapshot();
+  const snapshot = await sessionSnapshot(managedOmoPaths(managedOmoContext).socket);
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
-  let resolved: ResolvedTranscript;
-  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData); }
+  let resolved: NativeTranscript;
+  try { resolved = await paneTranscript(paneId, codexHome, snapshot, undefined, opencodeDb, hermesHome, grokHome, museData, undefined, managedOmoContext); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
+  if (resolved.source === "devin-transcript") return null;
   if (resolved.source === "opencode-transcript") {
     const output = opencodeToolOutput(resolved.path, resolved.session, ref);
     return output !== null && output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
@@ -2470,6 +2541,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
     if (!nativeRef.includes("@")) return null;
   }
   const output = transcriptToolOutput(resolved.source, resolved.path, nativeRef, resolved.codexHome ?? codexHome);
+  if (resolved.managedOmo && !(await revalidateManagedOmoRoute(paneId, resolved.managedOmo, managedOmoContext))) return null;
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
   if (resolved.source === "copilot-transcript") {
     const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);
@@ -2507,6 +2579,48 @@ export function transcriptToolOutput(source: StreamSource, path: string, ref: st
     return output !== null && output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
   }
   if (source === "pi-transcript" || source === "cmd-transcript") return piToolOutput(path, ref);
+  if (source === "omo-transcript") {
+    try {
+      const stream = transcriptStream(source, path, statSync(path), codexHome ?? defaultCodexHome());
+      const from = windowStart(stream.length);
+      const ranges = [...linesWith(stream, ref, from, stream.length), ...linesWith(stream, "context_clear", from, stream.length)];
+      const unique = new Map(ranges.map((range) => [range[0], range]));
+      let output: string | null = null;
+      for (const [start, end] of [...unique.values()].sort((a, b) => a[0] - b[0])) {
+        // A window may start inside a record; never interpret that partial record.
+        if (from > 0 && start === from) continue;
+        if (end - start > TOOL_OUTPUT_MAX) {
+          const shape = recordShape(stream, [start, end]);
+          if (shape === UNREAD) return null;
+          if (shape === NOT_A_RECORD) continue;
+          if (isContextClear(shape.entry, source)) output = null;
+          if (output !== null) continue;
+          const message = piMessage(shape.entry);
+          if (!message) continue;
+          const blocks = message.role === "toolResult" ? [message] : Array.isArray(message.content) ? message.content.filter((item) => item && typeof item === "object" && item.type === "toolResult") : [];
+          const block = blocks.find((item) => item && typeof item === "object" && (item as { toolCallId?: unknown }).toolCallId === ref) as { content?: unknown } | undefined;
+          if (!block) continue;
+          let result = "";
+          let truncated = false;
+          const text = (value: string): void => {
+            if (truncated || result.length > TOOL_OUTPUT_MAX) return;
+            truncated = !finish(scanStringSteps(stream, shape, value, TOOL_OUTPUT_MAX + 1 + IMAGE_SEARCH_WINDOW - result.length,
+              (piece) => { result += piece.slice(0, TOOL_OUTPUT_MAX + 1 - result.length); }));
+          };
+          const content = block.content;
+          if (typeof content === "string") text(content);
+          else if (Array.isArray(content)) for (const item of content) if (item && typeof item === "object" && typeof item.text === "string") text(item.text);
+          output = result;
+          if (truncated || output.length > TOOL_OUTPUT_MAX) output = `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed`;
+          continue;
+        }
+        const line = readStream(stream, start, end).toString("utf8");
+        try { if (isContextClear(JSON.parse(line), source)) output = null; } catch { continue; }
+        if (output === null) output = outputInText(source, line, ref);
+      }
+      return output;
+    } catch { return null; }
+  }
   if (source === "copilot-transcript") {
     let fd: number;
     try { fd = openCopilotFile(path); } catch { return null; }

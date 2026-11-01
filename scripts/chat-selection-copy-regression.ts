@@ -10,7 +10,9 @@ const root = mkdtempSync(join(tmpdir(), "herdr-chat-selection-copy-"));
 const longCode = Array.from({ length: FOLD_CODE_AFTER_LINES + 1 }, (_, index) => `line ${index + 1}`).join("\n");
 const shownCode = longCode.split("\n").slice(0, FOLDED_CODE_LINES).join("\n");
 const reply = "Outside **selection** and [docs](https://example.com).\n\n- First item\n- Second item\n- Third item\n\nKeep `src/main.ts` and `worker` here.\n\nNext paragraph.\n\n```sh\n  first\n\n  second  \n```\n\n| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |\n\n```\n" + longCode + "\n```\n\nOutside end.";
+const snapshot = "❯ Thought TPS Todo are my words\n\nThought: 1s\n\nTPS 12\n\nTodo\n[ ] task\nContext 20%\n──────\n  spaces preserved  \n" + "long-path-".repeat(100) + "\n";
 const safari = process.env.COPY_WEBKIT === "1";
+let snapshotMode = false;
 
 async function readClipboard(page: Page): Promise<string> {
   const copied = safari ? null : await page.evaluate(() => navigator.clipboard.readText());
@@ -34,7 +36,10 @@ try {
     const path = new URL(request.url).pathname;
     if (path === "/favicon.ico") return new Response(null, { status: 204 });
     if (path.endsWith("/pane/commands")) return Response.json({ commands: [] });
-    if (path.endsWith("/pane/conversation")) return Response.json({ source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
+    if (path.endsWith("/pane/conversation")) return Response.json(snapshotMode
+      ? { source: "scrollback", turns: [] }
+      : { source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
+    if (path.endsWith("/pane/read")) return Response.json({ read: { text: snapshot, truncated: false } });
     if (path === "/") return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><p id="outside">Before the chat</p><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, path.slice(1))));
   } });
@@ -197,6 +202,34 @@ try {
         assert.equal(await readClipboard(page), "Outside selection and docs.\n\n- First item\n- Second item\n- Third item\n\nKeep src/main.ts and worker here.\n\nNext paragraph.\n\n  first\n\n  second  \n\n\n| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |\n\n" + longCode + "\n\n\nOutside end.", "per-message Plain text Copy keeps text and line breaks");
         await context.close();
         console.log(`PASS ${width}: selections copy as shown with safe rich HTML; explicit MD/TXT copy is unchanged`);
+      }
+      snapshotMode = true;
+      for (const width of [360, 393, 430]) {
+        const context = await browser.newContext({ viewport: { width, height: 800 }, locale: "en-US", hasTouch: true, isMobile: true, permissions: safari ? [] : ["clipboard-read", "clipboard-write"] });
+        const page = await context.newPage();
+        page.setDefaultTimeout(10_000);
+        await page.goto(`http://127.0.0.1:${server.port}/`);
+        const terminal = page.locator(".chat-terminal-snapshot");
+        await terminal.waitFor();
+        assert.equal(await terminal.locator("pre").textContent(), snapshot, "the terminal read is not split or filtered");
+        assert.equal(await page.locator(".chat-turn-agent, .chat-agent-meta").count(), 0, "terminal output is not presented as assistant turns");
+        assert.equal(await terminal.getByRole("button", { name: "Copy as plain text" }).count(), 1);
+        await terminal.getByRole("button", { name: "Copy as plain text" }).click();
+        assert.equal(await readClipboard(page), snapshot, "the single copy action preserves the snapshot");
+        const layout = await page.evaluate(() => {
+          const stack = document.querySelector<HTMLElement>(".terminal-stack")!;
+          const view = document.querySelector<HTMLElement>(".chat-view")!;
+          stack.style.setProperty("--composer-over", "150px");
+          view.scrollTop = view.scrollHeight;
+          return { bodyWidth: document.documentElement.scrollWidth, viewport: window.innerWidth,
+            preWidth: document.querySelector<HTMLElement>(".chat-terminal-snapshot pre")!.scrollWidth,
+            preClient: document.querySelector<HTMLElement>(".chat-terminal-snapshot pre")!.clientWidth,
+            padding: parseFloat(getComputedStyle(view).paddingBottom) };
+        });
+        assert.ok(layout.bodyWidth <= layout.viewport && layout.preWidth <= layout.preClient, `snapshot overflows at ${width}: ${JSON.stringify(layout)}`);
+        assert.ok(layout.padding >= 150, `composer clearance is missing at ${width}: ${JSON.stringify(layout)}`);
+        await context.close();
+        console.log(`PASS ${width}: terminal snapshot wraps, copies verbatim and keeps composer clearance`);
       }
     } finally { await browser.close(); }
   } finally { await server.stop(true); }

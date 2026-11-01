@@ -1,6 +1,8 @@
 import type { HerdrPane } from "../shared/protocol.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 
+let warnedUnverifiedSession = false;
+
 /** A live Devin executable, not a command line which happens to mention one. */
 export function isDevinProcess(argv: readonly string[]): boolean {
   const executable = argv[0] ?? "";
@@ -34,7 +36,14 @@ export function devinSessionForPane(pane: HerdrPane, panes: HerdrPane[], argv: s
     throw new ConversationUnavailable("no_session_id");
   }
   const explicit = reported ?? named;
-  if (explicit === null) throw new ConversationUnavailable("no_session_id");
+  // A held ACP session lock alone does not prove which session the terminal displays after a switch.
+  if (explicit === null) {
+    if (!warnedUnverifiedSession) {
+      warnedUnverifiedSession = true;
+      console.warn("Devin conversation unavailable: the current session cannot be verified for this process.");
+    }
+    throw new ConversationUnavailable("devin_current_session_unverified");
+  }
   if (panes.some((other) => other.pane_id !== pane.pane_id && other.agent === "devin"
     && other.agent_session?.agent === "devin" && other.agent_session.kind === "id" && other.agent_session.value === explicit)) {
     throw new ConversationUnavailable("no_session_id");
