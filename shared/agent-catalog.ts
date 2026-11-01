@@ -189,9 +189,9 @@ export function meetsMinVersion(version: string, min: string): boolean {
 
 /** Every address a command names, whatever its scheme: a quote, a pipe, a semicolon or a bracket ends one. */
 const URL_IN_COMMAND = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'|;)]+/gi;
-/** The package managers a catalog command may install with, and the package each install names. */
+/** The package managers a catalog command may install with, and the packages each install names (npm takes several at once). */
 const PACKAGE_INSTALLS: readonly (readonly [string, RegExp])[] = [
-  ["npm", /\bnpm\s+(?:install|i)\s+-g\s+(\S+)/g],
+  ["npm", /\bnpm[ \t]+(?:install|i)[ \t]+-g((?:[ \t]+[^\s&|;]+)+)/g],
   ["brew", /\bbrew\s+install\s+(?:--cask\s+)?(\S+)/g],
   ["winget", /\bwinget\s+install\s+(\S+)/g],
   ["uv", /\buv\s+tool\s+install\s+(\S+)/g],
@@ -302,9 +302,13 @@ export function commandProblems(entry: AgentCatalogEntry): string[] {
       let installs = 0;
       for (const [manager, pattern] of PACKAGE_INSTALLS) {
         for (const match of command.matchAll(pattern)) {
-          installs++;
-          const name = manager === "npm" ? npmName(match[1]!) : match[1]!;
-          if (!entry.packages.includes(`${manager}:${name}`)) at(`installs ${manager}:${name}, not one of the vendor's packages`);
+          for (const spec of match[1]!.trim().split(/[ \t]+/)) {
+            // a flag after the packages (--ignore-scripts, --prefix) changes what the install does
+            if (spec.startsWith("-")) { at(`passes ${manager} ${spec}, which the vendor's command does not`); continue; }
+            installs++;
+            const name = manager === "npm" ? npmName(spec) : spec;
+            if (!entry.packages.includes(`${manager}:${name}`)) at(`installs ${manager}:${name}, not one of the vendor's packages`);
+          }
         }
       }
       if (urls.length === 0 && installs === 0) at("names no address or package it installs from");
