@@ -8,21 +8,81 @@ import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import "./ReplyComments.css";
 
 /**
+ * Where a selection running past a reply's last word into nothing more is read up to: a triple-click
+ * ends at the start of what follows the words (the copy row, a work block), a drag past the last
+ * word at the reply's end, over its copy row and time. `cut`: the text after the words a selection
+ * of the whole carries (the copy row's labels where they are selectable, the time), to take off the
+ * end of what it reads. Null: the range is read as it is (no words before, nothing past them, or
+ * more than the copy row past them: a work block, another part of the reply).
+ */
+function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } | null {
+  const words = [...turn.children].filter((child) => child.classList.contains("markdown") && range.intersectsNode(child)).at(-1);
+  if (words === undefined || range.comparePoint(words, words.childNodes.length) !== 0) return null;
+  const tail = document.createRange();
+  tail.setStart(words, words.childNodes.length);
+  tail.setEnd(range.endContainer, range.endOffset);
+  if (tail.collapsed) return null;
+  // the copy row's buttons take no words; at the reply's end its time may be taken too. A work block's
+  // title is a button as well, and is words of the turn: never passed over
+  const meta = turn.querySelector(":scope > .chat-turn-meta");
+  const atEnd = range.endContainer === turn && range.endOffset >= turn.childNodes.length;
+  const cut: string[] = [];
+  // from the first node after the words to the range's end: never the words themselves
+  let last: Node = words;
+  while (last.lastChild !== null) last = last.lastChild;
+  const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
+  walker.currentNode = last;
+  for (let node = walker.nextNode() as Text | null; node !== null && tail.comparePoint(node, 0) <= 0; node = walker.nextNode() as Text | null) {
+    const taken = node.data.slice(0, node === tail.endContainer ? tail.endOffset : node.length);
+    if (taken.trim() === "") continue;
+    // anything taken past the words but the copy row (a work block's title, selectable or not) is more than nothing
+    const copyRow = meta?.contains(node) === true && (atEnd || node.parentElement?.closest("button, [role=button]") != null);
+    if (!copyRow) return null;
+    // what a copy of the selection carries: selectable and drawn (a mouse's copy row hides its MD and TXT)
+    if (selectable(node.parentElement) && drawn(node.parentElement)) cut.push(taken);
+  }
+  const trimmed = range.cloneRange();
+  trimmed.setEnd(words, words.childNodes.length);
+  return { range: trimmed, cut };
+}
+
+/** Drawn on the page: a copy of the selection leaves out what is not (`display: none`, hidden). */
+function drawn(element: Element | null): boolean {
+  return element !== null && element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible";
+}
+
+/** `user-select: none` is not inherited as a computed value (a label inside a button reads `auto`): each ancestor is asked. */
+function selectable(element: Element | null): boolean {
+  for (let at = element; at !== null; at = at.parentElement) if (getComputedStyle(at).userSelect === "none") return false;
+  return true;
+}
+
+/**
  * The selected text, as a copy carries it, when the selection lies in the words of one agent reply
  * in `root`: never across a work block, the reply's copy row, a user message, another pane or a field.
+ * One running past the reply's last word into nothing more (wordsEnd) is read up to it: the copy's
+ * text, its line breaks and a tool file's path as written kept, without what was taken past the words.
  */
 export function replySelectionText(selection: Selection | null, root: Element): string | null {
   if (selection === null || selection.isCollapsed || selection.rangeCount !== 1) return null;
-  const range = selection.getRangeAt(0);
+  const selected = selection.getRangeAt(0);
   const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
-  const start = element(range.startContainer), end = element(range.endContainer);
+  const start = element(selected.startContainer), end = element(selected.endContainer);
   if (start === null || end === null || !root.contains(start) || !root.contains(end)) return null;
   if (start.closest("input, textarea, [contenteditable=true]") !== null) return null;
   const turn = start.closest(".chat-turn-agent");
   if (turn === null || turn !== end.closest(".chat-turn-agent")) return null;
+  const past = wordsEnd(selected, turn);
+  const range = past?.range ?? selected;
   // every part of the reply the range touches is its words: a work block, a skill or goal line or the meta row is not
   for (const child of turn.children) if (range.intersectsNode(child) && !child.classList.contains("markdown")) return null;
-  const text = chatSelectionClipboardPayload(selection, root)?.text ?? selection.toString();
+  let text = chatSelectionClipboardPayload(selection, root)?.text ?? selection.toString();
+  // the copy row's text comes last in the copy, in order: taken off its end, and nothing once one is not there
+  for (const piece of (past?.cut ?? []).reverse()) {
+    text = text.trimEnd();
+    if (!text.endsWith(piece.trim())) break;
+    text = text.slice(0, text.length - piece.trim().length);
+  }
   return text.trim() === "" ? null : text;
 }
 
