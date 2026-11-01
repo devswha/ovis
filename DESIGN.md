@@ -2885,13 +2885,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Enter sends and Shift+Enter breaks by default; with **Enter sends** off, Mod+Enter sends. On touch screens the same device setting is shown inverted as **Return inserts a new line**, with Send and hardware Mod+Enter explained below it. IME Enter is ignored. Stop sends Escape. While the agent works and a draft shows Send in Stop's place, Escape in the box is Stop; an open completion menu takes the first Escape, and its X in the top corner (`.composer-menu-close`, Close suggestions, sticky over the rows it scrolls; the first row leaves it room) does the same for a pointer or a phone, which has no Escape, keeping the text and the focus in the box. T3 Code's command menu closes on Escape alone. Working Send schedules a pending message; its Send now action submits that same message now.
 
 ### Comments on a reply (`.reply-comment*`, `.reply-comments*`)
-- Selecting text inside the words of one agent reply offers **Comment** (lucide `MessageSquarePlus`), a
-  pill on `--bg-elevated` with `--shadow-pop`, drawn on a layer over the transcript (`.reply-comment-layer`,
+- Selecting text inside the words of one agent reply offers **Quote** first (lucide `Quote`, labelled)
+  and **Comment** second (lucide `MessageSquarePlus`, icon only, `--text-dim`, after a hairline divider;
+  `--touch-target` square on a coarse pointer), one pill on `--bg-elevated` with `--shadow-pop`, drawn on a layer over the transcript (`.reply-comment-layer`,
   `--z-popover`), never in the flow: a selection in progress moves nothing (the composer row #1845 had
   shook the chat, #1922). With a mouse it stands under the point where the button was released; on a touch
   screen `28px` under the selection, clear of its handles, while the system's own menu stays above it.
   A selection reaching a user message, a work block, a skill or goal line or the copy row offers nothing;
   a watching device and an ended pane offer nothing either.
+- Quote puts the words in the pane's draft as `> ` quote lines and a blank line, after what the draft
+  holds (kept as typed), and the message box takes the keyboard with its caret at the end; nothing is
+  sent, and quotes stack. The draft is then `agent_only`, as a message carrying comments is. A quote that
+  would pass the composer's limit is refused (Quote disabled, saying why), never cut; under a secret
+  prompt, which stands in the message box's place, the pill offers Comment alone. Precedent: Antigravity's
+  chat, where a selection is quoted into the input; Quote is the main action and Comment the secondary one.
 - Comment opens a small form at the same place (`360px` at most, `--radius-xl`): the quote, three lines
   at most behind a `2px` `--accent` rule, a field, Cancel and Save. Mod+Enter saves, Escape closes it
   while it is empty. Narrower than `560px` it docks along the chat's bottom edge, over the message box,

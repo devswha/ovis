@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
-import { MessageSquarePlus, MessageSquareQuote, X } from "lucide-react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
+import { MessageSquarePlus, MessageSquareQuote, Quote, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
+import { quoteFits, quoteIntoComposer } from "../lib/chatQuote.ts";
+import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import "./ReplyComments.css";
@@ -27,7 +29,7 @@ export function replySelectionText(selection: Selection | null, root: Element): 
 const EDGE = 8;
 /** below a touch selection: clear of its handles, while the system's own menu stands above it */
 const HANDLE_ROOM = 28;
-const OFFER_W = 132;
+const OFFER_W = 148;
 const OFFER_H = 36;
 const FORM_W = 360;
 /** a frame narrower than this docks the form along its bottom edge, where a phone's keyboard meets it */
@@ -36,11 +38,12 @@ const DOCK_BELOW = 560;
 interface Placed { quote: string; left: number; top: number }
 
 /**
- * The Comment action over a chat (#511). It floats over the transcript, so a selection in progress
- * never moves what is under it (#1922); with a mouse it stands where the button was released, on a
- * touch screen below the selection. Its form saves the comment for the composer's next message.
+ * The actions on a selection in a chat's reply. It floats over the transcript, so a selection in
+ * progress never moves what is under it (#1922); with a mouse it stands where the button was
+ * released, on a touch screen below the selection. Quote, first, puts the words in the composer as a
+ * `> ` quote (lib/chatQuote.ts); Comment (#511) opens a form that saves a comment for the next message.
  */
-export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string }) {
+export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string; paneKey: string | null }) {
   const t = useT();
   const layer = useRef<HTMLDivElement>(null);
   const [offer, setOffer] = useState<Placed | null>(null);
@@ -50,6 +53,7 @@ export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObje
   const dragging = useRef(false);
   // a press on the action: a touch that clears the selection on its way down still comments on it
   const pressing = useRef(false);
+  const quoteNote = useId();
   const formOpen = useRef(false);
   formOpen.current = form !== null;
 
@@ -116,6 +120,18 @@ export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObje
     setComment("");
     setForm({ ...placed, left, top: Math.min(placed.top, Math.max(height - 220, EDGE)), docked });
   };
+  const quote = (placed: Placed) => {
+    pressing.current = false;
+    if (paneKey === null || !quoteFits(composerDrafts.read(composerDraftKey(paneKey)).text, placed.quote)) return;
+    setOffer(null);
+    // cleared before the composer takes the keyboard: clearing after would take its caret too
+    getSelection()?.removeAllRanges();
+    quoteIntoComposer(paneKey, placed.quote);
+  };
+  // the draft, read again as it changes (a send settling, another tab): whether the quote fits follows it
+  const draft = useSyncExternalStore(composerDrafts.subscribe, () => paneKey === null ? "" : composerDrafts.read(composerDraftKey(paneKey)).text);
+  // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
+  const fits = offer !== null && paneKey !== null && quoteFits(draft, offer.quote);
   const close = () => { setForm(null); setComment(""); };
   const save = () => {
     if (form === null || comment.trim() === "") return;
@@ -130,14 +146,22 @@ export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObje
   };
 
   return <div className="reply-comment-layer" ref={layer}>
-    {offer !== null && form === null && <button type="button" className="reply-comment-offer" style={{ left: offer.left, top: offer.top }}
+    {/* outside the pill, on the chat's far side from it (at the foot, over the jump control's room); drawn first, so the pill stays over it */}
+    {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className={`selection-note${offer.top < (layer.current?.clientHeight ?? 0) / 2 ? " is-below" : ""}`} role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
+    {offer !== null && form === null && <div className="selection-offer" role="group" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
       // a mouse press keeps the selection; a touch's is read from the offer it showed
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
-      onPointerCancel={() => { pressing.current = false; }}
-      onClick={() => open(offer)}>
-      <MessageSquarePlus aria-hidden="true" />{t("Comment")}
-    </button>}
+      onPointerCancel={() => { pressing.current = false; }}>
+      {/* too long, it stays focusable and says why in words, for a touch or a keyboard that has no hover */}
+      {paneKey !== null && <button type="button" className="selection-quote" aria-disabled={!fits || undefined}
+        aria-describedby={fits ? undefined : quoteNote} title={fits ? t("Quote it in your message") : undefined} onClick={() => quote(offer)}>
+        <Quote aria-hidden="true" />{t("Quote")}
+      </button>}
+      <button type="button" className="reply-comment-offer" aria-label={t("Comment")} title={t("Comment")} onClick={() => open(offer)}>
+        <MessageSquarePlus aria-hidden="true" />
+      </button>
+    </div>}
     {form !== null && <ReplyCommentForm form={form} comment={comment} onComment={setComment} onKeyDown={keyDown} onSave={save} onCancel={close} />}
   </div>;
 }
