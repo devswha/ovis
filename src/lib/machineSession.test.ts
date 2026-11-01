@@ -290,6 +290,23 @@ describe("PC connection ownership", () => {
     } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
   });
 
+  it("times a row sent again from its own try, not from an earlier one that left it held", () => {
+    const { session, socket } = setup("retry-pc");
+    const key = waitingKey("retry-pc", "w1:p1");
+    const clock = spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      // not typed (a draft in the box): held, and sent with Send now long after
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
+      clock.mockReturnValue(90_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      clock.mockReturnValue(91_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 90_000 }]);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
+  });
+
   it("accepts an unmounted pane's submit receipt on its captured live connection", () => {
     const { session, socket, store } = setup();
     start(session, socket);

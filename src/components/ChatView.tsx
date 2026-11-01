@@ -1349,6 +1349,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    * from the active chain).
    */
   const [cancelledAtSend, setCancelledAtSend] = useState<{ text: string; page: ConversationTurn[] } | null>(null);
+  /**
+   * The last restored copy shown, with the newest turns it was shown on. A Send now empties the box
+   * before its receipt advances sentKey, so a prompt read between the two answers none: this copy,
+   * on the same turns, is the cancelled send that Send now cleared.
+   */
+  const lastRestored = useRef<{ text: string; page: ConversationTurn[] } | null>(null);
   /** the newest page as rendered: an earlier page loaded above it does not move the transcript */
   const heldPage = useRef<ConversationTurn[]>([]);
   const seenSent = useRef(sentKey);
@@ -1429,7 +1435,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const page = heldPage.current;
     const last = page[page.length - 1];
     setSentOver(last?.role === "assistant" && agentStatus !== "working" && agentStatus !== "blocked" ? { turn: last, page } : null);
-    setCancelledAtSend(restored === null ? null : { text: restored, page });
+    const cancelled = restored ?? (lastRestored.current?.page === page ? lastRestored.current.text : null);
+    // with none, the record of an earlier send stands: the turns it holds for are unchanged, or it no longer applies
+    if (cancelled !== null) setCancelledAtSend({ text: cancelled, page });
   }, [sentKey, agentStatus, restored]);
 
   // Status edges still read immediately, including on a bridge without conversation pushes.
@@ -2066,14 +2074,17 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while
   // the last turn is that very send — matching the terminal, which shows it only as typed text.
+  // A send that emptied the box keeps it out while the turns are unchanged (cancelledAtSend). Its
+  // outcome gets no sent row either (outcomeRows).
+  const hiddenSend = restored ?? (cancelledAtSend !== null && cancelledAtSend.page === state.turns ? cancelledAtSend.text : null);
   const shownTurns = useMemo(() => {
     const last = turns[turns.length - 1];
-    const hidden = restored ?? (cancelledAtSend !== null && cancelledAtSend.page === state.turns ? cancelledAtSend.text : null);
-    if (hidden === null || last?.role !== "user") return turns;
+    if (hiddenSend === null || last?.role !== "user") return turns;
     const sent = last.parts.filter((part): part is Extract<ConversationPart, { kind: "text" }> => part.kind === "text").map((part) => part.text).join("\n");
-    return sameMessage(sent, hidden) ? turns.slice(0, -1) : turns;
-  }, [turns, restored, cancelledAtSend, state.turns]);
+    return sameMessage(sent, hiddenSend) ? turns.slice(0, -1) : turns;
+  }, [turns, hiddenSend]);
   heldPage.current = state.turns;
+  if (restored !== null) lastRestored.current = { text: restored, page: state.turns };
   const finishedBeforeSend = sentOver !== null && sentOver.page === state.turns ? sentOver.turn : null;
   const lastShownTurn = state.source === "conversation" ? shownTurns.at(-1) : undefined;
   const lastSplit = lastShownTurn !== undefined && isLiveWorkTurn(lastShownTurn, true, workStatus, finishedBeforeSend) ? splitTurn(lastShownTurn.parts) : null;
@@ -2101,7 +2112,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const rowMemories = useMemo(() => new Map<string, ChatRowMemory>(), [timelineScope]);
   // the turns with the commands sent from here: a chip on the turn that records one, a provisional
   // sent row for one no turn records (yet), placed by send time (lib/outcomeChip.ts)
-  const withOutcomes = useMemo(() => outcomeRows(shownTurns, outcomes, { restored, beginningLoaded: olderCursor === null }), [shownTurns, outcomes, restored, olderCursor]);
+  const withOutcomes = useMemo(() => outcomeRows(shownTurns, outcomes, { restored: hiddenSend, beginningLoaded: olderCursor === null }), [shownTurns, outcomes, hiddenSend, olderCursor]);
   const timelineRows = useMemo((): ChatRow[] => {
     const rows = withOutcomes.map((row): ChatRow => {
       if (row.kind === "sent") return { key: `outcome:${row.outcome.id}`, turn: null, outcome: row.outcome, beforeUser: false };

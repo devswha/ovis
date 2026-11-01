@@ -78,8 +78,12 @@ export class MachineSession {
         const owner = paneStorageId(this.machineId, message.pane_id);
         const scope = this.currentScope;
         const key = waitingKey(this.machineId, message.pane_id);
-        // taken before the row's Enter, as a composer send's are before it is submitted
-        for (const item of message.messages) if (item.state === "sending" && !this.going.has(item.id)) this.going.set(item.id, { at: Date.now(), after: waitingBaseline(key) });
+        // taken before the row's Enter, as a composer send's are before it is submitted. A row back in
+        // the queue or held was not typed: its next try takes its own
+        for (const item of message.messages) {
+          if (item.state === "sending" && !this.going.has(item.id)) this.going.set(item.id, { at: Date.now(), after: waitingBaseline(key) });
+          else if (item.state === "queued" || item.state === "held") this.going.delete(item.id);
+        }
         const typed = message.removed?.filter((item) => item.outcome === "sent" && this.store.isOwned(owner, item.id, scope)) ?? [];
         sent = typed.length > 0;
         // the rows' words, read before the publish lets them go

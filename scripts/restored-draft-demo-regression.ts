@@ -79,6 +79,7 @@ try {
     const demo = window.fetch;
     const infra = ${JSON.stringify(panes.omp)};
     window.restoredText = null;
+    window.promptOutcomes = [];
     window.extraTurn = null;
     window.extraServed = 0;
     window.promptReads = 0;
@@ -109,7 +110,7 @@ try {
       if (url.searchParams.get("pane_id") !== infra) return demo(input, init);
       if (url.pathname === "/api/pane/prompt") {
         window.promptReads += 1;
-        return json({ prompt: null, suggestion: null, restored: window.restoredText });
+        return json({ prompt: null, suggestion: null, restored: window.restoredText, outcomes: window.promptOutcomes });
       }
       if (url.pathname === "/api/pane/conversation" && window.holdReads) return new Promise((resolve) => heldReads.push(() => resolve(window.fetch(input, init))));
       if (url.pathname === "/api/pane/conversation" && window.extraTurn !== null && !url.searchParams.has("before") && !url.searchParams.has("from")) {
@@ -233,7 +234,27 @@ try {
         await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count, served, { timeout: 10_000 });
         await announce(page);
         await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count + 1, served, { timeout: 10_000 });
-        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the restored send's turn is out of view");
+        // the cancelled send's turn, or its outcome drawn as a sent row (.chat-turn-sent)
+        const cancelledShown = (): Promise<number> => page.locator(".chat-turn", { hasText: "Rename the backup job" }).count();
+        assert.equal(await cancelledShown(), 0, "the restored send's turn is out of view");
+        // the bridge lists the cancelled send's outcome too: it gets no sent row while its turn is out
+        await page.evaluate((text) => {
+          const at = new Date(Date.now() - 1000).toISOString();
+          Object.assign(window, { promptOutcomes: [{ id: "cancelled", pane_id: "", text, state: "accepted", evidence: [], created_at: at, updated_at: at }] });
+        }, RESTORED);
+        await promptReadsPast(page, await promptReads(page) + 1);
+        assert.equal(await cancelledShown(), 0, "the restored send's outcome is out of view");
+        /** a message from the composer, once the agent is at rest (Stop gives way to Send) */
+        const sendAtRest = async (text: string): Promise<void> => {
+          await page.locator(".composer-stop").waitFor({ state: "detached", timeout: 10_000 });
+          await composer.fill(text);
+          await page.getByRole("button", { name: "Send message", exact: true }).click();
+          await page.locator(".chat-sent-waiting-list", { hasText: text }).waitFor({ timeout: 10_000 });
+        };
+        const release = async (text: string): Promise<void> => {
+          await page.evaluate(() => { const view = window as unknown as { extraTurn: unknown; releaseReads: () => void }; view.extraTurn = null; view.releaseReads(); });
+          await page.locator(".chat-turn", { hasText: text }).waitFor({ timeout: 10_000 });
+        };
         const next = "Reply with one word";
         await composer.fill(next);
         // the box empties as the message goes, in one task: no prompt read answers between the two
@@ -243,11 +264,36 @@ try {
         });
         await page.locator(".chat-sent-waiting-list", { hasText: next }).waitFor({ timeout: 10_000 });
         await promptReadsPast(page, await promptReads(page) + 1);
-        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the cancelled turn stays out after the send");
-        await page.evaluate(() => { const view = window as unknown as { extraTurn: unknown; releaseReads: () => void }; view.extraTurn = null; view.releaseReads(); });
-        await page.locator(".chat-turn", { hasText: next }).waitFor({ timeout: 10_000 });
-        assert.equal(await page.locator(".chat-turn", { hasText: "Rename the backup job" }).count(), 0, "the new turn's read leaves the cancelled one out");
-        console.log("PASS a message sent over a restored send keeps that send's turn out until the new turn is read");
+        assert.equal(await cancelledShown(), 0, "the cancelled turn and its outcome stay out after the send");
+        // a second message before the transcript has the first: the box was empty at its send
+        await sendAtRest("And a second one");
+        await promptReadsPast(page, await promptReads(page) + 1);
+        assert.equal(await cancelledShown(), 0, "a second send keeps the cancelled turn out while the transcript is unchanged");
+        await page.evaluate(() => { Object.assign(window, { promptOutcomes: [] }); });
+        await promptReadsPast(page, await promptReads(page) + 1);
+        await release("And a second one");
+        assert.equal(await cancelledShown(), 0, "the new turns' read leaves the cancelled one out");
+        console.log("PASS a message sent over a restored send keeps that send's turn and outcome out until the new turn is read");
+
+        // A Send now empties the box before its receipt: a prompt read between the two answers no
+        // copy before the send counts. Here that read comes first: the turn stands again, as for a
+        // copy cleared in the terminal, and the send that follows on the same turns takes it out
+        const servedAgain = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
+        await feed(page, RESTORED, extraTurn());
+        await boxValue(page, RESTORED);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count, servedAgain, { timeout: 10_000 });
+        await announce(page);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count + 1, servedAgain, { timeout: 10_000 });
+        assert.equal(await cancelledShown(), 0, "restored again, the turn is out of view");
+        await page.evaluate(() => { Object.assign(window, { holdReads: true, restoredText: null }); });
+        await boxValue(page, "");
+        await page.locator(".chat-turn", { hasText: "Rename the backup job" }).waitFor({ timeout: 10_000 });
+        await sendAtRest("A third one");
+        await promptReadsPast(page, await promptReads(page) + 1);
+        assert.equal(await cancelledShown(), 0, "a send after the copy left the box keeps its turn out while the turns are unchanged");
+        await release("A third one");
+        assert.equal(await cancelledShown(), 0, "the new turn's read leaves the cancelled one out");
+        console.log("PASS a send after the restored copy left the box keeps that send's turn out until the new turn is read");
 
         assert.deepEqual(errors, []);
       } finally { await desktop.close(); }
