@@ -83,3 +83,5 @@ export function useRelay() {
   }, []);
   return { status, unsupported, pending, request };
 }
+
+export type RelayState = ReturnType<typeof useRelay>;

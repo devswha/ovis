@@ -1,6 +1,6 @@
 /**
  * Japanese for the keys only the devices files use:
- * components/DevicesPanel.tsx (with VIA), components/PhonePanel.tsx, components/PortalPanel.tsx,
+ * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
  * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
@@ -179,4 +179,10 @@ export const DEVICES_JA: Record<string, string> = {
   "Getting a code…": "コードを取得しています…",
   "This is a paired device, reaching the PC through the Ovis relay.": "Ovis リレー経由で PC に接続しているペアリング済みデバイスです。",
   "via relay": "リレー経由",
+  "How the phone connects": "スマートフォンの接続方法",
+  "How it works": "仕組み",
+  "Recommended: works from anywhere, with nothing to install on the phone.": "おすすめ: どこからでも使え、スマートフォンに何もインストールしなくて済みます。",
+  "Turn on the relay": "リレーをオンにする",
+  "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "このアドレスをすでに開けるスマートフォン向けです。同じ Wi-Fi、またはトンネルやプロキシ経由の場合です。",
+  "Get a pairing code": "ペアリングコードを取得",
 };

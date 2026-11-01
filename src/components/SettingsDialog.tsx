@@ -7,6 +7,7 @@ import type { AppActions } from "../lib/actions.ts";
 import { useInstallPrompt } from "../lib/install.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { loadRelayShell } from "../lib/relay.ts";
+import { useRelay } from "../lib/useRelay.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { SHORTCUTS, bindingDisplayKeys, formatKeys, isMacPlatform, setShortcutRecording, shortcutDisplayKeys, shortcutKeys, shortcutConflict, type ShortcutId } from "../lib/shortcuts.ts";
 import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib/shortcutRecorder.ts";
@@ -37,10 +38,10 @@ import type { VoiceStatus } from "../../shared/voice.ts";
 import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
-import { PhonePanel } from "./PhonePanel.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
 import { RelayPanel } from "./RelayPanel.tsx";
+import { ConnectPhoneDialog, defaultRoute, relayOffered, type ConnectRoute } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
 import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
@@ -889,6 +890,16 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   const pairUrl = plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
   // what keeps the switch from working here, only while it does (lib/wakeLock.ts asks for the same two)
   const wakeLockProblem = !window.isSecureContext ? t("Needs HTTPS or localhost.") : !("wakeLock" in navigator) ? t("This browser can't keep the screen on.") : null;
+  // one relay state for the switch on this page and the Connect a phone dialog, so each shows the other's change at once
+  const relay = useRelay();
+  const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
+  const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
+  // the dialog with the ways a phone connects, and the way it opens on; null while it is closed
+  const [connecting, setConnecting] = useState<{ route: ConnectRoute; startCode: boolean } | null>(null);
+  const closeConnect = useCallback(() => setConnecting(null), []);
+  const connectSummary = relayOffered(relay) && relay.status?.phase === "online" ? t("Ready through the Ovis relay.")
+    : plan.kind === "here" || plan.kind === "served" ? t("Ready at {url}.", { url: plan.url })
+    : t("Use the Ovis relay, Tailscale or a pairing code.");
   return (
     <>
       <SettingsGroup title={t("Phone")} section="phone">
@@ -913,7 +924,9 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
             )}
           </>
         )}
-        <div className="settings-item"><PhonePanel plan={plan} loading={access === undefined} onRefresh={loadAccess} /></div>
+        <SettingsRow label={t("Connect a phone")} description={<span className="connect-phone-summary">{connectSummary}</span>}>
+          <button type="button" className="btn btn-primary" onClick={() => setConnecting({ route: defaultRoute(plan, relay), startCode: false })}>{t("Connect")}</button>
+        </SettingsRow>
         <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
           <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
         </SettingsRow>
@@ -922,16 +935,21 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
         </SettingsRow>
       </SettingsGroup>
 
-      <RelayPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} closesGate={security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured} />
+      <RelayPanel relay={relay} readOnly={relayReadOnly} closesGate={closesGate} />
 
       <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
 
       <SettingsGroup title={t("Devices")} section="devices">
-        <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} onRevokedAll={onRevokedAll} /></div>
+        <div className="settings-item"><DevicesPanel onPair={() => setConnecting({ route: "code", startCode: true })} onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} /></div>
         {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} />}
       </SettingsGroup>
 
       <AccessFacts facts={security} />
+
+      {connecting !== null && (
+        <ConnectPhoneDialog route={connecting.route} startCode={connecting.startCode} plan={plan} loading={access === undefined} onRefresh={loadAccess} pairUrl={pairUrl}
+          relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"} onClose={closeConnect} />
+      )}
     </>
   );
 }
