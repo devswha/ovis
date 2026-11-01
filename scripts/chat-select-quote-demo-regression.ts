@@ -205,6 +205,18 @@ try {
           const message = (await submits(page)).at(-1)!;
           assert.equal(message.text, `${stacked}Go ahead.`, `${label}: the message the agent gets`);
           assert.equal(message.agent_only, true, `${label}: for an agent alone`);
+
+          // a quote past the composer's limit is refused, saying why in words, and the draft is never cut
+          const full = "x".repeat(19_990);
+          await composer.fill(full);
+          await composer.blur();
+          await select(page, FIRST, !shape.mobile);
+          assert.equal(await page.locator(".selection-quote").getAttribute("aria-disabled"), "true", `${label}: Quote refuses a quote past the limit`);
+          assert.equal((await page.locator(".selection-note").textContent())?.trim(), "Too long to quote: shorten the message or the selection.", `${label}: it says why`);
+          await shot("3-too-long");
+          await page.locator(".selection-quote").click();
+          await frames(page);
+          assert.equal(await composer.inputValue(), full, `${label}: the draft stays whole`);
           assert.deepEqual(errors, [], `${label}: no page errors`);
           console.log(`PASS ${label}`);
         } finally {

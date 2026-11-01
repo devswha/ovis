@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
 import { MessageSquarePlus, MessageSquareQuote, Quote, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
 import { quoteFits, quoteIntoComposer } from "../lib/chatQuote.ts";
+import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import "./ReplyComments.css";
@@ -52,6 +53,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   const dragging = useRef(false);
   // a press on the action: a touch that clears the selection on its way down still comments on it
   const pressing = useRef(false);
+  const quoteNote = useId();
   const formOpen = useRef(false);
   formOpen.current = form !== null;
 
@@ -120,14 +122,16 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   };
   const quote = (placed: Placed) => {
     pressing.current = false;
-    if (paneKey === null || !quoteFits(paneKey, placed.quote)) return;
+    if (paneKey === null || !quoteFits(composerDrafts.read(composerDraftKey(paneKey)).text, placed.quote)) return;
     setOffer(null);
     // cleared before the composer takes the keyboard: clearing after would take its caret too
     getSelection()?.removeAllRanges();
     quoteIntoComposer(paneKey, placed.quote);
   };
+  // the draft, read again as it changes (a send settling, another tab): whether the quote fits follows it
+  const draft = useSyncExternalStore(composerDrafts.subscribe, () => paneKey === null ? "" : composerDrafts.read(composerDraftKey(paneKey)).text);
   // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
-  const fits = offer !== null && paneKey !== null && quoteFits(paneKey, offer.quote);
+  const fits = offer !== null && paneKey !== null && quoteFits(draft, offer.quote);
   const close = () => { setForm(null); setComment(""); };
   const save = () => {
     if (form === null || comment.trim() === "") return;
@@ -147,10 +151,12 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
       onPointerCancel={() => { pressing.current = false; }}>
-      {paneKey !== null && <button type="button" className="selection-quote" disabled={!fits}
-        title={fits ? t("Quote it in your message") : t("Too long to quote: shorten the message or the selection.")} onClick={() => quote(offer)}>
+      {/* too long, it stays focusable and says why in words, for a touch or a keyboard that has no hover */}
+      {paneKey !== null && <button type="button" className="selection-quote" aria-disabled={!fits || undefined}
+        aria-describedby={fits ? undefined : quoteNote} title={fits ? t("Quote it in your message") : undefined} onClick={() => quote(offer)}>
         <Quote aria-hidden="true" />{t("Quote")}
       </button>}
+      {paneKey !== null && !fits && <span id={quoteNote} className="selection-note" role="status">{t("Too long to quote: shorten the message or the selection.")}</span>}
       <button type="button" className="reply-comment-offer" aria-label={t("Comment")} title={t("Comment")} onClick={() => open(offer)}>
         <MessageSquarePlus aria-hidden="true" />
       </button>

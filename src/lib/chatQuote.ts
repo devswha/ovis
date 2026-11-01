@@ -16,8 +16,8 @@ export function draftWithQuote(draft: string, quote: string): string {
 const listeners = new Map<string, Set<() => void>>();
 
 /** Whether the quote fits in the pane's draft under the composer's limit: one that does not is refused, never cut. */
-export function quoteFits(paneKey: string, quote: string): boolean {
-  return draftWithQuote(composerDrafts.read(draftKeyOf(paneKey)).text, quote).length <= MAX_COMPOSER_CHARS;
+export function quoteFits(draft: string, quote: string): boolean {
+  return draftWithQuote(draft, quote).length <= MAX_COMPOSER_CHARS;
 }
 
 /** The pane's composer takes the keyboard, its caret after the draft, once a quote went into it. */
@@ -40,7 +40,7 @@ export function quoteIntoComposer(paneKey: string, quote: string): boolean {
   const key = draftKeyOf(paneKey);
   const draft = composerDrafts.read(key).text;
   const next = draftWithQuote(draft, quote);
-  if (next.length > MAX_COMPOSER_CHARS) return false;
+  if (!quoteFits(draft, quote)) return false;
   if (next === draft) return true;
   composerDrafts.markAgentOnly(key);
   composerDrafts.set(key, next);

@@ -62,7 +62,18 @@
   color: var(--text-strong);
 }
 
-.selection-quote:disabled {
+.selection-note {
+  display: inline-flex;
+  align-items: center;
+  max-width: 16rem;
+  padding: 0 var(--space-3);
+  border-left: var(--hairline) solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: normal;
+}
+
+.selection-quote[aria-disabled="true"] {
   background: transparent;
   color: var(--text-dim);
   cursor: not-allowed;
