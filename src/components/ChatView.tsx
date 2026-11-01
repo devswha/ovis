@@ -2021,9 +2021,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
+    // The list's own move down can stop short too: the browser holds it at the transcript's height
+    // before the list has grown it, and once grown no row changes to follow (a long chat's first
+    // open). A glide's stops are not that: where it ends, ChatTimeline settles it.
+    const stoppedShort = scrollingDown && !byReader && !smoothFollow && timeline.current !== null;
     // the layout's move left a reader still following short of the end: they go on there, unless
     // what they just clicked is laid out where they are (ChatTimeline manualLayout)
-    if (heldInPlace && stickToBottom.current && !pagingAway.current && !manualLayout.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+    if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+      // the list's scroll lands a frame later: the frame painted next is at the end already
+      if (stoppedShort) node.scrollTop = node.scrollHeight;
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
       else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
     }
