@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 
-import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, observePaneSessions, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
+import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, observePaneSessions, paneSessionsMoving, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
 import { ConversationRefresh } from "./conversationRefresh.ts";
 import type { ConversationResponse } from "../../shared/protocol.ts";
 
@@ -280,6 +280,21 @@ describe("conversation read started by a press", () => {
     expect(sent).toEqual(["press:same", "press:switched", "press:switched"]);
   });
 
+  it("takes no press read once its PC says its panes changed, before the roster naming them comes", async () => {
+    const sent = answering();
+    observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "press:moving", agent: "claude", agent_session: null }] } }]);
+    prefetchPaneConversation("press:moving", "local", 10);
+    await heldPast("press:moving");
+    paneSessionsMoving("pc-other");
+    await mount("press:moving");
+    expect(sent).toHaveLength(1);
+    prefetchPaneConversation("press:moving", "local", 10);
+    await heldPast("press:moving");
+    paneSessionsMoving("local");
+    await mount("press:moving");
+    expect(sent).toHaveLength(3);
+  });
+
   it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
     const answers: ((history: string) => void)[] = [];
     globalThis.fetch = (async (_url: string) => {
@@ -354,21 +369,59 @@ describe("conversation peek", () => {
     expect(peekPaneConversation("peek:late-held", "local", 10)).toBe(plain);
   });
 
-  it.each([{ from: "session-a:40" }, {}])("keeps no answer read for a session the pane has left: %o", async (page) => {
+  it.each([{ from: "session-a:40" }, {}])("reads a page sent while the pane left its session again, and keeps none of the old one: %o", async (page) => {
     const pane = `peek:left-${Object.keys(page).length}`;
-    const answer = Promise.withResolvers<void>();
+    let session = "a";
+    const first = Promise.withResolvers<void>();
+    let reads = 0;
     globalThis.fetch = (async (_url: string) => {
-      await answer.promise;
-      return Response.json({ source: "claude-transcript", history_id: "session-a", cursor: "session-a:40", turns: [] }, { headers: { etag: '"session-a"' } });
+      const history = `session-${session}`;
+      if (++reads === 1) await first.promise;
+      return Response.json({ source: "claude-transcript", history_id: history, cursor: `${history}:40`, turns: [] }, { headers: { etag: `"${history}"` } });
     }) as typeof fetch;
     const roster = (value: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: pane, agent: "codex", agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value } }] } }]);
     roster("a");
     const read = fetchPaneConversation(pane, "local", { ...page, prompts: 10 });
+    session = "b";
     roster("b");
-    answer.resolve();
-    // the caller still gets its answer; the cache does not hand it to a chat of session B
-    expect((await read).history_id).toBe("session-a");
-    expect(peekPaneConversation(pane, "local", 10)).toBeUndefined();
+    first.resolve();
+    // the caller gets the session the pane is on, never the one it left while the read was out
+    const answer = await read;
+    expect(answer.history_id).toBe("session-b");
+    expect(reads).toBe(2);
+    expect(peekPaneConversation(pane, "local", 10)).toBe(answer);
+  });
+
+  it("draws no page a replaced herdr's pane of the same ID read, nor one of a pane the roster stopped listing", async () => {
+    globalThis.fetch = (async (_url: string) => Response.json({ source: "claude-transcript", history_id: "h", cursor: null, turns: [] }, { headers: { etag: '"h"' } })) as typeof fetch;
+    const roster = (lifetime: string, panes: string[]) => observePaneSessions([{ id: "local", snapshot: { herdr_lifetime: lifetime, panes: panes.map((pane_id) => ({ pane_id, agent: "claude", agent_session: null })) } }]);
+    roster("one", ["peek:reused", "peek:gone"]);
+    await fetchPaneConversation("peek:reused", "local", { prompts: 10 });
+    await fetchPaneConversation("peek:gone", "local", { prompts: 10 });
+    roster("one", ["peek:reused"]);
+    expect(peekPaneConversation("peek:gone", "local", 10)).toBeUndefined();
+    expect(peekPaneConversation("peek:reused", "local", 10)).toBeDefined();
+    roster("two", ["peek:reused"]);
+    expect(peekPaneConversation("peek:reused", "local", 10)).toBeUndefined();
+  });
+
+  it("keeps the pages of the session a pane moved to when a read of the one it left is rejected", async () => {
+    const held = Promise.withResolvers<void>();
+    globalThis.fetch = (async (url: string) => {
+      if (new URL(url, "http://fixture").searchParams.has("from")) {
+        await held.promise;
+        return Response.json({ error: { code: "history_changed", message: "reload" } }, { status: 409 });
+      }
+      return Response.json({ source: "claude-transcript", history_id: "session-b", cursor: null, turns: [] }, { headers: { etag: '"session-b"' } });
+    }) as typeof fetch;
+    const roster = (value: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "peek:stale-409", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value } }] } }]);
+    roster("a");
+    const rejected = fetchPaneConversation("peek:stale-409", "local", { from: "session-a:40", history_id: "session-a", prompts: 10 });
+    roster("b");
+    const plain = await fetchPaneConversation("peek:stale-409", "local", { prompts: 10 });
+    held.resolve();
+    await expect(rejected).rejects.toBeInstanceOf(ApiError);
+    expect(peekPaneConversation("peek:stale-409", "local", 10)).toBe(plain);
   });
 
   it("never hands back an older page", async () => {

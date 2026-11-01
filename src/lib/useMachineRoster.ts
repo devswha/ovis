@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { DevicePairedEvent, Machine, MachineEvent } from "../../shared/machines.ts";
-import { ApiError, authenticate, fetchMachines, observePaneSessions, verifySourceBoot } from "./api.ts";
+import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionsMoving, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepEventStream } from "./eventStream.ts";
 import { receiveSeen } from "./seenFinishes.ts";
@@ -243,7 +243,11 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
         setNotificationViewTarget(null); setTerminalPeek(null);
         setAutoSelected(true);
       }
-      if (message.type === "session-changed" || message.type === "pane-exited") scheduleRefetch();
+      if (message.type === "session-changed" || message.type === "pane-exited") {
+        // until the roster after it comes, the panes' sessions are not known: no press read of the old one is taken
+        paneSessionsMoving(machine.id);
+        scheduleRefetch();
+      }
     };
     return keepEventStream("/api/machines/events", {
       // opened or reopened: a shared-settings save paused by failures gets a new round

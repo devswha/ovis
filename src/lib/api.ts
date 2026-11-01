@@ -494,11 +494,30 @@ export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">)
   return `${pane.agent ?? ""}\u0000${pane.agent_session?.value ?? ""}`;
 }
 
-/** Takes every pane's session from a roster as it arrives, before any chat renders from it. */
-export function observePaneSessions(machines: readonly { id: string; snapshot: { panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[]): void {
+/**
+ * Takes every pane's session from a roster as it arrives, before any chat renders from it. A herdr that
+ * replaced another reuses its pane IDs, so the session is the herdr's too; a pane the roster no longer
+ * lists has none.
+ */
+export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[]): void {
   for (const machine of machines) {
-    for (const pane of machine.snapshot?.panes ?? []) paneSessions.set(paneKey(pane.pane_id, machine.id), paneSessionKey(pane));
+    if (machine.snapshot === null) continue;
+    const listed = new Set<string>();
+    for (const pane of machine.snapshot.panes) {
+      const key = paneKey(pane.pane_id, machine.id);
+      listed.add(key);
+      paneSessions.set(key, `${machine.snapshot.herdr_lifetime ?? ""}\u0000${paneSessionKey(pane)}`);
+    }
+    for (const key of paneSessions.keys()) if (key.startsWith(paneKey("", machine.id)) && !listed.has(key)) paneSessions.delete(key);
   }
+}
+
+/**
+ * The PC says its panes changed (a session-changed or pane-exited event) before the roster that
+ * names them comes: a press read on it may be of a session a pane has left, so none is taken.
+ */
+export function paneSessionsMoving(machineId: string): void {
+  for (const [url, pressed] of pressReads) if (pressed.pane.startsWith(paneKey("", machineId))) pressReads.delete(url);
 }
 
 /** The cached answer at `url`, while its pane is still on the session it was read for; one from another session is dropped. */
@@ -537,7 +556,7 @@ export function peekPaneConversation(paneId: string, machineId = "local", prompt
 }
 
 /** A newest-page read a press started, the pane's session it was read for, and its answer once it came. */
-interface PressRead { at: number; session: string | undefined; read: Promise<ConversationResponse>; answer?: ConversationResponse }
+interface PressRead { at: number; pane: string; session: string | undefined; read: Promise<ConversationResponse>; answer?: ConversationResponse }
 /**
  * Newest-page reads a press started (prefetchPaneConversation), by page URL without the history:
  * the chat the press opens takes its mount read from here instead of asking again. Each one is
@@ -569,7 +588,7 @@ export function prefetchPaneConversation(paneId: string, machineId: string, prom
   // the mount read names the history of the cached answer it drew (ChatView's peek)
   const cached = currentAnswer(url, pane)?.body;
   const historyId = cached?.source === "scrollback" ? undefined : cached?.history_id;
-  const pressed: PressRead = { at: performance.now(), session: paneSessions.get(pane), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true }) };
+  const pressed: PressRead = { at: performance.now(), pane, session: paneSessions.get(pane), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true }) };
   // a press that was a scroll leaves it untaken; a read that takes it still gets its failure
   pressed.read.then((answer) => { pressed.answer = answer; }, () => undefined);
   pressReads.set(url, pressed);
@@ -604,7 +623,8 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
     return { response, body: (await response.json()) as ConversationResponse };
   }, chatReadDeadlineMs(machineId)).catch((cause: unknown) => {
     // a rejected history is the pane's, whatever page size it was read at: none of its pages may draw again
-    if (cause instanceof ApiError && cause.status === 409) {
+    // (unless the pane has moved on to another session since: that one's pages are not the rejected history's)
+    if (cause instanceof ApiError && cause.status === 409 && paneSessions.get(pane) === session) {
       for (const [cached, answer] of conversationAnswers) if (cached === url || answer.pane === pane) conversationAnswers.delete(cached);
     }
     throw cause;
@@ -615,8 +635,9 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   if (ownsPlain) lastNewestRead.delete(plain);
   if (polled && lastNewestRead.get(url) !== read) return body;
   if (polled) lastNewestRead.delete(url);
-  // the pane is on another session than the one this read was sent for: the answer is its caller's, never the cache's
-  if (paneSessions.get(pane) !== session) return body;
+  // the pane went to another session while this read was out: its answer is the session left behind,
+  // so the newest page is read again for the session the pane is on now; it is never the cache's
+  if (paneSessions.get(pane) !== session) return polled ? fetchPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true }) : body;
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
     conversationAnswers.set(url, known);
