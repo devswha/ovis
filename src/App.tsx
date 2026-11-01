@@ -4,7 +4,7 @@ import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Searc
 import type { HerdrPane } from "../shared/protocol.ts";
 import { authenticate, createTab, moveTabToWorkspace, shareSeen, swapPaneWith } from "./lib/api.ts";
 import { layoutActions } from "./lib/layoutActions.ts";
-import { displayPaneTitle, storedWorktreeCollapsed } from "./components/Sidebar.tsx";
+import { displayPaneTitle, storedWorktreeCollapsed, tabPaneTitle } from "./components/Sidebar.tsx";
 import { endSignIn } from "./lib/signOut.ts";
 import { PaneCanvas } from "./components/PaneCanvas.tsx";
 import { MachineSessionsProvider } from "./lib/machineSessionContext.tsx";
@@ -381,9 +381,10 @@ export function App() {
     ? headerCrumb({ machine: selectedMachine?.name ?? selectedMachineId, machineCount: machines.length, workspace: selectedWorkspace?.label ?? selectedPane.workspace_id, title: selectedTitle, cwd: selectedPane.cwd })
     : null;
 
+  const tabTitle = selectedPane ? tabPaneTitle(selectedPane) : null;
   useEffect(() => {
-    document.title = selectedTitle ? `${selectedTitle} · Ovis` : APP_TITLE;
-  }, [selectedTitle]);
+    document.title = tabTitle ? `${tabTitle} · Ovis` : APP_TITLE;
+  }, [tabTitle]);
 
   // A new tab's workspace: the named one, else the selected pane's. Its folder is the workspace's:
   // a worktree's checkout, else where the pane in front (the selected one, else the one herdr has
