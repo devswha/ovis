@@ -10,7 +10,7 @@ import { useResourceUrlState } from "../useResourceUrl.ts";
 import type { ResourceUrlState } from "../useResourceUrl.ts";
 import type { RelayChannelOptions } from "./channel.ts";
 import { isFatalRelayError, openRelayTransport, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
-import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { RelayResourceTooLargeError } from "./resources.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -194,6 +194,59 @@ it("sends a request body where the browser has no Request.body, as Firefox", asy
   expect(await response.text()).toBe('{"a":1}');
 });
 
+/** A browser without Request.body (Firefox) for the page's requests: their body reads are counted and wait for `hold`. */
+function firefoxRequests(hold: Promise<void> = Promise.resolve()) {
+  const native = globalThis.Request;
+  const reads = { count: 0 };
+  // only the page's requests (relay.ovis.invalid addresses) lack it: the PC in this process keeps its own
+  const page = (url: string): boolean => url.startsWith("https://relay.ovis.invalid/");
+  globalThis.Request = class extends native {
+    override get body() { return page(this.url) ? undefined as unknown as null : super.body; }
+    override async arrayBuffer(): Promise<ArrayBuffer> { if (page(this.url)) { reads.count++; await hold; } return super.arrayBuffer(); }
+    override async blob(): Promise<Blob> { if (page(this.url)) { reads.count++; await hold; } return super.blob(); }
+  };
+  cleanups.push(() => { globalThis.Request = native; });
+  return reads;
+}
+
+it("never sends a Firefox request on a carrier that reconnected while its body was read", async () => {
+  // Given a browser without Request.body, and a prompt answer whose body is still being read
+  const held = deferred<void>();
+  const reads = firefoxRequests(held.promise);
+  const requested: string[] = [];
+  const f = await fixture({ dispatch: async (request) => {
+    requested.push(new URL(request.url).pathname);
+    return Response.json({ ok: true });
+  } });
+  const answer = f.transport.fetch("/api/pane/prompt/answer", { method: "POST", body: '{"custom_text":"typed answer"}' })
+    .catch((error: unknown) => error);
+  expect(reads.count).toBe(1);
+  // When the carrier drops and a new one opens before the read finishes
+  await f.drop();
+  await f.transport.connect();
+  expect(f.connections).toHaveLength(2);
+  held.resolve();
+  // Then the answer fails as not sent, and only what is asked on the new carrier reaches the PC
+  expect(await bounded(answer)).toBeInstanceOf(TypeError);
+  expect((await f.transport.fetch("/api/after")).status).toBe(200);
+  expect(requested).toEqual(["/api/after"]);
+});
+
+it("refuses a Firefox request body without reading it when no carrier is up or it is over the request limit", async () => {
+  // Given a browser without Request.body
+  const reads = firefoxRequests();
+  let requests = 0;
+  const f = await fixture({ dispatch: async () => { requests++; return new Response(null); } });
+  // When a body over the PC's request limit is posted, and then a small one while the carrier is down
+  const big = new Blob([new Uint8Array(LIMITS_V1.max_request_body_bytes + 1)]);
+  await expect(f.transport.fetch("/api/upload", { method: "POST", body: big })).rejects.toBeInstanceOf(TypeError);
+  await f.drop();
+  await expect(f.transport.fetch("/api/upload", { method: "POST", body: "small" })).rejects.toBeInstanceOf(TypeError);
+  // Then neither body was read, and neither request reached the PC
+  expect(reads.count).toBe(0);
+  expect(requests).toBe(0);
+});
+
 it("rejects an upload on carrier loss with TypeError and aborts the server handler", async () => {
   // Given an upload whose handler has read a chunk but has not returned headers.
   const reading = deferred<void>();
@@ -326,6 +379,24 @@ it("dispatches property handlers at their native listener position and copies bi
   const received = (await echoed).data;
   expect(received).toBeInstanceOf(ArrayBuffer);
   expect([...new Uint8Array(received)]).toEqual([9, 10]);
+});
+
+it("fails a websocket whose unsent messages pass the send queue bound instead of queueing them", async () => {
+  // Given an open socket
+  const f = await fixture({ onWs: (stream) => stream.accept() });
+  const socket = f.transport.openSocket("/ws");
+  await opened(socket);
+  const events: string[] = [];
+  socket.onerror = () => events.push("error");
+  const end = closed(socket);
+  // When one synchronous burst sends more than the bound
+  const chunk = new Uint8Array(1024 * 1024);
+  for (let index = 0; index < 5; index++) socket.send(chunk);
+  // Then the socket fails at once, as a browser's does when its send buffer is full
+  expect(socket.readyState).toBe(socket.CLOSING);
+  expect(await end).toMatchObject({ code: 1006, wasClean: false });
+  expect(events).toEqual(["error"]);
+  expect(socket.bufferedAmount).toBe(5 * chunk.length);
 });
 
 it("fails a refused websocket handshake with error before abnormal close", async () => {
