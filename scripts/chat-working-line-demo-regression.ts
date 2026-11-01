@@ -202,8 +202,42 @@ try {
       assert.ok(answered.length > 0, "the answer is drawn");
       assert.deepEqual(answered.filter((frame) => frame.footer.length > 0).map((frame) => frame.footer), [],
         "no Working head stands under the answer while the status catches up with it");
-      assert.deepEqual(errors, []);
       console.log("PASS a turn's answer drawn 300 ms before the pane rests has no Working head under it");
+
+      // The agent works on by itself long enough for its head to show, and its next turn is read in
+      // already finished, while herdr still says working. The wait runs again for that new turn: no
+      // head stands under its answer either.
+      const answeredTurns: ConversationTurn[] = [asked, { role: "assistant", ts: null, parts: [
+        { kind: "tool", name: "Bash", summary: "ls shelves", input: JSON.stringify({ command: "ls shelves" }), output: "a b c", call_id: "shelves", state: "ok" },
+        { kind: "text", text: "There are three shelves.", phase: "final_answer" },
+      ] }];
+      await status(page, panes.flaky, "working");
+      await flaky.locator(".chat-activity", { hasText: "Working…" }).waitFor();
+      await painted(page);
+      await record(page, panes.flaky);
+      const restedAgain = page.evaluate(([id, answer]) => new Promise<void>((done) => {
+        const drawn = (): void => {
+          if (!document.querySelector(`.pane-frame[data-layout-pane="${id}"]`)?.textContent?.includes(answer!)) { requestAnimationFrame(drawn); return; }
+          setTimeout(() => {
+            (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id!, "idle");
+            done();
+          }, 300);
+        };
+        requestAnimationFrame(drawn);
+      }), [panes.flaky, "Shelf b holds the atlas."]);
+      await addTurns(page, panes.flaky, [...answeredTurns,
+        { role: "user", ts: null, parts: [{ kind: "text", text: "Which shelf holds the atlas?" }] },
+        { role: "assistant", ts: null, parts: [{ kind: "text", text: "Shelf b holds the atlas.", phase: "final_answer" }] },
+      ]);
+      await restedAgain;
+      await flaky.locator(".chat-activity").waitFor({ state: "detached" });
+      await painted(page);
+      const next = (await stop(page)).filter((frame) => frame.lastRow.includes("Shelf b holds the atlas."));
+      assert.ok(next.length > 0, "the next answer is drawn");
+      assert.deepEqual(next.filter((frame) => frame.footer.length > 0).map((frame) => frame.footer), [],
+        "no Working head stands under a turn read in already finished, after the last one's wait ran out");
+      assert.deepEqual(errors, []);
+      console.log("PASS a turn read in already finished waits its own lag: no Working head under its answer");
       await context.close();
     } finally { await browser.close(); }
   } finally { server.stop(); }

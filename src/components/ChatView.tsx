@@ -2083,13 +2083,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // began by itself with no row yet. The next turn's head waits out the lag, so none flashes under
   // each answer. A send from here has its turn on the way, and its head shows at once.
   const afterAnswer = workStatus === "working" && lastShownTurn?.role === "assistant" && lastShownTurn !== finishedBeforeSend && endedOnAnswer(lastShownTurn);
-  const [answerLagOut, setAnswerLagOut] = useState(false);
+  // the wait runs for that finished turn, named by its start (no later read of it changes that): a new
+  // turn read in already finished waits its own, and the frame it first shows in draws no head
+  const answerTurn = afterAnswer && lastShownTurn !== undefined ? lastShownTurn.ts ?? chatTurnAnchor(lastShownTurn) : null;
+  const [lagOutFor, setLagOutFor] = useState<string | null>(null);
   useEffect(() => {
-    setAnswerLagOut(false);
-    if (!afterAnswer) return;
-    const timer = window.setTimeout(() => setAnswerLagOut(true), ANSWER_STATUS_LAG_MS);
+    if (answerTurn === null) { setLagOutFor(null); return; }
+    const timer = window.setTimeout(() => setLagOutFor(answerTurn), ANSWER_STATUS_LAG_MS);
     return () => window.clearTimeout(timer);
-  }, [afterAnswer, paneId]);
+  }, [answerTurn, paneId]);
+  const answerLagOut = answerTurn !== null && lagOutFor === answerTurn;
   const empty = state.source === "conversation" ? turns.length === 0 : agent === null && state.messages.length === 0;
   const blank = !ended && chatIsBlank({ loaded, failed: error !== null, transcript: state.source === "conversation", turns: turns.length, older: typeof olderCursor === "string", abandoned: abandoned?.count ?? 0, prompt: prompt !== null, agent });
   // the scrollback standing in says nothing of the conversation: it has no history to compare
