@@ -7,6 +7,7 @@ import { ApiError, requestRelayOffer, startPairing, type RelayOffer } from "../l
 import { useT } from "../lib/i18n.ts";
 import { announcePairingCode, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
+import { decodeOffer } from "../../shared/relay-offer.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
@@ -114,6 +115,13 @@ export function RelayPairing() {
       if (cancelled) return;
       setOffer(next);
       setState("live");
+      // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
+      // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)
+      const code = decodeOffer(next.url)?.code;
+      if (code !== undefined) {
+        announcing.current = true;
+        try { announcePairingCode({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
+      }
     }, (reason: unknown) => {
       if (cancelled) return;
       setOffer(null);

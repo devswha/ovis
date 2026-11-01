@@ -3071,7 +3071,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   code; every QR code is in this dialog. A segmented control picks one way at a time: **Ovis
   relay** (where the server has the route and this is not the hosted shell), **Tailscale** and
   **Pairing code** (not for a Portal visitor). It opens on Tailscale once Tailscale already
-  serves this PC or the page is on its HTTPS address, otherwise on the relay, whose route then
+  serves this PC or the page is on its HTTPS address, or the relay is not offered here, otherwise
+  on the relay, whose route then
   starts with one line saying it is recommended (works from anywhere, nothing to install on the
   phone). The relay route is the relay's state sentence, the gate condition, **Turn on the relay**
   (or **Try again** after a start that failed) while it is off, and the pairing offer once it is
@@ -3085,7 +3086,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pairing grants, the README links) wait behind one accent **How it works** under a hairline.
   Devices' **Pair a device** opens the dialog on the pairing code with a code started, as the
   button always did, and the dialog closes by itself once the Devices group sees the device the
-  code let in, its "Paired" line then in the list. The relay's switch, its reset and the device
+  code let in, its "Paired" line then in the list. The relay's offer announces its code as well,
+  the first one the server made included, so a phone paired through the relay closes it too. The relay's switch, its reset and the device
   list stay on the page. The precedent is Paseo's desktop Settings, where the host's **Pair a
   device** opens the pairing flow, with Enable relay and the QR code there rather than inline
   ([docs](https://paseo.sh/docs/connectivity)); this differs in keeping the relay's switch on the

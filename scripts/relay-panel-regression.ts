@@ -201,6 +201,25 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.notEqual(rotated.server_public_key, offered.server_public_key);
     await qr.waitFor();
     await closeSheet();
+    // a phone pairs with the code of a fresh page's first offer, the one the server made with no code started on
+    // the page: the page watches that code too, so the dialog closes and the Devices group names the phone
+    await openPhoneSettings(page, fixture.origin);
+    await state.filter({ hasText: "Online. No phone connected." }).waitFor();
+    const firstOfPage = offerAnswer();
+    await connect.click();
+    await sheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
+    const pageOffer = decodeOffer(((await (await firstOfPage).json()) as { url: string }).url);
+    assert.ok(pageOffer !== null && pageOffer.code !== undefined, "the fresh page's offer carries a pairing code");
+    await qr.waitFor();
+    const relayPaired = await fetch(`${fixture.origin}/api/devices/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
+      body: JSON.stringify({ code: pageOffer.code, label: "Relay phone" }),
+    });
+    assert.equal(relayPaired.status, 204, "the phone paired with the offer's code");
+    await sheet.waitFor({ state: "detached" });
+    await dialog.locator('[data-section="devices"]').getByText("Paired: Relay phone.", { exact: true }).waitFor();
+    await state.filter({ hasText: "Online." }).waitFor();
 
     // Even a Portal visitor with a saved drive role cannot control the relay (owner_only).
     const visitorContext = await englishContext(browser);
