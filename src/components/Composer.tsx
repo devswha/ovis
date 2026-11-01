@@ -20,6 +20,7 @@ import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashC
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDrafts } from "../lib/composerDraft.ts";
+import { onQuoted } from "../lib/chatQuote.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -631,6 +632,16 @@ export function Composer({
     element.selectionStart = element.selectionEnd = clampedCaret;
     if (activeRef.current) element.focus();
   }, []);
+
+  // a quote taken from the chat (lib/chatQuote.ts) is in the draft already: the caret goes after it, the keyboard here
+  useEffect(() => onQuoted(paneStorageId(machineId, paneId), () => {
+    const quoted = composerDrafts.read(draftKey).text;
+    setTextAndCaret(quoted, quoted.length);
+    const element = textareaRef.current;
+    if (!element) return;
+    element.focus({ preventScroll: true });
+    element.scrollTop = element.scrollHeight;
+  }), [draftKey, machineId, paneId, setTextAndCaret]);
 
   // an upload finishes while the user may be typing: its mention goes to the start (insertLeadingMention),
   // and the caret and selection only move along with the text they sit in, without taking focus
