@@ -183,6 +183,8 @@ export interface ChatViewProps {
   ended: boolean;
   agent: string | null;
   agentStatus?: AgentStatus;
+  /** the pane's session as the roster names it (api.ts paneSessionKey): an answer drawn for the session before is read again */
+  agentSession?: string | null;
   onMetadata?: (paneId: string, metadata: ConversationMetadata | null) => void;
   /** what the last read says of the conversation, for the composer's greeting; null while nothing is known (loading, a failed read, the chat gone) */
   onRead?: (paneId: string, read: ChatRead | null) => void;
@@ -1214,7 +1216,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, quotable = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, quotable = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1387,6 +1389,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const seenSent = useRef(sentKey);
   const seenUnsent = useRef(unsentKey);
   const seenStatus = useRef<{ pane: string; status: AgentStatus | undefined }>({ pane: paneId, status: agentStatus });
+  const seenSession = useRef({ pane: paneId, session: agentSession });
   const seenConnected = useRef(connected);
   /** the socket has been connected since this pane showed: only then is a connected edge a reconnect */
   const wasConnected = useRef(connected);
@@ -1491,6 +1494,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     seenStatus.current = { pane: paneId, status: agentStatus };
     if (seen.pane === paneId && statusEdgeRead(seen.status, agentStatus)) setPollKey((key) => key + 1);
   }, [paneId, agentStatus]);
+  // herdr moved the pane to another session: what the chat shows (a press read taken while the roster
+  // still named the old one) is that session's, so the newest page is read now, not at the next push
+  useEffect(() => {
+    const seen = seenSession.current;
+    seenSession.current = { pane: paneId, session: agentSession };
+    if (seen.pane === paneId && seen.session !== agentSession) setPollKey((key) => key + 1);
+  }, [paneId, agentSession]);
 
   useEffect(() => {
     if (!visible) return;

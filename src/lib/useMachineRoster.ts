@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { DevicePairedEvent, Machine, MachineEvent } from "../../shared/machines.ts";
-import { ApiError, authenticate, fetchMachines, verifySourceBoot } from "./api.ts";
+import { ApiError, authenticate, fetchMachines, observePaneSessions, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepEventStream } from "./eventStream.ts";
 import { receiveSeen } from "./seenFinishes.ts";
@@ -92,6 +92,8 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
       await snapshotRequests.current.read(fetchMachines, (next) => {
         // a PC whose herdr was replaced leaves its panes' drafts and lenses before they are drawn
         paneLifetimes.observe(next, displayPaneTitle);
+        // a pane's conversation answers stand for the session it was on: the chats read this roster's
+        observePaneSessions(next);
         reorderCoordinator.roster(next, { kind: "load", started });
         setMachines((previous) => sameData(previous, next) ? previous : next);
         rosterIn();
@@ -199,6 +201,7 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
       snapshotRequests.current.invalidate();
       if (payload.type === "machines") {
         paneLifetimes.observe(payload.machines, displayPaneTitle);
+        observePaneSessions(payload.machines);
         onRoster(payload.machines);
         reorderCoordinator.roster(payload.machines, { kind: "event" });
         setMachines((previous) => sameData(previous, payload.machines) ? previous : payload.machines);

@@ -57,6 +57,8 @@ try {
   /** the cursor an older page answers with: null ends the history there */
   let olderNext: string | null = null;
   let product = false;
+  /** the session herdr has the "local/switch" pane on: its history and the turn it shows */
+  let switchSession = "A";
   let unavailable = false, terminalFails = false;
   let readPending = false, gapPending = false;
   let holdTerminal = false;
@@ -77,7 +79,9 @@ try {
     if (product) {
       const pane = url.searchParams.get("pane_id") ?? url.searchParams.get("pane") ?? "";
       const key = `${/\/api\/machines\/([^/]+)\//.exec(url.pathname)?.[1] ?? "local"}/${pane}`;
-      const answer = (status: number) => status === 200
+      const answer = (status: number) => status === 200 && key === "local/switch"
+        ? route.fulfill({ json: { source: "claude-transcript", history_id: `switch-${switchSession}`, cursor: null, turns: [user(`session ${switchSession}`)] }, headers: { etag: `"switch-${switchSession}"` } })
+        : status === 200
         ? route.fulfill({ json: key === "local/agy" ? { source: "agy-transcript", history_id: "synthetic-agy-session", cursor: null, turns: parseAgyTranscript([
           { step_index: 0, type: "USER_INPUT", status: "DONE", content: "Summarize the last three fictional commits." },
           { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [{ name: "run_command", args: { CommandLine: "git log -3 --oneline" } }] },
@@ -428,6 +432,16 @@ try {
   await page.getByText("Fictional commit log", { exact: true }).waitFor();
   assert.equal(await page.getByText("Synthetic Claude prompt", { exact: true }).count(), 0);
   console.log("PASS Agy native parser output renders user/assistant text and independent expandable tool results");
+  // A press reads a chat before its pick renders (#2562). herdr moves the pane to another session after
+  // that read answered and before the click lands: the chat opened shows the new session, never the old one.
+  await page.evaluate(() => { window.qa.session("switch", "a"); window.qa.press("switch"); });
+  await page.waitForFunction(() => window.qa.answered.includes("local/switch"));
+  switchSession = "B";
+  await page.evaluate(() => window.qa.session("switch", "b"));
+  await select("switch", "local", "claude");
+  await page.getByText("session B", { exact: true }).waitFor();
+  assert.ok((await page.evaluate(() => window.qa.commits)).every((turns) => !turns.some((turn) => turn.includes("session A"))), "a chat opened on session B never drew the press read of session A");
+  console.log("PASS a press read of the session herdr left is neither drawn nor taken by the chat it opens");
   assert.deepEqual(errors, []);
   console.log("PASS synthetic Devin bubbles and tools render; switching to Claude clears Devin history");
   console.log("PASS product pane commits across A→B→A, another PC, and late or failed answers");

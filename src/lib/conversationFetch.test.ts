@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 
-import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
+import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, observePaneSessions, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
 import { ConversationRefresh } from "./conversationRefresh.ts";
 import type { ConversationResponse } from "../../shared/protocol.ts";
 
@@ -251,6 +251,35 @@ describe("conversation read started by a press", () => {
     expect(sent).toHaveLength(5);
   });
 
+  it("is taken only while the roster names the session it was read for: a pane on another one asks the server", async () => {
+    const sent: string[] = [];
+    const histories = new Map<string, string>([["press:same", "session-a"], ["press:switched", "session-a"]]);
+    globalThis.fetch = (async (url: string) => {
+      const pane = new URL(url, "http://fixture").searchParams.get("pane_id")!;
+      sent.push(pane);
+      const history = histories.get(pane)!;
+      return Response.json({ source: "claude-transcript", history_id: history, cursor: null, turns: [] }, { headers: { etag: `"${history}"` } });
+    }) as typeof fetch;
+    const roster = (switched: string) => observePaneSessions([{ id: "local", snapshot: { panes: [
+      { pane_id: "press:same", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "a" } },
+      { pane_id: "press:switched", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: switched } },
+    ] } }]);
+    roster("a");
+    for (const pane of histories.keys()) {
+      prefetchPaneConversation(pane, "local", 10);
+      await heldPast(pane);
+    }
+    // herdr moves one pane to session B between the press read's answer and the click
+    histories.set("press:switched", "session-b");
+    roster("b");
+    const same = await mount("press:same");
+    expect(same.read.history_id).toBe("session-a");
+    const switched = await mount("press:switched");
+    expect(switched.drawn).toBeUndefined();
+    expect(switched.read.history_id).toBe("session-b");
+    expect(sent).toEqual(["press:same", "press:switched", "press:switched"]);
+  });
+
   it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
     const answers: ((history: string) => void)[] = [];
     globalThis.fetch = (async (_url: string) => {
@@ -307,6 +336,39 @@ describe("conversation peek", () => {
     const held = await fetchPaneConversation("peek:held", "local", { from: "h:2", history_id: "h", prompts: 10 });
     // a chat opened again draws what the open one last showed
     expect(peekPaneConversation("peek:held", "local", 10)).toBe(held);
+  });
+
+  it("keeps a held page that answers after a newer newest-page read out of the page a chat opened again draws", async () => {
+    const held = Promise.withResolvers<void>();
+    globalThis.fetch = (async (url: string) => {
+      const from = new URL(url, "http://fixture").searchParams.get("from");
+      if (from === null) return Response.json({ source: "claude-transcript", history_id: "session-b", cursor: null, turns: [] }, { headers: { etag: '"session-b"' } });
+      await held.promise;
+      return Response.json({ source: "claude-transcript", history_id: "session-a", cursor: from, turns: [] }, { headers: { etag: '"session-a-held"' } });
+    }) as typeof fetch;
+    // the chat on session A held its start and unmounted with that read in flight; the pane went to B
+    const late = fetchPaneConversation("peek:late-held", "local", { from: "session-a:40", history_id: "session-a", prompts: 10 });
+    const plain = await fetchPaneConversation("peek:late-held", "local", { prompts: 10 });
+    held.resolve();
+    expect((await late).history_id).toBe("session-a");
+    expect(peekPaneConversation("peek:late-held", "local", 10)).toBe(plain);
+  });
+
+  it.each([{ from: "session-a:40" }, {}])("keeps no answer read for a session the pane has left: %o", async (page) => {
+    const pane = `peek:left-${Object.keys(page).length}`;
+    const answer = Promise.withResolvers<void>();
+    globalThis.fetch = (async (_url: string) => {
+      await answer.promise;
+      return Response.json({ source: "claude-transcript", history_id: "session-a", cursor: "session-a:40", turns: [] }, { headers: { etag: '"session-a"' } });
+    }) as typeof fetch;
+    const roster = (value: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: pane, agent: "codex", agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value } }] } }]);
+    roster("a");
+    const read = fetchPaneConversation(pane, "local", { ...page, prompts: 10 });
+    roster("b");
+    answer.resolve();
+    // the caller still gets its answer; the cache does not hand it to a chat of session B
+    expect((await read).history_id).toBe("session-a");
+    expect(peekPaneConversation(pane, "local", 10)).toBeUndefined();
   });
 
   it("never hands back an older page", async () => {
