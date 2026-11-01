@@ -698,20 +698,31 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
   order and names; every terminal block in a tab is a pane. A terminal no tab holds (a worker an
   agent started, one from `hc run`) has a tab of its own under **Other terminals**.
+- **New and Close:** **New workspace**, **New tab**, a new terminal and **New tab with agent**
+  start a shell that herdr-core keeps, labeled so the Herdr app takes it into that space and tab;
+  it shows there even before the app does. Ovis never writes the app's own names, so a name you
+  type is kept on the terminal and shown while the app has no name of its own for that space or
+  tab. **Close** ends every terminal of the pane, tab or workspace, and the app drops them. Terminals under **Other terminals** are closed one by one.
+- **Starting an agent:** the agent's command is typed into the pane's shell, so it starts only
+  in a pane that runs a plain shell of its own (sh, bash, dash, zsh, ksh, mksh, ash or fish), and
+  only while nothing else runs in front of it. A pane the app started with a program directly
+  cannot take one.
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
-  agent that reports none shows no status. `error` counts as finished.
-- **Terminal:** the live view is `hc attach`, input and the key bar work as on herdr, and the
-  terminal takes the size of the viewer that last typed in it or resized it: the app's window, or
-  your phone once you type or open it there.
+  agent that reports none shows no status. A turn is done only when the program itself reports
+  its turn finished (`done`, or `working` then `idle`); `error` shows no status.
+- **Terminal:** the live view streams over the server's own connection to herdr-core, input and
+  the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
+  it or resized it: the app's window, or your phone once you type or open it there.
 - **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
   not kept current behind your back. A recent tab you switch away from keeps its last screen until
   you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
   window, and after a reconnect a tab attaches again at once.
 - **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
   empty input box reads as typed text, and a send waits for you to confirm it.
-- **Not on herdr-core:** making, rearranging, renaming or closing workspaces, tabs, splits and
-  panes, which belong to the app's window; search and scrollback selection in a pane; plugins and
-  worktrees. Remote PCs keep running herdr's TUI server.
+- **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
+  splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
+  those actions on such a PC. Search and scrollback selection in a pane, plugins and worktrees
+  are not available either. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 
@@ -737,7 +748,7 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
 | `OVIS_HERDR_BIN` | `herdr` | herdr executable used for terminal attach |
 | `OVIS_RUNTIME` | `herdr` | `herdr-core` shows the terminals of [herdr-core](https://herdr.dev/core) (`hc`), the core the Herdr desktop app runs on, instead of herdr's TUI server: see [Herdr app terminals](#herdr-app-terminals) |
-| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`, for its connection and for terminal attach. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
+| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`: the server runs it as its one `hc connect`, which also carries the live terminals. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
 | `OVIS_SSH` | `ssh` (Git for Windows' on Windows) | OpenSSH client for [remote PCs](#remote-pcs-over-ssh); the `sftp` and `ssh-keygen` beside it are used too |
 | `OVIS_APP_NAME` | unset (`Ovis`) | The name the installed app has on a phone or computer, for example the PC's name. Each PC installs as an app of its own, and without it they are all called `Ovis`. An app already installed takes the new name when the browser next updates it, usually within a day or two, without a reinstall. Keep it short: a home screen cuts a long label |
 | `OVIS_PASTE_DIR` | `<pane cwd>/.ovis` | Where pasted and attached files are saved: an absolute path or `~/…`. Set it to keep them out of your projects; an agent may then ask before reading one. It covers the panes of this server's PC; a remote PC keeps the default |
@@ -893,7 +904,8 @@ A React client talks to a Bun HTTP/WebSocket server.
 herdr owns the processes and the scrollback.
 
 With `OVIS_RUNTIME=herdr-core`, the server answers herdr's socket API itself from herdr-core
-(`server/herdr-core/`), through one `hc connect`, and attaches with `hc attach`.
+(`server/herdr-core/`), through one `hc connect`, and streams the live terminals over that same
+connection.
 
 ## FAQ
 
