@@ -1047,12 +1047,13 @@ const time = (value: string | null): number => value === null ? 0 : Date.parse(v
  * that does not leaves what was running as lost, ended when last heard of. `since`: when the
  * Claude process there started, when known; an agent last written before it died with the
  * process before (a resumed session appends to the same files). `settled`: nothing was left
- * unread, so the same answer stands until a file changes.
+ * unread, so the same answer stands until a file changes. `behind`: an agent file was left unread
+ * for the read budget while this call read on, so another call reads further.
  */
 /** what each session's last read said of each agent: kept while the transcript is read in parts */
 const previous = new Map<string, Map<string, OmoTask>>();
 
-export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
+export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
   const files = agentIds(parentPath).flatMap((id) => {
     const stat = plain(join(dir, `agent-${id}.jsonl`));
@@ -1061,8 +1062,9 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
-  if (parent === null && files.length === 0) return { tasks: [], settled: true, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
+  if (parent === null && files.length === 0) return { tasks: [], settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   const budget = { left: READ_BUDGET };
+  let behind = false;
   const running: OmoTask[] = [];
   const ended: OmoTask[] = [];
   const promptAt = parent?.promptAt ?? null;
@@ -1075,6 +1077,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   for (const { id, stat } of files) {
     const meta = readMeta(join(dir, `agent-${id}.meta.json`));
     const work = scanWork(join(dir, `agent-${id}.jsonl`), budget);
+    if (work?.behind) behind = true;
     if (work !== null) sources.push(work.commands);
     // a file caught while it is written says nothing yet, and what was worked out without it is not final
     if (meta === null || work === null) { settled = false; continue; }
@@ -1156,7 +1159,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   ended.sort((a, b) => last(b) - last(a));
   // read to its end only: a part not read yet may hold the next turn
   const resting = parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
-  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
+  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
 
   function keep(task: OmoTask, dispatched = time(task.started_at)): void {
     all.set(task.id, task);
@@ -1172,6 +1175,23 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
 }
 
 export const claudeSubagents = (parentPath: string, live: boolean, now = Date.now(), since: number | null = null): OmoTask[] => claudeSubagentState(parentPath, live, now, since).tasks;
+
+/**
+ * The list as a file thread gives it (`file-tasks.ts`): the thread's caches start cold, and it runs
+ * off the event loop under the long-task deadline, so it reads on, a budget at a time, until neither
+ * an agent file nor the transcript is left behind. Its first answer then has the counts a warm read
+ * has. It reads on only while a pass read something, so the loop ends; and only until `until` (by
+ * `clock`), so a huge session answers with what it read so far inside its deadline.
+ */
+export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, until = Infinity, clock: () => number = Date.now): OmoTask[] {
+  for (;;) {
+    const from = parents.get(parentPath)?.offset;
+    const state = claudeSubagentState(parentPath, live, now, since);
+    const parent = parents.get(parentPath);
+    const parentBehind = parent !== undefined && parent.behind && parent.offset !== from;
+    if (!(state.behind || parentBehind) || clock() >= until) return state.tasks;
+  }
+}
 
 /** Forget every read kept between calls (tests compare against a cold read). */
 export function forgetSubagents(): void {
@@ -1203,6 +1223,8 @@ export interface ClaudeSubagentDeps {
 
 /** `sig`: what the files looked like when the count was last worked out from them in full */
 interface Tracked {
+  /** Opaque lifetime of an asynchronous task-list read, renewed on a proven replacement. */
+  read: number;
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
@@ -1215,6 +1237,9 @@ interface Tracked {
   /** every observed agent, whose own file can end or resume its turn */
   watch: string[];
 }
+
+/** Unique across trackers too: several servers in one process share the file worker pool. */
+let taskReadSequence = 0;
 
 /**
  * What says a Claude pane's session may have begun a turn its transcript does not show yet: herdr
@@ -1363,9 +1388,9 @@ export class ClaudeSubagentStatus {
   }
 
   /** The transcript of the Claude session the pane holds, or last held, whether it still runs Claude, and when that process started. */
-  sessionOf(paneId: string): { path: string; live: boolean; startedAt: number | null } | null {
+  sessionOf(paneId: string): { path: string; live: boolean; startedAt: number | null; read?: number } | null {
     const tracked = this.panes.get(paneId);
-    return tracked?.path ? { path: tracked.path, live: tracked.live, startedAt: tracked.startedAt } : null;
+    return tracked?.path ? { path: tracked.path, live: tracked.live, startedAt: tracked.startedAt, read: tracked.read } : null;
   }
 
   /** Finds the Claude panes of a snapshot and their transcripts; a lookup costs process calls, so a known one is not repeated. */
@@ -1433,7 +1458,7 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1448,6 +1473,7 @@ export class ClaudeSubagentStatus {
     this.deps.onReset?.(pane.pane_id);
     const tracked = this.panes.get(pane.pane_id);
     if (!tracked) return;
+    tracked.read = ++taskReadSequence;
     tracked.live = false;
     tracked.reset = true;
     // Leaving Claude retains the old transcript for the lost-task list, but a new Claude session cannot read it.
