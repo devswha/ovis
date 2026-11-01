@@ -95,18 +95,18 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   cannot reach it directly both dial out, carrying only end-to-end encrypted frames it has no key
   for and keeping no logs. A PC must prove it holds its key to serve its `server_id`. It runs as a
   Cloudflare Worker deployed from CI with the maintainer's approval, or as a plain Bun server. Ovis
-  uses it only once a PC's relay link (below) is started.
+  uses it only once a PC's relay link (below) is turned on in Settings; it is off by default.
   ([#2499](https://github.com/devswha/ovis/pull/2499))
 - The PC side of the Ovis relay: a link from this PC to the relay that answers the relay's server
   proof, with `/api/relay` routes to start and stop it that only the owner may use, and only over a
   direct connection to the PC. `plugin pair` prints a relay QR when the relay is online. It is off
-  by default: nothing connects until it is started, and there is no Settings switch for it yet.
+  by default: nothing connects until it is turned on in Settings (below).
   ([#2504](https://github.com/devswha/ovis/pull/2504))
 - The phone side of the Ovis relay: a hosted shell (`bun run build:shell`) that pairs from the PC's
   relay QR, keeps a device key the browser cannot export, and opens the full app through the relay,
   end-to-end encrypted: terminals, chat, event streams and push alerts. A shell and PC on different
   versions reload onto the newer shell or ask for the PC's update. Like the PC side it is off by
-  default: nothing connects until the PC's relay is started, and there is no Settings switch yet.
+  default: nothing connects until the PC's relay is turned on in Settings.
   ([#2509](https://github.com/devswha/ovis/pull/2509))
 - Files and chat images load through the Ovis relay, including PDFs, rendered HTML pages and
   seekable videos in browsers. Clients without a service worker open files up to 64 MiB and
@@ -114,6 +114,13 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   reader, and rendered pages remain isolated from the app and its stored device keys. Like the
   rest of the relay it is off by default.
   ([#2509](https://github.com/devswha/ovis/pull/2509))
+- Remote access through the Ovis relay can be turned on in **Settings → Phone & devices → Remote
+  access through Ovis relay**; it is off by default. Once on, it shows a QR that pairs a phone
+  through the relay and says whether a phone is connected; turning it on closes the device gate,
+  only the PC's owner on a direct connection can control it, and the PC's relay identity can be
+  reset there. The iOS and Android apps open a PC paired over the relay from its pairing link and
+  save it by its own address on the hosted shell (app.ovis.sh), which is deployed separately.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
@@ -215,6 +222,25 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - The iOS and Android apps no longer show the hosted shell's Safari home-screen pairing hint (the
   relay is off by default).
   ([#2509](https://github.com/devswha/ovis/pull/2509))
+- Limit self-hosted relay connections, rooms, open sockets per address and address bookkeeping by
+  default, with configurable per-address and global rate budgets.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
+- Close a relay client that waits 30 s for a PC that is not connected, so waiting clients cannot
+  fill the relay while the PC is away.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
+- Require proof of the PC's relay key before replacing its connection or attaching a data socket.
+  Prerelease random-ID identities require an explicit relay identity reset and phone rescan.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
+- The hosted shell now reads the PC's copy-on-select preference and sends relay-control requests
+  through the paired relay connection instead of the static shell host.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
+- Opening a Claude Code pane's background-task list reads its subagent history on a file thread,
+  so that request's filesystem work no longer blocks other requests and terminal connections.
+  ([#2511](https://github.com/devswha/ovis/pull/2511) by @duytbp)
+- Words typed in the "Tell Claude what to change" field of Claude Code's plan card go to Claude as
+  feedback, and Claude keeps planning, as Enter does in its terminal. The card used to send
+  Shift+Tab, which approved the plan with the feedback and started to run it.
+  ([#2518](https://github.com/devswha/ovis/pull/2518) by @jpcarranza94)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
