@@ -30,7 +30,8 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
-import { attachmentFileName, mentionFileName, type GalleryImage } from "../lib/imageViewer.ts";
+import type { GalleryImage } from "../lib/imageViewer.ts";
+import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import { toTranscriptMessages, type TranscriptMessage } from "../lib/transcript.ts";
 import { isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, runNames, splitTurn, turnSegments, type WorkSegment, todoGroups, visibleWorkParts, workBlockStartsOpen, workFailed, workSummary, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
@@ -58,7 +59,6 @@ import { patchText } from "../../shared/patch.ts";
 import { workRowLabel } from "../lib/workRowLabel.ts";
 import { machinePath, paneStorageId } from "../../shared/machines.ts";
 import { chatRestoreIndex, chatTurnAnchor, readChatPosition, rememberChatPosition, type ChatPosition } from "../lib/chatScrollMemory.ts";
-import { fileUrl } from "../lib/api.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
 import { useSkillMatcher } from "../lib/useSkillMatcher.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
@@ -472,16 +472,6 @@ function ImageGallery({ images, className }: { images: GalleryImage[]; className
   </div>;
 }
 
-/** A tool's picture as the viewer shows it, fetched from the pane's conversation by its ref. */
-function toolGalleryImage(machineId: string, paneId: string, image: WorkImage, t: ReturnType<typeof useT>): GalleryImage {
-  return {
-    src: machinePath(machineId, `pane/conversation/image?${new URLSearchParams({ pane_id: paneId, ref: image.ref }).toString()}`),
-    // a tool's picture carries no file name: it is named by its place and the tool that read it
-    name: t("Image {n} from {tool}", { n: image.ordinal + 1, tool: image.part.name }),
-    file: attachmentFileName(image.mediaType, image.ordinal),
-  };
-}
-
 /** Images a tool returned (pi reads a picture into the result), at full thumbnail size in the opened row. */
 function ToolImages({ paneId, part }: { paneId: string; part: ToolPartType }) {
   const t = useT();
@@ -802,24 +792,11 @@ function GoalActivity({ goal }: { goal: GoalState }) {
   </ChatDetails>;
 }
 
-/** Image files a message mentions as `@path`, the way this app attaches them: shown as thumbnails. */
-const IMAGE_MENTION = /(?:^|\s)@(\S+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
-
 function UserImages({ paneId, parts, text }: { paneId: string; parts: ConversationPart[]; text: string }) {
   const t = useT();
   const machineId = useMachineId();
-  const pasted = parts.filter((part): part is Extract<ConversationPart, { kind: "image" }> => part.kind === "image");
-  const mentioned = [...new Set([...text.matchAll(IMAGE_MENTION)].map((match) => match[1]!))];
-  if (pasted.length === 0 && mentioned.length === 0) return null;
-  // one gallery for the message: its pasted pictures first, then the files it mentioned
-  const images: GalleryImage[] = [
-    ...pasted.map((part, index): GalleryImage => ({
-      src: machinePath(machineId, `pane/conversation/image?${new URLSearchParams({ pane_id: paneId, ref: part.ref }).toString()}`),
-      name: t("Attached image"),
-      file: attachmentFileName(part.media_type, index),
-    })),
-    ...mentioned.map((path): GalleryImage => ({ src: fileUrl(path, paneId, machineId), name: path, file: mentionFileName(path) })),
-  ];
+  const images = userGalleryImages(machineId, paneId, parts, text, t);
+  if (images.length === 0) return null;
   return <ImageGallery images={images} className="chat-user-images" />;
 }
 

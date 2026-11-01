@@ -821,7 +821,11 @@ export async function fetchFileInfo(path: string, paneId: string | null, machine
 
 /** GET /api/fs/favicon: the icon the project in folder `root` keeps, or null, in one request. */
 export async function fetchProjectFavicon(root: string, machineId = "local"): Promise<FileInfo | null> {
-  return (await getJson<ProjectFavicon>(machinePath(machineId, `fs/favicon?${new URLSearchParams({ root }).toString()}`))).icon;
+  return (await getJson<ProjectFavicon>(projectFaviconUrl(root, machineId))).icon;
+}
+
+export function projectFaviconUrl(root: string, machineId = "local"): string {
+  return machinePath(machineId, `fs/favicon?${new URLSearchParams({ root }).toString()}`);
 }
 
 /** GET /api/fs/file: the file itself, streamed (ranges for media); `download` saves it instead. */

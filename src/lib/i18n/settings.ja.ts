@@ -335,4 +335,10 @@ export const SETTINGS_JA: Record<string, string> = {
   "agents hooks claude codex install": "エージェント フック claude codex インストール",
   "onboarding first run getting started welcome": "オンボーディング 初回 はじめに ようこそ",
   "Agent integrations": "エージェント連携",
+  // the hosted relay shell's rows (lib/relay/shell.tsx)
+  "This page shows one PC. The front page lists every PC this phone is paired with.": "このページは1台のPCを表示します。トップページにこのスマホとペアリング済みのすべてのPCが並びます。",
+  "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "このPC用のこのスマホのキーを削除します。再度ペアリングするにはPCの新しいQRコードが必要です。",
+  "Forget this PC?": "このPCを削除しますか？",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
+  "Forget": "削除",
 };

@@ -3066,6 +3066,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   workspace-list toggle. Under the row, once the server has answered, the bridge auto-update switch.
 - Install (a row of the Phone group) reflects installed, promptable or browser-instructions state;
   About links the repository.
+- In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the Phone
+  group opens with two rows the native build never shows: **Change PC** (a neutral button to the
+  shell's front page, which lists every paired PC, the same row the iOS app gets for its own list)
+  and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
+  deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
+  PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
 - Portal, a group of its own between Phone and Devices where the server offers it: while it runs,
   the address and QR code as the Phone group draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
@@ -3560,6 +3566,48 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A centered password card replaces the entire shell while authentication is required. It has a real
   label, autofocused field, primary Unlock button and linked alert text.
 - Success mounts the shell; Lock unsubscribes push, deletes auth and returns to the gate.
+
+### Relay shell (`.relay-shell*`)
+- The hosted shell's screens before the app (components/RelayShell.tsx, lib/relay/shell.tsx): the
+  token gate's card, one sidebar wide on `--bg`, the sheep mark, a `--fs-lg` title that says what
+  is happening and one `--text-dim` sentence that says what to do, then the actions stacked full
+  width (`.btn`, the one primary action `.btn-primary`). No entrance motion; the connecting
+  state's `.boot-spinner` is the only thing that moves. Every screen names itself in
+  `data-relay-state` on the `<main>` (`list`, `empty`, `confirm`, `connecting`, `pc-offline`,
+  `pc-unresponsive`, `relay-unreachable`, `needs-update`, `revoked`, `identity-changed`,
+  `forgotten`, `code-expired`, `bad-offer`) for the browser scripts. Which of the three silences a stalled
+  connection is comes from the channel's phase (lib/relay/channel.ts): the relay that never
+  assigned the connection (10 s) is unreachable, the PC that never answered once it had (15 s) is
+  offline, and the PC that answered but never finished admitting the phone (10 s) is unresponsive;
+  the last offers Try again and names restarting Ovis on the PC, never "start Ovis".
+- Brief. Primary action: on a pairing link **Pair** (a new PC is confirmed first, "Pair with
+  {name}?", as paseo confirms a new host); after a failure **Try again**, or **Forget this PC**
+  (`.btn-danger`, since it discards a key) when the PC's identity changed. Forget only forgets:
+  the link whose key failed the check is never paired with, and the `forgotten` screen says to
+  scan a new QR code on the PC itself (otherwise the same bad link would be pinned in two taps). A
+  link whose key is not the one its PC's id is derived from is forged: it gets the same
+  `identity-changed` warning in its own words, every time it is opened, with only **Back** (no
+  key of its was saved, so there is nothing to forget); on the front page the
+  saved PCs themselves, one `--touch-target` row each with a chevron, the whole row the link to
+  the PC's own scope (`/s/<server_id>/`). Priorities: the PC's name, what is happening, what to do
+  next. Left out on purpose: a status badge, a stat tile, an illustration, a subtitle under the
+  title, the relay's address, and any Retry on a screen a retry cannot change (a used code, a
+  revoked phone, a damaged link offer only **Back**). Required content: the PC's name on every
+  scoped screen, the sentence per state, **Back** to the front page on a PC's page and nowhere
+  else, the iPhone browser tab's line "Add to Home Screen to stay paired" (a `--fs-sm` dim line
+  over a hairline at the card's foot, only there: the installed app's storage is not cleared).
+- Layout: `centred card`; the document is the one scroller; the saved-PC list is a plain column
+  inside the card, never a scroller of its own.
+- Precedent: paseo's hosted web app (confirm a new host, remember hosts, one list to pick from)
+  for the flow; the states and their words are this app's, in the token gate's own frame, so a
+  phone that pairs through the relay and one that pairs with a code see the same room. Neither
+  the Codex nor the Claude app has a hosted relay shell to follow.
+- Relay files keep the existing file viewer and its Paseo-style file bar, rather than adding a
+  separate remote-files screen. A client without a resource-capable service worker shows the
+  usual file note as an alert when the 64 MiB limit is exceeded. Copy link and new-tab actions
+  name the paired PC's reader, which opens its own channel; active file content is never a
+  navigated blob. Rendered HTML uses the opaque sandbox's own render host and policy, so its
+  inline scripts work without access to the shell's origin or device keys.
 
 ### Role (no control surface)
 - `interact` types and resizes; `observe` does neither. The server enforces both and the WS protocol
