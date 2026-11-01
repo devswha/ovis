@@ -1099,6 +1099,80 @@ tab to add notes | enter to submit answer | esc to interrupt
   });
 });
 
+describe("Claude's plan in a narrow pane", () => {
+  // Claude Code 2.1.316's plan dialog with a made-up plan, wrapped as Claude wraps it: a 58-column pane
+  // (two side by side) breaks the footer inside the plan's path or before it, a 44-column phone pane
+  // spreads it over three lines
+  const split = (footer: string) => `  ────────────────────────────────────────────────────────
+   Ready to code?
+
+   Here is Claude's plan:
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   Plan: add a heading to the README
+
+   1. Add a heading line at the top of README.md.
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+
+  ────────────────────────────────────────────────────────
+   Claude has written up a plan and is ready to execute.
+   Would you like to proceed?
+
+   ❯ 1. Yes, and use auto mode
+     2. Yes, manually approve edits
+     3. Tell Claude what to change
+        shift+tab to approve with this feedback
+
+${footer}
+`;
+  const phone = `  ──────────────────────────────────────────
+   Ready to code?
+
+   Here is Claude's plan:
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   Plan: add a heading to the README
+
+   1. Add a heading line at the top of
+   README.md.
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+
+  ──────────────────────────────────────────
+   Claude has written up a plan and is
+   ready to execute. Would you like to
+   proceed?
+
+   ❯ 1. Yes, and use auto mode
+     2. Yes, manually approve edits
+     3. Tell Claude what to change
+        shift+tab to approve with this
+        feedback
+
+   ctrl+g to edit in VS Code ·
+   ~/.claude/plans/plan-add-a-heading-to-th
+   e-readme-mellow-pike.md
+`;
+  const screens = [
+    ["wrapped inside the path", split("   ctrl+g to edit in VS Code · ~/.claude/plans/plan-add-a\n   -heading-to-the-readme-mellow-pike.md")],
+    ["wrapped before the path", split("   ctrl+g to edit in VS Code ·\n   ~/.claude/plans/plan-readme-heading-mellow-pike.md")],
+    ["over three lines", phone],
+    ["on one line", split("   ctrl+g to edit in VS Code · ~/.claude/plans/plan-a.md")],
+  ];
+
+  test.each(screens)("reads the plan with its footer %s", (_footer, screen) => {
+    const prompt = parseInteractivePrompt("claude", screen);
+    expect(prompt).toMatchObject({
+      kind: "plan", title: "Ready to code?", custom_option_index: 2,
+      options: [{ label: "Yes, and use auto mode" }, { label: "Yes, manually approve edits" }, { label: "Tell Claude what to change" }],
+    });
+    expect(prompt?.body).toContain("Add a heading line");
+  });
+
+  test.each(screens)("reads no plan once output follows its footer %s", (_footer, screen) => {
+    expect(parseInteractivePrompt("claude", `${screen}\n⏺ User approved Claude's plan\n`)).toBeNull();
+  });
+});
+
 describe("Claude's question in a narrow pane", () => {
   // live-captured from Claude Code 2.1.283 in a 44-column herdr pane: the hint wraps
   const narrow = `────────────────────────────────────────────
