@@ -18,7 +18,7 @@ import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { registry } from "./dialogs/registry.ts";
-import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, finishPrompt, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { sameText } from "./dialogs/omo.ts";
@@ -624,6 +624,20 @@ async function restoredOnLiveScreen(paneId: string, viewport: string): Promise<s
   return viewportShowsLive(scrollBefore, scrollAfter, colors, before, live) ? claudeRestoredDraft(live, colors, sent) : null;
 }
 
+/**
+ * Claude's own input box ending the screen: a `❯` or bash `!` row between the last two rules, and
+ * only Claude's footer under them (as parseClaudeHeld reads the box). A list's cursor row (`❯ 1.`)
+ * between two rules, or a dialog drawn under the box, is no input box.
+ */
+function claudeInputBoxEndsScreen(screen: string): boolean {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const bottom = findLastIndex(lines, (line) => isDivider(line));
+  const footer = lines.slice(bottom + 1).map(cleanLine).filter(Boolean);
+  if (bottom < 0 || footer.length > 8 || footer.some((line) => line.startsWith("❯"))) return false;
+  const content = claudeInputBoxContent(screen) ?? "";
+  return /^[❯!]/.test(content) && !/^❯\s*\d+\./.test(content);
+}
+
 async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?: string, openCodeState = defaultOpenCodeState, signal?: AbortSignal): Promise<{ agent: string; status: string; prompt: InteractivePrompt | null; pane: HerdrPane; panes: HerdrPane[]; snapshot: SessionSnapshot; screen?: string; stale?: boolean; inputUnverified?: true }> {
   const before = openCodeState.checkpoint();
   const snapshot = await openCodeState.snapshot();
@@ -661,7 +675,7 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
-    || (agent === "claude" && /^[❯!]/.test(claudeInputBoxContent(screen) ?? ""))) {
+    || (agent === "claude" && claudeInputBoxEndsScreen(screen))) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen };
   }
@@ -1077,7 +1091,9 @@ const SETTLE_MS = 1_500;
  * screen that does not move within a second leaves it to the card's next poll.
  */
 async function formMovedOn(paneId: string, still: (prompt: InteractivePrompt | null) => boolean, codexHome?: string, openCodeStateDir?: string): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  // a second in all, however long each read takes
+  const deadlineAt = Date.now() + 1_000;
+  for (let attempt = 0; attempt < 20 && Date.now() < deadlineAt; attempt += 1) {
     await Bun.sleep(50);
     const read = await readPrompt(paneId, codexHome, openCodeStateDir).catch(() => undefined);
     // A failed read says nothing about whether the screen moved on.

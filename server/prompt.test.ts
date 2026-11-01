@@ -5687,6 +5687,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  // a list's cursor row between two rules, or a dialog drawn under a box, is no input box ending the screen
+  test.each([
+    ["its options between two rules", `● Earlier output\n Some new Claude dialog\n${"─".repeat(80)}\n ❯ 1. Allow\n   2. Deny\n${"─".repeat(80)}\n Enter to confirm · Esc to cancel\n`],
+    ["drawn under an input box", `● Earlier output\n${"─".repeat(80)}\n❯ \n${"─".repeat(80)}\n Some new dialog under the box\n ❯ 1. Allow\n   2. Deny\n Enter to confirm · Esc to cancel\n`],
+  ])("still offers the fallback card for a Claude dialog no reader knows, %s", async (_name, screen) => {
+    await withPane("claude", "blocked", screen, async () => {
+      expect((await card())?.options.map((option) => option.label)).toEqual(["Allow", "Deny", "Enter", "Esc"]);
+    });
+  });
+
   test("keeps waiting for Claude's next question through a failed read after answering", async () => {
     const screen = (question: string) => `←  ☐ Device  ☐ Symptoms  ✔ Submit  →\n\n${question}\n\n❯ 1. Phone\n  2. Desktop browser\n  3. Type something.\n${"─".repeat(80)}\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n`;
     await withPane("claude", "blocked", screen("Which device do you use?"), async (pane) => {
@@ -5875,6 +5885,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       // the card's read right after the answer: neither the dialog just answered, under a new id, nor a fallback card
       const after = await card();
       expect(after === null ? null : { title: after.title, options: after.options.map((option) => option.label), sameId: after.id === before.id }).toBeNull();
+    });
+  });
+
+  test("an answer to a Claude approval that does not close waits about a second, however slow the reads", async () => {
+    const approval = `● Bash(touch made.txt)\n${"─".repeat(80)}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n`;
+    await withPane("claude", "blocked", approval, async (pane) => {
+      const before = (await card())!;
+      pane.readDelay = 100;
+      const started = performance.now();
+      expect(await answer(before.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      // 20 reads of 100 ms and more took over 3 s; the wait's own deadline is 1 s, plus the read in flight
+      expect(performance.now() - started).toBeLessThan(2_000);
     });
   });
 
