@@ -514,6 +514,9 @@ interface PressRead { at: number; read: Promise<ConversationResponse>; answer?: 
 const pressReads = new Map<string, PressRead>();
 /** A press becomes a pick well within this, or it was a scroll, a drag or a long press. */
 export const PRESS_READ_MS = 1000;
+/** Per newest-page URL, the read that started last: an older read that answers after it (an untaken press read) keeps out of the cache. */
+const lastNewestRead = new Map<string, number>();
+let newestReads = 0;
 
 /**
  * Starts the first read of a chat that a press is about to open (a tab or a sidebar row, before
@@ -547,6 +550,8 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
     // A copy is this read's own: the chat counts its presentation read, and it can prove a finish
     if (performance.now() - pressed.at < PRESS_READ_MS) return pressed.answer === undefined ? pressed.read : { ...pressed.answer };
   }
+  const read = ++newestReads;
+  if (polled) lastNewestRead.set(url, read);
   const known = polled ? conversationAnswers.get(url) : undefined;
   const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
   const { response, body } = await withChatReadDeadline(async (signal) => {
@@ -563,6 +568,9 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
     throw cause;
   });
   // Cache changes occur after the bounded read: a late, aborted answer cannot replace it.
+  // A newest-page read that started after this one owns the cache, answered or not
+  if (polled && lastNewestRead.get(url) !== read) return body;
+  if (polled) lastNewestRead.delete(url);
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
     conversationAnswers.set(url, known);

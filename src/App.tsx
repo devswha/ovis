@@ -334,7 +334,8 @@ export function App() {
   // the Herdr app's window owns the selected PC's workspaces, tabs and splits (lib/machineContext.tsx AppLayoutContext):
   // the palette and the shortcuts offer none of its layout calls; each PC's own value goes to its sidebar and its half
   const appLayout = appLayoutOf(targetHerdr);
-  const appLayoutOn = (machineId: string): boolean => appLayoutOf(machineId === "local" ? health?.herdr : machines.find((machine) => machine.id === machineId)?.herdr);
+  const herdrOn = (machineId: string) => machineId === "local" ? health?.herdr : machines.find((machine) => machine.id === machineId)?.herdr;
+  const appLayoutOn = (machineId: string): boolean => appLayoutOf(herdrOn(machineId));
   // the herdr the header names as current: this PC's last answer only while it is still shown (through one
   // failed read, not once unavailable), though its capabilities stay in targetHerdr
   const shownHerdr = selectedMachineId === "local" ? shownHealth?.herdr : targetHerdr;
@@ -347,8 +348,10 @@ export function App() {
   // health read keeps this PC's last answer (lib/healthPresentation.ts)
   // a server that repaints the pane's screen instead (terminal_mirror) has a terminal lens too
   const terminalAttach = targetHerdr?.terminal_attach !== false || targetHerdr?.terminal_mirror === true;
+  // the same rule for any PC: a press on another PC's pane asks its lens as a pick there would
+  const attachOn = (machineId: string): boolean => { const herdr = herdrOn(machineId); return herdr?.terminal_attach !== false || herdr?.terminal_mirror === true; };
 
-  const { lenses, view, pressPane } = usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek });
+  const { lenses, view, pressPane } = usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, attachOn, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek });
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, webDialogCover, contentReady } = usePaneCoverage({ contentKey });

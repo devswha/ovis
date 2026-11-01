@@ -250,6 +250,27 @@ describe("conversation read started by a press", () => {
     await fetchPaneConversation("press:p4", "local", { prompts: 10, fresh: true });
     expect(sent).toHaveLength(5);
   });
+
+  it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
+    const answers: ((history: string) => void)[] = [];
+    globalThis.fetch = (async (_url: string) => {
+      const history = await new Promise<string>((resolve) => { answers.push(resolve); });
+      return Response.json({ source: "claude-transcript", history_id: history, cursor: null, turns: [] }, { headers: { etag: `"${history}"` } });
+    }) as typeof fetch;
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    restoreClock = () => { clock.mockRestore(); };
+    prefetchPaneConversation("press:late", "local", 10);
+    // the chat mounts after the press read is too old to take, and asks again
+    now = PRESS_READ_MS;
+    const mounted = fetchPaneConversation("press:late", "local", { prompts: 10, fresh: true });
+    for (let turn = 0; turn < 50 && answers.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    answers[1]!("newer");
+    await mounted;
+    answers[0]!("older");
+    for (let turn = 0; turn < 50 && peekPaneConversation("press:late", "local", 10)?.history_id === "newer"; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(peekPaneConversation("press:late", "local", 10)?.history_id).toBe("newer");
+  });
 });
 
 describe("conversation peek", () => {

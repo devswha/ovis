@@ -50,13 +50,15 @@ export function usePaneLensState() {
   return { lens, setLens, viewPicks, setViewPicks };
 }
 
-export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
+export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, attachOn, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
   settings: Settings;
   selectedPaneId: string | null;
   selectedMachineId: string;
   selectedPane: HerdrPane | null;
   selectedAgent: HerdrPane["agent"] | null;
   terminalAttach: boolean;
+  /** terminalAttach for any PC, the one selected or not */
+  attachOn: (machineId: string) => boolean;
   notificationViewTarget: NotificationTarget | null;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   lens: { key: string; view: PaneView };
@@ -96,12 +98,10 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   // show (storedView), so its alert opens its own lens; until the snapshot says, it counts as an agent
   if (notificationView !== null && !(notificationView === "chat" && selectedPane !== null && selectedAgent === null)) view = notificationView;
   // a press on an agent pane's tab or sidebar row starts its chat's first read before the pick renders
-  // it, when the lens a pick gives it (asked, not kept) is the chat.
-  // ponytail: another PC's herdr counts as attach-capable here; one without an attach (always chat) may start nothing
-  const pressPane = useCallback((machineId: string, paneId: string): void => {
-    const attach = machineId === selectedMachineId ? terminalAttach : true;
-    if (storedView(lenses, viewPicks, paneId, machineId, true, attach, false) === "chat") prefetchPaneConversation(paneId, machineId, settings.historyPrompts);
-  }, [lenses, viewPicks, selectedMachineId, terminalAttach, settings.historyPrompts]);
+  // it, when the lens a pick gives it (asked, not kept) is the chat
+  const pressPane = (machineId: string, paneId: string): void => {
+    if (storedView(lenses, viewPicks, paneId, machineId, true, attachOn(machineId), false) === "chat") prefetchPaneConversation(paneId, machineId, settings.historyPrompts);
+  };
   return { lenses, view, pressPane };
 }
 
