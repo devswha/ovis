@@ -4970,7 +4970,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       // another question by the time the cursor is down: the text would be typed into its row
       pane.onSent = () => { pane.screen = QUESTION(["main", "release", "Type something."], 2); };
       expect(await answer(prompt.id, { custom_text: "the internal set" })).toEqual({ status: 409, code: "prompt_changed" });
-      expect(pane.sent).toEqual(["down", "down"]);
+      // the read right before the second move already shows the other question: no second key either
+      expect(pane.sent).toEqual(["down"]);
     });
   });
 
