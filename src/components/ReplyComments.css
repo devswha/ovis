@@ -262,6 +262,7 @@
     min-height: var(--touch-target);
   }
 
+  .reply-comment-offer,
   .reply-comments-clear,
   .reply-comments-remove {
     min-width: var(--touch-target);

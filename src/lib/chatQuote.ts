@@ -1,5 +1,5 @@
 import { MAX_COMPOSER_CHARS } from "./compose.ts";
-import { composerDrafts } from "./composerDraft.ts";
+import { composerDraftKey as draftKeyOf, composerDrafts } from "./composerDraft.ts";
 import { quoteBlock } from "./replyComments.ts";
 
 /**
@@ -13,7 +13,6 @@ export function draftWithQuote(draft: string, quote: string): string {
   return `${draft}${gap}${quoteBlock(quote)}\n\n`;
 }
 
-const draftKeyOf = (paneKey: string): string => `ovis:composer-draft:${paneKey}`;
 const listeners = new Map<string, Set<() => void>>();
 
 /** Whether the quote fits in the pane's draft under the composer's limit: one that does not is refused, never cut. */

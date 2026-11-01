@@ -142,7 +142,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   };
 
   return <div className="reply-comment-layer" ref={layer}>
-    {offer !== null && form === null && <div className="selection-offer" role="toolbar" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
+    {offer !== null && form === null && <div className="selection-offer" role="group" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
       // a mouse press keeps the selection; a touch's is read from the offer it showed
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
