@@ -371,6 +371,13 @@ are held for explicit review.
 
 ## GJC parent-turn status
 
+On Linux, herdr-manager's managed GJC wrapper can expose its exact recorded native transcript.
+The bridge verifies the manager record, process and wrapper identities, transcript inode and header,
+and the current GJC SDK broker generation before use; a missing or changed proof fails closed.
+It does not select a newer transcript by directory. Native GJC sessions still use their native
+extension and SDK ownership path; managed records do not replace that path or OmO recognition.
+Managed labeling uses only the local herdr socket, never an explicitly different server socket.
+
 GJC status follows the native transcript bound to that pane, rather than a provider child's stale status or session ID. A user message, tool result or tool call keeps the parent turn working; an explicit final answer ends it. Native background-result, monitor and scheduled-task notifications start another turn, and an open `ask` waits for input.
 
 This is parent-turn state, not a count of live background jobs. GJC's job manager keeps that live state in memory, so historical job starts are not treated as proof that a job still runs. Missing or unreadable native evidence leaves herdr's status in charge; interrupted old turns are not successful completions. The isolated `scripts/gjc-status-browser-regression.ts` fixture exercises the real server and browser without invoking a provider or touching existing sessions.

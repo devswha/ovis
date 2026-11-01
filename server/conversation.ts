@@ -38,6 +38,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { authorizedTranscript } from "./transcript-store.ts";
+import { type ManagedGjcBinding, type ManagedGjcDeps } from "./managed-gjc-session.ts";
+import { declaresManagedGjc, ManagedGjcProofFailure } from "./managed-gjc-record.ts";
+import { MANAGED_GJC_TOOL_REF, managedGjcConversation, managedGjcToolOutput, resolveManagedGjcTranscript, type PaneConversationDeps } from "./managed-gjc-conversation.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
@@ -1325,7 +1328,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
 type ResolvedTranscript =
-  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null } & (
+  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null; managedGjc?: ManagedGjcBinding } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -1345,8 +1348,12 @@ export type NativeTranscript =
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, managedGjcDeps: ManagedGjcDeps = {}): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
+  const managed = await resolveManagedGjcTranscript(pane, managedGjcDeps);
+  if (managed !== null) return managed;
+  if (declaresManagedGjc(pane) && resolveAgent(pane).agent === "gjc") throw new ManagedGjcProofFailure("blocked_managed_record_unavailable");
+  if (cwd.length === 0) throw new ConversationUnavailable("no_recognized_transcript");
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
   // nothing about what runs now, so the pane's processes are asked before it is followed.
@@ -1461,15 +1468,15 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
  * Resolve the native live file or database session without reading conversation turns. `known`: herdr's
  * `pane.process_info` for this pane that the caller read for this same look, so it is not asked again.
  */
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<NativeTranscript> {
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, managedGjcDeps: ManagedGjcDeps = {}): Promise<NativeTranscript> {
   const panes = (snapshot ?? await sessionSnapshot()).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined) throw new ConversationUnavailable("pane_not_found");
   // an agent pane without a folder is a failure to diagnose, not a shell's expected scrollback
-  if (typeof pane.cwd !== "string" || pane.cwd.length === 0) throw new ConversationUnavailable("no_recognized_transcript", undefined, pane.agent ? "agent_cwd_missing" : undefined);
+  if ((typeof pane.cwd !== "string" || pane.cwd.length === 0) && !declaresManagedGjc(pane)) throw new ConversationUnavailable("no_recognized_transcript", undefined, pane.agent ? "agent_cwd_missing" : undefined);
 
   if (pane.agent === "devin" && !(await paneRunsOmo(paneId, known))) {
-    const cwd = pane.foreground_cwd || pane.cwd;
+    const cwd = pane.foreground_cwd || pane.cwd || "";
     const storePath = devinDbPath ?? defaultDevinDbPath();
     const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { foreground_processes?: { argv?: unknown }[] } }>(
       "pane.process_info", { pane_id: paneId },
@@ -1487,7 +1494,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known);
+  return resolveTranscript(pane, pane.cwd ?? "", codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, managedGjcDeps);
 }
 
 /**
@@ -1522,8 +1529,8 @@ async function bottomViewport(paneId: string): Promise<string> {
  * shows the pages before it. A cursor from another file throws HistoryChanged.
  * `opencodeDb` is OpenCode's store, unset where OpenCode itself would find it.
  */
-export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
-  const snapshot = await sessionSnapshot();
+export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, deps: PaneConversationDeps = {}): Promise<RecognizedConversation> {
+  const snapshot = await (deps.snapshot ?? sessionSnapshot)();
   let resolved: NativeTranscript;
 
   // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
@@ -1554,7 +1561,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   };
 
   try {
-    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
+    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData, undefined, deps.managedGjc);
     launchedAgents.forget(paneId);
   } catch (error) {
     if (error instanceof ConversationNotStarted) { launchedAgents.forget(paneId); return await onNotStarted(error); }
@@ -1616,6 +1623,17 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       if (error instanceof ConversationNotStarted) return await onNotStarted(error);
       throw error;
     }
+  }
+  if ("managedGjc" in resolved && resolved.managedGjc !== undefined) {
+    const pane = snapshot.panes.find(candidate => candidate.pane_id === paneId);
+    if (pane === undefined) throw new ManagedGjcProofFailure("blocked_managed_identity_changed");
+    const answer = await managedGjcConversation(pane, page, resolved.managedGjc, deps.managedGjc,
+      (internalPage, fd) => transcriptPageRead(resolved.source, resolved.path, internalPage, undefined, undefined, fd));
+    rememberPaneRead(paneId, resolved.path);
+    const session = `${resolved.source}\0${resolved.managedGjc.identity.sessionId}`;
+    writtenSessions.add(session);
+    rememberPaneSession(paneId, session);
+    return answer;
   }
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
@@ -1739,8 +1757,10 @@ const commandTranscripts = new Map<string, {
 const REMEMBERED_BRANCHES = 8;
 
 /** `look`: the snapshot and herdr's `pane.process_info` the caller's poll already read, so neither is asked again. */
-export async function readCommandTranscript(paneId: string, codexHome?: string, look: { snapshot?: SessionSnapshot; processes?: KnownProcesses } = {}): Promise<CommandTranscript | null> {
-  const resolved = await paneTranscript(paneId, codexHome, look.snapshot, undefined, undefined, undefined, undefined, undefined, look.processes);
+export async function readCommandTranscript(paneId: string, codexHome?: string, look: { snapshot?: SessionSnapshot; processes?: KnownProcesses; managedGjc?: ManagedGjcDeps } = {}): Promise<CommandTranscript | null> {
+  const resolved = await paneTranscript(paneId, codexHome, look.snapshot, undefined, undefined, undefined, undefined, undefined, look.processes, look.managedGjc);
+  // This auxiliary reader does not yet share the manager-pinned descriptor used by chat pages.
+  if ("managedGjc" in resolved && resolved.managedGjc !== undefined) return null;
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
@@ -2313,13 +2333,13 @@ const TOOL_REF = /^[A-Za-z0-9_:.-]{1,128}$/;
 const TOOL_OUTPUT_MAX = 2_000_000;
 
 /** The whole output of a tool call whose page output was cut, by its id; null when there is none. */
-export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<string | null> {
-  if (!TOOL_REF.test(ref) && !/^cp[0-9a-f]{16}\.[A-Za-z0-9_:.-]{1,128}(?:@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32})?$/.test(ref)) return null;
+export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, managedGjcDeps: ManagedGjcDeps = {}): Promise<string | null> {
+  if (!TOOL_REF.test(ref) && !MANAGED_GJC_TOOL_REF.test(ref) && !/^cp[0-9a-f]{16}\.[A-Za-z0-9_:.-]{1,128}(?:@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32})?$/.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
-  if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
+  if (pane === undefined || ((typeof pane.cwd !== "string" || pane.cwd.length === 0) && !declaresManagedGjc(pane))) return null;
   let resolved: ResolvedTranscript;
-  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData); }
+  try { resolved = await resolveTranscript(pane, pane.cwd ?? "", codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData, undefined, managedGjcDeps); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
   if (resolved.source === "opencode-transcript") {
     const output = opencodeToolOutput(resolved.path, resolved.session, ref);
@@ -2327,6 +2347,10 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   }
   rememberPaneRead(paneId, resolved.path);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
+  if ("managedGjc" in resolved && resolved.managedGjc !== undefined) {
+    return managedGjcToolOutput(pane, ref, resolved.managedGjc, managedGjcDeps,
+      (nativeRef, fd) => transcriptToolOutput(resolved.source, resolved.path, nativeRef, resolved.codexHome ?? codexHome, fd));
+  }
   let nativeRef = ref;
   if (resolved.source === "copilot-transcript") {
     let history: string;
@@ -2349,7 +2373,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
 }
 
 /** The output a transcript file holds for one tool call id, whole (up to TOOL_OUTPUT_MAX). */
-export function transcriptToolOutput(source: StreamSource, path: string, ref: string, codexHome?: string): string | null {
+export function transcriptToolOutput(source: StreamSource, path: string, ref: string, codexHome?: string, fd?: number): string | null {
   if (!TOOL_REF.test(ref) && !(source === "copilot-transcript" && /^[A-Za-z0-9_:.-]{1,128}@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32}$/.test(ref))) return null;
   if (source === "codex-transcript") {
     let segments: ReturnType<typeof codexHistorySegments>;
@@ -2382,7 +2406,7 @@ export function transcriptToolOutput(source: StreamSource, path: string, ref: st
     } finally { closeSync(fd); }
   }
   let text: string;
-  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  try { text = readFileSync(fd ?? path, "utf8"); } catch { return null; }
   return outputInText(source, text, ref);
 }
 
