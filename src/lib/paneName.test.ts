@@ -70,3 +70,8 @@ it("strips a Codex title to its thread for a row, and keeps the folder for an al
   // a shell's title is not an agent's: its user@host goes, a pipe in it stays
   expect(stripPaneChrome("me@host:~/work | notes", null)).toBe("~/work | notes");
 });
+
+it("drops an omp title's glyph and spinner for a row, and keeps them for the browser tab (#2568)", () => {
+  expect(stripPaneChrome("π ⠋ Fix the build", "omp")).toBe("Fix the build");
+  expect(stripPaneChrome("π ⠋ Fix the build", "omp", false, true)).toBe("π ⠋ Fix the build");
+});

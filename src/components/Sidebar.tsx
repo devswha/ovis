@@ -59,6 +59,14 @@ export function displayPaneTitle(pane: PaneInfo): string {
 }
 
 /**
+ * The browser tab's title for a pane: as a row's, with an agent's glyph and spinner kept, as the tab
+ * has no row mark or badge beside it (omp's `π ⠋`, #2568).
+ */
+export function tabPaneTitle(pane: PaneInfo): string {
+  return pane.label?.trim() || shortPathTitle(stripPaneChrome(paneTitle(pane), pane.agent, false, true)) || pane.pane_id;
+}
+
+/**
  * The title an alert names a pane by: as a row's, with the folder Codex adds after its thread
  * kept. A notification is read away from the row that says where the pane is.
  */
