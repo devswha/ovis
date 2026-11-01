@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { memoryLimiters, relayLimits, relayLimitsFromArgs } from "./bun-limits.ts";
+import { DEFAULT_RELAY_LIMITS, memoryLimiters, relayLimits, relayLimitsFromArgs } from "./bun-limits.ts";
 import { startBunRelay } from "./bun.ts";
 import { admit } from "./core.ts";
 import { Peer, newServer, relayUrls } from "./relay-test-client.ts";
@@ -44,14 +44,16 @@ test("address bookkeeping fails closed at its cap and reclaims only idle buckets
 });
 
 test("flags override environment values and invalid budgets fail startup", () => {
-  const limits = relayLimitsFromArgs(["--max-sockets", "9", "--per-address-per-minute", "7"], {
+  const limits = relayLimitsFromArgs(["--max-sockets", "9", "--per-address-per-minute", "7", "--max-sockets-per-address", "5"], {
     RELAY_MAX_SOCKETS: "8", RELAY_PER_ADDRESS_PER_MINUTE: "6", RELAY_MAX_ROOMS: "3",
-    RELAY_GLOBAL_PER_MINUTE: "17", RELAY_MAX_ADDRESSES: "11",
+    RELAY_GLOBAL_PER_MINUTE: "17", RELAY_MAX_ADDRESSES: "11", RELAY_MAX_SOCKETS_PER_ADDRESS: "4",
   });
-  expect(limits).toEqual({ maxSockets: 9, perAddressPerMinute: 7, maxRooms: 3, globalPerMinute: 17, maxAddresses: 11 });
+  expect(limits).toEqual({ maxSockets: 9, perAddressPerMinute: 7, maxRooms: 3, globalPerMinute: 17, maxAddresses: 11, maxSocketsPerAddress: 5 });
+  expect(relayLimitsFromArgs([], { RELAY_MAX_SOCKETS_PER_ADDRESS: "4" }).maxSocketsPerAddress).toBe(4);
   for (const value of ["0", "-1", "NaN", "1.5", "Infinity", "", "9007199254740992"]) {
     expect(() => relayLimitsFromArgs(["--max-sockets", value], {})).toThrow();
     expect(() => relayLimitsFromArgs([], { RELAY_MAX_ROOMS: value })).toThrow();
+    expect(() => relayLimitsFromArgs(["--max-sockets-per-address", value], {})).toThrow();
   }
   expect(() => relayLimitsFromArgs(["--max-rooms"], {})).toThrow();
 });
@@ -104,9 +106,47 @@ test("failed upgrades release room and socket reservations", async () => {
   expect((await peer.json())["type"]).toBe("assigned");
 });
 
+test("one address cannot hold more than its share of open sockets, waiting or connected, and gets its place back on close", async () => {
+  // the default budgets but for the rate: one address opening sockets as fast as it may
+  const relay = startBunRelay({ port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } });
+  cleanup.push(() => relay.stop());
+  const base = `ws://127.0.0.1:${relay.port}`;
+  const held: Peer[] = [];
+  // each in its own room, all waiting for a PC that never comes
+  for (let i = 0; i < DEFAULT_RELAY_LIMITS.maxSocketsPerAddress; i++) {
+    const peer = await Peer.open(relayUrls(base, newServer()).client);
+    expect((await peer.json())["type"]).toBe("assigned");
+    held.push(peer);
+  }
+  // far below the room and socket caps, yet the address's next socket is refused
+  const refused = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, upgrade);
+  expect(refused.status).toBe(429);
+  expect(refused.headers.get("retry-after")).toBe("60");
+  expect(await refused.text()).toBe("too many open connections from this address");
+  // the refusal evicts nobody
+  expect(held.every((peer) => peer.socket.readyState === WebSocket.OPEN)).toBe(true);
+  held[0]!.socket.close();
+  await held[0]!.closeCode();
+  const next = await Peer.open(relayUrls(base, newServer()).client);
+  expect((await next.json())["type"]).toBe("assigned");
+});
+
+test("a failed upgrade gives the address its place back", async () => {
+  const relay = startBunRelay({ port: 0, limits: { maxSocketsPerAddress: 1 } });
+  cleanup.push(() => relay.stop());
+  const base = `ws://127.0.0.1:${relay.port}`;
+  const response = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, {
+    headers: { ...upgrade.headers, "sec-websocket-key": "invalid" },
+  });
+  expect(response.status).toBe(426);
+  const peer = await Peer.open(relayUrls(base, newServer()).client);
+  expect((await peer.json())["type"]).toBe("assigned");
+});
+
 test.each([["rooms", 256], ["sockets", 1024]] as const)("Bun enforces the default %s capacity", async (cap, capacity) => {
+  // every socket here comes from one address: its own cap is lifted to reach the global ones
   const relay = startBunRelay({ port: 0, limits: {
-    perAddressPerMinute: 10_000, globalPerMinute: 10_000,
+    perAddressPerMinute: 10_000, globalPerMinute: 10_000, maxSocketsPerAddress: 2048,
     ...(cap === "sockets" ? { maxRooms: 2048 } : {}),
   } });
   cleanup.push(() => relay.stop());

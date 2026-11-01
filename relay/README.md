@@ -49,8 +49,9 @@ out takes 16 arrivals within its one round trip.
 - A client holds one of the PC's slots once the PC has answered it, that is once its data socket
   has sent a frame. Until then it is waiting: with the PC connected, it is closed `1013` 15 s after
   the PC could have answered (from its data socket attaching, or from the client or the PC
-  arriving, whichever is later), keepalives or not. While no PC is connected it waits for one, and
-  a PC that comes back gets the full 15 s again. A client past the waiting limit pushes the oldest
+  arriving, whichever is later), keepalives or not. While no PC is connected it waits 30 s for one
+  (from its arrival, or from the PC leaving), then closes `1013`, keepalives or not; a PC that
+  comes back in time gives it the full 15 s again. A client past the waiting limit pushes the oldest
   waiting one out, so holding the waiting places takes 4 arrivals within one phone's handshake.
 - From then on, every frame from the client goes to its data socket and back, text as text and
   binary as binary, byte for byte. Frames a client sends before its data socket attaches are held
@@ -68,6 +69,7 @@ out takes 16 arrivals within its one round trip.
 | clients the PC has answered, per `server_id` | 8 | the new client closes `1013` |
 | clients the PC has not answered yet, per `server_id` | 4 | the oldest of them closes `1013` |
 | a client the PC has not answered, with the PC connected | 15 s | the client closes `1013` |
+| a client waiting while no PC is connected | 30 s | the client closes `1013` |
 | a PC socket answering its challenge | 10 s, 16 at once per `server_id` | `4401`; past 16 the oldest closes `1013` |
 | frames held for a waiting client | 200 frames or 1 MiB, whichever comes first | the client closes `1013` |
 | idle | 120 s without a frame or keepalive | the socket closes `1001` |
@@ -75,6 +77,7 @@ out takes 16 arrivals within its one round trip.
 | connections from all addresses | 600 a minute | `429`, `Retry-After: 60` |
 | total sockets (Bun, including pending upgrades/proofs) | 1024 | `503`, `Retry-After: 60` |
 | rooms (Bun, including pending upgrades) | 256 | `503`, `Retry-After: 60` |
+| open sockets per address (Bun, waiting, connected or upgrading) | 64 | `429`, `Retry-After: 60`; open sockets are never closed for it |
 | address buckets (Bun) | 4096 | a new address gets `429` until an idle bucket expires |
 
 | Code | Meaning |
@@ -162,7 +165,8 @@ tokens. Idle address buckets expire after a minute; active buckets are never evi
 new addresses. Restarting the process clears the budgets.
 
 The address is the TCP peer, never an untrusted forwarding header. Behind a local TLS proxy,
-all users share that proxy's address bucket, so size this budget for the whole deployment. Set
+all users share that proxy's address bucket and its open-socket cap, so size both for the whole
+deployment. Set
 its budget for that deployment and also limit
 real client addresses at the trusted proxy; do not simply trust `X-Forwarded-For` from callers.
 The global cap remains a backstop.
@@ -174,11 +178,12 @@ The global cap remains a backstop.
 | `--max-sockets` | `RELAY_MAX_SOCKETS` | 1024 |
 | `--max-rooms` | `RELAY_MAX_ROOMS` | 256 |
 | `--max-addresses` | `RELAY_MAX_ADDRESSES` | 4096 |
+| `--max-sockets-per-address` | `RELAY_MAX_SOCKETS_PER_ADDRESS` | 64 |
 
 Flags override environment. Values must be positive safe integers; zero, infinity, fractions
 and missing flag values fail startup. `startBunRelay({ limits: { maxSockets: 2048, ... } })`
 accepts the same budgets as camel-case options (`perAddressPerMinute`, `globalPerMinute`,
-`maxSockets`, `maxRooms`, `maxAddresses`). Programmatic options do not read environment.
+`maxSockets`, `maxRooms`, `maxAddresses`, `maxSocketsPerAddress`). Programmatic options do not read environment.
 `startBunRelay({ limiters })` can replace just the rate limiters; room/socket caps still hold.
 Admission reserves both caps synchronously before upgrade, rolls back failed upgrades and
 reclaims a room when its last pending/open socket leaves. `/health` remains available at capacity.

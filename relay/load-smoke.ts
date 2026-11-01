@@ -25,7 +25,7 @@ const deadlineMs = count("timeout-ms", 120_000);
 
 const connections = pcs * (1 + 2 * clientsPerPc);
 const local = args.includes("--url") ? null : startBunRelay({ port: 0, limits: {
-  perAddressPerMinute: connections, globalPerMinute: connections, maxSockets: connections, maxRooms: pcs,
+  perAddressPerMinute: connections, globalPerMinute: connections, maxSockets: connections, maxRooms: pcs, maxSocketsPerAddress: connections,
 } });
 const base = local ? `ws://127.0.0.1:${local.port}` : option("url", "");
 
