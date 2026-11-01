@@ -4,7 +4,7 @@
  * paragraph (its range ends at the start of what follows the words: the copy row or a work block)
  * and a drag past the last word both offer Quote and Comment, and Quote takes the reply's words
  * alone, never the copy row's labels or time. A selection reaching a user message or another reply
- * still offers nothing. At 1280 with a mouse and at 390 on a touch screen (the range a triple tap
+ * still offers nothing. A reply ending in a word its copy row shows (TXT) keeps it. At 1280 with a mouse and at 390 on a touch screen (the range a triple tap
  * or the handles leave). All files and HTTP traffic stay in this disposable, loopback-only app; no
  * herdr session is opened.
  */
@@ -110,7 +110,23 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
+  // the Claude chat's last reply ends in a word its copy row also shows (TXT): the quote keeps it
+  const gates = `<script>(() => {
+    const demo = window.fetch;
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+      if (url.pathname !== "/api/pane/conversation" || url.searchParams.get("pane_id") !== ${JSON.stringify(panes.api)}) return demo(input, init);
+      return Promise.resolve(demo(input, init)).then(async (response) => {
+        if (!response.ok) return response;
+        const body = await response.json();
+        if (Array.isArray(body.turns)) body.turns = [...body.turns,
+          { role: "user", ts: "2026-10-29T00:00:00.000Z", parts: [{ kind: "text", text: "How do I get the report out?" }] },
+          { role: "assistant", ts: "2026-10-29T00:00:01.000Z", end_ts: "2026-10-29T00:00:05.000Z", parts: [{ kind: "text", phase: "final_answer", text: "Open Reports and press Export.\\n\\nPick the format you want: CSV or TXT" }] }];
+        return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+      });
+    };
+  })();</script>`;
+  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
 
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
@@ -149,6 +165,7 @@ try {
           await frames(page);
           const composer = page.getByRole("textbox", { name: "Message", exact: true });
           const { words } = await lastParagraph(page);
+          if (agent === "claude") assert.equal(words, "Pick the format you want: CSV or TXT", `${label}: the reply ending in TXT`);
 
           for (const [gesture, select] of [["triple-click", tripleClick], ["drag past the end", dragPastEnd]] as const) {
             await composer.fill("");

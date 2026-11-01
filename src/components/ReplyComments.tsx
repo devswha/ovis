@@ -38,11 +38,17 @@ function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } 
     // anything taken past the words but the copy row (a work block's title, selectable or not) is more than nothing
     const copyRow = meta?.contains(node) === true && (atEnd || node.parentElement?.closest("button, [role=button]") != null);
     if (!copyRow) return null;
-    if (selectable(node.parentElement)) cut.push(taken);
+    // what a copy of the selection carries: selectable and drawn (a mouse's copy row hides its MD and TXT)
+    if (selectable(node.parentElement) && drawn(node.parentElement)) cut.push(taken);
   }
   const trimmed = range.cloneRange();
   trimmed.setEnd(words, words.childNodes.length);
   return { range: trimmed, cut };
+}
+
+/** Drawn on the page: a copy of the selection leaves out what is not (`display: none`, hidden). */
+function drawn(element: Element | null): boolean {
+  return element !== null && element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible";
 }
 
 /** `user-select: none` is not inherited as a computed value (a label inside a button reads `auto`): each ancestor is asked. */
@@ -71,9 +77,11 @@ export function replySelectionText(selection: Selection | null, root: Element): 
   // every part of the reply the range touches is its words: a work block, a skill or goal line or the meta row is not
   for (const child of turn.children) if (range.intersectsNode(child) && !child.classList.contains("markdown")) return null;
   let text = chatSelectionClipboardPayload(selection, root)?.text ?? selection.toString();
+  // the copy row's text comes last in the copy, in order: taken off its end, and nothing once one is not there
   for (const piece of (past?.cut ?? []).reverse()) {
     text = text.trimEnd();
-    if (text.endsWith(piece.trim())) text = text.slice(0, text.length - piece.trim().length);
+    if (!text.endsWith(piece.trim())) break;
+    text = text.slice(0, text.length - piece.trim().length);
   }
   return text.trim() === "" ? null : text;
 }
