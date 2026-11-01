@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { codexThreadTitle, folderName, placeLine, shortPathTitle, taskRowLines, stripPaneChrome } from "./paneName.ts";
+import { codexThreadTitle, folderName, placeLine, shortPathTitle, tabTitle, taskRowLines, stripPaneChrome } from "./paneName.ts";
 
 it("shows a path title as its last folder, and leaves any other title alone", () => {
   expect(shortPathTitle("/tmp/audit-oDjsU2/lms-backend")).toBe("lms-backend");
@@ -73,5 +73,10 @@ it("strips a Codex title to its thread for a row, and keeps the folder for an al
 
 it("drops an omp title's glyph and spinner for a row, and keeps them for the browser tab (#2568)", () => {
   expect(stripPaneChrome("π ⠋ Fix the build", "omp")).toBe("Fix the build");
-  expect(stripPaneChrome("π ⠋ Fix the build", "omp", false, true)).toBe("π ⠋ Fix the build");
+  expect(tabTitle("π ⠋ Fix the build", "omp")).toBe("π ⠋ Fix the build");
+  // a path after the mark is still shortened to its folder, as a row's is
+  expect(tabTitle("π ⠋ /home/me/dev/api", "omp")).toBe("π ⠋ api");
+  // a shell's title has no mark to keep; a title that is only the mark leaves nothing
+  expect(tabTitle("me@host:~/work/api", null)).toBe("api");
+  expect(tabTitle("π ⠋ ", "omp")).toBe("");
 });

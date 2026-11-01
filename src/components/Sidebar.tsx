@@ -15,7 +15,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { WorktreeDialog, type WorktreeDialogMode } from "./WorktreeDialog.tsx";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
-import { folderName, shortPathTitle, stripPaneChrome, taskRowLines } from "../lib/paneName.ts";
+import { folderName, shortPathTitle, stripPaneChrome, tabTitle, taskRowLines } from "../lib/paneName.ts";
 import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { userErrorMessage } from "../lib/userError.ts";
@@ -63,7 +63,7 @@ export function displayPaneTitle(pane: PaneInfo): string {
  * has no row mark or badge beside it (omp's `π ⠋`, #2568).
  */
 export function tabPaneTitle(pane: PaneInfo): string {
-  return pane.label?.trim() || shortPathTitle(stripPaneChrome(paneTitle(pane), pane.agent, false, true)) || pane.pane_id;
+  return pane.label?.trim() || tabTitle(paneTitle(pane), pane.agent) || pane.pane_id;
 }
 
 /**

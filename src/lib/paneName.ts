@@ -24,14 +24,24 @@ const AGENT_CHROME = /^π\s*[^\p{L}\p{N}\s]?\s*/u;
 /**
  * A pane's live title without what is drawn beside it: a shell's `user@host:`, an agent's glyph and
  * spinner, and the folder Codex adds after its thread. `whole` keeps that folder: an alert is read
- * away from the row that says where the pane is. `keepMark` keeps the glyph and spinner: the browser
- * tab has no row mark or badge, so its title is where a working agent shows it is working (#2568).
+ * away from the row that says where the pane is.
  */
-export function stripPaneChrome(title: string, agent: string | null | undefined, whole = false, keepMark = false): string {
+export function stripPaneChrome(title: string, agent: string | null | undefined, whole = false): string {
   const shellStripped = title.replace(SHELL_PREFIX, "");
   if (!agent) return shellStripped;
-  const marked = keepMark ? shellStripped : shellStripped.replace(AGENT_CHROME, "");
+  const marked = shellStripped.replace(AGENT_CHROME, "");
   return agent === "codex" && !whole ? codexThreadTitle(marked) : marked;
+}
+
+/**
+ * A pane's live title as the browser tab shows it: as a row's, with the agent's glyph and spinner
+ * kept in front. The tab has no row mark or badge, so its title is where a working agent shows it
+ * is working (#2568). The rest is shortened as a row's is, so a path after the mark is still its folder.
+ */
+export function tabTitle(title: string, agent: string | null | undefined): string {
+  const rest = shortPathTitle(stripPaneChrome(title, agent));
+  const mark = agent ? title.replace(SHELL_PREFIX, "").match(AGENT_CHROME)?.[0] ?? "" : "";
+  return rest ? `${mark}${rest}` : "";
 }
 
 export function shortPathTitle(title: string): string {
