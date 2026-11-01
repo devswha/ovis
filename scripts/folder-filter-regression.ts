@@ -16,6 +16,11 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   await filter.waitFor();
   await filter.fill("A");
   await until(async () => (await dialog.locator(".dir-browser-item").allTextContents()).join() === "a", "case-insensitive folder filter");
+  const [pickBox, listBox] = await Promise.all([
+    dialog.getByRole("button", { name: "Use this folder", exact: true }).boundingBox(),
+    dialog.locator(".dir-browser-list").boundingBox(),
+  ]);
+  assert.ok(pickBox && listBox && pickBox.y + pickBox.height <= listBox.y, "Use this folder sits above the folder list");
   const composition = await filter.evaluate((input) => [
     { key: "Enter", isComposing: true },
     { key: "Enter", keyCode: 229 },
