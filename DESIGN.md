@@ -2519,7 +2519,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   greeting and the composer is back at the bottom at once: it snaps, with no animation. Held
   messages keep the composer docked. Once a message went out, the greeting stays away for that
   pane until the conversation shows a turn or becomes another history: another lens, another
-  pane or a failed read does not bring it back. A stack too short for the composer and the
+  pane or a failed read does not bring it back. Nor does the chat's own empty line take its place
+  while that message is on its way or waits for its turn: the Codex and Claude apps never call a
+  thread empty once its first message is sent. A stack too short for the composer and the
   greeting leaves the greeting out (`.is-out`, hidden and `aria-hidden`) and the chat shows its
   own empty line. While the composer is lifted, the completion menu's height is capped to the
   room over the input card, where it scrolls. On a coarse pointer the greeting takes no touch:
