@@ -3,14 +3,15 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; env?: Record<string, string>; with?: Record<string, string> }
-interface Job { needs?: string | string[]; if?: string; environment?: string | { name: string }; permissions?: Record<string, string>; "timeout-minutes"?: number; steps: Step[] }
-interface Workflow { on: { workflow_dispatch: unknown; push?: unknown }; jobs: Record<string, Job> }
+interface Job { needs?: string | string[]; if?: string; env?: Record<string, string>; "runs-on"?: unknown; environment?: string | { name: string }; permissions?: Record<string, string>; "timeout-minutes"?: number; steps: Step[] }
+interface Workflow { on: { workflow_dispatch: unknown; push?: unknown }; env?: Record<string, string>; jobs: Record<string, Job> }
 
 /** The workflow at `path` (default: the committed one), as parsed YAML. */
 export const loadWorkflow = (path = process.env.SHELL_DEPLOY_WORKFLOW ?? new URL("../.github/workflows/release.yml", import.meta.url).pathname): Workflow =>
   Bun.YAML.parse(readFileSync(path, "utf8")) as Workflow;
 
 const job = (): Job => loadWorkflow().jobs["shell-deploy"]!;
+const attachJob = (): Job => loadWorkflow().jobs["shell-attach"]!;
 const indexOf = (predicate: (step: Step) => boolean): number => job().steps.findIndex(predicate);
 
 test("the shell deploys after publish, from the release workflow on main only, never on a tag push", () => {
@@ -28,21 +29,51 @@ test("the job builds the release tag's checkout and refuses any other commit", (
   const gate = steps.find((step) => step.name === "Require the release tag's commit")!;
   expect(gate.run).toContain('git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"');
   expect(gate.run).toContain('test "$(git rev-parse HEAD)" = "$RELEASE_SHA"');
-  expect(steps.indexOf(gate)).toBeLessThan(indexOf((step) => step.run === "bun run build:shell"));
+  const build = indexOf((step) => step.run === "bun run build:shell");
+  expect(steps.indexOf(gate)).toBeLessThan(build);
+  const required = indexOf((step) => step.name === "Require the built shell");
+  expect(required).toBe(build + 1);
+  expect(steps[required]!.run).toContain("index.html build.json");
+  expect(steps[required]!.run).toContain("exit 1");
 });
 
-test("it waits in production with the least permissions that attach a release asset", () => {
+test("it waits in production on a GitHub-hosted runner, reading only, with pinned actions and wrangler", () => {
   const environment = job().environment;
   expect(typeof environment === "string" ? environment : environment?.name).toBe("production");
-  expect(job().permissions).toEqual({ contents: "write" });
+  expect(job()["runs-on"]).toBe("ubuntu-24.04");
+  expect(job().permissions).toEqual({ contents: "read" });
   expect(job()["timeout-minutes"]).toBeGreaterThan(0);
-  for (const step of job().steps) if (step.uses && !step.uses.startsWith("./")) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
+  for (const step of [...job().steps, ...attachJob().steps]) if (step.uses && !step.uses.startsWith("./")) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
+  expect(job().steps.some((step) => /bunx wrangler@\d+\.\d+\.\d+ pages deploy /.test(step.run ?? ""))).toBe(true);
+});
+
+test("only the attach job may write, and it holds no Cloudflare secret", () => {
+  const workflow = loadWorkflow();
+  expect(attachJob().needs).toBe("shell-deploy");
+  expect(attachJob().if).toBeUndefined();
+  expect(attachJob().permissions).toEqual({ contents: "write" });
+  expect(attachJob().environment).toBeUndefined();
+  for (const [name, candidate] of Object.entries(workflow.jobs)) {
+    if (name === "shell-deploy") continue;
+    expect(JSON.stringify(candidate)).not.toContain("CLOUDFLARE_");
+  }
+});
+
+test("only the deploy step receives the Cloudflare secrets; others may only test that they are set", () => {
+  const secret = "secrets.CLOUDFLARE_";
+  expect(JSON.stringify(loadWorkflow().env ?? {})).not.toContain(secret);
+  expect(JSON.stringify(job().env ?? {})).not.toContain(secret);
+  const deploy = indexOf((step) => step.run?.includes("pages deploy dist-shell") === true);
+  expect(deploy).toBeGreaterThanOrEqual(0);
+  job().steps.forEach((step, index) => {
+    if (index !== deploy) expect(JSON.stringify(step).replace(/secrets\.CLOUDFLARE_\w+ != ''/g, "")).not.toContain(secret);
+  });
 });
 
 test("the deploy is skipped with a notice without the secrets, and verification follows it", () => {
   const { steps } = job();
   const guard = steps.findIndex((step) => step.env?.HAS_CLOUDFLARE_API_TOKEN !== undefined && step.env?.HAS_CLOUDFLARE_ACCOUNT_ID !== undefined);
-  const deploy = indexOf((step) => step.run?.includes("bunx wrangler pages deploy dist-shell --project-name ovis-app --branch main") === true);
+  const deploy = indexOf((step) => step.run?.includes("pages deploy dist-shell --project-name ovis-app --branch main") === true);
   const verify = indexOf((step) => step.env?.SHELL_BUILD_URL !== undefined);
   expect(guard).toBeGreaterThanOrEqual(0);
   expect(deploy).toBeGreaterThan(guard);
@@ -62,17 +93,24 @@ test("the deploy is skipped with a notice without the secrets, and verification 
   expect(steps[verify]!.run).toContain("--max-time");
 });
 
-test("dist-shell.tar.gz and its SHA-256 are attached to the release after verification", () => {
+test("dist-shell.tar.gz and its SHA-256 are attached to the release from the artifact the deploy job packed", () => {
   const { steps } = job();
-  const verify = indexOf((step) => step.env?.SHELL_BUILD_URL !== undefined);
-  const attach = indexOf((step) => step.run?.includes("gh release upload") === true);
-  expect(attach).toBeGreaterThan(verify);
-  expect(steps[attach]!.if).toBeUndefined();
-  expect(steps[attach]!.run).toContain("dist-shell.tar.gz");
-  expect(steps[attach]!.run).toContain("dist-shell.tar.gz.sha256");
-  expect(steps[attach]!.env?.GH_TOKEN).toBe("${{ github.token }}");
-  const pack = steps.find((step) => step.name === "Pack the shell")!;
-  expect(pack.run).toContain("sha256sum dist-shell.tar.gz");
+  expect(steps.some((step) => step.run?.includes("gh release upload") === true)).toBe(false);
+  const pack = indexOf((step) => step.name === "Pack the shell");
+  expect(steps[pack]!.run).toContain("sha256sum dist-shell.tar.gz");
+  const upload = indexOf((step) => step.uses?.startsWith("actions/upload-artifact@") === true);
+  expect(upload).toBe(pack + 1);
+  expect(upload).toBeLessThan(indexOf((step) => step.env?.CLOUDFLARE_API_TOKEN !== undefined));
+  expect(steps[upload]!.with?.["if-no-files-found"]).toBe("error");
+  const attachSteps = attachJob().steps;
+  const download = attachSteps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@") === true);
+  const attach = attachSteps.findIndex((step) => step.run?.includes("gh release upload") === true);
+  expect(attachSteps[download]!.with?.name).toBe(steps[upload]!.with?.name);
+  expect(attach).toBeGreaterThan(download);
+  expect(attachSteps[attach]!.if).toBeUndefined();
+  expect(attachSteps[attach]!.run).toContain("dist-shell.tar.gz");
+  expect(attachSteps[attach]!.run).toContain("dist-shell.tar.gz.sha256");
+  expect(attachSteps[attach]!.env?.GH_TOKEN).toBe("${{ github.token }}");
 });
 
 /** Runs the verify step's script through `bash -e` against a local server that answers each request with the next status and `body`. */

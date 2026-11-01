@@ -694,10 +694,13 @@ visible to them even without a GitHub release. Existing tags cannot be reused; f
 published version with a new patch release. If publishing fails after a tag was created,
 verify that tag's commit and repair its GitHub release rather than moving the tag.
 
-The `shell-deploy` job then builds the hosted shell (`bun run build:shell`) from the release tag,
-deploys it with `bunx wrangler pages deploy dist-shell --project-name ovis-app --branch main`, waits
-until `https://app.ovis.sh/build.json` answers 2xx with the tag's commit as its `revision`, and
-attaches `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256` to the release, so anyone can compare
+The `shell-deploy` job then builds the hosted shell (`bun run build:shell`) from the release tag on
+a GitHub-hosted runner with read-only repository access, fails if `dist-shell/` lacks `index.html`
+or `build.json`, deploys it with
+`bunx wrangler@4.156.0 pages deploy dist-shell --project-name ovis-app --branch main`, and waits
+until `https://app.ovis.sh/build.json` answers 2xx with the tag's commit as its `revision`. The
+`shell-attach` job, the only one that may write, then attaches the `dist-shell.tar.gz` and
+`dist-shell.tar.gz.sha256` it packed to the release, so anyone can compare
 what app.ovis.sh serves with what the tag builds. Nothing else deploys the shell: never from a
 branch or a developer machine. Until the owner setup below is done the job passes with a notice
 naming the missing secrets, still attaches the tarball, and app.ovis.sh stays as it was.
