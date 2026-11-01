@@ -4,6 +4,8 @@
 # BROWSER_WORKERS: worker count for parallel mode (default: min(cores/2, 6))
 set -euo pipefail
 
+# The relay scripts drive the hosted shell, a build of its own (dist-shell/).
+bun run build:shell
 if [ "${BROWSER_PARALLEL:-}" = "1" ]; then
   exec bun scripts/ci-browser-parallel.ts
 fi
@@ -48,6 +50,9 @@ if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
 fi
 CHROME_PATH="$(bash scripts/ci-chromium.sh)"
 export CHROME_PATH
+# the relay media run encodes its test video with the pinned ffmpeg
+FFMPEG="${FFMPEG:-$(bash scripts/ci-ffmpeg.sh)}"
+export FFMPEG
 # The demo scripts below all show the same client: it is built once here and each copies it
 # (scripts/demo-build.ts), instead of each building it again.
 HERDR_DEMO_BUILD="$(mktemp -d)"
@@ -182,4 +187,5 @@ run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
-run_script scripts/relay-shell-browser-qa.ts
+# runs relay-shell-browser-qa.ts and relay-media-browser-qa.ts too
+run_script scripts/relay-e2e-regression.ts

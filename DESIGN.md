@@ -3015,8 +3015,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (the phone address,
-  Keep screen on, Install; then Portal, where the server offers it; then paired devices; then
-  Access),
+  Keep screen on, Install; then Remote access through Ovis relay, where the server has the route;
+  then Portal, where the server offers it; then paired devices; then Access),
   **Remote PCs** (Add PC, Update PC bridges automatically; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
   Updates opens the dialog on About.
 - Every page is built from the same parts (`components/SettingsControls.tsx`). A group is an
@@ -3106,6 +3106,42 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ([`Restart=on-failure`](https://github.com/cloudflare/cloudflared/blob/733bfb93/cmd/cloudflared/linux_service.go)),
   without limit. This differs on purpose: one restart, in the existing status row with no new
   control or setting, so a tunnel that keeps failing says so instead of looping.
+- Remote access through Ovis relay (`components/RelayPanel.tsx`, `lib/useRelay.ts`), a group of
+  its own between Phone and Portal where the server answers `/api/relay`: the caption, one plain
+  sentence (anywhere, without Tailscale; end-to-end encrypted; the relay sees only when and how
+  much), then one row whose control is the switch and whose sentence is the relay's state in
+  words (Off, Connecting…, Online with how many phones are connected, Error with the server's
+  sentence, Blocked by serve-only or an unreadable identity), one step above a row's sentence
+  (`--fs-sm`, the label's own size) and never above its label. While the gate is still open,
+  no token is set and nothing blocks the relay, the condition line under it says turning the
+  relay on closes the gate; the switch is disabled while blocked, with the reason in its place,
+  and a serve-only install is offered no reset either, since the server refuses that too (an
+  unreadable identity keeps it: the reset is what mends it). While the relay is online the pairing offer is a QR code beside its words as the
+  Phone group draws an address (`.relay-pairing`, stacked on a phone), with a countdown and
+  **New code**. The server keeps one pending pairing code, which this offer and the Devices
+  group's code both carry, so the offer is asked for when the group opens with the relay online,
+  when the Devices group starts a code (`PAIRING_CODE_EVENT`, lib/useRelay.ts: both then show
+  the same code), when its countdown runs out, and on **New code**, which starts a new code
+  first and tells the Devices group; never on a timer or a render. An offer that arrives already
+  expired (the PC's clock and this one apart) says so and waits for **New code** rather than
+  asking again and again. **Reset relay identity** is one row
+  with its one-sentence consequence and a neutral **Reset**, confirmed in the shared
+  `ConfirmDialog` ("Phones paired through the relay will need to scan a new code"). A watching
+  device or Portal visitor sees the switch disabled and the state, no offer and no reset:
+  the condition text beside it explains that only the PC's owner can control the relay through a
+  direct connection and asks them to open Ovis on the PC or at its direct address. It reuses the
+  row's condition style, beside the control it explains, rather than a separate banner.
+  Portal watch visitors get `403 read_only` first; even a saved drive invitation gets
+  `403 owner_only` (the watch guard precedes the owner guard in `server/dispatch.ts:223-243`).
+  The hosted shell (a page
+  carrying `<meta name="ovis-shell" content="relay">`) shows the group not at all, since
+  every relay mutation requires a direct connection (`403 local_required` over the relay).
+  In Devices, a device paired through the relay wears
+  the **via relay** pill, the `this device` pill in neutral tones (`.devices-via-relay`: a
+  category, not this device's own mark). The precedent is Paseo's relay pairing (the daemon's
+  key and relay in a QR `#offer=` fragment the phone confirms, shown while the relay is up); this
+  differs in keeping the state a sentence in the switch's row rather than a status badge, and in
+  sharing one pending code with the Devices group instead of a code of its own.
 - Access, the last group of Phone & devices, is read-only: one row per fact the server reports
   (`security` on `/api/health`), each a label, its dim sentence and the value in place of a
   control (`.settings-fact`: `--fs-md`, `--fw-medium`, `--text-strong`, end-aligned, at most 45%

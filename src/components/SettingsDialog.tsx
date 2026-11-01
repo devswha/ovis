@@ -40,6 +40,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
+import { RelayPanel } from "./RelayPanel.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
 import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
@@ -855,8 +856,9 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
       {fact(t("Listens on"), bind === "loopback" ? t("Loopback") : bind === "tailnet" ? t("Tailscale address") : t("Other address"),
         bind === "other" ? t("A network address, every interface or a host name: other devices on that network may reach it.")
           : t("The address the server listens on. A proxy on this PC can still forward other traffic to it."))}
-      {fact(t("This connection"), ingress === "direct" ? t("No proxy seen") : ingress === "proxy" ? t("Through a proxy") : ingress === "tailscale" ? t("Through Tailscale") : ingress === "funnel" ? t("Through Tailscale Funnel") : t("Unknown"),
+      {fact(t("This connection"), ingress === "direct" ? t("No proxy seen") : ingress === "proxy" ? t("Through a proxy") : ingress === "tailscale" ? t("Through Tailscale") : ingress === "funnel" ? t("Through Tailscale Funnel") : ingress === "relay" ? t("Through the Ovis relay") : t("Unknown"),
         ingress === "direct" ? t("No proxy said it forwarded this browser's request. One that adds nothing, such as an SSH tunnel, looks the same.")
+          : ingress === "relay" ? t("This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.")
           : t("How this browser's request arrived, not how every device reaches the server."))}
       {fact(t("Public internet"), summary.public_exposure === "observed" ? t("Reachable") : t("Unknown"),
         summary.public_exposure === "observed" ? t("This request came through Tailscale Funnel, which is open to the public internet.")
@@ -919,6 +921,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
           {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
         </SettingsRow>
       </SettingsGroup>
+
+      <RelayPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} closesGate={security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured} />
 
       <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
 
