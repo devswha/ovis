@@ -126,6 +126,8 @@ export class HerdrSocket {
   private readonly attached = new Map<string, AttachState>();
   /** panes this tab views read-only while out of use (feature "watch"), at the grid it asked for; replayed after each snapshot */
   private readonly watched = new Map<string, { cols: number; rows: number }>();
+  /** panes unwatched on this connection: an end of that earlier view can still be on its way, after a new watch */
+  private readonly superseded = new Set<string>();
   /** Panes whose mounted, visible chat asks for transcript invalidations. The server drops interest
    * with the attachment, so each attach of a pane listed here (a reconnect's, or a tab back in use
    * after letting go of it) asks again; only the chat taking its interest back removes it. */
@@ -335,6 +337,8 @@ export class HerdrSocket {
       // the reconnect would leave the server on the stale role and no ack would ever
       // arrive - the UI would stay stuck in the old role while the header pill lies
       this.rawSend({ type: "role", mode: this.mode });
+      // no earlier view of this connection can end on a new one
+      this.superseded.clear();
       // a new connection is a new client to the server: it has to hear again whether the page is in use
       if (this.presence !== null) this.rawSend({ type: "presence", active: this.presence });
       // Mounted panes decide whether a new connection may acquire an attach before any replay.
@@ -402,7 +406,17 @@ export class HerdrSocket {
         this.markFeatures();
       }
       if (message.type === "error" && message.code === "attach_held") this.trace.record("input_held", {}, true);
-      if (message.type === "watch-end") this.watched.delete(message.pane_id);
+      if (message.type === "watch-end") {
+        // The end may be the unwatched view's, sent before the server read the unwatch: it carries no
+        // view of its own. Start the current view again rather than drop it, so the next unwatch still
+        // reaches the server; an end that follows is this view's own.
+        const grid = this.watched.get(message.pane_id);
+        if (this.superseded.delete(message.pane_id) && grid) {
+          this.rawSend({ type: "watch", pane_id: message.pane_id, cols: grid.cols, rows: grid.rows });
+          return;
+        }
+        this.watched.delete(message.pane_id);
+      }
       if (message.type === "pty-data") this.outputSeen.add(message.pane_id);
       if ((message.type === "input-ready" && message.ready !== false) || (message.type === "pty-data" && this.featuresKnown && !this.features.has("input-ready"))) {
         if (this.attached.has(message.pane_id)) this.inputReady.add(message.pane_id);
@@ -801,7 +815,10 @@ export class HerdrSocket {
   }
 
   unwatch(paneId: string): void {
-    if (this.watched.delete(paneId) && this.connected && this.features.has("watch")) this.rawSend({ type: "unwatch", pane_id: paneId });
+    if (this.watched.delete(paneId) && this.connected && this.features.has("watch")) {
+      this.rawSend({ type: "unwatch", pane_id: paneId });
+      this.superseded.add(paneId);
+    }
   }
 
   resize(paneId: string, cols: number, rows: number, force = false): void {

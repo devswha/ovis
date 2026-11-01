@@ -788,6 +788,33 @@ it("watches a pane it let go of only on a server that can, again after a reconne
   client.close();
 });
 
+it("keeps a new watch when the unwatched view's end arrives after it, so the next unwatch still goes out", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  const ended: string[] = [];
+  client.on((message) => { if (message.type === "watch-end") ended.push(message.pane_id); });
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  socket.receive(snapshot(["watch"]));
+  const frames = () => socket.sent.filter((m) => m.type === "watch" || m.type === "unwatch");
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  client.watch("w1:p1", 100, 30);
+  // the first view's end, sent before the server read the unwatch
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual([]);
+  client.unwatch("w1:p1");
+  expect(frames().map((m) => m.type)).toEqual(["watch", "unwatch", "watch", "watch", "unwatch"]);
+  // a view that really ends after its restart is ended for the page
+  client.watch("w1:p1", 100, 30);
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual(["w1:p1"]);
+  client.unwatch("w1:p1");
+  expect(frames().at(-1)).toEqual({ type: "watch", pane_id: "w1:p1", cols: 100, rows: 30 });
+  client.close();
+});
+
 it("restores watches and chat interest once per connection: on the features frame, not again on the snapshot", () => {
   const client = new HerdrSocket("ws://test/ws");
   client.trustFeatures(() => true);

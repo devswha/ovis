@@ -1025,6 +1025,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // a hidden recent tab's view, kept unparsed until its return (null: none, or past VIEW_BUFFER_MAX)
       let viewBuffer: string[] | null = null;
       let viewBytes = 0;
+      // a hidden page dropped that view, and the terminal reset it began with: the return resets itself
+      let viewDropped = false;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
       // Text composed while the pane could not take input (a dictated phrase still in the editor)
@@ -1225,12 +1227,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
-          // Queued frames are stale: a frozen page could not parse them, and the return attaches afresh.
-          if (document.visibilityState === "hidden") {
-            viewBuffer = null;
-            viewBytes = 0;
-            return;
-          }
           // a hidden recent tab keeps its view unparsed and parses it once on its return (resume): hidden
           // tabs cost no parsing or drawing. Past the bound it is dropped, and the return draws from the attach.
           if (!presentedRef.current) {
@@ -1971,8 +1967,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         cachedReleaseRef.current = cachedRef.current;
         // A recent tab lets go of its attach, and of the input with it, as any hidden tab does; while
         // this window is in use, herdr's read-only view keeps its screen current for the return
+        // A page hidden by then watches nothing: a frozen page could not draw the view (stopWatch)
         if (!cachedRef.current) {
-          if (document.visibilityState === "hidden") stopWatch();
+          if (document.visibilityState === "hidden") stopWatch(current);
           else watch(current);
         } else afterSwitch(reconcileView);
         if (idle) {
@@ -2013,20 +2010,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // then parses the whole burst at once (the return's freeze), while the unacknowledged
       // server queue grows until the socket is closed (4008) on a weak link. Returning attaches
       // afresh, and the attach's replay is the screen it needs.
-      const stopWatch = (pane = paneRef.current): void => {
+      const stopWatch = (pane: string | null): void => {
         if (pane && watchingRef.current) {
           socket.unwatch(pane);
           setWatching(false);
         }
+        if (viewBuffer !== null) viewDropped = true;
         viewBuffer = null;
         viewBytes = 0;
       };
       // the pane's screen starts again from the view, as on a pane switch; the view's first frame is whole
       const watch = (pane: string): void => {
-        if (document.visibilityState === "hidden") {
-          stopWatch(pane);
-          return;
-        }
         // a bridge without a read-only view (herdr-core) has nothing to start the screen again from:
         // the pane keeps its last screen until the next attach, which resets it (resume)
         if (!socket.canWatch()) {
@@ -2108,7 +2102,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // A frame the old stream left open is not the new one's
         frameGateRef.current.reset();
         // what the view drew while this tab was hidden, parsed now in one go, before the attach's own screen
-        if (viewBuffer !== null && viewBuffer.length > 1) {
+        const drewView = viewBuffer !== null && viewBuffer.length > 1;
+        if (drewView && viewBuffer !== null) {
           // marked replay: a copy request in it was answered when it was new (OSC 52 above)
           writeOutput(viewBuffer.join(""), true, () => {
             if (!disposed && paneRef.current === current) modifyOtherKeysRef.current = 0;
@@ -2118,7 +2113,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         viewBytes = 0;
         // the hidden tabs' views start or stop once this pane drew (paneTerminalShared.ts)
         holdViews();
-        if (!cachedReleaseRef.current) {
+        // a recent tab starts from its view's reset; one whose view a hidden page dropped starts as any other tab
+        if (!cachedReleaseRef.current || viewDropped && !drewView) {
           writeOutput("\x1bc", false, () => {
             if (disposed || paneRef.current !== current || generation !== outputGeneration) return;
             modifyOtherKeysRef.current = 0;
@@ -2126,6 +2122,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           modifyOtherKeysRef.current = 0;
         }
         cachedReleaseRef.current = false;
+        viewDropped = false;
         setInputReady(false);
         setOutputReady(false);
         if (!observeRef.current && !chatViewRef.current && shownRef.current && !keyboardHolds(true)) {
@@ -2208,11 +2205,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // freeze before a timer runs, and its attach would keep herdr's own window at the phone's size.
       const hiddenOnTouch = (): boolean => coarseRef.current && document.visibilityState === "hidden";
       const onVisibility = (): void => {
-        if (document.visibilityState === "hidden") stopWatch();
+        const pane = paneRef.current;
+        if (document.visibilityState === "hidden") stopWatch(pane);
         if (inUse()) back();
         else {
           leave();
           if (hiddenOnTouch()) release();
+          // shown again without the focus: a pane let go of while hidden watches again, as one left shown does
+          else if (document.visibilityState === "visible" && pane && releasedRef.current && !cachedRef.current
+            && !watchingRef.current && mirroredRef.current === false && presentedRef.current) watch(pane);
         }
       };
       // Another device can size the pty while this window keeps its focus (a phone used beside a

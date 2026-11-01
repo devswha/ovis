@@ -380,6 +380,31 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     await pocket.context().close();
     console.log("PASS a phone put away lets go of the pane at once and attaches again when it is back");
 
+    // a desktop window hidden lets go of its pane without watching it; shown again behind another
+    // app (no focus), it watches the pane again, so its screen stays current as before it was hidden
+    const away = await open({ viewport: { width: 1280, height: 800 } });
+    await attached(away);
+    await pauseClock(away);
+    const awayVisibility = (hidden: boolean) => away.evaluate((hide) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => hide ? "hidden" : "visible" });
+      Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, hidden);
+    type WireFrame = { dir: string; type: string };
+    await awayVisibility(true);
+    await away.clock.runFor(2_000);
+    await away.waitForFunction(() => (window as unknown as { frames_: WireFrame[] }).frames_.some((f) => f.dir === "out" && f.type === "detach"), undefined, { timeout: 10_000 });
+    assert.ok(!(await framesOf(away)).some((f) => f.dir === "out" && f.type === "watch"), "a hidden desktop window lets go of its pane without watching it");
+    const shownAt = (await framesOf(away)).length;
+    await awayVisibility(false);
+    await away.clock.resume();
+    await away.waitForFunction((from) => (window as unknown as { frames_: WireFrame[] }).frames_.slice(from).some((f) => f.dir === "out" && f.type === "watch"), shownAt, { timeout: 10_000 });
+    await size();
+    await away.waitForFunction((from) => (window as unknown as { frames_: WireFrame[] }).frames_.slice(from).some((f) => f.dir === "in" && f.type === "watch-data"), shownAt, { timeout: 10_000 });
+    await viewOnly(away).waitFor({ timeout: 10_000 });
+    await away.context().close();
+    console.log("PASS a desktop window let go of while hidden watches its pane again when shown without the focus");
+
     // a font the user chose loads after every attach and refits the grid: one no device has falls
     // back to the built-in fonts, so the grid keeps its size
     const desktop = await open({ viewport: { width: 1280, height: 800 } }, { terminalFontFamily: "ovis-test-no-such-font" });
