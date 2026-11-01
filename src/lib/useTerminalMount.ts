@@ -149,6 +149,8 @@ export interface TerminalMountDeps {
   setTerminal: Dispatch<SetStateAction<Terminal | null>>;
   setUnsupported: Dispatch<SetStateAction<boolean>>;
   setWatching: (next: boolean) => void;
+  /** shows the view-only banner for a view a hidden page starts only once it is shown (false: as `watching` says) */
+  setViewHeld: (held: boolean) => void;
   sharedGridRef: RefObject<{ cols: number; rows: number; } | null>;
   shortcutSettings: RefObject<ShortcutOverrides>;
   shownRef: RefObject<boolean>;
@@ -170,7 +172,7 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef } = deps;
+  const { activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -1027,6 +1029,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let viewBytes = 0;
       // a hidden page dropped that view, and the terminal reset it began with: the return resets itself
       let viewDropped = false;
+      // the pane the running view was asked for: a hide stops that one, whatever pane the render moved to
+      let viewPane: string | null = null;
       // set by a disconnect: the first frame after the reconnect tries a preference that could not be read again
       let rereadHerdrUi = false;
       // Text composed while the pane could not take input (a dictated phrase still in the editor)
@@ -1233,7 +1237,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (viewBuffer !== null && viewBytes + message.data.length <= VIEW_BUFFER_MAX) {
               viewBuffer.push(message.data);
               viewBytes += message.data.length;
-            } else viewBuffer = null;
+            } else {
+              // past the bound the view, and the reset it began with, are gone: the return resets itself
+              if (viewBuffer !== null) viewDropped = true;
+              viewBuffer = null;
+            }
             return;
           }
           const owner = message.pane_id;
@@ -1967,11 +1975,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         cachedReleaseRef.current = cachedRef.current;
         // A recent tab lets go of its attach, and of the input with it, as any hidden tab does; while
         // this window is in use, herdr's read-only view keeps its screen current for the return
-        // A page hidden by then watches nothing: a frozen page could not draw the view (stopWatch)
-        if (!cachedRef.current) {
-          if (document.visibilityState === "hidden") stopWatch(current);
-          else watch(current);
-        } else afterSwitch(reconcileView);
+        // A page hidden by then only says so: a frozen page could not draw the view (watch)
+        if (!cachedRef.current) watch(current);
+        else afterSwitch(reconcileView);
         if (idle) {
           // the attach is gone: the next one that takes input starts the quiet spell again
           inputWasReady = false;
@@ -2010,10 +2016,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // then parses the whole burst at once (the return's freeze), while the unacknowledged
       // server queue grows until the socket is closed (4008) on a weak link. Returning attaches
       // afresh, and the attach's replay is the screen it needs.
-      const stopWatch = (pane: string | null): void => {
-        if (pane && watchingRef.current) {
-          socket.unwatch(pane);
+      const stopWatch = (): void => {
+        if (viewPane !== null && watchingRef.current) {
+          socket.unwatch(viewPane);
           setWatching(false);
+          // a pane let go of shows its view again once the page is shown (onVisibility)
+          if (!cachedRef.current) setViewHeld(true);
         }
         if (viewBuffer !== null) viewDropped = true;
         viewBuffer = null;
@@ -2027,7 +2035,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           setWatching(false);
           return;
         }
+        // A hidden page watches nothing (stopWatch): it says the pane is view only, and the view
+        // starts when the page is shown again (onVisibility), or the return attaches (resume)
+        if (document.visibilityState === "hidden") {
+          setViewHeld(true);
+          return;
+        }
         const generation = ++outputGeneration;
+        viewPane = pane;
         if (!presentedRef.current) {
           // the view of a hidden tab is parsed on its return, starting with this reset (watch-data)
           viewBuffer = ["\x1bc"];
@@ -2087,10 +2102,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         setReleased(false);
         const current = paneRef.current;
         if (!current) return;
-        if (watchingRef.current) {
-          socket.unwatch(current);
-          setWatching(false);
-        }
+        if (watchingRef.current) socket.unwatch(current);
+        // also a view only held for a hidden page's return
+        setWatching(false);
         // A fresh attach says attach_held again if needed; success does not send attach-resumed.
         setHeld(false);
         // the pane's screen starts again from the new attach, as on a pane switch
@@ -2103,6 +2117,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         frameGateRef.current.reset();
         // what the view drew while this tab was hidden, parsed now in one go, before the attach's own screen
         const drewView = viewBuffer !== null && viewBuffer.length > 1;
+        // a view started (its reset is in its buffer) or dropped: the terminal starts from a reset
+        const viewReset = viewDropped || viewBuffer !== null;
         if (drewView && viewBuffer !== null) {
           // marked replay: a copy request in it was answered when it was new (OSC 52 above)
           writeOutput(viewBuffer.join(""), true, () => {
@@ -2114,7 +2130,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // the hidden tabs' views start or stop once this pane drew (paneTerminalShared.ts)
         holdViews();
         // a recent tab starts from its view's reset; one whose view a hidden page dropped starts as any other tab
-        if (!cachedReleaseRef.current || viewDropped && !drewView) {
+        if (!cachedReleaseRef.current || viewReset && !drewView) {
           writeOutput("\x1bc", false, () => {
             if (disposed || paneRef.current !== current || generation !== outputGeneration) return;
             modifyOtherKeysRef.current = 0;
@@ -2206,7 +2222,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const hiddenOnTouch = (): boolean => coarseRef.current && document.visibilityState === "hidden";
       const onVisibility = (): void => {
         const pane = paneRef.current;
-        if (document.visibilityState === "hidden") stopWatch(pane);
+        if (document.visibilityState === "hidden") stopWatch();
         if (inUse()) back();
         else {
           leave();

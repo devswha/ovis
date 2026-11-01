@@ -126,8 +126,13 @@ export class HerdrSocket {
   private readonly attached = new Map<string, AttachState>();
   /** panes this tab views read-only while out of use (feature "watch"), at the grid it asked for; replayed after each snapshot */
   private readonly watched = new Map<string, { cols: number; rows: number }>();
-  /** panes unwatched on this connection: an end of that earlier view can still be on its way, after a new watch */
-  private readonly superseded = new Set<string>();
+  /**
+   * Per pane, the server views this connection ended or replaced (an unwatch, a watch over a running
+   * one) whose own end can still be on its way: each may have ended before the server read the
+   * frame. `fence` is a ping sent after the last of them: its pong (or a later one) proves every such
+   * end has arrived, and any end after it is the current view's own.
+   */
+  private readonly superseded = new Map<string, { ends: number; fence: number | null }>();
   /** Panes whose mounted, visible chat asks for transcript invalidations. The server drops interest
    * with the attachment, so each attach of a pane listed here (a reconnect's, or a tab back in use
    * after letting go of it) asks again; only the chat taking its interest back removes it. */
@@ -364,6 +369,9 @@ export class HerdrSocket {
       }
       // ended before the handlers run, so the input checks they make already read true; the pong
       // goes on to them, so a view that read input as refused during the probe reads it again
+      if (message.type === "pong") {
+        for (const [paneId, stale] of this.superseded) if (stale.fence !== null && message.id >= stale.fence) this.superseded.delete(paneId);
+      }
       if (message.type === "pong" && this.probeIds.has(message.id)) {
         this.trace.record("pong");
         this.probeDrops = 0;
@@ -407,12 +415,19 @@ export class HerdrSocket {
       }
       if (message.type === "error" && message.code === "attach_held") this.trace.record("input_held", {}, true);
       if (message.type === "watch-end") {
-        // The end may be the unwatched view's, sent before the server read the unwatch: it carries no
-        // view of its own. Start the current view again rather than drop it, so the next unwatch still
-        // reaches the server; an end that follows is this view's own.
+        // Before the fence's pong, the end may be a superseded view's, sent before the server read the
+        // frame that ended it: it names no view. Start the current view again rather than drop it, so
+        // the next unwatch still reaches the server; once every superseded view could have ended, an
+        // end is this view's own.
         const grid = this.watched.get(message.pane_id);
-        if (this.superseded.delete(message.pane_id) && grid) {
+        const stale = this.superseded.get(message.pane_id);
+        if (stale) {
+          stale.ends -= 1;
+          if (stale.ends <= 0) this.superseded.delete(message.pane_id);
+        }
+        if (stale && grid) {
           this.rawSend({ type: "watch", pane_id: message.pane_id, cols: grid.cols, rows: grid.rows });
+          this.supersede(message.pane_id);
           return;
         }
         this.watched.delete(message.pane_id);
@@ -803,9 +818,14 @@ export class HerdrSocket {
    */
   watch(paneId: string, cols: number, rows: number): boolean {
     if (!this.canWatch()) return false;
+    const running = this.watched.has(paneId);
     this.watched.set(paneId, { cols, rows });
     // before the features are known, the handler that learns them sends it
-    if (this.connected && this.featuresKnown) this.rawSend({ type: "watch", pane_id: paneId, cols, rows });
+    if (this.connected && this.featuresKnown) {
+      this.rawSend({ type: "watch", pane_id: paneId, cols, rows });
+      // the server replaces the running view with this one
+      if (running) this.supersede(paneId);
+    }
     return true;
   }
 
@@ -817,8 +837,19 @@ export class HerdrSocket {
   unwatch(paneId: string): void {
     if (this.watched.delete(paneId) && this.connected && this.features.has("watch")) {
       this.rawSend({ type: "unwatch", pane_id: paneId });
-      this.superseded.add(paneId);
+      this.supersede(paneId);
     }
+  }
+
+  /** One more server view of this pane was just ended by a frame; a ping after it fences its possible end. */
+  private supersede(paneId: string): void {
+    const stale = this.superseded.get(paneId) ?? { ends: 0, fence: null };
+    stale.ends += 1;
+    if (this.features.has("ping")) {
+      stale.fence = this.nextPing++;
+      this.rawSend({ type: "ping", id: stale.fence });
+    }
+    this.superseded.set(paneId, stale);
   }
 
   resize(paneId: string, cols: number, rows: number, force = false): void {

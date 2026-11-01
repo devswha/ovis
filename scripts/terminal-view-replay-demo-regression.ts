@@ -156,6 +156,46 @@ try {
       assert.equal(await mouseMode(), false, `${width}: a recent tab whose view a hidden page dropped starts again from a reset`);
       assert.deepEqual(errors, [], "no browser errors");
       console.log(`PASS ${width}: a recent tab whose view a hidden page dropped attaches from a reset`);
+
+      // The same holds for a view past its bound (dropped with its reset), and for a view started
+      // again (the window left and back) whose first frame has not come by the return
+      const returnsFromReset = async (label: string, away: () => Promise<void>) => {
+        await page.evaluate((pane) => {
+          for (const socket of window.viewFixture.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\x1b[?1000h" });
+        }, a);
+        await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] .xterm`)?.classList.contains("enable-mouse-events"), a, { timeout: 10_000 });
+        const left = await page.evaluate(() => window.viewFixture.sent.length);
+        await page.locator(`.tab-strip [role="tab"][data-tab-id="${tabB}"]`).click();
+        await frame(b).locator("[data-pane-content]").waitFor();
+        await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "watch" && sent.pane_id === pane), { pane: a, start: left }, { timeout: 10_000 });
+        await away();
+        const back = await page.evaluate(() => window.viewFixture.sent.length);
+        await page.locator(`.tab-strip [role="tab"][data-tab-id="${tabA}"]`).click();
+        await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "attach" && sent.pane_id === pane), { pane: a, start: back }, { timeout: 10_000 });
+        await frame(a).locator("[data-pane-content]").waitFor();
+        await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] .xterm`)?.classList.contains("enable-mouse-events") === false, a, { timeout: 10_000 })
+          .catch(() => undefined);
+        assert.equal(await mouseMode(), false, `${width}: ${label} starts again from a reset`);
+        assert.deepEqual(errors, [], "no browser errors");
+        console.log(`PASS ${width}: ${label} attaches from a reset`);
+      };
+      await returnsFromReset("a recent tab whose view outgrew its buffer", () => page.evaluate((pane) => {
+        for (const socket of window.viewFixture.sockets) socket.push({ type: "watch-data", pane_id: pane, data: "x".repeat(600 * 1024) });
+      }, a));
+      await returnsFromReset("a recent tab back before its restarted view's first frame", async () => {
+        const blurred = await page.evaluate(() => window.viewFixture.sent.length);
+        await page.evaluate(() => {
+          Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
+          window.dispatchEvent(new Event("blur"));
+        });
+        await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "unwatch" && sent.pane_id === pane), { pane: a, start: blurred }, { timeout: 10_000 });
+        const focused = await page.evaluate(() => window.viewFixture.sent.length);
+        await page.evaluate(() => {
+          Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
+          window.dispatchEvent(new Event("focus"));
+        });
+        await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "watch" && sent.pane_id === pane), { pane: a, start: focused }, { timeout: 10_000 });
+      });
     } finally { await context.close(); }
   }
 } finally {

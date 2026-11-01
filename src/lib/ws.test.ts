@@ -788,15 +788,29 @@ it("watches a pane it let go of only on a server that can, again after a reconne
   client.close();
 });
 
-it("keeps a new watch when the unwatched view's end arrives after it, so the next unwatch still goes out", () => {
+/** Answers every ping the client sent and the fake server has not answered yet, as the bridge does in order. */
+const answerPings = (socket: FakeSocket, answered: Set<unknown>) => {
+  for (const frame of socket.sent) if (frame.type === "ping" && !answered.has(frame.id)) {
+    answered.add(frame.id);
+    socket.receive({ type: "pong", id: frame.id });
+  }
+};
+
+const watchClient = () => {
   const client = new HerdrSocket("ws://test/ws");
   const ended: string[] = [];
   client.on((message) => { if (message.type === "watch-end") ended.push(message.pane_id); });
   client.connect();
   const socket = FakeSocket.last;
   socket.open();
-  socket.receive(snapshot(["watch"]));
+  socket.receive(snapshot(["watch", "ping"]));
   const frames = () => socket.sent.filter((m) => m.type === "watch" || m.type === "unwatch");
+  return { client, ended, socket, frames };
+};
+
+it("keeps a new watch when the unwatched view's end arrives after it, so the next unwatch still goes out", () => {
+  const { client, ended, socket, frames } = watchClient();
+  const answered = new Set<unknown>();
   client.watch("w1:p1", 100, 30);
   client.unwatch("w1:p1");
   client.watch("w1:p1", 100, 30);
@@ -805,13 +819,47 @@ it("keeps a new watch when the unwatched view's end arrives after it, so the nex
   expect(ended).toEqual([]);
   client.unwatch("w1:p1");
   expect(frames().map((m) => m.type)).toEqual(["watch", "unwatch", "watch", "watch", "unwatch"]);
-  // a view that really ends after its restart is ended for the page
+  // once the server answered past every superseded view, a view that ends is ended for the page
   client.watch("w1:p1", 100, 30);
-  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  answerPings(socket, answered);
   socket.receive({ type: "watch-end", pane_id: "w1:p1" });
   expect(ended).toEqual(["w1:p1"]);
   client.unwatch("w1:p1");
   expect(frames().at(-1)).toEqual({ type: "watch", pane_id: "w1:p1", cols: 100, rows: 30 });
+  client.close();
+});
+
+it("absorbs the late ends of two superseded views, so the newest unwatch still goes out", () => {
+  const { client, ended, socket, frames } = watchClient();
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  client.watch("w1:p1", 100, 30);
+  // both earlier views ended before the server read their unwatch
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual([]);
+  const sent = frames().length;
+  client.unwatch("w1:p1");
+  expect(frames().slice(sent)).toEqual([{ type: "unwatch", pane_id: "w1:p1" }]);
+  client.close();
+});
+
+it("honours a view's own end after an unwatch once the server has read that unwatch", () => {
+  const { client, ended, socket, frames } = watchClient();
+  const answered = new Set<unknown>();
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  // the pong of a ping sent after the unwatch: the unwatched view can no longer end on a new one
+  answerPings(socket, answered);
+  client.watch("w1:p1", 100, 30);
+  const sent = frames().length;
+  socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual(["w1:p1"]);
+  // the view is over: it is not started again, and there is nothing left to unwatch
+  client.unwatch("w1:p1");
+  expect(frames().slice(sent)).toEqual([]);
   client.close();
 });
 

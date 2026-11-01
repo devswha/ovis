@@ -853,9 +853,19 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           console.log(`PASS inactive attach lifecycle: ${scenario}`);
           continue;
         }
+        // A hidden page says its pane is view only but watches nothing until it is shown: a frozen
+        // page could not draw the view, whose frames would queue and arrive as one burst on return
+        const viewing = async (hidden: boolean, start = 0): Promise<void> => {
+          assert.ok(page);
+          if (!hidden) {
+            await page.waitForFunction((from) => (window as unknown as { frames_: Frame[] }).frames_.slice(from).some((frame) => frame.type === "watch-data"), start);
+            return;
+          }
+          assert.ok(!(await framesOf(page)).slice(start).some((frame) => (frame.dir === "out" && frame.type === "watch") || frame.type === "watch-data"), "a hidden page watches nothing");
+        };
         if (watchFirst) {
           await page.locator(".terminal-banner", { hasText: "View only while you use another window" }).waitFor();
-          await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_.some((frame) => frame.type === "watch-data"));
+          await viewing(scenario === "hidden-mount");
           assert.deepEqual(await sent(page), [], "an out-of-use mount watches without ever acquiring an attach");
           assert.equal(attachRunning(firstTerminal), false, "watching must not start a sidecar");
           assert.equal(await shellSize(first)(), "40 140", "watching preserves the real size, not the layout rectangle");
@@ -866,7 +876,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             // Reload while still away, including when hidden but hasFocus() returns true.
             await page.reload();
             await page.locator(".terminal-banner", { hasText: "View only while you use another window" }).waitFor();
-            await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_.some((frame) => frame.type === "watch-data"));
+            await viewing(scenario === "hidden-mount");
             assert.deepEqual(await sent(page), [], "a background reload never acquires an attach");
             assert.equal(await shellSize(first)(), "40 140");
             await page.evaluate(() => {
@@ -902,8 +912,18 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               [{ dir: "out", type: "attach", keep_size: true }], "a legacy reconnect keeps today's attach behavior");
           } else {
             await page.locator(".terminal-banner", { hasText: "View only while you use another window" }).waitFor();
-            await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_.some((frame) => frame.type === "watch-data"));
+            await viewing(scenario === "hidden-reconnect", before);
             assert.deepEqual(await sent(page, before), [], "a background reconnect watches before any attach replay");
+            if (scenario === "hidden-reconnect") {
+              // shown again behind another window, it starts the view it held for the return
+              await page.evaluate(() => {
+                Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+                document.dispatchEvent(new Event("visibilitychange"));
+              });
+              await viewing(false, before);
+              assert.ok((await framesOf(page)).slice(before).some((frame) => frame.dir === "out" && frame.type === "watch"), "the page shown again watches its pane");
+              assert.deepEqual(await sent(page, before), [], "shown without the focus, it still acquires no attach");
+            }
           }
           console.log(`PASS inactive attach lifecycle: ${scenario}`);
           continue;
