@@ -128,7 +128,8 @@ try {
       if (holdOlder) await new Promise<void>((resolve) => releases.push(resolve));
       await route.fulfill({ json: { source: "omp-transcript", history_id: captured, cursor: olderNext ?? url.searchParams.get("since"), turns: [user("old earlier")] } });
     } else {
-      const tool = { role: "assistant", ts: "reused", parts: [{ kind: "tool", name: "Read", summary: "same", input: "{}", output: "preview", output_ref: "reused", output_size: 9000 }] };
+      // with the notice, the tool's result changes too: what names the turn's row stays the same
+      const tool = { role: "assistant", ts: "reused", parts: [{ kind: "tool", name: "Read", summary: "same", input: "{}", output: notice ? "preview, read again" : "preview", output_ref: "reused", output_size: 9000 }] };
       const held = { role: "user", ts: "held", parts: [{ kind: "notice", text: "Message held", source: "informational" }] };
       await route.fulfill({ json: { source: "omp-transcript", history_id: epoch, cursor: before, turns: newest ? [user(newest), ...(notice ? [held] : []), tool] : [] } });
     }

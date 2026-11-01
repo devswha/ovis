@@ -21,7 +21,7 @@ import { loadChatTimeline, loadedChatTimeline, useChatTimeline } from "./chatTim
 import { ChatMinimap } from "./ChatMinimap.tsx";
 import { minimapTurns } from "../lib/chatMinimap.ts";
 import type { LegendListRef } from "@legendapp/list/react";
-import { appendChatRowSlots, continuesHistory, createChatRowSlots, insertChatRowSlots, insertedTurns, prependChatRowSlots } from "../lib/chatRows.ts";
+import { continuesHistory, createChatRowSlots, growChatRowSlots, prependChatRowSlots } from "../lib/chatRows.ts";
 import { ChatDetails, ChatRowMemoryContext, useChatRowToggle, useRowFocus, type ChatRowMemory } from "../lib/chatRowState.tsx";
 import { turnRevision } from "../lib/turnRevision.ts";
 import { conversationFinishEvidence, conversationFinishPresented } from "../lib/panePresentation.ts";
@@ -1370,7 +1370,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   };
 
   /** Lays out the state built from an answer and marks that answer as the one shown. */
-  const showAnswer = (conversation: ConversationResponse, next: ChatState, moved = 0): void => {
+  const showAnswer = (conversation: ConversationResponse, next: ChatState, moved: readonly ConversationTurn[] = []): void => {
     if (next.source === "conversation") {
       const count = olderCount.current + next.turns.length;
       if (slotsHistory.current !== (history.current ?? null) || lastAnswer.current?.source === "scrollback") {
@@ -1379,11 +1379,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       } else if (count > slots.current.rows.length) {
         // a turn written before the one at work takes a new row there: the turns after it keep theirs
         const previous = lastAnswer.current;
-        const shown = previous !== null && previous.history_id === conversation.history_id ? previous.turns.slice(moved).map(chatTurnAnchor) : [];
-        for (const at of insertedTurns(shown, next.turns.map(chatTurnAnchor))) {
-          if (slots.current.rows.length < count) slots.current = insertChatRowSlots(slots.current, olderCount.current + at, 1);
-        }
-        if (count > slots.current.rows.length) slots.current = appendChatRowSlots(slots.current, count - slots.current.rows.length);
+        const shown = previous !== null && previous.history_id === conversation.history_id ? previous.turns : [];
+        slots.current = growChatRowSlots(slots.current, olderCount.current - moved.length, shown, moved, next.turns);
       } else if (count < slots.current.rows.length) {
         slots.current = { ...slots.current, rows: slots.current.rows.slice(0, count) };
       }
@@ -1559,7 +1556,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           if (cancelled || generation !== olderGeneration.current) return;
           next = { source: "scrollback", turns: [], messages: toTranscriptMessages(result.text).filter((message) => message.role !== "status"), truncated: result.truncated === true };
         }
-        showAnswer(conversation, next, moved.length);
+        showAnswer(conversation, next, moved);
         setReadPresentation(proved ? readKey : undefined);
       } catch (cause) {
         if (cancelled || generation !== olderGeneration.current) return;
