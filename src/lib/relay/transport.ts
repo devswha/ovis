@@ -33,12 +33,28 @@ const clock: MuxClock = {
 
 const HTTP_QUEUE_LIMIT = 64;
 const HTTP_QUEUE_TIMEOUT_MS = 30_000;
-/** The mux queues at most 4 MiB of outgoing payload across streams: a socket never holds more waiting for it. */
+/** The mux queues at most 4 MiB of outgoing payload across streams: a socket holds no more than that waiting to reach it. */
 const WS_SEND_QUEUE_LIMIT = 4 * 1024 * 1024;
+
+/** Messages a socket holds waiting for the mux, however small: each holds a copy and a callback. */
+const WS_SEND_QUEUE_MESSAGES = 16_384;
+
+/** UTF-8 length counted without encoding, so an oversized string is refused before it is copied. */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && (text.charCodeAt(index + 1) & 0xfc00) === 0xdc00) { bytes += 4; index++; }
+    else bytes += 3; // a lone surrogate encodes as U+FFFD
+  }
+  return bytes;
+}
 
 /** A body's size when it is known without reading it. */
 function knownSize(body: BodyInit | null | undefined): number | undefined {
-  if (typeof body === "string") return new TextEncoder().encode(body).byteLength;
+  if (typeof body === "string") return utf8Length(body);
   if (body instanceof Blob) return body.size;
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
   return undefined;
@@ -208,26 +224,30 @@ export class RelayTransport implements Transport {
 
   async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const address = input instanceof Request ? input : new URL(String(input), "https://relay.ovis.invalid").href;
-    // These are browser networking policies, not properties of an encrypted mux request.
-    const request = new Request(address, { ...init, credentials: "omit", mode: "cors" });
-    request.signal.throwIfAborted();
     // The request belongs to the carrier up when it was made: if that one is gone before it is sent, it fails
     // and is never sent on a later one (nothing typed is sent automatically after a disconnect).
     const mux = this.mux();
+    const connected = (): void => { if (this.stopped || !mux.active) throw new TypeError("Relay carrier is disconnected"); };
+    // Firefox has no Request.body (undefined, where a request without one has null): its body is buffered below,
+    // so one over the PC's request limit is refused before Request copies it, when its size is known
+    const buffered = new Request("https://relay.ovis.invalid/").body === undefined;
+    if (buffered && (knownSize(init?.body) ?? 0) > LIMITS_V1.max_request_body_bytes) throw tooLarge();
+    // These are browser networking policies, not properties of an encrypted mux request.
+    const request = new Request(address, { ...init, credentials: "omit", mode: "cors" });
+    request.signal.throwIfAborted();
     let upload: ReadableStream<Uint8Array> | null;
-    if (request.body !== undefined) upload = request.body;
+    if (!buffered) upload = request.body;
     else if (request.method === "GET" || request.method === "HEAD") upload = null;
     else {
-      // Firefox has no Request.body (undefined, where a request without one has null): buffer its body instead,
-      // refusing one over the PC's request limit before reading it when its size is known
-      if ((knownSize(init?.body) ?? 0) > LIMITS_V1.max_request_body_bytes) throw tooLarge();
       const blob = await request.blob();
+      request.signal.throwIfAborted();
+      connected();
       if (blob.size > LIMITS_V1.max_request_body_bytes) throw tooLarge();
       upload = blob.size > 0 ? blob.stream() : null;
     }
     const open = (): Promise<Response> => {
       const allowed: readonly string[] = REQUEST_HEADERS;
-      if (this.stopped || !mux.active) throw new TypeError("Relay carrier is disconnected");
+      connected();
       const stream = mux.openHttp({
         target: target(request.url), method: method(request.method),
         headers: [...request.headers].filter(([name]) => allowed.includes(name)),
@@ -318,6 +338,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   declare onerror: WebSocketLike["onerror"];
   private stream: WsStream | undefined;
   private pendingBytes = 0;
+  private waiting = 0;
   private outgoing = Promise.resolve();
   private events = Promise.resolve();
   get bufferedAmount(): number { return this.pendingBytes + (this.stream?.getBufferedAmount() ?? 0); }
@@ -368,18 +389,22 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
 
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     if (this.readyState === this.CONNECTING) throw new DOMException("Socket is connecting", "InvalidStateError");
-    const size = typeof data === "string" ? new TextEncoder().encode(data).length : data instanceof Blob ? data.size : data.byteLength;
+    const size = typeof data === "string" ? utf8Length(data) : data instanceof Blob ? data.size : data.byteLength;
     if (this.readyState !== this.OPEN) { this.pendingBytes += size; return; }
     const stream = this.stream;
     if (!stream) return;
     this.pendingBytes += size;
-    if (this.pendingBytes > WS_SEND_QUEUE_LIMIT) {
-      // As a browser's socket whose send buffer is full: it fails, and nothing still waiting is sent.
+    if (this.pendingBytes > WS_SEND_QUEUE_LIMIT || this.waiting >= WS_SEND_QUEUE_MESSAGES) {
+      // As a browser's socket whose send buffer is full: it fails, nothing still waiting is sent,
+      // and what the mux had not sent yet stays counted once the reset discards it.
       this.readyState = this.CLOSING;
+      this.pendingBytes += stream.getBufferedAmount();
+      this.stream = undefined;
       stream.reset("resource_exhausted");
       void this.enqueue(() => this.finish(1006, "", false));
       return;
     }
+    this.waiting++;
     // Capture the stream now. Neither Blob conversion nor backpressure can replay on a new mux.
     const message = typeof data === "string" || data instanceof Blob ? data : ArrayBuffer.isView(data)
       ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice() : new Uint8Array(data).slice();
@@ -389,7 +414,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
         this.pendingBytes -= size;
         stream.send(bytes);
       }
-    }).catch(() => this.finish(1006, "", false));
+    }).catch(() => this.finish(1006, "", false)).finally(() => { this.waiting--; });
   }
 
   close(code?: number, reason = ""): void {

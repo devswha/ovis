@@ -194,13 +194,17 @@ it("sends a request body where the browser has no Request.body, as Firefox", asy
   expect(await response.text()).toBe('{"a":1}');
 });
 
-/** A browser without Request.body (Firefox) for the page's requests: their body reads are counted and wait for `hold`. */
+/** A browser without Request.body (Firefox) for the page's requests: bodies given to them and their reads are counted, and reads wait for `hold`. */
 function firefoxRequests(hold: Promise<void> = Promise.resolve()) {
   const native = globalThis.Request;
-  const reads = { count: 0 };
+  const reads = { count: 0, bodies: 0 };
   // only the page's requests (relay.ovis.invalid addresses) lack it: the PC in this process keeps its own
   const page = (url: string): boolean => url.startsWith("https://relay.ovis.invalid/");
   globalThis.Request = class extends native {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      super(input, init);
+      if (page(this.url) && init?.body != null) reads.bodies++;
+    }
     override get body() { return page(this.url) ? undefined as unknown as null : super.body; }
     override async arrayBuffer(): Promise<ArrayBuffer> { if (page(this.url)) { reads.count++; await hold; } return super.arrayBuffer(); }
     override async blob(): Promise<Blob> { if (page(this.url)) { reads.count++; await hold; } return super.blob(); }
@@ -240,10 +244,13 @@ it("refuses a Firefox request body without reading it when no carrier is up or i
   // When a body over the PC's request limit is posted, and then a small one while the carrier is down
   const big = new Blob([new Uint8Array(LIMITS_V1.max_request_body_bytes + 1)]);
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: big })).rejects.toBeInstanceOf(TypeError);
+  // a string's UTF-8 size: "\u00e9" is two bytes
+  const text = "\u00e9".repeat(LIMITS_V1.max_request_body_bytes / 2 + 1);
+  await expect(f.transport.fetch("/api/upload", { method: "POST", body: text })).rejects.toBeInstanceOf(TypeError);
   await f.drop();
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: "small" })).rejects.toBeInstanceOf(TypeError);
-  // Then neither body was read, and neither request reached the PC
-  expect(reads.count).toBe(0);
+  // Then no body was copied into a request or read, and no request reached the PC
+  expect(reads).toEqual({ count: 0, bodies: 0 });
   expect(requests).toBe(0);
 });
 
@@ -381,22 +388,41 @@ it("dispatches property handlers at their native listener position and copies bi
   expect([...new Uint8Array(received)]).toEqual([9, 10]);
 });
 
-it("fails a websocket whose unsent messages pass the send queue bound instead of queueing them", async () => {
-  // Given an open socket
+it("fails a websocket whose unsent messages pass the send queue bound, keeping every unsent byte counted", async () => {
+  // Given an open socket whose PC reads nothing, so its second message waits in the mux for credit
   const f = await fixture({ onWs: (stream) => stream.accept() });
   const socket = f.transport.openSocket("/ws");
   await opened(socket);
   const events: string[] = [];
   socket.onerror = () => events.push("error");
   const end = closed(socket);
-  // When one synchronous burst sends more than the bound
   const chunk = new Uint8Array(1024 * 1024);
+  socket.send(chunk);
+  socket.send(chunk);
+  await socket["outgoing"];
+  const held = socket.bufferedAmount;
+  expect(held).toBeGreaterThanOrEqual(chunk.length);
+  // When one synchronous burst sends more than the bound
   for (let index = 0; index < 5; index++) socket.send(chunk);
-  // Then the socket fails at once, as a browser's does when its send buffer is full
+  // Then the socket fails at once, as a browser's does when its send buffer is full, and nothing unsent is forgotten
   expect(socket.readyState).toBe(socket.CLOSING);
+  expect(socket.bufferedAmount).toBe(held + 5 * chunk.length);
   expect(await end).toMatchObject({ code: 1006, wasClean: false });
   expect(events).toEqual(["error"]);
-  expect(socket.bufferedAmount).toBe(5 * chunk.length);
+  expect(socket.bufferedAmount).toBe(held + 5 * chunk.length);
+});
+
+it("fails a websocket sent more small messages at once than it may hold", async () => {
+  // Given an open socket
+  const f = await fixture({ onWs: (stream) => stream.accept() });
+  const socket = f.transport.openSocket("/ws");
+  await opened(socket);
+  const end = closed(socket);
+  // When one synchronous burst sends many empty messages
+  for (let index = 0; index < 20_000; index++) socket.send("");
+  // Then the socket fails instead of holding a callback for each
+  expect(socket.readyState).toBe(socket.CLOSING);
+  expect(await end).toMatchObject({ code: 1006, wasClean: false });
 });
 
 it("fails a refused websocket handshake with error before abnormal close", async () => {
