@@ -335,4 +335,10 @@ export const SETTINGS_ZH: Record<string, string> = {
   "agents hooks claude codex install": "Agent 钩子 claude codex 安装",
   "onboarding first run getting started welcome": "入门 首次运行 开始使用 欢迎",
   "Agent integrations": "代理集成",
+  // the hosted relay shell's rows (lib/relay/shell.tsx)
+  "This page shows one PC. The front page lists every PC this phone is paired with.": "此页面只显示一台电脑。首页列出与此手机配对的所有电脑。",
+  "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "删除此手机对应这台电脑的密钥。重新配对需要电脑上新的二维码。",
+  "Forget this PC?": "忘记这台电脑？",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "此手机上的对应密钥将被删除；在电脑上撤销之前，它仍会列出这部手机。重新配对需要电脑上新的二维码。",
+  "Forget": "忘记",
 };

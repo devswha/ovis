@@ -12,6 +12,7 @@ import { SETUP_KO } from "./i18n/setup.ko.ts";
 import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
+import { RELAY_KO } from "./i18n/relay.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -301,6 +302,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
+  "Forget this PC": "이 PC 잊기",
   "Selected": "선택됨",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "보내지 않은 글",
@@ -345,6 +347,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   guide: GUIDE_KO,
   updates: UPDATES_KO,
   palette: PALETTE_KO,
+  relay: RELAY_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

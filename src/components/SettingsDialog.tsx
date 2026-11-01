@@ -6,6 +6,8 @@ import "./SettingsDialog.css";
 import type { AppActions } from "../lib/actions.ts";
 import { useInstallPrompt } from "../lib/install.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
+import { loadRelayShell } from "../lib/relay.ts";
+import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { SHORTCUTS, bindingDisplayKeys, formatKeys, isMacPlatform, setShortcutRecording, shortcutDisplayKeys, shortcutKeys, shortcutConflict, type ShortcutId } from "../lib/shortcuts.ts";
 import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib/shortcutRecorder.ts";
 import { exactChordRisk, isReservedShortcutKey, parseExactChord } from "../lib/shortcutBindings.ts";
@@ -34,6 +36,7 @@ import { useMachineApi } from "../lib/machineContext.tsx";
 import type { VoiceStatus } from "../../shared/voice.ts";
 import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
+import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
@@ -868,6 +871,10 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   const installPrompt = useInstallPrompt();
   // the iOS app (app/) holds this page: its way back to the app's list of PCs
   const nativeApp = inNativeApp();
+  // the hosted shell (app.ovis.sh) shows one PC per page: its front page lists the others, and the
+  // phone's key for this PC can be forgotten here (lib/relay/shell.tsx)
+  const relayPc = shellMode() === "relay" ? serverIdOfPath(window.location.pathname) : null;
+  const [confirmForget, setConfirmForget] = useState(false);
   // the server says what Tailscale on its PC already serves
   const [access, setAccess] = useState<RemoteAccess | null | undefined>(undefined);
   const loadAccess = useCallback(() => {
@@ -887,6 +894,22 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
           <SettingsRow label={t("Change PC")} description={window.location.protocol === "capacitor:" ? t("This is the demo. Go back to the app's list of PCs to open yours.") : t("This app shows {address}. Go back to its list of PCs to open another.", { address: window.location.host })}>
             <button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button>
           </SettingsRow>
+        )}
+        {relayPc !== null && (
+          <>
+            <SettingsRow label={t("Change PC")} description={t("This page shows one PC. The front page lists every PC this phone is paired with.")}>
+              <button type="button" className="btn" onClick={() => window.location.assign("/")}>{t("Change PC")}</button>
+            </SettingsRow>
+            <SettingsRow label={t("Forget this PC")} description={t("Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.")}>
+              <button type="button" className="btn" onClick={() => setConfirmForget(true)}>{t("Forget this PC")}</button>
+            </SettingsRow>
+            {confirmForget && (
+              <ConfirmDialog title={t("Forget this PC?")}
+                body={t("This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.")}
+                confirmLabel={t("Forget")} onClose={() => setConfirmForget(false)}
+                onConfirm={async () => { await (await loadRelayShell()).forgetSavedPc(relayPc); window.location.assign("/"); }} />
+            )}
+          </>
         )}
         <div className="settings-item"><PhonePanel plan={plan} loading={access === undefined} onRefresh={loadAccess} /></div>
         <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
