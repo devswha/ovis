@@ -1189,6 +1189,7 @@ export function PaneTerminal({
             conversationPushes={conversationPushes && !released}
             onTerminalOutput={onTerminalOutput}
             sentKey={chatSent}
+            pendingRows={pending}
             localSend={chatLocalSend}
             navigation={chatNavigation}
             connected={connected}

@@ -97,7 +97,7 @@ const ImageViewerContext = createContext<(images: GalleryImage[], index: number)
 const ToolPathRootContext = createContext<string | null>(null);
 import type { TypedAnswer } from "../lib/promptAnswer.ts";
 import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
-import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, SlashCommand } from "../../shared/protocol.ts";
+import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, PendingMessage, SlashCommand } from "../../shared/protocol.ts";
 import { chatIsBlank, type ChatRead } from "../lib/greeting.ts";
 import { TurnTime } from "./TurnTime.tsx";
 import { useT } from "../lib/i18n.ts";
@@ -159,6 +159,8 @@ export interface ChatViewProps {
   onTerminalOutput?: (listener: (() => void) | null) => void;
   /** bumped when a composer message goes out, before the transcript holds it */
   sentKey?: number;
+  /** the pane's pending rows: one going out (`sending`, Send now or the turn-end drain) empties the agent's box before its receipt bumps sentKey */
+  pendingRows?: readonly Pick<PendingMessage, "id" | "state">[];
   /** bumped once this browser's own message from the box was accepted at once, with the navigation
    * generation it went out at: the chat follows it to the end unless the reader navigated since */
   localSend?: { key: number; navigationGeneration: number };
@@ -226,6 +228,7 @@ interface ChatState {
 }
 
 const EMPTY_STATE: ChatState = { source: "conversation", turns: [], messages: [], truncated: false };
+const NO_ROWS: readonly Pick<PendingMessage, "id" | "state">[] = [];
 
 /** One row of the timeline: a loaded turn in its browser slot, or a provisional sent row keyed by its outcome. */
 type ChatRow = { key: string; beforeUser: boolean } & (
@@ -1197,7 +1200,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1349,12 +1352,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    * from the active chain).
    */
   const [cancelledAtSend, setCancelledAtSend] = useState<{ text: string; page: ConversationTurn[] } | null>(null);
-  /**
-   * The last restored copy shown, with the newest turns it was shown on. A Send now empties the box
-   * before its receipt advances sentKey, so a prompt read between the two answers none: this copy,
-   * on the same turns, is the cancelled send that Send now cleared.
-   */
+  /** The last restored copy shown, with the newest turns it was shown on: a send on those same turns clears it, even once the box reads empty. */
   const lastRestored = useRef<{ text: string; page: ConversationTurn[] } | null>(null);
+  /**
+   * The cancelled send a pending row going out clears (Send now, the turn-end drain), with that row and
+   * the turns it was read from. The bridge empties the box as the row starts, long before its receipt
+   * bumps sentKey: from then the turn stays out while those turns are unchanged. A row listed again but
+   * not going out (back in the queue, held) was not typed, and its record no longer applies.
+   */
+  const [goingCancel, setGoingCancel] = useState<{ id: string; text: string; page: ConversationTurn[] } | null>(null);
+  const goingId = pendingRows.find((row) => row.state === "sending")?.id ?? null;
+  /** the cancelled send a message going out now clears from the box: the copy shown, or the last one shown on these turns */
+  const cancelledNow = (page: ConversationTurn[]): string | null => restored ?? (lastRestored.current?.page === page ? lastRestored.current.text : null);
   /** the newest page as rendered: an earlier page loaded above it does not move the transcript */
   const heldPage = useRef<ConversationTurn[]>([]);
   const seenSent = useRef(sentKey);
@@ -1435,10 +1444,20 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const page = heldPage.current;
     const last = page[page.length - 1];
     setSentOver(last?.role === "assistant" && agentStatus !== "working" && agentStatus !== "blocked" ? { turn: last, page } : null);
-    const cancelled = restored ?? (lastRestored.current?.page === page ? lastRestored.current.text : null);
+    const cancelled = cancelledNow(page);
     // with none, the record of an earlier send stands: the turns it holds for are unchanged, or it no longer applies
     if (cancelled !== null) setCancelledAtSend({ text: cancelled, page });
   }, [sentKey, agentStatus, restored]);
+
+  useEffect(() => {
+    if (goingId === null) return;
+    const page = heldPage.current, cancelled = cancelledNow(page);
+    if (cancelled !== null) setGoingCancel({ id: goingId, text: cancelled, page });
+  }, [goingId, restored]);
+  // its row listed again, not going out, was not typed: the record goes (a later Discard is no send either)
+  useEffect(() => {
+    if (goingCancel !== null && pendingRows.some((row) => row.id === goingCancel.id && row.state !== "sending")) setGoingCancel(null);
+  }, [goingCancel, pendingRows]);
 
   // Status edges still read immediately, including on a bridge without conversation pushes.
   // They share the same serialized reader as pushes, sends and the periodic backstop.
@@ -2074,9 +2093,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while
   // the last turn is that very send — matching the terminal, which shows it only as typed text.
-  // A send that emptied the box keeps it out while the turns are unchanged (cancelledAtSend). Its
-  // outcome gets no sent row either (outcomeRows).
-  const hiddenSend = restored ?? (cancelledAtSend !== null && cancelledAtSend.page === state.turns ? cancelledAtSend.text : null);
+  // A send that emptied the box keeps it out while the turns are unchanged (cancelledAtSend, and
+  // goingCancel from a pending row's start). Its outcome gets no sent row either (outcomeRows).
+  const onPage = (record: { text: string; page: ConversationTurn[] } | null): string | null => record !== null && record.page === state.turns ? record.text : null;
+  const goneOut = goingCancel !== null && !pendingRows.some((row) => row.id === goingCancel.id && row.state !== "sending");
+  const hiddenSend = restored ?? onPage(cancelledAtSend) ?? (goneOut ? onPage(goingCancel) : null);
   const shownTurns = useMemo(() => {
     const last = turns[turns.length - 1];
     if (hiddenSend === null || last?.role !== "user") return turns;

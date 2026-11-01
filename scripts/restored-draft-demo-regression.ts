@@ -90,7 +90,28 @@ try {
     // the demo's sockets, so a transcript change can be announced on them as the bridge does
     const DemoSocket = window.WebSocket;
     const sockets = new Set();
-    const Socket = function (...args) { const socket = new DemoSocket(...args); sockets.add(socket); return socket; };
+    // a held row this check lists itself (window.heldRow), as the bridge would: its Send now goes out at
+    // once (\`sending\`), and its receipt waits for window.answerSendNow
+    window.heldRow = null;
+    window.sendNowAsked = null;
+    window.pushPending = (messages, removed) => { for (const socket of sockets) socket.push({ type: "pending-messages", pane_id: infra, messages, ...(removed ? { removed } : {}) }); };
+    window.answerSendNow = () => {
+      window.pushPending([], [{ id: window.heldRow.id, outcome: "sent" }]);
+      for (const socket of sockets) socket.push({ type: "pending-result", id: window.sendNowAsked.id, pane_id: infra, pending_id: window.heldRow.id, ok: true });
+    };
+    const Socket = function (...args) {
+      const socket = new DemoSocket(...args);
+      sockets.add(socket);
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        let frame = null;
+        try { frame = JSON.parse(raw); } catch { /* no frame of this check's */ }
+        if (frame?.type !== "pending-action" || window.heldRow === null || frame.pending_id !== window.heldRow.id) return send(raw);
+        window.sendNowAsked = frame;
+        window.pushPending([{ ...window.heldRow, state: "sending" }]);
+      };
+      return socket;
+    };
     Socket.prototype = DemoSocket.prototype;
     Object.setPrototypeOf(Socket, DemoSocket);
     window.WebSocket = Socket;
@@ -253,7 +274,7 @@ try {
         };
         const release = async (text: string): Promise<void> => {
           await page.evaluate(() => { const view = window as unknown as { extraTurn: unknown; releaseReads: () => void }; view.extraTurn = null; view.releaseReads(); });
-          await page.locator(".chat-turn", { hasText: text }).waitFor({ timeout: 10_000 });
+          await page.locator("[data-chat-row] .chat-turn", { hasText: text }).waitFor({ timeout: 10_000 });
         };
         const next = "Reply with one word";
         await composer.fill(next);
@@ -294,6 +315,71 @@ try {
         await release("A third one");
         assert.equal(await cancelledShown(), 0, "the new turn's read leaves the cancelled one out");
         console.log("PASS a send after the restored copy left the box keeps that send's turn out until the new turn is read");
+
+        // Send now of a held row (a follow-up held over a stopped send's copy): the bridge empties the box
+        // as the row starts going out, long before its receipt. The receipt waits here until a prompt read
+        // answered the box empty: no painted frame meanwhile shows the cancelled turn. A row that went
+        // out and came back held, never typed, leaves the copy as it was
+        const servedLast = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
+        await feed(page, RESTORED, extraTurn());
+        await boxValue(page, RESTORED);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count, servedLast, { timeout: 10_000 });
+        await announce(page);
+        await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count + 1, servedLast, { timeout: 10_000 });
+        assert.equal(await cancelledShown(), 0, "restored once more, the turn is out of view");
+        const follow = "Then reply PONG";
+        type HeldRowCheck = { heldRow: { id: string } | null; holdReads: boolean; restoredText: string | null; pushPending: (messages: unknown[]) => void; answerSendNow: () => void; sendNowAsked: unknown; extraTurn: unknown; releaseReads: () => void; shownFrames: number; sampling: boolean };
+        await page.evaluate((text) => {
+          const view = window as unknown as HeldRowCheck;
+          view.heldRow = { id: "held-follow-up", request_id: 901, text, state: "held", created_at: new Date().toISOString() } as HeldRowCheck["heldRow"];
+          view.holdReads = true;
+          view.pushPending([view.heldRow]);
+        }, follow);
+        const row = page.locator(".pending-message", { hasText: follow });
+        await row.waitFor({ timeout: 10_000 });
+        const painted = (): Promise<unknown> => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+        await page.evaluate(() => { const view = window as unknown as HeldRowCheck; view.pushPending([{ ...view.heldRow, state: "sending" }]); });
+        await page.locator('.pending-message[data-state="sending"]').waitFor({ timeout: 10_000 });
+        await painted();
+        await page.evaluate(() => { const view = window as unknown as HeldRowCheck; view.pushPending([view.heldRow]); });
+        await page.locator('.pending-message[data-state="held"]', { hasText: follow }).waitFor({ timeout: 10_000 });
+        await page.evaluate(() => { Object.assign(window, { restoredText: null }); });
+        await page.locator(".chat-turn", { hasText: "Rename the backup job" }).waitFor({ timeout: 10_000 });
+        console.log("PASS a held row that went out and came back, never typed, leaves the cancelled turn as the copy left it");
+
+        await page.evaluate((text) => { Object.assign(window, { restoredText: text }); }, RESTORED);
+        await boxValue(page, RESTORED);
+        await page.waitForFunction(() => ![...document.querySelectorAll(".chat-turn")].some((turn) => turn.textContent?.includes("Rename the backup job")), undefined, { timeout: 10_000 });
+        await page.evaluate(() => {
+          const view = window as unknown as HeldRowCheck;
+          view.shownFrames = 0;
+          view.sampling = true;
+          const frame = (): void => {
+            if ([...document.querySelectorAll(".chat-turn")].some((turn) => turn.textContent?.includes("Rename the backup job"))) view.shownFrames += 1;
+            if (view.sampling) requestAnimationFrame(frame);
+          };
+          requestAnimationFrame(frame);
+        });
+        await row.getByRole("button", { name: /^Send now:/ }).click();
+        await page.waitForFunction(() => (window as unknown as HeldRowCheck).sendNowAsked !== null, undefined, { timeout: 10_000 });
+        await page.locator('.pending-message[data-state="sending"]').waitFor({ timeout: 10_000 });
+        // the bridge emptied the box: a prompt read answers no copy, before the receipt
+        await page.evaluate(() => { Object.assign(window, { restoredText: null }); });
+        await promptReadsPast(page, await promptReads(page) + 1);
+        await page.evaluate(() => (window as unknown as HeldRowCheck).answerSendNow());
+        await page.locator(".chat-sent-waiting-list", { hasText: follow }).waitFor({ timeout: 10_000 });
+        await promptReadsPast(page, await promptReads(page) + 1);
+        const shownFrames = await page.evaluate(() => { const view = window as unknown as HeldRowCheck; view.sampling = false; return view.shownFrames; });
+        assert.equal(shownFrames, 0, "no painted frame shows the cancelled turn between the empty box and the receipt");
+        // the agent writes the follow-up's turn: the read leaves the cancelled one off its chain
+        await page.evaluate((text) => {
+          const view = window as unknown as HeldRowCheck;
+          view.extraTurn = { role: "user", ts: new Date().toISOString(), parts: [{ kind: "text", text }] };
+          view.releaseReads();
+        }, follow);
+        await page.locator("[data-chat-row] .chat-turn", { hasText: follow }).waitFor({ timeout: 10_000 });
+        assert.equal(await cancelledShown(), 0, "the follow-up's read leaves the cancelled turn out");
+        console.log("PASS Send now of a held row keeps the cancelled turn out from its start, with no frame until its receipt");
 
         assert.deepEqual(errors, []);
       } finally { await desktop.close(); }
