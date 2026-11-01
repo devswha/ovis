@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 
-import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, peekPaneConversation, pinPaneConversation, unpinPaneConversation } from "./api.ts";
+import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
 import { ConversationRefresh } from "./conversationRefresh.ts";
 import type { ConversationResponse } from "../../shared/protocol.ts";
 
@@ -159,6 +159,117 @@ describe("conversation polling", () => {
     // the control is gone
     expect(peekPaneConversation("control:p1", "local", 10)).toBeUndefined();
     unpinPaneConversation("open:p1");
+  });
+});
+
+describe("conversation read started by a press", () => {
+  /** every request the chat makes: its query and whether it revalidates */
+  function answering(): { url: string; etag: string | null }[] {
+    const sent: { url: string; etag: string | null }[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      sent.push({ url: String(url), etag: new Headers(init?.headers).get("if-none-match") });
+      return Response.json({ source: "claude-transcript", history_id: "history-a", cursor: null, turns: [] }, { headers: { etag: '"a"' } });
+    }) as typeof fetch;
+    return sent;
+  }
+
+  it("starts at the press, and the mount read of the chat it opens takes it instead of asking again", async () => {
+    const sent = answering();
+    prefetchPaneConversation("press:p1", "local", 10);
+    expect(sent).toHaveLength(1);
+    // ChatView's mount read: no answer shown yet, a new presentation
+    const mounted = await fetchPaneConversation("press:p1", "local", { prompts: 10, fresh: true });
+    expect(sent).toHaveLength(1);
+    expect(peekPaneConversation("press:p1", "local", 10)).toBe(mounted);
+    // taken once: the next read asks the server
+    await fetchPaneConversation("press:p1", "local", { prompts: 10, history_id: mounted.history_id });
+    expect(sent).toHaveLength(2);
+  });
+
+  it("names the history of the cached answer the mount read draws, so that read still takes it", async () => {
+    const sent = answering();
+    await fetchPaneConversation("press:p2", "local", { prompts: 10 });
+    prefetchPaneConversation("press:p2", "local", 10);
+    prefetchPaneConversation("press:p2", "local", 10);
+    await fetchPaneConversation("press:p2", "local", { prompts: 10, history_id: "history-a", fresh: true });
+    expect(sent.map((request) => new URL(request.url, "http://fixture").searchParams.get("history_id"))).toEqual([null, "history-a"]);
+    expect(sent[1]!.etag).toBeNull();
+  });
+
+  /** A press held past its read's answer (a click lasts 50-150 ms): the answer is in the cache before the chat mounts. */
+  async function heldPast(paneId: string, before?: ConversationResponse): Promise<void> {
+    for (let turn = 0; turn < 50 && peekPaneConversation(paneId, "local", 10) === before; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** ChatView's mount: the cached answer draws before paint, then the mount read names its history. */
+  async function mount(paneId: string): Promise<{ drawn: ConversationResponse | undefined; read: ConversationResponse }> {
+    const drawn = peekPaneConversation(paneId, "local", 10);
+    return { drawn, read: await fetchPaneConversation(paneId, "local", { prompts: 10, history_id: drawn?.history_id, fresh: true }) };
+  }
+
+  it("is taken by the mount read of a press held past its answer, which names that answer's history", async () => {
+    const sent = answering();
+    prefetchPaneConversation("press:held", "local", 10);
+    await heldPast("press:held");
+    const { drawn } = await mount("press:held");
+    expect(drawn?.history_id).toBe("history-a");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("gives a chat opened again an answer of its own, not the one it drew", async () => {
+    const sent = answering();
+    const earlier = await fetchPaneConversation("press:again", "local", { prompts: 10 });
+    prefetchPaneConversation("press:again", "local", 10);
+    await heldPast("press:again", earlier);
+    const { drawn, read } = await mount("press:again");
+    expect(sent).toHaveLength(2);
+    // the very object drawn would tell the chat nothing was read: no presentation read, no finish proved
+    expect(read).not.toBe(drawn);
+    expect(read).toEqual(drawn!);
+  });
+
+  it("starts nothing for a pane whose chat is mounted: a cached tab reads no more than before", () => {
+    const sent = answering();
+    pinPaneConversation("press:p3");
+    prefetchPaneConversation("press:p3", "local", 10);
+    unpinPaneConversation("press:p3");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("is not taken by another page, PC or page size, nor once its press is old", async () => {
+    const sent = answering();
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    restoreClock = () => { clock.mockRestore(); };
+    prefetchPaneConversation("press:p4", "local", 10);
+    await fetchPaneConversation("press:p4", "local", { prompts: 25 });
+    await fetchPaneConversation("press:p4", "pc-a", { prompts: 10 });
+    await fetchPaneConversation("press:p4", "local", { prompts: 10, before: "history-a:5" });
+    expect(sent).toHaveLength(4);
+    now = PRESS_READ_MS;
+    await fetchPaneConversation("press:p4", "local", { prompts: 10, fresh: true });
+    expect(sent).toHaveLength(5);
+  });
+
+  it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
+    const answers: ((history: string) => void)[] = [];
+    globalThis.fetch = (async (_url: string) => {
+      const history = await new Promise<string>((resolve) => { answers.push(resolve); });
+      return Response.json({ source: "claude-transcript", history_id: history, cursor: null, turns: [] }, { headers: { etag: `"${history}"` } });
+    }) as typeof fetch;
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    restoreClock = () => { clock.mockRestore(); };
+    prefetchPaneConversation("press:late", "local", 10);
+    // the chat mounts after the press read is too old to take, and asks again
+    now = PRESS_READ_MS;
+    const mounted = fetchPaneConversation("press:late", "local", { prompts: 10, fresh: true });
+    for (let turn = 0; turn < 50 && answers.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    answers[1]!("newer");
+    await mounted;
+    answers[0]!("older");
+    for (let turn = 0; turn < 50 && peekPaneConversation("press:late", "local", 10)?.history_id === "newer"; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(peekPaneConversation("press:late", "local", 10)?.history_id).toBe("newer");
   });
 });
 
