@@ -1,6 +1,6 @@
 /**
  * Simplified Chinese for the keys only the devices files use:
- * components/DevicesPanel.tsx (with VIA), components/PhonePanel.tsx, components/PortalPanel.tsx,
+ * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
  * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
@@ -179,4 +179,10 @@ export const DEVICES_ZH: Record<string, string> = {
   "Getting a code…": "正在获取代码…",
   "This is a paired device, reaching the PC through the Ovis relay.": "这是通过 Ovis 中继访问 PC 的已配对设备。",
   "via relay": "经由中继",
+  "How the phone connects": "手机的连接方式",
+  "How it works": "工作原理",
+  "Recommended: works from anywhere, with nothing to install on the phone.": "推荐：随处可用，手机上无需安装任何东西。",
+  "Turn on the relay": "开启中继",
+  "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "适用于已能打开此地址的手机：在同一 Wi-Fi 下，或经由隧道或代理。",
+  "Get a pairing code": "获取配对码",
 };

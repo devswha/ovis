@@ -343,4 +343,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Forget": "忘记",
   "Through the Ovis relay": "经由 Ovis 中继",
   "This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.": "此浏览器的请求来自通过 Ovis 中继配对的手机，端到端加密：中继无法读取内容。",
+  "Ready through the Ovis relay.": "可通过 Ovis 中继连接。",
+  "Ready at {url}.": "可在 {url} 打开。",
+  "Use the Ovis relay, Tailscale or a pairing code.": "使用 Ovis 中继、Tailscale 或配对码连接。",
 };

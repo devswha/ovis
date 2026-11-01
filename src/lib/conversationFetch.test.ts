@@ -183,6 +183,21 @@ describe("conversation peek", () => {
     expect(peekPaneConversation("peek:p2")).toBeUndefined();
   });
 
+  it("hands back the newest turns a held read brought, not the page from before the chat held its start", async () => {
+    let turns = 2;
+    globalThis.fetch = (async (url: string) => {
+      const from = new URL(url, "http://fixture").searchParams.get("from");
+      const body = { source: "claude-transcript", history_id: "h", cursor: from ?? "h:0", turns: Array.from({ length: turns }, (_, index) => ({ role: "user", ts: null, parts: [{ kind: "text", text: `turn ${index}` }] })) };
+      return Response.json(body, { headers: { etag: `"${from}-${turns}"` } });
+    }) as typeof fetch;
+    await fetchPaneConversation("peek:held", "local", { prompts: 10 });
+    // the newest page moved: the chat holds its start and reads from it from now on
+    turns = 6;
+    const held = await fetchPaneConversation("peek:held", "local", { from: "h:2", history_id: "h", prompts: 10 });
+    // a chat opened again draws what the open one last showed
+    expect(peekPaneConversation("peek:held", "local", 10)).toBe(held);
+  });
+
   it("never hands back an older page", async () => {
     globalThis.fetch = (async (_url: string) => new Response(JSON.stringify({ source: "claude-transcript", turns: [], cursor: "c:1" }), { status: 200, headers: { etag: "\"r\"" } })) as typeof fetch;
     await fetchPaneConversation("peek:p3", "local", { before: "c:5" });

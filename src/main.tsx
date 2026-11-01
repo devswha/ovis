@@ -1,4 +1,6 @@
-// first: every module below may read browser storage as it loads
+// first: every module below may call a built-in older browsers lack (lib/builtins.ts)
+import "./lib/builtins.ts";
+// then: every module below may read browser storage as it loads
 import "./lib/legacyStorage.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

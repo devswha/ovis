@@ -121,6 +121,36 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   reset there. The iOS and Android apps open a PC paired over the relay from its pairing link and
   save it by its own address on the hosted shell (app.ovis.sh), which is deployed separately.
   ([#2514](https://github.com/devswha/ovis/pull/2514))
+- **Reset relay identity**, under the relay switch, gives the PC a new relay ID and key and removes
+  every phone paired through the relay; each then scans a new QR code. The relay ID is derived from
+  the PC's key, and the relay lets a PC in only after it proves it holds that key, so knowing the
+  ID is not enough to take the PC's place or catch its phones.
+  ([#2514](https://github.com/devswha/ovis/pull/2514))
+- A Letta Code pane on Letta's local backend shows its model and reasoning effort in the composer,
+  as Letta runs the turn: the conversation's own `/model` choice, else its agent's.
+  ([#2519](https://github.com/devswha/ovis/pull/2519) by @homebodify)
+- Large files and videos over the relay keep up to 384 KiB in flight, so a download isn't held
+  back by waiting for each receipt (over 5 MB/s at a 50 ms round trip), while terminal output still
+  goes ahead of it.
+  ([#2522](https://github.com/devswha/ovis/pull/2522))
+- Remote access through the Ovis relay, off until you turn it on under **Settings → Phone &
+  devices**: scan its QR code and the phone opens Ovis at app.ovis.sh, end-to-end encrypted to the
+  PC, with no Tailscale, account or port forwarding. A phone pairs once with a pairing code and then
+  proves itself with its own device key, never a token. Terminals, files, pictures, PDFs, seekable
+  videos and push alerts work through it, and **Revoke** cuts a phone off at once. `pair` prints
+  the relay's QR code too, and the iOS and Android apps open relay pairing links.
+  ([#2522](https://github.com/devswha/ovis/pull/2522))
+- Run your own relay with `bun relay/bun.ts` and `OVIS_RELAY_URL`, or host the app yourself with
+  `OVIS_RELAY_APP_URL`.
+  ([#2522](https://github.com/devswha/ovis/pull/2522))
+- Each release attaches the hosted app it deploys to app.ovis.sh as `dist-shell.tar.gz` with its
+  SHA-256, so anyone can compare the two. The user guide and docs/relay.md explain what
+  relay.ovis.sh and app.ovis.sh can and can't see.
+  ([#2522](https://github.com/devswha/ovis/pull/2522))
+- DeepSeek Harness is in Settings → Agents and the setup guide: Ovis finds it (`dsh` with the
+  dsh-tui terminal UI), installs it with its makers' npm command in a terminal tab, and starts
+  dsh-tui from New workspace, New tab and New worktree.
+  ([#2524](https://github.com/devswha/ovis/pull/2524))
 
 ### Changed
 - On a PC with `OVIS_RUNTIME=herdr-core`, Ovis no longer offers renaming, moving, splitting, zooming
@@ -130,6 +160,18 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - With `OVIS_RUNTIME=herdr-core`, a terminal's live view streams over the server's own connection to
   herdr-core, instead of an `hc attach` process and a PTY host for every open pane.
   ([#2447](https://github.com/devswha/ovis/pull/2447))
+- Settings → Phone & devices is shorter: one Connect button opens a Connect a phone dialog with the
+  Ovis relay, Tailscale and a pairing code, and the QR codes and longer explanations are there
+  instead of on the page. Pair a device opens it on a fresh pairing code.
+  ([#2533](https://github.com/devswha/ovis/pull/2533))
+- The `tailscale serve` command box no longer has a blue accent stripe on its left edge.
+  ([#2533](https://github.com/devswha/ovis/pull/2533))
+- Chat shows pictures larger, as a desktop chat app does: a picture you attached and one a tool
+  read are drawn whole, up to the message column's width and never past their own size, instead
+  of a cropped 9 by 7 rem thumbnail. A tall screenshot, there or in an answer, stops at 70% of the
+  window's height (60% on a phone), and a diagram may now grow to the same height instead of
+  24 rem. A small icon stays its own size, and a tap still opens the image viewer.
+  ([#2539](https://github.com/devswha/ovis/pull/2539))
 
 ### Fixed
 - An answer to one of Claude Code's questions (AskUserQuestion) comes back once the terminal shows
@@ -228,9 +270,6 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Close a relay client that waits 30 s for a PC that is not connected, so waiting clients cannot
   fill the relay while the PC is away.
   ([#2514](https://github.com/devswha/ovis/pull/2514))
-- Require proof of the PC's relay key before replacing its connection or attaching a data socket.
-  Prerelease random-ID identities require an explicit relay identity reset and phone rescan.
-  ([#2514](https://github.com/devswha/ovis/pull/2514))
 - The hosted shell now reads the PC's copy-on-select preference and sends relay-control requests
   through the paired relay connection instead of the static shell host.
   ([#2514](https://github.com/devswha/ovis/pull/2514))
@@ -241,6 +280,99 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   feedback, and Claude keeps planning, as Enter does in its terminal. The card used to send
   Shift+Tab, which approved the plan with the feedback and started to run it.
   ([#2518](https://github.com/devswha/ovis/pull/2518) by @jpcarranza94)
+- Chat's question card can move to unanswered later pi-ask questions with Next, and between omp
+  Ask questions without answering. Omp moves need a complete styled tab strip and its matching
+  open call; omp's review page is not a step the card moves to, and offers no moves itself.
+  Unsent edits stay visible until sent or cleared.
+  ([#2508](https://github.com/devswha/ovis/pull/2508))
+- Before each key the card sends, a move or an answer, the server reads the terminal again and sends
+  the key only if it still shows the question the card was tapped on; otherwise nothing is sent.
+  ([#2508](https://github.com/devswha/ovis/pull/2508))
+- An omp question cut short on screen keeps the terminal's text on the card instead of the call's
+  Markdown, since what is shown may be another call's question that starts the same way.
+  ([#2508](https://github.com/devswha/ovis/pull/2508))
+- With `OVIS_RUNTIME=herdr-core`, a tab no longer stays paused after a reconnect, and a tab out of use
+  no longer starts herdr's read-only view, which cannot reach herdr-core and only logged a failure:
+  the server offers no watch there, so a reconnecting tab attaches again at once and a tab out of use
+  keeps its last screen until you are back.
+  ([#2512](https://github.com/devswha/ovis/pull/2512) by @lifeofpi-ux)
+- Over the relay in Firefox, a request made before the connection dropped (such as a prompt answer)
+  now fails as not sent instead of going out on the reconnected link, and an upload over the PC's
+  limit is refused before Firefox reads it into memory.
+  ([#2516](https://github.com/devswha/ovis/pull/2516))
+- A relay terminal socket that is sent more than 4 MiB faster than it can hand it on now fails like
+  a browser socket with a full send buffer, instead of queueing it all in memory.
+  ([#2516](https://github.com/devswha/ovis/pull/2516))
+- An answer to a Claude Code tool approval, plan or folder-trust check comes back once Claude has
+  closed the dialog. The dialog just answered no longer comes back as a new card for two seconds,
+  and Claude's own input box no longer shows as a "Waiting for input" card with Enter and Esc.
+  ([#2521](https://github.com/devswha/ovis/pull/2521) by @jpcarranza94)
+- A first message typed in the New tab or New workspace dialog goes to Claude Code once it is ready.
+  It was often held as "the pane's terminal or agent session changed" or "the agent started for this
+  message has ended", because it was bound to a program Claude Code runs as it starts (git, gh), not
+  to Claude Code itself.
+  ([#2526](https://github.com/devswha/ovis/pull/2526) by @jpcarranza94)
+- A Claude Code pane whose session has kept thousands of subagent transcripts no longer has the
+  server check every one of them on each status poll: files last written over a day ago are
+  checked again once a minute, so the server's event loop stays free for terminals and requests.
+  ([#2527](https://github.com/devswha/ovis/pull/2527) reported by @duytbp)
+- The first message sent from an empty chat no longer brings up "No conversation yet — say something
+  below" for a moment, beside the message itself, before the agent starts working.
+  ([#2531](https://github.com/devswha/ovis/pull/2531) by @jpcarranza94)
+- An API key or token typed or pasted into the terminal input line is no longer saved in the
+  browser's storage while it waits to be sent: such a line stays in the open page only, a reload
+  or a replaced herdr does not keep it, and a key an earlier version saved there is removed.
+  ([#2532](https://github.com/devswha/ovis/pull/2532))
+- Panes show again on iOS 16.4 and later and on Safari 16.4 to 17.3, where every pane said
+  "This pane can't be shown.": the app now brings its own `Promise.withResolvers` and
+  `AbortSignal.any`, and its own `crypto.randomUUID` for a plain-http address.
+  ([#2535](https://github.com/devswha/ovis/pull/2535) reported by @devtm1123)
+- In a chat long enough to scroll, a message sent from Chat shows its faded bubble at the end,
+  wholly above the message box, instead of partly under it, and the chat no longer jumps up by
+  that gap when the agent writes the turn. A long message's bubble shows its words as its turn
+  does, up to the same 12 lines, instead of its first 160 characters.
+  ([#2538](https://github.com/devswha/ovis/pull/2538) by @jpcarranza94)
+- Claude Code's plan shows as its "Ready to code?" card in a narrow pane too, as on a phone or in
+  two panes side by side. It used to show as a "Waiting for input" card with only Enter and Esc,
+  because the plan file's path in the dialog's last line wrapped onto a line of its own.
+  ([#2541](https://github.com/devswha/ovis/pull/2541) by @jpcarranza94)
+- An open question or approval card stays in Chat when you come back from the Terminal view and
+  across a reconnect. It no longer goes for a moment and comes back with the next read.
+  ([#2543](https://github.com/devswha/ovis/pull/2543) by @jpcarranza94)
+- Chat reads the agent's question or approval as soon as the pane turns blocked, so the card shows
+  with the turn's "Needs you" instead of up to two seconds after it. A question answered in the
+  terminal leaves Chat as soon as the agent works again.
+  ([#2543](https://github.com/devswha/ovis/pull/2543) by @jpcarranza94)
+- A notice or a subagent's result that Claude Code writes while it works no longer draws the turn at
+  work again: the tool rows and the work block you opened in it stay open.
+  ([#2545](https://github.com/devswha/ovis/pull/2545) by @jpcarranza94)
+- A long chat opened again (back from the Terminal lens, or a tab no longer kept) shows its latest
+  turns at once, not an older page that then jumps to them.
+  ([#2545](https://github.com/devswha/ovis/pull/2545) by @jpcarranza94)
+- /clear in a long chat goes from the old turns straight to the new conversation, without an empty
+  chat and "Loading conversation…" in between.
+  ([#2545](https://github.com/devswha/ovis/pull/2545) by @jpcarranza94)
+- A queued follow-up stays in Chat as a sent message from the moment it leaves its row until its
+  turn shows: at the end of a turn, after Send now, and when the turn ended before it arrived.
+  ([#2547](https://github.com/devswha/ovis/pull/2547) by @jpcarranza94)
+- After Stop, a message sent in place of the stopped one no longer brings the stopped message back
+  into Chat for a moment.
+  ([#2547](https://github.com/devswha/ovis/pull/2547) by @jpcarranza94)
+- Stop with a follow-up queued no longer erases the stopped message from Claude Code's input box:
+  the stopped message comes back to the composer, and the follow-up waits for Send now.
+  ([#2547](https://github.com/devswha/ovis/pull/2547) by @jpcarranza94)
+- Clicking Stop keeps the keyboard focus in the message box, as Send does.
+  ([#2547](https://github.com/devswha/ovis/pull/2547) by @jpcarranza94)
+- A Claude Code `/compact` sent from Chat says "Done" once the conversation is compacted, not as
+  soon as the command starts. After `/clear`, a command sent to the conversation left behind (such
+  as that `/compact`) no longer shows in the new, empty chat.
+  ([#2549](https://github.com/devswha/ovis/pull/2549) by @jpcarranza94)
+- A finished turn no longer opens again as "Working…" for a moment when Claude starts a new turn by
+  itself, as when a background task ends, or when a message comes from the terminal.
+  ([#2551](https://github.com/devswha/ovis/pull/2551) by @jpcarranza94)
+- Switching to a working agent's chat no longer shows a "Working…" head above "Loading
+  conversation…" before the turn's own rows are drawn.
+  ([#2551](https://github.com/devswha/ovis/pull/2551) by @jpcarranza94)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so

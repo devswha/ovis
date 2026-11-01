@@ -2003,6 +2003,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       // the pane's screen starts again from the view, as on a pane switch; the view's first frame is whole
       const watch = (pane: string): void => {
+        // a bridge without a read-only view (herdr-core) has nothing to start the screen again from:
+        // the pane keeps its last screen until the next attach, which resets it (resume)
+        if (!socket.canWatch()) {
+          setWatching(false);
+          return;
+        }
         const generation = ++outputGeneration;
         if (!presentedRef.current) {
           // the view of a hidden tab is parsed on its return, starting with this reset (watch-data)

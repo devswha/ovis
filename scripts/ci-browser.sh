@@ -69,6 +69,7 @@ run_script scripts/sticky-modifiers-regression.ts
 run_script scripts/terminal-switch-regression.ts
 run_script scripts/terminal-switch-resize-regression.ts
 run_script scripts/terminal-view-replay-demo-regression.ts
+run_script scripts/terminal-release-no-watch-demo-regression.ts
 run_script scripts/pane-lifetime-regression.ts
 run_script scripts/terminal-arrows-clicks-regression.ts
 run_script scripts/terminal-viewport-regression.ts
@@ -92,6 +93,7 @@ run_script scripts/agents-sign-in-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
+run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
@@ -150,6 +152,7 @@ run_script scripts/chat-math-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
+run_script scripts/chat-working-line-demo-regression.ts
 run_script scripts/replay-clipboard-demo-regression.ts
 run_script scripts/todo-snapshots-demo-regression.ts
 run_script scripts/command-outcome-demo-regression.ts
@@ -167,6 +170,7 @@ run_script scripts/sidebar-tokens-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
+run_script scripts/prompt-card-timing-demo-regression.ts
 run_script scripts/opencode-prompt-regression.ts
 run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts
