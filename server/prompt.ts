@@ -30,7 +30,7 @@ import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
-import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
+import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
@@ -659,8 +659,11 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   const screen = known.screen ?? await liveScreen(paneId);
   // Codex's collapsed question queue reads blocked while its main prompt takes a message; a
   // model list of Claude Code's or Codex's that no reader could read is left to the terminal
-  // (registry.waits)
-  if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)) {
+  // (registry.waits); Claude's own input box (a `❯` or bash `!` row between the last two rules)
+  // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
+  // and for a second or two after it closes
+  if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
+    || (agent === "claude" && /^[❯!]/.test(claudeInputBoxContent(screen) ?? ""))) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen };
   }
@@ -1068,11 +1071,12 @@ async function closeOpenQuestion(paneId: string): Promise<void> {
 const SETTLE_MS = 1_500;
 
 /**
- * After an answer to a form of several questions (omo, Claude's question tabs) or to a model list
- * (Claude Code, Codex): back once the pane shows its next step (the next question, the review, a
- * model's levels, or nothing when it was submitted or closed), so the card's read right after the
- * answer gets that step and never the one just answered. `still` says whether a read is the step
- * just answered. A screen that does not move within a second leaves it to the card's next poll.
+ * After an answer to a form of several questions (omo, Claude's question tabs), to one of Claude's
+ * other dialogs (a tool approval, a plan, the folder-trust check) or to a model list (Claude Code,
+ * Codex): back once the pane shows its next step (the next question, the review, a model's levels,
+ * or nothing when it was submitted or closed), so the card's read right after the answer gets that
+ * step and never the one just answered. `still` says whether a read is the step just answered. A
+ * screen that does not move within a second leaves it to the card's next poll.
  */
 async function formMovedOn(paneId: string, still: (prompt: InteractivePrompt | null) => boolean, codexHome?: string, openCodeStateDir?: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -1090,8 +1094,9 @@ const sameContent = (answered: string | undefined) => (prompt: InteractivePrompt
 /**
  * Claude's question (AskUserQuestion) just answered, still on screen: its question with the same
  * options, whatever is ticked (a tick marks its tab answered, and the card's title changes with it),
- * or the review still up. A screen no reader knows while Claude still waits (the fallback card) is
- * the next step half drawn.
+ * or the review still up. Any other dialog of Claude's (a tool approval, a plan, the folder-trust
+ * check): the same panel, whatever its options say (the plan's feedback row shows the typed answer).
+ * A screen no reader knows while Claude still waits (the fallback card) is the next step half drawn.
  */
 function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | null) => boolean {
   return (prompt) => {
@@ -1099,6 +1104,8 @@ function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | n
     const shown = prompt ? parsedByPublicPrompt.get(prompt) : undefined;
     if (!shown) return false;
     if (answered.responder === "claude-submit") return shown.responder === "claude-submit";
+    if (answered.responder !== "claude-question") return shown.responder === answered.responder && shown.title === answered.title
+      && shown.question === answered.question && shown.body === answered.body;
     return shown.responder === "claude-question" && shown.question === answered.question
       && JSON.stringify(shown.options) === JSON.stringify(answered.options);
   };
@@ -1781,8 +1788,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // A model list closes, or opens its next list, a moment after its key: the same wait, so
       // the card's read right after the answer does not get the list just answered once more
       // Claude draws its next tab, or its review, a moment after the key: the same wait, by what the
-      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503)
-      if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
+      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503). Its
+      // other dialogs close a moment after the key too, and get the same wait
+      if (responder === "claude-question" || responder === "claude-submit"
+        || responder === "claude-approval" || responder === "claude-plan" || responder === "claude-confirm") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       else if (target.steps) form.still = sameContent(contentId(target));
       else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
       return jsonResponse({ ok: true });
