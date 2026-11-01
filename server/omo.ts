@@ -236,6 +236,19 @@ const sessionDir = (cwd: string, agentDir: string) => join(agentDir, "sessions",
 const HOLDER_START_TOLERANCE_MS = 3000;
 const HOLDER_START_LATE_MS = 60_000;
 
+/** Validate native holder metadata; strict mode requires this boot and a three-second start match. */
+export function matchesOmoHolder(record: unknown, pid: number, cwd: string | undefined, startedAt: number | null, bootAt: number | null, strict = false): boolean {
+  if (typeof record !== "object" || record === null) return false;
+  const row = record as Record<string, unknown>;
+  if (row.pid !== pid || (cwd !== undefined && row.cwd !== cwd)) return false;
+  const thisBoot = bootAt !== null && typeof row.bootAtMs === "number" && Math.abs(row.bootAtMs - bootAt) <= HOLDER_START_TOLERANCE_MS;
+  if (strict && (!thisBoot || startedAt === null)) return false;
+  if (startedAt === null) return true;
+  if (typeof row.processStartedAtMs !== "number" || !Number.isFinite(row.processStartedAtMs)) return false;
+  const lag = row.processStartedAtMs - startedAt;
+  return lag >= -HOLDER_START_TOLERANCE_MS && lag <= (thisBoot && !strict ? HOLDER_START_LATE_MS : HOLDER_START_TOLERANCE_MS);
+}
+
 /** This host's boot instant as omo records it: the wall clock minus uptime, in whole seconds. null if unreadable. */
 export function hostBootAt(now = Date.now()): number | null {
   try {
@@ -262,14 +275,7 @@ export function heldSessionIds(dir: string, pid: number, startedAt: number | nul
   for (const name of names.slice(0, 4096)) {
     try {
       const record = JSON.parse(readFileSync(join(holders, name, `${pid}.json`), "utf8"));
-      if (record?.pid !== pid) continue;
-      if (cwd !== undefined && record.cwd !== cwd) continue;
-      if (startedAt !== null) {
-        if (typeof record.processStartedAtMs !== "number") continue;
-        const thisBoot = bootAt !== null && typeof record.bootAtMs === "number" && Math.abs(record.bootAtMs - bootAt) <= HOLDER_START_TOLERANCE_MS;
-        const lag = record.processStartedAtMs - startedAt;
-        if (lag < -HOLDER_START_TOLERANCE_MS || lag > (thisBoot ? HOLDER_START_LATE_MS : HOLDER_START_TOLERANCE_MS)) continue;
-      }
+      if (!matchesOmoHolder(record, pid, cwd, startedAt, bootAt)) continue;
       ids.push(decodeURIComponent(name));
     } catch { /* this pid holds nothing here, or the record is unreadable */ }
   }

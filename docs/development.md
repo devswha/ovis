@@ -421,6 +421,17 @@ the child's environment before `exec` (`OMO_CODING_AGENT_DIR=… my-launcher`): 
 variable the process sets only in-process later may never appear in
 `/proc/<pid>/environ`, which reports the environment the kernel recorded at `exec`.
 
+Linux managed panes also support a broker-owned OmO process behind `managed_pty.py`.
+`HERDR_MANAGED_NAMESPACE` selects the manager's private record directory; its default is
+`~/dev/agents/herdr_manager/state/managed-sessions`. Only tagged schema-2 records are
+eligible. The proof pins the actual local server socket, pane/generation, wrapper,
+broker and child process lifetimes, runtime hashes, and native holder in the private
+session directory. It never guesses ownership from cwd, newest files, or process ancestry
+alone. Conversation, command-history and tool-output reads revalidate before returning.
+Missing or changed evidence fails closed without changing the direct OmO reader.
+OmO tool-output searches cover at most the latest 16 MiB, exclude a partial leading record,
+and trim returned text to 2,000,000 characters; older references can be unavailable.
+
 ## Browser connection diagnostics
 
 The browser keeps at most 32 recent connection breadcrumbs plus one pinned 16-record incident
