@@ -193,6 +193,7 @@ bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New 
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
 bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
+bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513)
 bun scripts/push-health-demo-regression.ts # the alerts health notice with a stand-in PushManager: a retired subscription told once over the pane and in Settings, repaired once; a refusal, a key mismatch, denied, unsupported, offline, loading and a watching device's refused test, at 390 and 1440, light and dark, Korean at 390
 bun scripts/device-security-demo-regression.ts # Phone & devices on demo fixtures: revoking every device (the caller's warning, the confirmation, a refused write, a watching device) and the line every window gets when a device pairs
 bun scripts/chat-browser-qa.ts  # chat lens end to end
@@ -486,7 +487,8 @@ terminal output.
 Conversation responses are gzipped like every other text answer (`server/compress.ts`), with
 weak ETags so conditional reads hold across encodings.
 Prompt polling remains separate at 2 s: approval cards and suggestions can change on the
-terminal screen without a transcript write or agent-status transition.
+terminal screen without a transcript write or agent-status transition. A pane that turns blocked,
+or stops being blocked, has its prompt read at once.
 
 ### Initial push + gzip measurement
 
@@ -693,6 +695,54 @@ Do not push release tags by hand: installed updaters read Git tags directly, so 
 visible to them even without a GitHub release. Existing tags cannot be reused; fix a
 published version with a new patch release. If publishing fails after a tag was created,
 verify that tag's commit and repair its GitHub release rather than moving the tag.
+
+The hosted shell is then built and deployed in three jobs, so the Cloudflare token never shares a
+job with the build's dependencies. `shell-build` (no environment, no secrets, the dependency cache
+restored read-only) checks out the release tag, fails unless the tag points at the commit this
+release published, builds the shell (`bun run build:shell`), fails if `dist-shell/` lacks
+`index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
+passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
+read-only repository access, checks nothing out and runs no repository code: it sets up Bun, checks
+the downloaded tarball against that SHA-256, refuses it if it holds a link, a special file, a path
+outside it, a `_worker.js`, a `functions/` or a `_routes.json` (Pages would run or route those as
+server code next to the token), unpacks it, installs wrangler from this commit's
+`.github/deploy-tools/package.json` and `bun.lock` with `bun install --frozen-lockfile
+--ignore-scripts`, runs that binary as `wrangler pages deploy dist-shell --project-name ovis-app
+--branch main --no-bundle` (the token reaches that step alone), and waits until `https://app.ovis.sh/build.json`
+answers 2xx with the tag's commit as its `revision`. The `shell-attach` job, the only one that may
+write, then attaches the tarball and its SHA-256 to the release, so anyone can compare what app.ovis.sh
+serves with what the tag builds; it runs only after a deploy that did not fail. Nothing else deploys
+app.ovis.sh: never from a branch or a developer machine. Until the owner setup below is done the
+deploy passes with a notice naming the missing secrets, the tarball is still attached, and app.ovis.sh
+stays as it was.
+
+To move the deploy to another wrangler, change the version in `.github/deploy-tools/package.json`,
+run `bun install` in that directory and commit both files; the deploy jobs refuse a lockfile that
+does not match the manifest.
+
+One-time owner setup for the shell deploy:
+
+1. In Cloudflare, create the Pages project `ovis-app` (direct upload, production branch `main`) and
+   give it the custom domain `app.ovis.sh`. Keep its production branch `main`: the shell preview
+   deploys to the branch `preview` and stays off app.ovis.sh only while `preview` is not the
+   production branch.
+2. Create an API token that may edit Cloudflare Pages for that account, and add it with the account
+   ID as the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` of the GitHub environment
+   `production` (not repository secrets).
+3. Give the `production` environment the maintainer as a required reviewer: every deploy waits for
+   an approval on the Release run.
+4. Keep the account on the Workers Paid plan (the relay needs it) and set a billing alert at
+   $20 a month.
+
+To try the relay from a phone before a release, without Tailscale, deploy main to the Pages preview:
+**Actions → Shell preview → Run workflow** on `main`, approve the `production` environment, then open
+<https://preview.ovis-app.pages.dev>. The workflow (`.github/workflows/shell-preview.yml`, run by hand
+only) has the same two-job split as the release: `shell-build` builds the shell from main without
+secrets and fails if `dist-shell/` lacks `index.html` or `build.json`; `shell-deploy` checks the
+tarball's SHA-256, deploys it with the locked wrangler and `--branch preview` (never `main`, so
+app.ovis.sh keeps the release's build) and waits until the preview's `build.json` names main's commit.
+Run the PC's Ovis from the same main with `OVIS_RELAY_APP_URL=https://preview.ovis-app.pages.dev`, so its QR codes open the preview
+instead of app.ovis.sh. It uses the same secrets and approval as the release deploy.
 
 Remote-PC runtime bundles are published by a `remote-vN` tag, and an app release requires the bundle
 that matches its server (step 3). See [remote PCs](remote-pcs.md).
@@ -1005,7 +1055,7 @@ do; measure setup, test execution and retries separately when comparing speed. S
 [scripts/self-hosted-runner/README.md](../scripts/self-hosted-runner/README.md).
 
 `scripts/ci-tests.ts` discovers all `.test.ts` and `.test.tsx` files under
-src/shared/server/scripts/telemetry/push-relay/integrations.
+src/shared/server/scripts/telemetry/push-relay/relay/integrations.
 Files named `*.contract.test.ts`, tests under `server/herdr/` and `server/pty/`, and
 `server/updater.test.ts` (which includes real bridge restart/rollback cases) belong
 to integration; everything else belongs to unit. Name new live-server tests

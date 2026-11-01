@@ -93,6 +93,7 @@ run_script scripts/agents-sign-in-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
+run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
@@ -168,6 +169,7 @@ run_script scripts/sidebar-tokens-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
+run_script scripts/prompt-card-timing-demo-regression.ts
 run_script scripts/opencode-prompt-regression.ts
 run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts

@@ -343,4 +343,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Forget": "削除",
   "Through the Ovis relay": "Ovis リレー経由",
   "This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.": "このブラウザーのリクエストは、Ovis リレー経由でペアリングしたスマートフォンから端末間暗号化で届きました。リレーは内容を読めません。",
+  "Ready through the Ovis relay.": "Ovis リレー経由で接続できます。",
+  "Ready at {url}.": "{url} で開けます。",
+  "Use the Ovis relay, Tailscale or a pairing code.": "Ovis リレー、Tailscale、またはペアリングコードで接続します。",
 };

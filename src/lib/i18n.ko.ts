@@ -183,6 +183,7 @@ const BASE: Record<string, string> = {
   "New code": "새 코드",
   "Paired: {name}.": "페어링됨: {name}.",
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
+  "Connect a phone": "폰 연결",
   "Pairing code": "페어링 코드",
   "Open this address on your phone": "폰에서 이 주소를 여세요",
   "{agent} is ready": "{agent} 준비 완료",
