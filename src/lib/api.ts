@@ -492,12 +492,27 @@ const paneSessions = new Map<string, string>();
  * Per PC, a token its event that panes changed (paneSessionsMoving) gave it until the roster after it
  * names the sessions: a read in between is of a session not known yet, so it stands for none other.
  */
-const movingSessions = new Map<string, string>();
+const movingSessions = new Map<string, { token: string; event: number }>();
 let movingEvents = 0;
 
 /** The session a pane (paneKey) is on for a read starting now: its PC's moving token, else the roster's. */
 function sessionNow(pane: string): string | undefined {
-  return movingSessions.get(pane.slice(0, pane.indexOf("\u0000"))) ?? paneSessions.get(pane);
+  return movingSessions.get(pane.slice(0, pane.indexOf("\u0000")))?.token ?? paneSessions.get(pane);
+}
+
+/**
+ * The session names the conversation: herdr reports the pane's agent_session, and its PC has said nothing
+ * since. A press read is started and taken only then: a pane with no reported session can change
+ * conversation with nothing on the client changing, so its chat asks the server on mount, as before #2562.
+ */
+function namesSession(session: string | undefined): boolean {
+  return session !== undefined && !movingToken(session) && !session.endsWith("\u0000");
+}
+const movingToken = (session: string): boolean => session.startsWith("moving:");
+
+/** How many PC events said panes changed: a roster read started now is read after every one of them. */
+export function paneSessionEvents(): number {
+  return movingEvents;
 }
 
 /** A pane's session as paneSessions keeps it. */
@@ -510,10 +525,13 @@ export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">)
  * replaced another reuses its pane IDs, so the session is the herdr's too; a pane the roster no longer
  * lists has none.
  */
-export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[]): void {
+export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[], readAfter?: number): void {
   for (const machine of machines) {
     if (machine.snapshot === null) continue;
-    movingSessions.delete(machine.id);
+    // only a roster read after the PC's last event names its panes' sessions now; one read before it (a poll
+    // that was out, a push the server built earlier) can still name the session a pane left
+    const moving = movingSessions.get(machine.id);
+    if (moving !== undefined && readAfter !== undefined && readAfter >= moving.event) movingSessions.delete(machine.id);
     const listed = new Set<string>();
     for (const pane of machine.snapshot.panes) {
       const key = paneKey(pane.pane_id, machine.id);
@@ -529,7 +547,8 @@ export function observePaneSessions(machines: readonly { id: string; snapshot: {
  * names them comes: a press read on it may be of a session a pane has left, so none is taken.
  */
 export function paneSessionsMoving(machineId: string): void {
-  movingSessions.set(machineId, `moving:${++movingEvents}`);
+  movingEvents += 1;
+  movingSessions.set(machineId, { token: `moving:${movingEvents}`, event: movingEvents });
   for (const [url, pressed] of pressReads) if (pressed.pane.startsWith(paneKey("", machineId))) pressReads.delete(url);
 }
 
@@ -595,7 +614,7 @@ let newestReads = 0;
  */
 export function prefetchPaneConversation(paneId: string, machineId: string, prompts: number): void {
   const pane = paneKey(paneId, machineId);
-  if (pinnedConversations.has(pane)) return;
+  if (pinnedConversations.has(pane) || !namesSession(sessionNow(pane))) return;
   const url = conversationUrl(paneId, machineId, { prompts });
   if (pressReads.has(url)) return;
   // the mount read names the history of the cached answer it drew (ChatView's peek)
@@ -625,7 +644,7 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
     // a press held past its answer: the pick drew that answer from the cache and names its history.
     // A copy is this read's own: the chat counts its presentation read, and it can prove a finish.
     // A pane herdr moved to another session since the press asks again: that answer is the old session's
-    if (performance.now() - pressed.at < PRESS_READ_MS && pressed.session === session) return pressed.answer === undefined ? pressed.read : { ...pressed.answer };
+    if (performance.now() - pressed.at < PRESS_READ_MS && pressed.session === session && namesSession(session)) return pressed.answer === undefined ? pressed.read : { ...pressed.answer };
   }
   // the plain page a held read also writes (below): a plain read that starts after it owns that page
   const plain = polled && page.from !== undefined ? conversationUrl(paneId, machineId, page.prompts === undefined ? {} : { prompts: page.prompts }) : undefined;

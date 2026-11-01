@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 
-import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, observePaneSessions, paneSessionsMoving, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
+import { ApiError, CONVERSATION_ANSWER_MAX_BYTES, CONVERSATION_ANSWERS_BYTES, CONVERSATION_ANSWERS_KEPT, fetchPaneConversation, conversationAnswerBytes, observePaneSessions, paneSessionEvents, paneSessionsMoving, peekPaneConversation, pinPaneConversation, prefetchPaneConversation, PRESS_READ_MS, unpinPaneConversation } from "./api.ts";
 import { ConversationRefresh } from "./conversationRefresh.ts";
 import type { ConversationResponse } from "../../shared/protocol.ts";
 
@@ -13,7 +13,14 @@ afterEach(() => {
   globals.window = realWindow;
   restoreClock?.();
   restoreClock = undefined;
+  // the roster the event a test raised scheduled: this PC's panes are known again, and none is named
+  observePaneSessions([{ id: "local", snapshot: { panes: [] } }], paneSessionEvents());
 });
+
+/** The roster naming each pane's session (herdr's agent_session), read after every PC event so far. */
+function named(machine: string, sessions: Record<string, string | null>): void {
+  observePaneSessions([{ id: machine, snapshot: { panes: Object.entries(sessions).map(([pane_id, value]) => ({ pane_id, agent: "claude", agent_session: value === null ? null : { agent: "claude", kind: "id", source: "herdr:claude", value } })) } }], paneSessionEvents());
+}
 
 describe("conversation polling", () => {
   it("echoes displayed history, retains it on a retryable read, and forgets it on a rejected history", async () => {
@@ -163,6 +170,8 @@ describe("conversation polling", () => {
 });
 
 describe("conversation read started by a press", () => {
+  // herdr reports each pane's session: only then is a press read started and taken
+  beforeEach(() => named("local", Object.fromEntries(["press:p1", "press:p2", "press:held", "press:again", "press:p3", "press:p4", "press:late"].map((pane) => [pane, "a"]))));
   /** every request the chat makes: its query and whether it revalidates */
   function answering(): { url: string; etag: string | null }[] {
     const sent: { url: string; etag: string | null }[] = [];
@@ -282,7 +291,7 @@ describe("conversation read started by a press", () => {
 
   it("takes no press read once its PC says its panes changed, before the roster naming them comes", async () => {
     const sent = answering();
-    observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "press:moving", agent: "claude", agent_session: null }] } }]);
+    named("local", { "press:moving": "a" });
     prefetchPaneConversation("press:moving", "local", 10);
     await heldPast("press:moving");
     paneSessionsMoving("pc-other");
@@ -317,6 +326,49 @@ describe("conversation read started by a press", () => {
     expect(peekPaneConversation("press:gap", "gap-pc", 10)?.history_id).not.toBe("session-a");
     const mounted = await fetchPaneConversation("press:gap", "gap-pc", { prompts: 10, fresh: true });
     expect(mounted.history_id).toBe("session-b");
+  });
+
+  it("starts no press read for a pane whose session herdr does not report: its chat asks the server on mount", async () => {
+    let history = "session-a";
+    const sent: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      sent.push(url);
+      return Response.json({ source: "copilot-transcript", history_id: history, cursor: null, turns: [] }, { headers: { etag: `"${history}"` } });
+    }) as typeof fetch;
+    named("local", { "press:unnamed": null });
+    prefetchPaneConversation("press:unnamed", "local", 10);
+    for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    // the agent goes to session B; the roster still names no session
+    history = "session-b";
+    named("local", { "press:unnamed": null });
+    const { read } = await mount("press:unnamed");
+    expect(read.history_id).toBe("session-b");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("keeps a PC's panes unknown after its event until a roster read after it, not one read before it", async () => {
+    let history = "session-a";
+    const sent: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      sent.push(url);
+      return Response.json({ source: "claude-transcript", history_id: history, cursor: null, turns: [] }, { headers: { etag: `"${history}"` } });
+    }) as typeof fetch;
+    const roster = (value: string, readAfter: number) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "press:stale", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value } }] } }], readAfter);
+    roster("a", paneSessionEvents());
+    prefetchPaneConversation("press:stale", "local", 10);
+    await heldPast("press:stale");
+    // a roster read is out when herdr moves the pane to B and its PC says so; that read answers after the event
+    const polled = paneSessionEvents();
+    history = "session-b";
+    paneSessionsMoving("local");
+    roster("a", polled);
+    expect(peekPaneConversation("press:stale", "local", 10)).toBeUndefined();
+    expect((await mount("press:stale")).read.history_id).toBe("session-b");
+    // the refetch the event scheduled names B: the pane's session is known again, and B's pages are kept
+    roster("b", paneSessionEvents());
+    const read = await fetchPaneConversation("press:stale", "local", { prompts: 10 });
+    expect(peekPaneConversation("press:stale", "local", 10)).toBe(read);
+    expect(read.history_id).toBe("session-b");
   });
 
   it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
