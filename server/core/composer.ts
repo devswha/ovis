@@ -268,7 +268,7 @@ export async function claudeBoxReads(paneId: string): Promise<[string, string | 
  * right after it is cancelled. That copy, while the agent is not working, two Esc presses empty
  * again — never Ctrl+C, which would arm "press Ctrl-C again to exit" — then the box is read once
  * more before the send. Every other draft, and a box still not empty after them, refuses as before.
- * An `automatic` send (a queued message going on its own) refuses over that copy too: the user stopped
+ * An `automatic` send (a queued message, whether the drain or its own request types it) refuses over that copy too: the user stopped
  * that send, and the composer gets it back only from its next prompt read, seconds after the drain.
  * `authorize` throws once the sender may no longer send: it is asked before each Esc, and again
  * right before herdr is written to. A send with less than RESTORED_CLEAR_RESERVE_MS left before its

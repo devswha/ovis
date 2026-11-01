@@ -63,7 +63,7 @@ import { useMachineId } from "../lib/machineContext.tsx";
 import { useSkillMatcher } from "../lib/useSkillMatcher.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
 import { lineDiff } from "../lib/diff.ts";
-import { formatTokens, sameMessage } from "../lib/compose.ts";
+import { endsWithTurn, formatTokens, stoppedTurn, type TurnIdentity } from "../lib/compose.ts";
 import { formatElapsed, taskCallItems, taskResultMarkdown } from "../lib/omoTasks.ts";
 import { sendUserFileCall } from "../lib/sendUserFile.ts";
 import { LINE_IMAGES_SHOWN, LINE_IMAGES_SHOWN_TOUCH, lineImages, linePictures, previewPlace, workImages, type WorkImage } from "../lib/workImages.ts";
@@ -1343,12 +1343,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    */
   const [sentOver, setSentOver] = useState<{ turn: ConversationTurn; page: ConversationTurn[] } | null>(null);
   /**
-   * A cancelled send back in the agent's box when a message went out, with the turns it was read from.
-   * That message empties the box, so a prompt read answers no restored copy before the transcript holds
-   * the new turn; the cancelled turn stays out while those turns are unchanged (the next read drops it
-   * from the active chain).
+   * The cancelled send's turn, back in the agent's box when a message went out. That message empties
+   * the box, so a prompt read answers no restored copy before the transcript holds the new turn; the
+   * cancelled turn stays out while it is still the last turn (the next read drops it from the active
+   * chain). `lastStopped`: that turn as last read with its copy in the box, which is before the send
+   * started: a read between the send and its receipt (a queued send's, a row's removal) answers none.
    */
-  const [cancelledAtSend, setCancelledAtSend] = useState<{ text: string; page: ConversationTurn[] } | null>(null);
+  const [cancelledAtSend, setCancelledAtSend] = useState<TurnIdentity | null>(null);
+  const lastStopped = useRef<TurnIdentity | null>(null);
   /** the newest page as rendered: an earlier page loaded above it does not move the transcript */
   const heldPage = useRef<ConversationTurn[]>([]);
   const seenSent = useRef(sentKey);
@@ -1410,6 +1412,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
+    setCancelledAtSend(null); lastStopped.current = null;
     wasConnected.current = connected;
     // Stale while revalidating: the last answer read for this pane draws before paint, and the
     // mount read still asks the server; an unchanged answer (a 304) is this object and is skipped.
@@ -1429,8 +1432,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const page = heldPage.current;
     const last = page[page.length - 1];
     setSentOver(last?.role === "assistant" && agentStatus !== "working" && agentStatus !== "blocked" ? { turn: last, page } : null);
-    setCancelledAtSend(restored === null ? null : { text: restored, page });
-  }, [sentKey, agentStatus, restored]);
+    setCancelledAtSend(lastStopped.current);
+  }, [sentKey, agentStatus]);
 
   // Status edges still read immediately, including on a bridge without conversation pushes.
   // They share the same serialized reader as pushes, sends and the periodic backstop.
@@ -2066,13 +2069,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while
   // the last turn is that very send — matching the terminal, which shows it only as typed text.
-  const shownTurns = useMemo(() => {
-    const last = turns[turns.length - 1];
-    const hidden = restored ?? (cancelledAtSend !== null && cancelledAtSend.page === state.turns ? cancelledAtSend.text : null);
-    if (hidden === null || last?.role !== "user") return turns;
-    const sent = last.parts.filter((part): part is Extract<ConversationPart, { kind: "text" }> => part.kind === "text").map((part) => part.text).join("\n");
-    return sameMessage(sent, hidden) ? turns.slice(0, -1) : turns;
-  }, [turns, restored, cancelledAtSend, state.turns]);
+  const stopped = useMemo(() => stoppedTurn(turns, restored), [turns, restored]);
+  if (stopped !== null) lastStopped.current = stopped;
+  const shownTurns = useMemo(() => stopped !== null || endsWithTurn(turns, cancelledAtSend) ? turns.slice(0, -1) : turns, [turns, stopped, cancelledAtSend]);
   heldPage.current = state.turns;
   const finishedBeforeSend = sentOver !== null && sentOver.page === state.turns ? sentOver.turn : null;
   const lastShownTurn = state.source === "conversation" ? shownTurns.at(-1) : undefined;

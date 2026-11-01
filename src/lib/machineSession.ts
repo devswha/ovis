@@ -27,7 +27,8 @@ export class MachineSession {
   private currentEpoch = 0;
   private announcedLifetime: string | undefined;
   private resumedReceipts: Array<{ paneId: string; lifetime: string; removal: PendingRemoval }> = [];
-  /** rows seen going out (`sending`), each with when and what its pane's chat held then (lib/sentWaiting.ts) */
+  /** rows seen going out (`sending`), each with when and what its pane's chat held then (lib/sentWaiting.ts); a row
+   * back as queued or held leaves it, so the next attempt (Send now) is timed from itself */
   private readonly going = new Map<string, { at: number; after: WaitingBaseline | null }>();
   private role: RoleAck | null = null;
   private readonly handlers = new Set<Handler>();
@@ -79,7 +80,10 @@ export class MachineSession {
         const scope = this.currentScope;
         const key = waitingKey(this.machineId, message.pane_id);
         // taken before the row's Enter, as a composer send's are before it is submitted
-        for (const item of message.messages) if (item.state === "sending" && !this.going.has(item.id)) this.going.set(item.id, { at: Date.now(), after: waitingBaseline(key) });
+        for (const item of message.messages) {
+          if (item.state !== "sending") this.going.delete(item.id);
+          else if (!this.going.has(item.id)) this.going.set(item.id, { at: Date.now(), after: waitingBaseline(key) });
+        }
         const typed = message.removed?.filter((item) => item.outcome === "sent" && this.store.isOwned(owner, item.id, scope)) ?? [];
         sent = typed.length > 0;
         // the rows' words, read before the publish lets them go
@@ -90,10 +94,12 @@ export class MachineSession {
           rememberGreeting(owner, afterSettled(afterSend(memory), true, memory.history));
         }
         // a typed row stays in the chat as the user's waiting message until its turn is read, as a
-        // composer send does (#2258): the turn end's drain and Send now leave no gap between the two
+        // composer send does (#2258): the turn end's drain and Send now leave no gap between the two.
+        // Only a row this connection saw going out: one sent through another, its turn perhaps read
+        // already, has no time before its Enter that the turn could settle
         for (const item of typed) {
           const text = rows.find((row) => row.id === item.id)?.text, went = this.going.get(item.id);
-          if (text !== undefined) rememberWaitingSend(key, text, went?.at, went?.after ?? waitingBaseline(key));
+          if (text !== undefined && went !== undefined) rememberWaitingSend(key, text, went.at, went.after);
         }
         for (const item of message.removed ?? []) this.going.delete(item.id);
       }

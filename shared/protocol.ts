@@ -1061,8 +1061,12 @@ export type ServerMessage =
    * input box (plain rows, cut at 200 characters; empty when no whole box could be read). Present
    * only when a send with `send_anyway` may follow; an older server never sends it.
    * `submit_partial`: the explicitly confirmed terminal draft was cleared, but the send's
-   * deadline then expired before the message was sent; never a nothing-typed receipt. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; code?: string; message?: string; draft?: string; box?: string }
+   * deadline then expired before the message was sent; never a nothing-typed receipt.
+   * `typed_now`: on a queued send, this request typed the message at once (the turn had ended
+   * before it arrived); on a held copy's resend (`resend_id`), this request typed it. A replayed id, a
+   * row sent or discarded since, or a copy another connection sent answers ok without it; an older
+   * server never sends it. */
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

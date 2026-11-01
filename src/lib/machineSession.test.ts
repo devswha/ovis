@@ -290,6 +290,37 @@ describe("PC connection ownership", () => {
     } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
   });
 
+  // a row the drain tried came back held (Claude's box held the stopped copy); Send now minutes later
+  // is timed from itself, or its bubble would expire at once
+  it("times a row sent again after it came back held from that later send", () => {
+    const { session, socket } = setup("retry-pc");
+    const key = waitingKey("retry-pc", "w1:p1");
+    const clock = spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [{ ...message("p1", "held"), error: { code: "input_draft", message: "box" } }] });
+      clock.mockReturnValue(200_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      clock.mockReturnValue(201_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 200_000 }]);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
+  });
+
+  // sent through another connection: this one never saw it go out, and its turn may be read already
+  it("keeps no waiting message for a row removed as sent that this connection never saw sending", () => {
+    const { session, socket } = setup("elsewhere-pc");
+    const key = waitingKey("elsewhere-pc", "w1:p1");
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); session.close(); }
+  });
+
   it("accepts an unmounted pane's submit receipt on its captured live connection", () => {
     const { session, socket, store } = setup();
     start(session, socket);

@@ -143,7 +143,8 @@ it.each([
 
 it.each([
   ["unconfirmed", { ok: true, unconfirmed: true } as const],
-  ["confirmed", { ok: true } as const],
+  ["confirmed", { ok: true, typedNow: true } as const],
+  ["replayed", { ok: true } as const],
 ])("Send now of a held copy the bridge answered %s removes its recovery row only on a receipt", async (kind, answer) => {
   const saved = savedStorage();
   const pane = `legacy-held-${kind}`, owner = paneStorageId("local", pane), key = waitingKey("local", pane), shown: string[] = [];
@@ -161,8 +162,10 @@ it.each([
     } else {
       expect(pendingMessages.read(owner)).toEqual([]);
       expect(shown).toEqual(["held follow-up"]);
-      // the row went: the chat shows the message as waiting until its turn is read
-      expect(currentWaitingSends(key)).toMatchObject([{ text: "held follow-up" }]);
+      // the row went: the chat shows the message as waiting until its turn is read; a replay of a
+      // send another connection made typed nothing now, and its turn may be read already
+      if (kind === "confirmed") expect(currentWaitingSends(key)).toMatchObject([{ text: "held follow-up" }]);
+      else expect(currentWaitingSends(key)).toEqual([]);
     }
   } finally {
     forgetWaitingSends(key);
@@ -205,16 +208,32 @@ it("records a confirmed send for its original pane after navigation without foll
 it("a queued follow-up the bridge typed at once waits in the chat and follows it, as a send at once", async () => {
   const pane = "queued-typed-at-once", key = waitingKey("local", pane), shown: string[] = [];
   let follows = 0;
-  const actions = sends(pane, { ok: true }, shown, {
+  const actions = sends(pane, { ok: true, typedNow: true }, shown, {
     agentStatus: "working", inputAtRest: () => false, settings: { autoSendQueued: true },
     setChatLocalSend: () => { follows++; },
-    submitComposerMessage: (_text, delivery) => { expect(delivery).toBe("queue"); return Promise.resolve({ ok: true }); },
+    submitComposerMessage: (_text, delivery) => { expect(delivery).toBe("queue"); return Promise.resolve({ ok: true, typedNow: true }); },
   });
   try {
     expect(await actions.composerSend("then list the tests")).toBe(true);
     expect(currentWaitingSends(key)).toMatchObject([{ text: "then list the tests" }]);
     expect(follows).toBe(1);
     expect(shown).toEqual(["then list the tests"]);
+  } finally { forgetWaitingSends(key); }
+});
+
+// an ok with no row also answers a replayed id, or a row sent or discarded since: nothing was typed now
+it("a queued follow-up answered ok with no row and no typed-now mark is no waiting message", async () => {
+  const pane = "queued-replayed", key = waitingKey("local", pane), shown: string[] = [];
+  let follows = 0;
+  const actions = sends(pane, { ok: true }, shown, {
+    agentStatus: "working", inputAtRest: () => false, settings: { autoSendQueued: true },
+    setChatLocalSend: () => { follows++; },
+  });
+  try {
+    expect(await actions.composerSend("discarded follow-up")).toBe(true);
+    expect(currentWaitingSends(key)).toEqual([]);
+    expect(follows).toBe(0);
+    expect(shown).toEqual([]);
   } finally { forgetWaitingSends(key); }
 });
 
