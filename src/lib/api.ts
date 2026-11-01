@@ -504,10 +504,49 @@ export function peekPaneConversation(paneId: string, machineId = "local", prompt
   return conversationAnswers.get(conversationUrl(paneId, machineId, prompts === undefined ? {} : { prompts }))?.body;
 }
 
+/** A newest-page read a press started, and its answer once it came. */
+interface PressRead { at: number; read: Promise<ConversationResponse>; answer?: ConversationResponse }
+/**
+ * Newest-page reads a press started (prefetchPaneConversation), by page URL without the history:
+ * the chat the press opens takes its mount read from here instead of asking again. Each one is
+ * taken once, and only within PRESS_READ_MS of the press: any later read asks the server.
+ */
+const pressReads = new Map<string, PressRead>();
+/** A press becomes a pick well within this, or it was a scroll, a drag or a long press. */
+export const PRESS_READ_MS = 1000;
+
+/**
+ * Starts the first read of a chat that a press is about to open (a tab or a sidebar row, before
+ * the pick renders), with the query ChatView's mount read sends. Sent at the press, it answers
+ * before the herdr calls the pick sets off, which herdr 0.9.0 holds about 250 ms when they overlap.
+ * A pane whose chat is mounted (pinned: shown, or kept in the tab cache) reads it itself, so
+ * nothing starts for it.
+ */
+export function prefetchPaneConversation(paneId: string, machineId: string, prompts: number): void {
+  if (pinnedConversations.has(paneKey(paneId, machineId))) return;
+  const url = conversationUrl(paneId, machineId, { prompts });
+  if (pressReads.has(url)) return;
+  // the mount read names the history of the cached answer it drew (ChatView's peek)
+  const cached = conversationAnswers.get(url)?.body;
+  const historyId = cached?.source === "scrollback" ? undefined : cached?.history_id;
+  const pressed: PressRead = { at: performance.now(), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true }) };
+  // a press that was a scroll leaves it untaken; a read that takes it still gets its failure
+  pressed.read.then((answer) => { pressed.answer = answer; }, () => undefined);
+  pressReads.set(url, pressed);
+  setTimeout(() => { if (pressReads.get(url) === pressed) pressReads.delete(url); }, PRESS_READ_MS);
+}
+
 /** GET /api/pane/conversation: structured turns, or scrollback fallback; `page` as ConversationResponse.cursor describes. */
 export async function fetchPaneConversation(paneId: string, machineId = "local", page: ConversationPageQuery = {}): Promise<ConversationResponse> {
   const url = conversationUrl(paneId, machineId, page);
   const polled = page.before === undefined;
+  const pressed = polled ? pressReads.get(url) : undefined;
+  if (pressed !== undefined) {
+    pressReads.delete(url);
+    // a press held past its answer: the pick drew that answer from the cache and names its history.
+    // A copy is this read's own: the chat counts its presentation read, and it can prove a finish
+    if (performance.now() - pressed.at < PRESS_READ_MS) return pressed.answer === undefined ? pressed.read : { ...pressed.answer };
+  }
   const known = polled ? conversationAnswers.get(url) : undefined;
   const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
   const { response, body } = await withChatReadDeadline(async (signal) => {
