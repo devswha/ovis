@@ -80,7 +80,8 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" || open.length !== 1) return prompt;
-  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked, parsed.ompQuestionCut === true));
+  // the whole question, never a prefix omp cut: another call's question may start the same way
+  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked, false));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
   const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));

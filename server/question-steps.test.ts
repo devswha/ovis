@@ -465,6 +465,54 @@ describe("the answer route moves between questions, one key at a time, each seen
     }, open);
   });
 
+  describe("every key is sent only on a read, after the look before it, that still shows what the card asked", () => {
+    const alike = [["First", "Proceed?", ["Yes", "No"]], ["Second", "Proceed?", ["Yes", "No"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
+
+    test("omp: the other of two questions drawn alike, shown during the look before Enter, takes no Enter", async () => {
+      await withPane("omp", omp(0, false, alike), async pane => {
+        const first = await card();
+        const beforeKey = async (): Promise<void> => { pane.screen = omp(1, false, alike); };
+        expect(await move(first.id, { option_index: 0 }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, alike);
+    });
+
+    test.each([["Next", { step_next: true }], ["an answer", { option_index: 0 }]] as const)("omp: the review, drawn while the read before %s is still being checked, takes no key", async (_, action) => {
+      await withPane("omp", omp(0), async pane => {
+        const first = await card();
+        // after the look before the key, the terminal leaves the question while the read's own checks run
+        let looked = false;
+        const beforeKey = async (): Promise<void> => { looked = true; };
+        pane.onRpc = (method) => { if (looked && method === "pane.process_info") { looked = false; pane.screen = omp(3); } };
+        expect(await move(first.id, action, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      });
+    });
+
+    test("omp: a question bound whole, then shown cut, moves nothing", async () => {
+      const long = "Which deployment should we choose for the production environment today to delete everything?";
+      const open = [["Deploy", long, ["Red", "Blue"]], ...QUESTIONS.slice(1)] as const;
+      await withPane("omp", omp(0, false, open), async pane => {
+        const first = await card();
+        pane.screen = omp(0, false, [["Deploy", "Which deployment │\n│ should we choose │\n│ for the production │\n│ environment today …", ["Red", "Blue"]], ...QUESTIONS.slice(1)])
+          .replace("⏎ select · ", "⏎ select · ctrl+e expand · ");
+        expect(await move(first.id, { step_next: true })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, open);
+    });
+
+    test("omp: a cut question is not given the open call's words when only a prefix matches", async () => {
+      const long = "Which deployment should we choose for the production environment today to delete everything?";
+      const open = [["Deploy", long, ["Red", "Blue"]], ...QUESTIONS.slice(1)] as const;
+      const cut = omp(0, false, [["Deploy", "Which deployment │\n│ should we choose │\n│ for the production │\n│ environment today …", ["Red", "Blue"]], ...QUESTIONS.slice(1)])
+        .replace("⏎ select · ", "⏎ select · ctrl+e expand · ");
+      await withPane("omp", cut, async () => {
+        // the card says what the terminal shows, not words of a call whose question only starts the same way
+        expect((await card()).question).not.toBe(long);
+      }, open);
+    });
+  });
+
   test("omp: the review keeps its id whether or not the colours prove where the form stands", async () => {
     await withPane("omp", omp(3), async pane => {
       const proven = await card();
