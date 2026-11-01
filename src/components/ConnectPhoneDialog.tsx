@@ -100,7 +100,8 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
   const routes: { value: ConnectRoute; label: string; hint: string }[] = [
     ...(offered ? [{ value: "relay" as const, label: t("Ovis relay"), hint: t("From anywhere. Nothing to install.") }] : []),
-    { value: "tailscale", label: "Tailscale", hint: t("With the Tailscale app on the phone.") },
+    // on this page's own HTTPS address (maybe not Tailscale's), the hint names the address, not the app
+    { value: "tailscale", label: "Tailscale", hint: plan.kind === "here" ? t("At this page's HTTPS address.") : t("With the Tailscale app on the phone.") },
     ...(canPair ? [{ value: "code" as const, label: t("Pairing code"), hint: t("On the same Wi-Fi, or through a tunnel.") }] : []),
   ];
   const shown = routes.some((option) => option.value === route) ? route : routes[0]!.value;

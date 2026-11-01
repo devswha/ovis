@@ -183,6 +183,7 @@ export const DEVICES_JA: Record<string, string> = {
   "How it works": "仕組み",
   "From anywhere. Nothing to install.": "どこからでも使えます。インストールは不要です。",
   "With the Tailscale app on the phone.": "スマートフォンの Tailscale アプリで接続します。",
+  "At this page's HTTPS address.": "このページの HTTPS アドレスで接続します。",
   "On the same Wi-Fi, or through a tunnel.": "同じ Wi-Fi、またはトンネル経由で接続します。",
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   "Turn on the relay": "リレーをオンにする",

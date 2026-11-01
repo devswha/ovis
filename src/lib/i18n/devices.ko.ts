@@ -183,6 +183,7 @@ export const DEVICES_KO: Record<string, string> = {
   "How it works": "작동 방식",
   "From anywhere. Nothing to install.": "어디서나 됩니다. 설치할 것이 없습니다.",
   "With the Tailscale app on the phone.": "폰의 Tailscale 앱으로 연결합니다.",
+  "At this page's HTTPS address.": "이 페이지의 HTTPS 주소로 연결합니다.",
   "On the same Wi-Fi, or through a tunnel.": "같은 Wi-Fi에서, 또는 터널을 통해 연결합니다.",
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   "Turn on the relay": "릴레이 켜기",

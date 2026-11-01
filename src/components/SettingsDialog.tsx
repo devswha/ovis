@@ -897,9 +897,11 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   // the dialog with the ways a phone connects, and the way it opens on; null while it is closed
   const [connecting, setConnecting] = useState<{ route: ConnectRoute; startCode: boolean } | null>(null);
   const closeConnect = useCallback(() => setConnecting(null), []);
+  // a relay this PC can turn on: offered here and nothing blocking it (a serve-only install, an unreadable identity)
+  const relayUsable = relayOffered(relay) && relay.status?.blocked === null;
   const connectSummary = relayOffered(relay) && relay.status?.phase === "online" ? t("Ready through the Ovis relay.")
-    : plan.kind === "here" || plan.kind === "served" ? (relayOffered(relay) ? t("Ready at {url}. Or use the Ovis relay, no Tailscale needed.", { url: plan.url }) : t("Ready at {url}.", { url: plan.url }))
-    : relayOffered(relay) ? t("The Ovis relay works from anywhere with nothing to install, or use Tailscale.")
+    : plan.kind === "here" || plan.kind === "served" ? (relayUsable ? t("Ready at {url}. Or use the Ovis relay, no Tailscale needed.", { url: plan.url }) : t("Ready at {url}.", { url: plan.url }))
+    : relayUsable ? t("The Ovis relay works from anywhere with nothing to install, or use Tailscale.")
     : t("Use Tailscale or a pairing code.");
   return (
     <>

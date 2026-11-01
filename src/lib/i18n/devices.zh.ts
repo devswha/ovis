@@ -183,6 +183,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "How it works": "工作原理",
   "From anywhere. Nothing to install.": "随处可用，无需安装。",
   "With the Tailscale app on the phone.": "通过手机上的 Tailscale 应用连接。",
+  "At this page's HTTPS address.": "通过本页的 HTTPS 地址连接。",
   "On the same Wi-Fi, or through a tunnel.": "在同一 Wi-Fi 下，或通过隧道连接。",
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   "Turn on the relay": "开启中继",
