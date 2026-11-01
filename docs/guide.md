@@ -425,6 +425,10 @@ Step by step:
 2. Scan the QR code with the phone's camera. Ovis opens in the phone's browser at `app.ovis.sh` and asks whether to pair with this PC: tap **Pair**.
 3. Install it: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app** or **Add to Home screen** from its menu. Then open the **⋯** menu at the top right and tap **Alerts** to get alerts on this phone. iPhone needs iOS 16.4+ and the home-screen app.
 
+If the relay cannot start before its link exists, the switch stays off and shows
+**The relay did not start: …** with the reason. Fix the cause, then press **Try again**.
+A link that already exists stays on while retrying a connection error.
+
 The phone pairs once. It makes a key of its own for this PC, which never leaves the phone, and proves itself with it on every connection, so there's no token or password to type. The PC lists the phone under **Phone & devices**, marked **via relay**, and **Revoke** there removes it and closes its connections at once. Opened again later, the app connects by itself. Each PC is an app of its own: pair another PC from its own QR code, and `app.ovis.sh` lists every PC the phone is paired with.
 
 **On an iPhone or iPad, add it to the Home Screen to stay paired.** In a Safari tab, the phone's key for a PC can be cleared after a week without a visit, and the phone then has to pair again. The home-screen app keeps it, and the app reminds you of this in Safari.

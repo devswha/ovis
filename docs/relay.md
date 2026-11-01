@@ -128,6 +128,11 @@ The hosted shell hides the group because mutations
 over the relay answer 403 `local_required`. While the relay is off an offer answers 409
 `relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.
 
+**A start that fails.** If a start fails before the PC's relay link exists, the switch stays
+off and the panel shows **The relay did not start: …** with the reason and **Try again**. Nothing
+retries that failed start automatically. A link that already exists stays on while retrying a
+connection error.
+
 **What it may do.** A phone paired through the relay gets the same access as a device paired with a
 code: it can type into terminals and change settings. Every pairing, through the relay or not,
 makes such a device, and the app has no way to make a paired device watch-only.
