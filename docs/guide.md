@@ -900,7 +900,8 @@ A React client talks to a Bun HTTP/WebSocket server.
 herdr owns the processes and the scrollback.
 
 With `OVIS_RUNTIME=herdr-core`, the server answers herdr's socket API itself from herdr-core
-(`server/herdr-core/`), through one `hc connect`, and attaches with `hc attach`.
+(`server/herdr-core/`), through one `hc connect`, and streams the live terminals over that same
+connection.
 
 ## FAQ
 
