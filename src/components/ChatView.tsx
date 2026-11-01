@@ -184,7 +184,7 @@ export interface ChatViewProps {
   onMetadata?: (paneId: string, metadata: ConversationMetadata | null) => void;
   /** what the last read says of the conversation, for the composer's greeting; null while nothing is known (loading, a failed read, the chat gone) */
   onRead?: (paneId: string, read: ChatRead | null) => void;
-  /** the composer shows its greeting, or a message sent from it is on its way: the chat's own "nothing yet" line stays out */
+  /** the composer shows its greeting, or a message sent from it is on its way or held: the chat's own "nothing yet" line stays out */
   greeted?: boolean;
   /** the agent's waiting prompt, for the composer to answer too */
   onPrompt?: (paneId: string, prompt: InteractivePrompt | null, answered?: boolean) => void;
