@@ -1253,7 +1253,8 @@ describe("connection-owned pending input", () => {
     await f.state("idle");
     const before = f.bytes();
     f.socket.send({ type: "submit", id: 2, pane_id: f.pane, text: "then reply PONG", payload: "unused\r", delivery: "queue" });
-    expect(await f.socket.result(2)).toMatchObject({ ok: false, code: "input_draft" });
+    // it names the copy as an immediate send's refusal does, for the composer's Clear it / Send it
+    expect(await f.socket.result(2)).toMatchObject({ ok: false, code: "input_draft", draft: "write a story about a gardener" });
     // no Esc (nor anything else) was typed over the stopped copy
     expect(f.bytes()).toBe(before);
   }, 30_000);

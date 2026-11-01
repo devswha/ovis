@@ -53,7 +53,8 @@ export type PendingOwner = Client | FirstMessageOwner;
 const isClient = (owner: PendingOwner): owner is Client => owner !== FIRST_MESSAGE_OWNER;
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
 type PendingItem = PendingRecord<PendingOwner, PendingLease | null>;
-type SubmitReply = { ok: boolean; pending?: PendingMessage; code?: string; message?: string };
+/** `refusal`: a queued request's own input_draft refusal, kept for its submit-result's draft actions; never sent as is */
+type SubmitReply = { ok: boolean; pending?: PendingMessage; code?: string; message?: string; refusal?: { draft: string | null; box: string | null; identity: PendingIdentity } };
 type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessage; match: string; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
 /** a first message refused before anything was typed because its connection could not type it yet stays queued for its next attach or turn */
 const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_lost", "disconnected", "read_only"]);
@@ -579,7 +580,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
       // The box is the live screen's; only the viewport read tells Claude's grey text from a draft. The live
       // read comes after the colors, so text typed between the two is in the box and holds the message.
-      if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS), automatic || queued);
+      if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS), automatic || queued)
+        .catch((error: unknown) => { throw error instanceof InputDraftError ? new InputDraftError(error.draft, context.identity, error.box) : error; });
       else if (context.identity.agent === "hermes") context.screen = await freeHermesInput(paneId, context.identity);
       // OpenCode v2 attaches a skill only through its autocomplete, never from a paste. A first message
       // goes before any Chat read the pane's catalog: the cold send's catalog (bounded reads, within the
@@ -693,6 +695,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error)
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
       if (automatic && !wrote && fault.code === "agent_blocked") pending.observe(paneId, "blocked", mark);
+      // a queued request typed at once is refused as an immediate send is: with the draft (or box) its actions need
+      if (queued && !wrote && error instanceof InputDraftError && error.identity) return { ok: false, ...fault, refusal: { draft: error.draft, box: error.box, identity: error.identity } };
       return { ok: false, ...fault };
     } finally { piCapacity.release(piReservation); }
   }
@@ -1077,8 +1081,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const answer = await reply;
           const accepted = answer.pending ? pending.get(client, message.pane_id, answer.pending.id)?.message : undefined;
           if (answer.pending && !accepted) replayPendingOutcome(client, message.pane_id, answer.pending.id);
+          // refused over a draft as the immediate path is: confirmed for Clear it and send, or Send anyway
+          const refusal = answer.refusal;
+          if (refusal && (refusal.draft || refusal.box !== null)) {
+            let confirmations = draftConfirmations.get(client);
+            if (!confirmations) { confirmations = new Map(); draftConfirmations.set(client, confirmations); }
+            confirmations.set(message.pane_id, refusal);
+          }
           // typed by this very request: a replayed id, or a row gone since (sent or discarded), answers without it
-          result(answer.ok, answer.code, answer.message, accepted, undefined, undefined, !previous && answer.ok && answer.pending === undefined);
+          result(answer.ok, answer.code, answer.message, accepted, refusal?.draft ?? null, refusal && refusal.box !== null ? shownInputBox(refusal.box) : null,
+            !previous && answer.ok && answer.pending === undefined);
           drainPending(message.pane_id);
           return;
         }
