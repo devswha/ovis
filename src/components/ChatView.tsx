@@ -146,6 +146,10 @@ const TRANSCRIPT_LINES = 400;
 const PROMPT_POLL_MS = 2000;
 // failed prompt reads in a row before the card says it may be out of date: one is a hiccup
 const PROMPT_STALE_READS = 2;
+/** The prompt each pane's chat last read (by paneStorageId): a chat drawn again (back from the
+ * Terminal lens) shows its card before paint, as it shows its turns, while its first read revalidates
+ * it. Only while herdr still says the pane waits: one answered in the terminal is not drawn again. */
+const lastPrompts = new Map<string, InteractivePrompt>();
 /** Scrolling this close to the top asks for the page before it. */
 const LOAD_OLDER_PX = 400;
 
@@ -1411,7 +1415,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
     history.current = undefined; setHistoryId(undefined);
-    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? lastPrompts.get(paneStorageId(machineId, paneId)) ?? null : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1679,9 +1683,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // menu can appear while idle without any file mutation. Keep their independent 2s poll.
   const [promptStale, setPromptStale] = useState(false);
   const failedPromptReads = useRef(0);
-  const pollPrompt = connected && !ended && agent !== null;
+  const promptGone = ended || agent === null;
+  const pollPrompt = connected && !promptGone;
+  // herdr says the agent now waits on the user, or no longer does: the card is read at once, not at
+  // the next poll up to 2 s later, while the turn already says "Needs you"
+  const blocked = agentStatus === "blocked";
   useEffect(() => {
-    if (!pollPrompt) { setPrompt(null); setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
+    const promptKey = paneStorageId(machineId, paneId);
+    // a dropped connection says nothing about the screen either: the card stays until a read answers
+    if (promptGone) { lastPrompts.delete(promptKey); setPrompt(null); }
+    if (!pollPrompt) { setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
     if (!visible) return;
     let cancelled = false;
     let timer = 0;
@@ -1695,6 +1706,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           failedPromptReads.current = 0;
           setPromptStale(false);
           setPrompt((current) => polledPrompt(current, next.prompt));
+          if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, next.prompt);
           setAnsweredPrompt(null);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
@@ -1716,7 +1728,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     };
     void readPrompt();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [pollPrompt, paneId, machineId, promptPollKey, promptRefreshKey, fetchPanePromptState, visible]);
+  }, [pollPrompt, promptGone, paneId, machineId, promptPollKey, promptRefreshKey, fetchPanePromptState, visible, blocked]);
 
   useEffect(() => {
     onPrompt?.(paneId, prompt, prompt !== null && answeredPrompt === prompt.id);

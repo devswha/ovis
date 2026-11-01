@@ -486,7 +486,8 @@ terminal output.
 Conversation responses are gzipped like every other text answer (`server/compress.ts`), with
 weak ETags so conditional reads hold across encodings.
 Prompt polling remains separate at 2 s: approval cards and suggestions can change on the
-terminal screen without a transcript write or agent-status transition.
+terminal screen without a transcript write or agent-status transition. A pane that turns blocked,
+or stops being blocked, has its prompt read at once.
 
 ### Initial push + gzip measurement
 
