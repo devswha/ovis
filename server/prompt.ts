@@ -18,7 +18,7 @@ import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { registry } from "./dialogs/registry.ts";
-import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, finishPrompt, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { sameText } from "./dialogs/omo.ts";
@@ -30,7 +30,7 @@ import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
-import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
+import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
@@ -465,11 +465,9 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     // what was typed into pi's line in the terminal would stay around the answer: the line is
     // emptied first, after the cursor and before it (pi's editor keys, measured on 0.87.1)
     if (parsed.responder === "pi-input") navigation.push("ctrl+k", "ctrl+u");
-    return [
-      ...keySteps(navigation),
-      { text },
-      ...(parsed.responder === "claude-plan" ? keySteps([KEY.backtab]) : keySteps([KEY.enter])),
-    ];
+    // Claude's plan too: Enter on "Tell Claude what to change" sends the words and keeps planning,
+    // where shift+tab approves the plan with them (measured on 2.1.316)
+    return [...keySteps(navigation), { text }, ...keySteps([KEY.enter])];
   }
 
   if (answer.option_indices !== undefined) {
@@ -626,6 +624,20 @@ async function restoredOnLiveScreen(paneId: string, viewport: string): Promise<s
   return viewportShowsLive(scrollBefore, scrollAfter, colors, before, live) ? claudeRestoredDraft(live, colors, sent) : null;
 }
 
+/**
+ * Claude's own input box ending the screen: a `❯` or bash `!` row between the last two rules, and
+ * only Claude's footer under them (as parseClaudeHeld reads the box). A list's cursor row (`❯ 1.`)
+ * between two rules, or a dialog drawn under the box, is no input box.
+ */
+function claudeInputBoxEndsScreen(screen: string): boolean {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const bottom = findLastIndex(lines, (line) => isDivider(line));
+  const footer = lines.slice(bottom + 1).map(cleanLine).filter(Boolean);
+  if (bottom < 0 || footer.length > 8 || footer.some((line) => line.startsWith("❯"))) return false;
+  const content = claudeInputBoxContent(screen) ?? "";
+  return /^[❯!]/.test(content) && !/^❯\s*\d+\./.test(content);
+}
+
 async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?: string, openCodeState = defaultOpenCodeState, signal?: AbortSignal): Promise<{ agent: string; status: string; prompt: InteractivePrompt | null; pane: HerdrPane; panes: HerdrPane[]; snapshot: SessionSnapshot; screen?: string; stale?: boolean; inputUnverified?: true }> {
   const before = openCodeState.checkpoint();
   const snapshot = await openCodeState.snapshot();
@@ -659,8 +671,11 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   const screen = known.screen ?? await liveScreen(paneId);
   // Codex's collapsed question queue reads blocked while its main prompt takes a message; a
   // model list of Claude Code's or Codex's that no reader could read is left to the terminal
-  // (registry.waits)
-  if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)) {
+  // (registry.waits); Claude's own input box (a `❯` or bash `!` row between the last two rules)
+  // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
+  // and for a second or two after it closes
+  if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
+    || (agent === "claude" && claudeInputBoxEndsScreen(screen))) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen };
   }
@@ -1068,14 +1083,17 @@ async function closeOpenQuestion(paneId: string): Promise<void> {
 const SETTLE_MS = 1_500;
 
 /**
- * After an answer to a form of several questions (omo, Claude's question tabs) or to a model list
- * (Claude Code, Codex): back once the pane shows its next step (the next question, the review, a
- * model's levels, or nothing when it was submitted or closed), so the card's read right after the
- * answer gets that step and never the one just answered. `still` says whether a read is the step
- * just answered. A screen that does not move within a second leaves it to the card's next poll.
+ * After an answer to a form of several questions (omo, Claude's question tabs), to one of Claude's
+ * other dialogs (a tool approval, a plan, the folder-trust check) or to a model list (Claude Code,
+ * Codex): back once the pane shows its next step (the next question, the review, a model's levels,
+ * or nothing when it was submitted or closed), so the card's read right after the answer gets that
+ * step and never the one just answered. `still` says whether a read is the step just answered. A
+ * screen that does not move within a second leaves it to the card's next poll.
  */
 async function formMovedOn(paneId: string, still: (prompt: InteractivePrompt | null) => boolean, codexHome?: string, openCodeStateDir?: string): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  // a second in all, however long each read takes
+  const deadlineAt = Date.now() + 1_000;
+  for (let attempt = 0; attempt < 20 && Date.now() < deadlineAt; attempt += 1) {
     await Bun.sleep(50);
     const read = await readPrompt(paneId, codexHome, openCodeStateDir).catch(() => undefined);
     // A failed read says nothing about whether the screen moved on.
@@ -1090,8 +1108,9 @@ const sameContent = (answered: string | undefined) => (prompt: InteractivePrompt
 /**
  * Claude's question (AskUserQuestion) just answered, still on screen: its question with the same
  * options, whatever is ticked (a tick marks its tab answered, and the card's title changes with it),
- * or the review still up. A screen no reader knows while Claude still waits (the fallback card) is
- * the next step half drawn.
+ * or the review still up. Any other dialog of Claude's (a tool approval, a plan, the folder-trust
+ * check): the same panel, whatever its options say (the plan's feedback row shows the typed answer).
+ * A screen no reader knows while Claude still waits (the fallback card) is the next step half drawn.
  */
 function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | null) => boolean {
   return (prompt) => {
@@ -1099,6 +1118,8 @@ function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | n
     const shown = prompt ? parsedByPublicPrompt.get(prompt) : undefined;
     if (!shown) return false;
     if (answered.responder === "claude-submit") return shown.responder === "claude-submit";
+    if (answered.responder !== "claude-question") return shown.responder === answered.responder && shown.title === answered.title
+      && shown.question === answered.question && shown.body === answered.body;
     return shown.responder === "claude-question" && shown.question === answered.question
       && JSON.stringify(shown.options) === JSON.stringify(answered.options);
   };
@@ -1781,8 +1802,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // A model list closes, or opens its next list, a moment after its key: the same wait, so
       // the card's read right after the answer does not get the list just answered once more
       // Claude draws its next tab, or its review, a moment after the key: the same wait, by what the
-      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503)
-      if (responder === "claude-question" || responder === "claude-submit") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
+      // step asks, whether or not its tabs are steps (#2465; order by @jpcarranza94 in #2503). Its
+      // other dialogs close a moment after the key too, and get the same wait
+      if (responder === "claude-question" || responder === "claude-submit"
+        || responder === "claude-approval" || responder === "claude-plan" || responder === "claude-confirm") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       else if (target.steps) form.still = sameContent(contentId(target));
       else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
       return jsonResponse({ ok: true });

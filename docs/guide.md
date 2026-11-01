@@ -283,6 +283,11 @@ until `letta` starts again on that conversation. In the home folder it always do
 while another pane runs `letta` in the same folder or reports the same conversation, and until the conversation's
 first turn on this PC has ended; Chat comes back by itself once that is no longer so.
 
+With Letta's local backend, the composer shows the model and reasoning effort the conversation
+runs with, read from Letta's local store (`lc-local-backend`): the conversation's own `/model`
+choice, else its agent's. A cloud conversation keeps those on Letta's server, so its composer shows
+none.
+
 Letta writes a turn only when it ends, so a turn appears once it is done, and a cancelled one
 never does. While it runs, Chat shows the turns written so far and **Working…**, and a message you
 sent stays a faded bubble for a minute at most; the Terminal shows the turn as it happens. Only
@@ -713,6 +718,10 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
   it or resized it: the app's window, or your phone once you type or open it there.
+- **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
+  not kept current behind your back. A recent tab you switch away from keeps its last screen until
+  you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
+  window, and after a reconnect a tab attaches again at once.
 - **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
   empty input box reads as typed text, and a send waits for you to confirm it.
 - **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
