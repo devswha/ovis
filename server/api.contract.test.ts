@@ -2002,6 +2002,48 @@ describe("workspace and discovery endpoints", () => {
     }
   }, 20_000);
 
+  it("pushes session-changed when a tab, workspace or worktree create answers, not after the collector's debounce", async () => {
+    // the page draws a new pane only once the roster lists it, and the roster is read on this frame
+    const repo = mkdtempSync(join(tmpdir(), "ovis-create-push-"));
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    expect(git("init", "-q", "-b", "main").exitCode).toBe(0);
+    writeFileSync(join(repo, "README.md"), "create push fixture\n");
+    expect(git("add", "README.md").exitCode).toBe(0);
+    expect(git("commit", "-q", "-m", "fixture").exitCode).toBe(0);
+    const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
+    const owned: string[] = [];
+    // ms from the answer to the first session-changed after the request: the collector's comes 500 ms late
+    const pushedOnAnswer = async (path: string, body: unknown): Promise<number> => {
+      const before = new Set(socket.seen);
+      const changed = socket.waitFor((frame) => frame.type === "session-changed" && !before.has(frame), `session-changed after ${path}`, 5_000).then(() => performance.now());
+      const response = await fetch(`${base()}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const answered = performance.now();
+      expect(response.status).toBe(200);
+      owned.push(((await response.json()) as WorkspaceCreated).workspace_id);
+      const pushed = await changed - answered;
+      // the collector's frame for this create is not the next one's
+      await Bun.sleep(1_000);
+      return pushed;
+    };
+    try {
+      const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-create-push" });
+      owned.push(parent.workspace.workspace_id);
+      await socket.waitFor((frame) => frame.type === "session-changed", "session-changed after setup", 5_000);
+      await Bun.sleep(1_000);
+      expect(await pushedOnAnswer("/api/tab/create", { workspace_id: parent.workspace.workspace_id })).toBeLessThan(250);
+      expect(await pushedOnAnswer("/api/workspace/create", { cwd: repo, label: "ovis-test-create-push-2" })).toBeLessThan(250);
+      const checkout = join(`${repo}-checkouts`, "feature");
+      expect(await pushedOnAnswer("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "ovis-test-create-push", path: checkout })).toBeLessThan(250);
+      // opening a worktree that is open already answers from the same route: it pushes too
+      expect(await pushedOnAnswer("/api/worktree/open", { workspace_id: parent.workspace.workspace_id, path: checkout })).toBeLessThan(250);
+    } finally {
+      socket.close();
+      for (const id of new Set(owned)) await herdrRpc("workspace.close", { workspace_id: id }).catch(() => undefined);
+      rmSync(`${repo}-checkouts`, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("says a repository has no commits yet instead of passing git's refusal on", async () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-empty-"));
     expect(Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: repo, stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
