@@ -25,7 +25,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      # install scripts run here: restore the dependency cache, never save one other jobs trust
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: restore
       - run: bun install --frozen-lockfile
       - name: Build the shell
         run: bun run build:shell

@@ -99,7 +99,10 @@ jobs:
         with:
           ref: refs/tags/v${{ inputs.version }}
           persist-credentials: false
+      # install scripts run here: restore the dependency cache, never save one other jobs trust
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: restore
       - name: Require the release tag's commit
         env:
           RELEASE_TAG: v${{ inputs.version }}
