@@ -2071,7 +2071,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // the last turn is that very send — matching the terminal, which shows it only as typed text.
   const stopped = useMemo(() => stoppedTurn(turns, restored), [turns, restored]);
   if (stopped !== null) lastStopped.current = stopped;
-  const shownTurns = useMemo(() => stopped !== null || endsWithTurn(turns, cancelledAtSend) ? turns.slice(0, -1) : turns, [turns, stopped, cancelledAtSend]);
+  // A send that emptied the box keeps it out while it is still the last turn (cancelledAtSend). Its
+  // outcome gets no sent row either (outcomeRows).
+  const hiddenTurn = stopped ?? (endsWithTurn(turns, cancelledAtSend) ? cancelledAtSend : null);
+  const hiddenSend = restored ?? hiddenTurn?.text ?? null;
+  const shownTurns = useMemo(() => hiddenTurn !== null ? turns.slice(0, -1) : turns, [turns, hiddenTurn]);
   heldPage.current = state.turns;
   const finishedBeforeSend = sentOver !== null && sentOver.page === state.turns ? sentOver.turn : null;
   const lastShownTurn = state.source === "conversation" ? shownTurns.at(-1) : undefined;
@@ -2100,7 +2104,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const rowMemories = useMemo(() => new Map<string, ChatRowMemory>(), [timelineScope]);
   // the turns with the commands sent from here: a chip on the turn that records one, a provisional
   // sent row for one no turn records (yet), placed by send time (lib/outcomeChip.ts)
-  const withOutcomes = useMemo(() => outcomeRows(shownTurns, outcomes, { restored, beginningLoaded: olderCursor === null }), [shownTurns, outcomes, restored, olderCursor]);
+  const withOutcomes = useMemo(() => outcomeRows(shownTurns, outcomes, { restored: hiddenSend, beginningLoaded: olderCursor === null }), [shownTurns, outcomes, hiddenSend, olderCursor]);
   const timelineRows = useMemo((): ChatRow[] => {
     const rows = withOutcomes.map((row): ChatRow => {
       if (row.kind === "sent") return { key: `outcome:${row.outcome.id}`, turn: null, outcome: row.outcome, beforeUser: false };
