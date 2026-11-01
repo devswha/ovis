@@ -288,11 +288,35 @@ describe("conversation read started by a press", () => {
     paneSessionsMoving("pc-other");
     await mount("press:moving");
     expect(sent).toHaveLength(1);
+    const drawn = peekPaneConversation("press:moving", "local", 10);
     prefetchPaneConversation("press:moving", "local", 10);
-    await heldPast("press:moving");
+    await heldPast("press:moving", drawn);
     paneSessionsMoving("local");
     await mount("press:moving");
     expect(sent).toHaveLength(3);
+  });
+
+  it("draws and takes no answer an earlier press read brings between its PC's event and the roster after it", async () => {
+    const sent: string[] = [];
+    let history = "session-a";
+    const first = Promise.withResolvers<void>();
+    globalThis.fetch = (async (url: string) => {
+      sent.push(url);
+      const answered = history;
+      if (sent.length === 1) await first.promise;
+      return Response.json({ source: "claude-transcript", history_id: answered, cursor: null, turns: [] }, { headers: { etag: `"${answered}"` } });
+    }) as typeof fetch;
+    observePaneSessions([{ id: "gap-pc", snapshot: { panes: [{ pane_id: "press:gap", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "a" } }] } }]);
+    prefetchPaneConversation("press:gap", "gap-pc", 10);
+    // herdr moves the pane to B: the PC's event comes, the roster naming B is still on its way
+    history = "session-b";
+    paneSessionsMoving("gap-pc");
+    first.resolve();
+    for (let turn = 0; turn < 50 && sent.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    // the chat the click opens, before the roster: A's answer is neither drawn nor taken
+    expect(peekPaneConversation("press:gap", "gap-pc", 10)?.history_id).not.toBe("session-a");
+    const mounted = await fetchPaneConversation("press:gap", "gap-pc", { prompts: 10, fresh: true });
+    expect(mounted.history_id).toBe("session-b");
   });
 
   it("keeps an old press read that answers last out of the cache a newer read filled", async () => {
@@ -390,6 +414,28 @@ describe("conversation peek", () => {
     expect(answer.history_id).toBe("session-b");
     expect(reads).toBe(2);
     expect(peekPaneConversation(pane, "local", 10)).toBe(answer);
+  });
+
+  it("reads again for the session a pane moved to, also when a newer read overtook this one", async () => {
+    const pane = "peek:overtaken";
+    let history = "session-a";
+    const first = Promise.withResolvers<void>();
+    let reads = 0;
+    globalThis.fetch = (async (_url: string) => {
+      const answered = history;
+      if (++reads === 1) await first.promise;
+      return Response.json({ source: "claude-transcript", history_id: answered, cursor: null, turns: [] }, { headers: { etag: `"${answered}"` } });
+    }) as typeof fetch;
+    const roster = (value: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: pane, agent: "codex", agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value } }] } }]);
+    roster("a");
+    const older = fetchPaneConversation(pane, "local", { prompts: 10 });
+    history = "session-b";
+    roster("b");
+    const newer = await fetchPaneConversation(pane, "local", { prompts: 10 });
+    first.resolve();
+    expect(newer.history_id).toBe("session-b");
+    expect((await older).history_id).toBe("session-b");
+    expect(peekPaneConversation(pane, "local", 10)?.history_id).toBe("session-b");
   });
 
   it("draws no page a replaced herdr's pane of the same ID read, nor one of a pane the roster stopped listing", async () => {

@@ -488,6 +488,17 @@ function trimConversationAnswers(keep: string): void {
  * only while the pane is still on it. A pane the roster has not named yet is on `undefined`.
  */
 const paneSessions = new Map<string, string>();
+/**
+ * Per PC, a token its event that panes changed (paneSessionsMoving) gave it until the roster after it
+ * names the sessions: a read in between is of a session not known yet, so it stands for none other.
+ */
+const movingSessions = new Map<string, string>();
+let movingEvents = 0;
+
+/** The session a pane (paneKey) is on for a read starting now: its PC's moving token, else the roster's. */
+function sessionNow(pane: string): string | undefined {
+  return movingSessions.get(pane.slice(0, pane.indexOf("\u0000"))) ?? paneSessions.get(pane);
+}
 
 /** A pane's session as paneSessions keeps it. */
 export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">): string {
@@ -502,6 +513,7 @@ export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">)
 export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[]): void {
   for (const machine of machines) {
     if (machine.snapshot === null) continue;
+    movingSessions.delete(machine.id);
     const listed = new Set<string>();
     for (const pane of machine.snapshot.panes) {
       const key = paneKey(pane.pane_id, machine.id);
@@ -517,13 +529,14 @@ export function observePaneSessions(machines: readonly { id: string; snapshot: {
  * names them comes: a press read on it may be of a session a pane has left, so none is taken.
  */
 export function paneSessionsMoving(machineId: string): void {
+  movingSessions.set(machineId, `moving:${++movingEvents}`);
   for (const [url, pressed] of pressReads) if (pressed.pane.startsWith(paneKey("", machineId))) pressReads.delete(url);
 }
 
 /** The cached answer at `url`, while its pane is still on the session it was read for; one from another session is dropped. */
 function currentAnswer(url: string, pane: string): ConversationAnswer | undefined {
   const answer = conversationAnswers.get(url);
-  if (answer === undefined || answer.session === paneSessions.get(pane)) return answer;
+  if (answer === undefined || answer.session === sessionNow(pane)) return answer;
   conversationAnswers.delete(url);
   return undefined;
 }
@@ -552,7 +565,7 @@ function conversationUrl(paneId: string, machineId: string, page: ConversationPa
  */
 export function peekPaneConversation(paneId: string, machineId = "local", prompts?: number): ConversationResponse | undefined {
   const answer = conversationAnswers.get(conversationUrl(paneId, machineId, prompts === undefined ? {} : { prompts }));
-  return answer?.session === paneSessions.get(paneKey(paneId, machineId)) ? answer?.body : undefined;
+  return answer?.session === sessionNow(paneKey(paneId, machineId)) ? answer?.body : undefined;
 }
 
 /** A newest-page read a press started, the pane's session it was read for, and its answer once it came. */
@@ -588,7 +601,7 @@ export function prefetchPaneConversation(paneId: string, machineId: string, prom
   // the mount read names the history of the cached answer it drew (ChatView's peek)
   const cached = currentAnswer(url, pane)?.body;
   const historyId = cached?.source === "scrollback" ? undefined : cached?.history_id;
-  const pressed: PressRead = { at: performance.now(), pane, session: paneSessions.get(pane), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true }) };
+  const pressed: PressRead = { at: performance.now(), pane, session: sessionNow(pane), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true }) };
   // a press that was a scroll leaves it untaken; a read that takes it still gets its failure
   pressed.read.then((answer) => { pressed.answer = answer; }, () => undefined);
   pressReads.set(url, pressed);
@@ -599,7 +612,7 @@ export function prefetchPaneConversation(paneId: string, machineId: string, prom
 export async function fetchPaneConversation(paneId: string, machineId = "local", page: ConversationPageQuery = {}): Promise<ConversationResponse> {
   const url = conversationUrl(paneId, machineId, page);
   const pane = paneKey(paneId, machineId);
-  const session = paneSessions.get(pane);
+  const session = sessionNow(pane);
   const polled = page.before === undefined;
   const pressed = polled ? pressReads.get(url) : undefined;
   if (pressed !== undefined) {
@@ -624,7 +637,7 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   }, chatReadDeadlineMs(machineId)).catch((cause: unknown) => {
     // a rejected history is the pane's, whatever page size it was read at: none of its pages may draw again
     // (unless the pane has moved on to another session since: that one's pages are not the rejected history's)
-    if (cause instanceof ApiError && cause.status === 409 && paneSessions.get(pane) === session) {
+    if (cause instanceof ApiError && cause.status === 409 && sessionNow(pane) === session) {
       for (const [cached, answer] of conversationAnswers) if (cached === url || answer.pane === pane) conversationAnswers.delete(cached);
     }
     throw cause;
@@ -633,11 +646,13 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   // A newest-page read that started after this one owns the cache, answered or not
   const ownsPlain = plain !== undefined && lastNewestRead.get(plain) === read;
   if (ownsPlain) lastNewestRead.delete(plain);
-  if (polled && lastNewestRead.get(url) !== read) return body;
-  if (polled) lastNewestRead.delete(url);
+  const ownsUrl = polled && lastNewestRead.get(url) === read;
+  if (ownsUrl) lastNewestRead.delete(url);
   // the pane went to another session while this read was out: its answer is the session left behind,
-  // so the newest page is read again for the session the pane is on now; it is never the cache's
-  if (paneSessions.get(pane) !== session) return polled ? fetchPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true }) : body;
+  // so the newest page is read again for the session the pane is on now, whether or not a newer read
+  // owns the cache; it is never the cache's
+  if (sessionNow(pane) !== session) return polled ? fetchPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true }) : body;
+  if (polled && !ownsUrl) return body;
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
     conversationAnswers.set(url, known);
