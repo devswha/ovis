@@ -898,8 +898,9 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   const [connecting, setConnecting] = useState<{ route: ConnectRoute; startCode: boolean } | null>(null);
   const closeConnect = useCallback(() => setConnecting(null), []);
   const connectSummary = relayOffered(relay) && relay.status?.phase === "online" ? t("Ready through the Ovis relay.")
-    : plan.kind === "here" || plan.kind === "served" ? t("Ready at {url}.", { url: plan.url })
-    : t("Use the Ovis relay, Tailscale or a pairing code.");
+    : plan.kind === "here" || plan.kind === "served" ? (relayOffered(relay) ? t("Ready at {url}. Or use the Ovis relay, no Tailscale needed.", { url: plan.url }) : t("Ready at {url}.", { url: plan.url }))
+    : relayOffered(relay) ? t("The Ovis relay works from anywhere with nothing to install, or use Tailscale.")
+    : t("Use Tailscale or a pairing code.");
   return (
     <>
       <SettingsGroup title={t("Phone")} section="phone">

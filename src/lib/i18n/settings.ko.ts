@@ -345,5 +345,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.": "이 브라우저의 요청은 Ovis 릴레이로 페어링된 폰에서 종단 간 암호화되어 왔습니다. 릴레이는 내용을 읽을 수 없습니다.",
   "Ready through the Ovis relay.": "Ovis 릴레이로 연결할 수 있습니다.",
   "Ready at {url}.": "{url}에서 열 수 있습니다.",
-  "Use the Ovis relay, Tailscale or a pairing code.": "Ovis 릴레이, Tailscale 또는 페어링 코드로 연결합니다.",
+  "Ready at {url}. Or use the Ovis relay, no Tailscale needed.": "{url}에서 열 수 있습니다. Tailscale 없이 Ovis 릴레이로도 연결할 수 있습니다.",
+  "The Ovis relay works from anywhere with nothing to install, or use Tailscale.": "Ovis 릴레이는 어디서나 되고 설치할 것이 없습니다. Tailscale도 쓸 수 있습니다.",
+  "Use Tailscale or a pairing code.": "Tailscale 또는 페어링 코드로 연결합니다.",
 };
