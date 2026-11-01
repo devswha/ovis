@@ -6,7 +6,7 @@
 import type { WebSocketHandler } from "bun";
 import type { ClientMessage, ClientRole, ServerFeature, SessionSnapshot } from "../../shared/protocol.ts";
 import { ConnectionDiagnostics } from "../connection-diagnostics.ts";
-import { HerdrError } from "../herdr/client.ts";
+import { HerdrError, LARGE_REPLY_BYTES } from "../herdr/client.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
 import { type Client, connectionOf, presenceOf, send, type SocketData } from "./connections.ts";
 import { type AttachmentView, validGeometry } from "./terminals.ts";
@@ -110,8 +110,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   const handlers: FrameHandlers = { ...connectionFrames, ...frames };
 
   return {
-    // This transport cap also covers clients that predate application ACKs.
-    backpressureLimit: OUTPUT_HARD_BYTES,
+    // Only a last guard: send() holds each client to OUTPUT_HARD_BYTES itself, past which Bun would drop
+    // the next frame, and the queue may also hold one larger frame (connections.ts `backlog`): a snapshot,
+    // as large as herdr's largest reply (#2566).
+    backpressureLimit: OUTPUT_HARD_BYTES + LARGE_REPLY_BYTES,
     closeOnBackpressureLimit: true,
     drain(client) {
       drainOutput(client);
