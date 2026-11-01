@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   actionProblems, backgroundProblems, cacheProblems, DEPLOY_ACTIONS, type Job, parseWorkflow, root, runScript,
-  scriptProblems, secretProblems, type Step, stepList, type Workflow,
+  scriptProblems, secretProblems, type Step, stepList, unpackOutcomes, type Workflow,
 } from "./shell-workflow-rules.ts";
 
 /** The workflow at SHELL_DEPLOY_WORKFLOW (a mutated copy) or the committed release.yml. */
@@ -95,7 +95,7 @@ test("no job that holds a token starts a background process", () => {
 
 test("the deploy runs the wrangler the committed lockfile pins, installed from this commit with --frozen-lockfile", () => {
   const step = deploy().steps![deployIndex()]!;
-  expect(step.run).toBe("deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main");
+  expect(step.run).toBe("deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main --no-bundle");
   expect(step["working-directory"]).toBe("${{ runner.temp }}");
   const install = find(deploy(), (candidate) => candidate.name === "Install the pinned wrangler").run!;
   expect(install).toContain('"https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/deploy-tools/$file"');
@@ -212,6 +212,15 @@ test("the deploy unpacks only the tarball whose SHA-256 the build passed, and on
     expect(result.output).toContain("no build.json");
   });
 });
+
+test("the deploy refuses links, special files, paths outside the tarball and Pages server code before unpacking", async () => {
+  const outcomes = await unpackOutcomes(find(deploy(), (step) => step.name === "Check and unpack the shell").run!);
+  expect(outcomes["a clean shell"]!.code).toBe(0);
+  const refused = Object.entries(outcomes).filter(([name]) => name !== "a clean shell")
+    .map(([name, { code, output }]) => [name, code !== 0 && /::error::the tarball holds a (link or a special file|path outside it or Pages server code)/.test(output)]);
+  expect(refused).toEqual(refused.map(([name]) => [name, true]));
+  expect(refused.length).toBe(12);
+}, 30_000);
 
 /** Runs the verify step's script against a local server that answers each request with the next status and `body`. */
 async function runVerifyStep(statuses: number[], body: string): Promise<{ code: number; output: string; requests: number }> {

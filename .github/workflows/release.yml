@@ -165,8 +165,27 @@ jobs:
           [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::shell-build passed no SHA-256 for the tarball." >&2; exit 1; }
           cd "$RUNNER_TEMP"
           echo "$EXPECTED_SHA256  shell/dist-shell.tar.gz" | sha256sum --check --strict
+          # Pages runs a _worker.js or functions/ it is given as server code, bundled next to the token:
+          # before anything is extracted, refuse every entry but plain files and directories inside the
+          # tarball, and anything Pages would treat as code or routing
+          tar -tvzf shell/dist-shell.tar.gz > shell/listing
+          tar -tzf shell/dist-shell.tar.gz > shell/names
+          if grep -qv '^[-d]' shell/listing; then
+            echo "::error::the tarball holds a link or a special file:" >&2
+            grep -v '^[-d]' shell/listing >&2
+            exit 1
+          fi
+          if grep -E '^/|(^|/)\.\.(/|$)|(^|/)_worker\.js(/|$)|(^|/)functions(/|$)|(^|/)_routes\.json$' shell/names > shell/refused; then
+            echo "::error::the tarball holds a path outside it or Pages server code:" >&2
+            cat shell/refused >&2
+            exit 1
+          fi
           mkdir dist-shell
           tar -xzf shell/dist-shell.tar.gz -C dist-shell --no-same-owner --no-same-permissions
+          if [ -n "$(find dist-shell ! -type f ! -type d)" ] || [ -e functions ]; then
+            echo "::error::the unpacked shell holds something other than files and directories." >&2
+            exit 1
+          fi
           for file in index.html build.json; do
             test -s "dist-shell/$file" || { echo "::error::the tarball holds no $file." >&2; exit 1; }
           done
@@ -203,7 +222,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main
+        run: deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main --no-bundle
       - name: Verify app.ovis.sh serves this revision
         if: steps.cloudflare.outputs.ready == 'true'
         env:

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   actionProblems, backgroundProblems, cacheProblems, DEPLOY_ACTIONS, type Job, parseWorkflow, root, runScript,
-  scriptProblems, secretProblems, type Step, stepList, type Workflow,
+  scriptProblems, secretProblems, type Step, stepList, unpackOutcomes, type Workflow,
 } from "./shell-workflow-rules.ts";
 
 /** The preview workflow at SHELL_PREVIEW_WORKFLOW (a mutated copy) or the committed one. */
@@ -126,6 +126,15 @@ test("unset Cloudflare secrets fail the run and are named", async () => {
     expect((await runScript(check.run!, dir, { HAS_CLOUDFLARE_API_TOKEN: "true", HAS_CLOUDFLARE_ACCOUNT_ID: "true" })).code).toBe(0);
   });
 });
+
+test("the deploy refuses links, special files, paths outside the tarball and Pages server code before unpacking", async () => {
+  const outcomes = await unpackOutcomes(find(deploy(), (step) => step.name === "Check and unpack the shell").run!);
+  expect(outcomes["a clean shell"]!.code).toBe(0);
+  const refused = Object.entries(outcomes).filter(([name]) => name !== "a clean shell")
+    .map(([name, { code, output }]) => [name, code !== 0 && /::error::the tarball holds a (link or a special file|path outside it or Pages server code)/.test(output)]);
+  expect(refused).toEqual(refused.map(([name]) => [name, true]));
+  expect(refused.length).toBe(12);
+}, 30_000);
 
 /** The verify step against a local server answering every request with `status` and `body`. */
 async function verify(status: number, body: string): Promise<{ code: number; requests: number; output: string }> {

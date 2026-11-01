@@ -701,10 +701,12 @@ release published, builds the shell (`bun run build:shell`), fails if `dist-shel
 `index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
 passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
 read-only repository access, checks nothing out and runs no repository code: it sets up Bun, checks
-the downloaded tarball against that SHA-256, unpacks it, installs wrangler from this commit's
+the downloaded tarball against that SHA-256, refuses it if it holds a link, a special file, a path
+outside it, a `_worker.js`, a `functions/` or a `_routes.json` (Pages would run or route those as
+server code next to the token), unpacks it, installs wrangler from this commit's
 `.github/deploy-tools/package.json` and `bun.lock` with `bun install --frozen-lockfile
 --ignore-scripts`, runs that binary as `wrangler pages deploy dist-shell --project-name ovis-app
---branch main` (the token reaches that step alone), and waits until `https://app.ovis.sh/build.json`
+--branch main --no-bundle` (the token reaches that step alone), and waits until `https://app.ovis.sh/build.json`
 answers 2xx with the tag's commit as its `revision`. The `shell-attach` job, the only one that may
 write, then attaches the tarball and its SHA-256 to the release, so anyone can compare what app.ovis.sh
 serves with what the tag builds; it runs only after a deploy that did not fail. Nothing else deploys

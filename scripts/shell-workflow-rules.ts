@@ -1,6 +1,7 @@
 // Rules shared by release.yml's and shell-preview.yml's hosted-shell jobs and their tests
 // (scripts/shell-deploy-workflow.test.ts, scripts/shell-preview-workflow.test.ts).
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, linkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 export interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; "working-directory"?: string; env?: Record<string, string>; with?: Record<string, string> }
@@ -82,12 +83,57 @@ export function cacheProblems(workflow: Workflow): string[] {
 /** What identifies each step of a job: its name, else its action without the SHA, else its script. */
 export const stepList = (job: Job): string[] => steps(job).map((step) => step.name ?? step.uses?.replace(/@.*/, "") ?? step.run!);
 
-/** Runs `script` through `bash -e` in `cwd` with `env` added to a minimal environment. */
+/** Runs `script` as GitHub runs a `run:` (`bash -e -o pipefail`) in `cwd` with `env` added to a minimal environment. */
 export async function runScript(script: string, cwd: string, env: Record<string, string>): Promise<{ code: number; output: string }> {
-  const child = Bun.spawn(["bash", "-e", "-c", script], {
+  const child = Bun.spawn(["bash", "-e", "-o", "pipefail", "-c", script], {
     cwd, stdout: "pipe", stderr: "pipe",
     env: { PATH: `${dirname(process.execPath)}:${process.env.PATH}`, HOME: cwd, RUNNER_TEMP: cwd, ...env },
   });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { code, output: stdout + stderr };
+}
+
+/** What the deploy's unpack step must refuse: a complete shell plus these files, this setup or these tar arguments. */
+const REFUSED: Record<string, { files?: Record<string, string>; setup?: (src: string) => void; args?: string[] }> = {
+  "a symlink": { setup: (src) => symlinkSync("/proc/self/environ", join(src, "environ.txt")) },
+  "a hardlink": { setup: (src) => linkSync(join(src, "index.html"), join(src, "copy.html")) },
+  "a FIFO": { setup: (src) => { Bun.spawnSync(["mkfifo", join(src, "pipe")]); } },
+  "_worker.js at the top": { files: { "_worker.js": "export default {}" } },
+  "_worker.js deeper down": { files: { "assets/_worker.js": "export default {}" } },
+  "a _worker.js directory": { files: { "_worker.js/index.js": "export default {}" } },
+  "functions/ at the top": { files: { "functions/index.js": "export function onRequest() {}" } },
+  "a nested functions/": { files: { "assets/functions/a.js": "export function onRequest() {}" } },
+  "_routes.json": { files: { "_routes.json": "{}" } },
+  "a nested _routes.json": { files: { "assets/_routes.json": "{}" } },
+  "../x": { files: { "x": "x" }, args: ["--transform", "s,^\\./x$,../x,"] },
+  "/abs": { files: { "x": "x" }, args: ["-P", "--transform", "s,^\\./x$,/abs,"] },
+};
+
+/**
+ * Runs the deploy's unpack step (`script`) against a clean dist-shell tarball and one per refused entry,
+ * each with its right SHA-256, and returns each case's exit code and output.
+ */
+export async function unpackOutcomes(script: string): Promise<Record<string, { code: number; output: string }>> {
+  const outcomes: Record<string, { code: number; output: string }> = {};
+  for (const [name, refused] of [["a clean shell", {}], ...Object.entries(REFUSED)] as Array<[string, (typeof REFUSED)[string]]>) {
+    const dir = mkdtempSync(join(tmpdir(), "shell-unpack-"));
+    try {
+      const src = join(dir, "src");
+      const files = { "index.html": "<!doctype html>", "build.json": "{}\n", "assets/app.js": "", ...refused.files };
+      for (const [path, body] of Object.entries(files)) {
+        mkdirSync(dirname(join(src, path)), { recursive: true });
+        writeFileSync(join(src, path), body);
+      }
+      refused.setup?.(src);
+      mkdirSync(join(dir, "shell"));
+      const tarball = join(dir, "shell/dist-shell.tar.gz");
+      const packed = Bun.spawnSync(["tar", "-czf", tarball, "-C", src, ...(refused.args ?? []), "."], { stderr: "pipe" });
+      if (packed.exitCode !== 0) throw new Error(`${name}: ${packed.stderr.toString()}`);
+      const digest = new Bun.CryptoHasher("sha256").update(readFileSync(tarball)).digest("hex");
+      outcomes[name] = await runScript(script, dir, { EXPECTED_SHA256: digest });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  return outcomes;
 }
