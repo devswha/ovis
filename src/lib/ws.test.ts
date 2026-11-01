@@ -796,14 +796,14 @@ const answerPings = (socket: FakeSocket, answered: Set<unknown>) => {
   }
 };
 
-const watchClient = () => {
+const watchClient = (features = ["watch", "ping"]) => {
   const client = new HerdrSocket("ws://test/ws");
   const ended: string[] = [];
   client.on((message) => { if (message.type === "watch-end") ended.push(message.pane_id); });
   client.connect();
   const socket = FakeSocket.last;
   socket.open();
-  socket.receive(snapshot(["watch", "ping"]));
+  socket.receive(snapshot(features));
   const frames = () => socket.sent.filter((m) => m.type === "watch" || m.type === "unwatch");
   return { client, ended, socket, frames };
 };
@@ -860,6 +860,46 @@ it("honours a view's own end after an unwatch once the server has read that unwa
   // the view is over: it is not started again, and there is nothing left to unwatch
   client.unwatch("w1:p1");
   expect(frames().slice(sent)).toEqual([]);
+  client.close();
+});
+
+it("re-sends a replacement watch the server cannot start at most once, then lets its end reach the page", () => {
+  const { client, ended, socket, frames } = watchClient();
+  client.watch("w1:p1", 100, 30);
+  const start = socket.sent.length;
+  // a resize replaces the running view; the server cannot start the new one, so it ends it at once,
+  // answering each frame in order (its end comes before the pong of the ping sent after the watch)
+  client.watch("w1:p1", 120, 40);
+  for (let i = start; i < socket.sent.length && i < start + 100; i += 1) {
+    const frame = socket.sent[i]!;
+    if (frame.type === "watch") socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+    if (frame.type === "ping") socket.receive({ type: "pong", id: frame.id });
+  }
+  expect(frames().length - 1).toBeLessThanOrEqual(2);
+  expect(ended).toEqual(["w1:p1"]);
+  client.close();
+});
+
+it("honours a view's own end on a bridge without ping, after a replacement or an unwatch", () => {
+  const replaced = watchClient(["watch"]);
+  replaced.client.watch("w1:p1", 100, 30);
+  replaced.client.watch("w1:p1", 120, 40);
+  replaced.client.watch("w1:p1", 130, 40);
+  replaced.socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(replaced.ended).toEqual(["w1:p1"]);
+  replaced.client.close();
+
+  const { client, ended, socket, frames } = watchClient(["watch"]);
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  client.watch("w1:p1", 100, 30);
+  client.watch("w1:p1", 120, 40);
+  client.watch("w1:p1", 130, 40);
+  const sent = frames().length;
+  // nothing tells an unwatched view's late end from this one's: at most one end is skipped
+  for (let i = 0; i < 3 && ended.length === 0; i += 1) socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual(["w1:p1"]);
+  expect(frames().length - sent).toBeLessThanOrEqual(1);
   client.close();
 });
 

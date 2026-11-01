@@ -2066,7 +2066,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (disposed || !current || !cachedRef.current || !releasedRef.current) return;
         const keep = cachedReleaseRef.current && watchedRef.current && inUse() && !releaseAwayRef.current && socket.canWatch();
         if (keep && !watchingRef.current) watch(current);
-        else if (!keep && watchingRef.current) { socket.unwatch(current); setWatching(false); }
+        // the pane the view was started for, which a pane switch may have moved on from
+        else if (!keep && watchingRef.current) { socket.unwatch(viewPane ?? current); setWatching(false); }
       };
       // keep_size prevents resizing an existing attach, but a fresh sidecar still sizes the pane.
       // The client cannot distinguish those cases atomically, so both watch until the user returns.
@@ -2102,7 +2103,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         setReleased(false);
         const current = paneRef.current;
         if (!current) return;
-        if (watchingRef.current) socket.unwatch(current);
+        if (watchingRef.current) socket.unwatch(viewPane ?? current);
         // also a view only held for a hidden page's return
         setWatching(false);
         // A fresh attach says attach_held again if needed; success does not send attach-resumed.

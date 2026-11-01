@@ -418,7 +418,8 @@ export class HerdrSocket {
         // Before the fence's pong, the end may be a superseded view's, sent before the server read the
         // frame that ended it: it names no view. Start the current view again rather than drop it, so
         // the next unwatch still reaches the server; once every superseded view could have ended, an
-        // end is this view's own.
+        // end is this view's own. Each superseded view skips one end, and the re-send adds none: a
+        // view the server cannot start ends again at once, and that end reaches the page.
         const grid = this.watched.get(message.pane_id);
         const stale = this.superseded.get(message.pane_id);
         if (stale) {
@@ -427,7 +428,6 @@ export class HerdrSocket {
         }
         if (stale && grid) {
           this.rawSend({ type: "watch", pane_id: message.pane_id, cols: grid.cols, rows: grid.rows });
-          this.supersede(message.pane_id);
           return;
         }
         this.watched.delete(message.pane_id);
@@ -823,8 +823,9 @@ export class HerdrSocket {
     // before the features are known, the handler that learns them sends it
     if (this.connected && this.featuresKnown) {
       this.rawSend({ type: "watch", pane_id: paneId, cols, rows });
-      // the server replaces the running view with this one
-      if (running) this.supersede(paneId);
+      // the server replaces the running view with this one; without "ping" nothing fences that
+      // view's end, so an end after a replacement is this view's own
+      if (running && this.features.has("ping")) this.supersede(paneId);
     }
     return true;
   }
@@ -844,10 +845,14 @@ export class HerdrSocket {
   /** One more server view of this pane was just ended by a frame; a ping after it fences its possible end. */
   private supersede(paneId: string): void {
     const stale = this.superseded.get(paneId) ?? { ends: 0, fence: null };
-    stale.ends += 1;
     if (this.features.has("ping")) {
+      stale.ends += 1;
       stale.fence = this.nextPing++;
       this.rawSend({ type: "ping", id: stale.fence });
+    } else {
+      // a bridge without "ping" never clears the count: skip only the next end, so a real one comes
+      // back on the re-sent watch
+      stale.ends = 1;
     }
     this.superseded.set(paneId, stale);
   }
