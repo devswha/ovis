@@ -441,7 +441,7 @@ function useWholeOutput(ref: string | undefined): { text: string | null; state: 
   return saved === undefined ? result : { text: saved, state: "idle", load: result.load };
 }
 
-/** A chat thumbnail: a tap opens the message's pictures over the page (ImageLightbox), this one first. */
+/** A chat picture, shown whole: a tap opens the message's pictures over the page (ImageLightbox), this one first. */
 function ImageThumb({ image, onOpen }: { image: GalleryImage; onOpen: () => void }) {
   const t = useT();
   // the focus is placed on the thumbnail before the viewer opens, so the viewer's focus trap
@@ -460,7 +460,7 @@ function ImageGallery({ images, className }: { images: GalleryImage[]; className
   </div>;
 }
 
-/** Images a tool returned (pi reads a picture into the result), at full thumbnail size in the opened row. */
+/** Images a tool returned (pi reads a picture into the result), shown whole in the opened row. */
 function ToolImages({ paneId, part }: { paneId: string; part: ToolPartType }) {
   const t = useT();
   const machineId = useMachineId();
