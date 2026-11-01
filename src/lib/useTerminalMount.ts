@@ -9,7 +9,7 @@ import { clipboardKey, hasModifiers, physicalKey, terminalChord, navigationSeque
 import { EMPTY_DRAFT, applyToDraft, draftIsEmpty, type InputDraft } from "./draft.ts";
 import { pendingMessages } from "./pendingMessages.ts";
 import { FrameGate } from "./inputRow.ts";
-import { AttachmentTooLargeError, assertAttachable, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
+import { AttachmentTooLargeError, assertAttachable, fetchPaneConversation, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
 import { parseOsc52 } from "./osc52.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
@@ -521,8 +521,19 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       /** herdr's text for the last drag, while its highlight is still the selection */
       let copiedText: string | null = null;
       /** selected text as it is copied: an agent's own wrapped rows join back into their lines, as herdr's TUI copies them (#2558) */
-      const asCopied = (text: string, firstCol: number): string => agentRef.current ? unwrapAgentRows(text, term.cols, firstCol) : text;
-      const visibleSelection = (): string => asCopied(term.getSelection(), term.getSelectionPosition()?.start.x ?? 0);
+      /** the agent's replies as last read for a press in its pane: only they can prove a copied row break was its wrap */
+      let said: { pane: string; texts: readonly string[] } | null = null;
+      const readSaid = (pane: string): Promise<readonly string[]> => fetchPaneConversation(pane, machineId).then((answer) => {
+        // a conversation read off the screen holds the same rows, so it proves nothing
+        const texts = answer.source === "scrollback" ? [] : answer.turns.flatMap((turn) => turn.role === "assistant"
+          ? turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : []) : []);
+        said = { pane, texts };
+        return texts;
+      }, () => []);
+      const saidNow = (): readonly string[] => said !== null && said.pane === paneRef.current ? said.texts : [];
+      const asCopied = (text: string, firstCol: number, texts: readonly string[]): string =>
+        agentRef.current ? unwrapAgentRows(text, term.cols, firstCol, texts) : text;
+      const visibleSelection = (): string => asCopied(term.getSelection(), term.getSelectionPosition()?.start.x ?? 0, saidNow());
       let selectionGeneration = 0;
       let disposed = false;
       // Run after xterm's own copy listener, including for Cmd+C and context-menu
@@ -616,6 +627,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         sending: boolean;
         /** a press the program would have had but for the forced selection, with the keys the user held: let go in place, it is a click */
         click: ClickKeys | null;
+        /** the agent's replies, read at the press in an agent's pane */
+        said: Promise<readonly string[]> | null;
       }
       interface ClickKeys { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean }
       const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -715,6 +728,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const d: Drag = {
           pane: pane ?? "", anchor: cell, cursor: cell, top: null, anchorRow: 0, offset: 0, maxOffset: 0,
           scrolled: false, edge: 0, wheelPixels: 0, sentOffset: 0, sending: false, click,
+          said: pane && agentRef.current ? readSaid(pane) : null,
         };
         drag = d;
         if (!pane || !navigator.clipboard || observeRef.current) return;
@@ -818,7 +832,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // then names no line range rather than one its text does not hold
         let fromHerdr = true;
         const start = range[0];
-        const herdrText = fetchPaneSelection(d.pane, range[0], range[1], machineId).then((value) => asCopied(value, start.col)).catch(() => {
+        const herdrText = fetchPaneSelection(d.pane, range[0], range[1], machineId).then(async (value) => asCopied(value, start.col, await (d.said ?? []))).catch(() => {
           if (current() && d.scrolled) noteClipboard("could not read the selection from herdr");
           fromHerdr = false;
           return visibleText;
