@@ -1,145 +1,237 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  actionProblems, backgroundProblems, cacheProblems, DEPLOY_ACTIONS, type Job, parseWorkflow, root, runScript,
+  scriptProblems, secretProblems, type Step, stepList, type Workflow,
+} from "./shell-workflow-rules.ts";
 
-interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; env?: Record<string, string>; with?: Record<string, string> }
-interface Job { needs?: string | string[]; if?: string; env?: Record<string, string>; "runs-on"?: unknown; environment?: string | { name: string }; permissions?: Record<string, string>; "timeout-minutes"?: number; steps: Step[] }
-interface Workflow { on: { workflow_dispatch: unknown; push?: unknown }; env?: Record<string, string>; jobs: Record<string, Job> }
+/** The workflow at SHELL_DEPLOY_WORKFLOW (a mutated copy) or the committed release.yml. */
+const loadWorkflow = (): Workflow => parseWorkflow(process.env.SHELL_DEPLOY_WORKFLOW ?? join(root, ".github/workflows/release.yml"));
+const build = (): Job => loadWorkflow().jobs["shell-build"]!;
+const deploy = (): Job => loadWorkflow().jobs["shell-deploy"]!;
+const attach = (): Job => loadWorkflow().jobs["shell-attach"]!;
+const find = (job: Job, predicate: (step: Step) => boolean): Step => job.steps!.find(predicate)!;
+const deployIndex = (): number => deploy().steps!.findIndex((step) => step.run?.includes("pages deploy dist-shell") === true);
+const SHA256_OUTPUT = "${{ needs.shell-build.outputs.sha256 }}";
 
-/** The workflow at `path` (default: the committed one), as parsed YAML. */
-export const loadWorkflow = (path = process.env.SHELL_DEPLOY_WORKFLOW ?? new URL("../.github/workflows/release.yml", import.meta.url).pathname): Workflow =>
-  Bun.YAML.parse(readFileSync(path, "utf8")) as Workflow;
+const withDir = async (body: (dir: string) => Promise<void>): Promise<void> => {
+  const dir = mkdtempSync(join(tmpdir(), "shell-deploy-"));
+  try { await body(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+};
 
-const job = (): Job => loadWorkflow().jobs["shell-deploy"]!;
-const attachJob = (): Job => loadWorkflow().jobs["shell-attach"]!;
-const indexOf = (predicate: (step: Step) => boolean): number => job().steps.findIndex(predicate);
-
-test("the shell deploys after publish, from the release workflow on main only, never on a tag push", () => {
-  const workflow = loadWorkflow();
-  expect(job().needs).toBe("publish");
-  expect(job().if).toBe("github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'");
-  expect("push" in workflow.on).toBe(false);
+test("the shell builds after publish and deploys after the build, from main of devswha/ovis only, never on a tag push", () => {
+  const guard = "github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'";
+  expect(build().needs).toBe("publish");
+  expect(build().if).toBe(guard);
+  expect(deploy().needs).toBe("shell-build");
+  expect(deploy().if).toBe(guard);
+  expect("push" in loadWorkflow().on).toBe(false);
 });
 
-test("the job builds the release tag's checkout and refuses any other commit", () => {
-  const { steps } = job();
-  const checkout = steps.find((step) => step.uses?.startsWith("actions/checkout@"))!;
-  expect(checkout.with?.ref).toBe("refs/tags/v${{ inputs.version }}");
+test("no script interpolates an expression or writes $GITHUB_ENV or $GITHUB_PATH, in any job", () => {
+  expect(scriptProblems(loadWorkflow())).toEqual([]);
+});
+
+test("every job that installs packages restores the dependency cache read-only", () => {
+  expect(cacheProblems(loadWorkflow())).toEqual([]);
+  expect(find(build(), (step) => step.uses === "./.github/actions/setup-ci").with).toEqual({ cache: "restore" });
+});
+
+test("the build holds no secret and no environment, and builds the release tag's checkout after the tag gate", () => {
+  const job = build();
+  expect(job.environment).toBeUndefined();
+  expect(job.permissions).toEqual({ contents: "read" });
+  expect(JSON.stringify(job)).not.toContain("secrets.");
+  const checkout = find(job, (step) => step.uses?.startsWith("actions/checkout@") === true);
   expect(checkout.uses).toMatch(/^actions\/checkout@[0-9a-f]{40}$/);
-  const gate = steps.find((step) => step.name === "Require the release tag's commit")!;
-  expect(gate.run).toContain('git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"');
-  expect(gate.run).toContain('test "$(git rev-parse HEAD)" = "$RELEASE_SHA"');
-  const build = indexOf((step) => step.run === "bun run build:shell");
-  expect(steps.indexOf(gate)).toBeLessThan(build);
-  const required = indexOf((step) => step.name === "Require the built shell");
-  expect(required).toBe(build + 1);
-  expect(steps[required]!.run).toContain("index.html build.json");
-  expect(steps[required]!.run).toContain("exit 1");
+  expect(checkout.with).toEqual({ ref: "refs/tags/v${{ inputs.version }}", "persist-credentials": false } as unknown as Record<string, string>);
+  const names = stepList(job);
+  const gate = names.indexOf("Require the release tag's commit");
+  expect(gate).toBeGreaterThan(0);
+  expect(gate).toBeLessThan(names.indexOf("bun install --frozen-lockfile"));
+  expect(names.indexOf("Require the built shell")).toBe(names.indexOf("Build the shell") + 1);
+  expect(names.slice(-2)).toEqual(["Pack the shell", "actions/upload-artifact"]);
+  expect(job.outputs).toEqual({ sha256: "${{ steps.pack.outputs.sha256 }}" });
+  expect(find(job, (step) => step.name === "Pack the shell").id).toBe("pack");
+  expect(find(job, (step) => step.uses?.startsWith("actions/upload-artifact@") === true).with?.["if-no-files-found"]).toBe("error");
 });
 
-test("it waits in production on a GitHub-hosted runner, reading only, with pinned actions and wrangler", () => {
-  const environment = job().environment;
+test("the deploy job runs exactly its pinned steps: no checkout, no local action, only allowed pinned actions", () => {
+  expect(actionProblems("shell-deploy", deploy(), DEPLOY_ACTIONS)).toEqual([]);
+  expect(stepList(deploy())).toEqual([
+    "oven-sh/setup-bun",
+    "actions/download-artifact",
+    "Check and unpack the shell",
+    "Install the pinned wrangler",
+    "Check the Cloudflare secrets",
+    "Deploy the shell to Cloudflare Pages",
+    "Verify app.ovis.sh serves this revision",
+  ]);
+  const setupCi = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as { inputs: Record<string, { default: string }> };
+  expect(deploy().steps![0]!.with).toEqual({ "bun-version": setupCi.inputs["bun-version"]!.default, "no-cache": true } as unknown as Record<string, string>);
+  expect(deploy().steps![1]!.with?.name).toBe(find(build(), (step) => step.uses?.startsWith("actions/upload-artifact@") === true).with?.name);
+  expect(find(deploy(), (step) => step.name === "Check and unpack the shell").env).toEqual({ EXPECTED_SHA256: SHA256_OUTPUT });
+});
+
+test("it waits in production on a GitHub-hosted runner, reading only", () => {
+  const environment = deploy().environment;
   expect(typeof environment === "string" ? environment : environment?.name).toBe("production");
-  expect(job()["runs-on"]).toBe("ubuntu-24.04");
-  expect(job().permissions).toEqual({ contents: "read" });
-  expect(job()["timeout-minutes"]).toBeGreaterThan(0);
-  for (const step of [...job().steps, ...attachJob().steps]) if (step.uses && !step.uses.startsWith("./")) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
-  expect(job().steps.some((step) => /bunx wrangler@\d+\.\d+\.\d+ pages deploy /.test(step.run ?? ""))).toBe(true);
+  expect(deploy()["runs-on"]).toBe("ubuntu-24.04");
+  expect(deploy().permissions).toEqual({ contents: "read" });
+  expect(deploy()["timeout-minutes"]).toBeGreaterThan(0);
 });
 
-test("only the attach job may write, and it holds no Cloudflare secret", () => {
-  const workflow = loadWorkflow();
-  expect(attachJob().needs).toBe("shell-deploy");
-  expect(attachJob().if).toBeUndefined();
-  expect(attachJob().permissions).toEqual({ contents: "write" });
-  expect(attachJob().environment).toBeUndefined();
-  for (const [name, candidate] of Object.entries(workflow.jobs)) {
-    if (name === "shell-deploy") continue;
-    expect(JSON.stringify(candidate)).not.toContain("CLOUDFLARE_");
-  }
+test("only the deploy step receives the Cloudflare secrets; the check before it sees only whether they are set", () => {
+  expect(deployIndex()).toBeGreaterThanOrEqual(0);
+  expect(secretProblems(loadWorkflow(), "shell-deploy", deployIndex())).toEqual([]);
+  expect(deploy().steps![deployIndex()]!.env).toEqual({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" });
 });
 
-test("only the deploy step receives the Cloudflare secrets; others may only test that they are set", () => {
-  const secret = "secrets.CLOUDFLARE_";
-  expect(JSON.stringify(loadWorkflow().env ?? {})).not.toContain(secret);
-  expect(JSON.stringify(job().env ?? {})).not.toContain(secret);
-  const deploy = indexOf((step) => step.run?.includes("pages deploy dist-shell") === true);
-  expect(deploy).toBeGreaterThanOrEqual(0);
-  job().steps.forEach((step, index) => {
-    if (index !== deploy) expect(JSON.stringify(step).replace(/secrets\.CLOUDFLARE_\w+ != ''/g, "")).not.toContain(secret);
-  });
+test("no job that holds a token starts a background process", () => {
+  for (const name of ["shell-deploy", "shell-attach"]) expect(backgroundProblems(name, loadWorkflow().jobs[name]!)).toEqual([]);
+});
+
+test("the deploy runs the wrangler the committed lockfile pins, installed from this commit with --frozen-lockfile", () => {
+  const step = deploy().steps![deployIndex()]!;
+  expect(step.run).toBe("deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main");
+  expect(step["working-directory"]).toBe("${{ runner.temp }}");
+  const install = find(deploy(), (candidate) => candidate.name === "Install the pinned wrangler").run!;
+  expect(install).toContain('"https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/deploy-tools/$file"');
+  expect(install).toContain("for file in package.json bun.lock; do");
+  expect(install).toContain("bun install --frozen-lockfile --ignore-scripts");
+  const manifest = JSON.parse(readFileSync(join(root, ".github/deploy-tools/package.json"), "utf8")) as { dependencies: Record<string, string> };
+  expect(manifest.dependencies).toEqual({ wrangler: "4.156.0" });
+  expect(readFileSync(join(root, ".github/deploy-tools/bun.lock"), "utf8")).toMatch(/"wrangler": \["wrangler@4\.156\.0", "", \{.*\}, "sha512-[A-Za-z0-9+/=]+"\]/);
 });
 
 test("the deploy is skipped with a notice without the secrets, and verification follows it", () => {
-  const { steps } = job();
-  const guard = steps.findIndex((step) => step.env?.HAS_CLOUDFLARE_API_TOKEN !== undefined && step.env?.HAS_CLOUDFLARE_ACCOUNT_ID !== undefined);
-  const deploy = indexOf((step) => step.run?.includes("pages deploy dist-shell --project-name ovis-app --branch main") === true);
-  const verify = indexOf((step) => step.env?.SHELL_BUILD_URL !== undefined);
-  expect(guard).toBeGreaterThanOrEqual(0);
-  expect(deploy).toBeGreaterThan(guard);
-  expect(verify).toBeGreaterThan(deploy);
+  const steps = deploy().steps!;
+  const guard = steps.findIndex((step) => step.env?.HAS_CLOUDFLARE_API_TOKEN !== undefined);
+  const verify = steps.findIndex((step) => step.env?.SHELL_BUILD_URL !== undefined);
+  expect(guard).toBeLessThan(deployIndex());
+  expect(verify).toBeGreaterThan(deployIndex());
   const guardStep = steps[guard]!;
   expect(guardStep.env?.HAS_CLOUDFLARE_API_TOKEN).toBe("${{ secrets.CLOUDFLARE_API_TOKEN != '' }}");
   expect(guardStep.env?.HAS_CLOUDFLARE_ACCOUNT_ID).toBe("${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}");
   expect(guardStep.run).toContain("::notice");
   expect(guardStep.run).toContain("ready=false");
   const ready = `steps.${guardStep.id}.outputs.ready == 'true'`;
-  expect(steps[deploy]!.if).toBe(ready);
+  expect(steps[deployIndex()]!.if).toBe(ready);
   expect(steps[verify]!.if).toBe(ready);
-  expect(steps[deploy]!.env?.CLOUDFLARE_API_TOKEN).toBe("${{ secrets.CLOUDFLARE_API_TOKEN }}");
-  expect(steps[deploy]!.env?.CLOUDFLARE_ACCOUNT_ID).toBe("${{ secrets.CLOUDFLARE_ACCOUNT_ID }}");
-  expect(steps[verify]!.env?.SHELL_BUILD_URL).toBe("https://app.ovis.sh/build.json");
-  expect(steps[verify]!.env?.EXPECTED_REVISION).toBe("${{ github.sha }}");
-  expect(steps[verify]!.run).toContain("--max-time");
+  expect(steps[verify]!.env).toEqual({ SHELL_BUILD_URL: "https://app.ovis.sh/build.json", EXPECTED_REVISION: "${{ github.sha }}" });
 });
 
-test("dist-shell.tar.gz and its SHA-256 are attached to the release from the artifact the deploy job packed", () => {
-  const { steps } = job();
-  expect(steps.some((step) => step.run?.includes("gh release upload") === true)).toBe(false);
-  const pack = indexOf((step) => step.name === "Pack the shell");
-  expect(steps[pack]!.run).toContain("sha256sum dist-shell.tar.gz");
-  const upload = indexOf((step) => step.uses?.startsWith("actions/upload-artifact@") === true);
-  expect(upload).toBe(pack + 1);
-  expect(upload).toBeLessThan(indexOf((step) => step.env?.CLOUDFLARE_API_TOKEN !== undefined));
-  expect(steps[upload]!.with?.["if-no-files-found"]).toBe("error");
-  const attachSteps = attachJob().steps;
-  const download = attachSteps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@") === true);
-  const attach = attachSteps.findIndex((step) => step.run?.includes("gh release upload") === true);
-  expect(attachSteps[download]!.with?.name).toBe(steps[upload]!.with?.name);
-  expect(attach).toBeGreaterThan(download);
-  expect(attachSteps[attach]!.if).toBeUndefined();
-  expect(attachSteps[attach]!.run).toContain("dist-shell.tar.gz");
-  expect(attachSteps[attach]!.run).toContain("dist-shell.tar.gz.sha256");
-  expect(attachSteps[attach]!.env?.GH_TOKEN).toBe("${{ github.token }}");
+test("only the attach job may write; it checks nothing out, holds no secret and attaches only after a deploy that did not fail", () => {
+  const job = attach();
+  expect(job.needs).toEqual(["shell-build", "shell-deploy"]);
+  expect(job.if).toBeUndefined();
+  expect(job.permissions).toEqual({ contents: "write" });
+  expect(job.environment).toBeUndefined();
+  expect(JSON.stringify(job)).not.toContain("secrets.");
+  expect(actionProblems("shell-attach", job, [DEPLOY_ACTIONS[1]!])).toEqual([]);
+  expect(stepList(job)).toEqual(["actions/download-artifact", "Attach the shell tarball and its SHA-256 to the release"]);
+  const step = job.steps![1]!;
+  expect(step.if).toBeUndefined();
+  expect(step.env?.EXPECTED_SHA256).toBe(SHA256_OUTPUT);
+  expect(step.run).toContain('echo "$EXPECTED_SHA256  dist-shell.tar.gz" | sha256sum --check --strict');
+  expect(step.run).toContain("gh release upload \"$RELEASE_TAG\" dist-shell.tar.gz dist-shell.tar.gz.sha256");
+  for (const [name, candidate] of Object.entries(loadWorkflow().jobs)) {
+    if (name.startsWith("shell-") && name !== "shell-attach") expect(candidate.permissions).toEqual({ contents: "read" });
+  }
 });
 
-/** Runs the verify step's script through `bash -e` against a local server that answers each request with the next status and `body`. */
+/** A git repository with two commits, `first` and `second` (HEAD). */
+async function withRepo(body: (dir: string, first: string, second: string) => Promise<void>): Promise<void> {
+  await withDir(async (dir) => {
+    const git = (...args: string[]): string => {
+      const result = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], { cwd: dir, env: { PATH: process.env.PATH!, HOME: dir } });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+    git("init", "-q");
+    git("commit", "-q", "--allow-empty", "-m", "first");
+    const first = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "second");
+    git("tag", "-a", "v1.2.3", "-m", "v1.2.3");
+    git("tag", "v1.0.0", first);
+    await body(dir, first, git("rev-parse", "HEAD"));
+  });
+}
+
+const gate = (dir: string, tag: string, sha: string) =>
+  runScript(find(build(), (step) => step.name === "Require the release tag's commit").run!, dir, { RELEASE_TAG: tag, RELEASE_SHA: sha });
+
+test("the tag gate passes a release tag on the published commit at HEAD", async () => {
+  await withRepo(async (dir, _first, head) => expect((await gate(dir, "v1.2.3", head)).code).toBe(0));
+});
+
+test("the tag gate refuses a malformed version, a missing tag, a tag on another commit and another checkout", async () => {
+  await withRepo(async (dir, first, head) => {
+    for (const [tag, sha, message] of [
+      ["v1.2", head, "is not a release tag"],
+      ["v1.2.3;true", head, "is not a release tag"],
+      ["v9.9.9", head, "is not a tag in this checkout"],
+      ["v1.0.0", head, "points at"],
+      ["v1.2.3", first, "points at"],
+    ] as const) {
+      const result = await gate(dir, tag, sha);
+      expect([tag, result.code === 0, result.output.includes(message)]).toEqual([tag, false, true]);
+    }
+    Bun.spawnSync(["git", "checkout", "-q", first], { cwd: dir });
+    const elsewhere = await gate(dir, "v1.2.3", head);
+    expect(elsewhere.code).not.toBe(0);
+    expect(elsewhere.output).toContain("The checkout is not");
+  });
+});
+
+/** Packs `files` into shell/dist-shell.tar.gz under `dir` and returns its SHA-256. */
+function pack(dir: string, files: Record<string, string>): string {
+  mkdirSync(join(dir, "src"));
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, "src", name), body);
+  mkdirSync(join(dir, "shell"));
+  Bun.spawnSync(["tar", "-czf", join(dir, "shell/dist-shell.tar.gz"), "-C", join(dir, "src"), "."]);
+  return new Bun.CryptoHasher("sha256").update(readFileSync(join(dir, "shell/dist-shell.tar.gz"))).digest("hex");
+}
+
+const unpack = (dir: string, expected: string) => runScript(find(deploy(), (step) => step.name === "Check and unpack the shell").run!, dir, { EXPECTED_SHA256: expected });
+
+test("the deploy unpacks only the tarball whose SHA-256 the build passed, and only a complete shell", async () => {
+  await withDir(async (dir) => {
+    const digest = pack(dir, { "index.html": "<!doctype html>", "build.json": "{}\n" });
+    expect((await unpack(dir, "")).code).not.toBe(0);
+    expect((await unpack(dir, "0".repeat(64))).code).not.toBe(0);
+    const ok = await unpack(dir, digest);
+    expect(ok.code).toBe(0);
+    expect(readFileSync(join(dir, "dist-shell/build.json"), "utf8")).toBe("{}\n");
+  });
+  await withDir(async (dir) => {
+    const result = await unpack(dir, pack(dir, { "index.html": "<!doctype html>" }));
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("no build.json");
+  });
+});
+
+/** Runs the verify step's script against a local server that answers each request with the next status and `body`. */
 async function runVerifyStep(statuses: number[], body: string): Promise<{ code: number; output: string; requests: number }> {
-  const step = job().steps.find((candidate) => candidate.env?.SHELL_BUILD_URL !== undefined)!;
-  const expected = "a".repeat(40);
+  const step = find(deploy(), (candidate) => candidate.env?.SHELL_BUILD_URL !== undefined);
   let requests = 0;
   const server = Bun.serve({
     port: 0,
     fetch: () => {
       const status = statuses[Math.min(requests++, statuses.length - 1)]!;
-      return status === 302
-        ? new Response(null, { status, headers: { location: "/moved" } })
-        : new Response(body, { status });
+      return status === 302 ? new Response(null, { status, headers: { location: "/moved" } }) : new Response(body, { status });
     },
   });
-  const runner = await Bun.$`mktemp -d`.text();
   try {
-    const script = step.run!.replace("sleep 5", "sleep 0");
-    const child = Bun.spawn(["bash", "-e", "-c", script], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { PATH: `${dirname(process.execPath)}:${process.env.PATH}`, RUNNER_TEMP: runner.trim(), SHELL_BUILD_URL: `http://127.0.0.1:${server.port}/build.json`, EXPECTED_REVISION: expected },
+    let result = { code: -1, output: "" };
+    await withDir(async (dir) => {
+      result = await runScript(step.run!.replace("sleep 5", "sleep 0"), dir, { SHELL_BUILD_URL: `http://127.0.0.1:${server.port}/build.json`, EXPECTED_REVISION: REVISION });
     });
-    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    return { code, output: stdout + stderr, requests };
+    return { ...result, requests };
   } finally {
     await server.stop(true);
-    await Bun.$`rm -rf ${runner.trim()}`.quiet();
   }
 }
 
@@ -174,7 +266,6 @@ test("verification fails when only a nested revision matches the tag's", async (
   const result = await runVerifyStep([200], JSON.stringify({ revision: "b".repeat(40), metadata: { revision: REVISION } }));
   expect(result.code).not.toBe(0);
   expect(result.requests).toBe(12);
-  expect(result.output).toContain("did not serve revision");
 }, 30_000);
 
 test("verification fails on a body that is not JSON, even if it contains the revision", async () => {
