@@ -880,27 +880,42 @@ it("re-sends a replacement watch the server cannot start at most once, then lets
   client.close();
 });
 
-it("honours a view's own end on a bridge without ping, after a replacement or an unwatch", () => {
+// A bridge without "ping" cannot fence a superseded view's end, so the client tracks none: every end
+// reaches the page and nothing is re-sent or kept, and the page's next watch and unwatch both go out.
+const expectUntrackedEnds = ({ client, ended, socket, frames }: ReturnType<typeof watchClient>, ends: number) => {
+  const sent = frames().length;
+  for (let i = 0; i < ends; i += 1) socket.receive({ type: "watch-end", pane_id: "w1:p1" });
+  expect(ended).toEqual(Array.from({ length: ends }, () => "w1:p1"));
+  expect(frames().slice(sent)).toEqual([]);
+  expect(socket.sent.some((m) => m.type === "ping")).toBe(false);
+  client.watch("w1:p1", 100, 30);
+  client.unwatch("w1:p1");
+  expect(frames().slice(sent)).toEqual([{ type: "watch", pane_id: "w1:p1", cols: 100, rows: 30 }, { type: "unwatch", pane_id: "w1:p1" }]);
+  client.close();
+};
+
+it("tracks no superseded end on a bridge without ping: two late ends after two unwatches each reach the page", () => {
+  const watching = watchClient(["watch"]);
+  watching.client.watch("w1:p1", 100, 30);
+  watching.client.unwatch("w1:p1");
+  watching.client.watch("w1:p1", 100, 30);
+  watching.client.unwatch("w1:p1");
+  watching.client.watch("w1:p1", 100, 30);
+  expectUntrackedEnds(watching, 2);
+});
+
+it("tracks no superseded end on a bridge without ping: a replaced view's late end reaches the page", () => {
   const replaced = watchClient(["watch"]);
   replaced.client.watch("w1:p1", 100, 30);
   replaced.client.watch("w1:p1", 120, 40);
-  replaced.client.watch("w1:p1", 130, 40);
-  replaced.socket.receive({ type: "watch-end", pane_id: "w1:p1" });
-  expect(replaced.ended).toEqual(["w1:p1"]);
-  replaced.client.close();
+  expectUntrackedEnds(replaced, 1);
 
-  const { client, ended, socket, frames } = watchClient(["watch"]);
-  client.watch("w1:p1", 100, 30);
-  client.unwatch("w1:p1");
-  client.watch("w1:p1", 100, 30);
-  client.watch("w1:p1", 120, 40);
-  client.watch("w1:p1", 130, 40);
-  const sent = frames().length;
-  // nothing tells an unwatched view's late end from this one's: at most one end is skipped
-  for (let i = 0; i < 3 && ended.length === 0; i += 1) socket.receive({ type: "watch-end", pane_id: "w1:p1" });
-  expect(ended).toEqual(["w1:p1"]);
-  expect(frames().length - sent).toBeLessThanOrEqual(1);
-  client.close();
+  const both = watchClient(["watch"]);
+  both.client.watch("w1:p1", 100, 30);
+  both.client.unwatch("w1:p1");
+  both.client.watch("w1:p1", 100, 30);
+  both.client.watch("w1:p1", 120, 40);
+  expectUntrackedEnds(both, 2);
 });
 
 it("restores watches and chat interest once per connection: on the features frame, not again on the snapshot", () => {

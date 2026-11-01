@@ -823,9 +823,8 @@ export class HerdrSocket {
     // before the features are known, the handler that learns them sends it
     if (this.connected && this.featuresKnown) {
       this.rawSend({ type: "watch", pane_id: paneId, cols, rows });
-      // the server replaces the running view with this one; without "ping" nothing fences that
-      // view's end, so an end after a replacement is this view's own
-      if (running && this.features.has("ping")) this.supersede(paneId);
+      // the server replaces the running view with this one
+      if (running) this.supersede(paneId);
     }
     return true;
   }
@@ -842,18 +841,17 @@ export class HerdrSocket {
     }
   }
 
-  /** One more server view of this pane was just ended by a frame; a ping after it fences its possible end. */
+  /**
+   * One more server view of this pane was just ended by a frame; a ping after it fences its possible
+   * end. A bridge without "ping" gives no fence, so nothing is tracked there: every end is taken as
+   * the current view's own, as before superseded ends were tracked at all.
+   */
   private supersede(paneId: string): void {
+    if (!this.features.has("ping")) return;
     const stale = this.superseded.get(paneId) ?? { ends: 0, fence: null };
-    if (this.features.has("ping")) {
-      stale.ends += 1;
-      stale.fence = this.nextPing++;
-      this.rawSend({ type: "ping", id: stale.fence });
-    } else {
-      // a bridge without "ping" never clears the count: skip only the next end, so a real one comes
-      // back on the re-sent watch
-      stale.ends = 1;
-    }
+    stale.ends += 1;
+    stale.fence = this.nextPing++;
+    this.rawSend({ type: "ping", id: stale.fence });
     this.superseded.set(paneId, stale);
   }
 
