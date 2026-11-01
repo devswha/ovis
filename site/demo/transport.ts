@@ -1141,7 +1141,7 @@ const PLUGINS: PluginActions[] = [
 
 const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false };
 
-// ---- the Ovis relay (Settings → Phone & devices → Remote access through Ovis relay) ------------------
+// ---- the Ovis relay (Settings → Phone & devices → Connect a phone) ------------------
 
 /**
  * A fictional relay link, so the demo shows the panel's online state: the switch turns it on and

@@ -1,15 +1,16 @@
 /**
- * Settings → Phone & devices → Remote access through Ovis relay, against a local Bun relay
- * (relay/bun.ts): the switch turns the relay on and the row says Online, the page itself shows no
- * QR code, the Connect a phone dialog's relay route offers to turn it on while off and shows the QR
- * code of a fresh offer with its countdown once online, New code starts another code, a code the
- * dialog's pairing code route starts refreshes the offer, and the offer's code and that route's
- * code are one and the same both ways (the server keeps one pending code and the offer reuses it), the identity reset
- * gives the PC a new server id, the switch turns the relay off and the row says Off; a device
- * paired through the relay wears the via relay pill; a serve-only install disables the switch
- * with the reason. The dialog opens on the relay whenever it is offered, except with the relay off
- * and Tailscale already serving the PC: then it opens on Tailscale, and the relay's choice carries its
- * own switch, which turns the relay on there and shows its QR code. GET /api/access is pinned per
+ * Settings → Phone & devices: the Ovis relay, controlled only in the Connect a phone dialog, against a local Bun relay
+ * (relay/bun.ts). The page has no relay group and no relay switch: the Connect a phone row says the
+ * relay's state, and the dialog's relay card carries its one switch (with the gate note while off),
+ * which turns it on and off; online, the relay route shows the QR code of a fresh offer with its
+ * countdown, New code starts another code, a code the dialog's pairing code route starts refreshes
+ * the offer, and the offer's code and that route's code are one and the same both ways (the server
+ * keeps one pending code and the offer reuses it). Reset relay identity in the relay route asks
+ * first (Escape there closes only the confirmation) and gives the PC a new server id. A Portal
+ * visitor gets no switch and no reset; a failed start says why with Try again; a serve-only install
+ * shows Blocked with no switch and no reset; a device paired through the relay wears the via relay
+ * pill. The dialog opens on the relay whenever it is offered, except with the relay off and
+ * Tailscale already serving the PC: then it opens on Tailscale. GET /api/access is pinned per
  * context, so what Tailscale does on the PC running this never changes the outcome. All on pages the PC serves: that the hosted shell's Settings has no relay
  * group is checked where the app really runs under the shell, in relay-shell-browser-qa.ts (a
  * page of the PC's own build given the shell's meta boots the shell, not the app). Imported by
@@ -98,49 +99,45 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(page, fixture.origin);
     const dialog = page.locator(".settings-dialog");
-    const group = dialog.locator('[data-section="relay"]');
-    await group.getByRole("heading", { name: "Remote access through Ovis relay", exact: true }).waitFor();
-    assert.ok(await group.evaluate((section) => section.previousElementSibling?.getAttribute("data-section") === "phone" && section.nextElementSibling?.getAttribute("data-section") === "devices"),
-      "the relay group sits under Phone, where Portal would follow it");
-    const toggle = group.getByRole("switch", { name: "Ovis relay", exact: true });
-    const state = group.locator(".relay-status");
-    // the QR codes are in the Connect a phone dialog, each way of connecting one of its routes
-    const connect = dialog.locator('[data-section="phone"]').getByRole("button", { name: "Connect", exact: true });
+    // the relay has no group of its own: its state is in the Connect a phone row, its controls in the dialog
+    const phone = dialog.locator('[data-section="phone"]');
+    const state = phone.locator(".relay-status");
+    const connect = phone.getByRole("button", { name: "Connect", exact: true });
     const sheet = page.getByRole("dialog", { name: "Connect a phone", exact: true });
     const relayRoute = sheet.locator('[data-route="relay"]');
     const codeRoute = sheet.locator('[data-route="code"]');
+    const toggle = sheet.getByRole("switch", { name: "Ovis relay", exact: true });
     const qr = relayRoute.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true });
     const offerAnswer = () => page.waitForResponse((response) => response.url().endsWith("/api/relay/offer") && response.request().method() === "POST");
     const closeSheet = async () => { await page.keyboard.press("Escape"); await sheet.waitFor({ state: "detached" }); };
-    assert.equal(await toggle.getAttribute("aria-checked"), "false", "the relay starts off");
-    assert.equal(await toggle.isEnabled(), true, "nothing blocks the relay on a plain install");
-    assert.equal(await group.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
-    await state.filter({ hasText: "Off." }).waitFor();
+    await state.filter({ hasText: "Ovis relay: Off." }).waitFor();
+    assert.equal(await dialog.locator('[data-section="relay"]').count(), 0, "no separate relay group");
+    assert.equal(await dialog.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 0, "the settings page has no relay switch of its own");
     assert.equal(await dialog.getByRole("img").count(), 0, "the settings page itself shows no QR code");
     assert.equal((await relayState()).phase, "off");
-    const closesGate = group.getByText("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true });
-    assert.equal(await closesGate.isVisible(), true, "with no token and nothing paired, the row says turning the relay on closes the gate");
-    // off with no Tailscale, the dialog opens on the relay, which offers to turn it on and shows no offer
+    // off with no Tailscale, the dialog opens on the relay, whose card carries the relay's one switch
     await connect.click();
     const relayChoice = sheet.getByRole("button", { name: "Ovis relay", exact: true });
     await relayChoice.waitFor();
     assert.equal(await relayChoice.getAttribute("aria-pressed"), "true", "with no Tailscale the dialog opens on the relay, even while it is off");
     assert.equal(await relayRoute.isVisible(), true, "the relay's details are the ones shown");
-    assert.equal(await sheet.getByRole("switch").count(), 0, "opened on the relay, its own Turn on button stands in for a switch on its choice");
-    await relayRoute.getByRole("button", { name: "Turn on the relay", exact: true }).waitFor();
+    assert.equal(await page.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 1, "the relay's switch exists once, on its card in the dialog");
+    assert.equal(await toggle.getAttribute("aria-checked"), "false", "the relay starts off");
+    assert.equal(await relayRoute.getByRole("button", { name: "Turn on the relay", exact: true }).count(), 0, "one way to turn it on: the switch");
+    assert.equal(await sheet.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
+    const closesGate = sheet.getByText("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true });
+    assert.equal(await closesGate.isVisible(), true, "with no token and nothing paired, the switch says turning the relay on closes the gate");
+    assert.equal(await page.getByText("A paired device gets in on its own until you revoke it here.").count(), 1, "the paired-device line is said once, in Devices");
     assert.equal(await qr.count(), 0, "no offer while the relay is off");
-    await closeSheet();
 
-    // on: the server connects to the local relay, the row says so, and the dialog's offer comes by itself
+    // on: the server connects to the local relay, the dialog's offer comes by itself, and the row says so
+    const firstOffer = offerAnswer();
     await toggle.click();
-    await state.filter({ hasText: "Online. No phone connected." }).waitFor();
+    await relayRoute.locator(".relay-status").filter({ hasText: "Online. No phone connected." }).waitFor();
     assert.equal(await toggle.getAttribute("aria-checked"), "true", "the switch shows the relay on");
     assert.equal((await relayState()).phase, "online", "the server's relay link is online");
     await closesGate.waitFor({ state: "detached" });
-    assert.equal(await dialog.getByRole("img").count(), 0, "online, the settings page still shows no QR code");
-    const firstOffer = offerAnswer();
-    await connect.click();
-    await sheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
+    await state.filter({ hasText: "Ovis relay: Online. No phone connected." }).waitFor();
     await qr.waitFor();
     const offered = decodeOffer(((await (await firstOffer).json()) as { url: string }).url);
     assert.ok(offered !== null, "the QR code is a pairing offer");
@@ -192,18 +189,23 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await page.waitForFunction(([selector, code]) => document.querySelector(selector)?.textContent?.replace(/\s+/g, "") === code, ['[data-route="code"] .devices-code', followed] as const);
     assert.equal(await shownCode(), followed, "after New code the pairing code route shows the same code as the relay QR");
     await qr.waitFor();
-    await closeSheet();
 
-    // the identity reset asks first; Cancel changes nothing, Reset gives the PC a new server id, and the next offer carries it
-    const reset = group.getByRole("button", { name: "Reset", exact: true });
+    // the identity reset, a quiet last action of the relay's details, asks first: Escape and Cancel change nothing
+    // (Escape leaves the dialog under it open), Reset gives the PC a new server id, and the next offer carries it
+    const reset = relayRoute.getByRole("button", { name: "Reset relay identity", exact: true });
     const confirm = page.getByRole("alertdialog", { name: "Reset the relay identity?", exact: true });
     await reset.click();
     await confirm.getByText("Phones paired through the relay will need to scan a new code.", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await confirm.waitFor({ state: "detached" });
+    assert.equal(await sheet.isVisible(), true, "Escape on the confirmation closes it, not the dialog under it");
+    await reset.click();
     await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
     await confirm.waitFor({ state: "detached" });
     await reset.click();
     await confirm.getByRole("button", { name: "Reset", exact: true }).click();
     await confirm.waitFor({ state: "detached" });
+    await closeSheet();
     await state.filter({ hasText: "Online. No phone connected." }).waitFor();
     const afterReset = offerAnswer();
     await connect.click();
@@ -249,33 +251,32 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
       return route.fulfill({ status: 403, json: { error: { code: "owner_only", message: "Use the access token or a paired device." } } });
     });
     await openPhoneSettings(visitor, fixture.origin);
-    const visitorGroup = visitor.locator('.settings-dialog [data-section="relay"]');
-    await visitorGroup.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
-    assert.equal(await visitorGroup.getByRole("switch", { name: "Ovis relay", exact: true }).isDisabled(), true);
-    const visitorHelp = visitorGroup.getByTestId("relay-owner-help");
-    assert.equal(await visitorHelp.isVisible(), true, "the Portal restriction explains itself beside the disabled switch");
-    assert.ok((await visitorHelp.innerText()).trim().length > 0, "the explanation is not empty");
-    assert.equal(await group.getByTestId("relay-owner-help").count(), 0, "the online direct owner still has no restriction explanation");
-    assert.equal(await visitorGroup.getByRole("button", { name: "Reset", exact: true }).count(), 0);
-    // the visitor's dialog: the relay route reads, offers nothing, and there is no pairing code route
-    await visitor.locator('.settings-dialog [data-section="phone"]').getByRole("button", { name: "Connect", exact: true }).click();
+    const visitorPhone = visitor.locator('.settings-dialog [data-section="phone"]');
+    await visitorPhone.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
+    // the visitor's dialog: the relay route reads with the reason it cannot control the relay, offers nothing,
+    // has no switch and no reset, and there is no pairing code route
+    await visitorPhone.getByRole("button", { name: "Connect", exact: true }).click();
     const visitorSheet = visitor.getByRole("dialog", { name: "Connect a phone", exact: true });
     await visitorSheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
     await visitorSheet.locator('[data-route="relay"] .relay-status').filter({ hasText: "Online." }).waitFor();
+    const visitorHelp = visitorSheet.getByTestId("relay-owner-help");
+    assert.equal(await visitorHelp.isVisible(), true, "the Portal restriction explains itself in the relay's details");
+    assert.ok((await visitorHelp.innerText()).trim().length > 0, "the explanation is not empty");
+    assert.equal(await visitor.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 0, "a Portal visitor gets no relay switch");
+    assert.equal(await visitorSheet.getByRole("button", { name: "Reset relay identity", exact: true }).count(), 0, "nor the reset");
     assert.equal(await visitorSheet.locator('[data-route="relay"]').getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
     assert.equal(await visitorSheet.getByRole("button", { name: "Pairing code", exact: true }).count(), 0, "a Portal visitor is offered no pairing code");
     assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
     await visitorContext.close();
 
-    // off: the row says so and the offer goes with the connection
-    await toggle.click();
-    await state.filter({ hasText: "Off." }).waitFor();
-    assert.equal(await toggle.getAttribute("aria-checked"), "false", "the switch shows the relay off");
-    assert.equal((await relayState()).phase, "off", "the server's relay link is off");
+    // off: the offer goes with the connection, and the row says so
     await connect.click();
     await sheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
-    await relayRoute.getByRole("button", { name: "Turn on the relay", exact: true }).waitFor();
-    assert.equal(await qr.count(), 0, "no offer while the relay is off");
+    await toggle.click();
+    await relayRoute.locator(".relay-status").filter({ hasText: "Off." }).waitFor();
+    assert.equal(await toggle.getAttribute("aria-checked"), "false", "the switch shows the relay off");
+    assert.equal((await relayState()).phase, "off", "the server's relay link is off");
+    await qr.waitFor({ state: "detached" });
     assert.equal(await relayRoute.getByRole("button", { name: "New code", exact: true }).count(), 0, "no New code while the relay is off");
     await closeSheet();
 
@@ -292,7 +293,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     tailnet.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(tailnet, tailnetFixture.origin);
     const tailnetDialog = tailnet.locator(".settings-dialog");
-    await tailnetDialog.locator('[data-section="relay"] .relay-status').filter({ hasText: "Off." }).waitFor();
+    await tailnetDialog.locator('[data-section="phone"] .relay-status').filter({ hasText: "Off." }).waitFor();
     const tailnetSummary = tailnetDialog.locator(".connect-phone-summary");
     await tailnetSummary.filter({ hasText: "Ready at https://pc.tail0000.ts.net." }).waitFor();
     assert.match(await tailnetSummary.innerText(), /Ovis relay/, "the settings row names the relay beside the Tailscale address");
@@ -342,7 +343,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     late.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(late, tailnetFixture.origin);
     const lateDialog = late.locator(".settings-dialog");
-    await lateDialog.locator('[data-section="relay"] .relay-status').filter({ hasText: "Off." }).waitFor();
+    await lateDialog.locator('[data-section="phone"] .relay-status').filter({ hasText: "Off." }).waitFor();
     await lateDialog.locator('[data-section="phone"]').getByRole("button", { name: "Connect", exact: true }).click();
     const lateSheet = late.getByRole("dialog", { name: "Connect a phone", exact: true });
     const lateRelay = lateSheet.getByRole("button", { name: "Ovis relay", exact: true });
@@ -376,19 +377,21 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     failedPage.setDefaultTimeout(15_000);
     failedPage.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(failedPage, unwritable.origin);
-    const failedGroup = failedPage.locator('.settings-dialog [data-section="relay"]');
-    const failedToggle = failedGroup.getByRole("switch", { name: "Ovis relay", exact: true });
+    await failedPage.locator('.settings-dialog [data-section="phone"]').getByRole("button", { name: "Connect", exact: true }).click();
+    const failedSheet = failedPage.getByRole("dialog", { name: "Connect a phone", exact: true });
+    const failedRoute = failedSheet.locator('[data-route="relay"]');
+    const failedToggle = failedSheet.getByRole("switch", { name: "Ovis relay", exact: true });
     await failedToggle.click();
-    await failedGroup.getByRole("alert").filter({ hasText: "The relay did not start: Could not start the relay." }).waitFor();
+    await failedRoute.getByRole("alert").filter({ hasText: "The relay did not start: Could not start the relay." }).waitFor();
     assert.equal(await failedToggle.getAttribute("aria-checked"), "false", "a start that failed leaves the switch off");
-    await failedGroup.locator(".relay-status").filter({ hasText: "Off." }).waitFor();
+    await failedRoute.locator(".relay-status").filter({ hasText: "Off." }).waitFor();
     rmSync(savedChoice, { recursive: true });
-    await failedGroup.getByRole("button", { name: "Try again", exact: true }).click();
-    await failedGroup.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
+    await failedRoute.getByRole("button", { name: "Try again", exact: true }).click();
+    await failedRoute.locator(".relay-status").filter({ hasText: "Online." }).waitFor();
     assert.equal(await failedToggle.getAttribute("aria-checked"), "true", "Try again turned the relay on");
-    assert.equal(await failedGroup.getByRole("button", { name: "Try again", exact: true }).count(), 0, "no retry once it runs");
+    assert.equal(await failedRoute.getByRole("button", { name: "Try again", exact: true }).count(), 0, "no retry once it runs");
 
-    // serve-only: the switch is there and disabled, with the reason in the row
+    // serve-only: no switch anywhere, the reason in the row and in the relay's details, and no reset
     const serveOnly = startRelayFixture({ serveOnly: true });
     fixtures.push(serveOnly);
     const blockedContext = await englishContext(browser);
@@ -397,15 +400,17 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     blockedPage.setDefaultTimeout(15_000);
     blockedPage.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(blockedPage, serveOnly.origin);
-    const blockedGroup = blockedPage.locator('.settings-dialog [data-section="relay"]');
-    const blockedToggle = blockedGroup.getByRole("switch", { name: "Ovis relay", exact: true });
-    await blockedToggle.waitFor();
-    assert.equal(await blockedToggle.isDisabled(), true, "a serve-only install cannot turn the relay on");
-    assert.equal(await blockedToggle.getAttribute("aria-checked"), "false");
-    await blockedGroup.locator(".relay-status").filter({ hasText: "Blocked: OVIS_TAILSCALE_SERVE_ONLY" }).waitFor();
-    assert.equal(await blockedGroup.getByRole("img").count(), 0, "no offer on a blocked install");
-    assert.equal(await blockedGroup.getByRole("button", { name: "Reset", exact: true }).count(), 0, "a serve-only install is offered no reset, which it would refuse");
-    assert.equal(await blockedGroup.locator(".settings-condition").count(), 0, "a switch that cannot be turned on carries no note about turning it on");
+    const blockedPhone = blockedPage.locator('.settings-dialog [data-section="phone"]');
+    await blockedPhone.locator(".relay-status").filter({ hasText: "Ovis relay: Blocked: OVIS_TAILSCALE_SERVE_ONLY" }).waitFor();
+    await blockedPhone.getByRole("button", { name: "Connect", exact: true }).click();
+    const blockedSheet = blockedPage.getByRole("dialog", { name: "Connect a phone", exact: true });
+    await blockedSheet.getByRole("button", { name: "Ovis relay", exact: true }).click();
+    const blockedRoute = blockedSheet.locator('[data-route="relay"]');
+    await blockedRoute.locator(".relay-status").filter({ hasText: "Blocked: OVIS_TAILSCALE_SERVE_ONLY" }).waitFor();
+    assert.equal(await blockedPage.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 0, "a serve-only install shows no relay switch");
+    assert.equal(await blockedRoute.getByRole("img").count(), 0, "no offer on a blocked install");
+    assert.equal(await blockedRoute.getByRole("button", { name: "Reset relay identity", exact: true }).count(), 0, "a serve-only install is offered no reset, which it would refuse");
+    assert.equal(await blockedSheet.locator(".connect-phone-gate").count(), 0, "a relay that cannot be turned on carries no note about turning it on");
     assert.deepEqual(pageErrors, [], "the relay panel raises no page error");
     console.log("PASS the relay panel turns the relay on and off, offers a QR code and resets the identity; a relay-paired device wears the pill and serve-only blocks the switch");
   } finally {

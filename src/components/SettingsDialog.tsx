@@ -40,7 +40,7 @@ import { DevicesPanel } from "./DevicesPanel.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
-import { RelayPanel } from "./RelayPanel.tsx";
+import { statusText } from "./RelayPanel.tsx";
 import { ConnectPhoneDialog, defaultRoute, relayOffered, type ConnectRoute } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -890,7 +890,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
   const pairUrl = plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
   // what keeps the switch from working here, only while it does (lib/wakeLock.ts asks for the same two)
   const wakeLockProblem = !window.isSecureContext ? t("Needs HTTPS or localhost.") : !("wakeLock" in navigator) ? t("This browser can't keep the screen on.") : null;
-  // one relay state for the switch on this page and the Connect a phone dialog, so each shows the other's change at once
+  // one relay state for the Connect a phone row and its dialog, so the row shows the dialog's change at once
   const relay = useRelay();
   const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
@@ -927,7 +927,11 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
             )}
           </>
         )}
-        <SettingsRow label={t("Connect a phone")} description={<span className="connect-phone-summary">{connectSummary}</span>}>
+        {/* the relay's state lives here; its switch, reset and failures are in the Connect a phone dialog */}
+        <SettingsRow label={t("Connect a phone")} description={<>
+          <span className="connect-phone-summary">{connectSummary}</span>
+          {relayOffered(relay) && relay.status !== null && <span className="relay-status">{t("Ovis relay: {state}", { state: statusText(t, relay.status) })}</span>}
+        </>}>
           <button type="button" className="btn btn-primary" onClick={() => setConnecting({ route: defaultRoute(plan, relay), startCode: false })}>{t("Connect")}</button>
         </SettingsRow>
         <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
@@ -937,8 +941,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
           {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
         </SettingsRow>
       </SettingsGroup>
-
-      <RelayPanel relay={relay} readOnly={relayReadOnly} closesGate={closesGate} />
 
       <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
 
