@@ -12,6 +12,7 @@ import { FrameGate } from "./inputRow.ts";
 import { AttachmentTooLargeError, assertAttachable, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
 import { parseOsc52 } from "./osc52.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
+import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
@@ -519,6 +520,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
 
       /** herdr's text for the last drag, while its highlight is still the selection */
       let copiedText: string | null = null;
+      /** selected text as it is copied: an agent's own wrapped rows join back into their lines, as herdr's TUI copies them (#2558) */
+      const asCopied = (text: string, firstCol: number): string => agentRef.current ? unwrapAgentRows(text, term.cols, firstCol) : text;
+      const visibleSelection = (): string => asCopied(term.getSelection(), term.getSelectionPosition()?.start.x ?? 0);
       let selectionGeneration = 0;
       let disposed = false;
       // Run after xterm's own copy listener, including for Cmd+C and context-menu
@@ -552,7 +556,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       host.addEventListener("copy", onCopy);
       const copySelection = (): void => {
-        const text = copiedText ?? term.getSelection();
+        const text = copiedText ?? visibleSelection();
         if (!text) return;
         reserveAwaitedText();
         // Native copy still works in a user gesture when a Chromium/PWA site has
@@ -788,7 +792,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         if (!term.hasSelection()) return;
-        const visibleText = term.getSelection();
+        const visibleText = visibleSelection();
         copiedText = visibleText;
         // herdr's copy_on_select: letting go copies, or only selects for Ctrl+C or Copy (herdr's text below either way)
         const autoCopy = copyOnSelect();
@@ -813,7 +817,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // herdr's text covers the whole range; the visible text in its place does not, so the quote
         // then names no line range rather than one its text does not hold
         let fromHerdr = true;
-        const herdrText = fetchPaneSelection(d.pane, range[0], range[1], machineId).catch(() => {
+        const start = range[0];
+        const herdrText = fetchPaneSelection(d.pane, range[0], range[1], machineId).then((value) => asCopied(value, start.col)).catch(() => {
           if (current() && d.scrolled) noteClipboard("could not read the selection from herdr");
           fromHerdr = false;
           return visibleText;
