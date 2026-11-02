@@ -193,7 +193,7 @@ interface TranscriptStream {
   /** A cooperative image scan publishes only while its file snapshot is current. */
   current?: () => boolean;
   /** the history boundary a private (`apart`) scan of this stream published to clearScans, so a rejected image read can take it back */
-  published?: object;
+  published?: { scan: object; through: number };
   /** what the history boundary scan read, from `from` to the stream's end, digested a window at a time, when an image read keeps it */
   seen?: { from: number; digest: bigint };
 }
@@ -442,7 +442,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // A page read can advance the same cached object while this private copy is paused.
   if (!apart || (clearScans.get(path) === previous && previous?.scanned === previousScanned && (stream.current?.() ?? true))) {
     remember(clearScans, path, scan, 32);
-    if (apart) stream.published = scan;
+    if (apart) stream.published = { scan, through: scan.scanned };
   }
   // A valid final JSON object is visible before its newline; rescan it on append.
   stream.floor = !skipping && carry.length > 0 && isClear(carry) ? stream.length - carry.length : scan.floor;
@@ -2453,22 +2453,25 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
   const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
   const fd = openSync(path, "r");
+  const boundary = clearScans.get(path);
+  const boundaryScanned = boundary?.scanned;
+  const scans: TranscriptStream[] = [];
+  // A failed lookup may have published a boundary before a later read or filesystem fence throws.
+  const unpublish = (...streams: TranscriptStream[]): null => {
+    const kept = clearScans.get(path);
+    if (kept !== undefined && (streams.some((scanned) => scanned.published?.scan === kept && scanned.published.through === kept.scanned) || (kept === boundary && boundary.scanned === boundaryScanned))) clearScans.delete(path);
+    return null;
+  };
   try {
     const stat = fstatSync(fd);
-    const boundary = clearScans.get(path);
-    const boundaryScanned = boundary?.scanned;
     const current = (snapshot: typeof stat): boolean => sameImageFile(snapshot, fstatSync(fd)) && sameImageFile(snapshot, statSync(path));
     if (!current(stat)) return null;
     const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd);
+    scans.push(stream);
     stream.current = () => current(stat);
     if (apart) stream.seen = { from: 0, digest: 0n };
     // a read rejected after its scan published a boundary takes that boundary back (unless a newer read replaced it):
     // it was built from bytes that no longer stand, and a later lookup must not reuse it as an append's prefix
-    const unpublish = (...streams: TranscriptStream[]): null => {
-      const kept = clearScans.get(path);
-      if (kept !== undefined && (streams.some((scanned) => scanned.published === kept) || (kept === boundary && boundary?.scanned === boundaryScanned))) clearScans.delete(path);
-      return null;
-    };
     yield* applyHistoryBoundarySteps(path, stream, "claude-transcript", apart);
     const picture = yield* claudePictureSteps(stream, match);
     // the file held still for the whole read (its size, times and identity, by the pinned fd and by path)
@@ -2491,12 +2494,14 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     }
     if (digest !== seen.digest) return unpublish(stream);
     const active = transcriptStream("claude-transcript", path, now, defaultCodexHome(), undefined, fd);
+    scans.push(active);
     active.current = () => current(now);
     yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, true);
     const again = yield* claudePictureSteps(active, match);
     // a further change during this read is retried by a later request
     return again !== null && current(now) ? again : unpublish(stream, active);
-  } finally { closeSync(fd); }
+  } catch { return unpublish(...scans); }
+  finally { closeSync(fd); }
 }
 
 function* claudePictureSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray): Steps<TranscriptPicture | null> {

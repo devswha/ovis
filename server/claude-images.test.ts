@@ -316,3 +316,34 @@ it("a lookup that sees the file rewritten drops the boundary it kept, even when 
   appendFileSync(path, line({ type: "progress", data: "append" }));
   expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
 });
+
+it("a filesystem exception revokes a rejected lookup's boundary", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-image-exception-"));
+  roots.push(dir, `${dir}.away`);
+  const path = join(dir, "session.jsonl");
+  const drawn = line({ type: "user", uuid: id(1), message: { content: [picture] } });
+  const clear = line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } });
+  const same = line({ type: "progress", data: "x".repeat(clear.length - 30) });
+  expect(same.length).toBe(clear.length);
+  const padding = line({ type: "progress", data: "x".repeat(1024 * 1024) }).repeat(3);
+  writeFileSync(path, drawn + same + padding);
+  exact(await transcriptImageAsync(path, `${id(1)}:0`));
+  let moved = false;
+  const read = fs.readSync;
+  const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+    const value = read(...args);
+    const at = args as unknown as [number, Uint8Array, number, number, number];
+    if (!moved && at[4] === 0 && at[3] === 1024 * 1024) {
+      moved = true;
+      setImmediate(() => renameSync(dir, `${dir}.away`));
+    }
+    return value;
+  }) as typeof fs.readSync);
+  try { expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull(); } finally { watch.mockRestore(); }
+  expect(moved).toBe(true);
+  renameSync(`${dir}.away`, dir);
+  writeFileSync(path, drawn + clear + padding);
+  appendFileSync(path, line({ type: "progress", data: "append" }));
+  // The failed lookup must not leave a cached boundary that predates this clear.
+  expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
+});
