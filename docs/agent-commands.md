@@ -274,8 +274,8 @@ Hermes's informational results, and the steps of omp's `/handoff` that can be
 answered from a card. A step that needs an editor or native editing ends as `terminal-required`
 and keeps the draft.
 
-Messages in Chat carry no rewind action. Run the agent's own `/rewind` in the pane's terminal,
-where its dialog is answered. Chat follows the native transcript's active branch when the agent
+Messages in Chat carry no rewind action. For an agent with its own `/rewind` (Claude Code, grok,
+Antigravity), run it in the pane's terminal, where its dialog is answered. Chat follows the native transcript's active branch when the agent
 records it; Claude Code records that branch on the next prompt or command.
 
 ## Earlier sessions
