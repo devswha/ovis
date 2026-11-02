@@ -37,6 +37,13 @@ export interface TranscriptFile {
   read(position: number, length: number): Promise<Buffer>;
   /** The same bytes in a buffer the lease keeps for them, so no window is allocated: they hold only until the next `window` or the lease's end. */
   window(position: number, length: number): Promise<Buffer>;
+  /**
+   * Starts reading the window a later `window(position, length)` will ask for, into the lease's
+   * other buffer, so the read goes on while the lease awaits its other operations (a stat). The
+   * bytes the last `window` returned stay as they are. A `window` that asks for anything else
+   * waits for this read to settle first, and one read ahead at a time is kept.
+   */
+  ahead(position: number, length: number): void;
 }
 interface Request {
   path: string;
@@ -50,6 +57,8 @@ interface Request {
  * One main-process reader. A lease owns its path, handle and native-operation allowance until
  * close actually settles. Cancellation ends only the caller's wait. Native async FS uses Bun's
  * shared runtime pool; this bound does not reserve runtime capacity or interrupt a stuck syscall.
+ * A lease has at most two native operations in flight, the one it awaits and a read ahead, so the
+ * reader has at most twice its capacity of them.
  */
 export class TranscriptReader {
   private readonly queue: Request[] = [];
@@ -59,7 +68,7 @@ export class TranscriptReader {
   private readonly idle = new Set<() => void>();
   /** `window` buffers of leases that ended, every native operation on them settled */
   private readonly spare: Buffer[] = [];
-  constructor(private readonly io: TranscriptIO = nativeIO, private readonly capacity = 2, private readonly waiting = 32) {}
+  constructor(private readonly io: TranscriptIO = nativeIO, readonly capacity = 2, private readonly waiting = 32) {}
 
   read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number } = {}): Promise<T> {
     const { signal, deadline } = options;
@@ -92,16 +101,21 @@ export class TranscriptReader {
           let value: T | undefined;
           let error: unknown;
           let failed = false;
-          let scratch: Buffer | undefined;
+          // the buffer the last window was returned in, and the one a read ahead fills
+          let front: Buffer | undefined;
+          let back: Buffer | undefined;
+          let readAhead: { position: number; length: number; bytes: Promise<Buffer> } | null = null;
           try {
             handle = await this.io.open(path);
             current();
             const pinned = handle;
             let busy = false;
-            const operation = <V>(call: () => Promise<V>): Promise<V> => {
+            // a read ahead (`beside`) runs next to the one operation the work awaits at a time
+            const operation = <V>(call: () => Promise<V>, beside = false): Promise<V> => {
               const pending = (async () => {
                 current();
                 if (!accepting) throw new Error("the transcript lease is closed");
+                if (beside) { const result = await call(); current(); return result; }
                 if (busy) throw new Error("transcript operations must be awaited in order");
                 busy = true;
                 try { const result = await call(); current(); return result; }
@@ -111,11 +125,13 @@ export class TranscriptReader {
               void pending.then(() => operations.delete(pending), () => operations.delete(pending));
               return pending;
             };
-            // a window read whole (short reads completed, up to EOF)
-            const fill = (position: number, length: number, buffer: () => Buffer) => operation(async () => {
-              current();
+            const valid = (position: number, length: number) => {
               if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(length) || length < 0 || length > WINDOW_BYTES) throw new RangeError("invalid transcript window");
-              const bytes = buffer();
+            };
+            // a window read whole (short reads completed, up to EOF)
+            const fill = async (position: number, length: number, bytes: Buffer) => {
+              current();
+              valid(position, length);
               let offset = 0;
               while (offset < length) {
                 const { bytesRead } = await pinned.read(bytes, offset, length - offset, position + offset);
@@ -124,7 +140,8 @@ export class TranscriptReader {
                 offset += bytesRead;
               }
               return bytes.subarray(0, offset);
-            });
+            };
+            const spareWindow = () => this.spare.pop() ?? Buffer.allocUnsafe(WINDOW_BYTES);
             let initial: TranscriptVersion | undefined;
             const file: TranscriptFile = {
               get initial() { return initial!; },
@@ -141,8 +158,29 @@ export class TranscriptReader {
                 current();
                 return version;
               }),
-              read: (position, length) => fill(position, length, () => Buffer.allocUnsafe(length)),
-              window: (position, length) => fill(position, length, () => scratch ??= this.spare.pop() ?? Buffer.allocUnsafe(WINDOW_BYTES)),
+              read: (position, length) => operation(() => fill(position, length, Buffer.allocUnsafe(length))),
+              window: (position, length) => operation(async () => {
+                const read = readAhead;
+                readAhead = null;
+                if (read !== null) {
+                  if (read.position === position && read.length === length) {
+                    const bytes = await read.bytes;
+                    [front, back] = [back, front];
+                    return bytes;
+                  }
+                  // let settle first: its buffer is the next read ahead's, and the lease keeps to two native operations
+                  await read.bytes.catch(() => {});
+                }
+                return fill(position, length, front ??= spareWindow());
+              }),
+              ahead: (position, length) => {
+                if (readAhead !== null || !accepting) return;
+                valid(position, length);
+                const bytes = operation(() => fill(position, length, back ??= spareWindow()), true);
+                // a read ahead nobody asks for is let go of: its failure is no failure of the lease
+                bytes.catch(() => {});
+                readAhead = { position, length, bytes };
+              },
             };
             const before = await file.stat();
             initial = before;
@@ -157,7 +195,8 @@ export class TranscriptReader {
             // Even an open that answered after cancellation must close; neither its path nor the
             // physical allowance is available to a replacement until this await has settled.
             try { await handle?.close(); } catch (caught) { if (!failed) error = caught; failed = true; }
-            if (scratch !== undefined) this.spare.push(scratch);
+            if (front !== undefined) this.spare.push(front);
+            if (back !== undefined) this.spare.push(back);
             if (request.live && deadline !== undefined && Date.now() >= deadline) request.cancel();
             this.active.delete(request);
             this.paths.delete(path);

@@ -284,6 +284,8 @@ async function step(entry: Entry): Promise<void> {
   try {
     await transcriptReader.read(entry.path, async (file) => {
       let stop = performance.now() + SLICE_MS;
+      // the whole lines of the last window that a slice ended before taking in, and the stat taken after they were read
+      let rest: { from: number; to: number; bytes: Buffer; version: HistoryVersion } | null = null;
       for (let now = file.initial; ;) {
         // let go of (discarded) while it waited for the disk: nothing more is read for it
         if (entries.get(entry.path) !== entry) return;
@@ -294,10 +296,27 @@ async function step(entry: Entry): Promise<void> {
           if (entry.offset === 0 && entry.spans.length === 0) { entry.checked = now; entry.checkedThrough = 0; }
           const extends_ = entry.checked !== null && sameVersion(entry.checked, now) && entry.checkedThrough === entry.offset;
           // a record cut at the limit is read whole: past the limit, as far as the transcript goes
-          const bytes = await file.window(entry.offset, Math.min(CHUNK, Math.max(entry.limit, entry.version.size) - entry.offset));
-          known = entry.version;
-          after = await file.stat();
-          if (entries.get(entry.path) !== entry) return;
+          const end = Math.max(entry.limit, entry.version.size);
+          let bytes: Buffer;
+          if (rest !== null && rest.version === now && entry.offset > rest.from && entry.offset < rest.to) {
+            // read already, and no stat since the one after them: neither a read nor a stat is needed
+            bytes = rest.bytes.subarray(entry.offset - rest.from, rest.to - rest.from);
+            after = now;
+          } else {
+            const position = entry.offset;
+            bytes = await file.window(position, Math.min(CHUNK, end - position));
+            known = entry.version;
+            // the next window, from the last whole line of this one, is read while the stat is on its
+            // way and this one is taken in. Not when nobody listens: the read ends with this slice, and
+            // a read ahead left over holds up its close. Nor when this window reached the end
+            // already: there is nothing past it to read yet
+            const last = bytes.lastIndexOf(10);
+            const linesEnd = position + last + 1;
+            if (last >= 0 && position + bytes.length < end && entry.listeners.size > 0) file.ahead(linesEnd, Math.min(CHUNK, end - linesEnd));
+            after = await file.stat();
+            if (entries.get(entry.path) !== entry) return;
+            rest = last >= 0 ? { from: position, to: linesEnd, bytes, version: after } : null;
+          }
           // taken in only now, all at once: a request in between sees the read as it was, never
           // bytes read but not yet known unchanged; bytes that came within the turn are taken in
           // until it ends, and bytes that came after it (slow storage) get a turn of their own
@@ -306,6 +325,8 @@ async function step(entry: Entry): Promise<void> {
           // nothing was written while it read: what it read is as checked as what came before
           if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
         } else if (work === "check") {
+          // a check reads into the window those lines were in
+          rest = null;
           if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
         } else break;
         if (performance.now() >= stop) {
@@ -314,8 +335,10 @@ async function step(entry: Entry): Promise<void> {
           if (Date.now() >= held || entry.listeners.size === 0 || queue.some((other) => other !== entry)
             || transcriptReader.size().waiting > 0 || restarted || (entry.ends.length !== before && entry.listeners.size > entry.waiters)) break;
           // nobody else waits: the event loop has its turn, and the read goes on with the transcript
-          // still open (an open and its check cost several round trips on remote storage)
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          // still open (an open and its check cost several round trips on remote storage). Two
+          // immediates: one set while an I/O callback runs comes before the timers already due, so
+          // with one, a slice that needs no read (the rest of a window) could follow this one first
+          await new Promise<void>((resolve) => setImmediate(() => setImmediate(resolve)));
           stop = performance.now() + SLICE_MS;
         }
         // the stat after a read is as new as one taken now: one disk round trip fewer
@@ -432,6 +455,9 @@ async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, st
     const start = pass.next === 0 ? 0 : entry.spans[pass.next - 1]!.end;
     const span = entry.spans[pass.next]!;
     const bytes = await file.window(start, span.end - start);
+    // the next span is read while this one's digest is taken
+    const following = entry.spans[pass.next + 1];
+    if (following !== undefined && entry.listeners.size > 0) file.ahead(span.end, following.end - span.end);
     if (bytes.length !== span.end - start || BigInt(Bun.hash.xxHash3(bytes)) !== span.digest) return false;
     pass.next++;
     if (performance.now() >= stop) break;

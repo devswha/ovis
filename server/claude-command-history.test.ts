@@ -1,5 +1,5 @@
 import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
-import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandHistory, commandHistorySize, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
@@ -389,6 +389,39 @@ it("reads on by whole chunks when every read outlasts a slice, as on slow storag
   expect(reads(s.path)).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
 }, 5000);
 
+it("takes in the rest of a window a slice ended in without reading it again", async () => {
+  const s = fixture();
+  // a notice every 1 KiB or so, about 3 MiB
+  const ids = Array.from({ length: 3000 }, (_, index) => `c${index}`);
+  writeFileSync(s.path, ids.map((id) => notice(id) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
+  // a clock that moves on at every look: slices end several times inside each window
+  const clock = performance.now.bind(performance);
+  let moved = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + (moved += 0.02));
+  release.push(() => now.mockRestore());
+  let windows = 0;
+  wrapReads((_, work) => (file) => work({ ...file, window: (position, length) => { windows++; return file.window(position, length); } }));
+  const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(history).toMatchObject({ complete: true, through: s.limit() });
+  expect(history!.ends.map((end) => end.id)).toEqual(ids);
+  expect(windows).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
+}, 5000);
+
+it("starts over on a transcript rewritten and grown while it reads a window ahead", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("a") + filler.repeat(4));
+  let rewritten = false;
+  wrapReads((_, work) => (file) => work({ ...file, ahead: (position, length) => {
+    file.ahead(position, length);
+    // the same file, its first record another: whatever the read ahead finds, what was read before it is gone
+    if (!rewritten) { rewritten = true; writeFileSync(s.path, notice("b") + filler.repeat(5)); }
+  } }));
+  const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(rewritten).toBe(true);
+  expect(read).toMatchObject({ complete: true });
+  expect(read!.ends.map((end) => end.id)).toEqual(["b"]);
+}, 5000);
+
 it("lets a small session have its turn after each slow read of a large one", async () => {
   const large = fixture();
   writeFileSync(large.path, notice("large") + filler.repeat(8));
@@ -482,23 +515,32 @@ it("reads on in the same lease when the session it reads is asked for again", as
 it("gives each turn of a transcript it keeps open a slice of its own", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(16));
-  // a clock that moves only by 1 ms a read: four reads to a slice
-  let waited = 0, reads = 0;
+  // storage that answers at once, so the event loop runs only when a turn ends, and a clock that
+  // moves only by 1 ms a read: four reads to a slice
+  const bytes = readFileSync(s.path);
+  let waited = 0;
   const base = performance.now();
   const now = spyOn(performance, "now").mockImplementation(() => base + waited);
   release.push(() => now.mockRestore());
-  wrapReads((_, work) => (file) => work({ ...file, window: async (position, length) => {
-    const bytes = await file.window(position, length);
+  wrapReads((_, work) => (file) => work({ ...file, stat: async () => file.initial, ahead: () => {}, window: async (position, length) => {
     waited += 1;
-    reads++;
-    return bytes;
+    return bytes.subarray(position, position + length);
   } }));
-  const turns = spyOn(globalThis, "setImmediate");
-  release.push(() => turns.mockRestore());
+  // the clock each time the event loop runs
+  const runs: number[] = [];
+  let probing = true;
+  const probe = () => { runs.push(waited); if (probing) setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-  expect(reads).toBeGreaterThan(16);
-  // a turn ends every few reads, not after each one
-  expect(turns.mock.calls.length).toBeLessThan(reads / 2);
+  probing = false;
+  expect(waited).toBeGreaterThan(16);
+  // the reads between one run of the event loop and the next that saw any
+  const turns = runs.slice(1).map((at, index) => at - runs[index]!).filter((reads) => reads > 0);
+  // a turn ends every few reads, not after each one (the read's last may be short), and none runs
+  // on past its slice and the read that ended it
+  expect(turns.slice(0, -1).every((reads) => reads >= 2)).toBe(true);
+  expect(Math.max(...turns)).toBeLessThanOrEqual(5);
 }, 5000);
 
 it("reads one slice for a request nobody watches or waits for", async () => {

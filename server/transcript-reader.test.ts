@@ -239,3 +239,92 @@ it("never keeps the process alive for a read's deadline alone", async () => {
     expect(kept).toBe(false);
   } finally { timers.mockRestore(); }
 });
+
+/** A backend whose reads at `held` positions wait for that position's gate; `log` has each read's start and end. */
+function heldReads(held: Map<number, Promise<void>>) {
+  const b = backend(); const base = b.io.open;
+  const log: string[] = [], buffers: ArrayBufferLike[] = [];
+  b.io.open = async (path) => {
+    const handle = await base(path);
+    return { ...handle, read: async (buffer, offset, length, position) => {
+      log.push(`read ${position}`); buffers.push(buffer.buffer);
+      await held.get(position);
+      const result = await handle.read(buffer, offset, length, position);
+      log.push(`done ${position}`);
+      return result;
+    } };
+  };
+  return { ...b, log, buffers };
+}
+
+it("reads ahead while the lease awaits a stat, and hands the bytes to the window that asks for them", async () => {
+  const gate = deferred(); const b = heldReads(new Map([[2, gate.promise]])); const reader = new TranscriptReader(b.io);
+  await reader.read("file", async (file) => {
+    const first = await file.window(0, 2);
+    file.ahead(2, 2);
+    // the stat is answered while the read ahead is still on its way
+    await file.stat();
+    expect(b.log).toEqual(["read 0", "done 0", "read 2"]);
+    gate.resolve(); await tick();
+    // filled in the lease's other buffer: the last window's bytes are as they were
+    expect(b.log).toEqual(["read 0", "done 0", "read 2", "done 2"]);
+    expect(first.toString()).toBe("ab");
+    const second = await file.window(2, 2);
+    expect(second.toString()).toBe("cd");
+    // the next read ahead fills the buffer the first window was in, not this one
+    file.ahead(0, 2);
+    await file.stat(); await tick();
+    expect(b.log.at(-1)).toBe("done 0");
+    expect(second.toString()).toBe("cd");
+  });
+  // the window read ahead is not read again
+  expect(b.reads).toEqual(["file", "file", "file"]);
+  expect(b.buffers[1]).not.toBe(b.buffers[0]);
+});
+
+it("lets a read ahead settle before a window that asks for other bytes", async () => {
+  const gate = deferred(); const b = heldReads(new Map([[2, gate.promise]])); const reader = new TranscriptReader(b.io);
+  await reader.read("file", async (file) => {
+    await file.window(0, 2);
+    file.ahead(2, 2);
+    const other = file.window(1, 2);
+    await tick();
+    // its read waits: the buffer it reads into may be the one the read ahead fills next time
+    expect(b.log).toEqual(["read 0", "done 0", "read 2"]);
+    gate.resolve();
+    expect((await other).toString()).toBe("bc");
+    expect(b.log).toEqual(["read 0", "done 0", "read 2", "done 2", "read 1", "done 1"]);
+  });
+});
+
+it("closes a lease and gives its buffers to another only once a read ahead nobody asked for settled", async () => {
+  const gate = deferred(); const b = heldReads(new Map([[2, gate.promise]])); const reader = new TranscriptReader(b.io);
+  const pending = reader.read("file", async (file) => { await file.window(0, 2); file.ahead(2, 2); return "done"; });
+  await tick(); await tick();
+  expect(b.closed).toEqual([]);
+  // a lease that starts meanwhile reads into a buffer of its own
+  await reader.read("other", (file) => file.window(0, 4));
+  expect(b.buffers.slice(0, 2)).not.toContain(b.buffers[2]);
+  gate.resolve();
+  expect(await pending).toBe("done");
+  expect(b.closed).toEqual(["other", "file"]);
+  await reader.read("last", (file) => file.window(0, 4));
+  expect(b.buffers.slice(0, 2)).toContain(b.buffers[3]!);
+});
+
+it("ends a cancelled lease's read ahead without an unhandled rejection", async () => {
+  const gate = deferred(); const b = heldReads(new Map([[2, gate.promise]])); const reader = new TranscriptReader(b.io);
+  const unhandled: unknown[] = [];
+  const hear = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", hear);
+  try {
+    const abort = new AbortController();
+    const pending = reader.read("file", async (file) => { await file.window(0, 2); file.ahead(2, 2); }, { signal: abort.signal }).catch((e) => e);
+    await tick(); await tick();
+    abort.abort();
+    expect(await pending).toBeInstanceOf(TranscriptBusyError);
+    gate.resolve(); await reader.settled(); await tick();
+    expect(b.closed).toEqual(["file"]);
+    expect(unhandled).toEqual([]);
+  } finally { process.off("unhandledRejection", hear); }
+});
