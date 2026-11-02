@@ -34,6 +34,10 @@
  * integration and lives in paneTranscript.
  */
 
+import { claudeImageFileGeneration, type ClaudeImageRead } from "./claude-image-file.ts";
+import { claudeImageDeadline, claudeImageGeneration, claudeImageGenerationCurrent, claudeImageTask } from "./claude-image-pool.ts";
+import { FileBusyError } from "./file-pool.ts";
+
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { readStatuslineContext } from "./statusline.ts";
@@ -2153,16 +2157,23 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
  * picture a tool returned by its call (`codex-tool:<call id>:<nth picture>`); omp names its pictures
  * as pi does.
  */
-export async function conversationImage(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, grokHome?: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+export async function conversationImage(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, grokHome?: string, signal?: AbortSignal): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  const deadline = claudeImageDeadline();
   if (!CLAUDE_IMAGE_REF.test(ref) && !CODEX_IMAGE_REF.test(ref) && !CODEX_TOOL_IMAGE_REF.test(ref) && !PI_IMAGE_REF.test(ref) && !PI_PROMPT_IMAGE_REF.test(ref) && !OPENCODE_IMAGE_REF.test(ref) && !GROK_IMAGE_REF.test(ref) && !COPILOT_IMAGE_REF.test(ref)) return null;
-  const snapshot = await sessionSnapshot();
+  // Claim the existing bounded pane state before authorization yields: a close/clear during
+  // discovery must invalidate this request too, rather than being recreated by its continuation.
+  const imageReads = CLAUDE_IMAGE_REF.test(ref) ? paneReads.get(paneId) ?? emptyPaneReads() : undefined;
+  if (imageReads !== undefined) remember(paneReads, paneId, imageReads, PANE_READS_MAX);
+  const authorize = <T>(read: () => Promise<T>): Promise<T> => CLAUDE_IMAGE_REF.test(ref) ? imageBindingWait(read, signal, deadline) : read();
+  const snapshot = await authorize(sessionSnapshot);
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
   let resolved: ResolvedTranscript;
-  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, undefined, grokHome); }
+  try { resolved = await authorize(() => resolveTranscript(pane, pane.cwd!, codexHome, snapshot.panes, opencodeDb, undefined, grokHome)); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
   // OpenCode's store is read per request and keeps nothing for the pane to release
   if (resolved.source === "opencode-transcript") return opencodeImage(resolved.path, resolved.session, ref);
+  if (imageReads !== undefined && paneReads.get(paneId) !== imageReads) return null;
   rememberPaneRead(paneId, resolved.path);
   if (resolved.source === "codex-transcript") {
     if (CODEX_TOOL_IMAGE_REF.test(ref)) return codexToolImage(resolved.path, ref, resolved.codexHome ?? codexHome ?? defaultCodexHome());
@@ -2176,7 +2187,56 @@ export async function conversationImage(paneId: string, ref: string, codexHome?:
   // the store is held to the identity it had where the transcript was authorized (ompAuthorizedTranscript):
   // a path above it swapped since cannot move the read elsewhere
   if (resolved.source === "omp-transcript") return ompTranscriptImage(resolved.path, ref, resolved.ompBlobs ?? null);
-  return resolved.source === "claude-transcript" ? transcriptImageAsync(resolved.path, ref) : null;
+  if (resolved.source !== "claude-transcript" || !CLAUDE_IMAGE_REF.test(ref)) return null;
+  const reads = imageReads;
+  const paneBinding = (candidate: HerdrPane): string => JSON.stringify([candidate.pane_id, candidate.terminal_id, candidate.cwd, candidate.foreground_cwd, candidate.agent, candidate.agent_session]);
+  const binding = JSON.stringify([paneBinding(pane), resolved.source, resolved.path]);
+  const active = (): boolean => {
+    if (signal?.aborted) throw new FileBusyError("the request was cancelled");
+    if (performance.now() >= deadline) throw new FileBusyError("the image did not answer in time");
+    return reads !== undefined && paneReads.get(paneId) === reads;
+  };
+  const current = async (): Promise<boolean> => {
+    if (!active()) return false;
+    const latest = await imageBindingWait(sessionSnapshot, signal, deadline);
+    const candidate = latest.panes.find((entry) => entry.pane_id === paneId);
+    if (candidate === undefined || paneBinding(candidate) !== paneBinding(pane) || !active()) return false;
+    try {
+      const now = await imageBindingWait(() => resolveTranscript(candidate, candidate.cwd!, codexHome, latest.panes, opencodeDb, undefined, grokHome), signal, deadline);
+      return active() && now.source === "claude-transcript" && now.path === resolved.path;
+    } catch (error) { if (error instanceof ConversationUnavailable) return false; throw error; }
+  };
+  if (!active()) return null;
+  const generation = await claudeImageGeneration(resolved.path, binding, signal, deadline);
+  if (generation === null || !await current()) return null;
+  const job = { path: resolved.path, ref, binding, generation };
+  const image = await claudeImageTask(job, signal, deadline);
+  if (image === null || !await current()) return null;
+  if (!await claudeImageGenerationCurrent({ ...job, generation: image.generation }, signal, deadline) || !await current()) return null;
+  return { mediaType: image.mediaType, bytes: image.bytes };
+}
+
+/** Reauthorizing an image cannot outlive the same deadline or a client that has left. */
+function imageBindingWait<T>(read: () => Promise<T>, signal: AbortSignal | undefined, deadline: number): Promise<T> {
+  return new Promise((done, fail) => {
+    let settled = false;
+    const finish = (result: T | Error, failed = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+      if (failed) fail(result); else done(result as T);
+    };
+    const cancel = () => finish(new FileBusyError("the request was cancelled"), true);
+    const timer = setTimeout(() => finish(new FileBusyError("the image did not answer in time"), true), Math.max(0, deadline - performance.now()));
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    else if (performance.now() >= deadline) finish(new FileBusyError("the image did not answer in time"), true);
+    else {
+      try { read().then((result) => finish(result), (error: unknown) => finish(error instanceof Error ? error : new Error(String(error)), true)); }
+      catch (error) { finish(error instanceof Error ? error : new Error(String(error)), true); }
+    }
+  });
 }
 
 /** How much of a transcript the image endpoint reads at a time while it looks for a ref's entry. */
@@ -2440,19 +2500,27 @@ export function transcriptImage(path: string, ref: string): TranscriptPicture | 
   try { return finish(transcriptImageSteps(path, ref, false)); } catch { return null; }
 }
 
+/** A worker rejected this file generation; its boundary must not seed a later image lookup. */
+export function forgetTranscriptImage(path: string): void {
+  clearScans.delete(path);
+  transcriptRevisions.delete(path);
+}
+
 /** Yield between windows and short records; individual synchronous disk reads can still block. */
-export async function transcriptImageAsync(path: string, ref: string): Promise<TranscriptPicture | null> {
-  try { return await finishAsync(transcriptImageSteps(path, ref, true)); } catch { return null; }
+export async function transcriptImageAsync(path: string, ref: string, read?: ClaudeImageRead): Promise<TranscriptPicture | null> {
+  if (read !== undefined) delete read.observed;
+  try { return await finishAsync(transcriptImageSteps(path, ref, true, read)); } catch { return null; }
 }
 
 function sameImageFile(left: ReturnType<typeof fstatSync>, right: ReturnType<typeof fstatSync>): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
-function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps<TranscriptPicture | null> {
+function* transcriptImageSteps(path: string, ref: string, apart: boolean, read?: ClaudeImageRead): Steps<TranscriptPicture | null> {
   const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
   const fd = openSync(path, "r");
+  if (read?.opened !== undefined) Atomics.store(read.opened, 0, fd);
   const boundary = clearScans.get(path);
   const boundaryScanned = boundary?.scanned;
   const scans: TranscriptStream[] = [];
@@ -2464,8 +2532,16 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
   };
   try {
     const stat = fstatSync(fd);
+    if (read !== undefined && claudeImageFileGeneration(fd) !== read.expected) return unpublish(...scans);
     const current = (snapshot: typeof stat): boolean => sameImageFile(snapshot, fstatSync(fd)) && sameImageFile(snapshot, statSync(path));
-    if (!current(stat)) return null;
+    if (!current(stat)) return unpublish(...scans);
+    const accept = (picture: TranscriptPicture | null, snapshot: typeof stat): TranscriptPicture | null => {
+      if (picture === null || read === undefined) return picture;
+      const observed = claudeImageFileGeneration(fd);
+      if (observed === null || observed !== claudeImageFileGeneration(path) || !current(snapshot)) return unpublish(...scans);
+      read.observed = observed;
+      return picture;
+    };
     const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd);
     scans.push(stream);
     stream.current = () => current(stat);
@@ -2475,7 +2551,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     yield* applyHistoryBoundarySteps(path, stream, "claude-transcript", apart);
     const picture = yield* claudePictureSteps(stream, match);
     // the file held still for the whole read (its size, times and identity, by the pinned fd and by path)
-    if (!apart || current(stat)) return picture;
+    if (!apart || current(stat)) return accept(picture, stat);
     // a boundary kept from before the change is checked only by its tail, which a rewrite can keep
     if (picture === null) return unpublish(stream);
     // It changed under the read: only an append can keep the picture, and what was read may since be gone
@@ -2499,9 +2575,9 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, true);
     const again = yield* claudePictureSteps(active, match);
     // a further change during this read is retried by a later request
-    return again !== null && current(now) ? again : unpublish(stream, active);
+    return again !== null && current(now) ? accept(again, now) : unpublish(stream, active);
   } catch { return unpublish(...scans); }
-  finally { closeSync(fd); }
+  finally { if (read?.opened === undefined || Atomics.compareExchange(read.opened, 0, fd, -1) === fd) closeSync(fd); }
 }
 
 function* claudePictureSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray): Steps<TranscriptPicture | null> {
