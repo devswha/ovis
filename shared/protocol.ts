@@ -128,6 +128,16 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
+ *  GET    /api/relay                     -> RelayStatus, no-store; also included in authenticated
+ *         /api/health and /api/access answers.
+ *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
+ *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
+ *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
+ *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
+ *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
+ *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
+ *         Serve-only installs refuse relay start.
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
@@ -148,7 +158,7 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         requires the current NOTICE_VERSION. X-Herdr-Update: 1 and same-origin.
  *         404 from a server that sends no telemetry.
  *  GET    /api/agents                    -> { agents: AgentKind[] } (herdr's agent manifests: the
- *         kinds `agent.start` accepts, plus omo and gjc when they are on this server's PATH,
+ *         kinds `agent.start` accepts, plus omo, gjc and dsh-tui when they are on this server's PATH,
  *         each with `installed`: whether its command is on this server's PATH; for the
  *         new-session dialog)
  *  GET    /api/agent-catalog             -> AgentCatalogResponse (shared/agent-catalog.ts: every agent
@@ -320,7 +330,7 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         -> { ok: true } | 409 prompt_changed (the screen no longer shows that prompt)
  *  POST   /api/workspace/create { cwd?, label?, agent?: { kind, name?, args? } }
  *         -> WorkspaceCreated (workspace.create, then agent.start in the root pane when `agent` is given;
- *         omo and gjc, which herdr cannot start, are typed into the root pane's shell)
+ *         omo, gjc and dsh-tui, which herdr cannot start, are typed into the root pane's shell)
  *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? }, first_message?, first_message_connection? }
  *         -> TabCreated (tab.create in that workspace, then the same agent launch in the tab's root
  *         pane; without cwd herdr uses the workspace's folder, without label the tab's number)
@@ -389,8 +399,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  beside the X-Portal-Proof of the Portal this server started, so with no token asked. With a
  *  token configured, this PC and its Tailscale login stop counting: only the token, a paired device
  *  and that visitor do. That visitor drives like a paired device but leaves no standing access behind: the
- *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe and
- *  POST /api/portal/* answer it 403 owner_only. Without a token, and while no
+ *  changes under /api/devices/ (a code redeemed at /api/devices/pair apart), POST /api/push/subscribe,
+ *  POST /api/portal/* and POST /api/relay/* answer it 403 owner_only. Without a token, and while no
  *  device is paired, anything that reaches the server is let in as before (the startup
  *  warning says so). Refusals answer 401 `unauthorized` (403 `other_user` for another Tailscale
  *  login, when no token is configured); the upgrade is refused. Static files are always public.
@@ -405,7 +415,9 @@ export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageRe
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, RemoteAccess, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+/** Older servers and the Tailscale-only builder omit relay state. */
+export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
 /**
  * Browser stream keys: how the server tells one browser from another without a credential, so a
@@ -434,6 +446,16 @@ export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, Bin
 export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
+
+/** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
+export interface RelayStatus {
+  readonly phase: "off" | "connecting" | "online" | "error";
+  readonly relay: string;
+  readonly app: string;
+  readonly sessions: number;
+  readonly blocked: null | "serve_only" | "identity_unreadable";
+  readonly error: string | null;
+}
 
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
@@ -754,6 +776,9 @@ export interface InteractivePrompt {
   answers?: InteractivePromptAnswer[];
   /** whether the prompt can step back to a previous question in a multi-step form */
   can_step_back?: boolean;
+  /** whether the prompt can go on to the next question without answering this one, as the agent's own
+   * key does (omo's Tab, Codex's →, Hermes's Tab): answered with `step_next` */
+  can_step_next?: boolean;
   /** previously selected option index for a single-select step, if any */
   default_option_index?: number | null;
   /** previously selected option indices for a multi-select step, if any */
@@ -826,6 +851,8 @@ export interface PromptAnswer {
   option_indices?: number[];
   custom_text?: string;
   step_back?: boolean;
+  /** to the next question, this one left unanswered (`can_step_next`) */
+  step_next?: boolean;
   step_index?: number;
   /** Unsent edits for the current OpenCode step, saved only when navigating back. */
   draft?: { option_indices: number[]; custom_text: string };
@@ -1041,8 +1068,12 @@ export type ServerMessage =
    * input box (plain rows, cut at 200 characters; empty when no whole box could be read). Present
    * only when a send with `send_anyway` may follow; an older server never sends it.
    * `submit_partial`: the explicitly confirmed terminal draft was cleared, but the send's
-   * deadline then expired before the message was sent; never a nothing-typed receipt. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; code?: string; message?: string; draft?: string; box?: string }
+   * deadline then expired before the message was sent; never a nothing-typed receipt.
+   * `typed_now`: on a queued send, this request typed the message at once (the turn had ended
+   * before it arrived); on a held copy's resend (`resend_id`), this request typed it. A replayed id, a
+   * row sent or discarded since, or a copy another connection sent answers ok without it; an older
+   * server never sends it. */
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

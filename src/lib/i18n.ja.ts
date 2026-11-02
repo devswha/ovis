@@ -12,6 +12,7 @@ import { SETUP_JA } from "./i18n/setup.ja.ts";
 import { GUIDE_JA } from "./i18n/guide.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
+import { RELAY_JA } from "./i18n/relay.ja.ts";
 
 /**
  * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -136,6 +137,8 @@ const BASE: Record<string, string> = {
   "The other PC's answer could not be read": "別の PC の応答を読み取れませんでした",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
+  "Share link": "リンクを共有",
+  "Copy address": "アドレスをコピー",
   "Link copied": "リンクをコピーしました",
   "That agent has closed: its workspace is open": "そのエージェントは閉じられました。代わりにワークスペースを開きました",
   "That link's workspace is closed": "そのリンクのワークスペースは閉じられています",
@@ -220,6 +223,7 @@ const BASE: Record<string, string> = {
   "New code": "新しいコード",
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
+  "Connect a phone": "スマートフォンを接続",
   "Pairing code": "ペアリングコード",
   "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
   "{agent} is ready": "{agent} の準備ができました",
@@ -343,6 +347,7 @@ const BASE: Record<string, string> = {
   "Live voice": "ライブ音声",
   "Mute": "ミュート",
   "Unmute": "ミュート解除",
+  "Forget this PC": "このPCを削除",
   "Selected": "選択中",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "未送信のテキスト",
@@ -390,6 +395,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   guide: GUIDE_JA,
   updates: UPDATES_JA,
   palette: PALETTE_JA,
+  relay: RELAY_JA,
 };
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

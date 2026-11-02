@@ -7,6 +7,10 @@ import nacl from "tweetnacl";
 export const SERVER_PROOF_CLOSE = 4401;
 export const SERVER_PROOF_MS = 10_000;
 export const SERVER_PROOF_REQUIRED = "server proof v1 required; update Ovis on the PC";
+/** The only 4401 reasons that refuse the PC's key itself; a PC stops retrying on these and on no other 4401. */
+export const SERVER_KEY_MISMATCH = "server key does not match server_id";
+export const SERVER_KEY_INVALID = "invalid server key";
+export const PERMANENT_SERVER_PROOF_REFUSALS: readonly string[] = [SERVER_KEY_MISMATCH, SERVER_KEY_INVALID];
 
 export interface ProofRoute {
   readonly server_id: string;
