@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
-import { commandHistory, resetCommandHistory, sameHistory, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
+import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 
 /**
@@ -178,10 +178,13 @@ export function plain(path: string, max = Infinity): { size: number; mtimeMs: nu
 interface Commands {
   /** the title of each `Bash` call not answered yet: its description, else its command */
   calls: Map<string, string>;
-  launches: Map<string, { at: number; title: string }>;
+  /** `call`: the `Bash` call that started it, when its answer names one */
+  launches: Map<string, { at: number; title: string; call: string | null }>;
   /** the last few ends of each id, oldest first: an id used again ends once in each lifetime (claudeSubagentState) */
-  ends: Map<string, { at: number; status: OmoTask["status"] }[]>;
+  ends: Map<string, CommandTold[]>;
 }
+/** An end a transcript told of: `call`, the `Bash` call its notice names (none for a stop) */
+type CommandTold = { at: number; status: OmoTask["status"]; call: string | null };
 const ENDS_PER_ID = 4;
 const noCommands = (): Commands => ({ calls: new Map(), launches: new Map(), ends: new Map() });
 const TITLE_LENGTH = 120;
@@ -194,8 +197,8 @@ function commandEnds(result: Row | null, at: number, notices: readonly TaskNotif
   const ids = new Set<string>();
   // TaskStop answers with the task it stopped, KillShell with the shell.
   const stopped = typeof result?.["task_type"] === "string" ? result["task_id"] : result?.["shell_id"];
-  if (typeof stopped === "string") { ids.add(stopped); ends.push({ id: stopped, at, status: "cancelled" }); }
-  for (const notice of notices) if (!notice.agent && !ids.has(notice.taskId)) { ids.add(notice.taskId); ends.push({ id: notice.taskId, at, status: notice.status }); }
+  if (typeof stopped === "string") { ids.add(stopped); ends.push({ id: stopped, at, status: "cancelled", call: null }); }
+  for (const notice of notices) if (!notice.agent && !ids.has(notice.taskId)) { ids.add(notice.taskId); ends.push({ id: notice.taskId, at, status: notice.status, call: notice.toolUseId }); }
   return ends;
 }
 
@@ -214,14 +217,14 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
   const launched = result?.["backgroundTaskId"];
   if (typeof launched === "string" && AGENT_ID.test(launched)) {
     const call = blocks.find((block) => block["type"] === "tool_result" && typeof block["tool_use_id"] === "string")?.["tool_use_id"] as string | undefined;
-    remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command" }, MAX_NAMES);
+    remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command", call: call ?? null }, MAX_NAMES);
     if (call !== undefined) commands.calls.delete(call);
   }
   for (const end of commandEnds(result, at, notices)) {
     const told = commands.ends.get(end.id) ?? [];
     // the same notice comes in more than one carrier: once is enough
-    if (told.some((known) => known.at === end.at && known.status === end.status)) continue;
-    remember(commands.ends, end.id, [...told, { at: end.at, status: end.status }].slice(-ENDS_PER_ID), MAX_NAMES);
+    if (told.some((known) => known.at === end.at && known.status === end.status && known.call === end.call)) continue;
+    remember(commands.ends, end.id, [...told, { at: end.at, status: end.status, call: end.call }].slice(-ENDS_PER_ID), MAX_NAMES);
   }
 }
 
@@ -1195,23 +1198,36 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
     };
     keep(task, Math.max(tail.dispatchAt ?? 0, work.dispatchAt ?? 0, firstAt ?? 0));
   }
-  // every end any transcript was told of, by id. A launch ends at the first one at or after it, in
-  // whichever transcript was told first: an older end is of an earlier command that had the same id
-  const ends = new Map<string, { at: number; status: OmoTask["status"] }[]>();
-  const tell = (id: string, end: { at: number; status: OmoTask["status"] }) => { const told = ends.get(id); if (told) told.push(end); else ends.set(id, [end]); };
+  // every end any transcript was told of, by id. A launch ends at the first one after it, in
+  // whichever transcript was told first: an end no later than it (one in its very millisecond too:
+  // timestamps tie across transcripts, unless it names the very call that started it) is of an
+  // earlier command that had the same id, and so is one naming another `Bash` call
+  const ends = new Map<string, CommandTold[]>();
+  const tell = (id: string, end: CommandTold) => { const told = ends.get(id); if (told) told.push(end); else ends.set(id, [end]); };
   for (const source of sources) for (const [id, told] of source.ends) for (const end of told) tell(id, end);
-  const endOf = (id: string, launch: { at: number }) => {
-    let first: { at: number; status: OmoTask["status"] } | undefined;
-    for (const end of ends.get(id) ?? []) if (end.at >= launch.at && (first === undefined || end.at < first.at)) first = end;
+  const endOf = (id: string, launch: { at: number; call: string | null }) => {
+    let first: CommandTold | undefined;
+    for (const end of ends.get(id) ?? []) {
+      const named = end.call !== null && launch.call !== null;
+      if (end.at < launch.at || (named && end.call !== launch.call) || (end.at === launch.at && !named)) continue;
+      if (first === undefined || end.at < first.at) first = end;
+    }
     return first;
   };
   const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => endOf(id, launch) === undefined && !(launch.at <= (halts.get(source) ?? -Infinity))));
   const historyNeeded = parent !== null && parent.windowed && unresolved();
-  const evidence = historyNeeded ? history === undefined ? commandHistory(parentPath, parent!.historyLimit) : history : null;
-  const validEvidence = evidence !== null && parent !== null && sameHistory(evidence.version, parent.version);
-  if (validEvidence) for (const end of evidence.ends) tell(end.id, end);
+  const needed = () => new Set(sources.flatMap((source) => [...source.launches].filter(([id, launch]) => endOf(id, launch) === undefined).map(([id]) => id)));
+  const evidence = historyNeeded ? history === undefined ? commandHistory(parentPath, parent!.historyLimit, true, needed()) : history : null;
+  // evidence of an earlier version (handed to a file thread, or read before this one) vouches for no
+  // end until each one's line reads the same in the transcript as it is now
+  const wanted = needed();
+  const current = evidence !== null && parent !== null && evidence.version.size === parent.version.size && evidence.version.mtimeMs === parent.version.mtimeMs;
+  const told = evidence === null || parent === null || !sameHistory(evidence.version, parent.version) ? null
+    : current ? evidence.ends : vouchedEnds(parentPath, parent.version.id, evidence.ends.filter((end) => wanted.has(end.id)));
+  const validEvidence = told !== null;
+  if (told !== null) for (const end of told) tell(end.id, end);
   // only what is listed waits for it: a pane's queue and rest never do (holdsQueue, restsOn)
-  const historyPending = historyNeeded && unresolved() && !(validEvidence && evidence.complete && evidence.through >= parent!.historyLimit);
+  const historyPending = historyNeeded && unresolved() && !(validEvidence && evidence!.complete && evidence!.through >= parent!.historyLimit);
   if (historyPending) settled = false;
   for (const source of sources) {
     for (const [id, launch] of source.launches) {
@@ -1371,6 +1387,8 @@ export class ClaudeSubagentStatus {
   /** busy signals heard before the pane's transcript was read: matched at its first read */
   private readonly deferred = new Map<string, Signal[]>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** stopped: nothing is read any more, by a watch heard late or a lookup that answers after */
+  private stopped = false;
   private refreshing: Promise<void> | null = null;
   private queued: HerdrPane[] | null = null;
   private readonly now: () => number;
@@ -1382,12 +1400,14 @@ export class ClaudeSubagentStatus {
   }
 
   start(): void {
+    this.stopped = false;
     if (this.timer !== null) return;
     this.timer = setInterval(() => this.poll(), this.deps.pollMs ?? 2000);
     this.timer.unref?.();
   }
 
   stop(): void {
+    this.stopped = true;
     for (const release of this.historyWatches.values()) release();
     this.historyWatches.clear();
     this.lookups.clear();
@@ -1569,6 +1589,7 @@ export class ClaudeSubagentStatus {
 
   /** Reads what the files gained, of every pane or of one (a turn just ended there); a pane whose counts changed is told. */
   poll(only?: string): void {
+    if (this.stopped) return;
     for (const [paneId, tracked] of this.panes) {
       if (only !== undefined && paneId !== only) continue;
       let running = 0;

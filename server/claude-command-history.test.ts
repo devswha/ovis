@@ -73,6 +73,61 @@ it("forgets every end once any byte it read is rewritten, though the transcript 
   expect(after!.ends.map((end) => end.id)).toEqual(["else", "next"]);
 });
 
+it("tells no end it read before a rewrite that also grew the transcript until those bytes are checked again", async () => {
+  const s = fixture();
+  const head = filler.repeat(2);
+  writeFileSync(s.path, head + notice("same") + filler);
+  const limit = s.limit();
+  expect((await waitCommandHistory(s.path, limit))!.ends.map((end) => end.id)).toEqual(["same"]);
+  const fd = openSync(s.path, "r+");
+  writeSync(fd, Buffer.from(notice("else")), 0, Buffer.byteLength(notice("else")), Buffer.byteLength(head));
+  closeSync(fd);
+  appendFileSync(s.path, notice("next"));
+  // asked before any check of the grown transcript: what it read is unknown, not ended
+  expect(commandHistory(s.path, limit)).toMatchObject({ complete: false, ends: [] });
+  const checked = await waitCommandHistory(s.path, limit);
+  expect(checked).toMatchObject({ complete: true });
+  expect(checked!.ends.map((end) => end.id)).toEqual(["else", "next"]);
+});
+
+it.each([["the newline after it", 0], ["the newline before it (joining it to the record before)", -1]])("tells no end of a line once %s is rewritten", async (_, shift) => {
+  const s = fixture();
+  const head = json({ type: "progress" });
+  writeFileSync(s.path, head + notice("same") + filler);
+  const limit = s.limit();
+  await waitCommandHistory(s.path, limit);
+  const fd = openSync(s.path, "r+");
+  const at = shift === 0 ? Buffer.byteLength(head + notice("same")) - 1 : Buffer.byteLength(head) - 1;
+  writeSync(fd, Buffer.from(" "), 0, 1, at);
+  closeSync(fd);
+  appendFileSync(s.path, "\n");
+  expect(commandHistory(s.path, limit, false)).toMatchObject({ complete: false, ends: [] });
+});
+
+it("tells an end at once while the transcript grows, when its line begins exactly where a read chunk began", async () => {
+  const s = fixture();
+  const pad = json({ type: "progress", value: "" });
+  // the first record fills the first 1 MiB chunk exactly: the notice begins the next one
+  const first = json({ type: "progress", value: "x".repeat(1024 * 1024 - Buffer.byteLength(pad)) });
+  expect(Buffer.byteLength(first)).toBe(1024 * 1024);
+  writeFileSync(s.path, first + notice("same") + filler);
+  const limit = s.limit();
+  await waitCommandHistory(s.path, limit);
+  appendFileSync(s.path, notice("next"));
+  expect(commandHistory(s.path, limit, false)).toMatchObject({ complete: true, ends: [{ id: "same" }] });
+});
+
+it("tells the ends it read at once while the transcript only grows, before any check of it", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("same") + filler);
+  const limit = s.limit();
+  await waitCommandHistory(s.path, limit);
+  appendFileSync(s.path, notice("next"));
+  expect(commandHistory(s.path, limit, false)).toMatchObject({ complete: true, ends: [{ id: "same" }] });
+  // only the ids asked for
+  expect(commandHistory(s.path, limit, false, new Set(["other"]))!.ends).toEqual([]);
+});
+
 it("shares accepted notice and successful TaskStop semantics without accepting quoted output", async () => {
   const s = fixture();
   const timestamp = "2026-10-01T12:00:00.000Z";

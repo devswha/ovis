@@ -4,16 +4,21 @@ import { commandTerminals } from "./claude-subagents.ts";
 import { finishAsync, type Steps } from "./codex-images.ts";
 
 /** Terminal metadata only: historical reads never replay prompt/turn evidence. */
-export interface CommandEnd { id: string; at: number; status: "completed" | "failed" | "cancelled" }
+export interface CommandEnd { id: string; at: number; status: "completed" | "failed" | "cancelled"; /** the Bash call the notice names (`<tool-use-id>`), when it names one */ call: string | null }
 export interface HistoryVersion { id: string; size: number; mtimeMs: number }
 /**
  * How the commands told of in a transcript's first `through` bytes ended. `complete`: nothing more
  * is to come below the limit asked for: every byte up to it was read, and found unchanged by one
- * check of them all since (or the read gave up after failing again and again). A record too large
+ * check of them all since (or the read gave up after failing again and again). An end is told only
+ * when the line it came from is as it was read in the transcript as it is now: a check of every byte
+ * read at this very version says so, or else that line read again (after a rewrite that also grew
+ * the transcript, an end no longer written there is not told, and its command stays running). A record too large
  * to read or not JSON is passed over: it proves nothing, and a command it may have ended stays as
  * the window alone tells it.
  */
-export interface HistoryEvidence { version: HistoryVersion; through: number; complete: boolean; ends: CommandEnd[] }
+export interface HistoryEvidence { version: HistoryVersion; through: number; complete: boolean; ends: HistoryEnd[] }
+/** An end, and the line it was read from: where it starts and ends (past its newline) in the transcript, and a digest of it. */
+export type HistoryEnd = CommandEnd & { from: number; to: number; digest: bigint };
 
 interface Entry {
   path: string;
@@ -38,7 +43,7 @@ interface Entry {
   checks: number;
   wanted: number;
   waiters: number;
-  ends: CommandEnd[];
+  ends: HistoryEnd[];
   queued: boolean;
   listeners: Set<() => void>;
   failures: number;
@@ -58,6 +63,7 @@ const CHECK_INTERVAL_MS = 5000;
 const RETRY_MAX_MS = 30_000;
 const MAX_FAILURES = 5;
 /** Only a line holding one of these can end a command (commandTerminals): every other line is passed over unread. */
+const NEWLINE = Buffer.from("\n");
 const MARKERS = ["<task-notification>", '"task_id"', '"shell_id"'].map((marker) => Buffer.from(marker));
 
 const entries = new Map<string, Entry>();
@@ -79,8 +85,11 @@ export function sameHistory(older: HistoryVersion, newer: HistoryVersion): boole
 }
 const sameVersion = (a: HistoryVersion, b: HistoryVersion): boolean => a.id === b.id && a.size === b.size && a.mtimeMs === b.mtimeMs;
 
-/** What the history read of `path` knows so far, read on (when `schedule`) on the main thread a slice at a time. */
-export function commandHistory(path: string, limit: number, schedule = true): HistoryEvidence | null {
+/**
+ * What the history read of `path` knows so far, read on (when `schedule`) on the main thread a slice
+ * at a time. `needed`: the ids whose ends are wanted (all when left out); only theirs are told.
+ */
+export function commandHistory(path: string, limit: number, schedule = true, needed?: ReadonlySet<string>): HistoryEvidence | null {
   const version = historyVersion(path);
   if (version === null) return null;
   let entry = entries.get(path);
@@ -102,12 +111,49 @@ export function commandHistory(path: string, limit: number, schedule = true): Hi
   entry.version = version;
   entry.limit = Math.max(entry.limit, limit);
   if (schedule) enqueue(entry);
-  return evidence(entry, limit);
+  return evidence(entry, limit, needed);
 }
 
-function evidence(entry: Entry, limit: number): HistoryEvidence {
-  const complete = entry.failures >= MAX_FAILURES || (entry.offset >= limit && entry.checked !== null && entry.checkedThrough >= entry.offset);
-  return { version: entry.version, through: entry.offset, complete, ends: [...entry.ends] };
+function evidence(entry: Entry, limit: number, needed?: ReadonlySet<string>): HistoryEvidence {
+  const wanted = needed === undefined ? entry.ends : entry.ends.filter((end) => needed.has(end.id));
+  const checked = entry.checked !== null && entry.checkedThrough >= entry.offset;
+  // a rewrite that also grew the transcript passes sameHistory: only a check of the bytes as they are
+  // now vouches for an end, of them all at this version or of the end's own line
+  const ends = checked && sameVersion(entry.checked!, entry.version) ? wanted : vouchedEnds(entry.path, entry.version.id, wanted);
+  const complete = entry.failures >= MAX_FAILURES || (entry.offset >= limit && checked && ends !== null);
+  return { version: entry.version, through: entry.offset, complete, ends: ends ?? [] };
+}
+
+/** The most bytes of lines one call reads again (vouchedEnds): past it, what they told is unknown. */
+const VOUCH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * `ends` when every line they came from (newline and all) reads as it did in the transcript `id` as
+ * it is now, and nothing changed it while they were read; else null: a command they end may still run.
+ */
+export function vouchedEnds(path: string, id: string, ends: HistoryEnd[]): HistoryEnd[] | null {
+  if (ends.length === 0) return ends;
+  const lines = new Map<number, HistoryEnd>();
+  for (const end of ends) lines.set(end.from, end);
+  let bytes = 0;
+  for (const line of lines.values()) bytes += line.to - line.from;
+  if (bytes > VOUCH_BYTES) return null;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const before = fstatSync(fd);
+    if (`${before.dev}:${before.ino}` !== id) return null;
+    buffer ??= Buffer.allocUnsafe(CHUNK);
+    for (const line of lines.values()) {
+      const got = readSync(fd, buffer, 0, line.to - line.from, line.from);
+      if (got !== line.to - line.from || BigInt(Bun.hash.xxHash3(buffer.subarray(0, got))) !== line.digest) return null;
+    }
+    // written to while it read, or replaced: what it read may be gone already
+    const after = fstatSync(fd);
+    const now = historyVersion(path);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || now === null || now.id !== id || now.size !== before.size || now.mtimeMs !== before.mtimeMs) return null;
+    return ends;
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
 }
 
 /** Calls `changed` when the read of `path` learns something, starts over, ends or stops; null when `path` has no read. */
@@ -264,7 +310,8 @@ function step(entry: Entry): void {
 }
 
 function notify(entry: Entry): void {
-  for (const listener of [...entry.listeners]) queueMicrotask(listener);
+  // a listener let go of before its turn comes (a tracker stopped) hears nothing
+  for (const listener of [...entry.listeners]) queueMicrotask(() => { if (entry.listeners.has(listener)) listener(); });
 }
 
 /** The bytes read were changed: everything learnt from them goes, and the read starts again. */
@@ -319,7 +366,12 @@ function terminals(entry: Entry, bytes: Buffer, from: number, to: number, stop: 
     if (hit < 0) return to;
     const start = bytes.lastIndexOf(10, hit) + 1;
     const end = bytes.indexOf(10, hit);
-    for (const terminal of commandTerminals(bytes.toString("utf8", start, end), entry.session)) entry.ends.push(terminal);
+    // the newlines on both sides too: they keep the record whole (a line begun at a chunk's start
+    // follows the newline the last read stopped after)
+    const lead = entry.offset + start > 0 ? 1 : 0;
+    const line = start >= lead ? bytes.subarray(start - lead, end + 1) : Buffer.concat([NEWLINE, bytes.subarray(start, end + 1)]);
+    const digest = BigInt(Bun.hash.xxHash3(line));
+    for (const terminal of commandTerminals(bytes.toString("utf8", start, end), entry.session)) entry.ends.push({ ...terminal, from: entry.offset + start - lead, to: entry.offset + end + 1, digest });
     for (let index = 0; index < next.length; index++) if (next[index]! >= 0 && next[index]! <= end) next[index] = bytes.indexOf(MARKERS[index]!, end + 1);
     if (performance.now() >= stop) return end + 1;
   }
