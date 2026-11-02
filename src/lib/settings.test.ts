@@ -12,7 +12,7 @@ import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, saveSettings } from "./settings.ts";
+import { applyToDocument, ENTER_SENDS_STORAGE_KEY, enterSendsOn, loadSettings, saveSettings } from "./settings.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
 
@@ -87,6 +87,31 @@ describe("saved theme migration", () => {
       oldSaveSettings({ ...readOld(), terminalFontSize: 20 });
       expect(loadSettings().enterSends).toBe(enterSends);
     }
+  });
+
+  it("carries this fork's earlier enterKey choice over to enterSends, on a desktop and on a phone", () => {
+    // [saved enterKey, enterSends it becomes, Enter sends on a desktop, Return sends on a phone]
+    const cases = [["send", true, true, true], ["newline", false, false, false], ["auto", null, true, false]] as const;
+    for (const [enterKey, enterSends, desktop, phone] of cases) {
+      records.clear();
+      putOld({ enterKey, terminalFontSize: 18 });
+      const settings = loadSettings();
+      expect(settings.enterSends).toBe(enterSends);
+      expect([enterSendsOn(settings, false), enterSendsOn(settings, true)]).toEqual([desktop, phone]);
+      // the first save writes the choice to its own key, so it outlives the record's enterKey
+      saveSettings(settings);
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("enterKey");
+      expect(loadSettings().enterSends).toBe(enterSends);
+    }
+    // enterKey outranks the older boolean it replaced; an invalid one falls back to it
+    putOld({ enterKey: "auto", enterSends: false });
+    expect(loadSettings().enterSends).toBeNull();
+    putOld({ enterKey: "sideways", enterSends: false });
+    expect(loadSettings().enterSends).toBe(false);
+    // a choice made in the key of its own is never overridden by an old enterKey
+    putOld({ enterKey: "newline" });
+    records.set(ENTER_SENDS_STORAGE_KEY, "true");
+    expect(loadSettings().enterSends).toBe(true);
   });
 
   it("keeps the interface font in its own key, out of an old tab's whole-record save", () => {

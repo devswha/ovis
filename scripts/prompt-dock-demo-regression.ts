@@ -407,7 +407,7 @@ try {
         for (const enterSends of [true, false]) {
           // the keyboard alone: with a typed pick waiting, the empty box's Escape is the card's Cancel
           // and its Enter the card's Confirm, so the hands never leave the keys
-          const { page, errors, shot, close } = await open({ ...size, prompt: PLAN, settings: { enterKey: enterSends ? "send" : "newline" } });
+          const { page, errors, shot, close } = await open({ ...size, prompt: PLAN, settings: { enterSends } });
           try {
             const box = page.locator(".composer-text");
             const sendKey = enterSends ? "Enter" : "Control+Enter";

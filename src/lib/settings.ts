@@ -698,7 +698,7 @@ function readChatFold(key: string, fallback: boolean): boolean {
  */
 export const ENTER_SENDS_STORAGE_KEY = "ovis:enter-sends";
 
-function readEnterSends(record: boolean | null): boolean | null {
+function readEnterSends(record: boolean | null, legacy: boolean | null | undefined): boolean | null {
   try {
     const raw = window.localStorage.getItem(ENTER_SENDS_STORAGE_KEY);
     const value: unknown = raw === null ? null : JSON.parse(raw);
@@ -706,7 +706,17 @@ function readEnterSends(record: boolean | null): boolean | null {
   } catch {
     /* unreadable: the record's choice, if any */
   }
-  return record === false ? false : null;
+  return legacy !== undefined ? legacy : record === false ? false : null;
+}
+
+/**
+ * This fork's earlier setting kept the choice in the record as `enterKey` (auto, send or newline). Where the record
+ * still holds one and the key above holds none, it is that choice: send is true, newline false, auto none. Undefined
+ * where the record has no valid enterKey.
+ */
+function legacyEnterSends(raw: unknown): boolean | null | undefined {
+  const key = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>)["enterKey"] : undefined;
+  return key === "send" ? true : key === "newline" ? false : key === "auto" ? null : undefined;
 }
 
 /** Whether this device's primary pointer is a finger: a phone or a tablet, with or without a hardware keyboard. */
@@ -724,7 +734,7 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends, legacyEnterSends(stored.main?.value)), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork) };
 }
 
