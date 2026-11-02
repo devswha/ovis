@@ -85,6 +85,12 @@ export interface StatusCollectorHandlers {
    */
   onReconciled?: (panes: readonly HerdrPane[]) => void;
   onPaneEnded: (paneId: string) => void;
+  /**
+   * A pane closed with no exit frame (herdr's `pane.close`, hc's `terminal.kill`): what it held goes,
+   * but nothing ended by itself, so no "terminal ended" alert. It can follow `onPaneEnded` for a
+   * program that ended and whose pane then closed.
+   */
+  onPaneClosed?: (paneId: string) => void;
   onStructureChange: () => void;
   /**
    * Which herdr answers on the lifecycle subscription while it is open: `onChange` gets herdr's identity
@@ -555,8 +561,11 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
         }
         // closed with no exit frame: a snapshot on its way that still holds the pane is no news of it either
         if (parsed.closed !== undefined) {
+          // a tracked pane is known closed now: a snapshot without it must not report it ended
+          trackedPanes.delete(parsed.closed);
           actedOn.set(parsed.closed, ++statusEvents);
           heard.delete(parsed.closed);
+          handlers.onPaneClosed?.(parsed.closed);
         }
       }
       scheduleStructureChange();

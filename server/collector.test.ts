@@ -211,6 +211,35 @@ describe("lifecycle invalidations", () => {
     } finally { collector.stop(); }
   });
 
+  it("cleans up a closed pane without ending it, and a closed tracked pane is not reported ended by a later snapshot", async () => {
+    // Given: one tracked pane (a sign-in tab) and one ordinary pane
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const ended: string[] = [];
+    const closed: string[] = [];
+    handlers.onPaneEnded = (paneId) => ended.push(paneId);
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      const tracked = Promise.withResolvers<void>();
+      handlers.onReconciled = () => tracked.resolve();
+      herdr.setPanes([paneOf("w1:p1", "idle"), paneOf("w1:p2", "idle")]);
+      collector.trackPane("w1:p2");
+      await tracked.promise;
+      // When: both are closed (herdr's pane.close, hc's terminal.kill: pane_closed alone) and a snapshot follows
+      herdr.setPanes([]);
+      const reconciled = Promise.withResolvers<void>();
+      handlers.onReconciled = () => reconciled.resolve();
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      await reconciled.promise;
+      // Then: both are cleaned up as closed, and neither is reported ended
+      expect(closed).toEqual(["w1:p1", "w1:p2"]);
+      expect(ended).toEqual([]);
+    } finally { collector.stop(); }
+  });
+
   const types = [
     "workspace_created", "workspace_updated", "workspace_metadata_updated",
     "workspace_renamed", "workspace_moved", "workspace_reordered", "workspace_closed",
