@@ -604,6 +604,91 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
   expect(through).toBeLessThan(s.limit());
 }, 5000);
 
+/**
+ * Holds every window read of each of `paths` until its `release` is called, as a read stuck on its
+ * disk; its `entered` opens as the first one is held.
+ */
+function holdWindows(...paths: string[]) {
+  const holds = new Map(paths.map((path) => {
+    const entered = gate(), held = gate();
+    release.push(held.open);
+    return [path, { entered: entered.opened, release: held.open, open: entered.open, held: held.opened }];
+  }));
+  wrapReads((path, work) => {
+    const hold = holds.get(path);
+    return hold === undefined ? work : (file) => work({ ...file, window: async (position, length) => {
+      hold.open();
+      await hold.held;
+      return file.window(position, length);
+    } });
+  });
+  return (path: string) => holds.get(path)!;
+}
+
+it("reads another transcript while one transcript's read is stuck on its disk", async () => {
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  const held = holdWindows(a.path)(a.path);
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await held.entered;
+  const other = await waitCommandHistory(b.path, b.limit(), 150);
+  expect(other).toMatchObject({ complete: true, through: b.limit() });
+  expect(other!.ends.map((end) => end.id)).toEqual(["b"]);
+  held.release();
+  expect(await first).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+}, 5000);
+
+it("reads no other session beside a transcript it keeps open that takes its turns, however long it reads", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  // the drain's looks at whether the slice it waits for is stuck come only when the test calls them
+  const looks: (() => void)[] = [];
+  const timeout = globalThis.setTimeout;
+  const timers = spyOn(globalThis, "setTimeout").mockImplementation(((call: () => void, ms?: number) => {
+    if (ms !== 50) return timeout(call, ms);
+    looks.push(call);
+    return timeout(() => {}, 0);
+  }) as typeof setTimeout);
+  release.push(() => timers.mockRestore());
+  let answered: Promise<unknown> | undefined;
+  // the leases open as each read of the small one is made
+  const open: number[] = [];
+  const reads = slowReads((path, count) => {
+    if (path === small.path) open.push(transcriptReader.size().active);
+    else if (count === 3) {
+      answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
+      // the stall time passes while the large read is still in its turn
+      for (const look of looks.splice(0)) look();
+    }
+  });
+  expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
+  expect(await answered!).toBeLessThan(reads(large.path));
+  // the large one let go at the end of its turn, and the small one was read alone
+  expect(open).toEqual([1]);
+}, 5000);
+
+it("starts no more slices beside stuck ones than the reader has room for", async () => {
+  const a = fixture("a"), b = fixture("b"), c = fixture("c");
+  for (const s of [a, b, c]) writeFileSync(s.path, notice("done"));
+  const holds = holdWindows(a.path, b.path);
+  const heldA = holds(a.path), heldB = holds(b.path);
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await heldA.entered;
+  const second = waitCommandHistory(b.path, b.limit(), 60_000);
+  await heldB.entered;
+  // both of the reader's leases are stuck: the third session waits without a slice (none waits in
+  // the reader either), and has its slice once one ends
+  expect(await waitCommandHistory(c.path, c.limit(), 150)).toMatchObject({ complete: false, through: 0 });
+  expect(transcriptReader.size()).toMatchObject({ active: transcriptReader.capacity, waiting: 0 });
+  heldA.release();
+  expect(await waitCommandHistory(c.path, c.limit(), 60_000)).toMatchObject({ complete: true });
+  heldB.release();
+  for (const read of [first, second]) expect(await read).toMatchObject({ complete: true });
+}, 5000);
+
 it("counts the time it keeps a transcript open from when its read was asked for", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));

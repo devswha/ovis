@@ -49,6 +49,8 @@ interface Entry {
   failures: number;
   retryAt: number;
   timer: ReturnType<typeof setTimeout> | null;
+  /** turns its slices took inside held leases: a slice that takes them is reading, not stuck */
+  turns: number;
 }
 
 const MAX_SESSIONS = 16;
@@ -71,7 +73,10 @@ const MARKERS = ["<task-notification>", '"task_id"', '"shell_id"'].map((marker) 
 const entries = new Map<string, Entry>();
 const queue: Entry[] = [];
 let draining = false;
-/** Called once no drain runs (commandHistorySettled). */
+/** Slices under way, at most the reader's capacity, and the transcripts they read: one slice a transcript. */
+let slices = 0;
+const running = new Set<string>();
+/** Called once no drain and no slice runs (commandHistorySettled). */
 const idle = new Set<() => void>();
 /** Moved on by every reset: a request waiting from before it gives up. */
 let generation = 0;
@@ -108,7 +113,7 @@ export function commandHistory(path: string, limit: number, schedule = true, nee
     }
     entry = {
       path, session: basename(path, ".jsonl"), version, limit, offset: 0, skipping: false, cutAt: null, spans: [], checked: null, checkedThrough: 0, check: null,
-      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null,
+      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null, turns: 0,
     };
   }
   entries.set(path, entry);
@@ -257,24 +262,57 @@ function later(entry: Entry, at: number): void {
   entry.timer.unref?.();
 }
 
+/** A slice that has neither ended nor taken a turn in this long while another session waits is taken as stuck on its disk. */
+const STALL_MS = 50;
+
+/** A session waiting whose transcript no slice reads: it can have a slice now. */
+const runnable = (entry: Entry): boolean => !running.has(entry.path);
+
 function pump(): void {
-  if (draining || queue.length === 0) return;
+  if (draining || slices >= transcriptReader.capacity || !queue.some(runnable)) return;
   draining = true;
   // the first slice waits for the event loop too: whoever asked (a status poll) never runs one
   setImmediate(() => void drain().finally(() => { draining = false; pump(); settle(); }));
 }
 
 function settle(): void {
-  if (draining) return;
+  if (draining || slices > 0) return;
   for (const resolve of idle) resolve();
   idle.clear();
 }
 
-/** One slice of one session at a time, each behind every other session waiting. */
+/**
+ * The first session waiting that can have a slice, taken off the queue. Only the drain takes one:
+ * a session taken off it before its slice starts would answer its waiter at once.
+ */
+function next(): Entry | undefined {
+  if (slices >= transcriptReader.capacity) return undefined;
+  const index = queue.findIndex(runnable);
+  if (index < 0) return undefined;
+  const [entry] = queue.splice(index, 1);
+  entry!.queued = false;
+  return entry;
+}
+
+/**
+ * One slice of one session at a time, each behind every other session waiting. A slice that has
+ * taken no turn for STALL_MS while another session waits is left to end by itself, and the next
+ * slice starts beside it, up to the reader's capacity: a transcript stuck on its disk holds up
+ * only its own history. One that takes turns lets go by itself at the end of the next.
+ */
 async function drain(): Promise<void> {
-  for (let entry = queue.shift(); entry !== undefined; entry = queue.shift()) {
-    entry.queued = false;
-    await step(entry);
+  for (let entry = next(); entry !== undefined; entry = next()) {
+    const path = entry.path;
+    running.add(path);
+    slices++;
+    let done = false;
+    const slice = step(entry).finally(() => { done = true; running.delete(path); slices--; pump(); settle(); });
+    for (let seen = entry.turns; !done; seen = entry.turns) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([slice, new Promise<void>((resolve) => { timer = setTimeout(resolve, STALL_MS); })]);
+      clearTimeout(timer);
+      if (!done && entry.turns === seen && slices < transcriptReader.capacity && queue.some(runnable)) break;
+    }
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
@@ -338,14 +376,15 @@ async function step(entry: Entry): Promise<void> {
           if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
         } else break;
         if (performance.now() >= stop) {
-          // the turn ends the read when nobody wants it read on, another session or reader waits, it
-          // started over, or a watcher has an end to hear
-          if (Date.now() >= held || entry.listeners.size === 0 || queue.some((other) => other !== entry)
+          // the turn ends the read when nobody wants it read on, another session that can have a slice
+          // or another reader waits, it started over, or a watcher has an end to hear
+          if (Date.now() >= held || entry.listeners.size === 0 || queue.some((other) => other !== entry && runnable(other))
             || transcriptReader.size().waiting > 0 || restarted || (entry.ends.length !== before && entry.listeners.size > entry.waiters)) break;
           // nobody else waits: the event loop has its turn, and the read goes on with the transcript
           // still open (an open and its check cost several round trips on remote storage). Two
           // immediates: one set while an I/O callback runs comes before the timers already due, so
           // with one, a slice that needs no read (the rest of a window) could follow this one first
+          entry.turns++;
           await new Promise<void>((resolve) => setImmediate(() => setImmediate(resolve)));
           stop = performance.now() + SLICE_MS;
         }
@@ -489,9 +528,9 @@ export function holdCommandHistory(): () => void {
   return () => { if (!released) { released = true; if (--holders === 0) resetCommandHistory(); } };
 }
 export function commandHistorySize(): { waiting: number; sessions: number; draining: boolean; timers: number } {
-  return { waiting: queue.length, sessions: entries.size, draining, timers: [...entries.values()].filter((entry) => entry.timer !== null).length };
+  return { waiting: queue.length, sessions: entries.size, draining: draining || slices > 0, timers: [...entries.values()].filter((entry) => entry.timer !== null).length };
 }
 /** Resolves once no slice runs and none waits to start. */
 export function commandHistorySettled(): Promise<void> {
-  return draining ? new Promise((resolve) => idle.add(resolve)) : Promise.resolve();
+  return draining || slices > 0 ? new Promise((resolve) => idle.add(resolve)) : Promise.resolve();
 }
