@@ -1,3 +1,3 @@
 ### Fixed
-
-- Keep completed Claude background commands finished when a long session is read after a restart, while preserving commands that are still running.
+- A Claude background command that finished long ago in a long session stays finished after a
+  restart, instead of counting as running again; a command that is still running stays running.

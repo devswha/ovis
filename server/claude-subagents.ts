@@ -43,7 +43,7 @@ import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/pr
  */
 const READ_BUDGET = 8 * 1024 * 1024;
 /** how much of a parent transcript is read the first time: older notices are not found */
-const PARENT_WINDOW = 16 * 1024 * 1024;
+export const PARENT_WINDOW = 16 * 1024 * 1024;
 const MAX_META_BYTES = 64 * 1024;
 const MAX_AGENTS = 200;
 const MAX_NAMES = 5000;
@@ -179,8 +179,10 @@ interface Commands {
   /** the title of each `Bash` call not answered yet: its description, else its command */
   calls: Map<string, string>;
   launches: Map<string, { at: number; title: string }>;
-  ends: Map<string, { at: number; status: OmoTask["status"] }>;
+  /** the last few ends of each id, oldest first: an id used again ends once in each lifetime (claudeSubagentState) */
+  ends: Map<string, { at: number; status: OmoTask["status"] }[]>;
 }
+const ENDS_PER_ID = 4;
 const noCommands = (): Commands => ({ calls: new Map(), launches: new Map(), ends: new Map() });
 const TITLE_LENGTH = 120;
 
@@ -215,15 +217,24 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
     remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command" }, MAX_NAMES);
     if (call !== undefined) commands.calls.delete(call);
   }
-  for (const end of commandEnds(result, at, notices)) if (!commands.ends.has(end.id)) remember(commands.ends, end.id, { at: end.at, status: end.status }, MAX_NAMES);
+  for (const end of commandEnds(result, at, notices)) {
+    const told = commands.ends.get(end.id) ?? [];
+    // the same notice comes in more than one carrier: once is enough
+    if (told.some((known) => known.at === end.at && known.status === end.status)) continue;
+    remember(commands.ends, end.id, [...told, { at: end.at, status: end.status }].slice(-ENDS_PER_ID), MAX_NAMES);
+  }
 }
 
-/** Historical reconciliation shares the ordinary parser's accepted carriers and stop answers. */
-export function commandTerminals(line: string): CommandEnd[] {
+/**
+ * Historical reconciliation shares the ordinary parser's accepted carriers and stop answers. A row
+ * naming another session (`session`: the transcript's name) ends none of this one's commands; Claude
+ * Code writes `sessionId` on its rows, and a row without one is taken as this session's.
+ */
+export function commandTerminals(line: string, session: string): CommandEnd[] {
   if (!line.includes("<task-notification>") && !line.includes('"task_id"') && !line.includes('"shell_id"')) return [];
   let entry: Row | null;
   try { entry = row(JSON.parse(line)); } catch { return []; }
-  if (entry === null) return [];
+  if (entry === null || ("sessionId" in entry && entry["sessionId"] !== session)) return [];
   const at = stamp(entry["timestamp"]);
   if (at === null) return [];
   const content = row(entry["message"])?.["content"];
@@ -1092,7 +1103,7 @@ const time = (value: string | null): number => value === null ? 0 : Date.parse(v
 /** what each session's last read said of each agent: kept while the transcript is read in parts */
 const previous = new Map<string, Map<string, OmoTask>>();
 
-export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, history?: HistoryEvidence | null): { tasks: OmoTask[]; historyPending: boolean; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
+export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, history?: HistoryEvidence | null): { tasks: OmoTask[]; historyNeeded: boolean; historyPending: boolean; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
   const known = staleAgents.get(dir);
   const skip = staleFresh(known, now) ? known!.ids : null;
@@ -1107,7 +1118,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
-  if (parent === null && files.length === 0) return { tasks: [], historyPending: false, settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
+  if (parent === null && files.length === 0) return { tasks: [], historyNeeded: false, historyPending: false, settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   const budget = { left: READ_BUDGET };
   let behind = false;
   const running: OmoTask[] = [];
@@ -1184,22 +1195,30 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
     };
     keep(task, Math.max(tail.dispatchAt ?? 0, work.dispatchAt ?? 0, firstAt ?? 0));
   }
-  // a command ends once, in whichever transcript was told first
-  const ends = new Map<string, { at: number; status: OmoTask["status"] }>();
-  for (const source of sources) for (const [id, end] of source.ends) if ((ends.get(id)?.at ?? Infinity) > end.at) ends.set(id, end);
-  const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => !ends.has(id) && !(launch.at <= (halts.get(source) ?? -Infinity))));
-  const needsHistory = parent !== null && parent.windowed && unresolved();
-  const evidence = needsHistory ? history === undefined ? commandHistory(parentPath, parent!.historyLimit) : history : null;
+  // every end any transcript was told of, by id. A launch ends at the first one at or after it, in
+  // whichever transcript was told first: an older end is of an earlier command that had the same id
+  const ends = new Map<string, { at: number; status: OmoTask["status"] }[]>();
+  const tell = (id: string, end: { at: number; status: OmoTask["status"] }) => { const told = ends.get(id); if (told) told.push(end); else ends.set(id, [end]); };
+  for (const source of sources) for (const [id, told] of source.ends) for (const end of told) tell(id, end);
+  const endOf = (id: string, launch: { at: number }) => {
+    let first: { at: number; status: OmoTask["status"] } | undefined;
+    for (const end of ends.get(id) ?? []) if (end.at >= launch.at && (first === undefined || end.at < first.at)) first = end;
+    return first;
+  };
+  const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => endOf(id, launch) === undefined && !(launch.at <= (halts.get(source) ?? -Infinity))));
+  const historyNeeded = parent !== null && parent.windowed && unresolved();
+  const evidence = historyNeeded ? history === undefined ? commandHistory(parentPath, parent!.historyLimit) : history : null;
   const validEvidence = evidence !== null && parent !== null && sameHistory(evidence.version, parent.version);
-  if (validEvidence) for (const end of evidence.ends) if ((ends.get(end.id)?.at ?? Infinity) > end.at) ends.set(end.id, end);
-  const historyPending = needsHistory && unresolved() && !(validEvidence && evidence.complete && evidence.through >= parent!.historyLimit);
+  if (validEvidence) for (const end of evidence.ends) tell(end.id, end);
+  // only what is listed waits for it: a pane's queue and rest never do (holdsQueue, restsOn)
+  const historyPending = historyNeeded && unresolved() && !(validEvidence && evidence.complete && evidence.through >= parent!.historyLimit);
   if (historyPending) settled = false;
   for (const source of sources) {
     for (const [id, launch] of source.launches) {
       if (all.has(id)) continue;
       const halt = halts.get(source);
       // a command an agent left running stops with the agent
-      const end = ends.get(id) ?? (halt !== undefined && launch.at <= halt ? { at: halt, status: "cancelled" as const } : undefined);
+      const end = endOf(id, launch) ?? (halt !== undefined && launch.at <= halt ? { at: halt, status: "cancelled" as const } : undefined);
       const lost = !live || (since !== null && launch.at < since - START_SLACK_MS);
       keep({ id, title: launch.title, category: "shell", model: null, status: end?.status ?? (lost ? "lost" : "running"), started_at: iso(launch.at), ended_at: iso(end?.at ?? null), turns: null, tool_calls: null, tokens: null, detail_kind: null });
     }
@@ -1210,8 +1229,8 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   const last = (task: OmoTask): number => time(task.ended_at) || time(task.started_at);
   ended.sort((a, b) => last(b) - last(a));
   // read to its end only: a part not read yet may hold the next turn
-  const resting = !historyPending && parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
-  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], historyPending, settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
+  const resting = parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
+  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], historyNeeded, historyPending, settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
 
   function keep(task: OmoTask, dispatched = time(task.started_at)): void {
     all.set(task.id, task);
@@ -1279,7 +1298,6 @@ export interface ClaudeSubagentDeps {
 interface Tracked {
   /** Opaque lifetime of an asynchronous task-list read, renewed on a proven replacement. */
   read: number;
-  historyPending?: boolean;
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
@@ -1387,7 +1405,7 @@ export class ClaudeSubagentStatus {
   /** Signals that waited for their turn in vain hold the pane's queue: nothing proves they began no turn. */
   holdsQueue(paneId: string): boolean {
     const turns = this.panes.get(paneId)?.turns;
-    return this.panes.get(paneId)?.historyPending === true || (turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0);
+    return turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0;
   }
 
   /**
@@ -1557,15 +1575,16 @@ export class ClaudeSubagentStatus {
       let turnRunning = 0;
       let promptAt: number | null = null;
       let resting = false;
-      if (!tracked.live || tracked.path === null) tracked.historyPending = false;
       if (tracked.path !== null && tracked.live) {
         const scanAt = this.now();
         const before = subagentsSignature(tracked.path, tracked.watch, scanAt);
         if (`${before.sig}:${tracked.startedAt}` === tracked.sig) continue;
         const state = claudeSubagentState(tracked.path, true, this.now(), tracked.startedAt);
         ({ running, turnRunning, promptAt, resting } = state);
-        tracked.historyPending = state.historyPending;
-        if (state.historyPending && !this.historyWatches.has(tracked.path)) {
+        // watched while it is needed, even once read: a check of what was read may yet take an end back
+        if (!state.historyNeeded) { this.historyWatches.get(tracked.path)?.(); this.historyWatches.delete(tracked.path); }
+        // a watch the history's session cap refused is asked for again at the next poll
+        else if (!this.historyWatches.has(tracked.path)) {
           const path = tracked.path;
           const release = watchCommandHistory(path, () => {
             this.historyWatches.get(path)?.();

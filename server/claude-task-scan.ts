@@ -1,5 +1,5 @@
 import type { OmoTask } from "../shared/protocol.ts";
-import type { ClaudeSubagentStatus } from "./claude-subagents.ts";
+import { PARENT_WINDOW, type ClaudeSubagentStatus } from "./claude-subagents.ts";
 import { historyVersion, waitCommandHistory } from "./claude-command-history.ts";
 import { FileBusyError, fileTask } from "./file-pool.ts";
 
@@ -25,7 +25,7 @@ export function scanClaudeTasks(session: NonNullable<ReturnType<ClaudeSubagentSt
     const promise = (async () => {
       const tasks = await fileTask<OmoTask[]>({ op: "claude-tasks", path, live, since }, abort.signal);
       const version = historyVersion(path);
-      if (!version || version.size <= 16 * 1024 * 1024 || !tasks.some((task) => task.category === "shell" && (task.status === "running" || task.status === "lost"))) return tasks;
+      if (!version || version.size <= PARENT_WINDOW || !tasks.some((task) => task.category === "shell" && (task.status === "running" || task.status === "lost"))) return tasks;
       const history = await waitCommandHistory(path, version.size, 10_000, abort.signal);
       if (abort.signal.aborted) throw new FileBusyError("the request was cancelled");
       return fileTask<OmoTask[]>({ op: "claude-tasks", path, live, since, history }, abort.signal);
