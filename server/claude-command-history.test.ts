@@ -1,8 +1,8 @@
 import { afterEach, expect, it } from "bun:test";
-import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandHistory, commandHistorySize, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
+import { commandHistory, commandHistorySize, historyVersion, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
 
 const roots: string[] = [];
 const release: (() => void)[] = [];
@@ -56,6 +56,21 @@ it("invalidates completion authority on replacement, truncation and same-size re
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["alt"]);
   writeFileSync(s.path, "{}\n");
   expect((await waitCommandHistory(s.path, s.limit()))!.ends).toEqual([]);
+});
+
+it("invalidates completion authority on a same-size rewrite within the timestamp tick of the check", async () => {
+  const s = fixture();
+  // the second just begun: two writes in one tick keep inode, size and mtime, as on Windows a millisecond apart
+  const tick = Math.floor(Date.now() / 1000);
+  writeFileSync(s.path, notice("new"));
+  utimesSync(s.path, tick, tick);
+  const before = historyVersion(s.path);
+  expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["new"]);
+  writeFileSync(s.path, notice("alt"));
+  utimesSync(s.path, tick, tick);
+  expect(historyVersion(s.path)).toEqual(before);
+  expect(commandHistory(s.path, s.limit(), false)!.ends).toEqual([]);
+  expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["alt"]);
 });
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {
