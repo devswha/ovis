@@ -5,82 +5,16 @@ import "./RelayPanel.css";
 
 import { ApiError, requestRelayOffer, startPairing, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { announcePairingCode, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT } from "../lib/useRelay.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
-import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
-import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
-
-export interface RelayPanelProps {
-  /** the relay's state, shared with the Connect a phone dialog so a change in one shows in the other at once */
-  relay: RelayState;
-  /** a watching device or Portal visitor reads the state and changes nothing; neither is shown an offer */
-  readOnly?: boolean;
-  /** the device gate is still open and no token is set: turning the relay on closes it (server/relay/service.ts) */
-  closesGate?: boolean;
-}
 
 export const failureText = (error: unknown): string => error instanceof ApiError ? error.detail : error instanceof Error ? error.message : String(error);
 
-/**
- * Settings → Phone & devices → Remote access through Ovis relay: the switch that connects this PC
- * to the relay, what the relay is doing, and the identity reset. The QR code a phone scans to pair
- * through it is in the Connect a phone dialog (ConnectPhoneDialog.tsx). Hidden on the hosted shell
- * (relay controls require a direct connection) and on a server without the route.
- */
-export function RelayPanel({ relay, readOnly = false, closesGate = false }: RelayPanelProps) {
-  const t = useT();
-  const { status, unsupported, pending, request } = relay;
-  const [error, setError] = useState<string | null>(null);
-  const [confirmingReset, setConfirmingReset] = useState(false);
-  if (unsupported || status === null || inRelayShell()) return null;
-  const on = status.blocked === null && status.phase !== "off";
-  // a start that failed before the link existed: the relay is off and nothing retries it (server/relay/service.ts)
-  const notStarted = status.blocked === null && status.phase === "off" && status.error !== null;
-
-  const toggle = async (next: boolean) => {
-    setError(null);
-    try { await request(next ? "start" : "stop"); } catch (reason) { setError(failureText(reason)); }
-  };
-
-  return (
-    <SettingsGroup title={t("Remote access through Ovis relay")} section="relay">
-      <SettingsRow label={t("Ovis relay")} description={<>
-        <span className="relay-status" role="status">{statusText(t, status)}</span>
-        {readOnly && <span className="settings-condition" data-testid="relay-owner-help">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</span>}
-        {closesGate && !on && status.blocked === null && <span className="settings-condition">{t("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.")}</span>}
-      </>}>
-        <Toggle label={t("Ovis relay")} checked={on} disabled={readOnly || pending || status.blocked !== null} onChange={(next) => void toggle(next)} />
-      </SettingsRow>
-      {notStarted && (
-        <div className="settings-item relay-not-started">
-          <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: status.error })}</p>
-          {!readOnly && (
-            <div className="phone-actions">
-              <button type="button" className="btn" disabled={pending} onClick={() => void toggle(true)}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
-            </div>
-          )}
-        </div>
-      )}
-      {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
-      {!readOnly && status.blocked !== "serve_only" && (
-        <SettingsRow label={t("Reset relay identity")} description={t("This PC gets a new relay identity. Phones paired through the relay lose their pairing and need a new code.")}>
-          <button type="button" className="btn" disabled={pending} onClick={() => setConfirmingReset(true)}>{t("Reset")}</button>
-        </SettingsRow>
-      )}
-      {error !== null && <p className="settings-item settings-hint relay-error" role="alert">{error}</p>}
-      {confirmingReset && (
-        <ConfirmDialog title={t("Reset the relay identity?")} body={t("Phones paired through the relay will need to scan a new code.")}
-          confirmLabel={t("Reset")} onClose={() => setConfirmingReset(false)} onConfirm={async () => { await request("reset-identity"); setConfirmingReset(false); }} />
-      )}
-    </SettingsGroup>
-  );
-}
-
 export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): string {
   if (status.blocked === "serve_only") return t("Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.");
-  if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it below to use the relay again.");
+  if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it in Connect a phone to use the relay again.");
   switch (status.phase) {
     case "off": return t("Off. Nothing goes through the relay.");
     case "connecting": return t("Connecting…");

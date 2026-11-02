@@ -427,7 +427,7 @@ The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, n
 
 Step by step:
 
-1. On the PC, open **Settings → Phone & devices** and turn on **Ovis relay**, under **Remote access through Ovis relay**. Once it says **Online**, a QR code shows below the switch. It works for ten minutes, and **New code** makes another.
+1. On the PC, open **Settings → Phone & devices**, choose **Connect** next to **Connect a phone**, and turn on the switch on the **Ovis relay** card. Once it says **Online**, a QR code shows below. It works for ten minutes, and **New code** makes another.
 2. Scan the QR code with the phone's camera. Ovis opens in the phone's browser at `app.ovis.sh` and asks whether to pair with this PC: tap **Pair**.
 3. Install it: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app** or **Add to Home screen** from its menu. Then open the **⋯** menu at the top right and tap **Alerts** to get alerts on this phone. iPhone needs iOS 16.4+ and the home-screen app.
 

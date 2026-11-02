@@ -96,6 +96,8 @@ export interface PaneTerminalProps {
   agent?: string | null;
   /** the pane's live agent status: `working` turns composer sends into the queue */
   agentStatus?: AgentStatus;
+  /** the pane's session as the roster names it (api.ts paneSessionKey): the chat reads again when it changes */
+  agentSession?: string | null;
   /** an OmO pane's running background tasks: the composer's status line offers their list */
   backgroundTasks?: number;
   /** the plan the pane's agent keeps (null on an offline PC): the composer's chip opens it */
@@ -167,6 +169,7 @@ export function PaneTerminal({
   agent = null,
   title = null,
   agentStatus,
+  agentSession = null,
   backgroundTasks = 0,
   plan = null,
   backgroundWait = false,
@@ -373,6 +376,8 @@ export function PaneTerminal({
   const watchingRef = useRef(false);
   const [watching, setWatchingState] = useState(false);
   const setWatching = useCallback((next: boolean) => { watchingRef.current = next; setWatchingState(next); }, []);
+  // a view a hidden page holds for its return reads as watching on the banner only, never on the wire
+  const setViewHeld = useCallback((held: boolean) => setWatchingState(held || watchingRef.current), []);
   // the mount effect's initial-attach decision, also used for a replacement pane
   const deferAttachRef = useRef<(pane: string) => boolean>(() => false);
   // the mount effect's release, for the queue below: a tab that kept its pane for a message lets go once it went
@@ -649,7 +654,7 @@ export function PaneTerminal({
     }, 2500);
   }, []);
 
-  useTerminalMount({ activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
+  useTerminalMount({ activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
 
   useTerminalRefits({ activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme });
 
@@ -1197,6 +1202,7 @@ export function PaneTerminal({
             ended={ended}
             agent={agent}
             agentStatus={agentStatus}
+            agentSession={agentSession}
             onMetadata={onChatMetadata}
             onRead={onChatRead}
             greeted={greeted || sending}
@@ -1215,6 +1221,7 @@ export function PaneTerminal({
             onCommandScreenClosed={onCommandScreenClosed}
             onOutcomes={onChatOutcomes}
             interactive={!observing && role === "interact"}
+            quotable={!secretActive}
             onRewindInTerminal={onOpenTerminal ? rewindInTerminal : undefined}
             cwd={cwd}
           />

@@ -60,8 +60,8 @@ import { workRowLabel } from "../lib/workRowLabel.ts";
 import { machinePath, paneStorageId } from "../../shared/machines.ts";
 import { chatRestoreIndex, chatTurnAnchor, readChatPosition, rememberChatPosition, type ChatPosition } from "../lib/chatScrollMemory.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
-import { useSkillMatcher } from "../lib/useSkillMatcher.ts";
-import type { SkillMatcher } from "../lib/skillMentions.ts";
+import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { createSkillMatcher, type SkillMatcher } from "../lib/skillMentions.ts";
 import { lineDiff } from "../lib/diff.ts";
 import { endsWithTurn, formatTokens, stoppedTurn, type TurnIdentity } from "../lib/compose.ts";
 import { formatElapsed, taskCallItems, taskResultMarkdown } from "../lib/omoTasks.ts";
@@ -183,6 +183,8 @@ export interface ChatViewProps {
   ended: boolean;
   agent: string | null;
   agentStatus?: AgentStatus;
+  /** the pane's session as the roster names it (api.ts paneSessionKey): an answer drawn for the session before is read again */
+  agentSession?: string | null;
   onMetadata?: (paneId: string, metadata: ConversationMetadata | null) => void;
   /** what the last read says of the conversation, for the composer's greeting; null while nothing is known (loading, a failed read, the chat gone) */
   onRead?: (paneId: string, read: ChatRead | null) => void;
@@ -219,6 +221,8 @@ export interface ChatViewProps {
   onOutcomes?: (paneId: string, ids: readonly string[]) => void;
   /** this connection may type into the pane (it is no watching device or observer): only then can a message be rewound to */
   interactive?: boolean;
+  /** the pane's composer is there to take a quote of a selection: a secret prompt stands in its place */
+  quotable?: boolean;
   /** a message's "Rewind in terminal" (Claude Code, grok, agy): the pane opens its terminal with a hint to run the agent's own rewind; nothing is sent */
   onRewindInTerminal?: () => void;
   /** the pane's folder: a tool card's file reads from it (`app/src/a.ts`), while its title and what it opens stay the path as written */
@@ -1212,7 +1216,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, quotable = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1227,8 +1231,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     pinPaneConversation(paneId, machineId);
     return () => unpinPaneConversation(paneId, machineId);
   }, [paneId, machineId]);
-  const skillMatcher = useSkillMatcher(paneId, agent);
   const commands = usePaneCommands(paneId, agent);
+  // the pane's skill names, from the same list: a chat opened again chips them in its first frame
+  const skillMatcher = useMemo(() => createSkillMatcher(commands, skillSyntax(agent)), [commands, agent]);
   // polls pause while the page or the pane is hidden and pick up at once when it is back
   const pageVisible = usePageVisible();
   const visible = paneVisible && pageVisible;
@@ -1384,6 +1389,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const seenSent = useRef(sentKey);
   const seenUnsent = useRef(unsentKey);
   const seenStatus = useRef<{ pane: string; status: AgentStatus | undefined }>({ pane: paneId, status: agentStatus });
+  const seenSession = useRef({ pane: paneId, session: agentSession });
   const seenConnected = useRef(connected);
   /** the socket has been connected since this pane showed: only then is a connected edge a reconnect */
   const wasConnected = useRef(connected);
@@ -1488,6 +1494,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     seenStatus.current = { pane: paneId, status: agentStatus };
     if (seen.pane === paneId && statusEdgeRead(seen.status, agentStatus)) setPollKey((key) => key + 1);
   }, [paneId, agentStatus]);
+  // herdr moved the pane to another session: what the chat shows (a press read taken while the roster
+  // still named the old one) is that session's, so the newest page is read now, not at the next push
+  useEffect(() => {
+    const seen = seenSession.current;
+    seenSession.current = { pane: paneId, session: agentSession };
+    if (seen.pane === paneId && seen.session !== agentSession) setPollKey((key) => key + 1);
+  }, [paneId, agentSession]);
 
   useEffect(() => {
     if (!visible) return;
@@ -2021,9 +2034,15 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
+    // The list's own move down can stop short too: the browser holds it at the transcript's height
+    // before the list has grown it, and once grown no row changes to follow (a long chat's first
+    // open). A glide's stops are not that: where it ends, ChatTimeline settles it.
+    const stoppedShort = scrollingDown && !byReader && !smoothFollow && timeline.current !== null;
     // the layout's move left a reader still following short of the end: they go on there, unless
     // what they just clicked is laid out where they are (ChatTimeline manualLayout)
-    if (heldInPlace && stickToBottom.current && !pagingAway.current && !manualLayout.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+    if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
+      // the list's scroll lands a frame later: the frame painted next is at the end already
+      if (stoppedShort) node.scrollTop = node.scrollHeight;
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
       else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
     }
@@ -2415,8 +2434,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     </div>}
     {state.source === "conversation" && <ChatMinimap turns={minimap} rowKeys={rowKeys} scroller={scroller} onJump={jumpToTurn} onWheel={minimapWheel} />}
     {jump}
-    {/* only a pane this device may send to takes comments: they go with its next message */}
-    {state.source === "conversation" && interactive && !ended && <ReplyCommentAction scroller={scroller} storageKey={replyCommentsKey(paneStorageId(machineId, paneId))} />}
+    {/* only a pane this device may send to takes quotes and comments: they go with its next message */}
+    {state.source === "conversation" && interactive && !ended && <ReplyCommentAction scroller={scroller} storageKey={replyCommentsKey(paneStorageId(machineId, paneId))} paneKey={quotable ? paneStorageId(machineId, paneId) : null} />}
     </div>
     </div>
   {/* The prompt card is not part of the transcript: it is drawn on the composer's column, over the

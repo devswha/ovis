@@ -13,7 +13,7 @@
       ],
       "improved": [
         "Chat can open thinking or fold work by default, set in Settings.",
-        "Chat's spacing grows and shrinks with its font size.",
+        "Select words in a Chat reply to quote them into your message.",
         "Drag a key bar key by its handle to reorder it in Settings.",
         "On phones, same-host links can open in a popup inside the app.",
         "Claude question cards list each question as a step, with Back.",
@@ -45,7 +45,7 @@
       ],
       "improved": [
         "설정에서 Chat의 생각을 펼치거나 작업을 접은 채로 시작할 수 있습니다.",
-        "Chat의 간격이 글자 크기에 맞춰 늘고 줄어듭니다.",
+        "Chat 답변에서 고른 글을 인용으로 메시지에 넣을 수 있습니다.",
         "설정에서 키 바의 키를 손잡이로 끌어 순서를 바꿉니다.",
         "휴대폰에서 같은 호스트의 링크를 앱 안의 팝업으로 엽니다.",
         "Claude 질문 카드가 질문을 단계로 보여 주고 뒤로 갈 수 있습니다.",
@@ -77,7 +77,7 @@
       ],
       "improved": [
         "設定で、チャットの思考を開いたまま、作業を畳んだまま始められます。",
-        "チャットの余白が文字サイズに合わせて伸び縮みします。",
+        "チャットの返信で選んだ文を引用としてメッセージに入れられます。",
         "設定で、キーバーのキーをハンドルでドラッグして並べ替えられます。",
         "スマートフォンでは、同じホストのリンクをアプリ内のポップアップで開けます。",
         "Claude の質問カードが質問をステップで示し、「戻る」で戻れます。",
@@ -109,7 +109,7 @@
       ],
       "improved": [
         "可在设置中让聊天默认展开思考或折叠工作。",
-        "聊天的间距会随字号放大或缩小。",
+        "可在聊天回复中选中文字，作为引用放进消息。",
         "在设置中可按住手柄拖动键栏按键来调整顺序。",
         "在手机上，同主机链接可在应用内的弹窗中打开。",
         "Claude 的提问卡片会把问题列为步骤，并可返回上一步。",

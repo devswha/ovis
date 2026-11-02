@@ -178,6 +178,18 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   the relay whenever it is on or Tailscale is not set up; on a tailnet with the relay off it opens on
   Tailscale, with the relay's switch right on its card. The relay still starts off.
   ([#2567](https://github.com/devswha/ovis/pull/2567))
+- A chat opened from a tab, a workspace row or an agent row starts loading when the press begins,
+  not after the app has drawn the new pane, so its messages show sooner.
+  ([#2562](https://github.com/devswha/ovis/pull/2562) by @jpcarranza94)
+- Selecting text in a Chat reply now offers Quote first: it puts the words in the message box as a
+  `> ` quote after what you typed, ready to write under, without sending. Comment is still there,
+  as the icon beside it.
+  ([#2574](https://github.com/devswha/ovis/pull/2574))
+- Settings → Phone & devices says each thing once: the separate Ovis relay group is gone, its switch,
+  Reset relay identity and start failures are in the Connect a phone dialog's relay card, the
+  Connect a phone row shows the relay's state (Online, Off, Blocked), and what a paired device can
+  do is explained only under Devices.
+  ([#2578](https://github.com/devswha/ovis/pull/2578))
 
 ### Fixed
 - New workspace's folder picker puts **Use this folder** and the folder filter on one compact row, and
@@ -382,6 +394,44 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Switching to a working agent's chat no longer shows a "Working…" head above "Loading
   conversation…" before the turn's own rows are drawn.
   ([#2551](https://github.com/devswha/ovis/pull/2551) by @jpcarranza94)
+- A long chat opened for the first time now lands at its newest message. Before, the view could
+  stop several hundred pixels short of it when a long answer or table near the end grew while the
+  chat went down to it, and it stayed there.
+  ([#2564](https://github.com/devswha/ovis/pull/2564) by @jpcarranza94)
+- A chat opened again after a minute or more draws its skill chips and "Ran in terminal" rows at
+  once, not as plain text that changes when the pane's command list arrives.
+  ([#2560](https://github.com/devswha/ovis/pull/2560) by @jpcarranza94)
+- Opening a chat asks the server for the pane's command list once, not four times at the same
+  moment.
+  ([#2560](https://github.com/devswha/ovis/pull/2560) by @jpcarranza94)
+- A hidden page (a phone put away, or a desktop window minimized or behind a full-screen app) no
+  longer watches its pane read-only, including one that opens or reconnects while hidden: a frozen
+  page could not parse those frames, so the whole burst was drawn on return and a weak link's
+  unacknowledged queue could close the connection (4008). The pane still reads as view only;
+  returning attaches afresh and the pane's replay draws the current screen, and a window shown
+  again without the focus starts watching its pane then.
+  ([#2554](https://github.com/devswha/ovis/pull/2554) by @iwangjie)
+- A triple-clicked paragraph in a Chat reply, or a selection dragged past its last word, offers Quote
+  and Comment again, and quotes the reply's words without its copy row or time.
+  ([#2577](https://github.com/devswha/ovis/pull/2577))
+- A chat opened right after its agent moved to another session shows the new session, not the old
+  one from the tab press or from a page an earlier chat was still loading.
+  ([#2576](https://github.com/devswha/ovis/pull/2576))
+- On the herdr-core runtime, a pane running Claude Code shows its conversation again, along with
+  everything else Ovis does for Claude panes: herdr-core names Claude Code `claude-code`, and Ovis
+  now reads that as Claude.
+  ([#2572](https://github.com/devswha/ovis/pull/2572) reported by @rkqksk)
+- A browser connecting to a large herdr session (a snapshot over 1 MiB) gets its terminals again
+  instead of closing at once with "Terminal output stopped because this device could not keep
+  up": only output still queued for the browser counts as a stall, not the size of one message.
+  ([#2570](https://github.com/devswha/ovis/pull/2570) reported by @nathanvale)
+- The browser tab's title shows an Oh My Pi pane's `π` glyph and working spinner again; the sidebar
+  row and the header still leave them out, as the row's mark and badge say the same.
+  ([#2571](https://github.com/devswha/ovis/pull/2571) reported by @altgans)
+- Copying a wrapped reply from an agent's pane in the Terminal lens gives one line again, as herdr's
+  own copy does: the line breaks and two-space indent the agent drew at the pane's edge are left out,
+  so a long command it wrapped pastes whole.
+  ([#2575](https://github.com/devswha/ovis/pull/2575) reported by @matiemer)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so

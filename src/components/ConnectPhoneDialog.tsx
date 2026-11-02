@@ -14,6 +14,7 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { announcePairingCode, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode } from "../../shared/protocol.ts";
+import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, RelayPairing, statusText } from "./RelayPanel.tsx";
@@ -30,7 +31,7 @@ export const relayOffered = (relay: RelayState): boolean => !relay.unsupported &
 /** Tailscale already gives a phone an address for this PC */
 const tailscaleWorks = (plan: PhonePlan): boolean => plan.kind === "here" || plan.kind === "served";
 
-/** the relay is on: connecting or online, nothing blocking it (RelayPanel's switch reads the same) */
+/** the relay is on: connecting or online, nothing blocking it */
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
 
 /**
@@ -53,7 +54,7 @@ export interface ConnectPhoneDialogProps {
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
   readOnly: boolean;
-  /** turning the relay on closes the open device gate (RelayPanel's same note) */
+  /** turning the relay on closes the open device gate */
   closesGate: boolean;
   /** a Portal visitor may not start pairing codes (the server refuses it) */
   canPair: boolean;
@@ -67,8 +68,10 @@ export interface ConnectPhoneDialogProps {
  * top, each with its one-line hint, then the chosen one's details, and the QR codes, which show only
  * here. The Ovis relay (from anywhere, nothing to install),
  * Tailscale (the PC's tailnet address, or the command that publishes it) and a pairing code (a
- * phone that can already open this address: the same Wi-Fi, a tunnel, a proxy). The settings page
- * keeps the relay's switch and the device list; the long explanations wait behind How it works.
+ * phone that can already open this address: the same Wi-Fi, a tunnel, a proxy). The relay is
+ * controlled only here: its switch on its card, and its reset and start failures in its details.
+ * The settings page keeps the relay's state in the Connect a phone row and the device list; the
+ * long explanations wait behind How it works.
  */
 export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, pairUrl, relay, readOnly, closesGate, canPair, startCode = false, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
@@ -79,10 +82,13 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
   const route = picked ?? defaultRoute(plan, relay);
   const surface = useFocusTrap<HTMLDivElement>(true);
   useSheetSwipe(surface, onClose);
-  usePhoneSheetBack(() => { onClose(); });
+  // it stays up under the relay identity's confirmation, which Back or its own close then leaves for it
+  usePhoneSheetBack(() => { onClose(); }, true, true);
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.isComposing || nativeModalOver(surface.current)) return;
+      // the relay identity's confirmation, opened over this dialog, takes its own Escape
+      if (document.querySelector('[role="alertdialog"]') !== null) return;
       event.stopPropagation();
       event.preventDefault();
       onClose();
@@ -92,10 +98,10 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
   }, [onClose, surface]);
 
   const offered = relayOffered(relay);
-  // with Tailscale already working the dialog opens there, so the relay's choice carries its switch
-  const switchOnChoice = offered && tailscaleWorks(plan) && !readOnly && relay.status?.blocked === null;
+  // the relay's one switch, on its card, for the PC's owner where nothing blocks it
+  const switchOnChoice = offered && !readOnly && relay.status?.blocked === null;
   const [switchError, setSwitchError] = useState<string | null>(null);
-  // a failed switch's reason goes once the relay is on, however it came on (the page's own switch shares this state)
+  // a failed switch's reason goes once the relay is on, however it came on (Try again in its details too)
   const on = relayOn(relay);
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
   const routes: { value: ConnectRoute; label: string; hint: string }[] = [
@@ -141,14 +147,13 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
           {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
           {/* every way stays mounted while the dialog is up, the others hidden: the relay's QR and the pairing
               code follow each other's New code (the server keeps one pending code), as they did side by side */}
-          {offered && <div className="connect-phone-route" data-route="relay" hidden={shown !== "relay"}><RelayRoute relay={relay} readOnly={readOnly} closesGate={closesGate} switchOnChoice={switchOnChoice} /></div>}
+          {offered && <div className="connect-phone-route" data-route="relay" hidden={shown !== "relay"}><RelayRoute relay={relay} readOnly={readOnly} /></div>}
           <div className="connect-phone-route" data-route="tailscale" hidden={shown !== "tailscale"}><PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} /></div>
           {canPair && <div className="connect-phone-route" data-route="code" hidden={shown !== "code"}><CodeRoute pairUrl={pairUrl} startAtOnce={startCode && initial === "code"} /></div>}
           <details className="settings-details connect-phone-how">
             <summary><span className="settings-details-toggle">{t("How it works")}</span></summary>
             <p className="settings-hint">{t("Use Ovis from your phone anywhere, without Tailscale. Traffic is end-to-end encrypted; the relay sees only when and how much.")}</p>
             <p className="settings-hint">{t("Your own Tailscale devices get in as you.")} {t("With an access token set, each asks for it once. Anyone else's device, or a LAN or public address, needs pairing: Devices, below.")}</p>
-            <p className="settings-hint">{t("A paired device gets in on its own until you revoke it here.")} {t("It gets in from anywhere it can reach this server. A code comes from this screen on the PC or on a device already paired, or from the pair command in the PC's terminal.")}</p>
             <p className="settings-hint"><a href={README_PHONE} target="_blank" rel="noreferrer">{t("Other routes")}</a> · <a href={README_SAFETY} target="_blank" rel="noreferrer">{t("Access and safety")}</a></p>
           </details>
         </div>
@@ -159,14 +164,17 @@ export function ConnectPhoneDialog({ route: initial, plan, loading, onRefresh, p
 }
 
 /**
- * The relay's way: turn it on here when it is off, then its pairing QR code once it is online. With
- * the switch on its choice above (`switchOnChoice`), that switch and its gate note turn it on instead.
+ * The relay's way: its state (Blocked says why), a start that failed with Try again, the pairing QR
+ * code once it is online, and the identity reset as a quiet last action. The switch is on its card.
  */
-function RelayRoute({ relay, readOnly, closesGate, switchOnChoice }: { relay: RelayState; readOnly: boolean; closesGate: boolean; switchOnChoice: boolean }) {
+function RelayRoute({ relay, readOnly }: { relay: RelayState; readOnly: boolean }) {
   const t = useT();
   const { status, pending, request } = relay;
   const [error, setError] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const resetButton = useRef<HTMLButtonElement>(null);
   if (status === null) return null;
+  // a start that failed before the link existed: the relay is off and nothing retries it (server/relay/service.ts)
   const notStarted = status.blocked === null && status.phase === "off" && status.error !== null;
   const start = async () => {
     setError(null);
@@ -175,20 +183,30 @@ function RelayRoute({ relay, readOnly, closesGate, switchOnChoice }: { relay: Re
   return (
     <div className="connect-phone-relay">
       <p className="relay-status" role="status">{statusText(t, status)}</p>
-      {readOnly && <p className="settings-condition">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</p>}
+      {readOnly && <p className="settings-condition" data-testid="relay-owner-help">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</p>}
       {notStarted && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: status.error })}</p>}
-      {!readOnly && !switchOnChoice && status.blocked === null && status.phase === "off" && (
-        <>
-          {closesGate && <p className="settings-condition">{t("Turning it on closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
-          <div className="phone-actions">
-            <button type="button" className="btn btn-primary" disabled={pending} onClick={() => void start()}>
-              {notStarted ? <><RefreshCw aria-hidden="true" />{t("Try again")}</> : t("Turn on the relay")}
-            </button>
-          </div>
-        </>
+      {notStarted && !readOnly && (
+        <div className="phone-actions">
+          <button type="button" className="btn" disabled={pending} onClick={() => void start()}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
+        </div>
       )}
       {error !== null && <p className="settings-hint relay-error" role="alert">{error}</p>}
       {status.phase === "online" && !readOnly && <RelayPairing />}
+      {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
+      {!readOnly && status.blocked !== "serve_only" && (
+        <div className="phone-actions connect-phone-reset">
+          <button ref={resetButton} type="button" className="btn btn-ghost" disabled={pending} onClick={() => setConfirmingReset(true)}>{t("Reset relay identity")}</button>
+        </div>
+      )}
+      {confirmingReset && (
+        <ConfirmDialog title={t("Reset the relay identity?")} body={t("Phones paired through the relay will need to scan a new code.")}
+          confirmLabel={t("Reset")} onClose={() => setConfirmingReset(false)} onConfirm={async () => {
+            await request("reset-identity");
+            setConfirmingReset(false);
+            // the confirmation hands focus back only when it is dismissed: after the reset it goes back here
+            window.requestAnimationFrame(() => resetButton.current?.focus());
+          }} />
+      )}
     </div>
   );
 }

@@ -234,6 +234,8 @@ bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keybo
 bun scripts/droplet-demo-regression.ts        # real-app alerts below the header, keyboard and landscape
 bun scripts/chat-greeting-demo-regression.ts  # an empty chat's greeting: centred on a desktop, docked on a phone
 bun scripts/reply-comments-demo-regression.ts # comments on a reply (#511): the floating Comment moves nothing, one chip, the next message carries them for an agent alone, a slash command leaves them; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
+bun scripts/chat-select-quote-demo-regression.ts # Quote on a chat selection: Quote first and Comment second, the words go in the message box as a `> ` quote after the draft, it takes the keyboard, quotes stack, nothing is sent until Send, then for an agent alone; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
+bun scripts/chat-quote-selection-end-regression.ts # Quote and Comment on a triple-click and a drag past a reply's last word (Claude and Codex), quoting the words alone; a selection from a user message or another reply still offers nothing; 1280 and 390
 bun scripts/diff-line-notes-demo-regression.ts # a note on a diff line (#1603): hover +, arrow keys and Enter, a tap and a 44px Add a note; it waits with the reply comments and goes first in the next message for an agent alone; too long is refused; no agent says why; 1280 and 390, Korean, Codex palette in UI_EVIDENCE_DIR
 bun scripts/composer-fit-demo-regression.ts   # one Send/Stop control, pending Send now actions, context/label fit and Chat font sizing
 bun scripts/plan-chip-demo-regression.ts      # the plan chip's step in progress: one row at 390 and 1440, cut when long, with tasks, the list's read states, offline and in a split, Korean too

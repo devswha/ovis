@@ -348,4 +348,5 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Ready at {url}. Or use the Ovis relay, no Tailscale needed.": "可在 {url} 打开。也可以使用 Ovis 中继，无需 Tailscale。",
   "The Ovis relay works from anywhere with nothing to install, or use Tailscale.": "Ovis 中继随处可用，无需安装；也可以使用 Tailscale。",
   "Use Tailscale or a pairing code.": "使用 Tailscale 或配对码连接。",
+  "Ovis relay: {state}": "Ovis 中继：{state}",
 };

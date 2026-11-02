@@ -1,5 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
+import { OUTPUT_HARD_BYTES } from "../output-window.ts";
 import { type Client, connectionData } from "./connections.ts";
 import { createSocket } from "./socket.ts";
 
@@ -65,6 +66,44 @@ it("offers no watch where none can be drawn (herdr-core), and ends a watch sent 
   frames.length = 0;
   await handler.message!(client, JSON.stringify({ type: "watch", pane_id: "t1", cols: 0, rows: 24 }));
   expect(frames.map((frame) => frame.code)).toEqual(["invalid_geometry"]);
+});
+
+it("delivers a session snapshot larger than the transport budget to a socket with nothing queued (#2566)", async () => {
+  // a large session: its snapshot alone serializes past the 1 MiB the transport may hold queued
+  const snapshot = { workspaces: [], panes: Array.from({ length: 600 }, (_, i) => ({ pane_id: `p${i}`, cwd: `/w/${"x".repeat(2000)}` })), agents: [], layouts: [] } as unknown as SessionSnapshot;
+  expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeGreaterThan(OUTPUT_HARD_BYTES);
+  const handler = createSocket({
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, watchPane() {}, unwatchPane() {},
+    end() {}, holdPending() {}, attachments: new Map(),
+    clientSnapshot: async () => snapshot, herdrLifetime: () => undefined, browserSnapshot: (read) => read, countVisit() {}, drainOutput() {}, frames: {} as never,
+  });
+  // a real Bun socket with the production limits, so Bun's own backpressure cap is in play as well
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch: (request, bun) => bun.upgrade(request, { data: connectionData({ deviceId: undefined, readOnly: false }) }) ? undefined : new Response(null, { status: 400 }),
+    websocket: handler,
+  });
+  const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
+  try {
+    const types: string[] = [];
+    const outcome = Promise.withResolvers<string>();
+    ws.onmessage = (event) => {
+      const frame = JSON.parse(String(event.data)) as { type: string; snapshot?: SessionSnapshot };
+      types.push(frame.type);
+      if (frame.type === "snapshot") outcome.resolve(`snapshot with ${frame.snapshot!.panes.length} panes`);
+    };
+    ws.onclose = (event) => outcome.resolve(`closed ${event.code} ${event.reason}`);
+    const timer = setTimeout(() => outcome.resolve("timed out"), 5_000);
+    try {
+      expect(await outcome.promise).toBe("snapshot with 600 panes");
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(types).toEqual(["features", "snapshot"]);
+  } finally {
+    ws.close();
+    await server.stop(true);
+  }
 });
 
 it("records an abnormal close while running and stays quiet once the server is stopping", () => {
