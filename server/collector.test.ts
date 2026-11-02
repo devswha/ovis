@@ -266,6 +266,30 @@ describe("lifecycle invalidations", () => {
     } finally { collector.stop(); }
   });
 
+  it("cleans up on close a pane a snapshot showed again after its exit, and once only one it no longer showed", async () => {
+    // Given
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const closed: string[] = [];
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      // When: p1 exits and a snapshot then shows its ID in use again; p2 exits and a snapshot no longer shows it
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p2" } });
+      herdr.setPanes([paneOf("w1:p1", "idle")]);
+      const reconciled = Promise.withResolvers<void>();
+      handlers.onReconciled = () => reconciled.resolve();
+      herdr.lifecycle().emit({ data: { type: "pane_created", pane_id: "w1:p1" } });
+      await reconciled.promise;
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      // Then: the pane shown again is cleaned up on its close; the one gone was cleaned up by its exit
+      expect(closed).toEqual(["w1:p1"]);
+    } finally { collector.stop(); }
+  });
+
   const types = [
     "workspace_created", "workspace_updated", "workspace_metadata_updated",
     "workspace_renamed", "workspace_moved", "workspace_reordered", "workspace_closed",

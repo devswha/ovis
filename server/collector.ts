@@ -484,7 +484,9 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       for (const [paneId, seq] of lastEventOf) if (seq <= askedAt && !paneIds.includes(paneId)) lastEventOf.delete(paneId);
       for (const paneId of [...heard.keys()]) if (!paneIds.includes(paneId) && (lastEventOf.get(paneId) ?? 0) <= askedAt) heard.delete(paneId);
       for (const [paneId, seq] of actedOn) if (seq <= askedAt && !paneIds.includes(paneId)) actedOn.delete(paneId);
-      for (const [paneId, seq] of exitedAt) if (seq <= askedAt && !paneIds.includes(paneId)) exitedAt.delete(paneId);
+      // a pane shown again after its exit (its ID reused, a new program) holds state of its own: its close cleans
+      // up. One gone stays marked until its close frame, which may still come
+      for (const [paneId, seq] of exitedAt) if (seq <= askedAt && paneIds.includes(paneId)) exitedAt.delete(paneId);
       for (const [paneId, seq] of focusedAt) if (seq <= askedAt && !paneIds.includes(paneId)) focusedAt.delete(paneId);
       for (const paneId of [...displayAgents.keys()]) if (!paneIds.includes(paneId) && (lastEventOf.get(paneId) ?? 0) <= askedAt) displayAgents.delete(paneId);
       if (sameSet) {
