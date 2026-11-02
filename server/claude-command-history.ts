@@ -33,12 +33,13 @@ interface Entry {
   cutAt: number | null;
   /** a digest of each run of bytes read, in order: each ends at `end` and starts where the one before ended */
   spans: { end: number; digest: bigint }[];
-  /** every span was found unchanged at this version, up to `checkedThrough`, by reading begun at `checkedFrom` */
+  /** every span was found unchanged at this version, up to `checkedThrough`, by reading begun at `checkedFrom` (`checkedTick` on the monotonic clock) */
   checked: HistoryVersion | null;
   checkedThrough: number;
   checkedFrom: number;
-  /** a check of every span under way: the next span to check, at the version and time it began at */
-  check: { next: number; version: HistoryVersion; at: number } | null;
+  checkedTick: number;
+  /** a check of every span under way: the next span to check, at the version and times it began at */
+  check: { next: number; version: HistoryVersion; at: number; tick: number } | null;
   /** when the last check began, how many began, and the most a waiter wants begun (one begun after it came) */
   checkedAt: number;
   checks: number;
@@ -99,7 +100,7 @@ const checkedNow = (entry: Entry): boolean => entry.checked !== null && sameVers
  * What the history read of `path` knows so far, read on (when `schedule`) on the main thread a slice
  * at a time. `needed`: the ids whose ends are wanted (all when left out); only theirs are told.
  */
-export function commandHistory(path: string, limit: number, schedule = true, needed?: ReadonlySet<string>): HistoryEvidence | null {
+export function commandHistory(path: string, limit: number, schedule = true, needed?: ReadonlySet<string>, since = Infinity): HistoryEvidence | null {
   const version = historyVersion(path);
   if (version === null) return null;
   let entry = entries.get(path);
@@ -113,56 +114,95 @@ export function commandHistory(path: string, limit: number, schedule = true, nee
       discard(old);
     }
     entry = {
-      path, session: basename(path, ".jsonl"), version, limit, offset: 0, skipping: false, cutAt: null, spans: [], checked: null, checkedThrough: 0, checkedFrom: -Infinity, check: null,
+      path, session: basename(path, ".jsonl"), version, limit, offset: 0, skipping: false, cutAt: null, spans: [], checked: null, checkedThrough: 0, checkedFrom: -Infinity, checkedTick: -Infinity, check: null,
       checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null,
     };
   }
   entries.set(path, entry);
   entry.version = version;
   entry.limit = Math.max(entry.limit, limit);
+  const found = evidence(entry, limit, needed, since);
   if (schedule) enqueue(entry);
-  return evidence(entry, limit, needed);
+  return found;
 }
 
-function evidence(entry: Entry, limit: number, needed?: ReadonlySet<string>): HistoryEvidence {
+/** `since`: when a request began (performance.now()); a check begun after it vouches for what it read, to that request. */
+function evidence(entry: Entry, limit: number, needed: ReadonlySet<string> | undefined, since: number): HistoryEvidence {
   const wanted = needed === undefined ? entry.ends : entry.ends.filter((end) => needed.has(end.id));
   const checked = entry.checked !== null && entry.checkedThrough >= entry.offset;
-  // a rewrite that also grew the transcript passes sameHistory: only a check of the bytes as they are
-  // now vouches for an end, of them all at this version or of the end's own line
-  const ends = checked && checkedNow(entry) ? wanted : vouchedEnds(entry.path, entry.version.id, wanted);
-  const complete = entry.failures >= MAX_FAILURES || (entry.offset >= limit && checked && ends !== null);
-  return { version: entry.version, through: entry.offset, complete, ends: ends ?? [] };
+  // a rewrite that also grew the transcript passes sameHistory, and a same-size one within a
+  // timestamp tick keeps the version: only a check of the bytes as they are now vouches for an end,
+  // of them all at this version (once its tick was past, or for the request it was begun after) or
+  // of the end's own line
+  const vouched = checked && sameVersion(entry.checked!, entry.version) && (checkedNow(entry) || entry.checkedTick > since);
+  const told = vouched ? wanted : vouchLines(entry.path, entry.version.id, wanted);
+  if (told === "rewritten") {
+    // a line read is no longer as it was: everything learnt goes, and the read starts again
+    restart(entry);
+    notify(entry);
+    return { version: entry.version, through: 0, complete: false, ends: [] };
+  }
+  const complete = entry.failures >= MAX_FAILURES || (entry.offset >= limit && checked && told !== null && told.length === wanted.length);
+  return { version: entry.version, through: entry.offset, complete, ends: told ?? [] };
 }
 
 /** The most bytes of lines one call reads again (vouchedEnds): past it, what they told is unknown. */
 const VOUCH_BYTES = 4 * 1024 * 1024;
+
+/** Lines this close together are read at once (vouchLines). */
+const VOUCH_GAP = 64 * 1024;
 
 /**
  * `ends` when every line they came from (newline and all) reads as it did in the transcript `id` as
  * it is now, and nothing changed it while they were read; else null: a command they end may still run.
  */
 export function vouchedEnds(path: string, id: string, ends: HistoryEnd[]): HistoryEnd[] | null {
+  const told = vouchLines(path, id, ends);
+  return Array.isArray(told) && told.length === ends.length ? told : null;
+}
+
+/**
+ * The `ends` whose lines read as they did in the transcript `id` as it is now, the newest lines
+ * first as far as VOUCH_BYTES goes, each run of lines close together in one read. "rewritten": a line
+ * reads otherwise, and nothing changed the transcript while it was read. null: it changed meanwhile,
+ * or could not be read.
+ */
+function vouchLines(path: string, id: string, ends: HistoryEnd[]): HistoryEnd[] | "rewritten" | null {
   if (ends.length === 0) return ends;
-  const lines = new Map<number, HistoryEnd>();
-  for (const end of ends) lines.set(end.from, end);
-  let bytes = 0;
-  for (const line of lines.values()) bytes += line.to - line.from;
-  if (bytes > VOUCH_BYTES) return null;
+  const byLine = new Map<number, HistoryEnd>();
+  for (const end of ends) byLine.set(end.from, end);
+  // a command still unresolved more likely ended late than early
+  const newest = [...byLine.values()].sort((a, b) => b.from - a.from);
+  let kept = 0;
+  for (let bytes = 0; kept < newest.length && bytes + newest[kept]!.to - newest[kept]!.from <= VOUCH_BYTES; kept++) bytes += newest[kept]!.to - newest[kept]!.from;
+  const lines = newest.slice(0, kept).reverse();
+  if (lines.length === 0) return [];
   let fd: number | null = null;
   try {
     fd = openSync(path, "r");
     const before = fstatSync(fd);
     if (`${before.dev}:${before.ino}` !== id) return null;
     buffer ??= Buffer.allocUnsafe(CHUNK);
-    for (const line of lines.values()) {
-      const got = readSync(fd, buffer, 0, line.to - line.from, line.from);
-      if (got !== line.to - line.from || BigInt(Bun.hash.xxHash3(buffer.subarray(0, got))) !== line.digest) return null;
+    let rewritten = false;
+    for (let first = 0; first < lines.length && !rewritten;) {
+      const start = lines[first]!.from;
+      let last = first;
+      while (last + 1 < lines.length && lines[last + 1]!.to - start <= CHUNK && lines[last + 1]!.from - lines[last]!.to <= VOUCH_GAP) last++;
+      const length = lines[last]!.to - start;
+      const got = readSync(fd, buffer, 0, length, start);
+      for (let index = first; index <= last && !rewritten; index++) {
+        const line = lines[index]!;
+        rewritten = line.to - start > got || BigInt(Bun.hash.xxHash3(buffer.subarray(line.from - start, line.to - start))) !== line.digest;
+      }
+      first = last + 1;
     }
     // written to while it read, or replaced: what it read may be gone already
     const after = fstatSync(fd);
     const now = historyVersion(path);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || now === null || now.id !== id || now.size !== before.size || now.mtimeMs !== before.mtimeMs) return null;
-    return ends;
+    if (rewritten) return "rewritten";
+    const read = new Set(lines.map((line) => line.from));
+    return kept === newest.length ? ends : ends.filter((end) => read.has(end.from));
   } catch { return null; } finally { if (fd !== null) closeSync(fd); }
 }
 
@@ -191,10 +231,11 @@ function unlisten(entry: Entry, listener: () => void): void {
  */
 export async function waitCommandHistory(path: string, limit: number, ms = 10_000, signal?: AbortSignal): Promise<HistoryEvidence | null> {
   const deadline = Date.now() + ms;
+  const since = performance.now();
   const epoch = generation;
   for (;;) {
-    if (signal?.aborted || Date.now() >= deadline) return commandHistory(path, limit, false);
-    const found = commandHistory(path, limit, false);
+    if (signal?.aborted || Date.now() >= deadline) return commandHistory(path, limit, false, undefined, since);
+    const found = commandHistory(path, limit, false, undefined, since);
     const entry = entries.get(path);
     if (found === null || entry === undefined) return found;
     // a check begun before this request may have read the bytes before a rewrite: it waits for one begun after
@@ -220,7 +261,7 @@ export async function waitCommandHistory(path: string, limit: number, ms = 10_00
     });
     entry.waiters--;
     if (generation !== epoch) return null;
-    if (!again) return commandHistory(path, limit, false);
+    if (!again) return commandHistory(path, limit, false, undefined, since);
     // the replacement is read as far as it goes now, not to the length its predecessor had
     limit = Math.min(limit, historyVersion(path)?.size ?? limit);
   }
@@ -241,10 +282,13 @@ function due(entry: Entry, now: number): "scan" | "check" | number | null {
   if (entry.offset < entry.limit) return entry.cutAt !== null && entry.version.size <= entry.cutAt ? null : "scan";
   if (entry.checked !== null && entry.checkedThrough >= entry.offset && sameVersion(entry.checked, entry.version)) {
     if (checkedNow(entry)) return null;
-    // checked within the version's tick: a waiter gets a check begun after it, a watcher one once the tick is past
-    if (entry.waiters > 0 && entry.checks < entry.wanted) return "check";
-    // never past the interval: an mtime far ahead of the clock would otherwise hold it back for good
-    const at = Math.min(Math.max(entry.checkedAt + CHECK_INTERVAL_MS, entry.checked.mtimeMs + RACY_MS), now + CHECK_INTERVAL_MS);
+    // checked within the version's tick: checked once more when the tick is past, for every waiter and
+    // watcher alike (until then each answer reads its ends' lines again, evidence), a watcher's not
+    // sooner than the interval; never later than the interval: an mtime far ahead of the clock would
+    // otherwise hold it back for good
+    const waited = entry.waiters > 0 && entry.checks < entry.wanted;
+    const tickPast = entry.checked.mtimeMs + RACY_MS;
+    const at = Math.min(waited ? tickPast : Math.max(entry.checkedAt + CHECK_INTERVAL_MS, tickPast), now + CHECK_INTERVAL_MS);
     return now >= at ? "check" : at;
   }
   // read through but never checked whole, or a request waits: now; else not more often than the interval
@@ -303,7 +347,7 @@ function step(entry: Entry): void {
       entry.version = now;
       const work = due(entry, Date.now());
       if (work === "scan") {
-        if (entry.offset === 0 && entry.spans.length === 0) { entry.checked = now; entry.checkedThrough = 0; entry.checkedFrom = Date.now(); }
+        if (entry.offset === 0 && entry.spans.length === 0) { entry.checked = now; entry.checkedThrough = 0; entry.checkedFrom = Date.now(); entry.checkedTick = performance.now(); }
         const extends_ = entry.checked !== null && sameVersion(entry.checked, now) && entry.checkedThrough === entry.offset;
         scan(entry, fd, stop);
         const after = fstatSync(fd);
@@ -342,6 +386,7 @@ function restart(entry: Entry): void {
   entry.checked = null;
   entry.checkedThrough = 0;
   entry.checkedFrom = -Infinity;
+  entry.checkedTick = -Infinity;
   entry.check = null;
   entry.ends = [];
 }
@@ -400,7 +445,7 @@ function terminals(entry: Entry, bytes: Buffer, from: number, to: number, stop: 
 /** Checks the spans read against their digests, as far as the slice lasts; false when one changed. */
 function check(entry: Entry, fd: number, now: HistoryVersion, stop: number): boolean {
   buffer ??= Buffer.allocUnsafe(CHUNK);
-  if (entry.check === null) { entry.checkedAt = Date.now(); entry.check = { next: 0, version: now, at: entry.checkedAt }; entry.checks++; }
+  if (entry.check === null) { entry.checkedAt = Date.now(); entry.check = { next: 0, version: now, at: entry.checkedAt, tick: performance.now() }; entry.checks++; }
   const pass = entry.check;
   while (pass.next < entry.spans.length) {
     const start = pass.next === 0 ? 0 : entry.spans[pass.next - 1]!.end;
@@ -415,6 +460,7 @@ function check(entry: Entry, fd: number, now: HistoryVersion, stop: number): boo
     entry.checked = pass.version;
     entry.checkedThrough = entry.offset;
     entry.checkedFrom = pass.at;
+    entry.checkedTick = pass.tick;
   }
   return true;
 }

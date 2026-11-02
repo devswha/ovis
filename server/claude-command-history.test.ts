@@ -1,4 +1,5 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,6 +86,46 @@ it("times the recheck within a version's tick for a watch taken again after the 
   expect(commandHistorySize().timers).toBe(0);
   release.push(watchCommandHistory(s.path, () => {})!);
   expect(commandHistorySize().timers).toBe(1);
+});
+
+/** `body` written with a timestamp a minute ahead, so every check of the test begins within its tick, and read through. */
+async function racy(body: string) {
+  const s = fixture();
+  const tick = Math.ceil(Date.now() / 1000) + 60;
+  writeFileSync(s.path, body);
+  utimesSync(s.path, tick, tick);
+  await waitCommandHistory(s.path, s.limit());
+  return s;
+}
+/** The bytes `run` asks fs.readSync for, and how many reads. */
+function reads(run: () => unknown): Promise<{ bytes: number; calls: number }> {
+  const spy = spyOn(fs, "readSync");
+  return Promise.resolve(run()).then(() => ({ bytes: spy.mock.calls.reduce((sum, call) => sum + ((call as unknown[])[3] as number), 0), calls: spy.mock.calls.length })).finally(() => spy.mockRestore());
+}
+
+it("tells the ends whose lines it reads again within a tick, past the most it reads at once, and all to a request it checked for", async () => {
+  // five ends of 900 KB lines: more than one call reads again
+  const big = (id: string) => json({ ...JSON.parse(notice(id)), pad: "x".repeat(900 * 1024) });
+  const ids = ["a", "b", "c", "d", "e"];
+  const s = await racy(ids.map(big).join(""));
+  const now = commandHistory(s.path, s.limit(), false)!;
+  expect(now.ends.map((end) => end.id)).toEqual(["b", "c", "d", "e"]);
+  expect(now.complete).toBe(false);
+  appendFileSync(s.path, json({ type: "progress" }));
+  utimesSync(s.path, Math.ceil(Date.now() / 1000) + 60, Math.ceil(Date.now() / 1000) + 60);
+  expect(await waitCommandHistory(s.path, s.limit())).toMatchObject({ complete: true, ends: ids.map((id) => ({ id })) });
+});
+
+it("shares one recheck within a version's tick among the requests that wait, reading only the lines of its ends", async () => {
+  const s = await racy(filler.repeat(2) + notice("same"));
+  const read = await reads(async () => { for (let request = 0; request < 5; request++) expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["same"]); });
+  expect(read.bytes).toBeLessThan(s.limit());
+});
+
+it("reads the lines of ends close together at once", async () => {
+  const s = await racy(Array.from({ length: 50 }, (_, index) => notice(`id${index}`)).join(""));
+  const read = await reads(() => expect(commandHistory(s.path, s.limit(), false)!.ends).toHaveLength(50));
+  expect(read.calls).toBe(1);
 });
 
 it("rechecks a version whose mtime is far ahead of the clock within the check interval", async () => {
