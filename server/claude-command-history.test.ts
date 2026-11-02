@@ -142,6 +142,19 @@ it("rechecks a version whose mtime is far ahead of the clock within the check in
     expect(delays).toHaveLength(1);
     expect(delays[0]).toBeLessThanOrEqual(5000);
   } finally { timers.mockRestore(); }
+  // and once that interval is past, the check is due, not put off again
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 6000);
+  try {
+    commandHistory(s.path, s.limit());
+    expect(commandHistorySize().waiting).toBe(1);
+  } finally { clock.mockRestore(); }
+});
+
+it("reads again no more than its budget of bytes, the gaps between lines read at once too", async () => {
+  const gap = json({ type: "progress", value: "x".repeat(1024) }).repeat(60);
+  const s = await racy(Array.from({ length: 100 }, (_, index) => gap + notice(`id${index}`)).join(""));
+  const read = await reads(() => commandHistory(s.path, s.limit(), false));
+  expect(read.bytes).toBeLessThanOrEqual(4 * 1024 * 1024);
 });
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {

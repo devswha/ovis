@@ -163,7 +163,7 @@ export function vouchedEnds(path: string, id: string, ends: HistoryEnd[]): Histo
 
 /**
  * The `ends` whose lines read as they did in the transcript `id` as it is now, the newest lines
- * first as far as VOUCH_BYTES goes, each run of lines close together in one read. "rewritten": a line
+ * first, each run of lines close together in one read, as far as VOUCH_BYTES of reading goes. "rewritten": a line
  * reads otherwise, and nothing changed the transcript while it was read. null: it changed meanwhile,
  * or could not be read.
  */
@@ -171,12 +171,20 @@ function vouchLines(path: string, id: string, ends: HistoryEnd[]): HistoryEnd[] 
   if (ends.length === 0) return ends;
   const byLine = new Map<number, HistoryEnd>();
   for (const end of ends) byLine.set(end.from, end);
-  // a command still unresolved more likely ended late than early
+  // a command still unresolved more likely ended late than early; the bytes between lines read at once count too
   const newest = [...byLine.values()].sort((a, b) => b.from - a.from);
+  const runs: { from: number; to: number; lines: HistoryEnd[] }[] = [];
   let kept = 0;
-  for (let bytes = 0; kept < newest.length && bytes + newest[kept]!.to - newest[kept]!.from <= VOUCH_BYTES; kept++) bytes += newest[kept]!.to - newest[kept]!.from;
-  const lines = newest.slice(0, kept).reverse();
-  if (lines.length === 0) return [];
+  for (let bytes = 0; kept < newest.length; kept++) {
+    const line = newest[kept]!;
+    const run = runs.at(-1);
+    const joins = run !== undefined && run.from - line.to <= VOUCH_GAP && run.to - line.from <= CHUNK;
+    const cost = joins ? run.from - line.from : line.to - line.from;
+    if (bytes + cost > VOUCH_BYTES) break;
+    bytes += cost;
+    if (joins) { run.from = line.from; run.lines.push(line); } else runs.push({ from: line.from, to: line.to, lines: [line] });
+  }
+  if (kept === 0) return [];
   let fd: number | null = null;
   try {
     fd = openSync(path, "r");
@@ -184,24 +192,20 @@ function vouchLines(path: string, id: string, ends: HistoryEnd[]): HistoryEnd[] 
     if (`${before.dev}:${before.ino}` !== id) return null;
     buffer ??= Buffer.allocUnsafe(CHUNK);
     let rewritten = false;
-    for (let first = 0; first < lines.length && !rewritten;) {
-      const start = lines[first]!.from;
-      let last = first;
-      while (last + 1 < lines.length && lines[last + 1]!.to - start <= CHUNK && lines[last + 1]!.from - lines[last]!.to <= VOUCH_GAP) last++;
-      const length = lines[last]!.to - start;
-      const got = readSync(fd, buffer, 0, length, start);
-      for (let index = first; index <= last && !rewritten; index++) {
-        const line = lines[index]!;
-        rewritten = line.to - start > got || BigInt(Bun.hash.xxHash3(buffer.subarray(line.from - start, line.to - start))) !== line.digest;
+    for (const run of runs) {
+      const got = readSync(fd, buffer, 0, run.to - run.from, run.from);
+      for (const line of run.lines) {
+        rewritten = line.to - run.from > got || BigInt(Bun.hash.xxHash3(buffer.subarray(line.from - run.from, line.to - run.from))) !== line.digest;
+        if (rewritten) break;
       }
-      first = last + 1;
+      if (rewritten) break;
     }
     // written to while it read, or replaced: what it read may be gone already
     const after = fstatSync(fd);
     const now = historyVersion(path);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || now === null || now.id !== id || now.size !== before.size || now.mtimeMs !== before.mtimeMs) return null;
     if (rewritten) return "rewritten";
-    const read = new Set(lines.map((line) => line.from));
+    const read = new Set(runs.flatMap((run) => run.lines.map((line) => line.from)));
     return kept === newest.length ? ends : ends.filter((end) => read.has(end.from));
   } catch { return null; } finally { if (fd !== null) closeSync(fd); }
 }
@@ -288,7 +292,7 @@ function due(entry: Entry, now: number): "scan" | "check" | number | null {
     // otherwise hold it back for good
     const waited = entry.waiters > 0 && entry.checks < entry.wanted;
     const tickPast = entry.checked.mtimeMs + RACY_MS;
-    const at = Math.min(waited ? tickPast : Math.max(entry.checkedAt + CHECK_INTERVAL_MS, tickPast), now + CHECK_INTERVAL_MS);
+    const at = Math.min(waited ? tickPast : Math.max(entry.checkedAt + CHECK_INTERVAL_MS, tickPast), Math.max(entry.checkedAt, entry.checkedFrom) + CHECK_INTERVAL_MS);
     return now >= at ? "check" : at;
   }
   // read through but never checked whole, or a request waits: now; else not more often than the interval
