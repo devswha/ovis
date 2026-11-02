@@ -194,6 +194,8 @@ interface TranscriptStream {
   current?: () => boolean;
   /** the history boundary a private (`apart`) scan of this stream published to clearScans, so a rejected image read can take it back */
   published?: object;
+  /** what the history boundary scan read, from `from` to the stream's end, digested a window at a time, when an image read keeps it */
+  seen?: { from: number; digest: bigint };
 }
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
@@ -369,8 +371,8 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript" || source === "muse-transcript" || source === "letta-transcript") return;
   const previous = clearScans.get(path);
   const previousScanned = previous?.scanned;
-  // A rewrite during an image fingerprint cannot reuse a boundary from before that fingerprint.
-  let scan = fresh || (apart && stream.current && !stream.current()) ? undefined : previous;
+  // a file rewritten since a boundary was kept can still end in the tail that boundary is checked by
+  let scan = fresh ? undefined : previous;
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
     scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] } } : {}) };
   } else if (apart) scan = structuredClone(scan);
@@ -379,13 +381,16 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   let carry = Buffer.alloc(0);
   let skipping = false;
   let judged = 0;
+  if (stream.seen) stream.seen = { from: position, digest: 0n };
   const isClear = (line: Buffer): boolean => {
     if (!line.includes(source === "claude-transcript" ? "/clear" : "context_clear")) return false;
     try { return isContextClear(JSON.parse(line.toString("utf8")), source); } catch { return false; }
   };
   while (position < stream.length) {
     const end = Math.min(stream.length, position + TRANSCRIPT_WINDOW_BYTES);
-    const bytes = Buffer.concat([carry, readStream(stream, position, end)]);
+    const read = readStream(stream, position, end);
+    if (stream.seen) stream.seen.digest = Bun.hash.xxHash3(read, stream.seen.digest);
+    const bytes = Buffer.concat([carry, read]);
     const base = position - carry.length;
     let offset = 0;
     for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, offset)) {
@@ -2444,19 +2449,6 @@ function sameImageFile(left: ReturnType<typeof fstatSync>, right: ReturnType<typ
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
-/** Fingerprint the authorized prefix, bounded by search windows even on a warm boundary cache. */
-function* imagePrefixSteps(stream: TranscriptStream): Steps<string> {
-  const hash = createHash("sha256");
-  for (let from = 0; from < stream.length; from += IMAGE_SEARCH_WINDOW) {
-    const end = Math.min(stream.length, from + IMAGE_SEARCH_WINDOW);
-    const bytes = readStream(stream, from, end);
-    if (bytes.length !== end - from) throw new HistoryChanged();
-    hash.update(bytes);
-    if (end < stream.length) yield;
-  }
-  return hash.digest("hex");
-}
-
 function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps<TranscriptPicture | null> {
   const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
@@ -2469,9 +2461,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     if (!current(stat)) return null;
     const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd);
     stream.current = () => current(stat);
-    const prefix = apart ? yield* imagePrefixSteps(stream) : null;
-    // A fingerprint overlapping a write must rebuild its boundary from those bytes.
-    const changedDuringFingerprint = apart && !current(stat);
+    if (apart) stream.seen = { from: 0, digest: 0n };
     // a read rejected after its scan published a boundary takes that boundary back (unless a newer read replaced it):
     // it was built from bytes that no longer stand, and a later lookup must not reuse it as an append's prefix
     const unpublish = (...streams: TranscriptStream[]): null => {
@@ -2481,23 +2471,31 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     };
     yield* applyHistoryBoundarySteps(path, stream, "claude-transcript", apart);
     const picture = yield* claudePictureSteps(stream, match);
-    if (!apart || picture === null || current(stat)) return picture;
-    const latest = fstatSync(fd);
-    if (latest.dev !== stat.dev || latest.ino !== stat.ino || latest.size <= stat.size || !current(latest)) return unpublish(stream);
-    // An append is allowed only if it kept every original byte, including bytes far before the tail.
-    const original = { ...stream, hidden: undefined };
-    if ((yield* imagePrefixSteps(original)) !== prefix) {
-      return unpublish(stream);
+    // the file held still for the whole read (its size, times and identity, by the pinned fd and by path)
+    if (!apart || current(stat)) return picture;
+    // a boundary kept from before the change is checked only by its tail, which a rewrite can keep
+    if (picture === null) return unpublish(stream);
+    // It changed under the read: only an append can keep the picture, and what was read may since be gone
+    // (a rewrite, then its undoing: ABA). So the read is made again on what the file holds now, from a
+    // boundary rebuilt from those bytes (a rewrite before an append keeps the tail a kept boundary is
+    // checked by), and what that read finds is served.
+    const now = fstatSync(fd);
+    if (now.dev !== stat.dev || now.ino !== stat.ino || now.size <= stat.size || !current(now)) return unpublish(stream);
+    // the bytes the boundary scan read (all of them on a cold read, the tail since the last one on a warm
+    // read) must still be there: a rewrite of what this read saw is no append, whatever it changed
+    const seen = stream.seen!;
+    let digest = 0n;
+    for (let position = seen.from; position < stat.size; position = Math.min(stat.size, position + TRANSCRIPT_WINDOW_BYTES)) {
+      digest = Bun.hash.xxHash3(readStream({ ...stream, hidden: undefined }, position, Math.min(stat.size, position + TRANSCRIPT_WINDOW_BYTES)), digest);
+      yield;
     }
-    // Bound validation: a further append or rewrite during this pass is retried by a later request.
-    if (!current(latest)) return unpublish(stream);
-    const now = latest;
+    if (digest !== seen.digest) return unpublish(stream);
     const active = transcriptStream("claude-transcript", path, now, defaultCodexHome(), undefined, fd);
     active.current = () => current(now);
-    yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, changedDuringFingerprint);
-    // /clear and rewind can be appended too: revalidate the exact visible ranges, then fence the file.
-    if (stream.floor !== active.floor || JSON.stringify(stream.hidden ?? []) !== JSON.stringify(active.hidden ?? []) || !current(now)) return unpublish(stream, active);
-    return picture;
+    yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, true);
+    const again = yield* claudePictureSteps(active, match);
+    // a further change during this read is retried by a later request
+    return again !== null && current(now) ? again : unpublish(stream, active);
   } finally { closeSync(fd); }
 }
 
