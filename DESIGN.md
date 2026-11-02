@@ -1449,6 +1449,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and keeps the working dot's breath (opacity only).
 - Footer holds Settings, its gear alone (named **Settings** to screen readers and in its tooltip),
   with the plan meters filling the rest of its row, as a row on the same grid with no rule above.
+  On a coarse pointer the gear stays its `--side-box` column and takes a `--touch-target` width
+  through an invisible `::before` expander that grows into the footer's gutter on its left only:
+  the plan meters start `--space-1` after it, so the two never share a tap. In the compact density
+  it reaches a pixel past the `12px` gutter, off the screen's edge.
   It carries no product name or version: the running versions are read in Settings. Nor does it
   offer **Install app**: the page can only tell it is installed from inside the app's own window,
   so a footer row kept showing in every browser tab and in browsers that never prompt. Settings →
@@ -1988,6 +1992,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   after a drop, disconnected once output stopped. Below `900px` it keeps only its dot; the word stays as
   its accessible text and in its tooltip. While live the chip takes no room and stays in the
   document as a `role="status"` a screen reader can read (`.conn-live`; never `display: none`).
+- A connection this page had and lost is also said in words in the title area, in the crumb's place
+  (`.context-connection`, `lib/headerConnection.ts`): **Reconnecting…** in `--status-working` while
+  it is lost, **Connected** in `--status-done` for two seconds once it is back, then the crumb again,
+  as WhatsApp and Telegram say it under a chat's name. It follows the messengers rather than a
+  coding-agent app because their case is Ovis's on a phone: one conversation's header, whose link to
+  the other end comes and goes with the network. From `769px` it sits on the title's line; at
+  `<=768px` it goes under the title, both lines inside the header's height. It swaps in place and
+  is never animated, and while it speaks the chip keeps only its dot (`.conn-quiet`). It is about
+  the PC and split half the header shows, by the half that reported it: a recovery on one PC or half
+  is not said once another is shown, and a pane's first connection is not a reconnect. A stalled
+  output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
@@ -2925,6 +2940,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   closed or reloaded the app (#2343): there the first tap of the mic asks.
 - The recording pill shows Cancel, a **Recording** label, the level bars, a mono timer and Done.
   Amber only; `--danger` stays for errors.
+- On a coarse pointer the composer's mic (a `--control-h` circle) and the pill's Cancel and Done keep
+  their drawn size and take a `--touch-target` square through an invisible `::before` expander,
+  sized from the button's own box, so the terminal line's mic, already a `--touch-target` circle,
+  grows by nothing. The composer's add button, the mic and the plan chip are drawn `8px` apart;
+  with the mic's expander `3px` stay clear on each side (`2px` in the compact density), and the
+  plan chip's expander reaches only up and down, so no two share a tap. As iOS does with a bar's small glyph buttons (UIKit takes
+  taps beyond the drawn edge to `44pt`), the look stays and only the hit area grows; the Codex and
+  Claude phone apps draw their composer buttons at the target size, which here would crowd the
+  model label off the row. `scripts/tap-targets-demo-regression.ts` measures each hit area by
+  `elementFromPoint` at `390px` and `412px` (and `390px` compact), and that a mouse at `1280px`
+  gets the drawn box only.
 
 ### Live voice (Pi panes)
 - Design followed: Android's chat bubbles and Messenger's chat heads for the floating orb that a

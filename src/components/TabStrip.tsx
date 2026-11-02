@@ -142,15 +142,15 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
   const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames
     ? autoTabLabel(tab, panes.filter((pane) => pane.tab_id === tab.tab_id), machineId, firstLines, placeOf(tab)) : null;
-  // the name herdr holds (or was just sent), which a rename compares against: a tab herdr still names
-  // by its place says its one agent's title instead
-  const givenName = (tab: HerdrTab): string => {
+  // the name herdr holds (or was just sent), which a rename compares against
+  const givenName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, placeOf(tab));
+  // a tab herdr still names by its place says its one agent's title instead
+  // (else a few words of its first message, #2019)
+  const nameOf = (tab: HerdrTab): string => {
     if (sent?.tabId === tab.tab_id) return sent.label;
-    const place = tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
     const agents = panesOf(tab).filter((pane) => pane.agent);
-    return customTabLabel(tab, place) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : tabLabel(tab, t, place));
+    return customTabLabel(tab, placeOf(tab)) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : autoOf(tab) ?? givenName(tab));
   };
-  const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : autoOf(tab) ?? givenName(tab);
 
   useEffect(() => {
     // the pane each tab was last seen on, per PC: a tab clicked again opens where it was left

@@ -47,6 +47,7 @@ import { PiSessionReader } from "./pi-session-metadata.ts";
 import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
+import { holdCommandHistory } from "./claude-command-history.ts";
 import { holdFilePool } from "./file-pool.ts";
 import { handleRequest, type RequestServices, type ServerContext } from "./dispatch.ts";
 
@@ -363,6 +364,7 @@ export function createServer(
   const releaseOpenCodeNative = holdOpenCodeNative();
   // the file threads are shared by every server in this process too: the last one to stop ends them
   const releaseFilePool = holdFilePool();
+  const releaseCommandHistory = holdCommandHistory();
   core.start();
 
   return {
@@ -399,6 +401,7 @@ export function createServer(
       agentDetector.close();
       server.stop(true);
       releaseFilePool();
+      releaseCommandHistory();
       requestLog.close();
     },
   };

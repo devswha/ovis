@@ -201,6 +201,7 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/keyboard-viewport-demo-regression.ts", // docs/development.md
   "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
   "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
+  "scripts/reconnect-header-demo-regression.ts", // upstream's connection line in the header's crumb: this fork's header has tabs and no crumb
   "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)
