@@ -11,6 +11,7 @@
 .dir-browser-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1);
   padding: var(--space-1);
   border-bottom: var(--hairline) solid var(--border);
