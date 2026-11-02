@@ -137,13 +137,25 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
   through the Ovis relay it travels through the developer's `relay.ovis.sh`, end-to-end encrypted
   between the phone and the PC (`docs/relay.md`, Trust model): the relay sees each connection's
   PC relay ID (and, for the PC's own connection, its public key), its role, its address and when
-  and how much passes, never the content, and keeps none of it (no logs, no storage; the address only rate-limits). The app such
-  a PC opens in is static files from `app.ovis.sh` (Cloudflare Pages), which sees requests for
-  those files: the phone's address, the PC's relay ID in the path, and whatever else the address
-  holds, such as the path of a file the user opens in a tab of its own or as a raw file. No code
-  of the developer's runs on those requests (no Pages Functions) and nothing keeps them. So the
-  relay adds no data type and no recipient to the table below: the same types still go only to the user's PC (the
-  phone's relay key goes there in place of a cookie, under Device or other IDs).
+  and how much passes, never the content, and keeps none of it (no logs, no storage; the
+  address only rate-limits). The app such a PC opens in is static files from `app.ovis.sh`
+  (Cloudflare Pages), which sees requests for those files: the phone's address, the PC's relay ID
+  in the path, and whatever else the address holds, such as the path of a file the user opens in
+  a tab of its own or as a raw file. No code of the developer's runs on those requests (no Pages
+  Functions) and the developer keeps no log of them. So for the encrypted content (the types in
+  the table that the user sees and sends) the relay adds no type and no recipient: it still goes
+  only to the user's PC. What the relay services do get, unencrypted, is checked against the
+  form:
+  - The PC's relay ID (`server_id`) names the user's PC, so it is a Device or other ID. The relay
+    holds it only in memory for the life of a connection, but it is also in the `app.ovis.sh`
+    page address, which passes through Cloudflare, so it is not counted as processed ephemerally.
+    Device or other IDs is already declared (collected, required, App functionality), so the
+    answer stands; the row below now names the relay ID.
+  - The connecting address (IP) of the phone and the PC is used only to rate-limit connections,
+    never to infer a location and never stored. Play has no IP data type of its own and asks for
+    IP addresses to be declared by what they are used for; no location is derived from it, so it
+    adds no Approximate location answer (the declared one comes from the usage counts).
+  - The phone's relay key goes to the PC in place of a cookie, under Device or other IDs.
 - **On to the developer, from the PC**: the Ovis server on the PC sends anonymous usage counts to
   the developer's telemetry Worker (`server/telemetry.ts`, `telemetry/worker.ts`). The client the
   phone opens tells the PC its settings (`TelemetryNotice` in
@@ -173,7 +185,7 @@ Answers:
 | Files and docs | files the user attaches in the composer, and files opened in the file viewer | optional, user-initiated | App functionality |
 | App activity > Other user-generated content | what is typed into terminals | required | App functionality |
 | App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
-| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
+| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
 | Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; the address is not stored | optional (can be turned off) | Analytics |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 

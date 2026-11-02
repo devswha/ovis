@@ -115,12 +115,17 @@ without transparency, with the status bar set to 9:41.
 
 Apple counts data as collected when it leaves the device "in a way that allows you and/or your
 third-party partners to access it". What the app shows and sends goes only to a computer the
-user runs, so it is not collected in Apple's sense. That holds through the Ovis relay too: a PC
-paired that way is reached through the developer's `relay.ovis.sh`, end-to-end encrypted between
-the phone and the PC, so the developer cannot access the content; the relay keeps no logs and
-stores nothing, and `app.ovis.sh` serves the app's static files, with no code of the developer's
-running on a request (whose address can hold the path of a file the user opens in its own tab or as a raw file) and
-nothing keeping it (`docs/relay.md`, Trust model).
+user runs, so it is not collected in Apple's sense. That holds through the Ovis relay too, on
+the terms of its trust model (`docs/relay.md`, Trust model): a PC paired that way is reached
+through the developer's `relay.ovis.sh`, end-to-end encrypted between the phone and the PC, so
+the relay cannot read the content, and it keeps no logs and stores nothing. The encryption ends
+in the app the phone runs for that PC, which is code the developer serves from `app.ovis.sh`
+(Cloudflare Pages): it holds the phone's key and shows what the PC sends, so it protects the
+content from the relay, not from that code. That code is open source, built by the Release
+workflow from each tag and published with its SHA-256, and sends the content only to the PC.
+`app.ovis.sh` sees requests for its static files (the phone's address, the PC's relay ID, and
+any file path in a page address such as a file opened in its own tab or as a raw file); no code
+of the developer's runs on them and the developer keeps no log of them.
 One route does reach the developer: the app tells the PC the settings chosen in it
 (`TelemetryNotice` in
 `src/components/TelemetryControls.tsx`), and the Ovis server on the PC puts the settings of the
