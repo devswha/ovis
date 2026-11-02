@@ -1567,12 +1567,13 @@ export class ClaudeSubagentStatus {
         tracked.historyPending = state.historyPending;
         if (state.historyPending && !this.historyWatches.has(tracked.path)) {
           const path = tracked.path;
-          this.historyWatches.set(path, watchCommandHistory(path, () => {
+          const release = watchCommandHistory(path, () => {
             this.historyWatches.get(path)?.();
             this.historyWatches.delete(path);
             for (const pane of this.panes.values()) if (pane.path === path) pane.sig = null;
             this.poll();
-          }));
+          });
+          if (release !== null) this.historyWatches.set(path, release);
         }
         const parent = parents.get(tracked.path);
         let waiting = false;

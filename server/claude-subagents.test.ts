@@ -8,7 +8,7 @@ import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
 import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, readLines, remember, subagentDetails, taskNotification, validDetailId, wholeClaudeSubagents, within } from "./claude-subagents.ts";
 import { scanClaudeTasks } from "./claude-task-scan.ts";
-import { waitCommandHistory } from "./claude-command-history.ts";
+import { commandHistory, commandHistorySize, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
 import { runFileTask } from "./file-tasks.ts";
 
 const roots: string[] = [];
@@ -1680,6 +1680,48 @@ describe("claudeSubagents, before the files are read through", () => {
       expect(claudeSubagentState(s.path, true, NOW)).toMatchObject({ historyPending: false, running: 0 });
       expect(status.holdsQueue("p1")).toBe(false);
     } finally { status.stop(); }
+  });
+
+  it("retries a history watch refused by cache capacity and then drains chunks without more polling", async () => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("suite", 2, { file });
+    const filler = json({ type: "progress", value: "x".repeat(1024) }).repeat(2048);
+    appendFileSync(s.path, filler);
+    s.notify("suite", 3, { summary: "Background command finished", carriers: ["queue"] });
+    pastParentWindow(s.path);
+    forgetSubagents();
+    const owners: (() => void)[] = [];
+    const pane = { pane_id: "p1", agent: "claude", cwd: "/work", agent_status: "idle", focused: false, revision: 1 } as HerdrPane;
+    const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {}, now: () => NOW });
+    try {
+      // Already-owned cursors fill the cache before the tracker first requests its history.
+      for (let index = 0; index < 16; index++) {
+        const path = join(dirname(s.path), `owned-${index}.jsonl`);
+        writeFileSync(path, "{}\n");
+        expect(commandHistory(path, 0, false)).not.toBeNull();
+        const release = watchCommandHistory(path, () => {});
+        expect(release).not.toBeNull();
+        owners.push(release!);
+      }
+      await status.refresh([pane]);
+      expect(commandHistorySize()).toMatchObject({ sessions: 16, active: false });
+      expect(commandHistory(s.path, statSync(s.path).size, false)).toBeNull();
+      expect(watchCommandHistory(s.path, () => {})).toBeNull();
+      expect(await waitCommandHistory(s.path, statSync(s.path).size, 20)).toBeNull();
+      expect(status.holdsQueue("p1")).toBe(true);
+      owners.shift()!();
+      status.poll(); // Retry admission once; subsequent chunks must advance via the real watch.
+      const deadline = Date.now() + 3000;
+      while (status.holdsQueue("p1")) {
+        if (Date.now() > deadline) throw new Error("admitted command history did not release its queue hold");
+        await Bun.sleep(5);
+      }
+      const history = commandHistory(s.path, statSync(s.path).size, false);
+      expect(history!.through).toBeGreaterThan(2 * 1024 * 1024);
+      expect(history!.ends.map((end) => end.id)).toContain("suite");
+      expect(status.countOf("p1")).toBe(0);
+    } finally { status.stop(); for (const release of owners) release(); }
   });
 
   it("releases a cold-window history hold after a partial final record is completed", async () => {

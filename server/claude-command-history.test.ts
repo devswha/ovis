@@ -163,12 +163,13 @@ it("keeps a blocked physical slot through deadlines, invalidation and restart wh
   writeFileSync(other.path, notice("queued"));
   commandHistory(other.path, other.limit());
   const statusOwner = watchCommandHistory(other.path, () => {});
+  expect(statusOwner).not.toBeNull();
   const abort = new AbortController();
   const cancelled = waitCommandHistory(other.path, other.limit(), 10_000, abort.signal);
   abort.abort();
   await cancelled;
   expect(commandHistorySize().waiting).toBe(1);
-  statusOwner();
+  statusOwner!();
   expect(commandHistorySize().waiting).toBe(0);
   for (let reset = 0; reset < 3; reset++) {
     resetCommandHistory();
@@ -190,7 +191,8 @@ it("bounds the queue, coalesces sessions and lets a small session finish before 
   commandHistory(large.path, large.limit());
   const order: string[] = [];
   const unwatch = watchCommandHistory(large.path, () => { if (commandHistory(large.path, large.limit())?.through === large.limit()) order.push("large"); });
-  release.push(unwatch);
+  expect(unwatch).not.toBeNull();
+  release.push(unwatch!);
   const small = fixture();
   writeFileSync(small.path, notice("small"));
   expect((await waitCommandHistory(small.path, small.limit()))!.complete).toBe(true);

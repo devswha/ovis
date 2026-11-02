@@ -54,10 +54,10 @@ export function commandHistory(path: string, limit: number, schedule = true): Hi
   return { version, through: entry.offset, complete: entry.offset >= limit && !entry.uncertain, ends: [...entry.ends.values()] };
 }
 
-/** The tracker owns ongoing work; a request's deadline never destroys its checkpoint. */
-export function watchCommandHistory(path: string, changed: () => void): () => void {
+/** The tracker owns ongoing work; null means the bounded cache has not admitted this path. */
+export function watchCommandHistory(path: string, changed: () => void): (() => void) | null {
   const entry = entries.get(path);
-  if (!entry) return () => {};
+  if (!entry) return null;
   entry.listeners.add(changed);
   return () => {
     entry.listeners.delete(changed);
@@ -74,14 +74,15 @@ export async function waitCommandHistory(path: string, limit: number, ms = 10_00
   let evidence = commandHistory(path, limit);
   if (evidence === null || evidence.through >= limit) return evidence;
   await new Promise<void>((resolve) => {
-    let release = () => {};
+    let release: (() => void) | null = null;
     const timer = setTimeout(done, ms);
-    function done() { clearTimeout(timer); signal?.removeEventListener("abort", done); release(); resolve(); }
+    function done() { clearTimeout(timer); signal?.removeEventListener("abort", done); release?.(); resolve(); }
     signal?.addEventListener("abort", done, { once: true });
     release = watchCommandHistory(path, () => {
       const entry = entries.get(path);
       if (!entry || entry.offset >= limit) done();
     });
+    if (release === null) done();
   });
   evidence = commandHistory(path, limit, false);
   return evidence;
