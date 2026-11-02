@@ -278,11 +278,12 @@ async function step(entry: Entry): Promise<void> {
   let restarted = false;
   // the transcript as known when the stat now on its way was asked for
   let known = entry.version;
+  const deadline = Date.now() + READ_MS;
+  // the transcript is let go of well inside the read's deadline, however long the read waited to begin
+  const held = deadline - READ_MS / 2;
   try {
     await transcriptReader.read(entry.path, async (file) => {
       let stop = performance.now() + SLICE_MS;
-      // the transcript is let go of well inside the read's deadline
-      const held = Date.now() + READ_MS / 2;
       for (let now = file.initial; ;) {
         // let go of (discarded) while it waited for the disk: nothing more is read for it
         if (entries.get(entry.path) !== entry) return;
@@ -308,9 +309,10 @@ async function step(entry: Entry): Promise<void> {
           if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
         } else break;
         if (performance.now() >= stop) {
-          // the turn ends the read when another session or reader waits, or a watcher has news
-          if (Date.now() >= held || queue.some((other) => other !== entry) || transcriptReader.size().waiting > 0
-            || (entry.ends.length !== before && entry.listeners.size > entry.waiters)) break;
+          // the turn ends the read when nobody wants it read on, another session or reader waits, it
+          // started over, or a watcher has an end to hear
+          if (Date.now() >= held || entry.listeners.size === 0 || queue.some((other) => other !== entry)
+            || transcriptReader.size().waiting > 0 || restarted || (entry.ends.length !== before && entry.listeners.size > entry.waiters)) break;
           // nobody else waits: the event loop has its turn, and the read goes on with the transcript
           // still open (an open and its check cost several round trips on remote storage)
           await new Promise<void>((resolve) => setImmediate(resolve));
@@ -320,7 +322,7 @@ async function step(entry: Entry): Promise<void> {
         if (after === null) { known = entry.version; after = await file.stat(); }
         now = after;
       }
-    }, { deadline: Date.now() + READ_MS });
+    }, { deadline });
     if (entries.get(entry.path) !== entry) return;
     entry.failures = 0;
     entry.retryAt = 0;
@@ -350,7 +352,7 @@ async function step(entry: Entry): Promise<void> {
  * was known when it was asked for.
  */
 function seen(entry: Entry, known: HistoryVersion, now: HistoryVersion): boolean {
-  if (sameHistory(known, now) && (sameHistory(entry.version, now) || (entry.version !== known && sameHistory(now, entry.version)))) {
+  if (sameHistory(known, now) && (sameHistory(entry.version, now) || sameHistory(now, entry.version))) {
     if (sameHistory(entry.version, now)) entry.version = now;
     return true;
   }

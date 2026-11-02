@@ -500,3 +500,76 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
   // a turn ends every few reads, not after each one
   expect(turns.mock.calls.length).toBeLessThan(reads / 2);
 }, 5000);
+
+it("reads one slice for a request nobody watches or waits for", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(9));
+  const reads = slowReads();
+  commandHistory(s.path, s.limit());
+  for (let turns = 0; turns < 1000 && (commandHistory(s.path, s.limit(), false)!.through === 0 || commandHistorySize().draining); turns++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(commandHistorySize().draining).toBe(false);
+  expect(reads(s.path)).toBe(1);
+  expect(reads.leases(s.path)).toBe(1);
+}, 5000);
+
+it("reads on in one lease for a tracker's watch after it hears the first end", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(9));
+  const reads = slowReads();
+  // as a tracker asks: a read, and a watch of it until it is no longer needed
+  commandHistory(s.path, s.limit());
+  const done = gate();
+  release.push(watchCommandHistory(s.path, () => { if (commandHistory(s.path, s.limit(), false)!.complete) done.open(); })!);
+  await done.opened;
+  expect(reads(s.path)).toBeGreaterThan(9);
+  // let go of once, for the end the watcher hears from the first chunk
+  expect(reads.leases(s.path)).toBe(2);
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn it started over in", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("a") + filler.repeat(16));
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.ends.map((end) => end.id)).toEqual(["a"]);
+  // a clock that moves only by 1 ms a read: four reads to a slice
+  let waited = 0, reads = 0, heard = -1;
+  const base = performance.now();
+  const now = spyOn(performance, "now").mockImplementation(() => base + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((_, work) => (file) => work({ ...file, window: async (position, length) => {
+    const bytes = await file.window(position, length);
+    waited += 1;
+    reads++;
+    return bytes;
+  } }));
+  release.push(watchCommandHistory(s.path, () => { if (heard < 0) heard = reads; })!);
+  // rewritten in place and grown: the same file, its first record another; a check finds it
+  writeFileSync(s.path, notice("b") + filler.repeat(17));
+  const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(read!.ends.map((end) => end.id)).toEqual(["b"]);
+  expect(reads).toBeGreaterThan(16);
+  // the watcher hears of the start over in the turn it happened, not once the transcript is read again
+  expect(heard).toBeGreaterThan(0);
+  expect(heard).toBeLessThan(8);
+}, 5000);
+
+it("counts the time it keeps a transcript open from when its read was asked for", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  let now = Date.now();
+  setSystemTime(new Date(now));
+  try {
+    // another reader of the same transcript (one lease a path) holds it while most of half the
+    // read's deadline goes by
+    const held = gate(), entered = gate();
+    const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
+    await entered.opened;
+    const reads = slowReads();
+    const reading = waitCommandHistory(s.path, s.limit(), 60_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    setSystemTime(new Date(now += 6_000));
+    held.open();
+    await other;
+    expect((await reading)!.complete).toBe(true);
+    expect(reads.leases(s.path)).toBe(2);
+  } finally { setSystemTime(); }
+}, 5000);
