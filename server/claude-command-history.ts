@@ -243,7 +243,8 @@ function due(entry: Entry, now: number): "scan" | "check" | number | null {
     if (checkedNow(entry)) return null;
     // checked within the version's tick: a waiter gets a check begun after it, a watcher one once the tick is past
     if (entry.waiters > 0 && entry.checks < entry.wanted) return "check";
-    const at = Math.max(entry.checkedAt + CHECK_INTERVAL_MS, entry.checked.mtimeMs + RACY_MS);
+    // never past the interval: an mtime far ahead of the clock would otherwise hold it back for good
+    const at = Math.min(Math.max(entry.checkedAt + CHECK_INTERVAL_MS, entry.checked.mtimeMs + RACY_MS), now + CHECK_INTERVAL_MS);
     return now >= at ? "check" : at;
   }
   // read through but never checked whole, or a request waits: now; else not more often than the interval

@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,6 +85,22 @@ it("times the recheck within a version's tick for a watch taken again after the 
   expect(commandHistorySize().timers).toBe(0);
   release.push(watchCommandHistory(s.path, () => {})!);
   expect(commandHistorySize().timers).toBe(1);
+});
+
+it("rechecks a version whose mtime is far ahead of the clock within the check interval", async () => {
+  const s = fixture();
+  // 60 days ahead: past setTimeout's limit, a delay that long would fire at once, again and again
+  const tick = Math.ceil(Date.now() / 1000) + 60 * 86_400;
+  writeFileSync(s.path, notice("same"));
+  utimesSync(s.path, tick, tick);
+  await waitCommandHistory(s.path, s.limit());
+  const timers = spyOn(globalThis, "setTimeout");
+  try {
+    release.push(watchCommandHistory(s.path, () => {})!);
+    const delays = timers.mock.calls.map((call) => call[1] as number);
+    expect(delays).toHaveLength(1);
+    expect(delays[0]).toBeLessThanOrEqual(5000);
+  } finally { timers.mockRestore(); }
 });
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {
