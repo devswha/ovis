@@ -79,7 +79,8 @@ testers need a short beta review.
 > - Install Ovis on your PC (ovis.sh) and open it there.
 > - In the app, scan the pairing QR code from Settings > Phone & devices on the PC, or type its
 >   address.
-> - The app connects only to your own PC, over Tailscale or your own network.
+> - The app connects only to your own PC: over Tailscale or your own network, or, once you turn it
+>   on on the PC, through the Ovis relay, end-to-end encrypted.
 >
 > No account, no ads, no tracking. Try the demo on the first screen to look around without a PC.
 >
@@ -114,8 +115,12 @@ without transparency, with the status bar set to 9:41.
 
 Apple counts data as collected when it leaves the device "in a way that allows you and/or your
 third-party partners to access it". What the app shows and sends goes only to a computer the
-user runs, so it is not collected in Apple's sense. One route does reach the developer: the app
-tells the PC the settings chosen in it (`TelemetryNotice` in
+user runs, so it is not collected in Apple's sense. That holds through the Ovis relay too: a PC
+paired that way is reached through the developer's `relay.ovis.sh`, end-to-end encrypted between
+the phone and the PC, so the developer cannot access the content; the relay keeps no logs and
+stores nothing, and `app.ovis.sh` serves the app's static files (`docs/relay.md`, Trust model).
+One route does reach the developer: the app tells the PC the settings chosen in it
+(`TelemetryNotice` in
 `src/components/TelemetryControls.tsx`), and the Ovis server on the PC puts the settings of the
 last browser or phone that opened it into its anonymous usage counts, which it sends to the
 developer's telemetry Worker (`server/telemetry.ts`, stored by `telemetry/worker.ts`). They are on
@@ -160,7 +165,8 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 
 > Ovis is the phone app for Ovis, an open-source program people run on their own computer to
 > watch and control their coding agents and terminals (https://ovis.sh). The app connects only
-> to the user's own computer, so there is no account to give you. To review the whole app without
+> to the user's own computer, directly or through the end-to-end encrypted Ovis relay that
+> computer turns on, so there is no account to give you. To review the whole app without
 > a computer, tap "Try the demo" on the first screen: it runs the full interface with made-up
 > agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
 > pairing code a computer shows. The app uses the microphone for voice input the user chooses:

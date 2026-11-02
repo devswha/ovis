@@ -91,7 +91,8 @@ presence > Main store listing > Manage translations.
 > - Install Ovis on your PC (ovis.sh) and open it there.
 > - In the app, scan the pairing QR code from Settings > Phone & devices on the PC, or type its
 >   address.
-> - The app connects only to your own PC, over Tailscale or your own network.
+> - The app connects only to your own PC: over Tailscale or your own network, or, once you turn it
+>   on on the PC, through the Ovis relay, end-to-end encrypted.
 >
 > No account, no ads, no tracking. Try the demo on the first screen to look around without a PC.
 >
@@ -127,12 +128,20 @@ emulator; no real PC or session is in them.
 | Advertising ID | No, the app does not use it |
 | Data safety | below |
 
-**Data safety** (as of 1.0 (2), with push). Google counts as collected anything the
-app sends off the phone, wherever it goes, so what travels to the user's own PC counts too. Its
+**Data safety** (as of 1.0 (2), with push; the Ovis relay in 1.0 (4) changes no answer). Google
+counts as collected anything the app sends off the phone, wherever it goes, so what travels to the user's own PC counts too. Its
 exception for data a user sends to their own storage needs an app that "never collects or
 accesses" that data, and Ovis shows it, so it does not apply. Three routes leave the phone:
 
-- **To the user's own PC**: everything the app shows and sends while it is open.
+- **To the user's own PC**: everything the app shows and sends while it is open. For a PC paired
+  through the Ovis relay it travels through the developer's `relay.ovis.sh`, end-to-end encrypted
+  between the phone and the PC (`docs/relay.md`, Trust model): the relay sees each connection's
+  PC relay ID and public key, its role, its address and when and how much passes, never the
+  content, and keeps none of it (no logs, no storage; the address only rate-limits). The app such
+  a PC opens in is static files from `app.ovis.sh` (Cloudflare Pages), which sees requests for
+  those files: the phone's address and the PC's relay ID in the path. So the relay adds no data
+  type and no recipient to the table below: the same types still go only to the user's PC (the
+  phone's relay key goes there in place of a cookie, under Device or other IDs).
 - **On to the developer, from the PC**: the Ovis server on the PC sends anonymous usage counts to
   the developer's telemetry Worker (`server/telemetry.ts`, `telemetry/worker.ts`). The client the
   phone opens tells the PC its settings (`TelemetryNotice` in
@@ -146,8 +155,8 @@ Answers:
 
 - *Does your app collect or share any of the required user data types?* **Yes.**
 - *Is all of the user data collected by your app encrypted in transit?* **No** (a plain `http`
-  address on a home network is allowed; over Tailscale and `https` it is encrypted; the usage
-  counts go to the developer over `https`).
+  address on a home network is allowed; over Tailscale, `https` and the Ovis relay it is
+  encrypted; the usage counts go to the developer over `https`).
 - *Do you provide a way for users to request that their data is deleted?* **No** (what goes to the
   PC is kept on the user's own computer; the usage counts hold no account or contact to find a
   person by).
@@ -162,7 +171,7 @@ Answers:
 | Files and docs | files the user attaches in the composer, and files opened in the file viewer | optional, user-initiated | App functionality |
 | App activity > Other user-generated content | what is typed into terminals | required | App functionality |
 | App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
-| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired (to the PC); the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
+| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
 | Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; the address is not stored | optional (can be turned off) | Analytics |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 
@@ -170,8 +179,8 @@ The composer's attachment picker takes any file (`src/components/Composer.tsx`,
 `uploadPaneImage` in `src/lib/api.ts`), so every file-like type above is listed as optional and
 user-initiated: nothing is sent unless the user picks it. None of it is "shared": the PC is the
 user's own, the transcription provider is one the user chose and is sent to on the user's own
-action, and the developer's receiver and push relay run on Cloudflare, and FCM carries the
-encrypted alerts, as service providers.
+action, and the developer's receiver, push relay, Ovis relay and `app.ovis.sh` run on
+Cloudflare, and FCM carries the encrypted alerts, as service providers.
 
 **The usage counts, in full** (with the push token above, the only data that reaches the
 developer):
@@ -225,4 +234,7 @@ developer):
 - **Push (FCM)**, from 1.0 (2): built with `OVIS_GOOGLE_SERVICES` naming the Firebase project's
   `google-services.json` (without it the app builds with push unavailable). The phone's FCM token
   goes to the push relay, so "Device or other IDs" covers it (above), as does the privacy policy.
+- **Ovis relay**, from 1.0 (4): the app opens a PC paired through `relay.ovis.sh` in the app
+  served from `app.ovis.sh`. Both are named in the privacy policy; the Data safety answers above
+  stay as they are (see the first route).
 - Every new upload: raise `versionCode`, build as in section 2, upload to the track.
