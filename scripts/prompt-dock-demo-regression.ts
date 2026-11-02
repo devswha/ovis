@@ -488,8 +488,7 @@ try {
           assert.ok(body.height >= 2 * body.line && body.height <= 6 * body.line + 20, `${label}: the reference text shows two to six lines (${body.height / body.line})`);
           // a typed pick: its Confirm row is in sight at once, whatever the card's scroll
           await page.locator(".composer-text").fill("2");
-          // Return breaks the line on a touch screen, where a keyboard's Ctrl+Enter sends
-          await page.locator(".composer-text").press(size.touch ? "Control+Enter" : "Enter");
+          await page.locator(".composer-text").press("Enter");
           await page.locator(".prompt-card-confirm").waitFor();
           assert.deepEqual(await hitOf(page, ".prompt-card-confirm .btn-primary"), { hit: "self", visible: true }, `${label}: Confirm is in sight and pressable`);
           // the pinned row is as short as it can be: Confirm and Cancel share one line
@@ -643,7 +642,7 @@ try {
         try {
           placed(await layoutOf(page), label);
           await page.locator(".composer-text").fill("2");
-          await page.locator(".composer-text").press(size.touch ? "Control+Enter" : "Enter");
+          await page.locator(".composer-text").press("Enter");
           await page.locator(".prompt-card-confirm").waitFor();
           await page.waitForFunction(() => document.querySelector(".prompt-card-option.is-typed")!.getAnimations().length === 0);
           const row = await confirmRowOf(page);
