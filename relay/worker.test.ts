@@ -186,6 +186,30 @@ describe("relay Durable Object", () => {
     expect(two.client.closedWith?.code).toBe(CLOSE.RESTART);
   });
 
+  for (const target of ["client", "data"] as const) {
+    test(`a failed send to ${target} ends the pair without a runtime close event`, async () => {
+      const fake = fakeState();
+      const room = new RelayRoom(fake.state);
+      const control = await connectServer(room, fake);
+      const pair = await connectPair(room, fake);
+      const other = await connectPair(room, fake);
+      pair[target].send = () => { throw new Error("transport unavailable"); };
+      room.webSocketMessage(pair[target === "client" ? "data" : "client"], "ciphertext");
+      await Promise.resolve();
+      expect(pair[target].closedWith?.code).toBe(CLOSE.RESTART);
+      expect(pair[target === "client" ? "data" : "client"].closedWith?.code)
+        .toBe(target === "client" ? CLOSE.GOING_AWAY : CLOSE.RESTART);
+      expect(control.json(control.sent.length - 1)).toEqual({ type: "disconnected", connection_id: pair.connection_id });
+      const notifications = control.sent.length;
+      room.webSocketClose(pair.client);
+      room.webSocketError(pair.data);
+      expect(control.sent).toHaveLength(notifications);
+      room.webSocketMessage(other.client, "still connected");
+      expect(other.data.sent.at(-1)).toBe("still connected");
+      expect(control.closedWith).toBeNull();
+    });
+  }
+
   test("an alarm closes sockets idle for 120 s; a PC kept alive by the runtime's keepalive stays", async () => {
     const start = new Date("2026-10-29T12:00:00Z");
     setSystemTime(start);
