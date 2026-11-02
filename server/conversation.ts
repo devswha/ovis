@@ -35,8 +35,9 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { readStatuslineContext } from "./statusline.ts";
+import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
@@ -45,7 +46,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
-import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
+import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
@@ -188,10 +189,12 @@ interface TranscriptStream {
   floor: number;
   promptStarts?: number[];
   fd?: number;
+  /** the shared reader's lease on the one file the stream is (a Claude image read): its bytes come by async positional reads (streamBytes) */
+  file?: TranscriptFile;
   /** byte ranges a Claude rewind left off the session's branch (claudeBranch): read as blank lines */
   hidden?: [number, number][];
   /** A cooperative image scan publishes only while its file snapshot is current. */
-  current?: () => boolean;
+  current?: () => Steps<boolean>;
   /** the history boundary a private (`apart`) scan of this stream published to clearScans, so a rejected image read can take it back */
   published?: { scan: object; through: number };
   /** what the history boundary scan read, from `from` to the stream's end, digested a window at a time, when an image read keeps it */
@@ -313,7 +316,50 @@ function readStream(stream: TranscriptStream, from: number, to: number): Buffer 
       if (stream.fd === undefined) closeSync(fd);
     }
   }
-  const bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+  return hideOffBranch(stream, chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks), from, to);
+}
+
+/**
+ * readStream in steps: a lease's bytes (`stream.file`) are waited for (awaited), never read on the
+ * event loop. What one window holds comes in the lease's own buffer, not a new one: it holds only
+ * until the next read of the stream, and every reader here takes it in (decodes, copies or digests
+ * it) before it reads on.
+ */
+function* streamBytes(stream: TranscriptStream, from: number, to: number): Steps<Buffer> {
+  const file = stream.file;
+  if (file === undefined) return readStream(stream, from, to);
+  const within = stream.files.filter((segment) => Math.max(from, segment.start) < Math.min(to, segment.start + segment.length));
+  if (within.length === 1 && to - from <= LEASE_WINDOW_BYTES) {
+    const [segment] = within;
+    const low = Math.max(from, segment!.start);
+    const bytes = yield* awaited(file.window(segment!.offset + (low - segment!.start), Math.min(to, segment!.start + segment!.length) - low));
+    // the lease's buffer: valid until the next read on this lease, so the caller takes it in first
+    return hideOffBranch(stream, bytes, from, to);
+  }
+  return yield* awaited((async () => {
+    const chunks: Buffer[] = [];
+    for (const segment of stream.files) {
+      const low = Math.max(from, segment.start);
+      const high = Math.min(to, segment.start + segment.length);
+      if (low >= high) continue;
+      // as readSync fills it: a window at a time, what a short read leaves at the end cut off
+      const buffer = Buffer.alloc(high - low);
+      let got = 0;
+      while (got < buffer.length) {
+        const length = Math.min(LEASE_WINDOW_BYTES, buffer.length - got);
+        const window = await file.window(segment.offset + (low - segment.start) + got, length);
+        got += window.copy(buffer, got);
+        if (window.length < length) break;
+      }
+      chunks.push(buffer.subarray(0, got));
+    }
+    return hideOffBranch(stream, chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks), from, to);
+  })());
+}
+/** The most one read of a lease takes (TranscriptFile.window). */
+const LEASE_WINDOW_BYTES = 1024 * 1024;
+
+function hideOffBranch(stream: TranscriptStream, bytes: Buffer, from: number, to: number): Buffer {
   // a line off the branch keeps its place, so every offset still names the same bytes, and reads as blank
   for (const [start, end] of stream.hidden ?? []) {
     const low = Math.max(start, from) - from;
@@ -548,7 +594,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   const previousScanned = previous?.scanned;
   // a file rewritten since a boundary was kept can still end in the tail that boundary is checked by
   let scan = fresh ? undefined : previous;
-  if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
+  if (!scan || scan.id !== stream.id || scan.scanned > stream.length || (yield* bytesBeforeSteps(stream, scan.scanned)) !== scan.tail) {
     scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
@@ -563,7 +609,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   };
   while (position < stream.length) {
     const end = Math.min(stream.length, position + TRANSCRIPT_WINDOW_BYTES);
-    const read = readStream(stream, position, end);
+    const read = yield* streamBytes(stream, position, end);
     if (stream.seen) stream.seen.digest = Bun.hash.xxHash3(read, stream.seen.digest);
     const bytes = Buffer.concat([carry, read]);
     const base = position - carry.length;
@@ -623,10 +669,12 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     position = end;
     if (position < stream.length) yield;
   }
-  scan.tail = bytesBefore(stream, scan.scanned);
+  scan.tail = yield* bytesBeforeSteps(stream, scan.scanned);
   stream.pictures = scan.pictures;
-  // A page read can advance the same cached object while this private copy is paused.
-  if (!apart || (clearScans.get(path) === previous && previous?.scanned === previousScanned && (stream.current?.() ?? true))) {
+  // A page read can advance the same cached object while this private copy is paused, also while
+  // the file's check is on its way: what is kept is checked again once it answers.
+  const kept = () => clearScans.get(path) === previous && previous?.scanned === previousScanned;
+  if (!apart || (kept() && (stream.current === undefined || ((yield* stream.current()) && kept())))) {
     remember(clearScans, path, scan, 32);
     if (apart) stream.published = { scan, through: scan.scanned };
   }
@@ -725,6 +773,10 @@ const settledTurns = new Map<string, SettledTurns>();
 
 function bytesBefore(stream: TranscriptStream, offset: number): string {
   return readStream(stream, Math.max(0, offset - 64), offset).toString("latin1");
+}
+
+function* bytesBeforeSteps(stream: TranscriptStream, offset: number): Steps<string> {
+  return (yield* streamBytes(stream, Math.max(0, offset - 64), offset)).toString("latin1");
 }
 
 function remember<T>(map: Map<string, T>, key: string, value: T, limit: number): void {
@@ -2417,7 +2469,7 @@ function* linesWithSteps(stream: TranscriptStream, text: string, from: number, t
   let tail = "";
   let judged = 0;
   for (let position = from; position < to; position = Math.min(to, position + IMAGE_SEARCH_WINDOW)) {
-    const bytes = readStream(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW)).toString("latin1");
+    const bytes = (yield* streamBytes(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW))).toString("latin1");
     for (let offset = 0; ;) {
       const newline = bytes.indexOf("\n", offset);
       if (!hit) {
@@ -2472,7 +2524,7 @@ function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, numb
   let stringStart = 0;
   const keep = (bytes: Buffer) => { kept.push(Buffer.from(bytes)); size += bytes.length; };
   for (let position = start; position < end; position += IMAGE_SEARCH_WINDOW) {
-    const bytes = readStream(stream, position, Math.min(end, position + IMAGE_SEARCH_WINDOW));
+    const bytes = yield* streamBytes(stream, position, Math.min(end, position + IMAGE_SEARCH_WINDOW));
     let from = cutting ? -1 : 0;
     for (let index = 0; index < bytes.length; index += 1) {
       const byte = bytes[index]!;
@@ -2550,7 +2602,7 @@ function* scanStringSteps(stream: TranscriptStream, shape: RecordShape, value: s
   let pending = "";
   for (let position = range[0]; position <= range[1]; position += IMAGE_SEARCH_WINDOW) {
     const last = position + IMAGE_SEARCH_WINDOW >= range[1];
-    const text = pending + (last ? decoder.decode(readStream(stream, position, range[1])) : decoder.decode(readStream(stream, position, position + IMAGE_SEARCH_WINDOW), { stream: true }));
+    const text = pending + (last ? decoder.decode(yield* streamBytes(stream, position, range[1])) : decoder.decode(yield* streamBytes(stream, position, position + IMAGE_SEARCH_WINDOW), { stream: true }));
     // decode up to the last whole escape: the rest waits for the next window
     let split = text.length;
     if (!last) {
@@ -2603,7 +2655,7 @@ function* answersDrawnCallSteps(stream: TranscriptStream, id: string, before: nu
     from = Math.max(stream.floor, to - span);
     while (from > stream.floor) {
       const low = Math.max(stream.floor, from - CALL_SEARCH_START);
-      const newline = readStream(stream, low, from).lastIndexOf(0x0a);
+      const newline = (yield* streamBytes(stream, low, from)).lastIndexOf(0x0a);
       // each read is a step of its own: what reads the lines it found starts on the next one
       yield;
       if (newline !== -1) { from = low + newline + 1; break; }
@@ -2684,19 +2736,54 @@ export function transcriptImage(path: string, ref: string): TranscriptPicture | 
   try { return finish(transcriptImageSteps(path, ref, false)); } catch { return null; }
 }
 
-/** Yield between windows and short records; individual synchronous disk reads can still block. */
+/**
+ * On the shared reader (transcriptReader): the transcript's bytes and stats come by async positional
+ * reads of the file it pinned, so a slow disk holds up no other request, and the event loop gets its
+ * turn between windows and short records too. The lookups of one transcript take it in turn (imageTurn).
+ * The path is checked by the file it names (`follow`), a link to the transcript too, as statSync does.
+ */
 export async function transcriptImageAsync(path: string, ref: string): Promise<TranscriptPicture | null> {
-  try { return await finishAsync(transcriptImageSteps(path, ref, true)); } catch { return null; }
+  // The lookup began when it was asked for, not when its turn came (TranscriptStream.version): the
+  // pictures of a page are asked for together and take their turns one after another, and a check of
+  // the index's bytes (vouchedPictureSteps) that one of them makes vouches for the others, which began
+  // before it, as it does for lookups made side by side. A lookup only takes a verdict from a check
+  // begun after it was asked for, so that verdict is what the file held at a moment between the
+  // request and its answer. The version itself is still the lease's: a rewrite between that check and
+  // this lookup's stat changes it, unless the file's times did not move (the limit fineTimes states).
+  const began = { began: performance.now(), wall: Date.now() };
+  try { return await imageTurn(path, () => transcriptReader.read(path, (file) => finishAsync(transcriptImageSteps(path, ref, true, file, began)), { follow: true })); } catch { return null; }
+}
+
+/**
+ * The reader leases a path to one read at a time anyway: a page's pictures of one transcript wait
+ * here, one after another, so together they hold one place in its bounded queue (never refused for
+ * it), and each after the first finds the boundary the first one kept.
+ */
+const imageTurns = new Map<string, Promise<void>>();
+function imageTurn<T>(path: string, read: () => Promise<T>): Promise<T> {
+  const turn = (imageTurns.get(path) ?? Promise.resolve()).then(read);
+  const done = turn.then(() => {}, () => {});
+  imageTurns.set(path, done);
+  void done.then(() => { if (imageTurns.get(path) === done) imageTurns.delete(path); });
+  return turn;
 }
 
 function sameImageFile(left: ReturnType<typeof fstatSync>, right: ReturnType<typeof fstatSync>): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
-function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps<TranscriptPicture | null> {
+function* transcriptImageSteps(path: string, ref: string, apart: boolean, file?: TranscriptFile, began?: { began: number; wall: number }): Steps<TranscriptPicture | null> {
   const match = CLAUDE_IMAGE_REF.exec(ref);
   if (match === null) return null;
-  const fd = openSync(path, "r");
+  // a lease (`file`) pins the file itself
+  const fd = file === undefined ? openSync(path, "r") : undefined;
+  const pinned = function* (): Steps<Stats> { return file === undefined ? fstatSync(fd!) : yield* awaited(file.stats()); };
+  // the path still names the file as `snapshot` saw it
+  const named = function* (snapshot: Stats): Steps<boolean> {
+    if (file === undefined) return sameImageFile(snapshot, statSync(path));
+    const version = yield* awaited(file.pathVersion());
+    return version !== null && version.id === `${snapshot.dev}:${snapshot.ino}` && version.size === snapshot.size && version.mtimeMs === snapshot.mtimeMs;
+  };
   const boundary = clearScans.get(path);
   const boundaryScanned = boundary?.scanned;
   const scans: TranscriptStream[] = [];
@@ -2707,10 +2794,15 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     return null;
   };
   try {
-    const stat = fstatSync(fd);
-    const current = (snapshot: typeof stat): boolean => sameImageFile(snapshot, fstatSync(fd)) && sameImageFile(snapshot, statSync(path));
-    if (!current(stat)) return null;
+    const stat = yield* pinned();
+    const current = function* (snapshot: Stats): Steps<boolean> { return sameImageFile(snapshot, yield* pinned()) && (yield* named(snapshot)); };
+    // a lease is let in only while the path names the file it pinned (TranscriptReader.read); a change
+    // since is judged once the read ends, as one during it is
+    if (file === undefined && !(yield* current(stat))) return null;
     const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd);
+    stream.file = file;
+    // a lookup asked for before its turn began then (transcriptImageAsync)
+    if (began !== undefined && stream.version !== undefined) stream.version = { ...stream.version, ...began };
     scans.push(stream);
     stream.current = () => current(stat);
     if (apart) stream.seen = { from: 0, digest: 0n };
@@ -2719,33 +2811,34 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     yield* applyHistoryBoundarySteps(path, stream, "claude-transcript", apart);
     const picture = yield* claudePictureSteps(stream, match, apart);
     // the file held still for the whole read (its size, times and identity, by the pinned fd and by path)
-    if (!apart || current(stat)) return picture;
+    if (!apart || (yield* current(stat))) return picture;
     // a boundary kept from before the change is checked only by its tail, which a rewrite can keep
     if (picture === null) return unpublish(stream);
     // It changed under the read: only an append can keep the picture, and what was read may since be gone
     // (a rewrite, then its undoing: ABA). So the read is made again on what the file holds now, from a
     // boundary rebuilt from those bytes (a rewrite before an append keeps the tail a kept boundary is
     // checked by), and what that read finds is served.
-    const now = fstatSync(fd);
-    if (now.dev !== stat.dev || now.ino !== stat.ino || now.size <= stat.size || !current(now)) return unpublish(stream);
+    const now = yield* pinned();
+    if (now.dev !== stat.dev || now.ino !== stat.ino || now.size <= stat.size || !(yield* named(now))) return unpublish(stream);
     // the bytes the boundary scan read (all of them on a cold read, the tail since the last one on a warm
     // read) must still be there: a rewrite of what this read saw is no append, whatever it changed
     const seen = stream.seen!;
     let digest = 0n;
     for (let position = seen.from; position < stat.size; position = Math.min(stat.size, position + TRANSCRIPT_WINDOW_BYTES)) {
-      digest = Bun.hash.xxHash3(readStream({ ...stream, hidden: undefined }, position, Math.min(stat.size, position + TRANSCRIPT_WINDOW_BYTES)), digest);
+      digest = Bun.hash.xxHash3(yield* streamBytes({ ...stream, hidden: undefined }, position, Math.min(stat.size, position + TRANSCRIPT_WINDOW_BYTES)), digest);
       yield;
     }
     if (digest !== seen.digest) return unpublish(stream);
     const active = transcriptStream("claude-transcript", path, now, defaultCodexHome(), undefined, fd);
+    active.file = file;
     scans.push(active);
     active.current = () => current(now);
     yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, true);
     const again = yield* claudePictureSteps(active, match, true);
     // a further change during this read is retried by a later request
-    return again !== null && current(now) ? again : unpublish(stream, active);
+    return again !== null && (yield* current(now)) ? again : unpublish(stream, active);
   } catch { return unpublish(...scans); }
-  finally { closeSync(fd); }
+  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 /** Lets a test look a picture up as the search alone does, the reference the index is held to (false), or with the index again. */
@@ -2849,13 +2942,13 @@ function* pictureBytesStandSteps(stream: TranscriptStream, bytes: PictureBytes):
   for (let at = bytes.from; at < bytes.hashed;) {
     // whole digest pieces in each read: IMAGE_SEARCH_WINDOW is a multiple of PICTURE_DIGEST_BYTES
     const end = Math.min(bytes.hashed, (Math.floor(at / IMAGE_SEARCH_WINDOW) + 1) * IMAGE_SEARCH_WINDOW);
-    const read = readStream(raw, at, end);
+    const read = yield* streamBytes(raw, at, end);
     if (read.length !== end - at) return false;
     for (let piece = at; piece < end; piece = Math.min(end, pieceEnd(piece))) digest = Bun.hash.xxHash3(read.subarray(piece - at, Math.min(end, pieceEnd(piece)) - at), digest);
     at = end;
     yield;
   }
-  return digest === bytes.digest && readStream(raw, bytes.hashed, bytes.through).equals(bytes.pending);
+  return digest === bytes.digest && (yield* streamBytes(raw, bytes.hashed, bytes.through)).equals(bytes.pending);
 }
 
 function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray, apart: boolean): Steps<TranscriptPicture | null> {
