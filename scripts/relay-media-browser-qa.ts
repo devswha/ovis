@@ -272,7 +272,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   }
   async function read(page: Page, p: typeof pcs[number], name: string, machine = "local"): Promise<void> {
     const path = machine === "local" ? join(p.dir, name) : `/remote/${name}`;
-    await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`));
+    await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`, "relay"));
     await page.locator(".file-reader").waitFor();
   }
   async function image(page: Page): Promise<void> {

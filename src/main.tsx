@@ -15,6 +15,7 @@ import { AppCrash, CrashProbe } from "./components/AppCrash.tsx";
 import { FileReader } from "./components/FileReader.tsx";
 import { RenderBoundary } from "./components/RenderBoundary.tsx";
 import { readerFromSearch } from "./lib/fileReader.ts";
+import { pageSearch } from "./lib/pageQuery.ts";
 import { bootRelayShell } from "./lib/relay/boot.ts";
 import { SettingsProvider } from "./lib/settings.ts";
 import { shellMode } from "./lib/shellMode.ts";
@@ -30,7 +31,7 @@ if (!container) throw new Error("#root is missing from index.html");
 const mount: HTMLElement = container;
 
 // a markdown file opened in a tab of its own is that page alone, not the app (FileReader)
-const reader = readerFromSearch(window.location.search);
+const reader = readerFromSearch(pageSearch());
 
 // an error nothing else caught still reaches the console under one name, where a bug report can find it
 // (but not the browser's benign ResizeObserver loop notice: lib/uncaughtErrors.ts)

@@ -1,14 +1,18 @@
 /**
  * A markdown file opened in a tab of its own (the file viewer's "Open in a new tab"): a page of
- * just the document, never the whole app over it. Its address names the file and the PC it is on.
+ * just the document, never the whole app over it. Its address names the file and the PC it is on,
+ * in the fragment in the hosted shell (lib/pageQuery.ts).
  */
+import { pageAddress } from "./pageQuery.ts";
+import { shellMode, type ShellMode } from "./shellMode.ts";
+
 export interface ReaderTarget { machine: string; path: string }
 
 const PARAM = "read";
 
-export function readerHref(machine: string, path: string, pathname = window.location.pathname): string {
+export function readerHref(machine: string, path: string, pathname = window.location.pathname, mode: ShellMode = shellMode()): string {
   const query = new URLSearchParams({ [PARAM]: path, machine });
-  return `${pathname}?${query.toString()}`;
+  return pageAddress(pathname, `?${query.toString()}`, "", mode);
 }
 
 export function readerFromSearch(search: string): ReaderTarget | null {

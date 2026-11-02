@@ -10,6 +10,14 @@ describe("file reader links", () => {
     expect(readerFromSearch("?read=")).toBeNull();
   });
 
+  it("keeps the file and its PC in the fragment in the hosted shell", () => {
+    const scope = `/s/${"ab".repeat(16)}/`;
+    const href = readerHref("remote-1", "/home/me/plan.md#L3", scope, "relay");
+    const url = new URL(href, "https://app.example");
+    expect(url.pathname + url.search).toBe(scope);
+    expect(readerFromSearch(`?${url.hash.slice(1)}`)).toEqual({ machine: "remote-1", path: "/home/me/plan.md#L3" });
+  });
+
   it("resolves a document's links from its folder", () => {
     expect(resolveFromDocument("/repo/README.md", "README.ko.md")).toBe("/repo/README.ko.md");
     expect(resolveFromDocument("/repo/README.md", "docs/guide.md")).toBe("/repo/docs/guide.md");
