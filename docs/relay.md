@@ -346,7 +346,7 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
   through the relay ([`server/file-routes.ts`](../server/file-routes.ts)), so it doesn't play.
 - **Links.** In the hosted app, **Open in a new tab**, and **Copy link** in an installed app's
   window, give an address that opens the file in the app's reader for that PC
-  (`/s/<server_id>/?read=…`), which connects through the relay by itself. **Open raw file** opens
+  (`/s/<server_id>/#read=…`, in the fragment, so the host never sees the file), which connects through the relay by itself. **Open raw file** opens
   that reader at the file's first line. The app never opens a `blob:` copy of a file as a page,
   which would run with the app's own origin.
 
