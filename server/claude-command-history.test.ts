@@ -60,8 +60,9 @@ it("invalidates completion authority on replacement, truncation and same-size re
 
 it("invalidates completion authority on a same-size rewrite within the timestamp tick of the check", async () => {
   const s = fixture();
-  // the second just begun: two writes in one tick keep inode, size and mtime, as on Windows a millisecond apart
-  const tick = Math.floor(Date.now() / 1000);
+  // one timestamp for both writes, as two writes a millisecond apart keep on Windows; a minute ahead,
+  // so every check of this test begins within its tick however slowly it runs
+  const tick = Math.ceil(Date.now() / 1000) + 60;
   writeFileSync(s.path, notice("new"));
   utimesSync(s.path, tick, tick);
   const before = historyVersion(s.path);
@@ -71,6 +72,19 @@ it("invalidates completion authority on a same-size rewrite within the timestamp
   expect(historyVersion(s.path)).toEqual(before);
   expect(commandHistory(s.path, s.limit(), false)!.ends).toEqual([]);
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["alt"]);
+});
+
+it("times the recheck within a version's tick for a watch taken again after the last one let go", async () => {
+  const s = fixture();
+  const tick = Math.ceil(Date.now() / 1000) + 60;
+  writeFileSync(s.path, notice("same"));
+  utimesSync(s.path, tick, tick);
+  await waitCommandHistory(s.path, s.limit());
+  // asked while nobody watches: the recheck is held back untimed
+  commandHistory(s.path, s.limit());
+  expect(commandHistorySize().timers).toBe(0);
+  release.push(watchCommandHistory(s.path, () => {})!);
+  expect(commandHistorySize().timers).toBe(1);
 });
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {

@@ -171,6 +171,8 @@ export function watchCommandHistory(path: string, changed: () => void): (() => v
   const entry = entries.get(path);
   if (!entry) return null;
   entry.listeners.add(changed);
+  // work held back while nobody watched (a recheck once the version's tick is past) is timed now
+  enqueue(entry);
   return () => unlisten(entry, changed);
 }
 
