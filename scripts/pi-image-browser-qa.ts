@@ -211,11 +211,12 @@ try {
   assert.deepEqual(boxes, [[44, 44], [44, 44], [44, 44], [44, 44]], "every thumbnail and the tile is a 44px square");
   // the virtual list first places its rows at estimated heights and moves them once it has measured
   // them: two separate reads can fall on either side of that move. Both boxes come from one frame's
-  // layout, taken once two frames in a row agree
+  // layout, taken once two frames in a row agree. The deadline is a timer, not a frame: a page that
+  // stops drawing frames still fails here instead of leaving the evaluate waiting forever
   type Box = { x: number; y: number; width: number; height: number };
   const [head, strip] = await small.evaluate(() => new Promise<[Box, Box]>((settled, fail) => {
-    const started = performance.now();
     let before = "";
+    const deadline = setTimeout(() => fail(new Error(`the phone's folded line never settled: ${before}`)), 5000);
     const box = (selector: string): Box => {
       const found = document.querySelectorAll(selector);
       if (found.length !== 1) throw new Error(`expected one ${selector}, found ${found.length}`);
@@ -224,10 +225,9 @@ try {
     };
     const frame = () => {
       let boxes: [Box, Box];
-      try { boxes = [box(".work-block-head"), box(".work-block-line .work-images")]; } catch (error) { return fail(error); }
+      try { boxes = [box(".work-block-head"), box(".work-block-line .work-images")]; } catch (error) { clearTimeout(deadline); return fail(error); }
       const now = JSON.stringify(boxes);
-      if (now === before) return settled(boxes);
-      if (performance.now() - started > 5000) return fail(new Error(`the phone's folded line never settled: ${now}`));
+      if (now === before) { clearTimeout(deadline); return settled(boxes); }
       before = now;
       requestAnimationFrame(frame);
     };
