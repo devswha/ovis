@@ -7,6 +7,8 @@ import { basename, dirname, join } from "node:path";
 import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
 import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, readLines, remember, subagentDetails, taskNotification, validDetailId, wholeClaudeSubagents, within } from "./claude-subagents.ts";
+import { scanClaudeTasks } from "./claude-task-scan.ts";
+import { waitCommandHistory } from "./claude-command-history.ts";
 import { runFileTask } from "./file-tasks.ts";
 
 const roots: string[] = [];
@@ -1598,6 +1600,107 @@ describe("claudeSubagents, background commands", () => {
 
 describe("claudeSubagents, before the files are read through", () => {
   const body = (id: string, minute: number, stop: string | null) => json({ type: "assistant", timestamp: at(minute), message: { id, model: "claude-haiku-4-5", stop_reason: stop, usage: { output_tokens: 7 }, content: [{ type: "text", text: "x" }], pad: "p".repeat(1000) } });
+  const pastParentWindow = (path: string) => {
+    // Many ordinary records, each below the line limit: the old notice is before the 16 MiB cold window.
+    const filler = json({ type: "user", timestamp: at(5), message: { role: "user", content: "x".repeat(1024) } }).repeat(1024);
+    for (let mib = 0; mib < 17; mib++) appendFileSync(path, filler);
+  };
+
+  it.each(["completed", "failed", "cancelled"])("keeps an old subagent command %s after its parent notice falls outside a cold window (#2601)", async (status) => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("suite", 2, { file });
+    s.notify("suite", 3, { status, summary: "Background command finished", carriers: ["queue"] });
+    const ended = { id: "suite", status, ended_at: at(3) };
+    expect(wholeClaudeSubagents(s.path, true, NOW).find((task) => task.id === "suite")).toMatchObject(ended);
+    pastParentWindow(s.path);
+    expect(wholeClaudeSubagents(s.path, true, NOW).find((task) => task.id === "suite")).toMatchObject(ended);
+    forgetSubagents();
+    // Real workers use their own wall clock; keep their fixture inside the recent-task window.
+    const shift = Date.now() - NOW;
+    for (const path of [s.path, file]) writeFileSync(path, fs.readFileSync(path, "utf8").replace(/"timestamp":"([^"]+)"/g, (_match, timestamp: string) => `"timestamp":"${new Date(Date.parse(timestamp) + shift).toISOString()}"`));
+    const recentEnd = { ...ended, ended_at: new Date(Date.parse(at(3)) + shift).toISOString() };
+    expect((await scanClaudeTasks({ path: s.path, live: true, startedAt: null })).find((task) => task.id === "suite")).toMatchObject(recentEnd);
+    expect((await scanClaudeTasks({ path: s.path, live: false, startedAt: null })).find((task) => task.id === "suite")).toMatchObject(recentEnd);
+  });
+
+  it("keeps a genuinely unfinished old subagent command after a cold parent window (#2601)", async () => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("watch", 2, { file, command: "watch-tests" });
+    const running = { id: "watch", status: "running", ended_at: null };
+    expect(wholeClaudeSubagents(s.path, true, NOW).find((task) => task.id === "watch")).toMatchObject(running);
+    pastParentWindow(s.path);
+    forgetSubagents();
+    const history = await waitCommandHistory(s.path, statSync(s.path).size);
+    expect(wholeClaudeSubagents(s.path, true, NOW, null, Infinity, Date.now, history).find((task) => task.id === "watch")).toMatchObject(running);
+  });
+
+  it("does not count an ended subagent command after a cold parent window in pane status (#2601)", async () => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("suite", 2, { file });
+    s.notify("suite", 3, { summary: "Background command finished", carriers: ["queue"] });
+    s.notify("review", 4);
+    expect(claudeSubagentState(s.path, true, NOW).running).toBe(0);
+    pastParentWindow(s.path);
+    forgetSubagents();
+    const pane = { pane_id: "p1", agent: "claude", cwd: "/work", agent_status: "idle", focused: false, revision: 1 } as HerdrPane;
+    const status = new ClaudeSubagentStatus({
+      resolve: async () => ({ path: s.path, startedAt: Date.parse(at(0)) }),
+      onChange: () => {},
+      now: () => NOW,
+    });
+    await status.refresh([pane]);
+    expect(status.holdsQueue("p1")).toBe(true);
+    expect(status.restsOn("p1")).toBe(false);
+    await waitCommandHistory(s.path, statSync(s.path).size);
+    status.poll();
+    expect(status.countOf("p1")).toBe(0);
+    expect(status.holdsQueue("p1")).toBe(false);
+    status.stop();
+  });
+
+  it("releases history queue holds once every command has terminal evidence despite a skipped record", async () => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("suite", 2, { file });
+    s.notify("suite", 3, { summary: "Background command finished", carriers: ["queue"] });
+    s.notify("review", 4);
+    s.parent({ type: "progress", value: "x".repeat(2 * 1024 * 1024) });
+    pastParentWindow(s.path);
+    forgetSubagents();
+    const pane = { pane_id: "p1", agent: "claude", cwd: "/work", agent_status: "idle", focused: false, revision: 1 } as HerdrPane;
+    const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {}, now: () => NOW });
+    try {
+      await status.refresh([pane]);
+      expect(status.holdsQueue("p1")).toBe(true);
+      expect(await waitCommandHistory(s.path, statSync(s.path).size)).toMatchObject({ complete: false });
+      status.poll();
+      expect(claudeSubagentState(s.path, true, NOW)).toMatchObject({ historyPending: false, running: 0 });
+      expect(status.holdsQueue("p1")).toBe(false);
+    } finally { status.stop(); }
+  });
+
+  it("releases a cold-window history hold after a partial final record is completed", async () => {
+    const s = session();
+    const file = s.agent("review", { steps: [[1, 1]] });
+    s.bash("watch", 2, { file });
+    pastParentWindow(s.path);
+    const partial = '{"type":"progress","value":"unfinished';
+    appendFileSync(s.path, partial);
+    forgetSubagents();
+    wholeClaudeSubagents(s.path, true, NOW);
+    const boundary = statSync(s.path).size;
+    expect(await waitCommandHistory(s.path, boundary, 1000)).toMatchObject({ complete: false, through: boundary - Buffer.byteLength(partial) });
+    expect(claudeSubagentState(s.path, true, NOW).historyPending).toBe(true);
+    appendFileSync(s.path, '"}\n');
+    const history = await waitCommandHistory(s.path, boundary);
+    expect(history).toMatchObject({ complete: true });
+    const state = claudeSubagentState(s.path, true, NOW);
+    expect(state.historyPending).toBe(false);
+    expect(state.tasks.find((task) => task.id === "watch")).toMatchObject({ status: "running" });
+  });
 
   it("reads a whole list on through a transcript appended past what a call reads (#2511)", () => {
     const s = session();

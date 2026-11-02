@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
+import { commandHistory, resetCommandHistory, sameHistory, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 
 /**
@@ -186,6 +187,16 @@ const TITLE_LENGTH = 120;
 /** Whether a line may say something of a background command, before it is parsed: the answers of every other call are passed over. */
 const commandLine = (line: string): boolean => line.includes('"name":"Bash"') || line.includes('"backgroundTaskId"') || line.includes('"task_id"') || line.includes('"shell_id"');
 
+function commandEnds(result: Row | null, at: number, notices: readonly TaskNotification[]): CommandEnd[] {
+  const ends: CommandEnd[] = [];
+  const ids = new Set<string>();
+  // TaskStop answers with the task it stopped, KillShell with the shell.
+  const stopped = typeof result?.["task_type"] === "string" ? result["task_id"] : result?.["shell_id"];
+  if (typeof stopped === "string") { ids.add(stopped); ends.push({ id: stopped, at, status: "cancelled" }); }
+  for (const notice of notices) if (!notice.agent && !ids.has(notice.taskId)) { ids.add(notice.taskId); ends.push({ id: notice.taskId, at, status: notice.status }); }
+  return ends;
+}
+
 function scanCommands(commands: Commands, entry: Row, at: number | null, notices: readonly TaskNotification[]): void {
   if (at === null) return;
   const content = row(entry["message"])?.["content"];
@@ -204,10 +215,20 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
     remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command" }, MAX_NAMES);
     if (call !== undefined) commands.calls.delete(call);
   }
-  // TaskStop answers with the task it stopped, KillShell with the shell
-  const stopped = typeof result?.["task_type"] === "string" ? result["task_id"] : result?.["shell_id"];
-  if (typeof stopped === "string" && !commands.ends.has(stopped)) remember(commands.ends, stopped, { at, status: "cancelled" }, MAX_NAMES);
-  for (const notice of notices) if (!notice.agent && !commands.ends.has(notice.taskId)) remember(commands.ends, notice.taskId, { at, status: notice.status }, MAX_NAMES);
+  for (const end of commandEnds(result, at, notices)) if (!commands.ends.has(end.id)) remember(commands.ends, end.id, { at: end.at, status: end.status }, MAX_NAMES);
+}
+
+/** Historical reconciliation shares the ordinary parser's accepted carriers and stop answers. */
+export function commandTerminals(line: string): CommandEnd[] {
+  if (!line.includes("<task-notification>") && !line.includes('"task_id"') && !line.includes('"shell_id"')) return [];
+  let entry: Row | null;
+  try { entry = row(JSON.parse(line)); } catch { return []; }
+  if (entry === null) return [];
+  const at = stamp(entry["timestamp"]);
+  if (at === null) return [];
+  const content = row(entry["message"])?.["content"];
+  const failed = Array.isArray(content) && content.some((value) => { const block = row(value); return block?.["type"] === "tool_result" && block["is_error"] === true; });
+  return commandEnds(failed ? null : row(entry["toolUseResult"]), at, blocksIn(entry).flatMap((block) => taskNotification(block) ?? [])).filter((end) => end.id.length <= 300);
 }
 
 /**
@@ -228,6 +249,8 @@ function prompted(entry: Row): boolean {
 }
 
 interface Parent {
+  version: HistoryVersion;
+  historyLimit: number;
   id: string;
   offset: number;
   skipping: boolean;
@@ -283,10 +306,11 @@ function scanParent(path: string): Parent | null {
   const stat = plain(path);
   if (stat === null) return null;
   let parent = parents.get(path);
-  if (!parent || parent.id !== stat.id || parent.offset > stat.size) {
+  if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, echo: null };
   }
+  parent.version = stat;
   remember(parents, path, parent, 256);
   const state = parent;
   if (state.offset >= stat.size) state.behind = false;
@@ -1068,7 +1092,7 @@ const time = (value: string | null): number => value === null ? 0 : Date.parse(v
 /** what each session's last read said of each agent: kept while the transcript is read in parts */
 const previous = new Map<string, Map<string, OmoTask>>();
 
-export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null): { tasks: OmoTask[]; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
+export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, history?: HistoryEvidence | null): { tasks: OmoTask[]; historyPending: boolean; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
   const known = staleAgents.get(dir);
   const skip = staleFresh(known, now) ? known!.ids : null;
@@ -1083,7 +1107,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // each has a budget of its own: a long transcript must not keep the agents from being read.
   // Read with no subagent too: the session's own background commands are in it
   const parent = scanParent(parentPath);
-  if (parent === null && files.length === 0) return { tasks: [], settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
+  if (parent === null && files.length === 0) return { tasks: [], historyPending: false, settled: true, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   const budget = { left: READ_BUDGET };
   let behind = false;
   const running: OmoTask[] = [];
@@ -1163,6 +1187,13 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   // a command ends once, in whichever transcript was told first
   const ends = new Map<string, { at: number; status: OmoTask["status"] }>();
   for (const source of sources) for (const [id, end] of source.ends) if ((ends.get(id)?.at ?? Infinity) > end.at) ends.set(id, end);
+  const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => !ends.has(id) && !(launch.at <= (halts.get(source) ?? -Infinity))));
+  const needsHistory = parent !== null && parent.windowed && unresolved();
+  const evidence = needsHistory ? history === undefined ? commandHistory(parentPath, parent!.historyLimit) : history : null;
+  const validEvidence = evidence !== null && parent !== null && sameHistory(evidence.version, parent.version);
+  if (validEvidence) for (const end of evidence.ends) if ((ends.get(end.id)?.at ?? Infinity) > end.at) ends.set(end.id, end);
+  const historyPending = needsHistory && unresolved() && !(validEvidence && evidence.complete && evidence.through >= parent!.historyLimit);
+  if (historyPending) settled = false;
   for (const source of sources) {
     for (const [id, launch] of source.launches) {
       if (all.has(id)) continue;
@@ -1179,8 +1210,8 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   const last = (task: OmoTask): number => time(task.ended_at) || time(task.started_at);
   ended.sort((a, b) => last(b) - last(a));
   // read to its end only: a part not read yet may hold the next turn
-  const resting = parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
-  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
+  const resting = !historyPending && parent !== null && !parent.behind && parent.whole && parent.restAt !== null;
+  return { tasks: [...running, ...ended.slice(0, RECENT_LIMIT)], historyPending, settled, behind: behind && budget.left < READ_BUDGET, watch: files.map(({ id }) => id), running: running.length, turnRunning, promptAt, resting };
 
   function keep(task: OmoTask, dispatched = time(task.started_at)): void {
     all.set(task.id, task);
@@ -1204,10 +1235,10 @@ export const claudeSubagents = (parentPath: string, live: boolean, now = Date.no
  * has. It reads on only while a pass read something, so the loop ends; and only until `until` (by
  * `clock`), so a huge session answers with what it read so far inside its deadline.
  */
-export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, until = Infinity, clock: () => number = Date.now): OmoTask[] {
+export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, until = Infinity, clock: () => number = Date.now, history?: HistoryEvidence | null): OmoTask[] {
   for (;;) {
     const from = parents.get(parentPath)?.offset;
-    const state = claudeSubagentState(parentPath, live, now, since);
+    const state = claudeSubagentState(parentPath, live, now, since, history);
     const parent = parents.get(parentPath);
     const parentBehind = parent !== undefined && parent.behind && parent.offset !== from;
     if (!(state.behind || parentBehind) || clock() >= until) return state.tasks;
@@ -1216,6 +1247,7 @@ export function wholeClaudeSubagents(parentPath: string, live: boolean, now = Da
 
 /** Forget every read kept between calls (tests compare against a cold read). */
 export function forgetSubagents(): void {
+  resetCommandHistory();
   parents.clear();
   metas.clear();
   works.clear();
@@ -1247,6 +1279,7 @@ export interface ClaudeSubagentDeps {
 interface Tracked {
   /** Opaque lifetime of an asynchronous task-list read, renewed on a proven replacement. */
   read: number;
+  historyPending?: boolean;
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
@@ -1311,6 +1344,7 @@ interface Turns { readonly path: string; readonly id: string; retired: number; h
  * watched agent files as they were reads nothing. An agent's own file can end or resume it.
  */
 export class ClaudeSubagentStatus {
+  private historyWatches = new Map<string, () => void>();
   private readonly panes = new Map<string, Tracked>();
   /** Identity observations precede async resolution, including snapshots queued behind a lookup. */
   private readonly sessions = new Map<string, string | null>();
@@ -1336,6 +1370,8 @@ export class ClaudeSubagentStatus {
   }
 
   stop(): void {
+    for (const release of this.historyWatches.values()) release();
+    this.historyWatches.clear();
     this.lookups.clear();
     this.sessions.clear();
     this.deferred.clear();
@@ -1351,7 +1387,7 @@ export class ClaudeSubagentStatus {
   /** Signals that waited for their turn in vain hold the pane's queue: nothing proves they began no turn. */
   holdsQueue(paneId: string): boolean {
     const turns = this.panes.get(paneId)?.turns;
-    return turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0;
+    return this.panes.get(paneId)?.historyPending === true || (turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0);
   }
 
   /**
@@ -1422,6 +1458,9 @@ export class ClaudeSubagentStatus {
     for (const paneId of this.lookups.keys()) if (!ids.has(paneId)) this.lookups.delete(paneId);
     for (const paneId of this.sessions.keys()) if (!ids.has(paneId)) this.sessions.delete(paneId);
     for (const paneId of this.deferred.keys()) if (!ids.has(paneId)) this.deferred.delete(paneId);
+    for (const [path, release] of this.historyWatches) {
+      if (![...this.panes.values()].some((pane) => pane.path === path && pane.live)) { release(); this.historyWatches.delete(path); }
+    }
     for (const pane of panes) {
       this.observeSession(pane);
       const key = `${pane.agent_session?.value ?? ""}\0${pane.cwd ?? ""}`;
@@ -1518,12 +1557,23 @@ export class ClaudeSubagentStatus {
       let turnRunning = 0;
       let promptAt: number | null = null;
       let resting = false;
+      if (!tracked.live || tracked.path === null) tracked.historyPending = false;
       if (tracked.path !== null && tracked.live) {
         const scanAt = this.now();
         const before = subagentsSignature(tracked.path, tracked.watch, scanAt);
         if (`${before.sig}:${tracked.startedAt}` === tracked.sig) continue;
         const state = claudeSubagentState(tracked.path, true, this.now(), tracked.startedAt);
         ({ running, turnRunning, promptAt, resting } = state);
+        tracked.historyPending = state.historyPending;
+        if (state.historyPending && !this.historyWatches.has(tracked.path)) {
+          const path = tracked.path;
+          this.historyWatches.set(path, watchCommandHistory(path, () => {
+            this.historyWatches.get(path)?.();
+            this.historyWatches.delete(path);
+            for (const pane of this.panes.values()) if (pane.path === path) pane.sig = null;
+            this.poll();
+          }));
+        }
         const parent = parents.get(tracked.path);
         let waiting = false;
         if (parent === undefined) resting = false;
