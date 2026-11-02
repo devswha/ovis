@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { scanClaudeTasks } from "./claude-task-scan.ts";
 import * as pool from "./file-pool.ts";
 import type { FileTask, FileTaskResult } from "./file-tasks.ts";
+import { resetCommandHistory } from "./claude-command-history.ts";
+import { transcriptReader } from "./transcript-reader.ts";
 import { errorResponse } from "./http.ts";
 import { handleTasksRequest, type TaskTrackers } from "./tasks-routes.ts";
 
@@ -15,6 +17,8 @@ afterEach(async () => {
   for (const release of releases.splice(0)) release();
   pool.setFilePoolOptions();
   await pool.fileThreadsClosed();
+  resetCommandHistory();
+  await transcriptReader.settled();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -31,6 +35,16 @@ function session() {
   const agent = join(dir, "agent-a1.jsonl");
   writeFileSync(agent, json({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", name: "Read" }] } }));
   return { path, agent, json };
+}
+
+function historicalSession() {
+  const s = session();
+  const bash = (id: string) => s.json({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: `call-${id}`, name: "Bash", input: { command: "synthetic suite", run_in_background: true } }] } }) + s.json({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `call-${id}`, content: "background launch" }] }, toolUseResult: { backgroundTaskId: id } });
+  const terminal = (id: string) => s.json({ type: "queue-operation", operation: "enqueue", timestamp: new Date(Date.now() + 1000).toISOString(), content: `<task-notification><task-id>${id}</task-id><tool-use-id>call-${id}</tool-use-id><status>completed</status><summary>Background command finished</summary></task-notification>` });
+  const filler = `${JSON.stringify({ type: "progress", value: "x".repeat(1024) })}\n`.repeat(1024);
+  writeFileSync(s.path, terminal("B") + filler.repeat(17) + bash("A") + terminal("A"));
+  appendFileSync(s.agent, bash("B"));
+  return s;
 }
 
 /** Hold the real result on a file thread, without holding the test's event loop. */
@@ -257,6 +271,41 @@ describe("Claude task-list scans", () => {
       expect(await response!.json()).toMatchObject({ tasks: [{ id: "a1", status: "completed" }] });
     }
     expect(hold.tasks).toHaveLength(2);
+  });
+
+  it("refreshes local parent and subagent facts after held history instead of folding a stale snapshot", async () => {
+    const s = historicalSession();
+    let unblock!: () => void, reached!: () => void;
+    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    const entered = new Promise<void>((resolve) => { reached = resolve; });
+    const run = transcriptReader.version;
+    const metadata = spyOn(transcriptReader, "version").mockImplementation((path, options) => path !== s.path ? run(path, options) : transcriptReader.read(path, async (file) => { reached(); await gate; return file.initial; }, options));
+    releases.push(() => { unblock(); metadata.mockRestore(); });
+    const pending = scanClaudeTasks({ path: s.path, live: true, startedAt: null });
+    await entered;
+    writeFileSync(s.path, s.json({ type: "user", message: { role: "user", content: "synthetic replacement prompt" } }));
+    appendFileSync(s.agent, s.json({ type: "assistant", message: { id: "ended", stop_reason: "end_turn", content: [] } }));
+    unblock();
+    const tasks = await pending;
+    expect(tasks.find((task) => task.id === "A")).toBeUndefined();
+    expect(tasks.find((task) => task.id === "a1")).toMatchObject({ status: "completed" });
+    expect(tasks.find((task) => task.id === "B")).toMatchObject({ status: "running", ended_at: null });
+  });
+
+  it.each([1, 2])("bounds final snapshot retries after %i append races and keeps safe local facts", async (mutations) => {
+    const s = historicalSession(); const run = pool.fileTask; let scans = 0;
+    const parser = spyOn(pool, "fileTask").mockImplementation(async function<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal, onRun?: () => void): Promise<T> {
+      const result = await run<T>(task, signal, onRun);
+      if (task.op === "claude-tasks" && ++scans > 1 && scans <= mutations + 1) appendFileSync(s.path, s.json({ type: "progress", value: "synthetic append after parse" }));
+      return result;
+    });
+    releases.push(() => parser.mockRestore());
+    const tasks = await scanClaudeTasks({ path: s.path, live: true, startedAt: null });
+    expect(scans).toBe(mutations === 1 ? 3 : 4);
+    expect(tasks.find((task) => task.id === "A")).toMatchObject({ status: "completed" });
+    // One benign append is reconciled; repeated known changes exhaust two attempts and answer
+    // from a fresh local-only pass, without applying historical ends to a stale snapshot.
+    expect(tasks.find((task) => task.id === "B")).toMatchObject({ status: mutations === 1 ? "completed" : "running" });
   });
 
   it("bounds retries for a pane whose lifetime keeps changing", async () => {
