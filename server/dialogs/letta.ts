@@ -113,8 +113,11 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     ...rows.map((row) => ({ label: row.label, description: null })),
     ...beside.map(({ tab }) => ({ label: own("Show the {tab} tab", { tab: `${names[tab]} [${tabs[tab]![2]}]` }), description: null })),
     { label: own("Search models"), description: null },
+    // Esc: Letta clears a search first, and closes the picker when there is none
+    { label: own("Cancel"), description: null },
   ];
-  const searchIndex = options.length - 1;
+  const searchIndex = options.length - 2;
+  const cancelIndex = options.length - 1;
   return finishPrompt("letta", {
     kind: "question",
     title: "",
@@ -124,12 +127,15 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     multi_select: false,
     custom_option_index: searchIndex,
   }, {
-    responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search"], selectedIndex,
-    checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: null,
+    responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search", "cancel"], selectedIndex,
+    checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: cancelIndex,
     optionSteps: [
       ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
       // one key switches the tab, and Letta clears the search with it
       ...beside.map(({ key }) => [{ keys: [key] }]),
+      // the search row answers by typed words (customSteps), and Cancel by Esc
+      [],
+      [{ keys: [KEY.escape] }],
     ],
     // the search: what was typed is taken out a key at a time, then the new words go in a key at a
     // time, as Letta reads one. With nothing typed, `r` refreshes the list instead: its capital goes in
@@ -158,13 +164,14 @@ function parseLettaEffort(screen: string): ParsedPrompt | null {
       question: own("Select reasoning level for {model} for this session (currently {level})", { model: named[0]!, level: shown }),
     }),
     body: null,
-    options: [{ label: shown, description: null }],
+    // Esc goes back to the model list, whose card closes the picker
+    options: [{ label: shown, description: null }, { label: own("Cancel"), description: null }],
     multi_select: false,
     custom_option_index: null,
   }, {
-    responder: "letta-effort", menuLabels: [`${named[0]}  ${shown}`], selectedIndex: 0,
-    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
-    optionSteps: [[{ keys: [KEY.enter] }]],
+    responder: "letta-effort", menuLabels: [`${named[0]}  ${shown}`, "cancel"], selectedIndex: 0,
+    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: 1,
+    optionSteps: [[{ keys: [KEY.enter] }], [{ keys: [KEY.escape] }]],
   });
 }
 

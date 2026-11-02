@@ -17,12 +17,12 @@ describe("Letta Code's /model", () => {
     expect(card(screen("model-recents"))).toEqual({
       question: "Select model for this session",
       options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "openai-codex/gpt-6.1-sol", "Claude Opus 5.5 · ING", "Claude Sonnet 5.5 · ING",
-        "Show the Recommended [12] tab", "Show the All models [21] tab", "Search models"],
+        "Show the Recommended [12] tab", "Show the All models [21] tab", "Search models", "Cancel"],
     });
     expect(card(screen("model-recommended"))).toMatchObject({
       question: "Select model for this session. 5 more models in this tab: search, or show another tab.",
       options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "Claude Haiku 4.5 · Mimosa", "Claude Fable 5.1 · Mimosa",
-        "Claude Opus 4.8 · Mimosa", "Claude Sonnet 4.6 · Mimosa", "Claude Opus 5.5 · ING", "Show the All models [21] tab", "Show the Recents [5] tab", "Search models"],
+        "Claude Opus 4.8 · Mimosa", "Claude Sonnet 4.6 · Mimosa", "Claude Opus 5.5 · ING", "Show the All models [21] tab", "Show the Recents [5] tab", "Search models", "Cancel"],
     });
   });
 
@@ -34,6 +34,8 @@ describe("Letta Code's /model", () => {
     expect(answerKeys(prompt, { custom_text: "son" })).toEqual([{ text: "s" }, { text: "o" }, { text: "n" }]);
     // with the search empty, `r` would refresh the list: its capital goes in, and Letta matches without case
     expect(answerKeys(prompt, { custom_text: "ri" })).toEqual([{ text: "R" }, { text: "i" }]);
+    // Cancel is Esc, which closes the picker
+    expect(answerKeys(prompt, { option_index: 8 })).toEqual([{ keys: [KEY.escape] }]);
   });
 
   it("picks a row with the arrows from the cursor, then Enter", () => {
@@ -48,8 +50,9 @@ describe("Letta Code's /model", () => {
   it("offers the reasoning level the next step shows, and leaves the others to the terminal", () => {
     const prompt = parseInteractivePrompt("letta", screen("effort"))!;
     expect(prompt.question).toBe("Select reasoning level for openai-codex/gpt-6.1-sol for this session (currently Medium). More levels are listed in the terminal.");
-    expect(prompt.options.map((option) => option.label)).toEqual(["Medium"]);
+    expect(prompt.options.map((option) => option.label)).toEqual(["Medium", "Cancel"]);
     expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ keys: [KEY.enter] }]);
+    expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: [KEY.escape] }]);
   });
 
   it("reads no picker once output follows it, nor another agent's screen", () => {
