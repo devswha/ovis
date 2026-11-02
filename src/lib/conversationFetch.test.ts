@@ -875,8 +875,8 @@ describe("conversation invalidation refresh", () => {
     expect(reads).toEqual(["old"]);
     try {
       await settleRefresh();
-      expect(oldSignal?.aborted).toBe(true);
       expect(reads).toEqual(["old", "current"]);
+      expect(oldSignal?.aborted).toBe(true);
     } finally { old.resolve(); current.resolve(); refresh.stop(); }
     await settleRefresh();
     clock.advance(2000);
