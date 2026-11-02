@@ -3032,8 +3032,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
-  Keep screen on, Install; then Remote access through Ovis relay, where the server has the route;
-  then Portal, where the server offers it; then paired devices; then Access),
+  Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
   **Remote PCs** (Add PC, Update PC bridges automatically; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
   Updates opens the dialog on About.
 - Every page is built from the same parts (`components/SettingsControls.tsx`). A group is an
@@ -3100,28 +3099,33 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the relay is offered, except with the relay off and Tailscale already serving this PC (or the page
   on its HTTPS address): then on Tailscale. Until a card is picked the dialog follows that default
   as the relay's and Tailscale's answers arrive, so one opened before they did does not stay on its
-  guess; using the relay's switch picks the relay. Wherever Tailscale already serves, the relay's card
-  carries the relay's own switch in its corner (for the owner; the gate condition under the cards
-  while it is off), so it is turned on right there and the dialog moves to the relay's details;
-  with no relay offered, the dialog opens on Tailscale. The relay route is the
-  relay's state sentence, the gate condition and **Turn on the relay** (or **Try again** after a
-  start that failed) while it is off and its card has no switch, and the pairing offer once it is
-  online; the Tailscale route is the address and QR code, or the command to run (plain, in
+  guess; using the relay's switch picks the relay. The relay's card carries the relay's one switch
+  in its corner, for the PC's owner where nothing blocks the relay (the gate condition under the
+  cards while it is off): turned on, the dialog moves to the relay's details. With no relay offered
+  the dialog opens on Tailscale. The relay route is the relay's state sentence (Blocked says why),
+  a start that failed with its reason and **Try again**, the pairing offer once it is online, and
+  last, quiet under a hairline, **Reset relay identity** (a ghost button, confirmed in the shared
+  `ConfirmDialog`; Escape there closes the confirmation, not the dialog; a serve-only install is
+  offered none, since the server refuses it, and an unreadable identity keeps it, since the reset
+  mends it). A watching device or Portal visitor gets no switch and no reset, and the relay route
+  says only the PC's owner can control the relay, through a direct connection. The Tailscale route is the address and QR code, or the command to run (plain, in
   `.phone-command`, with no accent rail: a rail read as a focus ring there) with **Check again**;
   the pairing code route is one sentence (a phone that can already open this address: the same
   Wi-Fi, a tunnel, a proxy) and **Get a pairing code**, then the code, its QR code when the
   address is known, the link with Copy, the countdown and **New code**. All three stay mounted
   while the dialog is up and only the chosen one shows, so the relay's offer and the pairing code
-  follow each other's New code. The explanations (what the relay sees, who Tailscale lets in, what
-  pairing grants, the README links) wait behind one accent **How it works** under a hairline.
+  follow each other's New code. The explanations (what the relay sees, who Tailscale lets in, the
+  README links) wait behind one accent **How it works** under a hairline.
   Devices' **Pair a device** opens the dialog on the pairing code with a code started, as the
   button always did, and the dialog closes by itself once the Devices group sees the device the
   code let in, its "Paired" line then in the list. The relay's offer announces its code as well,
-  the first one the server made included, so a phone paired through the relay closes it too. The relay's switch, its reset and the device
-  list stay on the page. The precedent is Paseo's desktop Settings, where the host's **Pair a
-  device** opens the pairing flow, with Enable relay and the QR code there rather than inline
-  ([docs](https://paseo.sh/docs/connectivity)); this differs in keeping the relay's switch on the
-  page as well, since it is a setting that stays on, and in offering Tailscale and a pairing
+  the first one the server made included, so a phone paired through the relay closes it too. The
+  relay has no group of its own on the page: the row's second line is its state (**Ovis relay:**
+  Off, Connecting…, Online with how many phones, Error, Blocked with the reason), and every relay
+  control is in this dialog, so nothing is said twice. What pairing grants is said once, in
+  Devices. The precedent is Paseo's desktop Settings, where the host's **Pair a device** opens the
+  pairing flow, with Enable relay and the QR code there rather than inline
+  ([docs](https://paseo.sh/docs/connectivity)); this differs in offering Tailscale and a pairing
   code beside the relay in the same dialog.
 - Install (a row of the Phone group) reflects installed, promptable or browser-instructions state;
   About links the repository.
@@ -3165,35 +3169,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ([`Restart=on-failure`](https://github.com/cloudflare/cloudflared/blob/733bfb93/cmd/cloudflared/linux_service.go)),
   without limit. This differs on purpose: one restart, in the existing status row with no new
   control or setting, so a tunnel that keeps failing says so instead of looping.
-- Remote access through Ovis relay (`components/RelayPanel.tsx`, `lib/useRelay.ts`), a group of
-  its own between Phone and Portal where the server answers `/api/relay`: the caption, then one row whose control is the switch and whose sentence is the relay's state in
-  words (Off, Connecting…, Online with how many phones are connected, Error with the server's
-  sentence, Blocked by serve-only or an unreadable identity), one step above a row's sentence
-  (`--fs-sm`, the label's own size) and never above its label. While the gate is still open,
-  no token is set and nothing blocks the relay, the condition line under it says turning the
-  relay on closes the gate; the switch is disabled while blocked, with the reason in its place,
-  and a serve-only install is offered no reset either, since the server refuses that too (an
-  unreadable identity keeps it: the reset is what mends it). While the relay is online the pairing offer is a QR code beside its words in Connect a
-  phone's relay route (`.relay-pairing`, stacked on a phone), with a countdown and **New code**;
-  the group on the page has none. The server keeps one pending pairing code, which this offer and
-  the dialog's pairing code both carry, so the offer is asked for when the dialog opens with the
-  relay online, when the pairing code route starts a code (`PAIRING_CODE_EVENT`,
-  lib/useRelay.ts: both then show the same code), when its countdown runs out, and on **New
-  code**, which starts a new code first and tells the pairing code route; never on a timer or a
-  render. An offer that arrives already
-  expired (the PC's clock and this one apart) says so and waits for **New code** rather than
-  asking again and again. **Reset relay identity** is one row
-  with its one-sentence consequence and a neutral **Reset**, confirmed in the shared
-  `ConfirmDialog` ("Phones paired through the relay will need to scan a new code"). A watching
-  device or Portal visitor sees the switch disabled and the state, no offer and no reset:
-  the condition text beside it explains that only the PC's owner can control the relay through a
-  direct connection and asks them to open Ovis on the PC or at its direct address. It reuses the
-  row's condition style, beside the control it explains, rather than a separate banner.
-  Portal watch visitors get `403 read_only` first; even a saved drive invitation gets
-  `403 owner_only` (the watch guard precedes the owner guard in `server/dispatch.ts:223-243`).
-  The hosted shell (a page
-  carrying `<meta name="ovis-shell" content="relay">`) shows the group not at all, since
-  every relay mutation requires a direct connection (`403 local_required` over the relay).
+- The Ovis relay's state and pairing offer (`components/RelayPanel.tsx`: `statusText`,
+  `RelayPairing`; `lib/useRelay.ts`), shown where the server answers `/api/relay`: the state in
+  words is one step above a row's sentence (`--fs-sm`) and never above its label. While the relay
+  is online the pairing offer is a QR code beside its words in Connect a phone's relay route
+  (`.relay-pairing`, stacked on a phone), with a countdown and **New code**. The server keeps one
+  pending pairing code, which this offer and the dialog's pairing code both carry, so the offer is
+  asked for when the dialog opens with the relay online, when the pairing code route starts a
+  code (`PAIRING_CODE_EVENT`, lib/useRelay.ts: both then show the same code), when its countdown
+  runs out, and on **New code**, which starts a new code first and tells the pairing code route;
+  never on a timer or a render. An offer that arrives already expired (the PC's clock and this one
+  apart) says so and waits for **New code** rather than asking again and again. Portal watch
+  visitors get `403 read_only` first; even a saved drive invitation gets `403 owner_only` (the
+  watch guard precedes the owner guard in `server/dispatch.ts:223-243`). The hosted shell (a page
+  carrying `<meta name="ovis-shell" content="relay">`) offers no relay at all, since every relay
+  mutation requires a direct connection (`403 local_required` over the relay).
   In Devices, a device paired through the relay wears
   the **via relay** pill, the `this device` pill in neutral tones (`.devices-via-relay`: a
   category, not this device's own mark). The precedent is Paseo's relay pairing (the daemon's

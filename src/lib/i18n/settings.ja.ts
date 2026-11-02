@@ -348,4 +348,5 @@ export const SETTINGS_JA: Record<string, string> = {
   "Ready at {url}. Or use the Ovis relay, no Tailscale needed.": "{url} で開けます。Tailscale なしで Ovis リレーも使えます。",
   "The Ovis relay works from anywhere with nothing to install, or use Tailscale.": "Ovis リレーならどこからでも、インストール不要で使えます。Tailscale も使えます。",
   "Use Tailscale or a pairing code.": "Tailscale またはペアリングコードで接続します。",
+  "Ovis relay: {state}": "Ovis リレー: {state}",
 };
