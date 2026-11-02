@@ -209,8 +209,31 @@ try {
   assert.equal(await smallLine.locator(".work-image:not(.is-more)").count(), 3);
   const boxes = await smallLine.locator(".work-image").evaluateAll((buttons) => buttons.map((button) => [button.getBoundingClientRect().width, button.getBoundingClientRect().height]));
   assert.deepEqual(boxes, [[44, 44], [44, 44], [44, 44], [44, 44]], "every thumbnail and the tile is a 44px square");
-  const [head, strip] = [await small.locator(".work-block-head").boundingBox(), await smallLine.boundingBox()];
-  assert.ok(head !== null && strip !== null && strip.x + strip.width <= 390 && Math.abs(strip.y - head.y) < 1, "the strip stays on the folded line, inside the screen");
+  // the virtual list first places its rows at estimated heights and moves them once it has measured
+  // them: two separate reads can fall on either side of that move. Both boxes come from one frame's
+  // layout, taken once two frames in a row agree
+  type Box = { x: number; y: number; width: number; height: number };
+  const [head, strip] = await small.evaluate(() => new Promise<[Box, Box]>((settled, fail) => {
+    const started = performance.now();
+    let before = "";
+    const box = (selector: string): Box => {
+      const found = document.querySelectorAll(selector);
+      if (found.length !== 1) throw new Error(`expected one ${selector}, found ${found.length}`);
+      const { x, y, width, height } = found[0]!.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const frame = () => {
+      let boxes: [Box, Box];
+      try { boxes = [box(".work-block-head"), box(".work-block-line .work-images")]; } catch (error) { return fail(error); }
+      const now = JSON.stringify(boxes);
+      if (now === before) return settled(boxes);
+      if (performance.now() - started > 5000) return fail(new Error(`the phone's folded line never settled: ${now}`));
+      before = now;
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }));
+  assert.ok(strip.x + strip.width <= 390 && Math.abs(strip.y - head.y) < 1, "the strip stays on the folded line, inside the screen");
   await smallLine.locator(".work-image:not(.is-more)").first().tap();
   await small.getByRole("dialog", { name: "Image viewer" }).waitFor();
   assert.equal(await small.locator(".work-image-preview").count(), 0, "a tap opens the viewer, with no hover preview");
