@@ -240,6 +240,32 @@ describe("lifecycle invalidations", () => {
     } finally { collector.stop(); }
   });
 
+  it("does not clean up again a pane whose close follows its exit, but does once its ID is registered anew", async () => {
+    // Given
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const ended: string[] = [];
+    const closed: string[] = [];
+    handlers.onPaneEnded = (paneId) => ended.push(paneId);
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      // When: a program ends and its pane then closes (herdr, and hc for a program that exited)
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      // Then: the exit's cleanup was the only one
+      expect(ended).toEqual(["w1:p1"]);
+      expect(closed).toEqual([]);
+      // When: the ID ends, is taken by a new tracked pane, and that one is closed
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p2" } });
+      collector.trackPane("w1:p2");
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      // Then: the new pane is cleaned up
+      expect(closed).toEqual(["w1:p2"]);
+    } finally { collector.stop(); }
+  });
+
   const types = [
     "workspace_created", "workspace_updated", "workspace_metadata_updated",
     "workspace_renamed", "workspace_moved", "workspace_reordered", "workspace_closed",

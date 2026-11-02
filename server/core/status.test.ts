@@ -943,7 +943,7 @@ describe("the herdr a features frame names (#2257)", () => {
 });
 
 describe("a pane closed, not ended by itself", () => {
-  it("turns away a launch's held first message and sends no 'terminal ended' alert", async () => {
+  it("turns away what a closed pane held (a launch's first message) and sends no 'terminal ended' alert", async () => {
     // Given: a pane whose first message waits for its agent
     const h = hub();
     h.herdrSays(claude);

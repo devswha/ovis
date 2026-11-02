@@ -297,6 +297,8 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
   const actedOn = new Map<string, number>();
   /** Creation is newer than any snapshot already in flight when the caller registered it. */
   const trackedPanes = new Map<string, number>();
+  /** when a pane's exit was told: its close right after has nothing left to clean up */
+  const exitedAt = new Map<string, number>();
   /** when a pane last came to the front: no replay from a snapshot asked for before that. A resync still corrects it */
   const focusedAt = new Map<string, number>();
   /** the status subscription was closed for another pane set, or refused: a change since then may have had no event */
@@ -482,6 +484,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       for (const [paneId, seq] of lastEventOf) if (seq <= askedAt && !paneIds.includes(paneId)) lastEventOf.delete(paneId);
       for (const paneId of [...heard.keys()]) if (!paneIds.includes(paneId) && (lastEventOf.get(paneId) ?? 0) <= askedAt) heard.delete(paneId);
       for (const [paneId, seq] of actedOn) if (seq <= askedAt && !paneIds.includes(paneId)) actedOn.delete(paneId);
+      for (const [paneId, seq] of exitedAt) if (seq <= askedAt && !paneIds.includes(paneId)) exitedAt.delete(paneId);
       for (const [paneId, seq] of focusedAt) if (seq <= askedAt && !paneIds.includes(paneId)) focusedAt.delete(paneId);
       for (const paneId of [...displayAgents.keys()]) if (!paneIds.includes(paneId) && (lastEventOf.get(paneId) ?? 0) <= askedAt) displayAgents.delete(paneId);
       if (sameSet) {
@@ -539,6 +542,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
         trackedPanes.delete(parsed.paneId);
         // a snapshot already on its way still holds the pane: it is no news of it
         actedOn.set(parsed.paneId, ++statusEvents);
+        exitedAt.set(parsed.paneId, statusEvents);
         heard.delete(parsed.paneId);
         handlers.onPaneEnded(parsed.paneId);
       }
@@ -562,10 +566,14 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
         // closed with no exit frame: a snapshot on its way that still holds the pane is no news of it either
         if (parsed.closed !== undefined) {
           // a tracked pane is known closed now: a snapshot without it must not report it ended
+          const exited = exitedAt.get(parsed.closed);
+          exitedAt.delete(parsed.closed);
+          // after its exit with nothing heard or registered under its ID since, the exit already cleaned it up
+          const cleaned = exited !== undefined && Math.max(lastEventOf.get(parsed.closed) ?? 0, trackedPanes.get(parsed.closed) ?? 0) < exited;
           trackedPanes.delete(parsed.closed);
           actedOn.set(parsed.closed, ++statusEvents);
           heard.delete(parsed.closed);
-          handlers.onPaneClosed?.(parsed.closed);
+          if (!cleaned) handlers.onPaneClosed?.(parsed.closed);
         }
       }
       scheduleStructureChange();
