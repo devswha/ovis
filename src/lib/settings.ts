@@ -664,9 +664,10 @@ function readChatFold(key: string, fallback: boolean): boolean {
 /**
  * Settings > Chat > Enter sends (Return inserts a new line on a touch screen): whether it was chosen is kept in a
  * key of its own. Settings are saved whole, so `enterSends: true` in ovis:settings was written by any change at all,
- * not chosen; only its `false` was a choice (the old default was true). The record keeps the boolean an older tab
- * reads and writes (true until chosen), and its value wins once chosen: a tab still on an older version that
- * changes the setting writes only the record.
+ * not chosen; only its `false` was a choice (the old default was true), and it counts while this key holds none.
+ * The record keeps the boolean an older tab reads and writes (true until chosen), but once this key holds a choice
+ * the record never overrides it: a tab still on an older version rewrites the record whole with whatever it loaded,
+ * so a value there may be stale, and a choice must not flip back after an unrelated save.
  */
 export const ENTER_SENDS_STORAGE_KEY = "ovis:enter-sends";
 
@@ -674,7 +675,7 @@ function readEnterSends(record: boolean | null): boolean | null {
   try {
     const raw = window.localStorage.getItem(ENTER_SENDS_STORAGE_KEY);
     const value: unknown = raw === null ? null : JSON.parse(raw);
-    if (typeof value === "boolean") return record ?? value;
+    if (typeof value === "boolean") return value;
   } catch {
     /* unreadable: the record's choice, if any */
   }

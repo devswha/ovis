@@ -156,16 +156,21 @@ describe("settings across tabs", () => {
     expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).enterSends).toBe(true);
   });
 
-  it("follows a change an older tab made after this version chose", async () => {
-    // Given Enter sends chosen here, then turned off by a tab still on an older version, which writes only the record.
-    records.set(ENTER_SENDS_STORAGE_KEY, "true");
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: false }));
+  it("keeps this device's choice when an older tab rewrites the record it loaded before", async () => {
+    // Given an older tab that loaded the unchosen record (enterSends: true).
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true }));
+    const stale = records.get(SETTINGS_STORAGE_KEY)!;
 
-    // When the tab opens.
+    // When this version chooses Return breaks the line, and the older tab then saves an unrelated setting whole.
+    await open();
+    await act(async () => { update({ enterSends: false }); });
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ ...JSON.parse(stale), terminalFontSize: 18 }));
+    await act(async () => { renderer?.unmount(); });
     await open();
 
-    // Then the older tab's choice holds.
+    // Then the choice holds after the reload.
     expect(settings.enterSends).toBe(false);
+    expect(settings.terminalFontSize).toBe(18);
   });
 
   it("keeps a choice made before: the old record's false, and this key's own true or false", async () => {
