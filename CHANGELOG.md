@@ -435,6 +435,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Cloudflare relay connections now close both ends after a frame send fails, so clients can
   reconnect without waiting for a later transport close event or timeout.
   ([#2580](https://github.com/devswha/ovis/pull/2580))
+- A folder opened in New workspace's Browse no longer loses to a Show hidden toggle pressed while
+  the folder loads; the toggle waits for the listing. The path bar wraps at very narrow widths so
+  New folder is not clipped.
+  ([#2582](https://github.com/devswha/ovis/pull/2582) by @iwangjie)
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so
