@@ -432,6 +432,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   own copy does: the line breaks and two-space indent the agent drew at the pane's edge are left out,
   so a long command it wrapped pastes whole.
   ([#2575](https://github.com/devswha/ovis/pull/2575) reported by @matiemer)
+- Cloudflare relay connections now close both ends after a frame send fails, so clients can
+  reconnect without waiting for a later transport close event or timeout.
+  ([#2580](https://github.com/devswha/ovis/pull/2580))
 
 ### Maintenance
 - The installer test for a PC without its own Node no longer finds the host's `/usr/bin/node`, so

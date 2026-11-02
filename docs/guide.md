@@ -448,13 +448,13 @@ The phone pairs once. It makes a key of its own for this PC, which never leaves 
 Good to know:
 
 - Relay controls require drive access and a direct connection to this PC. A visitor signed in
-  through Portal can read the state, but sees a disabled switch with an explanation, no QR code
-  and no identity reset. Relay changes answer `403 read_only` for the default watch visitor;
+  through Portal can read the state in Connect a phone, with an explanation, but gets no relay
+  switch, no QR code and no identity reset. Relay changes answer `403 read_only` for the default watch visitor;
   even a saved drive invitation gets `403 owner_only`, because the watch guard runs first
   ([`server/dispatch.ts:223-243`](../server/dispatch.ts#L223-L243)).
   Open Ovis on the PC or at its direct address, using the owner's access token or a paired
   device with drive access instead.
-  The hosted shell hides the relay group; changes over the relay answer `403 local_required`.
+  The hosted shell offers no relay at all; changes over the relay answer `403 local_required`.
 - `OVIS_TAILSCALE_SERVE_ONLY=1` keeps the relay off: that setting says `tailscale serve` is the only way into this PC, and the relay would be another.
 - Turning the relay on closes the device gate when no device has paired yet and no token is set. From then on a new browser needs a pairing code or the token ([Access and safety](#access-and-safety)).
 - Only a phone paired through the relay gets in through it. The token and device cookies don't work there.
