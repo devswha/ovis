@@ -34,7 +34,7 @@
   top: 50%;
   left: 0;
   height: 2px;
-  border-radius: 1px;
+  border-radius: 0;
   transform: translateY(-50%);
 }
 
@@ -54,7 +54,7 @@
   z-index: 1;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--border-strong);
   transform: translate(-50%, -50%);
 }
@@ -95,7 +95,7 @@
   height: var(--knob);
   margin-top: calc((28px - var(--knob)) / 2);
   border: 2px solid var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--text-strong);
   appearance: none;
 }
@@ -104,7 +104,7 @@
   width: var(--knob);
   height: var(--knob);
   border: 2px solid var(--accent);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--text-strong);
 }
 

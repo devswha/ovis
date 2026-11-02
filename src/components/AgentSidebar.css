@@ -89,7 +89,7 @@
   display: flex;
   align-items: center;
   padding-right: var(--side-box);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 
@@ -101,7 +101,7 @@
   min-height: var(--side-row-2);
   padding: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   font: inherit;

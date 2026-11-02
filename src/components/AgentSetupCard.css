@@ -60,7 +60,7 @@
   width: 24px;
   height: 24px;
   border: 1.5px solid var(--border-strong);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   font-size: var(--fs-xs);
 }
 

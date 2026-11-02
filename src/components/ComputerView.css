@@ -58,7 +58,7 @@
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text);
   background: var(--bg-elevated);
   opacity: 0.6;

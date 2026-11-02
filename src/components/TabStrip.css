@@ -85,7 +85,7 @@
   flex: 0 0 auto;
   width: var(--dot-size);
   height: var(--dot-size);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
 }
 
 .tab-strip-dot[data-status="working"] { background: var(--status-working); }

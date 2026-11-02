@@ -280,7 +280,7 @@
   height: 24px;
   padding: 3px;
   border: 2px solid var(--status-done);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   color: var(--status-done);
 }
 

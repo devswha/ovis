@@ -187,7 +187,7 @@ where the two surfaces sit close: every light theme (the `[data-theme="light"]` 
 all palettes) and dark Catppuccin, whose elevated surface is darker than its canvas.
 
 - **Charcoal** is a neutral Ghostty-style dark: near-black canvas, a slightly lighter panel and
-  terminal, a near-white accent and primary, and muted agent states. It keeps amber's rounded
+  terminal, a near-white accent and primary, and muted agent states. It keeps amber's square
   corners and card shadow. In light it's plain paper with an ink accent and cursor.
 - **Codex** copies the Codex desktop app's default theme export: surface `#ffffff` / `#181818`,
   ink `#1a1c1f` / `#ffffff` and accent `#3a83f7`. The chrome sits one quiet step off the surface,
@@ -201,7 +201,7 @@ all palettes) and dark Catppuccin, whose elevated surface is darker than its can
   Blue / Maroon / Green (Maroon, not Red, keeps input AA on a hovered row). Light keeps Latte's
   surfaces and text, with Crust as the hover, the darkest surface Subtext1 stays AA on. Latte's
   accents are under 4.5:1 on these surfaces, so each keeps its hue and is darkened until it passes
-  AA. It keeps amber's rounded corners.
+  AA. It keeps amber's square corners.
 
 - **Black** uses Tokyo Night colors on a pure-black canvas, panel, inputs and terminal.
   Raised surfaces are near-black.
@@ -741,14 +741,21 @@ All spacing derives from a 4px base.
 
 ### Radii
 
+Every box draws square: the ladder keeps its names, so a rule still says which step it is on, but
+each step is `0`. Only a disc (a status dot, an orb, a step mark, a slider knob, the spinner) rounds,
+with `--radius-circle`, and the chat composer's Send, Voice and Stop button keeps its circle with
+`--radius-round`. Component CSS writes a radius only as one of these tokens or `0`.
+
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--radius-sm` | `6px` | Chips and inner controls |
-| `--radius-md` | `8px` | Buttons, inputs, selected rows |
-| `--radius-lg` | `12px` | Menus and chat surfaces |
-| `--radius-xl` | `16px` | Modals and bottom sheets |
-| `--radius-2xl` | `24px` | The composer's input card |
-| `--radius-pill` | `999px` | Pills and dots |
+| `--radius-sm` | `0` | Chips and inner controls |
+| `--radius-md` | `0` | Buttons, inputs, selected rows |
+| `--radius-lg` | `0` | Menus and chat surfaces |
+| `--radius-xl` | `0` | Modals and bottom sheets |
+| `--radius-2xl` | `0` | The composer's input card |
+| `--radius-pill` | `0` | Pills, chips, toggles and meters |
+| `--radius-circle` | `50%` | Status dots, orbs, step marks, slider knobs, the spinner |
+| `--radius-round` | `999px` | The chat composer's Send, Voice and Stop button |
 
 ### Sizes
 
@@ -1373,7 +1380,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   included. As herdr draws its tree, each indented worktree hangs from its repository's folder on
   a `--hairline` `--border-strong` branch in the indent: a tee for each but the last, an elbow for
   the last.
-  Selection uses a neutral rounded fill and no stroke; workspace rows have no amber
+  Selection uses a neutral square fill and no stroke; workspace rows have no amber
   rail or separate reorder gutter. Drag the row itself, or press `Alt+↑/↓` while its selector is
   focused, to reorder it.
   On a touch screen (`pointer: coarse`) the browser's drag is off: a long press (400ms, still
@@ -2292,7 +2299,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   after a middle dot, the step in progress in the agent's own words (`.bg-tasks-current`, #1040):
   one line, cut with an ellipsis past `16em` beside a mouse and `8em` on a narrow card, whole in
   the button's name and title. The figures and the task count are never cut for it, and on a card
-  narrower than the row's controls the step gives its room back before the add button or the round
+  narrower than the row's controls the step gives its room back before the add button or the action
   button do (a one-line clamp, so its narrowest size is one glyph). The model pill beside the chip
   steps out before the step does, as it does for the chip's other words: on a phone a long step and
   a task count leave it no room, because the step is what the phone would otherwise open the plan
@@ -2408,7 +2415,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the next prompt's card starts open. Follows T3 Code's pending-question panel, which folds per
   question the same way; its dismiss without answering needs an answer herdr's prompts do not have.
 - A form of several questions (omo) shows a row of step chips (`.prompt-card-steps`) under the
-  header: a chip per question, pill-shaped, mono number or a check once answered (`--accent`), the
+  header: a chip per question, mono number or a check once answered (`--accent`), the
   one asked now with an `--accent` border, `--accent-tint` fill and a `--primary` number. The title
   then reads `Question 1 of 2`; the review after the last question keeps the chips, all checked.
 - Single options submit immediately; multi-select exposes checks plus Submit; supported custom input
@@ -2469,12 +2476,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (the only other card on this surface is the prompt card docked over it, while an agent asks);
   focus turns its border `--accent` (no inner outline). Above it the notices (below), the
   completion popover and the background-task list; inside, the image strip is its own row at the top, then the auto-growing
-  message box as a row of its own at the card's full width (each tile's X is a `--chip-h` circle
+  message box as a row of its own at the card's full width (each tile's X is a `--chip-h` square
   with a mouse, reaching `--pointer-target` through an invisible `::before` expander; under a
   coarse pointer the button itself grows to `--touch-target` wide and `--touch-target` plus
   `--space-1` tall), then ONE row of controls under it:
   on the left the add button (lucide `Plus`, named "Attach files"), the mic when voice input
-  shows it (see Voice input), and the background-task chip; on the right the status content and ONE round Send/Stop button.
+  shows it (see Voice input), and the background-task chip; on the right the status content and ONE square Send/Stop button.
   The message's text starts `--space-4` in (`--space-3` on a phone, `480px` and below).
 - Empty chat (`.composer-greeting`): one line on the composer's column, directly over it,
   `What should <agent> do in <folder>?` in `--text-strong`, `--fs-display`, `--fw-semibold`, `--tracking-display`, centred,
@@ -2492,12 +2499,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   own empty line. While the composer is lifted, the completion menu's height is capped to the
   room over the input card, where it scrolls. On a coarse pointer the greeting takes no touch:
   a tap or drag on it reaches the chat under it, which puts the keyboard away.
-- The round button (`.composer-action`, a `--space-8` / `32px` circle with a `--space-4` glyph) is
+- The action button (`.composer-action`, a `--space-8` / `32px` circle (`--radius-round`) with a `--space-4` glyph) is
   Send or Stop in the same place at the same size, so only the glyph changes: Send is `--primary`
   with lucide `ArrowUp`; Stop is `--text-strong` with a `--bg` square, and turns
   `--status-blocked` on hover and focus. Not connected, Stop is disabled and loses its fill
   (`--border-strong` outline, `--text-dim` glyph). A coarse pointer keeps that compact visible
-  circle inside a transparent `--touch-target` / `44px` button, so tapping remains easy.
+  square inside a transparent `--touch-target` / `44px` button, so tapping remains easy.
 - The status content (`.composer-status`, `role="status"`) sits between the two control groups,
   pushed to the button's side. It draws, at `--fs-xs`: the model pill and the uploading
   or reconnecting sentence in `--text-dim`. The background-task chip is a button in the left controls;
@@ -2560,7 +2567,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   again after fonts arrive and the context label opens or closes. The input card keeps one row
   of controls on desktop and phones.
 - Every agent has one primary control: Stop while working with an empty draft, Send with text,
-  and Send at rest. Uploads and in-flight sends disable Send without clearing its text. An in-flight Send keeps its accent circle at full opacity and replaces the arrow with a small progress ring, rotating in eight steps using `--dur-spin`; reduced motion keeps the ring static. Its accessible name is `Sending…` and `aria-busy` stays true until the receipt settles, without a live region. The button keeps the same size and position, even if its draft is edited to empty while sending. There
+  and Send at rest. Uploads and in-flight sends disable Send without clearing its text. An in-flight Send keeps its accent square at full opacity and replaces the arrow with a small progress ring, rotating in eight steps using `--dur-spin`; reduced motion keeps the ring static. Its accessible name is `Sending…` and `aria-busy` stays true until the receipt settles, without a live region. The button keeps the same size and position, even if its draft is edited to empty while sending. There
   is no separate Queue button or send menu. The placeholder is `Message <agent>…`; message text
   uses `--fs-chat` scaled by `--chat-scale` on `--lh-code` with a fine pointer. Otherwise it
   uses that scaled size or `--fs-input`, whichever is larger, keeping the 16px floor that avoids
@@ -2638,11 +2645,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the sentence takes a line: the mark, the model, the level and the ring stay one row over it
   (`.composer-status-meta`), where the label gives way exactly as it does with no sentence. The
   status content is then left-aligned, beside the add button. In a narrow card (`data-compact`,
-  below `640px`) add, the icons and the round button at touch size leave it too little of the
+  below `640px`) add, the icons and the action button at touch size leave it too little of the
   row for a word, so while a sentence shows the status content takes a row of its own over them,
   the card's width (`.composer-surface[data-compact]:has(> .composer-status[data-hint])`): the
   sentence is read whole beside the model pill or under it, from where the message's text
-  starts, add and the round button keep their row, and the card grows by that row while the
+  starts, add and the action button keep their row, and the card grows by that row while the
   sentence shows. The primary control and add are disabled. With a draft, the reconnecting sentence is said instead of
   `Uploading file…`, never both: the attachment's own tile says it is uploading.
 - The stack over the input card, on its column, is written once (PaneTerminal): held messages,
@@ -3267,10 +3274,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still
   pending when the role comes back is dropped. One composed while the pane was not ready goes to
   the draft when input returns, before its commit key, and waits there for Send or Discard.
-- While herdr's viewport is above the bottom and the pane is interactive, a round ArrowDown
+- While herdr's viewport is above the bottom and the pane is interactive, a square ArrowDown
   "Jump to bottom" button floats over the grid's bottom-right corner and sends `pane.scroll`
   offset 0, the one-tap way back to the live bottom now that no scrollbar offers End. It uses
-  the chat lens' round button form (`--control-h`, `--touch-target` on coarse pointers,
+  the chat lens' icon button form (`--control-h`, `--touch-target` on coarse pointers,
   `--radius-pill`, `--shadow-pop`), keeps focus in the terminal, and is hidden at the bottom, in
   read-only views and while Find owns the viewport. A grown touch input line floats over it.
 - Mod+Shift+PageUp/PageDown pages the selected pane only, preserving chat composer focus and
@@ -3409,7 +3416,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   key bar toggle's own words, `--fs-chat` in `--text-dim`) above the draft, whose text is
   `max(--fs-input, --fs-xl)`. It has **Insert** (`.terminal-input-insert`, named "Insert text without
   Enter") left of Send. Each action is one button: its words above (`.terminal-input-caption`,
-  `--fs-chat`: "Insert text"; "Send", or "Enter" on an empty line) and its `--touch-target` round
+  `--fs-chat`: "Insert text"; "Send", or "Enter" on an empty line) and its `--touch-target` square
   face below. Send's face is the filled accent; Insert's is outlined on `--bg-elevated` in
   `--text-dim`, which holds 3:1 against the panel where the `--border` hairline does not; its glyph
   is lucide's text-cursor-input, Send keeps its arrow. Off (an empty line, disconnected, a send or

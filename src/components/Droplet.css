@@ -13,7 +13,7 @@
   --droplet-w: min(396px, calc(100vw - 2 * var(--space-4) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
   --droplet-h: 64px;
   --droplet-drop: 44px;
-  --droplet-radius: 24px;
+  --droplet-radius: var(--radius-2xl);
   --droplet-close: 28px;
   --droplet-close-inset: var(--space-2);
   position: fixed;
@@ -166,14 +166,14 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: var(--droplet-mark-bg);
 }
 
 .droplet-mark-blank {
   width: 10px;
   height: 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: var(--droplet-text-dim);
 }
 
@@ -205,7 +205,7 @@
 .droplet-dot {
   width: 8px;
   height: 8px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: var(--droplet-tone);
 }
 
@@ -219,7 +219,7 @@
     --droplet-w: var(--droplet-fit, var(--droplet-max));
     --droplet-h: 44px;
     --droplet-drop: 32px;
-    --droplet-radius: 22px;
+    --droplet-radius: var(--radius-2xl);
   }
 
   .droplet-card {

@@ -867,7 +867,7 @@ ol.markdown-list {
   content: "";
   width: 6px;
   height: 6px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: currentColor;
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }

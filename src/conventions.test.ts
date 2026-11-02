@@ -8,15 +8,21 @@ import { FRIENDS } from "../shared/friends.ts";
 // says what to change; server rules are in server/conventions.test.ts, repo-wide ones in
 // scripts/conventions.test.ts.
 
-/** The value of every declaration (`prop: value;`), comments and quoted strings removed; selectors and at-rule preludes are left out. */
-function declarationValues(css: string): string[] {
-  const values: string[] = [];
+/** Every declaration (`prop: value;`) as [prop, value], comments and quoted strings removed; selectors and at-rule preludes are left out. */
+function declarations(css: string): [string, string][] {
+  const found: [string, string][] = [];
   for (const [, piece, end] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^;{}]*)([;{}])/g)) {
     if (end === "{") continue;
     const colon = piece!.indexOf(":");
     if (colon < 0 || piece!.trim().startsWith("@")) continue;
-    values.push(piece!.slice(colon + 1).replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "\"\"").replace(/\s+/g, " ").trim());
+    found.push([piece!.slice(0, colon).trim(), piece!.slice(colon + 1).replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "\"\"").replace(/\s+/g, " ").trim()]);
   }
+  return found;
+}
+
+/** The value of every declaration, as declarations() reads it. */
+function declarationValues(css: string): string[] {
+  const values = declarations(css).map(([, value]) => value);
   return values;
 }
 
@@ -38,6 +44,15 @@ describe("component CSS", () => {
       ];
     });
     fail(offenders, "Component CSS takes colors from the tokens in src/styles.css (var(--…), or color-mix() of tokens) and wins by order at the same specificity, never by !important. Add a token to src/styles.css (both themes) and DESIGN.md if none fits.");
+  });
+
+  // This fork draws every box square: the radius ladder in src/styles.css is all 0 and only
+  // --radius-circle rounds. A literal radius would bring one corner back on its own.
+  it("takes radii from the ladder only: no literal radius outside its tokens", () => {
+    const offenders = scan("src/**/*.css").flatMap((file) => declarations(read(file))
+      .filter(([prop, value]) => /radius$/.test(prop) && !/^--radius-[\w-]+$/.test(prop) && /(?<![\w.-])(?!0+(?:\.0+)?(?:px|r?em|%|v[wh])?(?![\d.]))\d*\.?\d+(?:px|r?em|%|v[wh])/.test(value))
+      .map(([prop, value]) => `${file}: ${prop}: ${value}`));
+    fail(offenders, "A radius in CSS is a --radius-* token from src/styles.css, 0, inherit, or calc() of those: --radius-circle for a disc, any other step for a box (all 0 on this fork).");
   });
 
   it("reads declaration values, not selectors or comments", () => {

@@ -288,7 +288,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .pane-item {
   position: relative;
-  border-radius: 0;
+  border-radius: var(--radius-md);
 }
 
 /* the trailing padding keeps the status cell, which the selector draws at the row's right edge */
@@ -299,7 +299,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   min-width: 0;
   min-height: var(--side-row);
   padding-right: var(--side-box);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 
@@ -312,7 +312,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: 0;
   background: transparent;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--radius-md);
   color: var(--text);
   text-align: left;
   cursor: pointer;
@@ -639,7 +639,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 .sidebar-status-dot {
   width: var(--space-2);
   height: var(--space-2);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: currentColor;
 }
 

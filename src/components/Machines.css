@@ -116,7 +116,7 @@
   width: var(--dot-size);
   height: var(--dot-size);
   margin-left: var(--space-2);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-circle);
   background: var(--status-idle);
 }
 
