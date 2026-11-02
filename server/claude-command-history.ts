@@ -59,7 +59,11 @@ const MAX_ENDS = 5000;
 const CHUNK = 1024 * 1024;
 /** A session lets the next one have its turn after about this much work (the event loop gets one at every read too). */
 const SLICE_MS = 4;
-/** A read that has not answered in this long is given up for now (TranscriptBusyError) and tried again after a backoff. */
+/**
+ * A read that has not answered in this long is given up for now (TranscriptBusyError) and tried
+ * again a second later. A busy reader is no failure of the transcript, so one whose reads keep
+ * running out of time is tried every second for as long as it is watched, with no longer backoff.
+ */
 const READ_MS = 10_000;
 /** A transcript that changed after a check is checked again this long after, at the soonest, unless a request waits for it. */
 const CHECK_INTERVAL_MS = 5000;
@@ -264,7 +268,11 @@ function later(entry: Entry, at: number): void {
   entry.timer.unref?.();
 }
 
-/** A slice that has neither ended nor taken a turn in this long while another session waits is taken as stuck on its disk. */
+/**
+ * A slice that has neither ended nor taken a turn in this long while another session waits is taken
+ * as stuck on its disk. A healthy lease's open and its checks on remote storage, several round
+ * trips, can outlast it too, and the next slice then starts beside it.
+ */
 const STALL_MS = 50;
 
 /** A session waiting whose transcript no slice reads: it can have a slice now. */

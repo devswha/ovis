@@ -1,7 +1,11 @@
 import { constants, type Stats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
-/** A transcript's identity, length and clock, in the form `lstatSync` gives (historyVersion), so the two compare. */
+/**
+ * A transcript's identity, length and clock, in the form `lstatSync` gives (historyVersion), so the
+ * two compare. `dev` and `ino` are numbers there, not bigints: on a filesystem whose numbers pass
+ * 2^53, two files may share an identity.
+ */
 export interface TranscriptVersion { id: string; size: number; mtimeMs: number }
 export const transcriptVersion = (stat: Stats): TranscriptVersion | null => stat.isFile() ? { id: `${stat.dev}:${stat.ino}`, size: stat.size, mtimeMs: stat.mtimeMs } : null;
 
@@ -59,6 +63,11 @@ interface Request {
  * shared runtime pool; this bound does not reserve runtime capacity or interrupt a stuck syscall.
  * A lease has at most two native operations in flight, the one it awaits and a read ahead, so the
  * reader has at most twice its capacity of them.
+ *
+ * Known limits: a native operation that never settles (a read ahead or any other) keeps its lease,
+ * so two of them on two paths keep every lease, and every later read waits out its deadline. A
+ * cancelled lease keeps its path too, until its operations settle: a new read of that transcript
+ * waits behind it.
  */
 export class TranscriptReader {
   private readonly queue: Request[] = [];
