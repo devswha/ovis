@@ -689,6 +689,31 @@ it("starts no more slices beside stuck ones than the reader has room for", async
   for (const read of [first, second]) expect(await read).toMatchObject({ complete: true });
 }, 5000);
 
+it("gives up a read stuck in flight once the last server lets go", async () => {
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  const held = holdWindows(a.path)(a.path);
+  const hold = holdCommandHistory();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await held.entered;
+  hold();
+  // the request gives up, and no slice is left waiting for the disk
+  expect(await first).toBeNull();
+  await commandHistorySettled();
+  expect(commandHistorySize()).toMatchObject({ draining: false, sessions: 0, waiting: 0 });
+  // the read in flight cannot be interrupted: it keeps its lease of the reader until it settles,
+  // and other transcripts are read meanwhile
+  expect(transcriptReader.size().active).toBe(1);
+  expect(await waitCommandHistory(b.path, b.limit(), 1000)).toMatchObject({ complete: true, ends: [{ id: "b" }] });
+  // the stuck transcript itself waits for that lease (one a path), then is read anew
+  const again = waitCommandHistory(a.path, a.limit(), 60_000);
+  held.release();
+  expect(await again).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+  await transcriptReader.settled();
+  expect(transcriptReader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+}, 5000);
+
 it("counts the time it keeps a transcript open from when its read was asked for", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));

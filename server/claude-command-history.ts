@@ -80,6 +80,8 @@ const running = new Set<string>();
 const idle = new Set<() => void>();
 /** Moved on by every reset: a request waiting from before it gives up. */
 let generation = 0;
+/** Aborted by every reset: the reads of slices begun before it give up, and no drain waits for them. */
+let cancel = new AbortController();
 let holders = 0;
 let buffer: Buffer | null = null;
 
@@ -327,6 +329,7 @@ async function step(entry: Entry): Promise<void> {
   const deadline = Date.now() + READ_MS;
   // the transcript is let go of well inside the read's deadline, however long the read waited to begin
   const held = deadline - READ_MS / 2;
+  const signal = cancel.signal;
   try {
     await transcriptReader.read(entry.path, async (file) => {
       let stop = performance.now() + SLICE_MS;
@@ -392,7 +395,7 @@ async function step(entry: Entry): Promise<void> {
         if (after === null) { known = entry.version; after = await file.stat(); }
         now = after;
       }
-    }, { deadline });
+    }, { deadline, signal });
     if (entries.get(entry.path) !== entry) return;
     entry.failures = 0;
     entry.retryAt = 0;
@@ -519,6 +522,8 @@ async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, st
 
 export function resetCommandHistory(): void {
   generation++;
+  cancel.abort();
+  cancel = new AbortController();
   for (const entry of [...entries.values()]) discard(entry);
   queue.length = 0;
 }
