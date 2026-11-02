@@ -71,6 +71,8 @@ const MARKERS = ["<task-notification>", '"task_id"', '"shell_id"'].map((marker) 
 const entries = new Map<string, Entry>();
 const queue: Entry[] = [];
 let draining = false;
+/** Called once no drain runs (commandHistorySettled). */
+const idle = new Set<() => void>();
 /** Moved on by every reset: a request waiting from before it gives up. */
 let generation = 0;
 let holders = 0;
@@ -259,7 +261,13 @@ function pump(): void {
   if (draining || queue.length === 0) return;
   draining = true;
   // the first slice waits for the event loop too: whoever asked (a status poll) never runs one
-  setImmediate(() => void drain().finally(() => { draining = false; pump(); }));
+  setImmediate(() => void drain().finally(() => { draining = false; pump(); settle(); }));
+}
+
+function settle(): void {
+  if (draining) return;
+  for (const resolve of idle) resolve();
+  idle.clear();
 }
 
 /** One slice of one session at a time, each behind every other session waiting. */
@@ -482,4 +490,8 @@ export function holdCommandHistory(): () => void {
 }
 export function commandHistorySize(): { waiting: number; sessions: number; draining: boolean; timers: number } {
   return { waiting: queue.length, sessions: entries.size, draining, timers: [...entries.values()].filter((entry) => entry.timer !== null).length };
+}
+/** Resolves once no slice runs and none waits to start. */
+export function commandHistorySettled(): Promise<void> {
+  return draining ? new Promise((resolve) => idle.add(resolve)) : Promise.resolve();
 }

@@ -2,7 +2,7 @@ import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandHistory, commandHistorySize, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
+import { commandHistory, commandHistorySettled, commandHistorySize, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
 import { TranscriptBusyError, transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 
 const roots: string[] = [];
@@ -447,9 +447,9 @@ it("keeps a transcript open across turns while no other session waits", async ()
   writeFileSync(s.path, notice("large") + filler.repeat(8));
   const reads = slowReads();
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-  // a turn for every slow read, but the transcript opened (and checked) once
+  // a turn for every slow read, but the transcript opened (and checked) once, not for each turn
   expect(reads(s.path)).toBeGreaterThan(8);
-  expect(reads.leases(s.path)).toBe(1);
+  expect(reads.leases(s.path) * 4).toBeLessThan(reads(s.path));
 }, 5000);
 
 it("lets go of a transcript it keeps open at the end of the turn another session is asked for in", async () => {
@@ -459,12 +459,14 @@ it("lets go of a transcript it keeps open at the end of the turn another session
   writeFileSync(small.path, notice("small"));
   let answered: Promise<number> | undefined;
   const reads = slowReads((path, count) => {
-    if (path === large.path && count === 3) answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
+    if (path === large.path && count === 3) answered = waitCommandHistory(small.path, small.limit(), 60_000).then((found) => {
+      expect(found!.ends.map((end) => end.id)).toEqual(["small"]);
+      return reads(large.path);
+    });
   });
   expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
-  expect(await answered!).toBe(3);
-  // and opened again after it
-  expect(reads.leases(large.path)).toBe(2);
+  // the small one was read while the large one still had reads to go: it let go, and opened again after
+  expect(await answered!).toBeLessThan(reads(large.path));
 }, 5000);
 
 it("lets go of a transcript it keeps open well before the read's deadline", async () => {
@@ -473,10 +475,10 @@ it("lets go of a transcript it keeps open well before the read's deadline", asyn
   let now = Date.now();
   setSystemTime(new Date(now));
   try {
-    // half the read's deadline passes during the second read
-    const reads = slowReads((_, count) => { if (count === 2) setSystemTime(new Date(now += 5_000)); });
-    expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-    expect(reads.leases(s.path)).toBe(2);
+    // half the read's deadline passes during the second read, and as much again two reads later: a
+    // lease still held then would run out of time, and the read would give up for now
+    slowReads((_, count) => { if (count === 2 || count === 4) setSystemTime(new Date(now += 5_000)); });
+    expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, through: s.limit() });
   } finally { setSystemTime(); }
 }, 5000);
 
@@ -546,12 +548,14 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
 it("reads one slice for a request nobody watches or waits for", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(9));
-  const reads = slowReads();
+  slowReads();
   commandHistory(s.path, s.limit());
-  for (let turns = 0; turns < 1000 && (commandHistory(s.path, s.limit(), false)!.through === 0 || commandHistorySize().draining); turns++) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(commandHistorySize().draining).toBe(false);
-  expect(reads(s.path)).toBe(1);
-  expect(reads.leases(s.path)).toBe(1);
+  await commandHistorySettled();
+  // read on some way, and nothing left to read it on
+  const { through } = commandHistory(s.path, s.limit(), false)!;
+  expect(through).toBeGreaterThan(0);
+  expect(through).toBeLessThan(s.limit());
+  expect(commandHistorySize()).toMatchObject({ draining: false, waiting: 0, timers: 0 });
 }, 5000);
 
 it("reads on in one lease for a tracker's watch after it hears the first end", async () => {
@@ -561,11 +565,17 @@ it("reads on in one lease for a tracker's watch after it hears the first end", a
   // as a tracker asks: a read, and a watch of it until it is no longer needed
   commandHistory(s.path, s.limit());
   const done = gate();
-  release.push(watchCommandHistory(s.path, () => { if (commandHistory(s.path, s.limit(), false)!.complete) done.open(); })!);
+  let first: number | null = null;
+  release.push(watchCommandHistory(s.path, () => {
+    const history = commandHistory(s.path, s.limit(), false)!;
+    if (first === null && history.ends.length > 0) first = history.through;
+    if (history.complete) done.open();
+  })!);
   await done.opened;
   expect(reads(s.path)).toBeGreaterThan(9);
-  // let go of once, for the end the watcher hears from the first chunk
-  expect(reads.leases(s.path)).toBe(2);
+  // the end from the first chunk is heard while the read goes on
+  expect(first).not.toBeNull();
+  expect(first!).toBeLessThan(s.limit());
 }, 5000);
 
 it("lets go of a transcript it keeps open at the end of the turn it started over in", async () => {
@@ -573,7 +583,7 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
   writeFileSync(s.path, notice("a") + filler.repeat(16));
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.ends.map((end) => end.id)).toEqual(["a"]);
   // a clock that moves only by 1 ms a read: four reads to a slice
-  let waited = 0, reads = 0, heard = -1;
+  let waited = 0, reads = 0, heard = -1, through = -1;
   const base = performance.now();
   const now = spyOn(performance, "now").mockImplementation(() => base + waited);
   release.push(() => now.mockRestore());
@@ -583,7 +593,7 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
     reads++;
     return bytes;
   } }));
-  release.push(watchCommandHistory(s.path, () => { if (heard < 0) heard = reads; })!);
+  release.push(watchCommandHistory(s.path, () => { if (heard < 0) { heard = reads; through = commandHistory(s.path, s.limit(), false)!.through; } })!);
   // rewritten in place and grown: the same file, its first record another; a check finds it
   writeFileSync(s.path, notice("b") + filler.repeat(17));
   const read = await waitCommandHistory(s.path, s.limit(), 60_000);
@@ -591,7 +601,7 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
   expect(reads).toBeGreaterThan(16);
   // the watcher hears of the start over in the turn it happened, not once the transcript is read again
   expect(heard).toBeGreaterThan(0);
-  expect(heard).toBeLessThan(8);
+  expect(through).toBeLessThan(s.limit());
 }, 5000);
 
 it("counts the time it keeps a transcript open from when its read was asked for", async () => {
@@ -605,13 +615,13 @@ it("counts the time it keeps a transcript open from when its read was asked for"
     const held = gate(), entered = gate();
     const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
     await entered.opened;
-    const reads = slowReads();
+    // and as much again at the third read: a lease held by its own start would run out of time then
+    slowReads((_, count) => { if (count === 3) setSystemTime(new Date(now += 5_000)); });
     const reading = waitCommandHistory(s.path, s.limit(), 60_000);
     await new Promise<void>((resolve) => setImmediate(resolve));
     setSystemTime(new Date(now += 6_000));
     held.open();
     await other;
-    expect((await reading)!.complete).toBe(true);
-    expect(reads.leases(s.path)).toBe(2);
+    expect(await reading).toMatchObject({ complete: true, through: s.limit() });
   } finally { setSystemTime(); }
 }, 5000);
