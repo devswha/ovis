@@ -53,6 +53,8 @@ const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.s
  * choice so it can be turned on right there.
  */
 export function defaultRoute(plan: PhonePlan, relay: RelayState): ConnectRoute {
+  // in the hosted shell the phone is on the relay already: its card says so and points to the pairing code
+  if (inRelayShell() && !relay.unsupported && relay.status !== null) return "relay";
   if (!relayOffered(relay)) return "tailscale";
   return !relayOn(relay) && tailscaleWorks(plan) ? "tailscale" : "relay";
 }

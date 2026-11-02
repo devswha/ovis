@@ -6,7 +6,7 @@ import { encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
-import { CodeRoute, RelayRoute, sameNameRelayDevice } from "./ConnectPhoneDialog.tsx";
+import { CodeRoute, defaultRoute, RelayRoute, sameNameRelayDevice } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 
@@ -153,6 +153,15 @@ describe("Connect a phone on a phone", () => {
     expect(requests).not.toContain("/api/relay/offer");
     await act(async () => { button("Use a pairing code").props.onClick(); });
     expect(used).toBe(1);
+  });
+
+  it("opens on the relay's card in the hosted shell, where the phone already is on the relay", () => {
+    const served = { kind: "served" as const, url: "https://workstation.example.ts.net" };
+    const off = relayState({ ...ONLINE, phase: "off" });
+    expect(defaultRoute(served, off)).toBe("tailscale");
+    shellMeta = true;
+    expect(defaultRoute(served, off)).toBe("relay");
+    expect(defaultRoute(served, relayState())).toBe("relay");
   });
 
   it("keeps the desktop's relay QR code up front, with no self-pairing", async () => {
