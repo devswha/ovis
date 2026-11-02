@@ -53,6 +53,8 @@ interface Entry {
   timer: ReturnType<typeof setTimeout> | null;
   /** turns its slices took inside held leases: a slice that takes them is reading, not stuck */
   turns: number;
+  /** times it started over (restart): a request can start it over while a slice waits for the disk */
+  restarts: number;
 }
 
 const MAX_SESSIONS = 16;
@@ -130,7 +132,7 @@ export function commandHistory(path: string, limit: number, schedule = true, nee
     }
     entry = {
       path, session: basename(path, ".jsonl"), version, limit, offset: 0, skipping: false, cutAt: null, spans: [], checked: null, checkedThrough: 0, checkedFrom: -Infinity, checkedTick: -Infinity, check: null,
-      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null, turns: 0,
+      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null, turns: 0, restarts: 0,
     };
   }
   entries.set(path, entry);
@@ -417,6 +419,7 @@ async function step(entry: Entry): Promise<void> {
         const work = due(entry, Date.now());
         let after: HistoryVersion | null = null;
         if (work === "scan") {
+          const restarts = entry.restarts;
           if (entry.offset === 0 && entry.spans.length === 0) { entry.checked = now; entry.checkedThrough = 0; entry.checkedFrom = Date.now(); entry.checkedTick = performance.now(); }
           const extends_ = entry.checked !== null && sameVersion(entry.checked, now) && entry.checkedThrough === entry.offset;
           // a record cut at the limit is read whole: past the limit, as far as the transcript goes
@@ -445,9 +448,15 @@ async function step(entry: Entry): Promise<void> {
           // bytes read but not yet known unchanged; bytes that came within the turn are taken in
           // until it ends, and bytes that came after it (slow storage) get a turn of their own
           const arrived = performance.now();
-          scan(entry, bytes, arrived < stop ? stop : arrived + SLICE_MS);
-          // nothing was written while it read: what it read is as checked as what came before
-          if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
+          if (entry.restarts !== restarts) {
+            // started over while it read (a request found a line it read rewritten, evidence): the
+            // window is from where the read was, not from where it starts again
+            rest = null;
+          } else {
+            scan(entry, bytes, arrived < stop ? stop : arrived + SLICE_MS);
+            // nothing was written while it read: what it read is as checked as what came before
+            if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
+          }
         } else if (work === "check") {
           // a check reads into the window those lines were in
           rest = null;
@@ -525,6 +534,7 @@ function restart(entry: Entry): void {
   entry.checkedTick = -Infinity;
   entry.check = null;
   entry.ends = [];
+  entry.restarts++;
 }
 
 /** Takes in `bytes`, read from `entry.offset` (a chunk at most), and keeps the ends of the whole lines in them. */
@@ -582,6 +592,8 @@ async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, st
     const start = pass.next === 0 ? 0 : entry.spans[pass.next - 1]!.end;
     const span = entry.spans[pass.next]!;
     const bytes = await file.window(start, span.end - start);
+    // started over while it read (evidence): the spans it checks are gone, and so is the check
+    if (entry.check !== pass) return true;
     // the next span is read while this one's digest is taken
     const following = entry.spans[pass.next + 1];
     if (following !== undefined && entry.listeners.size > 0) file.ahead(span.end, following.end - span.end);

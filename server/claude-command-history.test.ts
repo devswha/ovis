@@ -838,3 +838,35 @@ it("counts the time it keeps a transcript open from when its read was asked for"
     expect(await reading).toMatchObject({ complete: true, through: s.limit() });
   } finally { setSystemTime(); }
 }, 5000);
+
+it("drops a window read across a start over that a request made while the window waited for the disk", async () => {
+  const s = fixture();
+  // one timestamp for both writes, a minute ahead: each request reads the lines of its ends again
+  const tick = Math.ceil(Date.now() / 1000) + 60;
+  writeFileSync(s.path, notice("a") + filler + notice("c") + filler);
+  utimesSync(s.path, tick, tick);
+  // every window but the first is held: the second until `second` opens, the rest until `rest` does
+  const second = gate(), secondEntered = gate(), rest = gate(), restEntered = gate();
+  release.push(second.open, rest.open);
+  let held = 0;
+  wrapReads((_, work) => (file) => work({ ...file, ahead: () => {}, window: async (position, length) => {
+    if (position > 0) {
+      if (held++ === 0) { secondEntered.open(); await second.opened; } else { restEntered.open(); await rest.opened; }
+    }
+    return file.window(position, length);
+  } }));
+  commandHistory(s.path, s.limit());
+  release.push(watchCommandHistory(s.path, () => {})!);
+  await secondEntered.opened;
+  // rewritten in place within the tick: the first end another, the version the same
+  writeFileSync(s.path, notice("b") + filler + notice("c") + filler);
+  utimesSync(s.path, tick, tick);
+  // a request reads the end's line again and finds it rewritten: the history starts over
+  expect(commandHistory(s.path, s.limit(), false)!.ends).toEqual([]);
+  second.open();
+  await restEntered.opened;
+  // the window read from before the start over is not taken in as the transcript's first: it was read from the start again
+  expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toEqual(["b"]);
+  rest.open();
+  expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, ends: [{ id: "b" }, { id: "c" }] });
+}, 5000);
