@@ -139,6 +139,10 @@ it("reads owned explicit-position windows and identifies replacement after the l
   const reader = new TranscriptReader();
   const before = await reader.read(path, async (file) => {
     const before = await file.stat();
+    // the same handle's whole stat, change time included
+    const stats = await file.stats();
+    expect(transcriptVersion(stats)).toEqual(before);
+    expect(stats.ctimeMs).toBeGreaterThan(0);
     const second = await file.read(11, 12);
     expect(second.toString()).toBe("second line\n");
     expect((await file.read(0, 5)).toString()).toBe("first");
@@ -172,6 +176,18 @@ it("keeps pinned bytes distinct from a changed named identity and rejects mismat
   expect(called).toBe(false);
   expect(b.closed).toEqual(["file", "file"]);
   expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+});
+
+it("checks a path by its own entry unless told to follow a link to the transcript", async () => {
+  const b = backend(); const reader = new TranscriptReader(b.io);
+  // a link: its own entry is no file; the file it names is the one the handle pinned
+  const link = { ...stat, ino: 9, isFile: () => false } as Stats;
+  const asked: (boolean | undefined)[] = [];
+  b.io.stat = async (_path, follow) => { asked.push(follow); return follow ? stat : link; };
+  await expect(reader.read("file", async () => "read")).rejects.toThrow("the transcript was replaced");
+  expect(await reader.read("file", async (file) => { expect((await file.pathVersion())!.id).toBe(file.initial.id); return "read"; }, { follow: true })).toBe("read");
+  expect(asked).toEqual([false, true, true]);
+  expect(b.closed).toEqual(["file", "file"]);
 });
 
 it("exposes the metadata checked at admission without another stat", async () => {

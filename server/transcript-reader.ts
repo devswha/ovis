@@ -1,4 +1,4 @@
-import { closeSync, constants, fstat, fstatSync, lstatSync, openSync, read, readSync, type Stats } from "node:fs";
+import { closeSync, constants, fstat, fstatSync, lstatSync, openSync, read, readSync, statSync, type Stats } from "node:fs";
 import { lstat, open, stat, statfs } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -31,7 +31,8 @@ export interface TranscriptHandleNow extends TranscriptHandle {
 const hasNow = (handle: TranscriptHandle): handle is TranscriptHandleNow => handle.readNow !== undefined && handle.statNow !== undefined;
 export interface TranscriptIO {
   open(path: string): Promise<TranscriptHandle>;
-  stat(path: string): Promise<Stats>;
+  /** The path's own entry (lstat), or with `follow` the file a link there names (stat). */
+  stat(path: string, follow?: boolean): Promise<Stats>;
   /**
    * Whether `directory` is on a local filesystem, where a read the page cache answers costs less
    * on the event loop than a round trip through the thread pool, and its device: a transcript on
@@ -40,7 +41,8 @@ export interface TranscriptIO {
    */
   filesystem?(directory: string): Promise<{ local: boolean; dev: number }>;
   openNow?(path: string): TranscriptHandleNow;
-  statNow?(path: string): Stats;
+  /** `stat` on the event loop. */
+  statNow?(path: string, follow?: boolean): Stats;
 }
 const FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 /**
@@ -59,7 +61,7 @@ const nativeIO: TranscriptIO = {
       statNow: () => fstatSync(handle.fd),
     };
   },
-  stat: (path) => lstat(path),
+  stat: (path, follow) => follow ? stat(path) : lstat(path),
   ...(process.platform === "linux" ? {
     filesystem: async (directory: string) => {
       const [found, named] = await Promise.all([statfs(directory), stat(directory)]);
@@ -76,7 +78,7 @@ const nativeIO: TranscriptIO = {
         close: async () => closeSync(fd),
       };
     },
-    statNow: (path: string) => lstatSync(path),
+    statNow: (path: string, follow?: boolean) => follow ? statSync(path) : lstatSync(path),
   } : {}),
 };
 const WINDOW_BYTES = 1024 * 1024;
@@ -91,6 +93,8 @@ export interface TranscriptFile {
   /** Identity already checked when this handle was opened, without another metadata round trip. */
   readonly initial: TranscriptVersion;
   stat(): Promise<TranscriptVersion>;
+  /** The pinned handle's whole stat, for a reader that keys on more than a TranscriptVersion (its change time). */
+  stats(): Promise<Stats>;
   pathVersion(): Promise<TranscriptVersion | null>;
   /** Owned bytes, at an explicit position, at most one MiB. Short reads are completed up to EOF. */
   read(position: number, length: number): Promise<Buffer>;
@@ -156,8 +160,9 @@ export class TranscriptReader {
   private admitting: Request | null = null;
   constructor(private readonly io: TranscriptIO = nativeIO, readonly capacity = 2, private readonly waiting = 32) {}
 
-  read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number } = {}): Promise<T> {
-    const { signal, deadline } = options;
+  /** `follow`: the path may be a link to the transcript (it is opened through one anyway), and is checked by the file it names. */
+  read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number; follow?: boolean } = {}): Promise<T> {
+    const { signal, deadline, follow = false } = options;
     if (signal?.aborted || (deadline !== undefined && deadline <= Date.now())) return Promise.reject(new TranscriptBusyError("the transcript read was cancelled"));
     if (this.queue.length >= this.waiting && (this.active.size >= this.capacity || this.paths.has(path))) return Promise.reject(new TranscriptBusyError());
     return new Promise<T>((resolve, reject) => {
@@ -304,9 +309,15 @@ export class TranscriptReader {
                 current();
                 return plain(version);
               }),
-              pathVersion: () => now ? timed(() => transcriptVersion(this.io.statNow!(path))) : operation(async () => {
+              stats: () => now ? timed((direct) => direct.statNow()) : operation(async () => {
                 current();
-                const version = transcriptVersion(await this.io.stat(path));
+                const stats = await pinned.stat();
+                current();
+                return stats;
+              }),
+              pathVersion: () => now ? timed(() => transcriptVersion(this.io.statNow!(path, follow))) : operation(async () => {
+                current();
+                const version = transcriptVersion(await this.io.stat(path, follow));
                 current();
                 return version;
               }),
