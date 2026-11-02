@@ -11,8 +11,7 @@ import { MachineSession } from "../lib/machineSession.ts";
 import { useMachineSessions } from "../lib/machineSessionContext.tsx";
 import { ViewportIntentGate } from "../lib/viewportIntent.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
-import { pageAddress } from "../lib/pageQuery.ts";
-import { shellMode } from "../lib/shellMode.ts";
+import { pageAddress, reloadOnPlainClick } from "../lib/pageQuery.ts";
 import { PaneCachedContext, PaneWatchedContext, PanePresentedContext, PaneFollowContext, PaneShownContext, PaneSubmitContext } from "../lib/paneSubmitContext.ts";
 import { NO_STICKY_MODIFIERS, type StickyModifiers } from "../lib/keys.ts";
 import { EMPTY_DRAFT, draftIsEmpty, restoreDraft, type InputDraft } from "../lib/draft.ts";
@@ -164,13 +163,6 @@ function reconnectHref(machineId: string, paneId: string): string {
   return pageAddress(window.location.pathname, `?machine=${encodeURIComponent(machineId)}&pane=${encodeURIComponent(paneId)}`, "");
 }
 
-/** In the hosted shell the link only changes the fragment, which loads nothing: the page reloads on it (lib/pageQuery.ts). */
-function reconnectInShell(event: { currentTarget: HTMLAnchorElement; preventDefault(): void }): void {
-  if (shellMode() !== "relay") return;
-  event.preventDefault();
-  window.history.replaceState(window.history.state, "", event.currentTarget.getAttribute("href") ?? window.location.pathname);
-  window.location.reload();
-}
 
 export function PaneTerminal({
   presentationKey,
@@ -887,7 +879,7 @@ export function PaneTerminal({
     });
     if (outputError) noticeItems.push({
       id: `${owner}:output`, priority: "urgent", revision: outputError, warning: true, mark: <TriangleAlert />, text: outputError,
-      actions: <a className="composer-notice-action" href={reconnectHref(machineId, paneId)} onClick={reconnectInShell}>{t("Reconnect")}</a>,
+      actions: <a className="composer-notice-action" href={reconnectHref(machineId, paneId)} onClick={(event) => reloadOnPlainClick(event)}>{t("Reconnect")}</a>,
     });
     if (!ended && connected && !draftIsEmpty(draft)) noticeItems.push({
       id: `${owner}:draft`, priority: "activity", revision: `${draft.truncated ? "…" : ""}${draft.text}`, warning: false, mark: <Clock />,
