@@ -160,3 +160,38 @@ describe("cooperative Claude images", () => {
     expect(await transcriptImageAsync(path, ref)).toBeNull();
   });
 });
+
+it("a lookup rejected after an in-place rewrite and growth leaves no stale boundary behind for the next lookup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-image-stale-boundary-"));
+  roots.push(dir);
+  const path = join(dir, "log.jsonl");
+  const uuid = "00000000-0000-4000-8000-000000000001";
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  const picture = JSON.stringify({ type: "user", uuid, message: { content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png } }] } }) + "\n";
+  const clear = JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } }) + "\n";
+  const same = JSON.stringify({ type: "progress", data: "x".repeat(clear.length - 30) }) + "\n";
+  expect(same.length).toBe(clear.length);
+  const padding = JSON.stringify({ type: "progress", data: "x".repeat(1024 * 1024) }) + "\n";
+  writeFileSync(path, picture + same + padding.repeat(3));
+  let starts = 0;
+  let changed = false;
+  const read = fs.readSync;
+  // the second whole-window read from the start is the boundary scan's, after the fingerprint: rewrite the record
+  // after the picture into a /clear (same length, same inode) and append, while the lookup is paused
+  const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+    const result = read(...args);
+    const at = args as unknown as [number, Uint8Array, number, number, number];
+    if (at[4] === 0 && at[3] === 1024 * 1024 && ++starts === 2) setImmediate(() => {
+      writeFileSync(path, picture + clear + padding.repeat(3));
+      appendFileSync(path, JSON.stringify({ type: "progress", data: "append" }) + "\n");
+      changed = true;
+    });
+    return result;
+  }) as typeof fs.readSync);
+  try {
+    expect(await transcriptImageAsync(path, `${uuid}:0`)).toBeNull();
+    expect(changed).toBe(true);
+  } finally { watch.mockRestore(); }
+  // the picture is now before a /clear: the next lookup must not reuse the rejected scan's boundary
+  expect(await transcriptImageAsync(path, `${uuid}:0`)).toBeNull();
+});
