@@ -66,9 +66,29 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
     const value = await directory.inputValue();
     return !value.endsWith("/a") && value !== "a";
   }, "Directory follows Browse back to the parent");
+  // a long path is cut on the controls' row, not wrapped: the bar keeps its height between folders
+  const bar = dialog.locator(".dir-browser-bar");
+  const path = dialog.locator(".dir-browser-path");
+  const rowHeight = Math.round((await bar.boundingBox())?.height ?? 0);
+  const longListing = async (route: Route): Promise<void> => {
+    const response = await route.fetch();
+    const listing = await response.json() as { path: string };
+    await route.fulfill({ response, json: { ...listing, parent: listing.path, path: `${listing.path}/${"a-folder-with-a-long-name/".repeat(4)}end` } });
+  };
+  await page.route("**/api/workspace/directories**", longListing);
+  try {
+    await eye.click();
+    await until(async () => ((await path.textContent()) ?? "").endsWith("/end"), "the long path is shown");
+    assert.equal(Math.round((await bar.boundingBox())?.height ?? 0), rowHeight, "a long path keeps the path bar on one row");
+  } finally {
+    await page.unroute("**/api/workspace/directories**", longListing);
+  }
+  await dialog.getByRole("button", { name: "Parent folder", exact: true }).click();
+  await until(async () => !((await path.textContent()) ?? "").endsWith("/end") && await eye.isEnabled(), "back from the long path");
+  await eye.click();
+  await until(async () => (await eye.getAttribute("aria-pressed")) === "false" && await eye.isEnabled(), "hidden folders off again");
   const viewport = page.viewportSize();
   await page.setViewportSize({ width: 176, height: 844 });
-  const bar = dialog.locator(".dir-browser-bar");
   const newFolder = dialog.getByRole("button", { name: "New folder", exact: true });
   const boxes = async () => Promise.all([bar.boundingBox(), newFolder.boundingBox()]);
   await until(async () => {
