@@ -171,7 +171,7 @@ export class TranscriptReader {
         },
       };
       signal?.addEventListener("abort", request.cancel, { once: true });
-      if (deadline !== undefined) timer = setTimeout(request.cancel, Math.max(0, deadline - Date.now()));
+      if (deadline !== undefined) { timer = setTimeout(request.cancel, Math.max(0, deadline - Date.now())); timer.unref?.(); }
       this.queue.push(request);
       this.pump();
     });
@@ -192,6 +192,8 @@ export class TranscriptReader {
   }
 
   reset(): void {
+    // a lease still open puts its buffer back once it ends
+    this.spare.length = 0;
     this.resetting = true;
     try { for (const request of [...this.queue, ...this.active]) request.cancel(); }
     finally { this.resetting = false; this.pump(); }

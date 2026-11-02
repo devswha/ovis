@@ -1,9 +1,8 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandHistory, commandHistorySize, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
-import { setSystemTime, spyOn } from "bun:test";
 import { TranscriptBusyError, transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 
 const roots: string[] = [];
@@ -243,15 +242,39 @@ it("drops every read and timer once the last server lets go", async () => {
 });
 
 const gate = () => { let open!: () => void; const opened = new Promise<void>((resolve) => { open = resolve; }); return { opened, open }; };
-/** Holds every slice of the history read after its lease opened (its first stat taken) until `release` is opened; `entered` opens as one is held. */
-function holdSlices() {
-  const entered = gate(), release = gate();
+type Work = (file: TranscriptFile) => Promise<unknown>;
+/** Runs every history read's work through `wrap`, for as long as the test lasts. */
+function wrapReads(wrap: (path: string, work: Work) => Work): void {
   const read = transcriptReader.read.bind(transcriptReader);
-  const spy = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: (file: TranscriptFile) => Promise<unknown>, options?: { deadline?: number }) =>
-    read(path, async (file) => { entered.open(); await release.opened; return work(file); }, options)) as typeof transcriptReader.read);
-  release.opened.then(() => spy.mockRestore());
-  return { entered: entered.opened, release: release.open };
+  const spy = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: Work, options?: { deadline?: number }) => read(path, wrap(path, work), options)) as typeof transcriptReader.read);
+  release.push(() => spy.mockRestore());
 }
+/** Holds every slice after its lease opened (its first stat taken) until `release` is called; `entered` opens as one is held. */
+function holdSlices() {
+  const entered = gate(), held = gate();
+  wrapReads((_, work) => async (file) => { entered.open(); await held.opened; return work(file); });
+  return { entered: entered.opened, release: held.open };
+}
+/**
+ * Every window read takes 10 ms of the clock (performance.now), more than a slice, though no time
+ * passes: storage as slow as an SSHFS home. Counts the reads of each path; `read` hears of each.
+ */
+function slowReads(read: (path: string, reads: number) => void = () => {}) {
+  const clock = performance.now.bind(performance);
+  let waited = 0;
+  const reads = new Map<string, number>();
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((path, work) => (file) => work({ ...file, window: async (position, length) => {
+    const bytes = await file.window(position, length);
+    waited += 10;
+    reads.set(path, (reads.get(path) ?? 0) + 1);
+    read(path, reads.get(path)!);
+    return bytes;
+  } }));
+  return (path: string) => reads.get(path) ?? 0;
+}
+const MIB = 1024 * 1024;
 
 it("backs off a read the reader is too busy for without counting it a failure of the transcript", async () => {
   const s = fixture();
@@ -273,10 +296,31 @@ it("backs off a read the reader is too busy for without counting it a failure of
   } finally { busy.mockRestore(); setSystemTime(); }
 }, 5000);
 
-it("lets the event loop run while a slice waits for the disk, and queues a session asked for meanwhile once", async () => {
+it("keeps the chunks it read and checked when a read gives up on its stat after a chunk", async () => {
   const s = fixture();
-  // many slices long
-  writeFileSync(s.path, notice("slow") + filler.repeat(32));
+  writeFileSync(s.path, notice("first") + filler.repeat(4));
+  const chunks = Math.ceil(s.limit() / MIB);
+  let windows = 0, failed = false;
+  // the stat after the second chunk runs out of time (the reader's deadline): TranscriptBusyError
+  wrapReads((_, work) => (file) => work({ ...file,
+    window: async (position, length) => { windows++; return file.window(position, length); },
+    stat: async () => { if (windows === 2 && !failed) { failed = true; throw new TranscriptBusyError(); } return file.stat(); } }));
+  let now = Date.now();
+  try {
+    expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: false });
+    expect(failed).toBe(true);
+    setSystemTime(new Date(now += 60_000)); // past the backoff
+    const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+    expect(read).toMatchObject({ complete: true, through: s.limit() });
+    expect(read!.ends.map((end) => end.id)).toEqual(["first"]);
+    // the chunk whose stat failed is read again, and nothing is checked over
+    expect(windows).toBe(chunks + 1);
+  } finally { setSystemTime(); }
+}, 5000);
+
+it("lets the event loop run while a slice waits for the disk", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("slow") + filler);
   const held = holdSlices();
   let answered = false;
   const waiting = waitCommandHistory(s.path, s.limit(), 60_000).then((found) => { answered = true; return found; });
@@ -285,13 +329,20 @@ it("lets the event loop run while a slice waits for the disk, and queues a sessi
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(answered).toBe(false);
   expect(commandHistorySize().draining).toBe(true);
-  // asked for again while its slice waits: once in the queue, then and after the slice
-  commandHistory(s.path, s.limit());
-  const waits = [commandHistorySize().waiting];
-  const stop = watchCommandHistory(s.path, () => waits.push(commandHistorySize().waiting));
-  release.push(stop!);
   held.release();
   expect((await waiting)!.ends.map((end) => end.id)).toEqual(["slow"]);
+}, 5000);
+
+it("queues a session asked for while its slice reads only once", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("slow") + filler.repeat(3));
+  // asked for again while its first read is under way; that read alone outlasts the slice
+  const reads = slowReads((_, count) => { if (count === 1) commandHistory(s.path, s.limit()); });
+  const waits: number[] = [];
+  const waiting = waitCommandHistory(s.path, s.limit(), 60_000);
+  release.push(watchCommandHistory(s.path, () => waits.push(commandHistorySize().waiting))!);
+  expect((await waiting)!.ends.map((end) => end.id)).toEqual(["slow"]);
+  expect(reads(s.path)).toBeGreaterThan(1);
   expect(Math.max(...waits)).toBe(1);
 }, 5000);
 
@@ -314,22 +365,45 @@ it("keeps what it read when a slice's stat is older than one a poll took while t
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["kept", "next", "later"]);
 }, 5000);
 
+it("starts over on a transcript cut short in place while a slice reads it", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("old") + filler.repeat(3));
+  // rewritten shorter, the same file, as the first read returns
+  slowReads((_, count) => { if (count === 1) writeFileSync(s.path, notice("new")); });
+  // answered well before the test's timeout: a read that never starts over waits out the request
+  const read = await waitCommandHistory(s.path, s.limit(), 3000);
+  expect(read).toMatchObject({ complete: true, through: s.limit() });
+  expect(read!.ends.map((end) => end.id)).toEqual(["new"]);
+}, 5000);
+
 it("reads on by whole chunks when every read outlasts a slice, as on slow storage", async () => {
   const s = fixture();
   // a notice every 2 KiB, about 3 MiB: each chunk is far less than a slice's work
   writeFileSync(s.path, Array.from({ length: 1500 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(2048) })).join(""));
-  // every read takes 10 ms of the clock, more than a slice, though no time passes
-  const clock = performance.now.bind(performance);
-  let waited = 0, reads = 0;
-  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
-  const read = transcriptReader.read.bind(transcriptReader);
-  const slow = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: (file: TranscriptFile) => Promise<unknown>, options?: { deadline?: number }) =>
-    read(path, (file) => work({ ...file, window: async (position, length) => { const bytes = await file.window(position, length); reads++; waited += 10; return bytes; } }), options)) as typeof transcriptReader.read);
-  try {
-    const history = await waitCommandHistory(s.path, s.limit(), 60_000);
-    expect(history).toMatchObject({ complete: true, through: s.limit() });
-    expect(history!.ends).toHaveLength(1500);
-    // a read for each chunk, not one for each record
-    expect(reads).toBeLessThanOrEqual(Math.ceil(s.limit() / (1024 * 1024)) + 1);
-  } finally { slow.mockRestore(); now.mockRestore(); }
+  const reads = slowReads();
+  const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(history).toMatchObject({ complete: true, through: s.limit() });
+  expect(history!.ends).toHaveLength(1500);
+  // a read for each chunk, not one for each record
+  expect(reads(s.path)).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
+}, 5000);
+
+it("lets a small session have its turn after each slow read of a large one", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  // the small one is asked for while the large one's first read is under way
+  let answered: Promise<number> | undefined;
+  const reads = slowReads((path, count) => {
+    if (path === large.path && count === 1) answered = waitCommandHistory(small.path, small.limit(), 60_000).then((found) => {
+      expect(found!.ends.map((end) => end.id)).toEqual(["small"]);
+      return reads(large.path);
+    });
+  });
+  const reading = waitCommandHistory(large.path, large.limit(), 60_000);
+  expect((await reading)!.complete).toBe(true);
+  expect(reads(large.path)).toBeGreaterThan(8);
+  // read before the large one went on past the slice its first read began
+  expect(await answered!).toBe(1);
 }, 5000);

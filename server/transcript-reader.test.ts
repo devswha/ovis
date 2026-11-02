@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -223,4 +223,19 @@ it("hands a window's buffer to another lease only once every read into it has se
   held.resolve(); await reader.settled();
   await reader.read("last", (file) => file.window(0, 4));
   expect([buffers[0], buffers[1]]).toContain(buffers[2]);
+  // a reset lets the spare buffers go
+  reader.reset();
+  await reader.read("after", (file) => file.window(0, 4));
+  expect(buffers.slice(0, 3)).not.toContain(buffers[3]);
+});
+
+it("never keeps the process alive for a read's deadline alone", async () => {
+  const b = backend(); const reader = new TranscriptReader(b.io);
+  const timers = spyOn(globalThis, "setTimeout");
+  try {
+    // looked at while the read goes on: once it settles, its timer is cleared
+    const kept = await reader.read("a", async () => (timers.mock.results.at(-1)!.value as ReturnType<typeof setTimeout>).hasRef(), { deadline: Date.now() + 60_000 });
+    expect(timers).toHaveBeenCalled();
+    expect(kept).toBe(false);
+  } finally { timers.mockRestore(); }
 });

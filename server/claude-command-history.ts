@@ -55,7 +55,7 @@ const MAX_SESSIONS = 16;
 const MAX_ENDS = 5000;
 /** A read takes at most this much of a file at once, so a record longer than it is passed over. */
 const CHUNK = 1024 * 1024;
-/** A session lets the next one have its turn after about this much work on the main thread; a wait for the disk is none of it. */
+/** A session lets the next one have its turn after about this much work (the event loop gets one at every read too). */
 const SLICE_MS = 4;
 /** A read that has not answered in this long is given up for now (TranscriptBusyError) and tried again after a backoff. */
 const READ_MS = 10_000;
@@ -276,18 +276,15 @@ async function step(entry: Entry): Promise<void> {
   if (entries.get(entry.path) !== entry) return;
   const before = entry.ends.length;
   let restarted = false;
+  // the transcript as known when the stat now on its way was asked for
+  let known = entry.version;
   try {
     await transcriptReader.read(entry.path, async (file) => {
-      // on slow storage one read alone outlasts SLICE_MS: only the work done on what it read counts
-      const slice = { spent: 0 };
+      const stop = performance.now() + SLICE_MS;
       for (let now = file.initial; ;) {
         // let go of (discarded) while it waited for the disk: nothing more is read for it
         if (entries.get(entry.path) !== entry) return;
-        if (!sameHistory(entry.version, now)) {
-          // older than a stat commandHistory took while this one waited: no news, though what it
-          // reads now is checked as of it
-          if (!sameHistory(now, entry.version)) { discard(entry); return; }
-        } else entry.version = now;
+        if (!seen(entry, known, now)) return;
         const work = due(entry, Date.now());
         let after: HistoryVersion | null = null;
         if (work === "scan") {
@@ -295,20 +292,22 @@ async function step(entry: Entry): Promise<void> {
           const extends_ = entry.checked !== null && sameVersion(entry.checked, now) && entry.checkedThrough === entry.offset;
           // a record cut at the limit is read whole: past the limit, as far as the transcript goes
           const bytes = await file.window(entry.offset, Math.min(CHUNK, Math.max(entry.limit, entry.version.size) - entry.offset));
-          // each chunk gets a whole slice, counted from when its bytes came: a read slower than a
-          // slice still leaves time for more than one record
-          const start = performance.now();
-          scan(entry, bytes, start + SLICE_MS);
-          slice.spent += performance.now() - start;
+          known = entry.version;
           after = await file.stat();
+          if (entries.get(entry.path) !== entry) return;
+          // taken in only now, all at once: a request in between sees the read as it was, never
+          // bytes read but not yet known unchanged; and each chunk has a slice of its own to be
+          // taken in, however long the disk took to give it
+          scan(entry, bytes, performance.now() + SLICE_MS);
           // nothing was written while it read: what it read is as checked as what came before
           if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
         } else if (work === "check") {
-          if (!await check(entry, file, now, slice)) { restart(entry); restarted = true; }
+          if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
         } else break;
-        if (slice.spent >= SLICE_MS) break;
+        if (performance.now() >= stop) break;
         // the stat after a read is as new as one taken now: one disk round trip fewer
-        now = after ?? await file.stat();
+        if (after === null) { known = entry.version; after = await file.stat(); }
+        now = after;
       }
     }, { deadline: Date.now() + READ_MS });
     if (entries.get(entry.path) !== entry) return;
@@ -331,6 +330,21 @@ async function step(entry: Entry): Promise<void> {
   else if (!entry.queued && typeof work === "number") later(entry, work);
   // a waiter hears when the read stops; a watcher when it learns an end or starts over too
   if (restarted || entry.ends.length !== before || !entry.queued) notify(entry);
+}
+
+/**
+ * Takes in `now`, a stat of the transcript asked for when it was known as `known`: false when it
+ * was changed other than by growing, and the read is let go of. A status poll may have seen the
+ * transcript newer while the stat was on its way: that stat is no news, though not a shrink of what
+ * was known when it was asked for.
+ */
+function seen(entry: Entry, known: HistoryVersion, now: HistoryVersion): boolean {
+  if (sameHistory(known, now) && (sameHistory(entry.version, now) || (entry.version !== known && sameHistory(now, entry.version)))) {
+    if (sameHistory(entry.version, now)) entry.version = now;
+    return true;
+  }
+  discard(entry);
+  return false;
 }
 
 function notify(entry: Entry): void {
@@ -398,18 +412,16 @@ function terminals(entry: Entry, bytes: Buffer, from: number, to: number, stop: 
 }
 
 /** Checks the spans read against their digests, as far as the slice lasts; false when one changed. */
-async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, slice: { spent: number }): Promise<boolean> {
+async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, stop: number): Promise<boolean> {
   if (entry.check === null) { entry.check = { next: 0, version: now }; entry.checks++; entry.checkedAt = Date.now(); }
   const pass = entry.check;
   while (pass.next < entry.spans.length) {
     const start = pass.next === 0 ? 0 : entry.spans[pass.next - 1]!.end;
     const span = entry.spans[pass.next]!;
     const bytes = await file.window(start, span.end - start);
-    const begun = performance.now();
     if (bytes.length !== span.end - start || BigInt(Bun.hash.xxHash3(bytes)) !== span.digest) return false;
-    slice.spent += performance.now() - begun;
     pass.next++;
-    if (slice.spent >= SLICE_MS) break;
+    if (performance.now() >= stop) break;
   }
   if (pass.next >= entry.spans.length) {
     entry.check = null;
