@@ -354,8 +354,10 @@ it("keeps a relay WS closing once its carrier is gone, even while a new carrier 
   f.callbacks.at(-1)!(new TypeError("Carrier dropped"));
   // Then it never reads open again: not with no carrier,
   expect(socket.readyState).toBe(socket.CLOSING);
-  // nor once a new carrier connects on the transport's retry.
-  for (let i = 0; i < 50 && f.connections.length < 2; i++) { f.clock.advance(1000); await new Promise((resolve) => setTimeout(resolve, 0)); }
+  // nor once a new carrier connects on the transport's retry, one second later on the injected clock.
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await f.transport.connect();
   expect(f.connections).toHaveLength(2);
   expect(socket.readyState).toBe(socket.CLOSING);
 });
@@ -376,9 +378,11 @@ it("reads a relay WS as closing once its carrier is, sends nothing into it, and 
   expect((await bounded(close, 2000)).code).toBe(1006);
   expect(received).toEqual([]);
   // and a new carrier connects on the transport's own retry, while the old WS never reads open again.
-  for (let i = 0; i < 50 && f.connections.length < 2; i++) { f.clock.advance(1000); await new Promise((resolve) => setTimeout(resolve, 0)); }
-  expect(f.connections).toHaveLength(2);
+  await bounded(f.connections.at(-1)!.closed);
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
   await f.transport.connect();
+  expect(f.connections).toHaveLength(2);
   expect(socket.readyState).toBe(socket.CLOSED);
   const next = f.transport.openSocket("/ws");
   await opened(next);

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DeviceStore } from "../../../server/devices.ts";
+import { bounded } from "../../../server/relay/test-helpers.ts";
 import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../../../shared/relay-e2ee.ts";
 import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
@@ -199,7 +200,7 @@ it("ends an admitted channel whose socket is closing, rather than sending into i
   // Then the channel reads its carrier as gone, and the next frame ends the channel instead of vanishing.
   expect(channel.carrierOpen).toBe(false);
   channel.mux.openHttp({ method: "GET", target: "/api/lost", headers: [], body: "none" });
-  expect(await Promise.race([lost.promise, Bun.sleep(2000).then(() => { throw new Error("channel not ended"); })])).toBeInstanceOf(MuxProtocolError);
+  expect(await bounded(lost.promise, 2000)).toBeInstanceOf(MuxProtocolError);
   expect(f.socket.closed).toBe(true);
 });
 
