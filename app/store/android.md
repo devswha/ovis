@@ -136,11 +136,13 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
 - **To the user's own PC**: everything the app shows and sends while it is open. For a PC paired
   through the Ovis relay it travels through the developer's `relay.ovis.sh`, end-to-end encrypted
   between the phone and the PC (`docs/relay.md`, Trust model): the relay sees each connection's
-  PC relay ID and public key, its role, its address and when and how much passes, never the
-  content, and keeps none of it (no logs, no storage; the address only rate-limits). The app such
+  PC relay ID (and, for the PC's own connection, its public key), its role, its address and when
+  and how much passes, never the content, and keeps none of it (no logs, no storage; the address only rate-limits). The app such
   a PC opens in is static files from `app.ovis.sh` (Cloudflare Pages), which sees requests for
-  those files: the phone's address and the PC's relay ID in the path. So the relay adds no data
-  type and no recipient to the table below: the same types still go only to the user's PC (the
+  those files: the phone's address, the PC's relay ID in the path, and whatever else the address
+  holds, such as the path of a file the user opens in a tab of its own or as a raw file. No code
+  of the developer's runs on those requests (no Pages Functions) and nothing keeps them. So the
+  relay adds no data type and no recipient to the table below: the same types still go only to the user's PC (the
   phone's relay key goes there in place of a cookie, under Device or other IDs).
 - **On to the developer, from the PC**: the Ovis server on the PC sends anonymous usage counts to
   the developer's telemetry Worker (`server/telemetry.ts`, `telemetry/worker.ts`). The client the

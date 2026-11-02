@@ -118,7 +118,9 @@ third-party partners to access it". What the app shows and sends goes only to a 
 user runs, so it is not collected in Apple's sense. That holds through the Ovis relay too: a PC
 paired that way is reached through the developer's `relay.ovis.sh`, end-to-end encrypted between
 the phone and the PC, so the developer cannot access the content; the relay keeps no logs and
-stores nothing, and `app.ovis.sh` serves the app's static files (`docs/relay.md`, Trust model).
+stores nothing, and `app.ovis.sh` serves the app's static files, with no code of the developer's
+running on a request (whose address can hold a file path the user opens in its own tab) and
+nothing keeping it (`docs/relay.md`, Trust model).
 One route does reach the developer: the app tells the PC the settings chosen in it
 (`TelemetryNotice` in
 `src/components/TelemetryControls.tsx`), and the Ovis server on the PC puts the settings of the
