@@ -22,7 +22,9 @@ import { ANSI_RE, KEY, type ParsedPrompt, findLastIndex, finishPrompt, keySteps,
  * A row is `> ` under the cursor and two spaces elsewhere, then the model's label, ` (current)` on the
  * model in use, and ` · <description>` when it has one. The window shows a few rows of the tab's list;
  * the count line says how many the tab holds. Enter picks the row: Letta then opens the model's
- * reasoning levels (parseLettaEffort) or applies it. The tabs and the search stay in the terminal.
+ * reasoning levels (parseLettaEffort) or applies it. The card also offers the tabs beside the one
+ * shown (← and → step one tab), and a search, which Letta matches against every model of the tab:
+ * each answers by keys and leaves the picker open, so the next card shows what it drew.
  */
 const LETTA_MODEL_TITLE = "Swap your agent's model";
 const LETTA_MODEL_HINT = "Enter select · ↑↓ navigate · ←→/Tab switch · Esc cancel";
@@ -57,6 +59,20 @@ function screenLines(screen: string): { lines: string[]; end: number } {
   return { lines, end };
 }
 
+/** Letta's tabs by the line it draws under them (getCategoryDescription in ModelSelector.tsx). */
+const LETTA_TAB_OF: Record<string, string> = {
+  "Models you've recently used": "Recents",
+  "Recommended models currently available for this account": "Recommended",
+  "All models currently available for this account": "All models",
+  "Recommended Letta API models currently available for this account": "Letta API",
+  "All Letta API models currently available for this account": "Letta API (all)",
+  "Recommended models via your connected API keys (use /connect to add more)": "BYOK",
+  "All models via your connected API keys (use /connect to add more)": "BYOK (all)",
+};
+const LETTA_TAB_RE = /^(\S.*?) \[(\d+)\]$/;
+/** What a search may hold: typed one character at a time, as Letta reads a key (input.length === 1) */
+const LETTA_SEARCH_MAX = 40;
+
 function parseLettaModel(screen: string): ParsedPrompt | null {
   const { lines, end } = screenLines(screen);
   // the picker holds the end of the screen: a hint above later output is an answered picker's
@@ -64,7 +80,7 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
   const count = lines[end - 1]?.trim().match(LETTA_MODEL_COUNT_RE);
   if (!count) return null;
   const search = findLastIndex(lines, (line, index) => index < end && /^\s{2}Search: /.test(line));
-  if (search < 0 || !lines.slice(0, search).some((line) => line.trim() === LETTA_MODEL_TITLE)) return null;
+  if (search < 2 || !lines.slice(0, search).some((line) => line.trim() === LETTA_MODEL_TITLE)) return null;
   const rows: { label: string; cursor: boolean; current: boolean; lineIndex: number }[] = [];
   for (let index = search + 1; index < end - 1; index += 1) {
     const line = lines[index]!;
@@ -75,24 +91,53 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     const text = row[2]!.replace(LETTA_CURRENT_RE, "");
     rows.push({ label: normalizeText(text), cursor: row[1] === "> ", current, lineIndex: index });
   }
-  if (rows.length < 1 || rows.filter((row) => row.cursor).length !== 1) return null;
-  const selectedIndex = rows.findIndex((row) => row.cursor);
+  // a search that matches nothing draws no rows: the card still offers the tabs and another search
+  if (rows.length > 0 && rows.filter((row) => row.cursor).length !== 1) return null;
+  const selectedIndex = Math.max(0, rows.findIndex((row) => row.cursor));
+  const query = lines[search]!.replace(/^\s{2}Search: /, "");
+  const typed = query === "(type to filter)" ? "" : query;
+
+  // the tabs: their line, and which one is shown, by the line Letta draws under them. Left and Right
+  // step one tab, so the tabs beside the one shown are offered
+  const tabs = lines[search - 2]?.trim().split(/\s{2,}/).map((tab) => tab.match(LETTA_TAB_RE)) ?? [];
+  const shown = LETTA_TAB_OF[lines[search - 1]?.trim() ?? ""];
+  const names = tabs.every((tab) => tab !== null) ? tabs.map((tab) => tab![1]!) : [];
+  const at = shown === undefined ? -1 : names.indexOf(shown);
+  const beside = at < 0 || names.length < 2 ? [] : [...new Set([(at + 1) % names.length, (at - 1 + names.length) % names.length])]
+    .filter((tab) => tab !== at).map((tab) => ({ tab, key: tab === (at + 1) % names.length ? KEY.right : KEY.left }));
+
   const current = rows.find((row) => row.current);
   const asked = current ? own("Select model for this session (currently {model})", { model: current.label }) : own("Select model for this session");
   const hidden = Number(count[1]) - rows.length;
+  const options = [
+    ...rows.map((row) => ({ label: row.label, description: null })),
+    ...beside.map(({ tab }) => ({ label: own("Show the {tab} tab", { tab: `${names[tab]} [${tabs[tab]![2]}]` }), description: null })),
+    { label: own("Search models"), description: null },
+  ];
+  const searchIndex = options.length - 1;
   return finishPrompt("letta", {
     kind: "question",
     title: "",
-    question: hidden <= 0 ? asked : hidden === 1 ? own("{question}. 1 more model is listed in the terminal.", { question: asked })
-      : own("{question}. {count} more models are listed in the terminal.", { question: asked, count: hidden }),
+    question: hidden <= 0 ? asked : own("{question}. {count} more models in this tab: search, or show another tab.", { question: asked, count: hidden }),
     body: null,
-    options: rows.map((row) => ({ label: row.label, description: null })),
+    options,
     multi_select: false,
-    custom_option_index: null,
+    custom_option_index: searchIndex,
   }, {
-    responder: "letta-model", menuLabels: rows.map((row) => row.label), selectedIndex,
-    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
-    optionSteps: rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
+    responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search"], selectedIndex,
+    checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: null,
+    optionSteps: [
+      ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
+      // one key switches the tab, and Letta clears the search with it
+      ...beside.map(({ key }) => [{ keys: [key] }]),
+    ],
+    // the search: what was typed is taken out a key at a time, then the new words go in a key at a
+    // time, as Letta reads one. With nothing typed, `r` refreshes the list instead: its capital goes in
+    customSteps: (text: string) => {
+      const words = text.slice(0, LETTA_SEARCH_MAX);
+      const first = typed === "" && words.startsWith("r") ? `R${words.slice(1)}` : words;
+      return [...keySteps(Array.from({ length: typed.length }, () => KEY.backspace)), ...[...first].map((character) => ({ text: character }))];
+    },
   });
 }
 

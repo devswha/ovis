@@ -12,16 +12,28 @@ const card = (shown: string) => {
 };
 
 describe("Letta Code's /model", () => {
-  it("offers the models the picker draws, and tells how many more the tab holds", () => {
+  it("offers the models the picker draws, the tabs beside the one shown, and a search", () => {
+    // Recents is shown: → is Recommended, ← wraps to All models
     expect(card(screen("model-recents"))).toEqual({
       question: "Select model for this session",
-      options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "openai-codex/gpt-6.1-sol", "Claude Opus 5.5 · ING", "Claude Sonnet 5.5 · ING"],
+      options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "openai-codex/gpt-6.1-sol", "Claude Opus 5.5 · ING", "Claude Sonnet 5.5 · ING",
+        "Show the Recommended [12] tab", "Show the All models [21] tab", "Search models"],
     });
     expect(card(screen("model-recommended"))).toMatchObject({
-      question: "Select model for this session. 5 more models are listed in the terminal.",
+      question: "Select model for this session. 5 more models in this tab: search, or show another tab.",
       options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "Claude Haiku 4.5 · Mimosa", "Claude Fable 5.1 · Mimosa",
-        "Claude Opus 4.8 · Mimosa", "Claude Sonnet 4.6 · Mimosa", "Claude Opus 5.5 · ING"],
+        "Claude Opus 4.8 · Mimosa", "Claude Sonnet 4.6 · Mimosa", "Claude Opus 5.5 · ING", "Show the All models [21] tab", "Show the Recents [5] tab", "Search models"],
     });
+  });
+
+  it("switches a tab with one key, and searches a key at a time", () => {
+    const prompt = parseInteractivePrompt("letta", screen("model-recents"))!;
+    expect(answerKeys(prompt, { option_index: 5 })).toEqual([{ keys: [KEY.right] }]);
+    expect(answerKeys(prompt, { option_index: 6 })).toEqual([{ keys: [KEY.left] }]);
+    expect(prompt.custom_option_index).toBe(7);
+    expect(answerKeys(prompt, { custom_text: "son" })).toEqual([{ text: "s" }, { text: "o" }, { text: "n" }]);
+    // with the search empty, `r` would refresh the list: its capital goes in, and Letta matches without case
+    expect(answerKeys(prompt, { custom_text: "ri" })).toEqual([{ text: "R" }, { text: "i" }]);
   });
 
   it("picks a row with the arrows from the cursor, then Enter", () => {
