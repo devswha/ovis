@@ -149,12 +149,17 @@ describe("Claude image disk isolation", () => {
     writeFileSync(file, "synthetic");
     const reading = claudeImageTask(held({ ...job("opened", { open: true }), path: file }, hold));
     const fd = await hold.ran();
-    expect(fstatSync(fd).size).toBe(9);
+    const original = fstatSync(fd);
+    expect(original.size).toBe(9);
+    const ownsOriginal = (): boolean => {
+      try { const now = fstatSync(fd); return now.dev === original.dev && now.ino === original.ino; }
+      catch { return false; }
+    };
     release();
     release();
     await expect(reading).rejects.toThrow("stopped");
     expect(claudeImagePoolSize()).toMatchObject({ physical: 1, retiring: 1, running: 1 });
-    expect(fstatSync(fd).size).toBe(9);
+    expect(fstatSync(fd)).toMatchObject({ dev: original.dev, ino: original.ino, size: 9 });
     const later = holdClaudeImagePool();
     const next = claudeImageTask(job("new-server"));
     expect(claudeImagePoolSize()).toMatchObject({ physical: 1, retiring: 1, waiting: 1 });
@@ -165,7 +170,8 @@ describe("Claude image disk isolation", () => {
     expect(claudeImagePoolSize()).toMatchObject({ physical: 1, retiring: 1, waiting: 1 });
     hold.release();
     expect((await replacement)!.bytes.length).toBe(4);
-    expect(() => fstatSync(fd)).toThrow();
+    // The replacement thread may reuse the number after close; it must no longer own this file.
+    expect(ownsOriginal()).toBe(false);
     later();
     await claudeImageThreadClosed();
     expect(claudeImagePoolSize().physical).toBe(0);
