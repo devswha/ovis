@@ -786,10 +786,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== null)) return;
-      const { shortcutOverrides } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides };
-      setSettings((current) => ({ ...current, shortcutOverrides }));
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== null)) return;
+      const { shortcutOverrides, enterSends } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends };
+      setSettings((current) => ({ ...current, shortcutOverrides, enterSends }));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

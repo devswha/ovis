@@ -192,6 +192,20 @@ describe("settings across tabs", () => {
     expect(enterSendsOn(settings, true)).toBe(true);
   });
 
+  it("follows Return's choice made in another tab", async () => {
+    // Given an open tab with nothing chosen.
+    await open();
+    expect(settings.enterSends).toBeNull();
+
+    // When another tab chooses Return breaks the line.
+    records.set(ENTER_SENDS_STORAGE_KEY, "false");
+    await storage(ENTER_SENDS_STORAGE_KEY);
+
+    // Then this tab's composer follows it without writing anything.
+    expect(settings.enterSends).toBe(false);
+    expect(writes).toBe(0);
+  });
+
   it("ignores storage events for unrelated keys", async () => {
     // Given an open tab and a settings record not announced by this event.
     await open();
