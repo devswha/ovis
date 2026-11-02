@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -64,8 +65,16 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => {
+// Node builds import.meta.url from the real path, so a symlinked launch only matches after
+// resolving argv[1] too. A path that cannot be resolved is not this module.
+function isEntry(path) {
+  try { return import.meta.url === pathToFileURL(realpathSync(path)).href; }
+  catch { return false; }
+}
+
+if (process.argv[1] && isEntry(process.argv[1])) {
+  main().catch((error) => {
+    console.error(printable(error instanceof Error ? error.message : error));
     console.error("Pi routing experiment failed. Check the selected mode, profile and compatible broker; no reconnect attempted.");
     process.exitCode = 1;
   });
