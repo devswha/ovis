@@ -257,22 +257,23 @@ function holdSlices() {
 }
 /**
  * Every window read takes 10 ms of the clock (performance.now), more than a slice, though no time
- * passes: storage as slow as an SSHFS home. Counts the reads of each path; `read` hears of each.
+ * passes: storage as slow as an SSHFS home. Counts the reads of each path, and the leases they were
+ * read in (`leases`); `read` hears of each read.
  */
 function slowReads(read: (path: string, reads: number) => void = () => {}) {
   const clock = performance.now.bind(performance);
   let waited = 0;
-  const reads = new Map<string, number>();
+  const reads = new Map<string, number>(), leases = new Map<string, number>();
   const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
   release.push(() => now.mockRestore());
-  wrapReads((path, work) => (file) => work({ ...file, window: async (position, length) => {
+  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); return (file) => work({ ...file, window: async (position, length) => {
     const bytes = await file.window(position, length);
     waited += 10;
     reads.set(path, (reads.get(path) ?? 0) + 1);
     read(path, reads.get(path)!);
     return bytes;
-  } }));
-  return (path: string) => reads.get(path) ?? 0;
+  } }); });
+  return Object.assign((path: string) => reads.get(path) ?? 0, { leases: (path: string) => leases.get(path) ?? 0 });
 }
 const MIB = 1024 * 1024;
 
@@ -406,4 +407,96 @@ it("lets a small session have its turn after each slow read of a large one", asy
   expect(reads(large.path)).toBeGreaterThan(8);
   // read before the large one went on past the slice its first read began
   expect(await answered!).toBe(1);
+}, 5000);
+
+it("keeps a transcript open across turns while no other session waits", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  const reads = slowReads();
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  // a turn for every slow read, but the transcript opened (and checked) once
+  expect(reads(s.path)).toBeGreaterThan(8);
+  expect(reads.leases(s.path)).toBe(1);
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn another session is asked for in", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  let answered: Promise<number> | undefined;
+  const reads = slowReads((path, count) => {
+    if (path === large.path && count === 3) answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
+  });
+  expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
+  expect(await answered!).toBe(3);
+  // and opened again after it
+  expect(reads.leases(large.path)).toBe(2);
+}, 5000);
+
+it("lets go of a transcript it keeps open well before the read's deadline", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  let now = Date.now();
+  setSystemTime(new Date(now));
+  try {
+    // half the read's deadline passes during the second read
+    const reads = slowReads((_, count) => { if (count === 2) setSystemTime(new Date(now += 5_000)); });
+    expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+    expect(reads.leases(s.path)).toBe(2);
+  } finally { setSystemTime(); }
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn another reader waits for it in", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  // another reader of the same transcript (one lease a path) asks while the third read is under way
+  let other: Promise<number> | undefined;
+  const reads = slowReads((_, count) => { if (count === 3) other = transcriptReader.read(s.path, async () => reads(s.path)); });
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(await other!).toBe(3);
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of a turn that told a watcher of an end", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("first") + filler.repeat(8));
+  let heard = -1;
+  const reads = slowReads();
+  commandHistory(s.path, s.limit(), false);
+  release.push(watchCommandHistory(s.path, () => { if (heard < 0 && commandHistory(s.path, s.limit(), false)!.ends.length > 0) heard = reads(s.path); })!);
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(heard).toBe(1);
+}, 5000);
+
+it("reads on in the same lease when the session it reads is asked for again", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  // the leases there were as each read was made
+  let leases = 0;
+  const reads = slowReads((_, count) => { leases = reads.leases(s.path); if (count === 3) commandHistory(s.path, s.limit()); });
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(reads(s.path)).toBeGreaterThan(8);
+  expect(leases).toBe(1);
+}, 5000);
+
+it("gives each turn of a transcript it keeps open a slice of its own", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(16));
+  // a clock that moves only by 1 ms a read: four reads to a slice
+  let waited = 0, reads = 0;
+  const base = performance.now();
+  const now = spyOn(performance, "now").mockImplementation(() => base + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((_, work) => (file) => work({ ...file, window: async (position, length) => {
+    const bytes = await file.window(position, length);
+    waited += 1;
+    reads++;
+    return bytes;
+  } }));
+  const turns = spyOn(globalThis, "setImmediate");
+  release.push(() => turns.mockRestore());
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(reads).toBeGreaterThan(16);
+  // a turn ends every few reads, not after each one
+  expect(turns.mock.calls.length).toBeLessThan(reads / 2);
 }, 5000);

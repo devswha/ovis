@@ -280,7 +280,9 @@ async function step(entry: Entry): Promise<void> {
   let known = entry.version;
   try {
     await transcriptReader.read(entry.path, async (file) => {
-      const stop = performance.now() + SLICE_MS;
+      let stop = performance.now() + SLICE_MS;
+      // the transcript is let go of well inside the read's deadline
+      const held = Date.now() + READ_MS / 2;
       for (let now = file.initial; ;) {
         // let go of (discarded) while it waited for the disk: nothing more is read for it
         if (entries.get(entry.path) !== entry) return;
@@ -296,15 +298,24 @@ async function step(entry: Entry): Promise<void> {
           after = await file.stat();
           if (entries.get(entry.path) !== entry) return;
           // taken in only now, all at once: a request in between sees the read as it was, never
-          // bytes read but not yet known unchanged; and each chunk has a slice of its own to be
-          // taken in, however long the disk took to give it
-          scan(entry, bytes, performance.now() + SLICE_MS);
+          // bytes read but not yet known unchanged; bytes that came within the turn are taken in
+          // until it ends, and bytes that came after it (slow storage) get a turn of their own
+          const arrived = performance.now();
+          scan(entry, bytes, arrived < stop ? stop : arrived + SLICE_MS);
           // nothing was written while it read: what it read is as checked as what came before
           if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
         } else if (work === "check") {
           if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
         } else break;
-        if (performance.now() >= stop) break;
+        if (performance.now() >= stop) {
+          // the turn ends the read when another session or reader waits, or a watcher has news
+          if (Date.now() >= held || queue.some((other) => other !== entry) || transcriptReader.size().waiting > 0
+            || (entry.ends.length !== before && entry.listeners.size > entry.waiters)) break;
+          // nobody else waits: the event loop has its turn, and the read goes on with the transcript
+          // still open (an open and its check cost several round trips on remote storage)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          stop = performance.now() + SLICE_MS;
+        }
         // the stat after a read is as new as one taken now: one disk round trip fewer
         if (after === null) { known = entry.version; after = await file.stat(); }
         now = after;
