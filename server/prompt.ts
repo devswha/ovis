@@ -1870,7 +1870,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const parsed = parsedByPublicPrompt.get(target)!;
         const responder = parsed.responder;
         const reader = registry.readerFor(responder);
-        const interaction = reader?.interaction?.(parsed);
+        // a picker's plan answers a row; typed words (Letta's model search) go by the steps alone
+        const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
         // where the moves sent so far leave the cursor (↑ stops at the first row: omoWalk)
         let cursor = parsed.selectedIndex;
         // Claude's unnumbered rows and pi's models are read with no number to aim at: looked at
