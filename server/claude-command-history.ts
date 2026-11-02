@@ -55,7 +55,7 @@ const MAX_SESSIONS = 16;
 const MAX_ENDS = 5000;
 /** A read takes at most this much of a file at once, so a record longer than it is passed over. */
 const CHUNK = 1024 * 1024;
-/** A session lets the next one have its turn after about this much work (the event loop also gets one at every read). */
+/** A session lets the next one have its turn after about this much work on the main thread; a wait for the disk is none of it. */
 const SLICE_MS = 4;
 /** A read that has not answered in this long is given up for now (TranscriptBusyError) and tried again after a backoff. */
 const READ_MS = 10_000;
@@ -278,12 +278,14 @@ async function step(entry: Entry): Promise<void> {
   let restarted = false;
   try {
     await transcriptReader.read(entry.path, async (file) => {
-      const stop = performance.now() + SLICE_MS;
+      // on slow storage one read alone outlasts SLICE_MS: only the work done on what it read counts
+      const slice = { spent: 0 };
       for (let now = file.initial; ;) {
         // let go of (discarded) while it waited for the disk: nothing more is read for it
         if (entries.get(entry.path) !== entry) return;
         if (!sameHistory(entry.version, now)) {
-          // answered after a newer stat was taken (commandHistory, while this one waited): no news, though the bytes are still read as of it
+          // older than a stat commandHistory took while this one waited: no news, though what it
+          // reads now is checked as of it
           if (!sameHistory(now, entry.version)) { discard(entry); return; }
         } else entry.version = now;
         const work = due(entry, Date.now());
@@ -291,14 +293,20 @@ async function step(entry: Entry): Promise<void> {
         if (work === "scan") {
           if (entry.offset === 0 && entry.spans.length === 0) { entry.checked = now; entry.checkedThrough = 0; }
           const extends_ = entry.checked !== null && sameVersion(entry.checked, now) && entry.checkedThrough === entry.offset;
-          await scan(entry, file, stop);
+          // a record cut at the limit is read whole: past the limit, as far as the transcript goes
+          const bytes = await file.window(entry.offset, Math.min(CHUNK, Math.max(entry.limit, entry.version.size) - entry.offset));
+          // each chunk gets a whole slice, counted from when its bytes came: a read slower than a
+          // slice still leaves time for more than one record
+          const start = performance.now();
+          scan(entry, bytes, start + SLICE_MS);
+          slice.spent += performance.now() - start;
           after = await file.stat();
           // nothing was written while it read: what it read is as checked as what came before
           if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
         } else if (work === "check") {
-          if (!await check(entry, file, now, stop)) { restart(entry); restarted = true; }
+          if (!await check(entry, file, now, slice)) { restart(entry); restarted = true; }
         } else break;
-        if (performance.now() >= stop) break;
+        if (slice.spent >= SLICE_MS) break;
         // the stat after a read is as new as one taken now: one disk round trip fewer
         now = after ?? await file.stat();
       }
@@ -308,7 +316,8 @@ async function step(entry: Entry): Promise<void> {
     entry.retryAt = 0;
   } catch (error) {
     if (entries.get(entry.path) !== entry) return;
-    // replaced before the read was let in (the reader refuses a path that names another file): read anew, as a stat finding it would
+    // replaced before the read was let in (the reader refuses a path that names another file):
+    // read anew, as a stat that found it would
     const named = historyVersion(entry.path);
     if (named !== null && !sameHistory(entry.version, named)) { discard(entry); return; }
     // the reader busy or a read too slow: no failure of this transcript, so it is never given up for it
@@ -341,12 +350,9 @@ function restart(entry: Entry): void {
   entry.ends = [];
 }
 
-/** Reads on from `entry.offset`, a chunk at most, and keeps the ends of the whole lines it read. */
-async function scan(entry: Entry, file: TranscriptFile, stop: number): Promise<void> {
+/** Takes in `bytes`, read from `entry.offset` (a chunk at most), and keeps the ends of the whole lines in them. */
+function scan(entry: Entry, bytes: Buffer, stop: number): void {
   entry.cutAt = null;
-  // a record cut at the limit is read whole: past the limit, as far as the transcript goes
-  const end = Math.max(entry.limit, entry.version.size);
-  const bytes = await file.window(entry.offset, Math.min(CHUNK, end - entry.offset));
   let from = 0;
   if (entry.skipping) {
     const newline = bytes.indexOf(10);
@@ -392,16 +398,18 @@ function terminals(entry: Entry, bytes: Buffer, from: number, to: number, stop: 
 }
 
 /** Checks the spans read against their digests, as far as the slice lasts; false when one changed. */
-async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, stop: number): Promise<boolean> {
+async function check(entry: Entry, file: TranscriptFile, now: HistoryVersion, slice: { spent: number }): Promise<boolean> {
   if (entry.check === null) { entry.check = { next: 0, version: now }; entry.checks++; entry.checkedAt = Date.now(); }
   const pass = entry.check;
   while (pass.next < entry.spans.length) {
     const start = pass.next === 0 ? 0 : entry.spans[pass.next - 1]!.end;
     const span = entry.spans[pass.next]!;
     const bytes = await file.window(start, span.end - start);
+    const begun = performance.now();
     if (bytes.length !== span.end - start || BigInt(Bun.hash.xxHash3(bytes)) !== span.digest) return false;
+    slice.spent += performance.now() - begun;
     pass.next++;
-    if (performance.now() >= stop) break;
+    if (slice.spent >= SLICE_MS) break;
   }
   if (pass.next >= entry.spans.length) {
     entry.check = null;

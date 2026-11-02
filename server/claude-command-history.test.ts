@@ -313,3 +313,23 @@ it("keeps what it read when a slice's stat is older than one a poll took while t
   expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toContain("kept");
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["kept", "next", "later"]);
 }, 5000);
+
+it("reads on by whole chunks when every read outlasts a slice, as on slow storage", async () => {
+  const s = fixture();
+  // a notice every 2 KiB, about 3 MiB: each chunk is far less than a slice's work
+  writeFileSync(s.path, Array.from({ length: 1500 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(2048) })).join(""));
+  // every read takes 10 ms of the clock, more than a slice, though no time passes
+  const clock = performance.now.bind(performance);
+  let waited = 0, reads = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
+  const read = transcriptReader.read.bind(transcriptReader);
+  const slow = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: (file: TranscriptFile) => Promise<unknown>, options?: { deadline?: number }) =>
+    read(path, (file) => work({ ...file, window: async (position, length) => { const bytes = await file.window(position, length); reads++; waited += 10; return bytes; } }), options)) as typeof transcriptReader.read);
+  try {
+    const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+    expect(history).toMatchObject({ complete: true, through: s.limit() });
+    expect(history!.ends).toHaveLength(1500);
+    // a read for each chunk, not one for each record
+    expect(reads).toBeLessThanOrEqual(Math.ceil(s.limit() / (1024 * 1024)) + 1);
+  } finally { slow.mockRestore(); now.mockRestore(); }
+}, 5000);
