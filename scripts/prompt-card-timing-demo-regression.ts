@@ -14,6 +14,7 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { pickLens } from "./view-menu.ts";
 
 const PROMPT_READ_MS = 150;
 // the chat's prompt poll (src/components/ChatView.tsx PROMPT_POLL_MS): a status change must not wait for it
@@ -103,10 +104,10 @@ try {
     await page.locator(".prompt-card").waitFor();
 
     // back from the Terminal lens: the chat is drawn again, and so is the card the screen still shows
-    await page.locator(".view-switch button", { hasText: "Terminal" }).click();
+    await pickLens(page, "terminal");
     await page.locator(".terminal-stack.is-chat").waitFor({ state: "detached" });
     let from = await paintCount(page);
-    await page.locator(".view-switch button", { hasText: "Chat" }).click();
+    await pickLens(page, "chat");
     await page.locator(".prompt-card").waitFor();
     // fixed wait: the frames painted after the chat is back are watched for a card that goes, which nothing announces
     await page.waitForTimeout(500);
@@ -122,7 +123,7 @@ try {
     const afterReconnect = await cardlessPaints(page, from);
 
     // the approval answered in the Terminal lens: back in Chat, its card is not drawn again
-    await page.locator(".view-switch button", { hasText: "Terminal" }).click();
+    await pickLens(page, "terminal");
     await page.locator(".terminal-stack.is-chat").waitFor({ state: "detached" });
     // the answer sets the agent to work again, as herdr reports it
     await page.evaluate((pane) => {
@@ -130,7 +131,7 @@ try {
       (window as unknown as { __herdrDemoOrder: { status: (pane: string, status: string) => void } }).__herdrDemoOrder.status(pane, "working");
     }, panes.web);
     from = await paintCount(page);
-    await page.locator(".view-switch button", { hasText: "Chat" }).click();
+    await pickLens(page, "chat");
     await page.locator(".composer-text").first().waitFor();
     // fixed wait: the frames after the chat is back are watched for the old card, which nothing announces
     await page.waitForTimeout(PROMPT_READ_MS * 4);
