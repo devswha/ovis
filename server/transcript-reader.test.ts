@@ -1,8 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdtempSync, renameSync, rmSync, writeFileSync, type Stats, type BigIntStats } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { transcriptMilliseconds } from "./transcript-version.ts";
 import { transcriptVersion, TranscriptBusyError, TranscriptReader, type TranscriptHandle, type TranscriptIO } from "./transcript-reader.ts";
 
 const roots: string[] = [];
@@ -127,41 +126,56 @@ it.each(["open", "stat", "read", "close"] as const)("releases a settled %s failu
   expect(reader.size().active).toBe(0);
 });
 
-it("reads owned explicit-position windows and identifies a replaced pathname", async () => {
+it("reads owned explicit-position windows and identifies replacement after the lease closes", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-transcript-reader-")); roots.push(root);
   const path = join(root, "session.jsonl"), next = join(root, "replacement");
   writeFileSync(path, "first line\nsecond line\n"); writeFileSync(next, "replacement\n");
   const reader = new TranscriptReader();
-  await reader.read(path, async (file) => {
+  const before = await reader.read(path, async (file) => {
     const before = await file.stat();
     const second = await file.read(11, 12);
     expect(second.toString()).toBe("second line\n");
     expect((await file.read(0, 5)).toString()).toBe("first");
     expect(second.toString()).toBe("second line\n");
-    renameSync(next, path);
-    expect((await file.pathVersion())!.id).not.toBe(before.id);
+    expect((await file.pathVersion())!.id).toBe(before.id);
     expect((await file.read(0, 5)).toString()).toBe("first");
+    return before;
   });
+  // Windows may reject replacement of an open destination. Native replacement is tested
+  // after actual close; the deterministic test below changes named identity during a lease.
+  renameSync(next, path);
+  expect((await reader.read(path, async (file) => file.initial)).id).not.toBe(before.id);
   expect(await reader.read(path, (file) => file.read(0, 100))).toEqual(Buffer.from("replacement\n"));
 });
 
-it("uses one metadata call without opening, and exposes initial pinned metadata without another stat", async () => {
+it("keeps pinned bytes distinct from a changed named identity and rejects mismatched admission", async () => {
+  const b = backend(); const reader = new TranscriptReader(b.io);
+  const replacement = { ...stat, ino: 3 } as Stats;
+  let named = stat;
+  b.io.stat = async () => named;
+  await reader.read("file", async (file) => {
+    const before = file.initial;
+    expect((await file.read(0, 4)).toString()).toBe("abcd");
+    named = replacement;
+    expect((await file.pathVersion())!.id).not.toBe(before.id);
+    expect((await file.stat()).id).toBe(before.id);
+    expect((await file.read(1, 2)).toString()).toBe("bc");
+  });
+  let called = false;
+  await expect(reader.read("file", async () => { called = true; })).rejects.toThrow("the transcript was replaced");
+  expect(called).toBe(false);
+  expect(b.closed).toEqual(["file", "file"]);
+  expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+});
+
+it("exposes the metadata checked at admission without another stat", async () => {
   const b = backend(); let metadata = 0, fdStats = 0;
   const base = b.io.open;
   b.io.stat = async () => { metadata++; return stat; };
   b.io.open = async (path) => { const handle = await base(path); return { ...handle, stat: async () => { fdStats++; return stat; } }; };
   const reader = new TranscriptReader(b.io);
-  expect(await reader.version("file")).toEqual(transcriptVersion(stat)!);
-  expect(b.opened).toEqual([]); expect(metadata).toBe(1); expect(fdStats).toBe(0);
   await reader.read("file", async (file) => { expect(file.initial).toEqual(transcriptVersion(stat)!); return file.read(0, 4); });
-  expect(fdStats).toBe(1); expect(metadata).toBe(2); expect(b.closed).toEqual(["file"]);
-});
-
-it("does not alias adjacent native inode identities above Number's integer precision", () => {
-  const first = { ...stat, dev: 1n, ino: 9007199254740992n, size: 4n, mtimeMs: 1n, mtimeNs: 1000000n } as unknown as BigIntStats;
-  const second = { ...first, ino: first.ino + 1n };
-  expect(Number(first.ino)).toBe(Number(second.ino));
-  expect(transcriptVersion(first)!.id).not.toBe(transcriptVersion(second)!.id);
+  expect(fdStats).toBe(1); expect(metadata).toBe(1); expect(b.closed).toEqual(["file"]);
 });
 
 it("enforces the absolute deadline before a late callback can publish ahead of its timer", async () => {
@@ -193,11 +207,20 @@ it("checks the absolute deadline after a pending close settles before the timer 
 });
 
 
-it("preserves integer millisecond boundaries and fractional time without epoch-nanosecond double rounding", () => {
-  const ms = 1793630926370, ns = 1793630926370000000n;
-  expect(Number(ns) / 1_000_000).not.toBe(ms); // the former conversion expires exact-day files early
-  expect(transcriptMilliseconds(ns)).toBe(ms);
-  expect(transcriptMilliseconds(ns + 123456n)).toBe(ms + 0.123456);
-  const native = { ...stat, dev: 1n, ino: 2n, size: 4n, mtimeMs: BigInt(ms), mtimeNs: ns + 123456n } as unknown as BigIntStats;
-  expect(transcriptVersion(native)!.mtimeMs).toBe(ms + 0.123456);
+it("hands a window's buffer to another lease only once every read into it has settled", async () => {
+  const b = backend(); const reader = new TranscriptReader(b.io);
+  const buffers: ArrayBufferLike[] = [];
+  const base = b.io.open;
+  b.io.open = async (path) => { const handle = await base(path); return { ...handle, read: (buffer, ...rest) => { buffers.push(buffer.buffer); return handle.read(buffer, ...rest); } }; };
+  const held = deferred(); b.reading.set("held", held);
+  const abort = new AbortController();
+  const cancelled = reader.read("held", (file) => file.window(0, 4), { signal: abort.signal }).catch((e) => e);
+  await tick(); abort.abort();
+  expect(await cancelled).toBeInstanceOf(TranscriptBusyError);
+  // the cancelled lease's read may still write into its buffer: the next lease gets another
+  expect(await reader.read("next", async (file) => (await file.window(1, 2)).toString())).toBe("bc");
+  expect(buffers[1]).not.toBe(buffers[0]);
+  held.resolve(); await reader.settled();
+  await reader.read("last", (file) => file.window(0, 4));
+  expect([buffers[0], buffers[1]]).toContain(buffers[2]);
 });

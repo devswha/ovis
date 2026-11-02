@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const windows = process.platform === "win32";
@@ -28,29 +27,6 @@ let child: ReturnType<typeof Bun.spawn> | undefined;
 try {
   const archive = resolve(`remote-bundles/herdr-web-ui-${process.platform}-${process.arch}.tgz`);
   assert.equal(Bun.spawnSync(["tar", "xzf", archive, "-C", bundle]).exitCode, 0);
-  // Run the actual copied server reader with the bundled Bun, on every bundle platform.
-  // It needs neither Herdr state nor an application Worker asset, including on Windows.
-  const transcript = join(root, "transcript.jsonl");
-  const leading = `${JSON.stringify({ type: "progress", value: "synthetic bundle fixture" })}\n`;
-  const terminal = `${JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: new Date().toISOString(), content: "<task-notification><task-id>bundle-command</task-id><status>completed</status><summary>Background command finished</summary></task-notification>" })}\n`;
-  writeFileSync(transcript, leading + terminal);
-  const readerSmoke = `
-    const { waitCommandHistory, resetCommandHistory } = await import(${JSON.stringify(pathToFileURL(join(bundle, "server/claude-command-history.ts")).href)});
-    const { transcriptReader } = await import(${JSON.stringify(pathToFileURL(join(bundle, "server/transcript-reader.ts")).href)});
-    const path = ${JSON.stringify(transcript)};
-    const version = await transcriptReader.version(path);
-    await transcriptReader.read(path, async (file) => {
-      const bytes = await file.read(${Buffer.byteLength(leading)}, ${Buffer.byteLength(terminal)});
-      if (bytes.toString() !== ${JSON.stringify(terminal)}) throw new Error("bundled positional transcript read differs");
-    });
-    const history = await waitCommandHistory(path, version.size);
-    if (!history?.complete || history.ends.length !== 1 || history.ends[0].id !== "bundle-command") throw new Error("bundled command history differs");
-    resetCommandHistory(); await transcriptReader.settled();
-  `;
-  const readerCheck = Bun.spawn([bun, "--eval", readerSmoke], { env, stdout: "inherit", stderr: "inherit" });
-  assert.equal(await readerCheck.exited, 0, "bundled Bun runs async positional reads and command-history proof");
-  console.log("Remote bundle async transcript reader and command history passed");
-
   // a bundle built with the Rust PTY host carries one that runs on this PC (scripts/pty-sidecar.ts)
   if (!windows && process.env["HERDR_BUNDLE_PTY_SIDECAR"]) {
     const host = Bun.spawnSync([join(bundle, "bin/ovis-pty-sidecar")], { stdin: "ignore", stderr: "pipe" });

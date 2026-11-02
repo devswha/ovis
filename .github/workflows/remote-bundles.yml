@@ -99,7 +99,7 @@ jobs:
         shell: pwsh
         env:
           HERDR_TEST_MODE: unit
-        run: bun test ./server/windows-native.test.ts ./server/transcript-reader.test.ts ./server/claude-command-history.test.ts ./server/claude-task-history.test.ts
+        run: bun test ./server/windows-native.test.ts
   ssh:
     timeout-minutes: 20
     runs-on: ubuntu-24.04

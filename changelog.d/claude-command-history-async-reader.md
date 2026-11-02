@@ -1,4 +1,4 @@
 ### Fixed
-- Claude background-command history uses bounded asynchronous positional reads, so slow transcript
-  storage no longer blocks the server while old task completions are checked. Changed transcripts
-  are checked before historical completions are applied, preserving call and session ownership.
+- The background-command history of an old Claude transcript is read and rechecked with
+  asynchronous reads, so slow transcript storage no longer holds the server for each 1 MiB it
+  reads. What the history tells is unchanged.

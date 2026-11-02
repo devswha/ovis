@@ -1,9 +1,6 @@
 import type { OmoTask } from "../shared/protocol.ts";
-import { type ClaudeSubagentStatus } from "./claude-subagents.ts";
-import { waitCommandHistory } from "./claude-command-history.ts";
-import { claudeTaskHistory } from "./claude-task-history.ts";
-import { sameTranscriptVersion } from "./transcript-version.ts";
-import { foldClaudeTasks, type ClaudeTaskSnapshot } from "./claude-task-state.ts";
+import { PARENT_WINDOW, type ClaudeSubagentStatus } from "./claude-subagents.ts";
+import { historyVersion, waitCommandHistory } from "./claude-command-history.ts";
 import { FileBusyError, fileTask } from "./file-pool.ts";
 
 /** Only scans still under way are shared; the next request after one finishes reads again. */
@@ -26,27 +23,12 @@ export function scanClaudeTasks(session: NonNullable<ReturnType<ClaudeSubagentSt
   if (scan === undefined) {
     const abort = new AbortController();
     const promise = (async () => {
-      const snapshot = await fileTask<ClaudeTaskSnapshot>({ op: "claude-tasks", path, live, since }, abort.signal);
-      const initial = foldClaudeTasks(snapshot);
-      if (!initial.historyNeeded) return initial.tasks;
-      const history = await waitCommandHistory(path, snapshot.parent!.limit, 10_000, abort.signal);
+      const tasks = await fileTask<OmoTask[]>({ op: "claude-tasks", path, live, since }, abort.signal);
+      const version = historyVersion(path);
+      if (!version || version.size <= PARENT_WINDOW || !tasks.some((task) => task.category === "shell" && (task.status === "running" || task.status === "lost"))) return tasks;
+      const history = await waitCommandHistory(path, version.size, 10_000, abort.signal);
       if (abort.signal.aborted) throw new FileBusyError("the request was cancelled");
-      // Preserve the original second stage: after up to ten seconds of prefix work, local
-      // parsing and small terminal proofs have their own bounded budget. Reparse at most twice
-      // when a proof observes that its local snapshot changed. A final local-only pass supplies
-      // the safe partial answer if storage keeps changing; it never applies old history to it.
-      const finalDeadline = Date.now() + 10_000;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const fresh = await fileTask<ClaudeTaskSnapshot>({ op: "claude-tasks", path, live, since, until: finalDeadline }, abort.signal);
-        if (Date.now() >= finalDeadline) return foldClaudeTasks(fresh).tasks;
-        let observed = fresh.parent?.version ?? null;
-        const proof = await claudeTaskHistory(path, fresh, { history, signal: abort.signal, deadline: finalDeadline, observed: (version) => { observed = version; } });
-        if (abort.signal.aborted) throw new FileBusyError("the request was cancelled");
-        if (fresh.parent === null || (observed !== null && sameTranscriptVersion(fresh.parent.version, observed))) return foldClaudeTasks(fresh, proof).tasks;
-        if (Date.now() >= finalDeadline) break;
-      }
-      const latest = await fileTask<ClaudeTaskSnapshot>({ op: "claude-tasks", path, live, since, until: Date.now() }, abort.signal);
-      return foldClaudeTasks(latest).tasks;
+      return fileTask<OmoTask[]>({ op: "claude-tasks", path, live, since, history }, abort.signal);
     })();
     scan = { promise, waiters: 0, abort };
     scans.set(key, scan);
