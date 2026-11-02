@@ -10,7 +10,7 @@ import { workspaceCreate, workspaceClose, sessionSnapshot } from "../server/herd
 import type { UpdateStatus } from "../shared/update.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 const source = resolve(import.meta.dir, "..");
 const temp = mkdtempSync(join(tmpdir(), "herdr-update-browser-"));

@@ -9,7 +9,7 @@ import { createServer } from "../server/index.ts";
 import { PtySession } from "../server/pty/session.ts";
 import { herdrRpc, herdrSocketPath, type WorkspaceCreateResult, paneRead, paneSendKeys, paneSendText, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openLensMenu, pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 /** how long a resize that should not happen gets to show up */
 const NO_RESIZE_WAIT_MS = 400;
@@ -206,8 +206,6 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
       }
       socket.addEventListener("message", receive);
     }, desktopSize.split(" ").map(Number));
-    // the menu is open before the clock starts: the budget is the pick's, as it was a switch's tap
-    await openLensMenu(phone, { tap: true });
     const chatAt = Date.now();
     await pickLens(phone, "chat", { tap: true });
     const restoredAt = await desktop.evaluate(() => (window as unknown as { gridRestored_: Promise<number> }).gridRestored_);

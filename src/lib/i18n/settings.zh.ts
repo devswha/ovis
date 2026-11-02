@@ -68,6 +68,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "When on, use Send or hardware Mod+Enter to send.": "开启后，点击发送按钮或使用实体键盘按 Mod+Enter 发送。",
   "When off, Mod+Enter sends": "关闭后按 Mod+Enter 发送",
   "Panes open in": "窗格默认视图",
+  "Chat": "聊天",
   "Every pane on this device. Switching a pane's lens keeps it there until this changes. Auto: chat for an agent on a touch screen, else the terminal.": "适用于此设备上的所有窗格。在窗格中切换视图后，在更改此设置之前都会以该视图打开。自动：触屏上的智能体为聊天，其余为终端。",
   "Show thinking": "显示思考过程",
   "Open work while the agent runs": "代理运行时展开工作",

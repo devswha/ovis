@@ -9,7 +9,7 @@ import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { AgentStatus, ConversationResponse, ServerMessage } from "../shared/protocol.ts";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 declare global {
   interface Window {

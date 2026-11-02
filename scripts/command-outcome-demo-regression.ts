@@ -7,7 +7,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 // What became of a command sent from Chat, on the unmodified app over the demo's fixture transport
 // (site/demo/transport.ts tracks each send as the bridge would): the chip under the sent bubble

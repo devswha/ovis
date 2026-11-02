@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { SlashCommand } from "../../shared/protocol.ts";
 import type { CaseRun } from "../skill-menu-case.ts";
-import { pickLens } from "../view-menu.ts";
+import { pickLens } from "../view-toggle.ts";
 
 export const agent = "claude";
 const builtin = (name: string, description: string, rest: Partial<SlashCommand> = {}): SlashCommand => ({ name, description, source: "builtin", ...rest });

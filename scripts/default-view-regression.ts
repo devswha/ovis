@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { herdrRpc, paneSplit, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { pickLens, shownLens } from "./view-menu.ts";
+import { pickLens, shownLens } from "./view-toggle.ts";
 
 /** Settings > Chat > Panes open in: one choice puts every agent pane on that lens, the ones that remembered another included. */
 export async function checkDefaultView(browser: Browser, origin: string): Promise<void> {
@@ -39,15 +39,15 @@ export async function checkDefaultView(browser: Browser, origin: string): Promis
     await openSettingsPage(page, "Chat");
     await page.getByRole("group", { name: "Panes open in", exact: true }).getByRole("button", { name: "Chat", exact: true }).click();
     await page.keyboard.press("Escape");
-    await page.waitForFunction(() => document.querySelector(".app-header .view-menu-button")?.getAttribute("data-view") === "chat");
+    await page.waitForFunction(() => document.querySelector(".app-header .view-toggle")?.getAttribute("data-view") === "chat");
     await page.locator(`.pane-select[title^="${two} —"]`).click();
-    await page.waitForFunction(() => document.querySelector(".app-header .view-menu-button")?.getAttribute("data-view") === "chat");
+    await page.waitForFunction(() => document.querySelector(".app-header .view-toggle")?.getAttribute("data-view") === "chat");
     assert.equal(await page.evaluate((pane) => localStorage.getItem(`ovis:view:local:${pane}`), two), null, "what a pane remembered gives way to the choice");
     // a pane switched by hand keeps its lens until the choice changes again
     await pickLens(page, "terminal");
     await page.locator(`.pane-select[title^="${one} —"]`).click();
     await page.locator(`.pane-select[title^="${two} —"]`).click();
-    await page.waitForFunction(() => document.querySelector(".app-header .view-menu-button")?.getAttribute("data-view") === "terminal");
+    await page.waitForFunction(() => document.querySelector(".app-header .view-toggle")?.getAttribute("data-view") === "terminal");
     assert.deepEqual(errors, []);
     console.log("PASS one choice in Settings opens every agent pane in the chat");
 
@@ -59,7 +59,7 @@ export async function checkDefaultView(browser: Browser, origin: string): Promis
     const frame = page.locator(`.pane-frame[data-layout-pane="${shell}"]`);
     await frame.locator(".pane-frame-body").click({ position: { x: 40, y: 40 } });
     await page.locator(`.pane-frame.is-current[data-layout-pane="${shell}"]`).waitFor();
-    await page.waitForFunction(() => document.querySelector(".app-header .view-menu-button")?.getAttribute("data-view") === "terminal");
+    await page.waitForFunction(() => document.querySelector(".app-header .view-toggle")?.getAttribute("data-view") === "terminal");
     await herdrRpc("pane.report_agent", { pane_id: shell, source: "manual", agent: "claude", state: "working" });
     // the open tab wears the shell's agent beside the other's once the app has seen it start
     await page.locator(".app-header .tab-strip-item.is-active .tab-strip-faces.is-split").waitFor({ timeout: 10_000 });

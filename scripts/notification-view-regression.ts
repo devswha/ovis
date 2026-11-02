@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { herdrRpc, paneClose, paneFocus, paneSplit, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
-import { type Lens } from "./view-menu.ts";
+import { type Lens } from "./view-toggle.ts";
 
 /** A tapped pane alert shows an agent pane's chat once: the lens the pane remembered stays its own, and a shell keeps its terminal. */
 export async function checkNotificationView(browser: Browser, origin: string): Promise<void> {
@@ -34,7 +34,7 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     /** the selected row and the lens drawn with it, both from the page: the stored selection is written before the render */
     const shows = (pane: string, lens: Lens) => page.waitForFunction(([id, view]) =>
       document.querySelector(".pane-select[aria-current='true']")?.getAttribute("title")?.startsWith(`${id} —`) === true
-      && document.querySelector(".app-header .view-menu-button")?.getAttribute("data-view") === view, [pane, lens]);
+      && document.querySelector(".app-header .view-toggle")?.getAttribute("data-view") === view, [pane, lens]);
     /** what public/sw.js posts to an open window when a pane's alert is tapped */
     const tapAlert = (pane: string, workspace?: string) => page.evaluate(([id, ws]) => {
       navigator.serviceWorker.dispatchEvent(new MessageEvent("message", { data: { type: "select-pane", machine_id: "local", pane_id: id, view: "chat", ...(ws ? { workspace_id: ws } : {}) } }));

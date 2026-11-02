@@ -68,6 +68,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "When on, use Send or hardware Mod+Enter to send.": "켜면 전송 버튼이나 하드웨어 키보드의 Mod+Enter로 전송합니다.",
   "When off, Mod+Enter sends": "끄면 Mod+Enter로 보냅니다",
   "Panes open in": "패널 기본 화면",
+  "Chat": "채팅",
   "Every pane on this device. Switching a pane's lens keeps it there until this changes. Auto: chat for an agent on a touch screen, else the terminal.": "이 기기의 모든 패널에 적용됩니다. 패널에서 화면을 바꾸면 이 설정을 다시 바꿀 때까지 그 화면으로 열립니다. 자동: 터치 화면의 에이전트는 채팅, 그 밖에는 터미널.",
   "Show thinking": "생각 표시",
   "Open work while the agent runs": "에이전트 작업 중 작업 펼치기",

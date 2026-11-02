@@ -386,10 +386,10 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   throw new Error(`The fake provider did not verify OMP's ask result: ${path}`);
 }
 
-/** Picks the header's lens from its menu (a popover, or a sheet on a phone): Chat is item 1, Terminal item 2. */
+/** Flips the header's lens toggle to Chat (item 1) or Terminal (item 2), when it shows the other one. */
 async function pickLensIn(binary: string, env: NodeJS.ProcessEnv, item: 1 | 2): Promise<void> {
-  await browser(binary, env, ["click", ".app-header .view-menu-button"]);
-  await browser(binary, env, ["click", `.row-menu button.menu-item:nth-of-type(${item}), .row-sheet-item:nth-of-type(${item})`]);
+  const other = item === 1 ? "terminal" : "chat";
+  await browser(binary, env, ["eval", `document.querySelector('.app-header .view-toggle[data-view="${other}"]')?.click()`]);
 }
 
 async function browser(binary: string, env: NodeJS.ProcessEnv, args: string[]): Promise<string> {

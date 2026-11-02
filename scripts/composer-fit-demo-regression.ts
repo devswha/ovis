@@ -10,7 +10,7 @@ import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
 import { MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
-import { pickLens, VIEW_BUTTON } from "./view-menu.ts";
+import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
 
 // The model label in the input card's last row, fitted to what is measured there, on the
 // unmodified app over the demo's fixture transport. The demo's panes name no context window and
@@ -1028,13 +1028,12 @@ try {
         }, reading);
         assert.equal(await box.inputValue(), draft, "the unsent draft survives the terminal/chat round trip");
         await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
-        // Leave in the same task: the list's deferred scroll cannot update memory first. The lens
-        // menu is opened before, and its Terminal picked in that task.
-        await page.locator(VIEW_BUTTON).click();
-        await page.evaluate(() => {
+        // Leave in the same task: the list's deferred scroll cannot update memory first, so the
+        // lens toggle flips to Terminal in that task.
+        await page.evaluate((toggle) => {
           document.querySelector<HTMLButtonElement>('button[title="Jump to latest"]')!.click();
-          document.querySelectorAll<HTMLButtonElement>('.row-menu [role="menuitem"], .row-sheet .row-sheet-item')[1]!.click();
-        });
+          document.querySelector<HTMLButtonElement>(toggle)!.click();
+        }, VIEW_BUTTON);
         await pickLens(page, "chat");
         await page.waitForFunction(() => {
           const node = document.querySelector(".chat-view")!;

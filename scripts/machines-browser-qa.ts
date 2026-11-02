@@ -7,7 +7,7 @@ import { herdrRpc } from "../server/herdr/client.ts";
 import { paneStorageId } from "../shared/machines.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 const fixture = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as { root: string; remoteHome: string; port: number; machineId: string; secondMachineId: string; paneId: string };
 const { machineId: a, secondMachineId: b, paneId } = fixture;
 const origin = `http://127.0.0.1:${fixture.port}`;

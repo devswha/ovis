@@ -1,9 +1,9 @@
 /**
- * The phone header's lens button (Chat or Terminal, opening both) is a compact control: it sits inside
+ * The phone header's lens toggle (Chat or Terminal, a tap flips them) is a compact control: it sits inside
  * the header bar with clear space above and below (never edge to edge), below a safe-area top inset
  * and in the compact density's shorter bar too, and still offers a touch target at least 44px tall
- * and wide through its invisible expander, which stays inside the bar. A tap opens its menu, and its
- * Terminal shows the pane's terminal. Folded (412) and
+ * and wide through its invisible expander, which stays inside the bar. A tap on it shows the
+ * pane's terminal. Folded (412) and
  * unfolded (720) foldable widths, a short landscape phone, a notched screen and the compact density.
  * On the isolated test herdr; UI_EVIDENCE_DIR=<dir> keeps the screenshots.
  */
@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, shownLens, VIEW_BUTTON } from "./view-menu.ts";
+import { pickLens, shownLens, VIEW_BUTTON } from "./view-toggle.ts";
 
 const TOUCH_TARGET = 44;
 const CLEARANCE = 6;
@@ -65,11 +65,11 @@ export async function checkHeaderLensSwitch(browser: Browser, origin: string, ev
         assert.ok(geometry.button.width >= TOUCH_TARGET - 0.5, `${size.label}: the button is a finger wide (${geometry.button.width})`);
         assert.ok(geometry.target.top >= bar.top - 0.5 && geometry.target.bottom <= bar.bottom + 0.5, `${size.label}: the touch target stays inside the bar`);
         await pickLens(page, "terminal", { tap: true });
-        assert.equal(await shownLens(page), "terminal", `${size.label}: the menu's Terminal shows the terminal`);
+        assert.equal(await shownLens(page), "terminal", `${size.label}: a tap on the toggle shows the terminal`);
         if (evidence) await page.screenshot({ path: join(evidence, `lens-switch-${size.label.replace(/\s+/g, "-")}.png`), clip: { x: 0, y: 0, width: size.width, height: 140 } });
       } finally { await context.close(); }
     }
-    console.log("PASS the phone header's lens button sits with room above and below, a 44px touch target inside the bar, and its menu switches the lens, folded, unfolded, landscape, under a notch and in the compact density");
+    console.log("PASS the phone header's lens button sits with room above and below, a 44px touch target inside the bar, and a tap on it switches the lens, folded, unfolded, landscape, under a notch and in the compact density");
   } finally {
     if (workspaceId) await workspaceClose(workspaceId).catch(() => {});
     rmSync(root, { recursive: true, force: true });

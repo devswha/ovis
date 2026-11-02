@@ -8,7 +8,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 interface RewindFixture { agent: string; inputs: string[]; mutations: string[] }
 declare global { interface Window { rewindFixture: RewindFixture } }

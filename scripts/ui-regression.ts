@@ -33,7 +33,7 @@ import type { CspWatch } from "./csp-violations.ts";
 import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } from "./browser-evidence.ts";
 import type { BrowserEvidenceSession } from "./browser-evidence.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, VIEW_BUTTON } from "./view-menu.ts";
+import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-browser-")));
 const workspaces: string[] = [];

@@ -8,7 +8,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { caseRun, type ColorScheme, type SkillMenuCase } from "./skill-menu-case.ts";
-import { pickLens } from "./view-menu.ts";
+import { pickLens } from "./view-toggle.ts";
 
 // Usage: bun scripts/agent-skill-menu-demo-regression.ts [case …]
 //

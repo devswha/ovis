@@ -11,7 +11,7 @@ import { herdrRpc, paneSplit, tabCreate, tabRename, workspaceClose, workspaceCre
 import type { ClientMessage, PendingMessage, ServerMessage } from "../shared/protocol.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, type Lens } from "./view-menu.ts";
+import { pickLens, type Lens } from "./view-toggle.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-pending-switch-")));
 const workspaces: string[] = [];

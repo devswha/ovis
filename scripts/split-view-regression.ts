@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Route, WebSocket } from "playwright-core";
 import { herdrRpc, paneFocus, paneRead, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import type { TabMovedToWorkspace } from "../shared/protocol.ts";
-import { shownLens } from "./view-menu.ts";
+import { shownLens } from "./view-toggle.ts";
 
 /**
  * The split view's edges (lib/split.ts), each on a browser context of its own: the other half's

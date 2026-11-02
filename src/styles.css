@@ -2045,14 +2045,15 @@ button {
   .header-tabs .tab-strip-row { --strip-bg: transparent; }
 }
 
-/* the open pane's lens: its icon and a chevron, both lenses in its menu (ViewMenu) */
-.view-menu-button {
+/* the open pane's lens: its icon, a tap flips to the other (ViewToggle) */
+.view-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
   flex: 0 0 auto;
   height: var(--control-h);
-  padding: 0 var(--space-1) 0 var(--space-2);
+  min-width: var(--control-h);
+  padding: 0 var(--space-2);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-md);
   background: var(--accent-tint);
@@ -2060,19 +2061,13 @@ button {
   cursor: pointer;
 }
 
-.view-menu-button svg {
+.view-toggle svg {
   width: 16px;
   height: 16px;
 }
 
-.view-menu-button .view-menu-chevron {
-  width: 12px;
-  height: 12px;
-  color: var(--text-dim);
-}
-
-.view-menu-button:hover,
-.view-menu-button:focus-visible {
+.view-toggle:hover,
+.view-toggle:focus-visible {
   border-color: var(--border-strong);
 }
 
@@ -2982,13 +2977,12 @@ button {
   }
 
   /* drawn at the bar's control height, tapped at the full target through an invisible expander */
-  .view-menu-button {
+  .view-toggle {
     position: relative;
     min-width: var(--touch-target-header);
-    justify-content: center;
   }
 
-  .view-menu-button::before {
+  .view-toggle::before {
     content: "";
     position: absolute;
     inset: calc((var(--control-h) - var(--touch-target-header)) / 2) 0;

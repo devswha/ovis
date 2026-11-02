@@ -43,7 +43,7 @@ import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
 import { openPresentation } from "./lib/filePresentation.ts";
 import { MachineDialog } from "./components/MachineDialog.tsx";
 import { RowMenu, type RowMenuItem } from "./components/RowMenu.tsx";
-import { ViewMenu } from "./components/ViewMenu.tsx";
+import { ViewToggle } from "./components/ViewToggle.tsx";
 import { headerCrumb, showsChat } from "./lib/headerCrumb.ts";
 import { paneStorageId } from "../shared/machines.ts";
 import { usePairedNotices } from "./lib/usePairedNotices.ts";
@@ -673,8 +673,8 @@ export function App() {
         {selectedPane && !splitOn && <div ref={setHeaderTabs} className="header-tabs" hidden={screenMachineId !== null} />}
         {screenMachineId !== null && <span className="machine-context-name header-screen-name">{machineName(screenMachineId)}</span>}
         {/* a PC's desktop is the host's alone: the pane's own controls step aside with its tabs */}
-        {selectedPane && screenMachineId === null && <ViewMenu view={view} terminalAttach={terminalAttach}
-          onPick={(next) => { setView(next); setDrawerOpen(false); }} />}
+        {selectedPane && screenMachineId === null && <ViewToggle view={terminalPeek !== null ? "terminal" : view}
+          terminalAttach={terminalAttach} onToggle={actions.toggleView} />}
         {selectedPane && screenMachineId === null && wideScreen && (
           <>
             {/* opens Files, it is no third lens: set apart from the switch by a hairline */}
