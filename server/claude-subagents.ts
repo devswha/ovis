@@ -179,14 +179,16 @@ interface Commands {
   /** the title of each `Bash` call not answered yet: its description, else its command */
   calls: Map<string, string>;
   /** `call`: the `Bash` call that started it, when its answer names one */
-  launches: Map<string, { at: number; title: string; call: string | null }>;
+  launches: Map<string, { at: number; title: string; call: string | null; seq: number }>;
+  /** rows read so far: where in the transcript a launch or an end was written (`seq`) */
+  seq: number;
   /** the last few ends of each id, oldest first: an id used again ends once in each lifetime (claudeSubagentState) */
   ends: Map<string, CommandTold[]>;
 }
 /** An end a transcript told of: `call`, the `Bash` call its notice names (none for a stop) */
-type CommandTold = { at: number; status: OmoTask["status"]; call: string | null };
+type CommandTold = { at: number; status: OmoTask["status"]; call: string | null; seq?: number; source?: Commands };
 const ENDS_PER_ID = 4;
-const noCommands = (): Commands => ({ calls: new Map(), launches: new Map(), ends: new Map() });
+const noCommands = (): Commands => ({ calls: new Map(), launches: new Map(), ends: new Map(), seq: 0 });
 const TITLE_LENGTH = 120;
 
 /** Whether a line may say something of a background command, before it is parsed: the answers of every other call are passed over. */
@@ -204,6 +206,7 @@ function commandEnds(result: Row | null, at: number, notices: readonly TaskNotif
 
 function scanCommands(commands: Commands, entry: Row, at: number | null, notices: readonly TaskNotification[]): void {
   if (at === null) return;
+  const seq = ++commands.seq;
   const content = row(entry["message"])?.["content"];
   const blocks = (Array.isArray(content) ? content : []).flatMap((value): Row[] => { const block = row(value); return block === null ? [] : [block]; });
   for (const block of blocks) {
@@ -217,14 +220,14 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
   const launched = result?.["backgroundTaskId"];
   if (typeof launched === "string" && AGENT_ID.test(launched)) {
     const call = blocks.find((block) => block["type"] === "tool_result" && typeof block["tool_use_id"] === "string")?.["tool_use_id"] as string | undefined;
-    remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command", call: call ?? null }, MAX_NAMES);
+    remember(commands.launches, launched, { at, title: (call === undefined ? undefined : commands.calls.get(call)) ?? "Background command", call: call ?? null, seq }, MAX_NAMES);
     if (call !== undefined) commands.calls.delete(call);
   }
   for (const end of commandEnds(result, at, notices)) {
     const told = commands.ends.get(end.id) ?? [];
     // the same notice comes in more than one carrier: once is enough
     if (told.some((known) => known.at === end.at && known.status === end.status && known.call === end.call)) continue;
-    remember(commands.ends, end.id, [...told, { at: end.at, status: end.status, call: end.call }].slice(-ENDS_PER_ID), MAX_NAMES);
+    remember(commands.ends, end.id, [...told, { at: end.at, status: end.status, call: end.call, seq }].slice(-ENDS_PER_ID), MAX_NAMES);
   }
 }
 
@@ -1200,23 +1203,25 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
   }
   // every end any transcript was told of, by id. A launch ends at the first one after it, in
   // whichever transcript was told first: an end no later than it (one in its very millisecond too:
-  // timestamps tie across transcripts, unless it names the very call that started it) is of an
-  // earlier command that had the same id, and so is one naming another `Bash` call
+  // timestamps tie across transcripts, unless it names the very call that started it, or it was
+  // written after the launch in the same transcript) is of an earlier command that had the same
+  // id, and so is one naming another `Bash` call
   const ends = new Map<string, CommandTold[]>();
   const tell = (id: string, end: CommandTold) => { const told = ends.get(id); if (told) told.push(end); else ends.set(id, [end]); };
-  for (const source of sources) for (const [id, told] of source.ends) for (const end of told) tell(id, end);
-  const endOf = (id: string, launch: { at: number; call: string | null }) => {
+  for (const source of sources) for (const [id, told] of source.ends) for (const end of told) tell(id, { ...end, source });
+  const endOf = (id: string, launch: { at: number; call: string | null; seq: number }, source: Commands) => {
     let first: CommandTold | undefined;
     for (const end of ends.get(id) ?? []) {
       const named = end.call !== null && launch.call !== null;
-      if (end.at < launch.at || (named && end.call !== launch.call) || (end.at === launch.at && !named)) continue;
+      const after = end.source === source && end.seq !== undefined && end.seq > launch.seq;
+      if (end.at < launch.at || (named && end.call !== launch.call) || (end.at === launch.at && !named && !after)) continue;
       if (first === undefined || end.at < first.at) first = end;
     }
     return first;
   };
-  const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => endOf(id, launch) === undefined && !(launch.at <= (halts.get(source) ?? -Infinity))));
+  const unresolved = () => sources.some((source) => [...source.launches].some(([id, launch]) => endOf(id, launch, source) === undefined && !(launch.at <= (halts.get(source) ?? -Infinity))));
   const historyNeeded = parent !== null && parent.windowed && unresolved();
-  const needed = () => new Set(sources.flatMap((source) => [...source.launches].filter(([id, launch]) => endOf(id, launch) === undefined).map(([id]) => id)));
+  const needed = () => new Set(sources.flatMap((source) => [...source.launches].filter(([id, launch]) => endOf(id, launch, source) === undefined).map(([id]) => id)));
   const evidence = historyNeeded ? history === undefined ? commandHistory(parentPath, parent!.historyLimit, true, needed()) : history : null;
   // evidence of an earlier version (handed to a file thread, or read before this one) vouches for no
   // end until each one's line reads the same in the transcript as it is now
@@ -1234,7 +1239,7 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
       if (all.has(id)) continue;
       const halt = halts.get(source);
       // a command an agent left running stops with the agent
-      const end = endOf(id, launch) ?? (halt !== undefined && launch.at <= halt ? { at: halt, status: "cancelled" as const } : undefined);
+      const end = endOf(id, launch, source) ?? (halt !== undefined && launch.at <= halt ? { at: halt, status: "cancelled" as const } : undefined);
       const lost = !live || (since !== null && launch.at < since - START_SLACK_MS);
       keep({ id, title: launch.title, category: "shell", model: null, status: end?.status ?? (lost ? "lost" : "running"), started_at: iso(launch.at), ended_at: iso(end?.at ?? null), turns: null, tool_calls: null, tokens: null, detail_kind: null });
     }

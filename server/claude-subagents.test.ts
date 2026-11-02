@@ -1804,6 +1804,14 @@ describe("claudeSubagents, before the files are read through", () => {
     expect(wholeClaudeSubagents(s.path, true, NOW).find((task) => task.id === "same")).toMatchObject({ status: "completed", ended_at: at(2) });
   });
 
+  it("ends a command stopped in its launch's very millisecond, written after it in the same transcript", () => {
+    const s = session();
+    s.bash("same", 2);
+    // TaskStop's answer names no Bash call: the transcript's order says it came after the launch
+    s.parent({ type: "user", timestamp: at(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_stop" }] }, toolUseResult: { task_id: "same", task_type: "local_bash" } });
+    expect(wholeClaudeSubagents(s.path, true, NOW).find((task) => task.id === "same")).toMatchObject({ status: "cancelled", ended_at: at(2) });
+  });
+
   it("never ends a launch with a historical end told of another call", async () => {
     const s = session();
     const file = s.agent("review", { steps: [[1, 1]] });
