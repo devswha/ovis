@@ -10,7 +10,7 @@ import type { PiVoicePhase } from "../../shared/pi-voice.ts";
 
 export const ORB_MAX_SCALE = 1.15;
 
-export type OrbMotionMode = "connecting" | "listening" | "thinking" | "speaking" | "muted" | "error" | "ended";
+export type OrbMotionMode = "connecting" | "listening" | "thinking" | "speaking" | "muted" | "parked" | "error" | "ended";
 
 export type OrbMotionDriver = {
   /** Seconds since the driver started; paces idle breathing and pulses. */
@@ -72,6 +72,7 @@ export function orbModeFor(phase: PiVoicePhase | "ended"): OrbMotionMode {
     case "working": return "thinking";
     case "speaking": return "speaking";
     case "muted": return "muted";
+    case "parked": return "parked";
     case "error": return "error";
     case "ended": return "ended";
     default: return "connecting";
@@ -80,7 +81,7 @@ export function orbModeFor(phase: PiVoicePhase | "ended"): OrbMotionMode {
 
 export function advanceOrbMotion(driver: OrbMotionDriver, inputLevel: number, outputLevel: number, mode: OrbMotionMode, deltaSeconds: number): OrbMotionFrame {
   const elapsed = Number.isFinite(deltaSeconds) ? Math.min(MAX_ELAPSED_SECONDS, Math.max(0, deltaSeconds)) : 0;
-  const status = mode === "error" || mode === "ended";
+  const status = mode === "error" || mode === "ended" || mode === "parked";
   const audible = status ? 0 : mode === "thinking" ? 0.25 : mode === "muted" ? 0.1 : 1;
 
   driver.clock += elapsed;
@@ -115,6 +116,12 @@ export function advanceOrbMotion(driver: OrbMotionDriver, inputLevel: number, ou
       targetScale = 0.97;
       targetOpacity = 0.78;
       targetFlow = 0.6;
+      break;
+    case "parked":
+      // asleep while the task runs: a slow breath, dimmer than anything live
+      targetScale = 1 + breath * BREATH_DEPTH;
+      targetOpacity = 0.5 + breath * 0.04;
+      targetFlow = 0.45;
       break;
     case "connecting":
       targetScale = 1 + breath * BREATH_DEPTH;

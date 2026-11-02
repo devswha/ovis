@@ -75,7 +75,7 @@ function setup() {
   const sent: PhoneToPiFrame[] = [];
   const failures: string[] = [];
   const timers = manualTimers();
-  const audio = { srcObject: null as unknown, played: 0, play() { audio.played += 1; return Promise.resolve(); }, pause() {}, remove() {} };
+  const audio = { srcObject: null as unknown, played: 0, removed: false, play() { audio.played += 1; return Promise.resolve(); }, pause() {}, remove() { audio.removed = true; } };
   const deps: PiVoiceMediaDeps = {
     stream: { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream,
     audio: audio as unknown as HTMLAudioElement,
@@ -95,10 +95,10 @@ function setup() {
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("the phone as Pi's audio device", () => {
-  it("says hello when the connection is up", () => {
+  it("says hello when the connection is up, naming the features it takes", () => {
     const { media, drain } = setup();
     media.hello();
-    expect(drain()).toEqual([{ type: "hello" }]);
+    expect(drain()).toEqual([{ type: "hello", features: ["park", "usage"] }]);
   });
 
   it("opens at once, since the microphone is already held", async () => {
@@ -250,5 +250,104 @@ describe("the phone as Pi's audio device", () => {
     expect(audio.srcObject).toBeNull();
     expect(drain()).toEqual([]);
     expect(failures).toEqual([]);
+  });
+  describe("parking", () => {
+    /** a call that is up and active, as Pi parks it */
+    async function active() {
+      const harness = setup();
+      harness.receive({ type: "request", id: 1, method: "createOffer" });
+      await flush();
+      harness.receive({ type: "request", id: 2, method: "acceptAnswer", sdp: "v=0 answer" });
+      harness.receive({ type: "request", id: 3, method: "waitForOpen" });
+      harness.peers[0]!.channel!.open();
+      await flush();
+      harness.receive({ type: "activate" });
+      harness.timers.advance(200);
+      harness.drain();
+      return harness;
+    }
+
+    it("lets go of the connection to the voice service and keeps the microphone, the speaker and Pi", async () => {
+      const { receive, drain, track, peers, audio, failures, timers } = await active();
+      receive({ type: "park" });
+      expect(peers[0]!.closed).toBe(true);
+      expect(peers[0]!.channel!.readyState).toBe("closed");
+      expect(audio.srcObject).toBeNull();
+      expect(track.stopped).toBe(false);
+      expect(audio.removed).toBe(false);
+      // nothing is sent while parked: not the microphone, not the levels
+      expect(track.enabled).toBe(false);
+      timers.advance(1000);
+      expect(drain()).toEqual([]);
+      // the peer going away is not a failure, nor is a late event from it passed on
+      peers[0]!.fail();
+      peers[0]!.channel!.onmessage?.({ data: '{"type":"late"}' });
+      expect(drain()).toEqual([]);
+      expect(failures).toEqual([]);
+    });
+
+    it("answers a wait for the channel that parking cuts short with an error, not silence", async () => {
+      const { receive, drain } = setup();
+      receive({ type: "request", id: 1, method: "createOffer" });
+      await flush();
+      receive({ type: "request", id: 2, method: "waitForOpen", timeoutMs: 30_000 });
+      await flush();
+      drain();
+      receive({ type: "park" });
+      await flush();
+      expect(drain()).toEqual([{ type: "response", id: 2, ok: false, error: "The call is parked." }]);
+    });
+
+    it("makes a new offer on the same media when Pi resumes it, and is active again from activate", async () => {
+      const { receive, drain, track, peers, timers } = await active();
+      receive({ type: "park" });
+      receive({ type: "request", id: 5, method: "createOffer" });
+      await flush();
+      expect(drain()).toEqual([{ type: "response", id: 5, ok: true, sdp: "v=0 offer" }]);
+      expect(peers).toHaveLength(2);
+      expect(peers[1]!.tracks).toEqual([track]);
+      expect(peers[1]!.channel?.label).toBe("oai-events");
+      receive({ type: "request", id: 6, method: "acceptAnswer", sdp: "v=0 answer 2" });
+      receive({ type: "request", id: 7, method: "waitForOpen" });
+      await flush();
+      expect(peers[1]!.remote).toEqual({ type: "answer", sdp: "v=0 answer 2" });
+      peers[1]!.channel!.open();
+      await flush();
+      expect(drain()).toEqual([{ type: "response", id: 6, ok: true }, { type: "response", id: 7, ok: true }]);
+      // still parked until Pi says activate again: the microphone stays shut and no levels go out
+      expect(track.enabled).toBe(false);
+      timers.advance(300);
+      expect(drain()).toEqual([]);
+      receive({ type: "activate" });
+      expect(track.enabled).toBe(true);
+      timers.advance(300);
+      expect(drain().filter((frame) => frame.type === "levels").length).toBeGreaterThanOrEqual(2);
+      peers[1]!.channel!.onmessage?.({ data: '{"type":"session.started"}' });
+      expect(drain()).toEqual([{ type: "event", payload: '{"type":"session.started"}' }]);
+    });
+
+    it("keeps its mute through a park", async () => {
+      const { receive, track } = await active();
+      receive({ type: "mute", muted: true });
+      receive({ type: "park" });
+      receive({ type: "request", id: 5, method: "createOffer" });
+      await flush();
+      receive({ type: "activate" });
+      expect(track.enabled).toBe(false);
+    });
+
+    it("still gives up on a Pi that stops answering while parked, and a ping keeps it", async () => {
+      const { media, receive, drain, track, failures, timers } = await active();
+      media.hello();
+      drain();
+      receive({ type: "park" });
+      timers.advance(15_000);
+      receive({ type: "ping" });
+      timers.advance(15_000);
+      expect(failures).toEqual([]);
+      timers.advance(6_000);
+      expect(failures).toEqual(["Pi stopped answering."]);
+      expect(track.stopped).toBe(true);
+    });
   });
 });

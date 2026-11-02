@@ -239,11 +239,30 @@ describe("the relay between a phone and a Pi", () => {
     expect(phone.closed).toBe(false);
   });
 
+  it("passes Pi's park, its parked phase and the call's billed seconds, and tells Pi the phone's features and resume", async () => {
+    const { hub, pi, phone } = await connected();
+    pi.send({ type: "park" });
+    pi.send({ type: "phase", phase: "parked" });
+    pi.send({ type: "usage", seconds: 75 });
+    await until(() => phone.sent.length === 3, "three frames");
+    expect(phone.sent).toEqual([{ v: 1, type: "park" }, { v: 1, type: "phase", phase: "parked" }, { v: 1, type: "usage", seconds: 75 }]);
+    hub.message(phone, frame({ type: "hello", features: ["park", "usage"] }));
+    hub.message(phone, frame({ type: "resume" }));
+    await until(() => pi.received.length === 3, "hello and resume");
+    expect(pi.received.slice(1)).toEqual([{ v: 1, type: "hello", features: ["park", "usage"] }, { v: 1, type: "resume" }]);
+    expect(phone.closed).toBe(false);
+  });
+
   it("closes both ends on a phone frame outside its allowlist", async () => {
     for (const bad of [
       frame({ type: "start" }),
       frame({ type: "request", id: 1, method: "open" }),
       frame({ type: "hello", token: "secret" }),
+      frame({ type: "hello", features: "park" }),
+      frame({ type: "hello", features: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }),
+      frame({ type: "hello", features: ["x".repeat(33)] }),
+      frame({ type: "hello", features: [1] }),
+      frame({ type: "resume", now: true }),
       frame({ type: "levels", input: 2, output: 0 }),
       "not json",
     ]) {
@@ -255,7 +274,7 @@ describe("the relay between a phone and a Pi", () => {
   });
 
   it("closes both ends, and tells the phone, on a Pi frame outside its allowlist", async () => {
-    for (const bad of [{ type: "ready", pid: 77, busy: false }, { type: "secret" }, { type: "phase", phase: "dancing" }]) {
+    for (const bad of [{ type: "ready", pid: 77, busy: false }, { type: "secret" }, { type: "phase", phase: "dancing" }, { type: "usage", seconds: -1 }, { type: "usage", seconds: 1.5 }, { type: "usage" }, { type: "park", now: true }]) {
       const { pi, phone } = await connected(join(root, `agent-${Math.random()}`));
       pi.send(bad);
       await until(() => phone.closed, "phone closed");

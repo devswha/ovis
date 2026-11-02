@@ -36,6 +36,15 @@ describe("the orb's motion", () => {
     expect(muted.opacity).toBeCloseTo(0.78, 1);
   });
 
+  it("rests dim and slow while parked, whatever the levels say", () => {
+    const parked = settle("parked", 1, 1);
+    const quiet = settle("parked", 0, 0);
+    expect(parked.scale).toBeCloseTo(quiet.scale, 3);
+    expect(parked.opacity).toBeCloseTo(quiet.opacity, 3);
+    expect(parked.opacity).toBeLessThan(settle("muted", 0, 0).opacity);
+    expect(parked.time).toBeLessThan(settle("listening", 0, 0).time);
+  });
+
   it("flows faster while speaking than when muted", () => {
     expect(settle("speaking", 0, 1).time).toBeGreaterThan(settle("muted", 0, 0).time * 2);
   });
@@ -63,6 +72,7 @@ describe("what the orb does for each phase of the call", () => {
     expect(orbModeFor("working")).toBe("thinking");
     expect(orbModeFor("speaking")).toBe("speaking");
     expect(orbModeFor("muted")).toBe("muted");
+    expect(orbModeFor("parked")).toBe("parked");
     expect(orbModeFor("error")).toBe("error");
     expect(orbModeFor("ended")).toBe("ended");
   });

@@ -1,7 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 
-import type { PiVoiceStatus } from "../../shared/pi-voice.ts";
-import { endPiVoice, FOLLOW_SETTLE_MS, followPiVoice, piVoiceState, startPiVoice } from "./piVoiceSession.ts";
+import { ENDED_SHOWN_MS, endPiVoice, formatPiVoiceTime, piVoiceState, resumePiVoice, startPiVoice } from "./piVoiceSession.ts";
 
 /** What the call touches of the browser: a microphone whose permission prompt the test settles, and sockets it can drive. */
 class FakeSocket {
@@ -84,7 +83,7 @@ describe("starting a call from the phone", () => {
     // Pi's answer to a start it cannot take arrives with nothing else in between
     socket.receive({ type: "ready", pid: 1, busy: false });
     socket.receive({ type: "ended", error: "Live voice is already on in this Pi." });
-    expect(piVoiceState()).toMatchObject({ status: "away", end: { kind: "error", message: "Live voice is already on in this Pi." } });
+    expect(piVoiceState()).toMatchObject({ status: "ended", end: { kind: "error", message: "Live voice is already on in this Pi." } });
     expect(socket.closed).toBe(true);
     // the microphone goes quiet at once, and is let go once the close chime has played
     expect(tracks.every((track) => !track.enabled && !track.stopped)).toBe(true);
@@ -107,7 +106,7 @@ describe("starting a call from the phone", () => {
     startPiVoice({ machineId: "local", paneId: "w1:p1", label: "cwd" });
     deny?.();
     await flush();
-    expect(piVoiceState()).toMatchObject({ status: "away", end: { kind: "denied" } });
+    expect(piVoiceState()).toMatchObject({ status: "ended", end: { kind: "denied" } });
     expect(FakeSocket.all).toHaveLength(0);
     // End puts the orb away
     endPiVoice();
@@ -125,29 +124,6 @@ describe("starting a call from the phone", () => {
   });
 });
 
-/** A timer the test fires by hand, and a status the test answers. */
-function followDeps(answer: PiVoiceStatus = { available: true, busy: false }) {
-  const pending: (() => void)[] = [];
-  const asked: string[] = [];
-  return {
-    pending,
-    asked,
-    deps: {
-      after: (run: () => void, ms: number) => {
-        expect(ms).toBe(FOLLOW_SETTLE_MS);
-        pending.push(run);
-        return () => { pending.splice(pending.indexOf(run), 1); };
-      },
-      status: (paneId: string) => {
-        asked.push(paneId);
-        return Promise.resolve(answer);
-      },
-    },
-  };
-}
-
-const pi = (paneId: string) => ({ machineId: "local", paneId, agent: "pi", label: "cwd" });
-
 async function liveOn(paneId: string): Promise<FakeSocket> {
   startPiVoice({ machineId: "local", paneId, label: "cwd" });
   grant?.();
@@ -158,100 +134,85 @@ async function liveOn(paneId: string): Promise<FakeSocket> {
   return socket;
 }
 
-describe("following the selected agent", () => {
-  it("does nothing while no call was started", () => {
-    const { deps, pending } = followDeps();
-    followPiVoice(pi("w1:p2"), deps);
-    expect(pending).toHaveLength(0);
-    expect(piVoiceState().status).toBe("idle");
-  });
-
-  it("ends the call on another agent at once, and calls the Pi there once the selection holds", async () => {
-    const first = await liveOn("w1:p1");
-    expect(piVoiceState().status).toBe("live");
-    const { deps, pending, asked } = followDeps();
-    followPiVoice(pi("w1:p2"), deps);
-    expect(first.closed).toBe(true);
-    expect(first.sent.map((text) => JSON.parse(text).type)).toContain("stop");
-    expect(piVoiceState()).toMatchObject({ status: "away", paneId: "w1:p2", end: null });
-    expect(FakeSocket.all).toHaveLength(1);
-    pending[0]!();
-    await flush();
-    expect(asked).toEqual(["w1:p2"]);
-    expect(piVoiceState().status).toBe("starting");
-    grant?.();
-    await flush();
-    expect(FakeSocket.all.at(-1)!.url).toBe("wss://ovis.test/ws/pi-voice?pane_id=w1%3Ap2");
-  });
-
-  it("opens nothing for a selection that moved on before it held", async () => {
-    await liveOn("w1:p1");
-    const { deps, pending } = followDeps();
-    const cancel = followPiVoice(pi("w1:p2"), deps);
-    cancel();
-    expect(pending).toHaveLength(0);
-    expect(piVoiceState().status).toBe("away");
-  });
-
-  it("waits with no voice on an agent that is not Pi, or a Pi that cannot take a call", async () => {
-    await liveOn("w1:p1");
-    const shell = followDeps();
-    followPiVoice({ machineId: "local", paneId: "w1:p2", agent: null, label: "cwd" }, shell.deps);
-    expect(shell.pending).toHaveLength(0);
-    expect(piVoiceState()).toMatchObject({ status: "away", end: null });
-    const unready = followDeps({ available: false, busy: false });
-    followPiVoice(pi("w1:p3"), unready.deps);
-    unready.pending[0]!();
-    await flush();
-    expect(piVoiceState()).toMatchObject({ status: "away", end: null });
-  });
-
-  it("says so when the Pi there already has a call", async () => {
-    await liveOn("w1:p1");
-    const { deps, pending } = followDeps({ available: true, busy: true });
-    followPiVoice(pi("w1:p2"), deps);
-    pending[0]!();
-    await flush();
-    expect(piVoiceState()).toMatchObject({ status: "away", end: { kind: "busy" } });
-  });
-
-  it("keeps the call on the same agent", async () => {
+describe("a call that ended", () => {
+  it("shows why for a moment on the pane it was on, then puts the orb away", async () => {
     const socket = await liveOn("w1:p1");
-    const { deps, pending } = followDeps();
-    followPiVoice(pi("w1:p1"), deps);
-    expect(socket.closed).toBe(false);
-    expect(pending).toHaveLength(0);
-    expect(piVoiceState().status).toBe("live");
+    jest.useFakeTimers();
+    try {
+      socket.receive({ type: "ended", code: "closed" });
+      expect(piVoiceState()).toMatchObject({ status: "ended", paneId: "w1:p1", label: "cwd", end: { kind: "closed" } });
+      jest.advanceTimersByTime(ENDED_SHOWN_MS - 1);
+      expect(piVoiceState().status).toBe("ended");
+      jest.advanceTimersByTime(1);
+      expect(piVoiceState()).toMatchObject({ status: "idle", end: null });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  it("stops following on End, and on Pi ending the call itself", async () => {
-    await liveOn("w1:p1");
-    endPiVoice();
-    const ended = followDeps();
-    followPiVoice(pi("w1:p2"), ended.deps);
-    expect(ended.pending).toHaveLength(0);
+  it("does not cut a call started in the meantime short", async () => {
+    const socket = await liveOn("w1:p1");
+    jest.useFakeTimers();
+    try {
+      socket.receive({ type: "ended", code: "closed" });
+      startPiVoice({ machineId: "local", paneId: "w1:p2", label: "cwd" });
+      jest.advanceTimersByTime(ENDED_SHOWN_MS);
+      expect(piVoiceState()).toMatchObject({ status: "starting", paneId: "w1:p2" });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("goes quietly when it was Pi's own end or the tap on End", async () => {
     const socket = await liveOn("w1:p1");
     socket.receive({ type: "ended" });
     expect(piVoiceState().status).toBe("idle");
+    await liveOn("w1:p1");
+    endPiVoice();
+    expect(piVoiceState().status).toBe("idle");
   });
+});
 
-  it("keeps following after a call is cut off, and the next agent clears why", async () => {
+describe("a parked call", () => {
+  const sentTypes = (socket: FakeSocket) => socket.sent.map((text) => JSON.parse(text).type as string);
+
+  it("stays live while Pi parks it, and resumes when the orb is tapped", async () => {
     const socket = await liveOn("w1:p1");
-    socket.receive({ type: "ended", code: "closed" });
-    expect(piVoiceState()).toMatchObject({ status: "away", end: { kind: "closed" } });
-    const { deps, pending } = followDeps();
-    followPiVoice(pi("w1:p2"), deps);
-    expect(piVoiceState()).toMatchObject({ status: "away", end: null });
-    expect(pending).toHaveLength(1);
+    socket.receive({ type: "phase", phase: "parked" });
+    expect(piVoiceState()).toMatchObject({ status: "live", phase: "parked", paneId: "w1:p1" });
+    socket.sent.length = 0;
+    resumePiVoice();
+    expect(sentTypes(socket)).toEqual(["resume"]);
+    // the tap answers at once; Pi's own phases take over from there
+    expect(piVoiceState().phase).toBe("connecting");
+    resumePiVoice();
+    expect(sentTypes(socket)).toEqual(["resume"]);
+    socket.receive({ type: "phase", phase: "listening" });
+    expect(piVoiceState().phase).toBe("listening");
   });
 
-  it("does not ask for a refused microphone again on the next agent", async () => {
-    startPiVoice({ machineId: "local", paneId: "w1:p1", label: "cwd" });
-    deny?.();
-    await flush();
-    const { deps, pending } = followDeps();
-    followPiVoice(pi("w1:p2"), deps);
-    expect(pending).toHaveLength(0);
-    expect(piVoiceState()).toMatchObject({ status: "away", end: { kind: "denied" } });
+  it("asks Pi for nothing when the call is not parked", async () => {
+    const socket = await liveOn("w1:p1");
+    socket.sent.length = 0;
+    resumePiVoice();
+    expect(socket.sent).toEqual([]);
+    expect(piVoiceState().phase).toBe("listening");
+  });
+});
+
+describe("the call's billed time", () => {
+  it("shows Pi's seconds, and none before the first or after the call", async () => {
+    const socket = await liveOn("w1:p1");
+    expect(piVoiceState().usage).toBeNull();
+    socket.receive({ type: "usage", seconds: 75 });
+    expect(piVoiceState().usage).toBe(75);
+    socket.receive({ type: "usage", seconds: 76 });
+    expect(piVoiceState().usage).toBe(76);
+    socket.receive({ type: "ended", code: "closed" });
+    expect(piVoiceState().usage).toBeNull();
+  });
+
+  it("reads as minutes and seconds", () => {
+    expect([0, 5, 59, 60, 75, 600, 3725].map(formatPiVoiceTime)).toEqual(["0:00", "0:05", "0:59", "1:00", "1:15", "10:00", "62:05"]);
   });
 });

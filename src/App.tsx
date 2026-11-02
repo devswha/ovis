@@ -53,7 +53,6 @@ import { adjacentTabPane, adjacentWorkspacePane, drawnWorkspaceRows, sidebarWork
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { piVoiceLabel, usePiVoiceFollow } from "./lib/piVoiceSession.ts";
 import { useSettings } from "./lib/settings.ts";
 import { useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
@@ -345,8 +344,6 @@ export function App() {
   // one thing to a screen reader (A4); null while no tab owns this pane
   const tabPanelLabel = paneTabPanelLabel(snapshot, selectedPane, t);
   const selectedAgent = selectedPane?.agent ?? null;
-  // a live call moves with the selection, to the Pi there once it holds
-  usePiVoiceFollow({ machineId: selectedMachineId, paneId: selectedPaneId, agent: selectedAgent, label: piVoiceLabel(selectedPane?.cwd), ...(settings.liveVoice !== "pi" ? { voice: settings.liveVoice } : {}) });
   // a herdr not heard from yet (or a server that predates the flag) counts as attach-capable; a failed
   // health read keeps this PC's last answer (lib/healthPresentation.ts)
   // a server that repaints the pane's screen instead (terminal_mirror) has a terminal lens too

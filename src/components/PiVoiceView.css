@@ -71,7 +71,7 @@
   height: var(--space-3);
 }
 
-.pi-voice-float.is-open .pi-voice-float-badge {
+.pi-voice-float.is-open:not(.is-parked) .pi-voice-float-badge {
   visibility: hidden;
 }
 
@@ -100,18 +100,31 @@
   translate: -50% var(--space-2);
 }
 
-.pi-voice-float.is-open .pi-voice-float-controls {
+/* a parked call keeps End in reach, since a tap on the orb asks for the voice back instead */
+.pi-voice-float.is-open .pi-voice-float-controls,
+.pi-voice-float.is-parked .pi-voice-float-controls {
   opacity: 1;
   visibility: visible;
   translate: -50% 0;
 }
 
-/* no call on the selected agent: the orb rests, dimmed, and says why beside it */
-.pi-voice-float.is-away .pi-voice-float-orb {
+/* the time the call has billed, above Mute and End */
+.pi-voice-float-usage {
+  padding: var(--space-1) var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* the call has stopped: the orb rests, dimmed, and says why beside it before it goes */
+.pi-voice-float.is-ended .pi-voice-float-orb {
   opacity: 0.5;
 }
 
-/* why there is no call, for a moment: it fades on its own, the dimmed orb staying to say it */
+/* why the call stopped, for a moment: it fades on its own, ahead of the orb going */
 .pi-voice-float-note {
   position: absolute;
   top: 50%;
@@ -137,6 +150,11 @@
 
 .pi-voice-float-note[role="alert"] {
   color: var(--danger-text);
+}
+
+/* the task is still running: the note stays until the voice is back */
+.pi-voice-float-note.is-lasting {
+  animation: none;
 }
 
 .pi-voice-float-note {

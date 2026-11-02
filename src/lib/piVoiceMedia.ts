@@ -1,4 +1,4 @@
-import type { PhoneToPiFrame, PiToPhoneFrame, PiVoiceRequest } from "../../shared/pi-voice.ts";
+import { PI_VOICE_FEATURES, type PhoneToPiFrame, type PiToPhoneFrame, type PiVoiceRequest } from "../../shared/pi-voice.ts";
 import { nativeCallAudio } from "./nativeApp.ts";
 
 /**
@@ -14,6 +14,10 @@ import { nativeCallAudio } from "./nativeApp.ts";
  * raised and limited. Chrome's browser-wide echo cancellation, and Android's own, hear that
  * output too. The <audio> element still holds the stream, muted: without it Chrome gives a
  * remote stream's Web Audio source silence.
+ *
+ * While Pi parks the call (a long task runs and the voice session sleeps) the connection to OpenAI
+ * is let go of but the microphone, the speaker and the connection to Pi stay: the next
+ * `createOffer` builds a new connection on the same media, without another `open`.
  */
 
 /** Pi pings every 5 s; the same silence after which Pi itself would give up on a vanished host */
@@ -85,10 +89,10 @@ export class BrowserLiveMedia {
     this.#micAnalyser = this.#analyserOf(deps.stream);
   }
 
-  /** The connection to Pi is up: say the device is here, and start counting Pi's silence. */
+  /** The connection to Pi is up: say the device is here and what it can take, and start counting Pi's silence. */
   hello(): void {
     this.#armLease();
-    this.#emit({ type: "hello" });
+    this.#emit({ type: "hello", features: [...PI_VOICE_FEATURES] });
   }
 
   /** A frame from Pi. Only the ones about the audio device are acted on; any of them shows Pi is there. */
@@ -107,6 +111,9 @@ export class BrowserLiveMedia {
       case "mute":
         this.#muted = frame.muted;
         this.#syncTrack();
+        break;
+      case "park":
+        this.#park();
         break;
       case "close":
         this.close();
@@ -129,12 +136,43 @@ export class BrowserLiveMedia {
     this.#stopLevels?.();
     this.#abortWait?.(new Error("The call ended."));
     for (const track of this.#deps.stream.getTracks()) track.stop();
-    this.#channel?.close();
-    this.#peer?.close();
+    this.#dropPeer();
     this.#deps.audio.pause();
-    this.#deps.audio.srcObject = null;
     this.#deps.audio.remove();
     void this.#deps.audioContext?.close().catch(() => undefined);
+  }
+
+  /**
+   * Pi parks the call: the connection to OpenAI goes, and nothing is sent until Pi activates a new
+   * one. The microphone, the speaker and Pi's lease stay.
+   */
+  #park(): void {
+    this.#active = false;
+    this.#syncTrack();
+    this.#stopLevels?.();
+    this.#stopLevels = undefined;
+    this.#abortWait?.(new Error("The call is parked."));
+    this.#dropPeer();
+  }
+
+  /** Lets go of the connection to OpenAI, quietly: whatever it still says is no one's. */
+  #dropPeer(): void {
+    const { audio } = this.#deps;
+    if (this.#channel) {
+      this.#channel.onopen = null;
+      this.#channel.onmessage = null;
+      this.#channel.close();
+    }
+    if (this.#peer) {
+      this.#peer.ontrack = null;
+      this.#peer.onconnectionstatechange = null;
+      this.#peer.close();
+    }
+    this.#peer = undefined;
+    this.#channel = undefined;
+    this.#opened = undefined;
+    this.#remoteAnalyser = undefined;
+    audio.srcObject = null;
   }
 
   /**
@@ -196,6 +234,8 @@ export class BrowserLiveMedia {
     // nothing is sent until Pi says the session is connected, then only while not muted
     track.enabled = false;
     track.onended = () => this.#fail("The microphone stopped.");
+    // an offer on media that already has a connection replaces it
+    this.#dropPeer();
     const peer = this.#deps.createPeer();
     this.#peer = peer;
     peer.addTrack(track, stream);

@@ -2904,11 +2904,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   slides out Mute (pressed state) and End (`--status-blocked`), a little smaller than the orb, away
   from the nearer edge; they tuck back after 4 s untouched, a press elsewhere or Escape. Muted, the
   orb wears a small crossed mic. The phase is read out in a polite live region.
-- The call follows the selected agent: selecting another one ends it at once, and once the
-  selection has held for a second on a Pi that can take a call, a new call starts there (Pi gives
-  it the chat so far, earlier calls included). With no call there the orb dims and says why beside
-  it for a few seconds ("No voice here", or why the last call stopped). End, or Pi ending the call
-  itself, puts the orb away and stops following; a refused microphone stops asking.
+- The call stays on the pane it started in: selecting another pane, workspace or PC leaves it alone,
+  and it ends only with End or when Pi ends it. The orb's tooltip names the pane. A call that stops
+  for a reason (a refused microphone, Pi's error, a cut connection) leaves the dimmed orb for a few
+  seconds with the reason beside it, then the orb goes; End or Pi ending the call itself removes it
+  at once.
+- Parked: when Pi parks the call for a long task (it closes its voice session so the call stops
+  using voice time, and brings the voice back with the result), the orb sleeps. It is dimmer and
+  slower than any live phase, wears an hourglass on its corner and has a note beside it that stays
+  while the task runs ("Task running. The voice returns with the result."). End stays in reach under
+  it, with no Mute; a tap on the orb asks Pi for the voice back now. The time the call has billed
+  (Pi's `usage` seconds, as m:ss) shows above Mute and End once Pi has said it.
 - The orb is the WebGL glass-liquid sphere (`VoiceOrb.tsx`); where WebGL is missing it is a disc in
   `--primary`. It swells with the reply, draws in while the user speaks, dims when muted, and with
   reduced motion it is drawn once and only swells.
