@@ -9,7 +9,7 @@ import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./p
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { codexTranscriptPath, paneCodexHome, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
-import { piTranscriptPath } from "./pi.ts";
+import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
@@ -741,6 +741,24 @@ function untilAborted<T>(look: Promise<T>, signal?: AbortSignal): Promise<T | un
 /** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
 class OmpNotInFront extends KeyRefused {}
 
+/** pi no longer holds the pane's input under a key-driven pi answer: nothing more is sent. */
+class PiNotInFront extends KeyRefused {}
+
+/**
+ * Whether pi itself holds the pane's input, as ompOwnsInput asks for omp: the screen pi leaves behind
+ * when it ends, its last dialog with one line of the shell's under it, reads like a dialog over an
+ * extension's status line (piFooterLines), and a key answered there would go to the shell. herdr
+ * names an omo pane pi too, and omo is pi's own build. Unknown (herdr did not answer) is not pi's.
+ * Windows lists no foreground process group: read as before. A cancelled answer's signal is not
+ * awaited here: its moves end as they did before this look (the answer path decides on cancelling).
+ */
+async function piOwnsInput(paneId: string): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  const info = await paneProcessInfo(paneId).catch(() => null);
+  return (info?.foreground_processes ?? []).some((entry) => isPiProcess(entry.argv ?? [])
+    || agentProcesses([entry], "pi").length > 0 || agentProcesses([entry], "omo").length > 0);
+}
+
 /** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
 class MoveLapsed extends KeyRefused {}
 
@@ -751,6 +769,7 @@ class MoveLapsed extends KeyRefused {}
  */
 async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
   if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
+  if (agent === "pi" && !(await piOwnsInput(paneId))) throw new PiNotInFront();
   if (agent === "omp" && !(await ompOwnsInput(paneId, deadline))) throw new OmpNotInFront();
 }
 
@@ -1060,6 +1079,10 @@ async function readKnownPrompt(
   }
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
+    return { prompt: null, screen, suppressFallback: true };
+  }
+  // and every card pi's own dialogs draw (pi-ask's form answers through the extension, not by keys)
+  if (agent === "pi" && prompt !== null && piNative === null && !(await piOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };

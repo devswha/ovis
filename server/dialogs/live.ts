@@ -194,20 +194,26 @@ const PI_FOOTER_LINES = 2;
  * pi's stats line, its second footer line: usage counters (`↑1.2k ↓300 R… W… CH…% $0.012 (sub)`), then
  * the context meter (`3.7%/1.0M`, `?/200k`). The meter comes last, and a narrow pane cuts the line
  * with `...` before it (`↑52 ↓5.3k R460k W33k CH98.9% $0.461 (sub) 3.7...`), so the line is told by how
- * it starts: every part has a fixed prefix (pi 1.4.0's footer).
+ * it starts: both counters (`↑52 ↓5.3k`), or the meter alone when pi has no usage yet (pi 1.4.0's footer).
  */
-const PI_STATS_LINE_RE = /^(?:[↑↓]\d|[RW]\d|CH\d|\$\d|(?:\d+(?:\.\d+)?%|\?)\/\d)/u;
+const PI_STATS_LINE_RE = /^(?:↑[\d.]+[kKmMbB]? ↓[\d.]+[kKmMbB]?|(?:\d+(?:\.\d+)?%|\?)\/[\d.]+[kKmMbB]?)(?:\s|\.\.\.|$)/u;
+
+/** pi's first footer line, the pane's folder: `~/app (main)`, `/tmp/app`, `C:\work\app`. */
+const PI_FOLDER_LINE_RE = /^(?:~(?:[\\/]|\s|$)|\/|[A-Za-z]:[\\/])/u;
 
 /**
  * An extension's `ctx.ui.setStatus` adds a third footer line under the stats line: pi joins every
  * status into that one line and truncates it to the pane's width, so it never wraps (pi 1.4.0's
  * footer). pi mounts its footer last, so while it runs nothing else can follow the stats line, and a
- * single line there is taken for that status. A prompt there, as a shell draws one after pi has
- * gone, or more output than that one line, still buries the hint.
+ * single line there is taken for that status, but only under pi's whole footer (its folder line, then
+ * its stats line). A prompt there, or more output than that one line, still buries the hint. A screen
+ * pi left behind when it ended looks the same with one line of the shell's under it, so a card answers
+ * only while pi still holds the pane's input (piOwnsInput in prompt.ts).
  */
 function piFooterLines(shown: string[]): number {
   const status = shown.at(-1) ?? "";
-  return PI_STATS_LINE_RE.test(shown.at(-2) ?? "") && !PROMPT_LINE_RE.test(status) ? PI_FOOTER_LINES + 1 : PI_FOOTER_LINES;
+  const footer = PI_FOLDER_LINE_RE.test(shown.at(-3) ?? "") && PI_STATS_LINE_RE.test(shown.at(-2) ?? "");
+  return footer && !PROMPT_LINE_RE.test(status) ? PI_FOOTER_LINES + 1 : PI_FOOTER_LINES;
 }
 
 /**
