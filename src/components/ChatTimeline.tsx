@@ -23,6 +23,13 @@ export interface ChatTimelineProps<Row extends ChatTimelineRow> {
    * chat, which lets it go when the reader goes back to the end (Jump to latest), whatever set it.
    */
   manualLayout: RefObject<boolean>;
+  /**
+   * Set by the timeline while a selection is in progress in it: a mouse drag held down, or a
+   * selection standing in its rows (a phone's long press leaves one). Nothing follows the end
+   * under it, so the words a reader is selecting stay where they are (#1922, #2650); a reader still
+   * following is put at the end once it is let go.
+   */
+  selecting: RefObject<boolean>;
   memories: Map<string, ChatRowMemory>;
   header: ReactNode;
   footer: ReactNode;
@@ -36,7 +43,7 @@ export interface ChatTimelineProps<Row extends ChatTimelineRow> {
 }
 
 /** One scroll owner; selected and focused rows stay real DOM nodes outside its window. */
-export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source, scroller, listRef, following, manualLayout, memories, header, footer, label, onScroll, onFollowed, onOpen, renderRow }: ChatTimelineProps<Row>) {
+export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source, scroller, listRef, following, manualLayout, selecting, memories, header, footer, label, onScroll, onFollowed, onOpen, renderRow }: ChatTimelineProps<Row>) {
   const [selectionKeys, setSelectionKeys] = useState<string[]>([]);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -83,6 +90,8 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
         }
       }
       const keys = last >= first ? rowKeys.slice(first, last + 1) : [];
+      selectedKeys.current = keys;
+      held.current();
       setSelectionKeys((previous) => previous.length === keys.length && previous.every((key, index) => key === keys[index]) ? previous : keys);
     };
     const focusChanged = () => setFocusKey(rowFor(document.activeElement));
@@ -106,7 +115,26 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
         dropPendingListScroll(listRef.current);
       }
     };
+    // a mouse press can start a drag selection before any selection exists: held from the press
+    const pressed = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse" || event.button !== 0) return;
+      pressing.current = rowFor(event.target as Node | null) ?? "";
+      held.current();
+    };
+    const released = () => {
+      if (pressing.current === null) return;
+      pressing.current = null;
+      held.current();
+    };
+    // a button let go outside the window sends this page no up: the next move without it, or the
+    // window losing focus, ends the press
+    const moved = (event: PointerEvent) => { if (event.pointerType === "mouse" && (event.buttons & 1) === 0) released(); };
     document.addEventListener("selectionchange", selectionChanged);
+    node.addEventListener("pointerdown", pressed, true);
+    document.addEventListener("pointerup", released, true);
+    document.addEventListener("pointercancel", released, true);
+    document.addEventListener("pointermove", moved, { capture: true, passive: true });
+    window.addEventListener("blur", released);
     node.addEventListener("focusin", focusChanged);
     node.addEventListener("focusout", focusOut);
     node.addEventListener("click", interaction, true);
@@ -126,30 +154,17 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     document.addEventListener("copy", copy);
     return () => {
       document.removeEventListener("selectionchange", selectionChanged);
+      node.removeEventListener("pointerdown", pressed, true);
+      document.removeEventListener("pointerup", released, true);
+      document.removeEventListener("pointercancel", released, true);
+      document.removeEventListener("pointermove", moved, { capture: true });
+      window.removeEventListener("blur", released);
       node.removeEventListener("focusin", focusChanged);
       node.removeEventListener("focusout", focusOut);
       node.removeEventListener("click", interaction, true);
       document.removeEventListener("copy", copy);
     };
   }, [scroller, listRef, positions, rowKeys, onOpen, following, manualLayout]);
-
-  // The footer (a sent message's bubble, the Working line) is no row: no item size change reports
-  // its growth, and a scroll to the end asked for before the list measured it stops short of it,
-  // under the composer. A reader following the end is put there before the grown footer is
-  // painted, and that short aim is dropped.
-  const footerRef = useCallback((box: HTMLDivElement) => {
-    let height = box.offsetHeight;
-    const observer = new ResizeObserver(() => {
-      const grew = box.offsetHeight > height;
-      height = box.offsetHeight;
-      const node = scroller.current;
-      if (!grew || node === null || !following.current || manualLayout.current) return;
-      dropPendingListScroll(listRef.current);
-      node.scrollTop = node.scrollHeight;
-    });
-    observer.observe(box);
-    return () => observer.disconnect();
-  }, [scroller, listRef, following, manualLayout]);
 
   // A measured row is followed in the frame it was measured in, before that frame paints. The list
   // measures inside a ResizeObserver callback and draws its new total in the microtask React queues
@@ -172,10 +187,10 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     queueMicrotask(() => {
       followQueued.current = false;
       const node = scroller.current, list = listRef.current;
-      if (node === null || list === null || !following.current || manualLayout.current) return;
+      if (node === null || list === null || !following.current || manualLayout.current || selecting.current) return;
       if (node.scrollTop !== heardTop.current) {
         heard();
-        if (!following.current || manualLayout.current) return;
+        if (!following.current || manualLayout.current || selecting.current) return;
       }
       const measured = list.getState().contentLength;
       const end = Math.max(0, (listEndPadded(node) ? measured : Math.max(measured, node.scrollHeight)) - node.clientHeight);
@@ -184,7 +199,136 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       heardTop.current = node.scrollTop;
       onFollowed(node.scrollTop);
     });
-  }, [scroller, listRef, following, manualLayout, heard, onFollowed]);
+  }, [scroller, listRef, following, manualLayout, selecting, heard, onFollowed]);
+
+  // A selection in progress holds the row it started in where it is on screen (#1922, #2650): the
+  // row a mouse pressed (a drag selection starts with the press), or the first row a selection
+  // stands in (a phone's long press). Nothing follows the end, and what the layout moves, a row
+  // above growing or the end shrinking, is scrolled back before it is painted; room is kept past
+  // the end for that, so the browser cannot pull the view up with a shorter transcript. A scroll
+  // (the reader's wheel, keys, finger or scrollbar, a drag carried past the chat's edge, Jump to
+  // latest) moves the view as it always does, and the row is held where it then is. Let go, the
+  // room goes and a reader still following is put at the end.
+  const pressing = useRef<string | null>(null);
+  const selectedKeys = useRef<readonly string[]>([]);
+  // the held row, where it is on screen, and where the view was when the hold last heard it
+  const anchor = useRef<{ key: string; y: number; top: number } | null>(null);
+  const room = useRef<string | null>(null);
+  const rowTop = useCallback((key: string): number | null => {
+    const node = scroller.current;
+    const row = node?.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
+    return node && row ? row.getBoundingClientRect().top - node.getBoundingClientRect().top : null;
+  }, [scroller]);
+  const keep = useCallback(() => {
+    const node = scroller.current, held = anchor.current;
+    // A reader away from the end has nothing followed under them: the list holds the rows they
+    // read in place itself (maintainVisibleContentPosition), and a second move would undo it.
+    if (node === null || held === null || !following.current) return;
+    const y = rowTop(held.key);
+    if (y === null) return;
+    // The view moved since the hold last heard it, and not because the transcript got too short
+    // for where it was: that is a scroll whose event has not come yet (a wheel, Jump to latest),
+    // and it stands. The row is held where it is now.
+    const max = node.scrollHeight - node.clientHeight;
+    const clamped = held.top > max && Math.abs(node.scrollTop - max) <= 1;
+    if (Math.abs(node.scrollTop - held.top) > 1 && !clamped) { held.y = y; held.top = node.scrollTop; return; }
+    const moved = y - held.y;
+    if (Math.abs(moved) < 1) return;
+    const target = node.scrollTop + moved;
+    const short = target - max;
+    const content = node.querySelector<HTMLElement>(".chat-transcript-virtual");
+    if (short > 0 && content !== null) {
+      // the list sets its own min-height inline: it is given back when the hold ends
+      room.current ??= content.style.minHeight;
+      content.style.minHeight = `${content.offsetHeight + Math.ceil(short)}px`;
+    }
+    node.scrollTop = target;
+    held.y = rowTop(held.key) ?? y;
+    held.top = node.scrollTop;
+    // the chat reads this move as the timeline's own, not the reader's (a drag's pointer moves
+    // would otherwise make one up a reader leaving the end)
+    onFollowed(node.scrollTop);
+  }, [scroller, rowTop, following, onFollowed]);
+  const keepQueued = useRef(false);
+  const keepMeasured = useCallback(() => {
+    if (keepQueued.current) return;
+    keepQueued.current = true;
+    // after the list's own microtask has drawn the measured rows, as followMeasured
+    queueMicrotask(() => { keepQueued.current = false; keep(); });
+  }, [keep]);
+  const hold = useCallback(() => {
+    const keys = selectedKeys.current;
+    const next = pressing.current !== null || keys.length > 0;
+    if (next) {
+      if (!selecting.current) dropPendingListScroll(listRef.current);
+      selecting.current = true;
+      // The row pressed holds; a press between rows holds the first row its selection reaches.
+      // A held row the selection still takes in stays held (a drag carried up into the rows
+      // above it), and one it has left gives way to the first row selected.
+      const current = anchor.current?.key;
+      const key = pressing.current || (current !== undefined && keys.includes(current) ? current : keys[0]);
+      if (key && current !== key) {
+        const y = rowTop(key), node = scroller.current;
+        anchor.current = y === null || node === null ? null : { key, y, top: node.scrollTop };
+      }
+      return;
+    }
+    if (!selecting.current) return;
+    selecting.current = false;
+    anchor.current = null;
+    const content = scroller.current?.querySelector<HTMLElement>(".chat-transcript-virtual");
+    if (content && room.current !== null) content.style.minHeight = room.current;
+    room.current = null;
+    followMeasured();
+  }, [selecting, listRef, scroller, rowTop, followMeasured]);
+  const held = useRef(hold);
+  held.current = hold;
+  // what a render changes under a held selection (the Working line going, a row's last words) is
+  // held back as soon as it is committed, before anything reads the layout
+  useLayoutEffect(() => { if (anchor.current !== null) keep(); }, [rows, header, footer, keep]);
+  useEffect(() => {
+    const node = scroller.current;
+    if (node === null) return;
+    // the layout's moves are held back where they are made (the layout effect above, the list's
+    // measurements, the observers): a scroll that comes to be heard is a move of the view itself
+    const scrolled = () => {
+      const held = anchor.current;
+      if (held === null) return;
+      held.y = rowTop(held.key) ?? held.y;
+      held.top = node.scrollTop;
+    };
+    const resized = new ResizeObserver(() => { if (anchor.current !== null) keep(); });
+    const content = node.querySelector<HTMLElement>(".chat-transcript-virtual");
+    if (content !== null) resized.observe(content);
+    node.addEventListener("scroll", scrolled, { passive: true });
+    return () => {
+      resized.disconnect();
+      node.removeEventListener("scroll", scrolled);
+      // the chat outlives a timeline (its source can change): no hold is left behind
+      selecting.current = false;
+      anchor.current = null;
+    };
+  }, [scroller, keep, rowTop, selecting]);
+
+  // The footer (a sent message's bubble, the Working line) is no row: no item size change reports
+  // its growth, and a scroll to the end asked for before the list measured it stops short of it,
+  // under the composer. A reader following the end is put there before the grown footer is
+  // painted, and that short aim is dropped.
+  const footerRef = useCallback((box: HTMLDivElement) => {
+    let height = box.offsetHeight;
+    const observer = new ResizeObserver(() => {
+      const grew = box.offsetHeight > height;
+      height = box.offsetHeight;
+      const node = scroller.current;
+      // held under a selection: a shrunk footer moves nothing either
+      if (selecting.current) { keep(); return; }
+      if (!grew || node === null || !following.current || manualLayout.current) return;
+      dropPendingListScroll(listRef.current);
+      node.scrollTop = node.scrollHeight;
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [scroller, listRef, following, manualLayout, selecting, keep]);
 
   useLayoutEffect(() => {
     const transcript = scroller.current?.querySelector<HTMLElement>(".chat-transcript");
@@ -230,6 +374,9 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     ListFooterComponent={<div ref={footerRef} className="chat-virtual-footer">{footer}</div>}
     onScroll={heard}
     onLoad={() => { if (following.current) listRef.current?.scrollToEnd({ animated: false }); }}
-    onItemSizeChanged={() => { if (following.current && !manualLayout.current) followMeasured(); }}
+    onItemSizeChanged={() => {
+      if (selecting.current) keepMeasured();
+      else if (following.current && !manualLayout.current) followMeasured();
+    }}
   />;
 }
