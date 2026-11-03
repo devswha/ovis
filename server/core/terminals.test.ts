@@ -19,7 +19,7 @@ const { createTerminalRegistry } = await import("./terminals.ts");
 
 afterEach(() => mock.restore());
 
-async function join({ readOnly = false, ready, recovering, times = 1, receiptResumeId, verifyResume }: { readOnly?: boolean; ready: boolean; recovering?: boolean; times?: number; receiptResumeId?: string; verifyResume?: (id: string | undefined) => void }): Promise<ServerMessage[]> {
+async function join({ readOnly = false, ready, recovering, times = 1, receiptResumeId, verifyResume, replayPrefix }: { readOnly?: boolean; ready: boolean; recovering?: boolean; times?: number; receiptResumeId?: string; verifyResume?: (id: string | undefined) => void; replayPrefix?: string }): Promise<ServerMessage[]> {
   const frames: ServerMessage[] = [];
   const client = {
     data: connectionData({ deviceId: undefined, readOnly }), readyState: WebSocket.OPEN,
@@ -30,7 +30,7 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
   replay.append("retained screen");
   attachment = {
     kind: "pty", ready, ...(recovering === undefined ? {} : { recovering }), cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay,
-    process: { exited: Promise.resolve(), pause() {}, resume() {}, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
+    process: { exited: Promise.resolve(), pause() {}, resume() {}, resize() {}, winch() {}, kill() {}, write() {}, ...(replayPrefix === undefined ? {} : { replayPrefix }) } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
   };
   const registry = createTerminalRegistry({
     options: {}, clients: new Set([client]), stopped: () => false, terminalAttach: async () => true,
@@ -70,6 +70,14 @@ for (const readOnly of [false, true]) for (const ready of [false, true]) {
     expect(frames.some((frame) => frame.type === "output-recovering")).toBe(false);
   });
 }
+
+// #2664 review: a herdr-core joiner's bounded tail may have lost the attach's clear, and the history it kept doubled
+it("clears a herdr-core joiner's kept history ahead of its replay", async () => {
+  const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_HISTORY });
+  expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
+    { type: "pty-data", pane_id: "p", data: `${coreAttach.CLEAR_HISTORY}retained screen`, replay: true },
+  ]);
+});
 
 for (const readOnly of [false, true]) {
   it(`tells an ${readOnly ? "observer" : "owner"} joining a recovering attach that its replay is the screen from before, once`, async () => {

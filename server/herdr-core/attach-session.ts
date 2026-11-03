@@ -7,10 +7,12 @@ const ASK_DISPLAY = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[c
 const FOCUS_ON = "\x1b[?1004h";
 const FOCUS_OFF = "\x1b[?1004l";
 /**
- * Erases the viewer's scrollback (ED 3) ahead of the history hc replays first: a viewer that kept the
- * last attach's lines (a reconnect, a recent tab coming back) holds them once, not once per attach.
+ * Erases the viewer's scrollback (ED 3) and screen ahead of the history hc replays first: a viewer that kept
+ * the last attach's lines (a reconnect, a recent tab coming back, a joiner's bounded replay) holds them once,
+ * not once per attach. It leaves the alternate screen first, or ED 3 would clear that buffer and leave the
+ * main screen's old history for the replay to double.
  */
-const CLEAR_SCROLLBACK = "\x1b[3J";
+export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
 
 /** What the viewer's terminal said about itself (hc's `Display`). */
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
@@ -83,6 +85,8 @@ export interface CoreAttachOptions {
  * TERMINAL_HISTORY_LINES lines, main screen only, as `hc attach --history` shows them.
  */
 export class CoreAttachSession {
+  /** goes ahead of a joiner's bounded replay, which may have lost the first attach's CLEAR_HISTORY */
+  readonly replayPrefix = CLEAR_HISTORY;
   readonly exited: Promise<void>;
   private channel: Channel | null = null;
   private closed = false;
@@ -125,7 +129,7 @@ export class CoreAttachSession {
         let text = decoder.decode(payload, { stream: true });
         if (text && first) {
           first = false;
-          text = CLEAR_SCROLLBACK + text;
+          text = CLEAR_HISTORY + text;
         }
         // a program turning focus reports off would leave hc without this viewer's focus
         if (text) options.onData(text.includes(FOCUS_OFF) ? text + FOCUS_ON : text);

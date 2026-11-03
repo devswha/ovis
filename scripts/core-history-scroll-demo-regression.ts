@@ -142,6 +142,7 @@ try {
             assert.ok(shown.scrollback > 0, "core: the browser keeps the scrollback");
             // the 300 replayed lines, less the screen's own rows, are history above it
             assert.ok(shown.baseY > 0 && shown.viewportY === shown.baseY, `core: the history sits above the screen, which shows the newest rows (${JSON.stringify(shown)})`);
+            assert.ok(shown.length >= 300, `core: the buffer keeps all 300 replayed lines (${JSON.stringify(shown)})`);
           } else {
             assert.equal(shown.scrollback, 0, "herdr: its TUI keeps the scrollback, not the browser");
             assert.equal(shown.baseY, 0, "herdr: nothing is kept above the screen");

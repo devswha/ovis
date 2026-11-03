@@ -6,8 +6,8 @@ import { encodeFrame, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_FACTS, FRAME_
 const CHANNEL = 7;
 /** what the session asks the viewers' terminal on attach, as `hc attach` asks its own */
 const ASKED = "\x1b[?1004h\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[c";
-/** what goes ahead of hc's first bytes: the viewer's last attach's scrollback is erased before hc replays it */
-const CLEARED = "\x1b[3J";
+/** what goes ahead of hc's first bytes: the viewer's last attach's scrollback is erased, on the main screen, before hc replays it */
+const CLEARED = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
 
 /** A core behind a fake `hc connect` that answers `terminal.attach` with one channel and records what the viewer sends on it. */
 class FakeCore implements HcTransport {

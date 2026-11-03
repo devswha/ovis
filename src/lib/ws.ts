@@ -117,6 +117,8 @@ export class HerdrSocket {
   private readonly disconnectHandlers = new Set<() => void>();
   private readonly beforeReplayHandlers = new Set<() => void>();
   private featuresKnown = false;
+  /** `terminal-history` from this connection's latest features frame (trusted or not) or snapshot: it says how to draw, not what to send */
+  private terminalHistory = false;
   private readonly outputSeen = new Set<string>();
   private readonly inputReady = new Set<string>();
   /** each pane's changes of input on this connection (readiness given, lost or given again, attach, detach); see inputLease */
@@ -316,6 +318,7 @@ export class HerdrSocket {
     this.inputReady.clear();
     this.outputSeen.clear();
     this.featuresKnown = false;
+    this.terminalHistory = false;
     this.featuresSeen = new Promise((resolve) => { this.markFeatures = resolve; });
     this.clearConnectTimer();
     this.connectTimer = window.setTimeout(() => {
@@ -388,6 +391,9 @@ export class HerdrSocket {
       // seconds on herdr; an older bridge lists them in its snapshot only. Each list is the bridge's
       // latest word, but what it restores is asked for once per connection, by the first of them. A features
       // frame counts only when trusted (trustFeatures); otherwise its snapshot says, as an older bridge's does.
+      // an untrusted features frame still says how its attach replays draw: history it lists ahead of the
+      // snapshot would be cut by a scrollback lowered until the snapshot came
+      if (message.type === "features" || message.type === "snapshot") this.terminalHistory = (message.features ?? []).includes("terminal-history");
       if ((message.type === "features" && this.featuresTrusted(message)) || message.type === "snapshot") {
         const first = !this.featuresKnown;
         this.features = new Set(message.features ?? []);
@@ -836,7 +842,7 @@ export class HerdrSocket {
 
   /** Whether the browser keeps a pane's scrollback (`terminal-history`); false until the features come. */
   hasTerminalHistory(): boolean {
-    return this.featuresKnown && this.features.has("terminal-history");
+    return this.terminalHistory;
   }
 
   unwatch(paneId: string): void {

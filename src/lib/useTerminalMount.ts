@@ -1106,7 +1106,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const screenSecret = (): string | null => {
         const lines: string[] = [];
         const buffer = term.buffer.active;
-        for (let row = 0; row < buffer.length; row++) {
+        // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
+        // cost every output frame a pass over its 2,000 lines
+        for (let row = buffer.baseY; row < buffer.length; row++) {
           const line = buffer.getLine(row);
           const text = line?.translateToString(!buffer.getLine(row + 1)?.isWrapped) ?? "";
           if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
@@ -1166,7 +1168,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // Every pane-addressed frame, errors included, belongs only to that pane's renderer.
         if ("pane_id" in message && message.pane_id !== undefined && message.pane_id !== paneRef.current) return;
         // the features come ahead of any pane's bytes; a changed scrollback changes the fit's scrollbar column
-        if ((message.type === "features" || message.type === "snapshot") && syncHistory()) refit();
+        // a tab out of use refits when it is back (back())
+        if ((message.type === "features" || message.type === "snapshot") && syncHistory() && inUse()) refit();
         // the PC's shared connection came back after an overload close (another pane's mount, or an
         // explicit pick, reconnected it): its replayed attach serves this pane again
         if (message.type === "snapshot" && stalledRef.current) {
