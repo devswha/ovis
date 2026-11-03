@@ -192,8 +192,12 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | { type: "seen"; finishes: SeenFinish[] }
   | DevicePairedEvent;
 /** `security`: authenticated requests only, absent from an older server (shared/protocol.ts SecuritySummary) */
-/** `web_ui.boot_id`: this server lifetime's id, as in the full health answer; absent from older servers */
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string } }
+/**
+ * `web_ui.boot_id`: this server lifetime's id, as in the full health answer. `runtime`: the runtime it
+ * serves. `accepted`: its launcher took it as its own past the startup check (absent when no launcher
+ * runs it). All three absent from older servers.
+ */
+export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: "herdr" | "herdr-core"; accepted?: boolean }
 export interface BridgeIdentity {
   pid: number;
   managed_remote: boolean;

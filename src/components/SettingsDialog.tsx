@@ -29,7 +29,7 @@ import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
 import type { HerdrCoreFacts, HerdrRuntimeFacts, Machine, MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth, fetchHealth } from "../lib/api.ts";
+import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -1110,11 +1110,8 @@ function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted
             setConfirming(false);
             awaitRestart(target, {
               from,
-              // the bridge's boot id needs no herdr; the whole health answer says the runtime answers too
-              boot: async () => {
-                const id = await fetchBridgeHealth().then((health) => health.web_ui?.boot_id ?? null);
-                return id === null ? null : { id, ready: await fetchHealth().then((health) => health.web_ui?.boot_id === id, () => false) };
-              },
+              // the bridge's own answer needs no herdr, and says whether the launcher took it as its own
+              boot: () => fetchBridgeHealth().then((health) => health.web_ui ? { id: health.web_ui.boot_id, accepted: health.accepted === true } : null),
               onBack: () => onServerRestarted?.(),
             });
           }}

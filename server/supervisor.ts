@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
-import { readSavedRuntime, restoreRuntime } from "./herdr-core/runtime-file.ts";
+import { restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
@@ -111,11 +111,12 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     clearTimeout(timer);
   }
   /**
-   * `ready`: what the health check waits for. "herdr" is the whole health answer, which needs the
-   * runtime to answer too; "bridge" only this bridge's own answer (`?scope=bridge`, which never asks
-   * herdr), for a start whose runtime may rightly be away, such as a herdr TUI the user starts later.
+   * Starts a bridge and waits for it: its own answer first (`?scope=bridge`, which never asks
+   * herdr), then the whole health answer when the runtime it says it serves must answer too:
+   * herdr-core, or herdr's TUI while its socket is there. A herdr TUI that is stopped is no failed
+   * start: Settings offers it, and the user starts herdr later. The bridge is told once it is taken.
    */
-  async function launch(release: Release | null, ready: "herdr" | "bridge" = readiness()) {
+  async function launch(release: Release | null) {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
@@ -153,25 +154,28 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     });
     child = candidate;
     const deadline = Date.now() + 20_000;
+    const ours = (body: { web_ui?: { boot_id?: string } }) => body.web_ui?.boot_id === bootId;
     while (Date.now() < deadline && !stopping && candidate.exitCode === null) {
       try {
-        const response = await fetch(`${origin}/api/health${ready === "bridge" ? "?scope=bridge" : ""}`, { signal: AbortSignal.timeout(1000) });
-        const body = await response.json() as { web_ui?: { boot_id?: string } };
-        if (response.ok && body.web_ui?.boot_id === bootId) { publish(); return; }
+        const bridge = await fetch(`${origin}/api/health?scope=bridge`, { signal: AbortSignal.timeout(1000) });
+        const own = await bridge.json() as { web_ui?: { boot_id?: string }; runtime?: string };
+        if (bridge.ok && ours(own)) {
+          let ready = own.runtime !== "herdr-core" && !existsSync(socketPath);
+          if (!ready) {
+            const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
+            ready = response.ok && ours(await response.json() as { web_ui?: { boot_id?: string } });
+          }
+          if (ready) {
+            try { candidate.send({ type: "bridge-accepted" }); } catch { /* it reads as not taken, and a page waits on */ }
+            publish();
+            return;
+          }
+        }
       } catch { /* wait for this exact bridge, never mistake another port owner for it */ }
       await Bun.sleep(100);
     }
     await stopChild();
     throw new Error("The new bridge failed its startup health check.");
-  }
-  /**
-   * What a start waits for: the whole health answer when the bridge will serve herdr-core (the core
-   * must answer) or herdr's TUI runs (its socket is there); otherwise the bridge's own answer, as a
-   * herdr TUI that is stopped is no failed start: Settings offers it, and the user starts herdr later.
-   */
-  function readiness(): "herdr" | "bridge" {
-    if (readSavedRuntime(appStateDir, port)?.runtime === "herdr-core") return "herdr";
-    return existsSync(socketPath) ? "herdr" : "bridge";
   }
   /** One bridge change at a time: a runtime switch and an update's activation wait for each other, neither is dropped. */
   let lane: Promise<unknown> = Promise.resolve();
