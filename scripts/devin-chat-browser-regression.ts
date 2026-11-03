@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { devinConversation, forgetDevinState } from "../server/devin.ts";
+import { openWorkRuns } from "./work-runs.ts";
 
 const root = mkdtempSync(join(tmpdir(), "ovis-devin-chat-browser-"));
 const dbPath = join(root, "sessions.db");
@@ -74,6 +75,7 @@ try {
           const block = assistant.locator(".work-block-head");
           await block.waitFor({ state: "visible" });
           if (await block.getAttribute("aria-expanded") === "false") await block.click();
+          await openWorkRuns(assistant);
           const tool = assistant.locator(".work-row-head");
           await tool.waitFor({ state: "visible" });
           assert.match(await tool.innerText(), /synthetic_tool/, "the tool is rendered as a work row");

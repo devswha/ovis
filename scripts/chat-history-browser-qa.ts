@@ -263,6 +263,7 @@ try {
   await page.evaluate(() => window.qa.chat("notice"));
   await page.getByText(newest, { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
+  await openWorkRuns(page);
   await page.locator(".work-row-head").click();
   const openedWork = await page.locator(".work-block-head").elementHandle();
   notice = true;
