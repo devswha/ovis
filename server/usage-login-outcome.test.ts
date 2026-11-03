@@ -1,12 +1,13 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageLoginFollowed, UsageLoginPrompt } from "../shared/usage-login.ts";
 import type { UsageReport } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
+import { PtySession } from "./pty/session.ts";
 import { UsageLoginService } from "./usage-login.ts";
-import { UsageService, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
+import { homeSignIn, UsageService, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
 const roots: string[] = [];
 const servers: ReturnType<typeof createServer>[] = [];
@@ -15,7 +16,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+interface FixtureOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly keychain?: UsageContext["keychain"];
+  readonly timing?: { readonly leaseMs: number; readonly maxMs: number };
+}
+
+function fixture(options: FixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "ovis-login-outcome-"));
   roots.push(root);
   const bin = join(root, "bin");
@@ -28,9 +35,10 @@ process.stdout.write(await Bun.file(${JSON.stringify(join(import.meta.dir, "fixt
 for await (const code of console) {
   if (code === "fail") process.exit(1);
   if (code === "noop") process.exit(0);
-  // a signal ends it: a PTY host reports that as exit code 0
-  if (code === "kill") process.kill(process.pid, "SIGKILL");
-  await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: \`fixture-\${crypto.randomUUID()}\`, expiresAt: 9999999999999, subscriptionType: "max" } }));
+  await Bun.write(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: \`fixture-\${crypto.randomUUID()}\`, expiresAt: code === "write-expired" ? 1 : 9999999999999, subscriptionType: "max" } }));
+  if (code === "write-fail") process.exit(1);
+  // a signal ends it after it wrote a sign-in
+  if (code === "write-kill") process.kill(process.pid, "SIGKILL");
   if (!await Bun.file(join(home, ".claude.json")).exists()) await Bun.write(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "added", emailAddress: "added@example.test" } }));
   // another home signed in meanwhile (another terminal): not this login's account
   if (code === "also-elsewhere") {
@@ -62,12 +70,12 @@ process.exit(plan.exit);
     } }));
   }
   const ctx: UsageContext = {
-    home: root, env: {}, platform: "linux", now: () => 1_000,
+    home: root, env: {}, platform: options.platform ?? "linux", now: () => 1_000,
     fetch: async () => Response.json({ five_hour: { utilization: 20 } }),
-    keychain: async () => ({ status: "missing" }), run: async () => null, has: () => false,
+    keychain: options.keychain ?? (async () => ({ status: "missing" })), run: async () => null, has: () => false,
   };
   const start = () => {
-    const login = new UsageLoginService(root, { PATH: bin }, ctx);
+    const login = new UsageLoginService(root, { PATH: bin }, ctx, options.timing);
     const server = createServer({
       port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"),
       machines: false, registerBridge: false, sidecar: false, terminalAttach: false,
@@ -100,7 +108,8 @@ const codexAuth = (email: string) => {
   return JSON.stringify({ tokens: { access_token: [part({ alg: "none" }), part({ exp: 9_999_999_999, "https://api.openai.com/profile": { email }, "https://api.openai.com/auth": { chatgpt_account_user_id: email } }), "sig"].join(".") } });
 };
 
-async function completeLogin(host: ReturnType<ReturnType<typeof fixture>["start"]>, body: object, code: string) {
+/** Starts a followed Claude sign-in and waits until its CLI asks for the code. */
+async function untilCode(host: ReturnType<ReturnType<typeof fixture>["start"]>, body: object) {
   const started = await fetch(`${host.origin}/api/usage/login`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, follow: true }),
   });
@@ -115,13 +124,47 @@ async function completeLogin(host: ReturnType<ReturnType<typeof fixture>["start"
     if (current.ended) throw new Error("The fixture exited before accepting a code");
     await changed;
   }
-  const ended = host.login.settled(id);
-  const response = await fetch(`${host.origin}/api/usage/login/code`, {
-    method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ login: id, code }),
+  const post = (path: string, extra: object = {}) => fetch(`${host.origin}/api/usage/login/${path}`, {
+    method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ login: id, ...extra }),
   });
-  expect(response.status).toBe(204);
+  return { id, prompt, post };
+}
+
+async function completeLogin(host: ReturnType<ReturnType<typeof fixture>["start"]>, body: object, code: string, beforeCode?: () => void) {
+  const login = await untilCode(host, body);
+  beforeCode?.();
+  const ended = host.login.settled(login.id);
+  expect((await login.post("code", { code })).status).toBe(204);
   await ended;
-  return prompt();
+  return login.prompt();
+}
+
+/**
+ * A keychain whose reads wait, once armed, until released: a sign-in's read of its home after its CLI
+ * exited stays pending while the test acts. Before arming it holds nothing.
+ */
+function heldKeychain() {
+  let armed = false;
+  const asked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const keychain: UsageContext["keychain"] = async () => {
+    if (!armed) return { status: "missing" };
+    asked.resolve();
+    await release.promise;
+    return { status: "missing" };
+  };
+  return { keychain, arm: () => { armed = true; }, asked: asked.promise, release: () => release.resolve() };
+}
+
+/** Resolves when a sign-in's PTY is next told to stop (a cancel, a lease or a deadline). */
+function nextKill() {
+  const killed = Promise.withResolvers<void>();
+  const original = PtySession.prototype.kill;
+  const spy = spyOn(PtySession.prototype, "kill").mockImplementation(function (this: PtySession) {
+    killed.resolve();
+    return original.call(this);
+  });
+  return { killed: killed.promise, restore: () => spy.mockRestore() };
 }
 
 it("re-authenticates the expired account in its own home and reports it signed in", async () => {
@@ -147,9 +190,72 @@ it("does not count an exit 0 that left the home's earlier sign-in as it was", as
   expect(result.succeeded).toBe(false);
 });
 
-it("does not count a CLI a signal ended, whose home still holds its earlier sign-in", async () => {
+it("does not count a CLI a signal ended, even after it wrote a new sign-in", async () => {
   const host = fixture().start();
-  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "kill");
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "write-kill");
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a CLI that wrote a new sign-in and then exited with an error", async () => {
+  const host = fixture().start();
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "write-fail");
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a new sign-in that has already expired", async () => {
+  const host = fixture().start();
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "write-expired");
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a sign-in cancelled while its home is read after the CLI exited", async () => {
+  const held = heldKeychain();
+  const host = fixture({ platform: "darwin", keychain: held.keychain }).start();
+  const login = await untilCode(host, { provider: "claude", account: "claude:work" });
+  held.arm();
+  const ended = host.login.settled(login.id);
+  expect((await login.post("code", { code: "success" })).status).toBe(204);
+  await held.asked;
+  const kill = nextKill();
+  try {
+    const cancelled = login.post("cancel");
+    await kill.killed;
+    held.release();
+    expect((await cancelled).status).toBe(204);
+  } finally { kill.restore(); }
+  await ended;
+  expect((await login.prompt()).succeeded).toBe(false);
+});
+
+it("does not count a sign-in whose deadline passed while its home is read after the CLI exited", async () => {
+  const held = heldKeychain();
+  const host = fixture({ platform: "darwin", keychain: held.keychain, timing: { leaseMs: 30_000, maxMs: 3_000 } }).start();
+  const login = await untilCode(host, { provider: "claude", account: "claude:work" });
+  held.arm();
+  const ended = host.login.settled(login.id);
+  const kill = nextKill();
+  try {
+    expect((await login.post("code", { code: "success" })).status).toBe(204);
+    await held.asked;
+    await kill.killed;
+    held.release();
+  } finally { kill.restore(); }
+  await ended;
+  expect((await login.prompt()).succeeded).toBe(false);
+}, 15_000);
+
+it("does not count a home whose earlier sign-in could not be read as newly signed in", async () => {
+  let locked = true;
+  const old = JSON.stringify({ claudeAiOauth: { accessToken: "fixture-work", expiresAt: 9_999_999_999_999, subscriptionType: "max" } });
+  const { root, start } = fixture({
+    platform: "darwin",
+    keychain: async (service) => service.startsWith("Claude Code-credentials-") && locked ? { status: "locked" } : service.startsWith("Claude Code-credentials-") ? { status: "found", value: old } : { status: "missing" },
+  });
+  // the sign-in lives in the keychain alone, as Claude Code keeps it on a Mac
+  rmSync(join(root, ".claude-work", ".credentials.json"));
+  const host = start();
+  // the keychain is locked until the CLI runs, then gives the same old sign-in
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", () => { locked = false; });
   expect(result.succeeded).toBe(false);
 });
 
@@ -183,4 +289,19 @@ it("does not credit a Codex home another sign-in wrote while this one failed", a
   writeFileSync(join(root, "codex-plan.json"), JSON.stringify({ write: [{ dir: join(root, ".codex-elsewhere"), email: "unrelated@example.test" }], exit: 0 }));
   const result = await completeCodexLogin(start(), { name: "team" });
   expect(result.succeeded).toBe(false);
+});
+
+it("tells a home whose credential file will not read from one that holds none", async () => {
+  const { root } = fixture();
+  const ctx: UsageContext = {
+    home: root, env: {}, platform: "linux", now: () => 1_000, fetch: async () => Response.json({}),
+    keychain: async () => ({ status: "missing" }), run: async () => null, has: () => false,
+  };
+  const dir = join(root, ".codex-damaged");
+  mkdirSync(dir);
+  expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBeNull();
+  writeFileSync(join(dir, "auth.json"), "{not json");
+  expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBe("unknown");
+  writeFileSync(join(dir, "auth.json"), "x".repeat(2 * 1024 * 1024));
+  expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBe("unknown");
 });

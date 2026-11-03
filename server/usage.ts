@@ -18,7 +18,7 @@
 
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1183,6 +1183,14 @@ export async function localSignInPlace(ctx: UsageContext, key: string): Promise<
   return null;
 }
 
+/** A credential file that is there but yields no sign-in: unreadable, too large, or not one the CLI wrote whole. */
+function unreadableCredential(path: string, parse: (source: string | null) => SignIn | null): boolean {
+  try { statSync(path); }
+  catch (error) { return !(error instanceof Error && "code" in error && error.code === "ENOENT"); }
+  const text = readText(path);
+  return text === null || parse(text) === null;
+}
+
 /** A followed sign-in's home as its CLI left it: the account as the list keys and names it, never a token or a path. */
 export interface HomeSignIn {
   readonly key: string;
@@ -1195,17 +1203,25 @@ export interface HomeSignIn {
 /**
  * The sign-in a Claude or Codex CLI keeps in `home`, read from there alone as that CLI writes it, never
  * refreshed: Claude's default home or directory, each with its keychain item; Codex's default home
- * (~/.codex, or its keychain item when that has no auth.json) or directory. Null when it holds none
- * this session can read. Other homes are not looked at: their sign-ins are no login's into this one.
+ * (~/.codex, or its keychain item when that has no auth.json) or directory. Null when it holds none;
+ * "unknown" when what it holds cannot be read (a locked keychain item, a credential file that will not
+ * read, is too large or holds no sign-in), so it can be told from neither none nor another sign-in.
+ * Other homes are not looked at: their sign-ins are no login's into this one.
  */
-export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | null> {
+export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | "unknown" | null> {
   let found: Found[];
-  if (provider === "claude") found = await claudeFound(ctx, claudeHome(ctx, home));
-  else if (home.kind === "dir") found = codexFileFound(home.dir);
-  else {
-    found = codexFileFound(join(ctx.home, ".codex"));
-    if (found.length === 0) found = await codexKeychainFound(ctx);
+  let file: string;
+  if (provider === "claude") {
+    const claudeAt = claudeHome(ctx, home);
+    file = join(claudeAt.dir, ".credentials.json");
+    found = await claudeFound(ctx, claudeAt);
+  } else {
+    const dir = home.kind === "dir" ? home.dir : join(ctx.home, ".codex");
+    file = join(dir, "auth.json");
+    found = codexFileFound(dir);
+    if (home.kind === "default" && found.length === 0) found = await codexKeychainFound(ctx);
   }
+  if (found.some((entry) => "locked" in entry) || unreadableCredential(file, provider === "claude" ? claudeSignIn : codexSignIn)) return "unknown";
   const signIn = found.find((entry): entry is Found & SignIn => !("locked" in entry));
   if (signIn === undefined) return null;
   return {

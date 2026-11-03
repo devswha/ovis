@@ -90,6 +90,8 @@ interface PrivateLogin {
   readonly secret: string;
   /** the browser stopped it: a home it made stays for that account's terminal sign-in, whatever the CLI wrote */
   cancelled: boolean;
+  /** its lease or deadline stopped it: whatever its CLI wrote, it did not sign in */
+  expired: boolean;
   /** its lock id in the shared file (PrivateHolder.launch) */
   readonly lock: string;
   /** settles once the CLI has exited and its home is free */
@@ -170,11 +172,11 @@ export class UsageLoginService {
     const secret = Buffer.from(login.secret);
     return sent.length === secret.length && timingSafeEqual(sent, secret) ? login : undefined;
   }
-  private readonly endedListeners: ((account: string | null) => void)[] = [];
+  private readonly endedListeners: (() => void)[] = [];
   private stopped = false;
 
   /** Called once a followed sign-in's CLI exits: the usage it may have changed is read again. */
-  onLoginEnded(listener: (account: string | null) => void): void { this.endedListeners.push(listener); }
+  onLoginEnded(listener: () => void): void { this.endedListeners.push(listener); }
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
    * one home race each other's tokens. By home, the login or launch of this server holding it.
@@ -273,12 +275,15 @@ export class UsageLoginService {
       const login = this.privates.get(id);
       if (login === undefined || login.ended) return;
       login.output = "";
+      let account: LoginAccount | null = null;
       try {
-        if (login.exitCode === 0 && !login.cancelled) login.signedIn = await loginAccount(this.context, login.target, login.before);
+        if (login.exitCode === 0 && !login.cancelled && !login.expired) account = await loginAccount(this.context, login.target, login.before);
       } catch {
         // Credential readers may fail; never put their contents in an error or leave the login held.
         console.warn("Could not identify the account after its sign-in");
       }
+      // stopped (by its browser, its lease or its deadline) while that read ran: it ended without signing in
+      login.signedIn = login.cancelled || login.expired ? null : account;
       liveLocks.delete(login.lock);
       // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
       if (login.madeHome !== null) {
@@ -291,7 +296,7 @@ export class UsageLoginService {
         }
       }
       for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
-      for (const listener of this.endedListeners) listener(login.signedIn?.key ?? null);
+      for (const listener of this.endedListeners) listener();
       login.ended = true;
       login.changed.resolve();
       const ended = [...this.privates].filter(([, entry]) => entry.ended);
@@ -604,14 +609,15 @@ export class UsageLoginService {
         const secret = randomUUID();
         this.privates.set(loginId, {
           provider: target.provider, target, before,
-          exitCode: null, signedIn: null, owner, secret, cancelled: false, lock, done,
+          exitCode: null, signedIn: null, owner, secret, cancelled: false, expired: false, lock, done,
           changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false,
         });
         unusedCredentialHome = null;
         reserved = null;
         // a start whose answer never reached its browser (the dialog closed meanwhile) leaves no one to end it
-        const lease = setTimeout(() => { const login = this.privates.get(loginId); if (login !== undefined && !login.read && !login.ended) proc.kill(); }, this.timing.leaseMs);
-        const deadline = setTimeout(() => proc.kill(), this.timing.maxMs);
+        const expire = () => { const login = this.privates.get(loginId); if (login !== undefined && !login.ended) login.expired = true; proc.kill(); };
+        const lease = setTimeout(() => { const login = this.privates.get(loginId); if (login !== undefined && !login.read && !login.ended) expire(); }, this.timing.leaseMs);
+        const deadline = setTimeout(expire, this.timing.maxMs);
         void done.then(() => { clearTimeout(lease); clearTimeout(deadline); });
         // the browser that asked has gone: it would never see or end this sign-in
         if (request.signal.aborted) { proc.kill(); return conflictResponse("request_cancelled", "The sign-in request was cancelled"); }
