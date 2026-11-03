@@ -2,7 +2,8 @@ import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
-import { findHc, type FoundHc } from "./discovery.ts";
+import { existsSync } from "node:fs";
+import { discoverHc, findHc, lastFoundHc, type FoundHc } from "./discovery.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
@@ -21,8 +22,17 @@ export function runtime(): Runtime {
 /** the hc startRuntime found (server/herdr-core/discovery.ts); null before it ran */
 let found: string | null = null;
 
-/** The `hc` to run: the one startRuntime found as the Herdr app finds it; before that, OVIS_HC_BIN, else `hc` on the PATH. */
+/**
+ * The `hc` to run: the one startRuntime found as the Herdr app finds it; before that, OVIS_HC_BIN,
+ * else `hc` on the PATH. When an update moved the one found, the next look's answer takes its place
+ * (a look starts here, and the call after it ends runs the new one).
+ */
 export function hcBin(): string {
+  if (found !== null && !existsSync(found)) {
+    const latest = lastFoundHc();
+    if (latest !== null && latest !== found) found = latest;
+    else void discoverHc();
+  }
   return found ?? (process.env["OVIS_HC_BIN"] || "hc");
 }
 

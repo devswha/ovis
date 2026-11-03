@@ -772,9 +772,10 @@ starts a core when none runs. When no candidate answers, Ovis does not start and
 looked, rather than run an `hc` that may not be herdr-core's.
 
 **Settings → About → Terminals** says which runtime this PC serves. On herdr's TUI, when it finds
-the Herdr app's core on the same PC, it says so and how to switch: add `OVIS_RUNTIME=herdr-core`
-to the `.env` file in the folder `herdr plugin config-dir devswha.ovis` prints, then restart
-Ovis. Only a device that drives this PC is told this, never a watching one or a stranger
+the Herdr app's core on the same PC, it says so and how to switch: set `OVIS_RUNTIME=herdr-core` and restart
+Ovis. When herdr's plugin starts Ovis, that goes in the `.env` file in the folder
+`herdr plugin config-dir devswha.ovis` prints; started another way (`bun run start`, a service),
+it goes in that environment. Only a device that drives this PC is told this, never a watching one or a stranger
 on an open install; and the look behind it skips the login shell, whose profile could run any
 command, so it never starts a core on a PC that did not choose herdr-core. Whether the core runs is read from its socket file (`HC_SOCKET`, `socket` in hc's
 `config.toml`, else `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core/`; `HC_SESSION` names the

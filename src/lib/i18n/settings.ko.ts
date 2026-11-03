@@ -351,11 +351,11 @@ export const SETTINGS_KO: Record<string, string> = {
   "Ovis relay: {state}": "Ovis 릴레이: {state}",
   "Terminals": "터미널",
   "This PC serves": "이 PC가 보여 주는 것",
-  "The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here instead, add {setting} to the .env file in the folder {command} prints, then restart Ovis.": "이 PC에서 Herdr 앱의 코어(hc {version})도 실행 중입니다. 대신 그 터미널을 여기서 보려면 {command}가 알려 주는 폴더의 .env 파일에 {setting}을 추가하고 Ovis를 다시 시작하세요.",
-  "The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here instead, add {setting} to the .env file in the folder {command} prints, then restart Ovis.": "이 PC에는 Herdr 앱의 코어(hc {version})도 설치되어 있습니다. 대신 그 터미널을 여기서 보려면 {command}가 알려 주는 폴더의 .env 파일에 {setting}을 추가하고 Ovis를 다시 시작하세요.",
   "Herdr app": "Herdr 앱",
   "herdr TUI": "herdr (TUI)",
   "Version {version}.": "버전 {version}.",
   "herdr-core {version}, session {session}.": "herdr-core {version}, 세션 {session}.",
   "herdr-core {version}.": "herdr-core {version} 사용 중.",
+  "The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.": "이 PC에서 Herdr 앱의 코어(hc {version})도 실행 중입니다. 대신 그 터미널을 여기서 보려면 {setting}을 설정하고 Ovis를 다시 시작하세요. herdr 플러그인이 Ovis를 시작한다면 {command}가 알려 주는 폴더의 .env 파일에, 다른 방법으로 시작한다면 그 실행 환경에 설정합니다.",
+  "The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.": "이 PC에는 Herdr 앱의 코어(hc {version})도 설치되어 있습니다. 대신 그 터미널을 여기서 보려면 {setting}을 설정하고 Ovis를 다시 시작하세요. herdr 플러그인이 Ovis를 시작한다면 {command}가 알려 주는 폴더의 .env 파일에, 다른 방법으로 시작한다면 그 실행 환경에 설정합니다.",
 };

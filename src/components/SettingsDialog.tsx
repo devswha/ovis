@@ -1057,8 +1057,8 @@ function RuntimeFacts({ version, runtime, core }: { version: string | null; runt
     : t("herdr-core {version}.", { version });
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = onCore || !core?.version ? null
-    : core.running ? t("The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here instead, add {setting} to the .env file in the folder {command} prints, then restart Ovis.", vars)
-    : t("The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here instead, add {setting} to the .env file in the folder {command} prints, then restart Ovis.", vars);
+    : core.running ? t("The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.", vars)
+    : t("The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.", vars);
   return (
     <SettingsGroup title={t("Terminals")} section="runtime">
       <SettingsRow label={t("This PC serves")} description={detail}>

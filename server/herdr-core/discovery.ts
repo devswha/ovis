@@ -7,9 +7,10 @@
  * uses herdr's TUI. So a candidate is only ever asked `--version`, and the core counts as running
  * when its socket file is there: nothing connects to it.
  */
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
+import { readHerdrConfig } from "../herdr-sidebar.ts";
 import { loginPathProbe, loginShell } from "../shell-agent.ts";
 import { userHome } from "../user-home.ts";
 
@@ -207,12 +208,10 @@ function runtimeDir(env: Env, options: CoreSocketOptions): string | null {
 
 /** `socket` in hc's config.toml, when it sets one */
 function configuredSocket(config: string): string | null {
-  try {
-    const socket = (Bun.TOML.parse(readFileSync(config, "utf8")) as Record<string, unknown>)["socket"];
-    return typeof socket === "string" && socket !== "" ? socket : null;
-  } catch {
-    return null;
-  }
+  // read as herdr's own config is: a regular file of a config's size, never a FIFO a health poll would block on
+  const parsed = readHerdrConfig(config);
+  const socket = parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>)["socket"] : undefined;
+  return typeof socket === "string" && socket !== "" ? socket : null;
 }
 
 function exists(path: string): boolean {
@@ -235,6 +234,12 @@ export function discoverHc(options: Omit<FindHcOptions, "loginShellPath"> = {}):
     return hc;
   }).finally(() => { finding = null; });
   return finding;
+}
+
+/** the hc the last look found, when it is still there */
+export function lastFoundHc(): string | null {
+  const bin = found?.hc?.bin ?? null;
+  return bin !== null && isFile(bin) ? bin : null;
 }
 
 /**

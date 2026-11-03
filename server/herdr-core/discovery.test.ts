@@ -183,3 +183,11 @@ it.skipIf(!unix)("answers the hc it found as an absolute path, whatever folder t
   expect(found?.bin).toBe(join(root, "bin", "hc"));
   expect(isAbsolute(found!.bin)).toBe(true);
 });
+
+it("takes no socket from a config.toml too big to be a config, so a health poll never reads it whole", () => {
+  const { root } = scratch();
+  const config = join(root, "config");
+  mkdirSync(join(config, "herdr-core"), { recursive: true });
+  writeFileSync(join(config, "herdr-core", "config.toml"), `socket = "${join(root, "configured.sock")}"\n# ${"x".repeat(2 * 1024 * 1024)}\n`);
+  expect(coreSocket({ env: { XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(root, "run") }, home: root, platform: "linux", userRuntimeDir: null }).path).toBe(join(root, "run", "herdr-core", "default.sock"));
+});

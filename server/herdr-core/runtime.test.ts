@@ -2,7 +2,7 @@ import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findHc } from "./discovery.ts";
+import { discoverHc, findHc } from "./discovery.ts";
 import { hcBin, startRuntime } from "./runtime.ts";
 
 /** an hc stand-in found, so no test looks at the developer's own PATH, shell or hc */
@@ -44,6 +44,31 @@ it.skipIf(platform === "win32")("runs the hc it found, not an unrelated one name
   if (!adapter) throw new Error("runtime did not start");
   try {
     expect(hcBin()).toBe(core);
+  } finally {
+    adapter.stop();
+  }
+});
+
+it.skipIf(platform === "win32")("finds hc again when the one it runs was moved, as an update can", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-moved-"));
+  cleanup = () => rmSync(dir, { recursive: true, force: true });
+  const write = (folder: string) => {
+    mkdirSync(join(dir, folder), { recursive: true });
+    writeFileSync(join(dir, folder, "herdr-core"), "#!/bin/sh\nprintf 'hc 0.1.18\\n'\n", { mode: 0o755 });
+    return join(dir, folder, "herdr-core");
+  };
+  const old = write("old");
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  delete process.env["OVIS_HC_BIN"];
+  const adapter = await startRuntime(join(dir, "state"), async () => ({ bin: old, version: "0.1.17" }));
+  if (!adapter) throw new Error("runtime did not start");
+  try {
+    rmSync(old);
+    const moved = write("new");
+    process.env["PATH"] = join(dir, "new");
+    hcBin();
+    await discoverHc();
+    expect(hcBin()).toBe(moved);
   } finally {
     adapter.stop();
   }
