@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
-import { discoverHc, type FoundHc } from "./discovery.ts";
+import { findHc, type FoundHc } from "./discovery.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
@@ -46,7 +46,7 @@ export function coreConnection(): HcConnection {
  * herdr, nothing. Another Ovis still serving the same state folder is an error, and so is a PC
  * where no hc answers as herdr-core's: nothing is started, and nothing else is run as hc.
  */
-export async function startRuntime(stateDir: string, find: () => Promise<FoundHc | null> = discoverHc): Promise<HerdrCoreAdapter | null> {
+export async function startRuntime(stateDir: string, find: () => Promise<FoundHc | null> = () => findHc()): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error("OVIS_RUNTIME=herdr-core is Linux/macOS only: no Windows named pipe support yet");

@@ -2,7 +2,8 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { coreSocket, findHc, plainSession } from "./discovery.ts";
+import { isAbsolute, relative } from "node:path";
+import { coreSocket, discoverHc, findHc, plainSession } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -165,4 +166,20 @@ it("tells a session only when it is a plain name, as hc takes one", () => {
   expect(plainSession("default")).toBe("default");
   expect(plainSession("work.2_a-b")).toBe("work.2_a-b");
   for (const name of ["/home/someone/private", "a\\b", "..", ".", "a b", ""]) expect(plainSession(name)).toBeNull();
+});
+
+it.skipIf(!unix)("looks for the Settings facts without running the login shell: its profile could start a core", async () => {
+  const { root, log } = scratch();
+  const shell = script(join(root, "shell"), "sh", "printf 'login\\n' >> '" + join(root, "shell.log") + "'", log);
+  const core = fake(join(root, "bin"), "herdr-core", "hc 0.1.17", log);
+  expect(await discoverHc({ env: { SHELL: shell, PATH: join(root, "empty") }, home: root, usualDirs: [join(root, "bin")] })).toEqual({ bin: core, version: "0.1.17" });
+  expect(runs(join(root, "shell.log"))).toEqual([]);
+});
+
+it.skipIf(!unix)("answers the hc it found as an absolute path, whatever folder the server runs in", async () => {
+  const { root, log } = scratch();
+  fake(join(root, "bin"), "hc", "hc 0.1.17", log);
+  const found = await findHc({ env: { PATH: relative(process.cwd(), join(root, "bin")) }, home: root, loginShellPath: async () => null, usualDirs: [] });
+  expect(found?.bin).toBe(join(root, "bin", "hc"));
+  expect(isAbsolute(found!.bin)).toBe(true);
 });

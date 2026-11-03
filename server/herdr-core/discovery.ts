@@ -8,7 +8,7 @@
  * when its socket file is there: nothing connects to it.
  */
 import { readFileSync, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
 import { loginPathProbe, loginShell } from "../shell-agent.ts";
 import { userHome } from "../user-home.ts";
@@ -62,7 +62,8 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
       seen.add(candidate);
       if (!isFile(candidate)) continue;
       const version = await hcVersion(candidate, env, options.timeoutMs ?? PROBE_TIMEOUT_MS);
-      if (version !== null) return { bin: candidate, version };
+      // absolute: a terminal attach runs it from another folder (server/core/terminal-process.ts)
+      if (version !== null) return { bin: resolve(candidate), version };
     }
     return null;
   };
@@ -223,9 +224,13 @@ const FIND_TTL_MS = 5 * 60_000;
 let found: { at: number; hc: FoundHc | null } | null = null;
 let finding: Promise<FoundHc | null> | null = null;
 
-/** Looks for hc again (one look at a time) and keeps the answer for herdrCoreFacts. */
-export function discoverHc(): Promise<FoundHc | null> {
-  finding ??= findHc().then((hc) => {
+/**
+ * Looks for hc again for Settings (one look at a time) and keeps the answer for herdrCoreFacts.
+ * It never runs the login shell: its profile could run any command, `hc connect` included, from a
+ * health request on a PC that never chose herdr-core. Only startRuntime looks there (findHc).
+ */
+export function discoverHc(options: Omit<FindHcOptions, "loginShellPath"> = {}): Promise<FoundHc | null> {
+  finding ??= findHc({ ...options, loginShellPath: async () => null }).then((hc) => {
     found = { at: Date.now(), hc };
     return hc;
   }).finally(() => { finding = null; });

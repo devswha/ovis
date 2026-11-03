@@ -5737,6 +5737,28 @@ describe("access facts on /api/health", () => {
     } finally { secured.stop(); }
   });
 
+  it("tells herdr-core's facts to a driving owner only: not a watching device, nor a caller on an open install", async () => {
+    let token = "";
+    const secured = serve({ token: SECRET, seed: (stateDir) => {
+      const store = new DeviceStore(stateDir);
+      token = store.pair(store.startPairing().code, "Watch", "watch")!.token;
+      store.match(token);
+    } });
+    try {
+      const watching = await secured.read({ cookie: `ovis_device=${token}`, "x-forwarded-for": "192.168.0.20" });
+      expect(watching.body.auth).toMatchObject({ authenticated: true, role: "watch" });
+      expect(watching.body.herdr_core).toBeUndefined();
+      expect((await secured.read({ authorization: `Bearer ${SECRET}` })).body.herdr_core).toEqual(CORE_FACTS);
+    } finally { secured.stop(); }
+    const open = serve({ hostname: "0.0.0.0" });
+    try {
+      const stranger = await open.read({ "x-forwarded-for": "192.168.0.20" });
+      expect(stranger.body.auth).toMatchObject({ authenticated: true, via: "open" });
+      expect(stranger.body.herdr_core).toBeUndefined();
+      expect((await open.read({})).body.herdr_core).toEqual(CORE_FACTS);
+    } finally { open.stop(); }
+  });
+
   it("watch can read but not change access", async () => {
     let token = "";
     const secured = serve({ token: SECRET, seed: (stateDir) => {
