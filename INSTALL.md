@@ -62,12 +62,13 @@ the question, and do not star the repository for the user.
 
 On a Linux or macOS PC that has herdr-core (`hc`, the core the Herdr desktop app runs on) and no herdr,
 C installs neither herdr nor the plugin. It installs Bun when missing, puts Ovis in its own checkout
-(`~/.local/share/ovis/app`, built as herdr builds the plugin), writes `OVIS_RUNTIME=herdr-core` to
-`~/.config/ovis/env`, and starts it with `bun ~/.local/share/ovis/app/scripts/plugin.ts start` from a
+(`~/.local/share/ovis/app`, built as herdr builds the plugin), writes `OVIS_RUNTIME=herdr-core` and
+the hc it found (`OVIS_HC_BIN`) to `~/.config/ovis/env`, and starts it with `bun ~/.local/share/ovis/app/scripts/plugin.ts start` from a
 user service that starts it again at login: `ovis.service` (`systemctl --user`) on Linux, the
 `sh.ovis.server` LaunchAgent on macOS. Without systemd it starts Ovis once and says how to start it
 again. `OVIS_RUNTIME=herdr` or `OVIS_RUNTIME=herdr-core` before `sh` picks the runtime instead.
-Updates work as for the plugin.
+Where the herdr plugin already runs Ovis, it does not add a second one: it says to set
+`OVIS_RUNTIME=herdr-core` in the plugin's own settings instead. Updates work as for the plugin.
 
 On Windows x64, use `irm https://ovis.sh/install.ps1 | iex` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.

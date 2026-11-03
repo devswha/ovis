@@ -18,12 +18,12 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const CONSTANTS = ["APP_DIR", "SERVICE", "AGENT_LABEL"].map((name) => {
+const CONSTANTS = ["PLUGIN", "LEGACY_PLUGIN", "APP_DIR", "SERVICE", "AGENT_LABEL"].map((name) => {
   const line = new RegExp(`^${name}=.*$`, "m").exec(INSTALLER)?.[0];
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "fail", "kill_tree", "bounded", "find_core", "pick_runtime", "core_settings", "core_service"].map(fn).join("\n");
+const FUNCTIONS = ["say", "fail", "kill_tree", "bounded", "is_core", "find_core", "pick_runtime", "core_settings", "xml_text", "unit_text", "core_service"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-core-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -34,7 +34,7 @@ function pc(tools: Record<string, string> = {}): { home: string; bin: string; en
   const bin = join(home, "tools");
   mkdirSync(bin);
   for (const [name, body] of Object.entries(tools)) writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-  return { home, bin, env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, OVIS_RUNTIME: "", XDG_CONFIG_HOME: "" } };
+  return { home, bin, env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, OVIS_RUNTIME: "", XDG_CONFIG_HOME: "", OVIS_HC_BIN: "", HC_SESSION: "", HC_SOCKET: "" } };
 }
 
 /** runs `call` after install.sh's constants and functions under /bin/sh with `set -eu`, as the script runs */
@@ -67,6 +67,21 @@ describe("find_core", () => {
     const { bin, env } = pc({ hc: CORE });
     expect(sh(`find_core && echo "CORE $core"`, env).out).toContain(`CORE ${bin}/hc`);
   });
+
+  it("passes over one that says `hc <version>` but fails", () => {
+    expect(sh(`find_core || echo NONE`, pc({ hc: `echo "hc 0.1.17"; exit 1` }).env).out).toContain("NONE");
+  });
+
+  it("takes OVIS_HC_BIN first, and looks where cargo puts it when the PATH has none", () => {
+    const { home, env } = pc({ hc: CORE });
+    const own = join(home, "own-hc");
+    writeFileSync(own, `#!/bin/sh\n${CORE}\n`, { mode: 0o755 });
+    expect(sh(`find_core && echo "CORE $core"`, { ...env, OVIS_HC_BIN: own }).out).toContain(`CORE ${own}`);
+    const cargo = pc();
+    mkdirSync(join(cargo.home, ".cargo", "bin"), { recursive: true });
+    writeFileSync(join(cargo.home, ".cargo", "bin", "herdr-core"), `#!/bin/sh\n${CORE}\n`, { mode: 0o755 });
+    expect(sh(`find_core && echo "CORE $core"`, cargo.env).out).toContain(`CORE ${cargo.home}/.cargo/bin/herdr-core`);
+  });
 });
 
 describe("pick_runtime", () => {
@@ -86,6 +101,23 @@ describe("pick_runtime", () => {
     const { home, env } = pc({ "herdr-core": CORE, herdr: "echo herdr 0.9.5" });
     mkdirSync(join(home, ".local", "share", "ovis", "app", ".git"), { recursive: true });
     expect(pick(env).out).toContain("RUNTIME herdr-core");
+  });
+
+  it("does not move an earlier install on herdr-core to herdr when hc does not answer this time", () => {
+    const { home, env } = pc({ herdr: "echo herdr 0.9.5" });
+    mkdirSync(join(home, ".local", "share", "ovis", "app", ".git"), { recursive: true });
+    const result = pick(env);
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("no herdr-core (hc) answers");
+    expect(result.out).not.toContain("RUNTIME herdr");
+  });
+
+  it("refuses herdr-core where the herdr plugin already runs Ovis, and says where its runtime is set", () => {
+    const plugin = `[ "$1 $2" = "plugin list" ] && echo "- devswha.ovis (Ovis) enabled [github:devswha/ovis@v0.4.22]"; exit 0`;
+    const result = pick({ ...pc({ "herdr-core": CORE, herdr: plugin }).env, OVIS_RUNTIME: "herdr-core" });
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("already runs here as a herdr plugin");
+    expect(result.out).toContain("herdr plugin config-dir devswha.ovis");
   });
 
   it("follows OVIS_RUNTIME, and fails on herdr-core without one or on a runtime it does not know", () => {
@@ -109,17 +141,46 @@ describe("core_settings", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  it("keeps a file's own lines, ends its last one first, and leaves a runtime it names alone", () => {
+  it("keeps a file's own lines and ends its last one first", () => {
     const { home, env } = pc();
     const config = join(home, ".config", "ovis");
     mkdirSync(config, { recursive: true });
     writeFileSync(join(config, "env"), "OVIS_TOKEN=secret", { mode: 0o600 });
     sh("core_settings", env);
     expect(readFileSync(join(config, "env"), "utf8")).toBe("OVIS_TOKEN=secret\nOVIS_RUNTIME=herdr-core\n");
-    writeFileSync(join(config, "env"), "PORT=7400\n");
-    writeFileSync(join(config, ".env"), "OVIS_RUNTIME=herdr\n");
-    sh("core_settings", env);
-    expect(readFileSync(join(config, "env"), "utf8")).toBe("PORT=7400\n");
+  });
+
+  it("replaces a runtime either file named, keeping the file's mode, and says so", () => {
+    const { home, env } = pc();
+    const config = join(home, ".config", "ovis");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(join(config, "env"), "PORT=7400\nOVIS_RUNTIME=herdr-core\n", { mode: 0o600 });
+    writeFileSync(join(config, ".env"), "OVIS_TOKEN=secret\nOVIS_RUNTIME=herdr\n", { mode: 0o600 });
+    const result = sh("core_settings", env);
+    expect(result.out).toContain(".env named another runtime");
+    expect(readFileSync(join(config, "env"), "utf8")).toBe("PORT=7400\nOVIS_RUNTIME=herdr-core\n");
+    expect(readFileSync(join(config, ".env"), "utf8")).toBe("OVIS_TOKEN=secret\n");
+    expect(statSync(join(config, ".env")).mode & 0o777).toBe(0o600);
+    expect(sh("core_settings", env).out).not.toContain("another runtime");
+  });
+
+  it("records the hc found, unless OVIS_HC_BIN or a file names one", () => {
+    const { home, env } = pc();
+    const file = join(home, ".config", "ovis", "env");
+    sh("core=/opt/hc/herdr-core; core_settings", env);
+    expect(readFileSync(file, "utf8")).toBe("OVIS_RUNTIME=herdr-core\nOVIS_HC_BIN=/opt/hc/herdr-core\n");
+    sh("core=/elsewhere/hc; core_settings", env);
+    expect(readFileSync(file, "utf8")).toContain("OVIS_HC_BIN=/opt/hc/herdr-core\n");
+    expect(readFileSync(file, "utf8")).not.toContain("/elsewhere");
+  });
+
+  it("keeps the hc session the installer ran with, unless a file names one", () => {
+    const { home, env } = pc();
+    sh("core_settings", { ...env, HC_SESSION: "work", HC_SOCKET: "/run/hc/work.sock" });
+    expect(readFileSync(join(home, ".config", "ovis", "env"), "utf8")).toBe("OVIS_RUNTIME=herdr-core\nHC_SESSION=work\nHC_SOCKET=/run/hc/work.sock\n");
+    sh("core_settings", { ...env, HC_SESSION: "other" });
+    expect(readFileSync(join(home, ".config", "ovis", "env"), "utf8")).toContain("HC_SESSION=work\n");
+    expect(readFileSync(join(home, ".config", "ovis", "env"), "utf8")).not.toContain("other");
   });
 
   it("writes to the settings dir from before the rename while only that one exists", () => {
@@ -138,38 +199,53 @@ describe("core_service", () => {
 
   it("on Linux, registers ovis.service that runs plugin.ts start and stop, enabled and started now", () => {
     const { home, bin, env } = pc({ bun, systemctl: recorder("systemctl"), loginctl: recorder("loginctl", "echo Linger=no") });
-    const result = sh("os=linux; core_service", env);
+    const result = sh("os=linux; core_settings; core_service", env);
     const unit = readFileSync(join(home, ".config", "systemd", "user", "ovis.service"), "utf8");
     const app = join(home, ".local", "share", "ovis", "app");
     expect(unit).toContain("Type=oneshot\nRemainAfterExit=yes\n");
     expect(unit).toContain(`ExecStart="${bin}/bun" "${app}/scripts/plugin.ts" start\n`);
     expect(unit).toContain(`ExecStop="${bin}/bun" "${app}/scripts/plugin.ts" stop\n`);
     expect(unit).toContain(`Environment="PATH=${env["PATH"]}"\n`);
+    expect(unit).toContain(`Environment="HERDR_PLUGIN_CONFIG_DIR=${home}/.config/ovis"\nEnvironment="HERDR_PLUGIN_STATE_DIR=${home}/.local/state/ovis"\n`);
     expect(unit).toContain("WantedBy=default.target");
     expect(readFileSync(join(home, "calls"), "utf8")).toContain("systemctl --user enable --now ovis.service");
     expect(result.out).toContain("starts at login (systemd");
     expect(result.out).toContain("loginctl enable-linger");
   });
 
+  it("escapes what systemd and launchd would read as their own syntax", () => {
+    const linux = pc({ bun, systemctl: "exit 0" });
+    const odd = `${linux.env["PATH"]}:/opt/50% "tools" \\x & $HOME`;
+    sh("os=linux; core_settings; core_service", { ...linux.env, PATH: odd });
+    const unit = readFileSync(join(linux.home, ".config", "systemd", "user", "ovis.service"), "utf8");
+    expect(unit).toContain(`:/opt/50%% \\"tools\\" \\\\x & $HOME"\n`);
+    const mac = pc({ bun, launchctl: "exit 0", id: "echo 501" });
+    sh("os=darwin; core_settings; core_service", { ...mac.env, PATH: `${mac.env["PATH"]}:/Users/me/tools & <utilities>` });
+    const plist = readFileSync(join(mac.home, "Library", "LaunchAgents", "sh.ovis.server.plist"), "utf8");
+    expect(plist).toContain(":/Users/me/tools &amp; &lt;utilities&gt;</string>");
+  });
+
   it("says how to start the app where there is no user systemd, or it refuses the unit", () => {
     const none = pc({ bun });
-    const without = sh("os=linux; core_service", none.env);
+    const without = sh("os=linux; core_settings; core_service", none.env);
     expect(without.code).toBe(0);
     expect(without.out).toContain("no user service manager");
     expect(existsSync(join(none.home, ".config", "systemd"))).toBe(false);
     const refusing = pc({ bun, systemctl: `[ "$2" = show-environment ] && exit 0; exit 1` });
-    const refused = sh("os=linux; core_service", refusing.env);
+    const refused = sh("os=linux; core_settings; core_service", refusing.env);
     expect(refused.code).toBe(0);
     expect(refused.out).toContain("systemd did not take");
   });
 
   it("on macOS, loads a LaunchAgent that runs plugin.ts start at load and leaves the server it starts running", () => {
     const { home, bin, env } = pc({ bun, launchctl: recorder("launchctl"), id: `[ "$1" = -u ] && echo 501` });
-    const result = sh("os=darwin; core_service", env);
+    const result = sh("os=darwin; core_settings; core_service", env);
     const agent = join(home, "Library", "LaunchAgents", "sh.ovis.server.plist");
     const plist = readFileSync(agent, "utf8");
     expect(plist).toContain(`<array><string>${bin}/bun</string><string>${home}/.local/share/ovis/app/scripts/plugin.ts</string><string>start</string></array>`);
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
+    expect(plist).toContain(`<key>HERDR_PLUGIN_CONFIG_DIR</key><string>${home}/.config/ovis</string>`);
+    expect(plist).toContain(`<key>HERDR_PLUGIN_STATE_DIR</key><string>${home}/.local/state/ovis</string>`);
     expect(plist).toContain("<key>AbandonProcessGroup</key><true/>");
     expect(readFileSync(join(home, "calls"), "utf8")).toBe(`launchctl bootout gui/501/sh.ovis.server\nlaunchctl bootstrap gui/501 ${agent}\n`);
     expect(result.out).toContain("starts at login (launchd");

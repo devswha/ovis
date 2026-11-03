@@ -370,64 +370,115 @@ running_code() {
   ' "$1" "$state" "$head"
 }
 
-# The herdr-core (hc) on this PC, in $core: herdr-core or hc on the PATH, then where Homebrew puts it.
-# Only `--version` is run, and only one that answers `hc <version>` counts: any other hc command starts
-# a core, and other programs are called hc too.
+# Whether $1 is herdr-core: it exits 0 from `--version` within 5 s and its first line is `hc <version>`.
+# Only `--version` is run: any other hc command starts a core, and other programs are called hc too.
+is_core() {
+  [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+  # into a file for the same reason as server_arch's
+  core_file=$(mktemp 2>/dev/null) || return 1
+  core_status=0
+  bounded 5 "$1" --version </dev/null >"$core_file" 2>/dev/null || core_status=$?
+  core_answer=$(sed -n '1s/^hc [0-9][0-9]*\.[0-9][0-9.]*.*/yes/p' "$core_file" 2>/dev/null || true)
+  rm -f "$core_file"
+  [ "$core_status" = 0 ] && [ "$core_answer" = yes ]
+}
+
+# The herdr-core (hc) on this PC, in $core, looked for as the server looks (server/herdr-core/discovery.ts):
+# OVIS_HC_BIN, the PATH, then the usual install places, herdr-core before hc in each.
 find_core() {
   core=""
-  for core_candidate in "$(command -v herdr-core 2>/dev/null || true)" "$(command -v hc 2>/dev/null || true)" /opt/homebrew/bin/herdr-core /usr/local/bin/herdr-core; do
-    [ -n "$core_candidate" ] && [ -x "$core_candidate" ] || continue
-    # into a file for the same reason as server_arch's
-    core_file=$(mktemp 2>/dev/null) || return 1
-    bounded 5 "$core_candidate" --version </dev/null >"$core_file" 2>/dev/null || true
-    core_answer=$(sed -n '1s/^hc [0-9][0-9.]*.*/yes/p' "$core_file" 2>/dev/null || true)
-    rm -f "$core_file"
-    [ "$core_answer" = yes ] || continue
-    core=$core_candidate
-    return 0
+  for core_candidate in "${OVIS_HC_BIN:-}" "$(command -v herdr-core 2>/dev/null || true)" "$(command -v hc 2>/dev/null || true)"; do
+    if is_core "$core_candidate"; then core=$core_candidate; return 0; fi
+  done
+  for core_dir in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin "$HOME/.local/share/mise/shims" "$HOME/.nix-profile/bin" "$HOME/.cargo/bin"; do
+    for core_name in herdr-core hc; do
+      if is_core "$core_dir/$core_name"; then core="$core_dir/$core_name"; return 0; fi
+    done
   done
   return 1
 }
 
 # The runtime to install for, in $runtime: OVIS_RUNTIME when set; else herdr-core where an earlier run
-# installed for it, or where there is no herdr but herdr-core answers; else herdr, installed if missing.
+# installed Ovis on it, or where there is no herdr but herdr-core answers; else herdr, installed if
+# missing. herdr-core needs an hc that answers, and no herdr plugin already running Ovis here: one
+# Ovis per PC, and the plugin's own settings are where it moves to herdr-core.
 pick_runtime() {
   case "${OVIS_RUNTIME:-}" in
     herdr) runtime=herdr; return 0 ;;
-    herdr-core)
-      find_core || fail "OVIS_RUNTIME=herdr-core, but no herdr-core (hc) answers on this PC. Install it (https://herdr.dev/core) and run this again."
-      runtime=herdr-core
-      return 0
+    herdr-core) runtime=herdr-core ;;
+    "")
+      if [ -d "$APP_DIR/.git" ]; then
+        runtime=herdr-core
+      elif ! command -v herdr >/dev/null 2>&1 && find_core; then
+        runtime=herdr-core
+      else
+        runtime=herdr
+        return 0
+      fi
       ;;
-    "") ;;
     *) fail "OVIS_RUNTIME=$OVIS_RUNTIME is not a runtime Ovis knows: use herdr or herdr-core" ;;
   esac
-  runtime=herdr
-  if [ -d "$APP_DIR/.git" ] || ! command -v herdr >/dev/null 2>&1; then
-    if find_core; then runtime=herdr-core; fi
+  [ -n "${core:-}" ] || find_core \
+    || fail "Ovis here runs on herdr-core (OVIS_RUNTIME, or the install in $APP_DIR), but no herdr-core (hc) answers on this PC. Install it (https://herdr.dev/core), or set OVIS_HC_BIN to it, and run this again."
+  if command -v herdr >/dev/null 2>&1 && herdr plugin list 2>/dev/null | grep -q -e "$PLUGIN " -e "$LEGACY_PLUGIN "; then
+    fail "Ovis already runs here as a herdr plugin. To show herdr-core's terminals with it, put OVIS_RUNTIME=herdr-core in the .env file in the folder 'herdr plugin config-dir $PLUGIN' prints and restart it (Stop and Start Ovis); or remove the plugin first (herdr plugin uninstall $PLUGIN)."
   fi
 }
 
-# OVIS_RUNTIME=herdr-core in the settings file scripts/plugin.ts reads where there is no herdr
-# (~/.config/ovis/env, or the one from before the rename), owner-only as the token in it needs; a
-# file that names a runtime already keeps it.
+# The settings file of Ovis on herdr-core (~/.config/ovis/env, or the one from before the rename), which
+# its service hands scripts/plugin.ts as HERDR_PLUGIN_CONFIG_DIR, so a herdr plugin's settings found
+# later are not read in its place; owner-only, as the token in it needs. It holds OVIS_RUNTIME=herdr-core,
+# in place of any runtime it or .env named, the hc found (OVIS_HC_BIN: a release before the server's own
+# search runs only that or `hc` on the PATH), and the hc session the installer ran with (HC_SESSION,
+# HC_SOCKET), which a service would not otherwise have. Also sets $state_dir, the record's dir.
 core_settings() {
   settings_dir="$HOME/.config/ovis"
   [ -d "$settings_dir" ] || [ ! -d "$HOME/.config/herdr-web-ui" ] || settings_dir="$HOME/.config/herdr-web-ui"
-  ! grep -qs '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_dir/env" "$settings_dir/.env" || return 0
+  state_dir="$HOME/.local/state/ovis"
+  [ -d "$state_dir" ] || [ ! -d "$HOME/.local/state/herdr-web-ui" ] || state_dir="$HOME/.local/state/herdr-web-ui"
   mkdir -p "$settings_dir"
+  for settings_file in "$settings_dir/env" "$settings_dir/.env"; do
+    grep -qs '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" || continue
+    if grep -s '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" | grep -qv '=[[:space:]]*["'\'']*herdr-core["'\'']*[[:space:]]*$'; then
+      say "$settings_file named another runtime; Ovis runs on herdr-core now"
+    fi
+    # written back through the same file, so it keeps its owner-only mode
+    settings_kept=$(mktemp) || fail "could not write $settings_file"
+    grep -v '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" >"$settings_kept" || true
+    cat "$settings_kept" >"$settings_file"
+    rm -f "$settings_kept"
+  done
   # a last line without its newline would run into the new one
   if [ -s "$settings_dir/env" ] && [ -n "$(tail -c 1 "$settings_dir/env")" ]; then echo >>"$settings_dir/env"; fi
   (umask 077 && printf '%s\n' "OVIS_RUNTIME=herdr-core" >>"$settings_dir/env")
+  OVIS_HC_BIN=${OVIS_HC_BIN:-${core:-}}
+  for settings_name in OVIS_HC_BIN HC_SESSION HC_SOCKET; do
+    eval "settings_value=\${${settings_name}:-}"
+    [ -n "$settings_value" ] || continue
+    ! grep -qs "^[[:space:]]*${settings_name}[[:space:]]*=" "$settings_dir/env" "$settings_dir/.env" || continue
+    printf '%s=%s\n' "$settings_name" "$settings_value" >>"$settings_dir/env"
+  done
 }
 
-# Registers the user service that runs `scripts/plugin.ts start` at login: launchd's on macOS, systemd's
-# on Linux. That start runs the server in the background and records it, as the plugin's start does,
+# A value for a plist <string>, with &, < and > as XML entities.
+xml_text() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+# A value inside a double-quoted systemd unit word: \ and " escaped, % (its specifier sign) doubled, and
+# for an Exec line ($2 = exec) $ doubled too, since systemd expands $NAME there.
+unit_text() {
+  if [ "${2:-}" = exec ]; then
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/\$/$$/g'
+  else
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g'
+  fi
+}
+
+# Registers the user service that runs `scripts/plugin.ts start` at login, with core_settings' dirs:
+# launchd's on macOS, systemd's on Linux. That start runs the server in the background and records it, as the plugin's start does,
 # so `plugin.ts stop` and `status` work on it as on the plugin's. Where there is neither, it says how
 # to start the app by hand.
 core_service() {
   bun_bin=$(command -v bun)
-  start_line="bun $APP_DIR/scripts/plugin.ts start"
+  start_line="HERDR_PLUGIN_CONFIG_DIR=$settings_dir HERDR_PLUGIN_STATE_DIR=$state_dir bun $APP_DIR/scripts/plugin.ts start"
   if [ "$os" = darwin ]; then
     agent="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
     mkdir -p "$(dirname "$agent")" "$HOME/Library/Logs/Ovis"
@@ -438,12 +489,16 @@ core_service() {
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$AGENT_LABEL</string>
-  <key>ProgramArguments</key><array><string>$bun_bin</string><string>$APP_DIR/scripts/plugin.ts</string><string>start</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PATH</string></dict>
+  <key>ProgramArguments</key><array><string>$(xml_text "$bun_bin")</string><string>$(xml_text "$APP_DIR/scripts/plugin.ts")</string><string>start</string></array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$(xml_text "$PATH")</string>
+    <key>HERDR_PLUGIN_CONFIG_DIR</key><string>$(xml_text "$settings_dir")</string>
+    <key>HERDR_PLUGIN_STATE_DIR</key><string>$(xml_text "$state_dir")</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>AbandonProcessGroup</key><true/>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/Ovis/start.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/Ovis/start.log</string>
+  <key>StandardOutPath</key><string>$(xml_text "$HOME/Library/Logs/Ovis/start.log")</string>
+  <key>StandardErrorPath</key><string>$(xml_text "$HOME/Library/Logs/Ovis/start.log")</string>
 </dict>
 </plist>
 EOF
@@ -464,9 +519,11 @@ Description=Ovis on herdr-core
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment="PATH=$PATH"
-ExecStart="$bun_bin" "$APP_DIR/scripts/plugin.ts" start
-ExecStop="$bun_bin" "$APP_DIR/scripts/plugin.ts" stop
+Environment="PATH=$(unit_text "$PATH")"
+Environment="HERDR_PLUGIN_CONFIG_DIR=$(unit_text "$settings_dir")"
+Environment="HERDR_PLUGIN_STATE_DIR=$(unit_text "$state_dir")"
+ExecStart="$(unit_text "$bun_bin" exec)" "$(unit_text "$APP_DIR/scripts/plugin.ts" exec)" start
+ExecStop="$(unit_text "$bun_bin" exec)" "$(unit_text "$APP_DIR/scripts/plugin.ts" exec)" stop
 TimeoutStartSec=120
 
 [Install]
@@ -491,6 +548,8 @@ EOF
 install_core() {
   if [ -d "$APP_DIR/.git" ]; then
     say "already installed in $APP_DIR, on herdr-core; Settings → Updates keeps it current"
+  elif [ -e "$APP_DIR" ]; then
+    fail "$APP_DIR is there but is not an Ovis checkout; move it away and run this again"
   else
     ref=${OVIS_REF:-${HERDR_WEB_UI_REF:-$(latest_release)}}
     [ -n "$ref" ] || fail "could not look up the latest release on github.com. Check the connection and run this again."
@@ -501,6 +560,9 @@ install_core() {
     mkdir -p "$(dirname "$APP_DIR")"
     git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "https://github.com/$REPO.git" "$APP_DIR.new" </dev/null \
       || { rm -rf "$APP_DIR.new"; fail "could not download Ovis $ref from github.com. Check the connection and run this again."; }
+    # on a branch named main at that release: Settings → Updates updates a source checkout from main only,
+    # and takes a detached one only as herdr's plugin checkout (server/updater.ts sourceBlock)
+    git -C "$APP_DIR.new" checkout --quiet -B main </dev/null || { rm -rf "$APP_DIR.new"; fail "could not set up the checkout in $APP_DIR.new"; }
     log=$(mktemp)
     if ! (cd "$APP_DIR.new" && sh scripts/preflight.sh && sh scripts/with-bun.sh install && sh scripts/with-bun.sh run build) </dev/null >"$log" 2>&1; then
       cat "$log" >&2
@@ -515,7 +577,8 @@ install_core() {
   code=$(running_code "$root")
   core_settings
   core_service
-  bun "$root/scripts/plugin.ts" start </dev/null || say "Ovis did not start; what it said is above. Start it again with: bun $root/scripts/plugin.ts start"
+  HERDR_PLUGIN_CONFIG_DIR=$settings_dir HERDR_PLUGIN_STATE_DIR=$state_dir bun "$root/scripts/plugin.ts" start </dev/null \
+    || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
 # Ovis as a herdr plugin: installed (or moved from its id before the rename) by herdr, with the Rust
