@@ -124,6 +124,33 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one", "two", "three", "four", "five"]);
   });
 
+  it("leaves a skill's record to its own receipt behind a command Pi recorded as nothing", () => {
+    const path = join(dir(), "command-skill.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("s1", "base", "user", `<skill name="commit" location="/s/SKILL.md">\nReferences are relative to /s.\n\nCommit.\n</skill>\n\nand push`));
+    expect(matchPiDeliveries(path, [candidate("one", "/deploy", anchor), candidate("two", "/skill:commit and push", anchor)]).consumed).toEqual(["one", "two"]);
+  });
+
+  it("gives a template's expansion to it where a later message of the same text has its own record", () => {
+    const path = join(dir(), "template-same-text.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("e1", "base", "user", "hello") + entry("u2", "e1", "user", "hello") + entry("u3", "u2", "user", "hello"));
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, [candidate("one", "/review", anchor), candidate("two", "hello", anchor)], consumed).consumed).toEqual(["one", "two"]);
+    // the third record is left for a later receipt
+    expect(consumed.size).toBe(2);
+  });
+
+  it("settles a /name Pi recorded as typed but stamped before the capture as ambiguous", () => {
+    const path = join(dir(), "template-earlier.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u1", "base", "user", "/plain", anchor.at - 60_000));
+    expect(matchPiDeliveries(path, [candidate("one", "/plain", anchor)])).toMatchObject({ consumed: [], ambiguous: ["one"] });
+  });
+
   it("keeps a /name receipt waiting until Pi records something after it", () => {
     const path = join(dir(), "template-wait.jsonl");
     writeFileSync(path, header() + entry("base", null, "assistant", "working"));

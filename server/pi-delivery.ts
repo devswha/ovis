@@ -144,6 +144,14 @@ export function piRecordText(text: string): string {
  */
 const piMaybeCommand = (text: string): boolean => text.startsWith("/") && !text.startsWith("/skill:");
 
+/** Whether `entry` is the user record Pi writes for a send of `text`: as typed, or a skill's expansion. */
+function piRecordOf(text: string, entry: BranchEntry): boolean {
+  if (entry.role !== "user") return false;
+  if (entry.text === text) return true;
+  const skill = piSkillSend(text);
+  return skill !== undefined && entry.skill?.name === skill.name && entry.skill.request === skill.request;
+}
+
 /**
  * The skill a `/skill:name request` send asks for, as Pi's `_expandSkillCommand` reads it: the name up
  * to the first space, the rest trimmed. Where Pi knows no such skill it records the text as sent, so
@@ -315,21 +323,21 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       }
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
-      const skill = piSkillSend(candidate.text);
-      const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
-        && (entry.text === candidate.text || (skill !== undefined && entry.skill?.name === skill.name && entry.skill.request === skill.request))
+      const same = chain.reverse().filter((entry) => entry.start > afterMatched && piRecordOf(candidate.text, entry)
         && !consumedEntries.has(key(entry)));
       const fresh = (entry: BranchEntry): boolean => entry.at === null || entry.at >= anchor.at;
-      if (piMaybeCommand(candidate.text)) {
-        const first = chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)));
-        if (!first) break;
-        if (first.text !== candidate.text) {
-          // Pi ran it: settle it. Its expansion is attributed to it, unless the record is a later
-          // receipt's own text, as when an extension's command recorded nothing.
-          consumed.push(candidate.id);
-          if (!candidates.slice(index + 1).some((later) => later.text === first.text)) { matchedEntries.push(key(first)); afterMatched = first.start; }
-          continue;
+      const first = piMaybeCommand(candidate.text)
+        ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
+        : undefined;
+      if (first && first.text !== candidate.text) {
+        // Pi ran it: settle it. The record is its expansion, unless it is a later receipt's own and
+        // no second such record follows, as when an extension's command recorded nothing.
+        consumed.push(candidate.id);
+        const owner = candidates.slice(index + 1).find((later) => piRecordOf(later.text, first));
+        if (!owner || chain.some((entry) => entry.start > first.start && piRecordOf(owner.text, entry) && !consumedEntries.has(key(entry)))) {
+          matchedEntries.push(key(first)); afterMatched = first.start;
         }
+        continue;
       }
       const match = same.find(fresh);
       const earlier = match ? undefined : same[0];
