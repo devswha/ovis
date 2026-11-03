@@ -119,6 +119,8 @@ export class HerdrSocket {
   private featuresKnown = false;
   private readonly outputSeen = new Set<string>();
   private readonly inputReady = new Set<string>();
+  /** panes whose current attach has taken input at least once: a later loss of input is an interruption, not an opening */
+  private readonly everReady = new Set<string>();
   /** each pane's changes of input on this connection (readiness given, lost or given again, attach, detach); see inputLease */
   private readonly leaseChanges = new Map<string, number>();
   /** role changes on this connection, asked for or forced by the server */
@@ -397,7 +399,7 @@ export class HerdrSocket {
         // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
         // its connection is trusted as before rather than dropped at the deadline or left paused
         if (!this.pingKnown && this.probing) this.endProbe();
-        if (!this.features.has("input-ready")) for (const pane of this.outputSeen) if (this.attached.has(pane)) this.inputReady.add(pane);
+        if (!this.features.has("input-ready")) for (const pane of this.outputSeen) if (this.attached.has(pane)) { this.inputReady.add(pane); this.everReady.add(pane); }
         // Capabilities arrive after open's role/attach replay. Restore only current interest,
         // never send an unknown frame to an older bridge or replay a hidden/detached chat.
         if (first && this.features.has("conversation-watch")) {
@@ -434,7 +436,7 @@ export class HerdrSocket {
       }
       if (message.type === "pty-data") this.outputSeen.add(message.pane_id);
       if ((message.type === "input-ready" && message.ready !== false) || (message.type === "pty-data" && this.featuresKnown && !this.features.has("input-ready"))) {
-        if (this.attached.has(message.pane_id)) this.inputReady.add(message.pane_id);
+        if (this.attached.has(message.pane_id)) { this.inputReady.add(message.pane_id); this.everReady.add(message.pane_id); }
       }
       if ((message.type === "input-ready" && message.ready === false) || message.type === "pty-exit" || (message.type === "error" && message.pane_id && ["attach_held", "input_not_ready"].includes(message.code))) this.inputReady.delete(message.pane_id!);
       // every readiness the bridge states is a lease of its own, a ready after a ready included
@@ -755,6 +757,7 @@ export class HerdrSocket {
   attach(paneId: string, cols: number, rows: number, keepSize = false): void {
     this.outputSeen.delete(paneId);
     this.inputReady.delete(paneId);
+    this.everReady.delete(paneId);
     this.changeLease(paneId);
     this.attached.set(paneId, { cols, rows, keepSize, releaseSizeOwed: !keepSize });
     this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", receipt_resume_id: receiptResumeId(), ...(keepSize ? { keep_size: true } : {}) });
@@ -923,9 +926,18 @@ export class HerdrSocket {
     return this.connected && !this.probing && this.mode === "interact" && this.inputReady.has(paneId);
   }
 
-  /** Whether the pane's attach is still opening on a live, answered connection: attached, its input not ready yet. */
+  /**
+   * Whether the pane's attach is still opening on a live, answered connection: attached, and not ready even once since
+   * this tab attached it. An attach that took input and lost it (a restart, a reconnect) is an interruption: what is
+   * typed then is held for review, never sent by itself.
+   */
   awaitsInput(paneId: string): boolean {
-    return this.connected && !this.probing && this.mode === "interact" && this.attached.has(paneId) && !this.inputReady.has(paneId);
+    return this.connected && !this.probing && this.mode === "interact" && this.attached.has(paneId) && !this.everReady.has(paneId);
+  }
+
+  /** Whether the pane's current attach has sent this tab any output (its screen, or the replay of it). */
+  sawOutput(paneId: string): boolean {
+    return this.outputSeen.has(paneId);
   }
 
   /** Whether this connection can accept and manage pending messages on the bridge. */

@@ -1065,9 +1065,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // else ends it as typing offline ends (failResume, retainTyped): an error or the end of the pane, a dropped
       // connection, the wait running out, or the attach given up (cancelLeave: let go of again, cached, another
       // pane). Nothing of it goes by itself after that; a masked prompt on screen keeps it out of the draft too.
-      let resumeInput: { pane: string; items: Typed[]; since: number } | null = null;
+      // `early`: typed while the pane's first attach opened (awaitsInput), which goes only once that attach's screen
+      // reached this tab (`screen`): a fresh attach is ready before herdr's first screen of it, which may be a prompt
+      type ResumeInput = { pane: string; items: Typed[]; since: number; early: boolean; screen: boolean };
+      let resumeInput: ResumeInput | null = null;
       let resumeTimer: number | null = null;
-      const takeResume = (): { pane: string; items: Typed[]; since: number } | null => {
+      const takeResume = (): ResumeInput | null => {
         const resumed = resumeInput;
         resumeInput = null;
         if (resumeTimer !== null) window.clearTimeout(resumeTimer);
@@ -1097,7 +1100,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let flushing: object | null = null;
       const flushResume = (): void => {
         const waiting = resumeInput;
-        if (waiting === null || flushing === waiting) return;
+        if (waiting === null || flushing === waiting || (waiting.early && !waiting.screen)) return;
         flushing = waiting;
         writeOutput("", false, () => {
           if (flushing === waiting) flushing = null;
@@ -1109,9 +1112,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
         });
       };
-      const startResume = (pane: string): void => {
+      const startResume = (pane: string, early = false): void => {
         failResume();
-        resumeInput = { pane, items: [], since: performance.now() };
+        resumeInput = { pane, items: [], since: performance.now(), early, screen: early && socket.sawOutput(pane) };
         resumeTimer = window.setTimeout(() => { resumeTimer = null; failResume(); }, RESUME_INPUT_WAIT_MS);
       };
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
@@ -1271,6 +1274,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
           });
+          // the screen of the attach early keys wait for has come (queued above): they may go once it is parsed
+          if (resumeInput !== null && resumeInput.pane === owner) {
+            resumeInput.screen = true;
+            if (socket.canInput(owner)) flushResume();
+          }
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
@@ -1614,7 +1622,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // opens): it waits for that attach to take input as the keys taking an idle pane back do, never dropped
         // a focus report tells of a moment gone by the time the keys go (xterm's answers to queries are not made then: unanswered)
         const reply = /^\x1b\[[IO]$/.test(input);
-        if (resumeInput === null && !secret && !reply && socket.awaitsInput(current)) startResume(current);
+        if (resumeInput === null && !secret && !reply && socket.awaitsInput(current)) startResume(current, true);
         // a mouse report is for the grid it was pressed on: the attach redraws the pane at another, so it is not kept
         if (resumeInput !== null && (reply || /^\x1b\[(<|M)/.test(input))) return;
         // a connection that is not plainly open (a liveness probe, a reconnect) holds typing for review: what waited is held with it

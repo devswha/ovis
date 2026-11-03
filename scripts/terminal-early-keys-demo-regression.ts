@@ -11,21 +11,21 @@ import { join } from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import terminalFixture from "../site/demo/fixtures/terminal.json";
 
-interface Probe { inFlight: number; queued: number; written: string }
 interface Fixture {
   sent: Array<{ type: string; pane_id?: string; text?: string; keys?: string[] }>;
   /** while set, the transport's `input-ready` frames wait here instead of reaching the client */
   holdReady: boolean;
   heldReady: Array<() => void>;
+  /** while set, the transport's own output is dropped: a fresh attach's screen comes only after its readiness */
+  dropOutput: boolean;
   sockets: Array<{ push(frame: Record<string, unknown>): void }>;
 }
 declare global { interface Window { earlyKeys: Fixture } }
 
 /** Installed after the demo's transport: records what the client sends, and holds input-ready back. */
 function installEarlyKeysFixture(): void {
-  const state: Fixture = { sent: [], holdReady: true, heldReady: [], sockets: [] };
+  const state: Fixture = { sent: [], holdReady: true, heldReady: [], dropOutput: false, sockets: [] };
   window.earlyKeys = state;
   const Demo = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
@@ -39,7 +39,7 @@ function installEarlyKeysFixture(): void {
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (state.holdReady && frame.type === "input-ready") state.heldReady.push(() => push(frame));
-      else push(frame);
+      else if (!(state.dropOutput && frame.type === "pty-data")) push(frame);
     };
     return socket;
   };
@@ -106,29 +106,45 @@ try {
     assert.equal(await frame.locator(".terminal-banner-draft").count(), 0, "nothing is held as a draft");
     console.log("PASS keys typed before the terminal took input are sent in order once it does");
 
-    // A fresh attach whose output, arriving with the readiness, ends at a password prompt: the keys that
-    // waited are never typed into it, whatever xterm had parsed when input-ready came
+    // A running attach that stops taking input and takes it again (a restart): what was typed in between is
+    // an interruption's, held for review as before, never sent when the input comes back
+    await page.evaluate((pane) => {
+      for (const socket of window.earlyKeys.sockets) socket.push({ type: "input-ready", pane_id: pane, ready: false });
+    }, pane);
+    await page.keyboard.press("r");
+    await page.evaluate((pane) => {
+      for (const socket of window.earlyKeys.sockets) socket.push({ type: "input-ready", pane_id: pane });
+    }, pane);
+    // Escape still reaches the program beside the held draft: once it is sent, anything the readiness flushed went before it
+    await page.keyboard.press("Escape");
+    await page.waitForFunction((pane) => window.earlyKeys.sent.filter((sent) => sent.type === "input" && sent.pane_id === pane).length >= 4, pane, { timeout: 10_000 })
+      .catch(async () => assert.fail(`the Escape after the restart was not sent: ${JSON.stringify(await typedOf(pane))}`));
+    assert.deepEqual(await typedOf(pane), ["x", "y", "\x1b", "\x1b"], "a key typed while a running attach restarted is held, not sent when input returns");
+    const discard = frame.getByRole("button", { name: "Discard held input" }).first();
+    await discard.waitFor({ state: "attached", timeout: 10_000 });
+    console.log("PASS keys typed while a ready terminal restarts are held for review, not sent when it takes input again");
+
+    // A fresh attach as the server makes one: input-ready first, then herdr's first screen of it, here a password
+    // prompt. The keys that waited are never typed into it.
+    await discard.click();
+    await discard.waitFor({ state: "detached", timeout: 10_000 });
     await page.reload();
+    await page.evaluate(() => { window.earlyKeys.dropOutput = true; });
     await page.waitForFunction((pane) => window.earlyKeys.sent.some((sent) => sent.type === "attach" && sent.pane_id === pane)
       && window.earlyKeys.heldReady.length > 0, pane, { timeout: 10_000 });
-    // the shell's recorded replay is all written, so nothing drawn after the prompt replaces it
-    const lastFrame = terminalFixture.frames.at(-1)!.data.slice(-512);
-    await page.waitForFunction((tail) => {
-      const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe } | null)?.outputProbe?.();
-      return probe !== undefined && probe.written.endsWith(tail) && probe.inFlight === 0 && probe.queued === 0;
-    }, lastFrame, { timeout: 10_000 });
     await frame.locator(".xterm-helper-textarea").focus();
     await page.keyboard.press("s");
     await page.keyboard.press("e");
     await page.evaluate((pane) => {
-      for (const socket of window.earlyKeys.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\r\nPassword: " });
       window.earlyKeys.holdReady = false;
+      window.earlyKeys.dropOutput = false;
       for (const release of window.earlyKeys.heldReady.splice(0)) release();
+      for (const socket of window.earlyKeys.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\x1b[2J\x1b[H[sudo] password for me: " });
     }, pane);
     await frame.getByText("Not sent: the terminal is not ready, and a password is never held for later.").waitFor({ state: "attached", timeout: 10_000 });
-    assert.deepEqual(await typedOf(pane), [], "keys that waited are never typed into a password prompt that came before the readiness");
+    assert.deepEqual(await typedOf(pane), [], "keys that waited are never typed into the password prompt the attach's first screen shows");
     assert.deepEqual(errors, [], "no browser errors");
-    console.log("PASS keys that waited are kept out of a password prompt drawn just before the terminal took input");
+    console.log("PASS keys that waited are kept out of a password prompt the attach's first screen shows");
   } finally { await context.close(); }
 } finally {
   await browser?.close();
