@@ -220,7 +220,10 @@ try {
           assert.equal(message.agent_only, true, `${label}: for an agent alone`);
           // the demo answers the message: once its answer is in and the Working line gone, the chat stops moving under the next drag
           await page.waitForFunction((count) => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers > count, answers, WAIT);
+          // read is not drawn: the answer's row is in the page (the list keeps the rows near the end it shows), then the Working line is gone
+          await page.locator(".chat-turn-agent", { hasText: "This is the demo, so nothing ran" }).last().waitFor({ state: "attached", ...WAIT });
           await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
+          await frames(page);
 
           // a quote past the composer's limit is refused, saying why in words, and the draft is never cut
           const full = "x".repeat(19_990);
