@@ -106,10 +106,10 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
         if (next.ended) {
           const after = (await fetchUsageLoginAccounts(provider, controller.signal)).accounts;
           window.dispatchEvent(new Event("herdr-usage-changed"));
-          const outcome = signInOutcome(before.current ?? [], after, again);
+          const outcome = next.succeeded === false ? { kind: "not-signed-in" } as const : signInOutcome(before.current ?? [], after, again);
           following.current = null;
           setPhase({ kind: "ended", outcome });
-          if (outcome.kind === "signed-in") signedInRef.current?.();
+          if (next.succeeded || outcome.kind === "signed-in") signedInRef.current?.();
           return;
         }
         // a whole round read: only that clears the failures, so failed account reads after the end still count

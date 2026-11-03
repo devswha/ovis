@@ -25,6 +25,11 @@ export interface UsageLoginAccounts {
   readonly accounts: readonly (string | null)[];
 }
 
+/** DELETE /api/usage/accounts: forget a public list key, never revoke or delete CLI credentials. */
+export interface UsageAccountRemoval {
+  readonly account: string;
+}
+
 /** What a login pane asks of its user, read from its screen: never a token, only what the CLI shows to type or open. */
 export interface UsageLoginPromptText {
   /** the sign-in page to open, on the provider's own host; null until the CLI prints it */
@@ -40,6 +45,8 @@ export interface UsageLoginPrompt extends UsageLoginPromptText {
   readonly provider: "claude" | "codex";
   /** the CLI has exited: whether it signed in, the accounts (GET /api/usage) tell */
   readonly ended: boolean;
+  /** Present once ended: the CLI exited successfully and its own credential home has a usable sign-in. */
+  readonly succeeded?: boolean;
 }
 
 /** POST /api/usage/login/code: the code a sign-in page showed, typed into that login's CLI. */

@@ -1146,7 +1146,7 @@ export class UsageService {
 }
 
 /** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
-function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
+export function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
   return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
 }
 
@@ -1173,7 +1173,7 @@ export async function localSignInPlace(ctx: UsageContext, key: string): Promise<
   return null;
 }
 
-export async function handleUsageRequest(request: Request, url: URL, service: UsageService): Promise<Response> {
+export async function handleUsageRequest(request: Request, url: URL, service: Pick<UsageService, "report">): Promise<Response> {
   if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET /api/usage" } }, 405, { allow: "GET" });
   return jsonResponse(await service.report(url.searchParams.get("refresh") === "1"), 200, { "cache-control": "no-store" });
 }

@@ -32,6 +32,7 @@ import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Toggle } from ".
 import { UsageAccountDialog } from "./UsageAccountDialog.tsx";
 import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
+import { UsageRemoveAccount } from "./UsageRemoveAccount.tsx";
 import "./UsageSettings.css";
 import "./AgentsSettings.css";
 
@@ -150,6 +151,7 @@ function ProviderAccounts({ id, providers, onLocalLogin, onFollow }: { readonly 
             onClick={() => update({ usageHidden: hidden ? settings.usageHidden.filter((key) => key !== usage.key) : [...settings.usageHidden, usage.key] })}>
             {hidden ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
           </button>
+          {onLocalLogin && !isHubAccount(usage) && <UsageRemoveAccount usage={usage} />}
         </span>
       </li>;
     })}
