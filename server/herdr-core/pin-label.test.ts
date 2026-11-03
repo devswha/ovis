@@ -172,6 +172,10 @@ describe("bridgePins", () => {
     expect(preferences.get().pins).toHaveLength(MAX_PINS);
     expect(new PreferenceStore(dir).get().pins).toHaveLength(MAX_PINS);
     expect(core.written).toEqual([]);
+    // a later change of anything else does not take it for an unpin
+    preferences.set({ settings: { theme: "dark" } });
+    await pins.idle();
+    expect(core.written).toEqual([]);
   });
 
   it("unpins nothing while no browser has shared its pins", async () => {

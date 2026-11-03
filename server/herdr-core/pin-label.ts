@@ -43,6 +43,10 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   const agreed = readAgreed(agreedPath);
   /** each live terminal of the current core: whether its label says pinned, as last heard */
   const live = new Map<string, boolean>();
+  /** pinned in the Herdr app, but left out of a full list: never unpinned for not being listed */
+  const refused = new Set<string>();
+  /** the agreed pins on disk are behind memory: the next agreement writes them, even an unchanged one */
+  let unsaved = false;
   let core = "";
   const keyOf = (address: string) => `${machineId}:${address}`;
   const agreedKey = (address: string) => `${core}/${address}`;
@@ -52,11 +56,19 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const saveAgreed = () => {
-    try { writeStateDocument(agreedPath, `${JSON.stringify(Object.fromEntries(agreed))}\n`, false); }
-    catch (error) { console.warn(`herdr-core: could not save ${agreedPath}:`, error); }
+    try {
+      writeStateDocument(agreedPath, `${JSON.stringify(Object.fromEntries(agreed))}\n`, false);
+      unsaved = false;
+    } catch (error) {
+      unsaved = true;
+      console.warn(`herdr-core: could not save ${agreedPath}:`, error);
+    }
   };
   const setAgreed = (address: string, pinned: boolean) => {
-    if (agreed.get(agreedKey(address)) === pinned) return;
+    if (agreed.get(agreedKey(address)) === pinned) {
+      if (unsaved) saveAgreed();
+      return;
+    }
     agreed.set(agreedKey(address), pinned);
     saveAgreed();
   };
@@ -79,7 +91,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   const writes = new Map<string, Promise<void>>();
   const writeLabel = (address: string) => {
     const run = (writes.get(address) ?? Promise.resolve()).then(async () => {
-      if (stopped || !live.has(address)) return;
+      if (stopped || !live.has(address) || refused.has(address)) return;
       const pinned = listed(address);
       if (live.get(address) === pinned) { setAgreed(address, pinned); return; }
       try {
@@ -98,10 +110,14 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   /** A terminal's label heard: settled against what both sides last agreed on. */
   const heard = (address: string, labelPinned: boolean) => {
     live.set(address, labelPinned);
+    refused.delete(address);
     const base = agreed.get(agreedKey(address));
     const ovis = listed(address);
     const wanted = base === undefined ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
-    if (ovis !== wanted && !list(address, wanted)) return;
+    if (ovis !== wanted && !list(address, wanted)) {
+      if (wanted) refused.add(address);
+      return;
+    }
     if (labelPinned !== wanted) writeLabel(address);
     else setAgreed(address, wanted);
   };
@@ -112,6 +128,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   };
   const gone = (address: string) => {
     live.delete(address);
+    refused.delete(address);
     if (agreed.delete(agreedKey(address))) saveAgreed();
   };
 
@@ -163,6 +180,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       closeStream = () => { closeStream = null; void channel.close(); };
       core = hello.core.id;
       live.clear();
+      refused.clear();
       const shown = new Set(result.terminals.filter((terminal) => terminal.state === "live").map((terminal) => agreedKey(terminal.address)));
       let pruned = false;
       for (const key of agreed.keys()) if (key.startsWith(`${core}/`) && !shown.has(key)) { agreed.delete(key); pruned = true; }
