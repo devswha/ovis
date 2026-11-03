@@ -176,6 +176,41 @@ const plainShell = (argv: readonly string[]): boolean => SHELL.test(argv[0] ?? "
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
 
+/** What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs `first_paint`). */
+const PAINT_END = "\u001b[?9001";
+/** How long a watch-only attach may take to bring its first paint. */
+const PAINT_MS = 5_000;
+/** Any escape sequence: CSI, OSC, a DCS/SOS/PM/APC string, or a short escape (HTS, a charset designation). */
+const ESCAPE_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[PX^_][^\u001b]*\u001b\\|[ -/]*[0-~])/g;
+const SGR_RE = /^\u001b\[[0-9;:]*m$/;
+
+/**
+ * What hc's text read of the screen (`terminal.read`, no history) shows, with its colors, from the
+ * first paint of an attach that asked for `rows` lines of history: one line per row with its SGR
+ * attributes and no other escape (cursor moves, modes, tab stops, title). hc's read trims the
+ * spaces, colored or not, at the end of each row (a U+00A0 stays), drops the screen's blank rows at
+ * the bottom and takes as many history lines in at the top, so this does too. hc paints after a
+ * clear (`CSI H CSI 2J`): the history, pushed up by an SGR reset, a line break and one more per
+ * screen row, then a second clear and the screen, which ends where the win32-input-mode state
+ * follows (herdr-core ghostty-vt `paint`, viewers.rs `first_paint`). null for a paint not shaped
+ * so. A row the terminal soft-wrapped stays a line of its own, as on the screen, where hc's text
+ * read joins it with the next.
+ */
+export function paintedScreen(paint: string, rows: number): string | null {
+  const end = paint.indexOf(PAINT_END);
+  const parts = paint.slice(0, Math.max(end, 0)).split("\u001b[H\u001b[2J");
+  if (end === -1 || parts.length < 2 || parts.length > 3) return null;
+  const text = (part: string): string => part.replace(ESCAPE_RE, (sequence) => (SGR_RE.test(sequence) ? sequence : ""))
+    .replace(/\r\n/g, "\n").replace(/\r/g, "");
+  const pushed = "\n".repeat(rows + 1);
+  const history = parts.length === 3 ? text(parts[1]!) : "";
+  if (history !== "" && !history.endsWith(pushed)) return null;
+  const lines = [...(history === "" ? [] : history.slice(0, -pushed.length).split("\n")), ...text(parts.at(-1)!).split("\n")]
+    .map((line) => line.replace(/(?:\u001b\[[0-9;:]*m| )+$/, (tail) => tail.replace(/ /g, "")));
+  while (lines.length > 0 && lines.at(-1)!.replace(/\u001b\[[0-9;:]*m/g, "") === "") lines.pop();
+  return lines.slice(-rows).join("\n");
+}
+
 function paneIdOf(params: Record<string, unknown>, field = "pane_id"): string {
   const value = params[field];
   if (typeof value !== "string" || value === "") throw new AdapterError("invalid_params", `${field} is required`);
@@ -236,6 +271,40 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
     if (now && (now.cols !== record.cols || now.rows !== record.rows)) channel.resize(now.cols, now.rows);
     channel.write(bytes);
     await channel.close();
+  };
+
+  /**
+   * hc's text read of the screen with its colors (paintedScreen): hc reads text only, so this is the
+   * first paint of an attach that only watches, which never types or resizes, closed once the screen
+   * is in. A paint of another shape answers the plain text, as a read without colors.
+   */
+  const coloredScreen = async (paneId: string): Promise<string> => {
+    const record = await terminal(paneId);
+    const decoder = new TextDecoder();
+    let paint = "";
+    const { promise, resolve, reject } = Promise.withResolvers<string>();
+    const timer = setTimeout(() => reject(new AdapterError("timeout", `herdr-core sent no screen of ${paneId} within ${PAINT_MS}ms`)), PAINT_MS);
+    const { result, channel } = await hc.open<{ channel: number; terminal?: HcTerminal }>("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows, history: record.rows, observe: true }, {
+      onData: (payload) => {
+        paint += decoder.decode(payload, { stream: true });
+        if (paint.includes(PAINT_END)) resolve(paint);
+      },
+      onClose: (reason) => reject(reason?.["reason"] === "connection_lost"
+        ? new AdapterError("connect_failed", "the line to herdr-core ended before the screen was read")
+        : new AdapterError("pane_not_found", `terminal ${paneId} ended before its screen was read`)),
+    }).catch((error: unknown) => {
+      clearTimeout(timer);
+      throw error;
+    });
+    let screen: string | null;
+    try {
+      // resized since it was looked up: the paint has the rows it has now
+      screen = paintedScreen(await promise, result.terminal?.rows ?? record.rows);
+    } finally {
+      clearTimeout(timer);
+      await channel.close();
+    }
+    return screen ?? (await hc.call<{ text: string }>("terminal.read", { terminal: paneId, lines: 0 })).text;
   };
 
   /** Input to one pane in the order it was asked for: each attach and its bytes finish before the next. */
@@ -302,6 +371,9 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       const format = typeof params["format"] === "string" ? params["format"] : "text";
       const recent = source === "recent" || source === "recent_unwrapped";
       const wanted = typeof params["lines"] === "number" && params["lines"] > 0 ? Math.floor(params["lines"]) : null;
+      if (format === "ansi" && source === "visible" && params["strip_ansi"] !== true) {
+        return { read: { pane_id: paneId, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source, format, text: await coloredScreen(paneId), revision: pane.revision, truncated: false } };
+      }
       // hc reads the screen plus `lines` of history above it; herdr's recent read is the last `lines` lines
       const read = await hc.call<{ text: string; complete: boolean }>("terminal.read", { terminal: paneId, lines: recent ? wanted ?? 1000 : 0 });
       let text = read.text;
