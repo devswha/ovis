@@ -277,6 +277,17 @@ describe("CoreAttachSession, automatic input", () => {
     session.kill();
   });
 
+  it("types text that is no terminal reply as DATA, even tagged automatic by the client", async () => {
+    const { core, session } = attach(() => {}, { features: ["automatic_input"], confirmAutomatic: true });
+    await core.attached;
+    session.write("rm -rf ~/x\r", true);
+    session.write("\x1b[A\r", true);
+    await core.until(FRAME_DATA, 2);
+    expect(decode(core.of(FRAME_DATA))).toEqual(["rm -rf ~/x\r", "\x1b[A\r"]);
+    expect(core.of(FRAME_AUTOMATIC_INPUT)).toEqual([]);
+    session.kill();
+  });
+
   for (const [label, options] of [
     ["hello does not name it", { confirmAutomatic: true }],
     ["the attach does not confirm it", { features: ["automatic_input"] }],
