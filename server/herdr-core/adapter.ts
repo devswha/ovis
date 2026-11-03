@@ -215,18 +215,17 @@ function herdrCode(error: HcError, missing: string): string {
 
 function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
   const terminal = async (address: string, missing = "pane_not_found"): Promise<HcTerminal> => {
-    const record = await hc.call<{ terminal: HcTerminal } | HcTerminal>("terminal.get", { terminal: address }).catch((error: unknown) => {
+    const found = await hc.call("terminal.get", { terminal: address }).catch((error: unknown) => {
       throw error instanceof HcError ? new AdapterError(herdrCode(error, missing), error.message) : error;
     });
-    const found = "terminal" in record ? record.terminal : record;
     if (found.state !== "live") throw new AdapterError(missing, `terminal ${address} has finished`);
     return found;
   };
 
   const snapshot = async (): Promise<SessionSnapshot> => {
     const [list, doc, hello] = await Promise.all([
-      hc.call<{ terminals: HcTerminal[] }>("terminal.list", {}),
-      hc.call<{ value: unknown }>("doc.get", { name: LAYOUT_DOC }),
+      hc.call("terminal.list", {}),
+      hc.call("doc.get", { name: LAYOUT_DOC }),
       hc.hello(),
     ]);
     return buildSnapshot(list.terminals, doc.value, hello.version);
@@ -245,7 +244,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
    */
   const type = async (paneId: string, bytes: string): Promise<void> => {
     const record = await terminal(paneId);
-    const { result, channel } = await hc.open<{ channel: number; terminal?: HcTerminal }>("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows }, { onData: () => {}, onClose: () => {} });
+    const { result, channel } = await hc.open("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows }, { onData: () => {}, onClose: () => {} });
     // resized since it was looked up: type at the size it has now
     const now = result.terminal;
     if (now && (now.cols !== record.cols || now.rows !== record.rows)) channel.resize(now.cols, now.rows);
@@ -269,7 +268,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
    */
   const startShell = async (params: Record<string, unknown>, labels: Record<string, string>) => {
     const env = isRecord(params["env"]) ? Object.fromEntries(Object.entries(params["env"]).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
-    const record = await hc.call<HcTerminal>("terminal.run", { keep: true, labels, ...(typeof params["cwd"] === "string" ? { cwd: params["cwd"] } : {}), ...(env ? { env } : {}) });
+    const record = await hc.call("terminal.run", { keep: true, labels, ...(typeof params["cwd"] === "string" ? { cwd: params["cwd"] } : {}), ...(env ? { env } : {}) });
     const shown = await snapshot();
     const root_pane = shown.panes.find((pane) => pane.pane_id === record.address);
     const tab = root_pane && shown.tabs.find((candidate) => candidate.tab_id === root_pane.tab_id);
@@ -318,7 +317,7 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
       const recent = source === "recent" || source === "recent_unwrapped";
       const wanted = typeof params["lines"] === "number" && params["lines"] > 0 ? Math.floor(params["lines"]) : null;
       // hc reads the screen plus `lines` of history above it; herdr's recent read is the last `lines` lines
-      const read = await hc.call<{ text: string; complete: boolean }>("terminal.read", { terminal: paneId, lines: recent ? wanted ?? 1000 : 0 });
+      const read = await hc.call("terminal.read", { terminal: paneId, lines: recent ? wanted ?? 1000 : 0 });
       let text = read.text;
       if (recent && wanted !== null) {
         const rows = text.split("\n");
@@ -583,7 +582,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     send(socket, `${JSON.stringify({ id: request.id, error: { code: "bad_frame", message: `hc event line exceeds ${EVENT_LINE_BYTES} bytes` } })}\n`, true);
   });
   try {
-    const { result, channel } = await hc.open<{ channel: number; terminals?: unknown }>("events.subscribe", {}, { onData: read, onClose: end });
+    const { result, channel } = await hc.open("events.subscribe", {}, { onData: read, onClose: end });
     // what each terminal reported as the stream starts: a first event that drops a message or progress is a change
     for (const terminal of Array.isArray(result.terminals) ? result.terminals : []) {
       if (!isRecord(terminal) || typeof terminal["address"] !== "string" || reported.has(terminal["address"])) continue;
