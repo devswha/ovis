@@ -98,13 +98,16 @@ const NOT_A_NAME = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/]|```|~~~)/;
  * nothing a tab could be told by (#2637). An upload's path may hold spaces (a folder under
  * ~/Library), so one in the shape an upload takes (server/paste.ts: `<name>-<YYYYMMDD>-<HHMMSS>-
  * <8 hex>.<ext>`, a name with no space) is taken whole up to the next mention, as lib/chatImages.ts
- * reads it; any other path ends at a space.
+ * reads it; any other path ends at a space, and so does one whose words reach another path.
  */
-const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s@).){0,1024}?[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|\S*)/giu;
+const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s(?:@|[\\/~]|[A-Za-z]:[\\/])).){0,1024}?[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|\S*)/giu;
 
-/** A label an Ovis before #2637 learned from an attachment's mention: it is never shown, and a new one takes its place. */
+/**
+ * A label an Ovis before #2637 learned with an attachment's mention in it (a label learned now never
+ * holds one): it is never shown, and a new one takes its place.
+ */
 export function attachmentTabLabel(label: string): boolean {
-  return /^@(?:\/|~[\\/]|[A-Za-z]:[\\/])/.test(label);
+  return /(?:^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])/.test(label);
 }
 
 /**

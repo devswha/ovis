@@ -1618,9 +1618,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   character takes two) cut at a word's end with `…` (#2019); its hover stays the pane's title. A
   slash command, a path or a code fence names nothing, so the next line is taken, and an attached
   file's `@path` mention is left out, an upload's path with spaces whole (#2637). An agent's own name
-  for its conversation comes before those words: the pane's name, else herdr's pane title or the
-  agent's terminal title as the pane's row says it (Codex's thread, Claude Code's topic), unless it
-  only says which agent runs where (the agent's name or its command line, its folder, a path). This follows the
+  for its conversation comes before those words: the pane's name, else herdr's pane title, else the
+  terminal title of Codex (its thread) or Claude Code (its topic), the agents that name the
+  conversation there (another agent's says its state, "Ready"), unless it only says which agent runs
+  where (the agent's name or its command line, a process, its folder, a path). This follows the
   Codex app, which titles a thread from its first prompt, rather than asking the model for a title (a
   model call and a wait). A name someone gave the tab (Rename tab, the New tab dialog's Name, a script,
   even one that is only an agent's name) is never covered, the workspace keeps its name, and herdr's

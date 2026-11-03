@@ -34,11 +34,12 @@ describe("tab labels from the first message", () => {
     expect(shortTabLabel("Fix @src/app.ts")).toBe("Fix @src/app.ts");
     // an upload's name in the words after another mention is the user's, not the path's
     expect(shortTabLabel("@/tmp/a.png Why paste-20261104-101500-0a1b2c3d.png")).toBe("Why paste-20261104-10150\u2026");
+    expect(shortTabLabel("@/tmp/a.png Please inspect /tmp/paste-20261104-101500-0a1b2c3d.png first")).toBe("Please inspect\u2026");
   });
 
   it("drops a label an earlier version learned from an attachment, and learns the pane's again", () => {
     const panes = [{ pane_id: "w1:p1", terminal_id: "term_a" }];
-    setTabLabels({ "w1:p1|term_a": "@/Users/example/Library/\u2026" });
+    setTabLabels({ "w1:p1|term_a": "See @/Users/example/Library/\u2026" });
     learnTabLabel("local", "w1:p1", "@/Users/example/Library/Mobile Documents/.ovis/paste-20261104-101500-0a1b2c3d.png Fix footer");
     settleTabLabels([pc("local", panes)]);
     expect(currentTabLabels()).toEqual({ "w1:p1|term_a": "Fix footer" });
