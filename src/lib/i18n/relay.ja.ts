@@ -8,7 +8,7 @@ export const RELAY_JA: Record<string, string> = {
   "Unnamed PC": "名前のないPC",
   "To add another PC, scan the QR code it shows under Phone & devices.": "別のPCを追加するには、そのPCの「スマホとデバイス」に表示されるQRコードをスキャンしてください。",
   "Scan the QR code on your PC": "PCのQRコードをスキャンしてください",
-  "On the PC, open Settings → Phone & devices and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.": "PCで設定 → スマホとデバイスを開き、Ovisリレー経由のリモートアクセスをオンにしてください。そこに表示されるQRコードで、このアプリがそのPCとペアリングされた状態で開きます。",
+  "On the PC, open Settings → Phone & devices and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.": "PCで設定 → スマートフォンとデバイスを開き、Ovisリレー経由のリモートアクセスをオンにしてください。そこに表示されるQRコードで、このアプリがそのPCとペアリングされた状態で開きます。",
   "Pair with {name}?": "{name}とペアリングしますか？",
   "This phone gets a key of its own for {name}. The PC lists it under Phone & devices, where it can be removed.": "このスマホは{name}専用のキーを受け取ります。PCの「スマホとデバイス」に表示され、そこから削除できます。",
   "Pair": "ペアリング",
@@ -44,4 +44,7 @@ export const RELAY_JA: Record<string, string> = {
   "Asking the PC to update…": "PCにアップデートを依頼しています…",
   "Waiting for {name} to restart…": "{name}の再起動を待っています…",
   "The update did not finish.": "アップデートが完了しませんでした。",
+  "The key it carries": "このリンクの鍵",
+  "Not a valid key": "有効な鍵ではありません",
+  "The PC shows its ID under Settings → Phone & devices. Marked groups differ.": "PCは設定 → スマホとデバイスで自分のIDを表示します。印の付いたグループが異なる部分です。",
 };

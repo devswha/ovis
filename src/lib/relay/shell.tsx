@@ -19,9 +19,9 @@ import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
-import { indexedDeviceStore, indexedPendingPush } from "./device.ts";
+import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, shellEntry } from "./shellState.ts";
 import type { PcUpdate, RelayShellState } from "./shellState.ts";
 import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
@@ -129,7 +129,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
     // the relay's close code is the one fact the sentence does not carry; a plain refusal adds nothing
     const detail = error instanceof RelayUnreachableError && error.closeCode !== null ? error.message : null;
-    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail });
+    const mismatch = error instanceof ServerIdentityChangedError ? keyMismatch(attempt.offer.server_id, error.keys) : null;
+    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail, ...(mismatch ? { mismatch } : {}) });
   };
 
   const connect = async (attempt: Attempt): Promise<void> => {
@@ -301,7 +302,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // a link that puts another key under this PC's id is never paired with, before or after a
     // Forget: it is no attempt (nothing retries it) and it touches no saved key
     if (entry.offer !== null && forgedOffer(entry.offer)) {
-      show({ kind: "forged", name: entry.offer.name ?? null });
+      show({ kind: "forged", name: entry.offer.name ?? null, mismatch: keyMismatch(entry.offer.server_id, [entry.offer.server_public_key]) });
       entry = { ...entry, offer: null };
       return true;
     }
@@ -331,7 +332,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const saved = await store.get(entry.serverId);
     if (saved === undefined) show({ kind: "empty" });
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
-    else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null });
+    else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [saved.server_public_key]) });
     else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null });
     return;
   }

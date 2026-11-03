@@ -11,7 +11,7 @@ import { bootRelayShell, takeEntryUrl } from "./boot.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { testOffer } from "./device.test.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, offerOf, shellEntry } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, shellEntry } from "./shellState.ts";
 
 const APP = "https://app.example";
 
@@ -43,6 +43,17 @@ describe("the shell's entry", () => {
     expect(forgedOffer(genuine)).toBe(false);
     expect(forgedOffer({ ...genuine, server_public_key: exportPublicKey(generateKeyPair().publicKey) })).toBe(true);
     expect(forgedOffer({ ...genuine, server_public_key: "not-a-key" })).toBe(true);
+  });
+
+  it("names the key that is not the PC's by the id it would have, for the phone to compare", () => {
+    const own = generateKeyPair().publicKey;
+    const other = generateKeyPair().publicKey;
+    const serverId = deriveServerId(own);
+    expect(keyMismatch(serverId, [exportPublicKey(own)])).toBeNull();
+    // the saved key and the offer's: whichever is not the PC's is the one received
+    expect(keyMismatch(serverId, [exportPublicKey(own), exportPublicKey(other)])).toEqual({ expected: serverId, received: deriveServerId(other) });
+    expect(keyMismatch(serverId, [exportPublicKey(other), exportPublicKey(own)])).toEqual({ expected: serverId, received: deriveServerId(other) });
+    expect(keyMismatch(serverId, ["not-a-key"])).toEqual({ expected: serverId, received: null });
   });
 
   it("rebuilds a saved PC's offer without a code", () => {

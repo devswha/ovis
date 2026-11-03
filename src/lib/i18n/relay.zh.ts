@@ -44,4 +44,7 @@ export const RELAY_ZH: Record<string, string> = {
   "Asking the PC to update…": "正在请求电脑更新…",
   "Waiting for {name} to restart…": "正在等待 {name} 重启…",
   "The update did not finish.": "更新未完成。",
+  "The key it carries": "此链接携带的密钥",
+  "Not a valid key": "不是有效的密钥",
+  "The PC shows its ID under Settings → Phone & devices. Marked groups differ.": "电脑会在设置 → 手机与设备中显示自己的 ID。标记出的分组就是不同之处。",
 };
