@@ -84,7 +84,7 @@ const nativeIO: TranscriptIO = {
 const WINDOW_BYTES = 1024 * 1024;
 /** A call on the event loop slower than this was answered by the disk, not the page cache. */
 const SLOW_MS = 2;
-/** After one (or a call that threw), a transcript's reads go through the thread pool this long; the first lease after tries again. */
+/** After two in a row (or a call that threw), a transcript's reads go through the thread pool this long; the first lease after tries again. */
 const SLOW_FOR_MS = 1000;
 /** How long a directory's filesystem is taken as known. */
 const FILESYSTEM_MS = 60_000;
@@ -135,8 +135,9 @@ interface Request {
  *
  * On a local Linux filesystem (LOCAL) a lease opens, stats, reads and closes on the event loop
  * instead, with no read ahead, while each call is fast. A lease that has to look up its
- * directory's filesystem (once a minute) opens through the thread pool meanwhile. The first slower than SLOW_MS sends the
- * rest of the lease through the thread pool, and the transcript's leases for SLOW_FOR_MS. Every
+ * directory's filesystem (once a minute) opens through the thread pool meanwhile. The second call in a row slower than
+ * SLOW_MS sends the rest of the lease through the thread pool, and the transcript's leases for SLOW_FOR_MS (one alone
+ * may be a garbage collection, not the disk). Every
  * other filesystem and platform reads through the thread pool only.
  *
  * Known limits:
@@ -233,8 +234,13 @@ export class TranscriptReader {
             current();
             const pinned = handle;
             let busy = false;
-            // reads on the event loop until one is slow or throws: then through the thread pool, for the rest of the lease
+            // reads on the event loop until two calls in a row are slow, or one throws: then through the
+            // thread pool, for the rest of the lease. One slow call alone may be the process's pause (a
+            // garbage collection of a few ms lands inside a call now and then); a disk that does not have
+            // the transcript cached is slow again on the next. The cost: a slow local disk blocks the loop
+            // for one more call before the lease leaves it
             let now = direct !== null && !slowOpen;
+            let slowBefore = false;
             let waited = true;
             const timed = <V>(call: (direct: TranscriptHandleNow) => V): Promise<V> => {
               try {
@@ -244,7 +250,9 @@ export class TranscriptReader {
                 let value: V;
                 try { value = call(direct!); } catch (caught) { now = false; this.slowed(path); throw caught; }
                 waited = false;
-                if (performance.now() - started > SLOW_MS) { now = false; this.slowed(path); }
+                const slow = performance.now() - started > SLOW_MS;
+                if (slow && slowBefore) { now = false; this.slowed(path); }
+                slowBefore = slow;
                 current();
                 return Promise.resolve(value);
               } catch (caught) { return Promise.reject(caught); }
