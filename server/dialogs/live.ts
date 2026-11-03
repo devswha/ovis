@@ -151,17 +151,17 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
     if (at < 0 || box < 0 || box - at > 60 || !cleanLines[box - 1]!.startsWith("─")) return false;
     return omoFooterIsActive(cleanLines.slice(box + 1));
   }
-  // pi keeps its footer under every dialog — the pane's folder, then its context meter — so the
-  // hint sits near the end without being it. A dialog already answered leaves its hint far
-  // above whatever came after, which is what keeps this window narrow.
-  if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES);
-  if (prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES, PI_THINKING_HINT_LINES);
+  // pi keeps its footer under every dialog — the pane's folder, then its stats line, then any
+  // extension status (piFooterLines) — so the hint sits near the end without being it. A dialog
+  // already answered leaves its hint far above whatever came after, which is what keeps this window narrow.
+  if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown));
+  if (prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown), PI_THINKING_HINT_LINES);
   if (prompt.responder === "omo-model") return omoModelListWaits(screen);
   // its reader already found the picker ending the screen, which only an open picker does
   if (prompt.responder === "omp-model") return true;
   if (prompt.responder === "pi-question" || prompt.responder === "pi-confirm" || prompt.responder === "pi-input") {
-    return hintAtEnd(shown, PI_MENU_HINT_AT_END_RE, PI_FOOTER_LINES, 4)
-      || hintAtEnd(shown, PI_INPUT_HINT_AT_END_RE, PI_FOOTER_LINES, 4);
+    return hintAtEnd(shown, PI_MENU_HINT_AT_END_RE, piFooterLines(shown), 4)
+      || hintAtEnd(shown, PI_INPUT_HINT_AT_END_RE, piFooterLines(shown), 4);
   }
   // Command Code's permission footer names its keys at the dialog's end and wraps on a narrow
   // pane: `↑/↓ navigate · enter select · ctrl+e explain · Run cmd --yolo to bypass all …`
@@ -185,9 +185,37 @@ const PI_INPUT_HINT_AT_END_RE = new RegExp(`${PI_INPUT_HINT_RE.source}$`, "i");
 const PI_MODEL_HINT_AT_END_RE = new RegExp(`${PI_MODEL_HINT_RE.source}$`, "i");
 /**
  * pi's own footer, under `/model` and under every dialog alike: the pane's folder, then its
- * context meter. A hint is allowed this many lines of it before the bottom of the screen.
+ * stats line. A hint is allowed this many lines of it before the bottom of the screen, one more
+ * under an extension's status (piFooterLines).
  */
 const PI_FOOTER_LINES = 2;
+
+/**
+ * pi's stats line, its second footer line: usage counters (`↑1.2k ↓300 R… W… CH…% $0.012 (sub)`), then
+ * the context meter (`3.7%/1.0M`, `?/200k`). The meter comes last, and a narrow pane cuts the line
+ * with `...` before it (`↑52 ↓5.3k R460k W33k CH98.9% $0.461 (sub) 3.7...`), so the line is told by how
+ * it starts: every part has a fixed prefix (pi 1.4.0's footer).
+ */
+const PI_STATS_LINE_RE = /^(?:[↑↓]\d|[RW]\d|CH\d|\$\d|(?:\d+(?:\.\d+)?%|\?)\/\d)/u;
+
+/**
+ * A composer or a shell's prompt: one starting with its mark (`❯`, `$ `, oh-my-zsh's `➜`), or ending
+ * with it (`user@host:~/app$`). Never an ending `%`: a usage status ends with one (`usage 12%`), so
+ * zsh's `host%` prompt, the rarer case, is not recognised.
+ */
+const PROMPT_LINE_RE = /^(?:[❯›>➜]|[$#](?:\s|$))|[❯›>$#]$/u;
+
+/**
+ * An extension's `ctx.ui.setStatus` adds a third footer line under the stats line: pi joins every
+ * status into that one line and truncates it to the pane's width, so it never wraps (pi 1.4.0's
+ * footer). pi mounts its footer last, so while it runs nothing else can follow the stats line, and a
+ * single line there is taken for that status. A prompt there, as a shell draws one after pi has
+ * gone, or more output than that one line, still buries the hint.
+ */
+function piFooterLines(shown: string[]): number {
+  const status = shown.at(-1) ?? "";
+  return PI_STATS_LINE_RE.test(shown.at(-2) ?? "") && !PROMPT_LINE_RE.test(status) ? PI_FOOTER_LINES + 1 : PI_FOOTER_LINES;
+}
 
 /**
  * Whether a hint is the last thing before an agent's footer, allowing for a phone's pane being

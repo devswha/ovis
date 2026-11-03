@@ -3307,6 +3307,14 @@ describe("pi's dialogs", () => {
     // redraws around the dialog, and turns stale only when the dialog itself changes
     expect(parseInteractivePrompt("pi", select.replace("0.0%/215k (auto)", "12.3%/215k (auto)"))!.id).toBe(parseInteractivePrompt("pi", select)!.id);
   });
+
+  test("reads a select, confirm and input over an extension's status line in pi's footer", () => {
+    const withStatus = (screen: string) => `${screen}worktree: main · usage 12%\n`;
+    expect(labels(parseInteractivePrompt("pi", withStatus(select)))).toEqual(["Allow once", "Always allow", "Block"]);
+    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Clear session?\n All messages will be lost.\n\n → Yes\n   No\n" + MENU_HINT)))?.kind).toBe("approval");
+    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Branch name?\n\n>\n enter submit  escape/ctrl+c cancel")))?.custom_option_index).toBe(0);
+    expect(parseInteractivePrompt("pi", `${withStatus(select)}Some later output\nand more\n`)).toBeNull();
+  });
 });
 
 // Pi's thinking-selector layout with fictional offered levels; no installed Pi dependency.
@@ -3350,6 +3358,14 @@ describe("pi's thinking selector", () => {
       piThinking(1, true) + "\nAnswer output\nMore output\n> next message",
       screen.replace("    max", "    unknown"),
     ]) expect(parseInteractivePrompt("pi", drawn)).toBeNull();
+  });
+
+  test("reads the selector over an extension's status line in pi's footer", () => {
+    for (const narrow of [false, true]) {
+      const screen = `${piThinking(1, narrow)}\nworktree: main · usage 12%`;
+      expect(labels(parseInteractivePrompt("pi", screen))).toEqual(["off", "medium", "max"]);
+      expect(parseInteractivePrompt("pi", `${screen}\nAnswer output\nMore output`)).toBeNull();
+    }
   });
 });
 
@@ -3518,6 +3534,54 @@ ${MODEL_HINT}
     // pi keeps the answered list on screen; the next request's output buries the hint under it,
     // and the card must not stay open offering a switch into whatever the pane shows by then
     expect(parseInteractivePrompt("pi", `${wide}\nSome later output\nand more`)).toBeNull();
+  });
+
+  // As pi 1.4.0 drew /model in a 68-column pane with a usage extension's `ctx.ui.setStatus`: pi
+  // joins every status into a third footer line under the meter, truncated rather than wrapped.
+  const status = `────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add
+providers.
+
+>
+
+→ ✓ claude-opus-5-5 [pi-claude-cli] · default
+    gpt-4.1 [openai]
+    gpt-4o [openai]
+  (1/58)
+
+  Model Name: Claude Opus 5.5
+
+  Model catalogs refreshed.
+
+  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to
+cancel
+────────────────────────────────────────────────────────────────────
+~/app (main)
+↑52 ↓5.3k R460k W33k CH98.9% $0.461 (sub) 3.7%/1.0M (auto)  claude-o
+Claude: 5h 12% (4h 4m) · 7d 12% (6d 8h) | Codex: 5h 0% (4h 55m) ·...
+`;
+
+  test("reads the list over an extension's status line in pi's footer", () => {
+    const prompt = parseInteractivePrompt("pi", status)!;
+    expect(prompt).not.toBeNull();
+    expect(prompt.question).toBe("Select model (currently claude-opus-5-5 [pi-claude-cli])");
+    expect(labels(prompt)).toEqual(["claude-opus-5-5 [pi-claude-cli] · default", "gpt-4.1 [openai]", "gpt-4o [openai]"]);
+    // the status line is allowed only under the stats line: output under the footer still buries the list
+    expect(parseInteractivePrompt("pi", `${status}Some later output\nand more\n`)).toBeNull();
+    expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\nprogress 50%/100 done\n"))).toBeNull();
+    const under = (line: string) => status.replace(/Claude: 5h.*\n$/, `${line}\n`);
+    // a prompt under the stats line is not a status: a composer, or a shell's once pi has gone
+    for (const prompt of ["❯ a new message", "› next", "> next", "$ ", "# ", "user@host:~/app$", "user@host ~/app (main)>", "➜  app git:(main)"]) {
+      expect(parseInteractivePrompt("pi", under(prompt))).toBeNull();
+    }
+    // statuses that merely start or end with such a character are still statuses
+    for (const shown of ["$0.42 today", "#1234 open", "usage 12%"]) expect(parseInteractivePrompt("pi", under(shown))).not.toBeNull();
+    // a narrow pane cuts the stats line before its meter, as pi cuts that line at 48 columns
+    const narrow = status.replace("$0.461 (sub) 3.7%/1.0M (auto)  claude-o", "$0.461 (sub) 3.7...");
+    expect(labels(parseInteractivePrompt("pi", narrow))).toEqual(labels(parseInteractivePrompt("pi", status)));
+    expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n0.0%/200k (auto)\n"))).not.toBeNull();
+    expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n?/200k\n"))).not.toBeNull();
   });
 });
 
