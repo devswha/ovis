@@ -79,12 +79,14 @@ for (const [stream, cleared] of [
   [`\x1b[?1049h${"a".repeat(2048)}alternate tail`, false],
 ] as const) {
   it(`clears a herdr-core joiner's kept history ahead of its replay only for a cut main-screen tail: ${stream.slice(-14)}`, async () => {
-    const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_HISTORY, retained: stream });
+    const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_JOINER_HISTORY, retained: stream });
     const tail = new ReplayBuffer(1024);
     tail.append(stream);
     expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
-      { type: "pty-data", pane_id: "p", data: (cleared ? coreAttach.CLEAR_HISTORY : "") + tail.text(), replay: true },
+      { type: "pty-data", pane_id: "p", data: (cleared ? coreAttach.CLEAR_JOINER_HISTORY : "") + tail.text(), replay: true },
     ]);
+    // #2664 review: rows a cut tail of in-place updates never draws again stay on the joiner's screen
+    expect(coreAttach.CLEAR_JOINER_HISTORY).not.toMatch(/\x1b\[[02]?J|\x1b\[H/);
   });
 }
 

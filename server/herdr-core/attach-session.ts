@@ -13,6 +13,11 @@ const FOCUS_OFF = "\x1b[?1004l";
  * main screen's old history for the replay to double.
  */
 export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
+/**
+ * The scrollback alone, for a joiner whose bounded tail starts on the main screen: its screen stays, as a cut
+ * tail of in-place updates cannot draw it again (hc has no repaint), and the tail's lines land once.
+ */
+export const CLEAR_JOINER_HISTORY = "\x1b[?1049l\x1b[3J";
 
 /** What the viewer's terminal said about itself (hc's `Display`). */
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
@@ -85,8 +90,8 @@ export interface CoreAttachOptions {
  * TERMINAL_HISTORY_LINES lines, main screen only, as `hc attach --history` shows them.
  */
 export class CoreAttachSession {
-  /** goes ahead of a joiner's bounded replay, which may have lost the first attach's CLEAR_HISTORY */
-  readonly replayPrefix = CLEAR_HISTORY;
+  /** goes ahead of a joiner's cut main-screen replay, which lost the first attach's CLEAR_HISTORY */
+  readonly replayPrefix = CLEAR_JOINER_HISTORY;
   readonly exited: Promise<void>;
   private channel: Channel | null = null;
   private closed = false;
