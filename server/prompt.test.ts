@@ -7360,6 +7360,11 @@ describe("piRunsCommand", () => {
     expect(piRunsCommand(pane, "/not-a-pi-command")).toBe(false);
     expect(piRunsCommand(pane, "/home/me/file.png what is this")).toBe(false);
     expect(piRunsCommand(pane, "switch with /model")).toBe(false);
+    // builtins Pi's menu hides still run when typed exactly
+    expect(piRunsCommand(pane, "/debug")).toBe(true);
+    expect(piRunsCommand(pane, "/arminsayshi")).toBe(true);
+    expect(piRunsCommand(pane, "/dementedelves")).toBe(true);
+    expect(piRunsCommand(pane, "/debug this")).toBe(false);
   });
 
   test("takes a builtin's argument only where Pi takes one, as Pi's submit handler reads it", () => {
