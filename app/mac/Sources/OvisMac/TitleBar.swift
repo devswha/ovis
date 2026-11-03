@@ -28,6 +28,15 @@ enum TitleBar {
         return "(() => {\n\(source)\novisTitleBar(document, \(bar.frame.height), \(zoom.frame.maxX), \(post));\n})();"
     }
 
+    /// Has AppKit look again for the views under the bar that take its clicks. It looks as the bar turns
+    /// transparent, finding the page; but as the window comes on screen (its first showing at a restored
+    /// frame, after Hide or the Dock) it asks only SwiftUI's view around the page, which takes none, and
+    /// the bar then takes every click on the header.
+    static func refresh(_ window: NSWindow) {
+        window.titlebarAppearsTransparent = false
+        window.titlebarAppearsTransparent = true
+    }
+
     /// The window's own bar back, for the setup that takes the page's place.
     static func unfold(_ window: NSWindow) {
         window.toolbar = nil

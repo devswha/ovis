@@ -52,15 +52,15 @@ final class OvisWebView: WKWebView {
     var drawsTitleBar = false
     /// The page's part of the folded bar, while its window has the bar folded.
     private var titleBarScript: String?
-    private var fullScreenWatch: [NSObjectProtocol] = []
+    private var windowWatch: [NSObjectProtocol] = []
     /// The press under way, and whether the page found it on its header's bare surface.
     private var press: NSEvent?
     private var dragArmed = false
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if let window, newWindow !== window, titleBarScript != nil {
-            fullScreenWatch.forEach(NotificationCenter.default.removeObserver)
-            fullScreenWatch = []
+            windowWatch.forEach(NotificationCenter.default.removeObserver)
+            windowWatch = []
             TitleBar.unfold(window)
             titleBarScript = nil
         }
@@ -73,7 +73,10 @@ final class OvisWebView: WKWebView {
         guard drawsTitleBar, let window, titleBarScript == nil, let script = TitleBar.fold(window) else { return }
         titleBarScript = script
         let center = NotificationCenter.default
-        fullScreenWatch = [
+        windowWatch = [
+            center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { if window.occlusionState.contains(.visible) { TitleBar.refresh(window) } }
+            },
             center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated { window.toolbar = nil }
             },
