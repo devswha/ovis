@@ -115,7 +115,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
    * runtime to answer too; "bridge" only this bridge's own answer (`?scope=bridge`, which never asks
    * herdr), for a start whose runtime may rightly be away, such as a herdr TUI the user starts later.
    */
-  async function launch(release: Release | null, ready: "herdr" | "bridge" = "herdr") {
+  async function launch(release: Release | null, ready: "herdr" | "bridge" = readiness()) {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
@@ -131,7 +131,10 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
         if (message?.type === "runtime-restart" && typeof message.id === "string") {
           const id: string = message.id;
           // a bridge an update replaced meanwhile already started on the saved choice: only the asking one restarts
-          void started.promise.then(() => { if (child === candidate) void restartForRuntime(id); });
+          void started.promise.then(() => {
+            if (child === candidate) void restartForRuntime(id);
+            else console.log("A runtime switch came from a bridge already replaced; the bridge now running started on the saved choice.");
+          });
         }
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
         const request = readUpdateIpcRequest(message);
@@ -161,6 +164,15 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     await stopChild();
     throw new Error("The new bridge failed its startup health check.");
   }
+  /**
+   * What a start waits for: the whole health answer when the bridge will serve herdr-core (the core
+   * must answer) or herdr's TUI runs (its socket is there); otherwise the bridge's own answer, as a
+   * herdr TUI that is stopped is no failed start: Settings offers it, and the user starts herdr later.
+   */
+  function readiness(): "herdr" | "bridge" {
+    if (readSavedRuntime(appStateDir, port)?.runtime === "herdr-core") return "herdr";
+    return existsSync(socketPath) ? "herdr" : "bridge";
+  }
   /** One bridge change at a time: a runtime switch and an update's activation wait for each other, neither is dropped. */
   let lane: Promise<unknown> = Promise.resolve();
   function exclusive<T>(change: () => Promise<T>): Promise<T> {
@@ -170,8 +182,9 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   }
   /** A bridge that exited while a change held `switching` was not seen by onExit: it is now. */
   function checkBridge() {
-    if (!stopping && child !== null && child.exitCode !== null) {
-      console.error(`Bridge exited unexpectedly (${child.exitCode}).`);
+    // a change that failed outright cleared `child` (stopChild): no bridge is as gone as an exited one
+    if (!stopping && (child === null || child.exitCode !== null)) {
+      console.error(child === null ? "No bridge is running after a failed change." : `Bridge exited unexpectedly (${child.exitCode}).`);
       void shutdown(1);
     }
   }
@@ -188,14 +201,13 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       switching = true;
       try {
         await stopChild();
-        const target = readSavedRuntime(appStateDir, port)?.runtime ?? "herdr";
-        try { await launch(active, target === "herdr-core" ? "herdr" : "bridge"); }
+        try { await launch(active); }
         catch (error) {
           // a stop that cut the wait short is no failed start: the choice stays for the next start
           if (stopping || !restoreRuntime(appStateDir, port, id)) throw error;
           console.error(`The bridge failed to start on the chosen runtime (${error instanceof Error ? error.message : error}); going back to the previous one.`);
           await stopChild();
-          await launch(active, "bridge");
+          await launch(active);
         }
       } catch (error) {
         console.error(error);
