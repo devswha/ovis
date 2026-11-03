@@ -277,14 +277,15 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     status(3, { app: "codex", state: "blocked", kind: "permission", msg: "Allow bash?" });
     status(4, { app: "codex", state: "blocked", kind: "permission", msg: "Allow bash?" });
     status(5, { app: "codex", state: "working", progress: 40 });
-    // the same step of 10, and a message and kind nobody is shown (not blocked): no news
-    status(6, { app: "codex", state: "working", progress: 47, msg: "Reading files", kind: "question" });
+    // the same percent, and a message and kind nobody is shown (not blocked): no news
+    status(6, { app: "codex", state: "working", progress: 40, msg: "Reading files", kind: "question" });
+    // the row prints the exact percent: one more is news
     status(61, { app: "codex", state: "working", progress: 41 });
     status(7, { app: "codex", state: "idle" });
     core.notify(channel, "missed", { seq: 8, terminals: [] });
     await ended.promise;
     const updated = { event: "pane.updated", data: { type: "pane_updated", pane_id: "t1" } };
-    expect(frames).toEqual([updated, updated, updated]);
+    expect(frames).toEqual([updated, updated, updated, updated]);
   });
 
   it("hears a message or progress that was there as the stream started go away", async () => {

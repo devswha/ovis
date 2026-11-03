@@ -86,7 +86,8 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
         <span className="agent-title-line">
           <span className="agent-title">{title}</span>
           {/* the agent's own words, as text, cut to fit: what it waits for while it is blocked (the tooltip says it all) */}
-          {status === "blocked" && blockedShort && <span className="agent-blocked">{blockedShort}</span>}
+          {status === "blocked" && blockedShort && <span className="agent-blocked" aria-hidden={blocked !== null && blocked !== blockedShort ? "true" : undefined}>{blockedShort}</span>}
+          {status === "blocked" && blocked !== null && blocked !== blockedShort && <span className="visually-hidden">{blocked}</span>}
           {/* how far the agent says it is, while it works or waits: its percent after the title, and in words for a
               screen reader (a role inside the row's button would not be read) */}
           {showProgress && <>
@@ -302,6 +303,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const shownEmpty = useAnnouncedText(rows.length === 0 && !filter.active ? (loading ? t("Loading agents…") : t("No agents running")) : null);
   const menuPinned = menu !== null && pinned.includes(menu.key);
   const menuShown = menuRow === undefined ? null : describe(menuRow);
+  // a phone has no tooltip: its sheet says a blocked agent's whole reason, as the row's tooltip does
+  const menuBlocked = menuRow !== undefined && menuShown?.online && activity.status(menuRow.machine.id, menuRow.entry.pane) === "blocked" ? blockedNote(menuRow.entry.pane, t) : null;
   const menuMuted = menuRow !== undefined && muted !== null && muted.includes(paneMuteKey(menuRow.machine.id, menuRow.entry.pane.pane_id));
   const runPin = (state: PinMenu): void => {
     // where the menu hands the focus back (lib RowMenu): the ⋯ itself unless the right-click said otherwise
@@ -334,7 +337,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         {split.rest.length > 0 && <ul className="agent-list">{split.rest.map(agentItem)}</ul>}
       </>}
     </div>
-    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.context} detail={menuShown.tokens.join(" · ") || undefined} onClose={closeMenu} items={[
+    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.context} detail={[menuBlocked, ...menuShown.tokens].filter(Boolean).join(" · ") || undefined} onClose={closeMenu} items={[
       menuPinned
         ? { id: "unpin", label: t("Unpin agent"), icon: PinOff, run: () => runPin(menu) }
         : { id: "pin", label: t("Pin agent"), icon: Pin, run: () => runPin(menu) },

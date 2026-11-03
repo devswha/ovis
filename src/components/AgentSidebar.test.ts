@@ -122,7 +122,10 @@ describe("AgentSidebar, what herdr-core reports", () => {
     ])]);
     expect([...html.matchAll(/data-pane="([^"]+)"(?: data-pin-key="[^"]+")?(?: data-depth="(\d)")?/g)].map((match) => [match[1], match[2] ?? "0"]))
       .toEqual([["t1", "0"], ["t2", "1"], ["t9", "0"], ["t3", "0"], ["t4", "0"]]);
-    expect(texts(html, "agent-blocked")).toEqual(["Needs permission", "Has a question", "payment"]);
+    expect([...html.matchAll(/<span class="agent-blocked"[^>]*>(.*?)<\/span>/g)].map((match) => match[1])).toEqual(["Needs permission", "Has a question", "payment"]);
+    // a screen reader hears the whole reason in the row, not the cut one
+    expect(html).toContain('<span class="agent-blocked" aria-hidden="true">Needs permission</span><span class="visually-hidden">Needs permission: Allow bash: rm -rf build?</span>');
+    expect(html).toContain('<span class="agent-blocked">payment</span>');
     expect(html).not.toContain("<branch>");
     // the whole reason is in the tooltip
     expect(tooltips(html)[1]).toContain("Needs permission: Allow bash: rm -rf build?");

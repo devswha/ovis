@@ -49,9 +49,7 @@ const STATUS_EVENT = "pane.agent_status_changed";
 const NOT_STRUCTURE = new Set([STATUS_EVENT, "pane.focused", "pane.output_matched"]);
 /**
  * What of a status the rows draw beyond its state, as `subscribe` compares reports: the kind and
- * message of a blocked agent, and its progress in steps of 10, so an agent counting up a percent at
- * a time does not make every browser read the session again for each. The snapshot that follows
- * carries the exact value.
+ * message of a blocked agent, and its progress, which the rows print as its exact percent.
  */
 function shownFacts(report: unknown): string {
   if (!isRecord(report) || typeof report["state"] !== "string") return NO_FACTS;
@@ -61,7 +59,7 @@ function shownFacts(report: unknown): string {
     ...(typeof report["msg"] === "string" ? { msg: report["msg"] } : {}),
     ...(typeof report["progress"] === "number" ? { progress: report["progress"] } : {}),
   });
-  return JSON.stringify([facts.agent_kind ?? null, facts.agent_message ?? null, facts.agent_progress === undefined ? null : Math.floor(facts.agent_progress / 10)]);
+  return JSON.stringify([facts.agent_kind ?? null, facts.agent_message ?? null, facts.agent_progress ?? null]);
 }
 const NO_FACTS = JSON.stringify([null, null, null]);
 /** A status or layout notification must fit in 4 MiB, even across hc frames. */
