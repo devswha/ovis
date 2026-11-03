@@ -198,6 +198,11 @@ interface TranscriptStream {
   seen?: { from: number; digest: bigint };
   /** where the boundary scan found the Claude records that hold pictures (PictureIndex) */
   pictures?: PictureIndex;
+  /**
+   * a Claude transcript's version as this read found it (identity, size and times), and when the read
+   * began: performance.now(), and Date.now() to set beside the file's times (vouchedPictureSteps)
+   */
+  version?: { key: string; mtimeMs: number; ctimeMs: number; began: number; wall: number };
 }
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
@@ -289,7 +294,9 @@ function transcriptStream(source: StreamSource, path: string, stat: { dev: numbe
     });
     chain = earlier.length === 0 ? "" : `-${createHash("sha256").update(earlier.join("\n")).digest("base64url").slice(0, 10)}`;
   }
-  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat, source === "muse-transcript")}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd };
+  const version = source === "claude-transcript"
+    ? { key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, began: performance.now(), wall: Date.now() } : undefined;
+  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat, source === "muse-transcript")}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd, version };
 }
 
 function readStream(stream: TranscriptStream, from: number, to: number): Buffer {
@@ -341,10 +348,21 @@ const clearScans = new Map<string, { id: string; scanned: number; floor: number;
  * `unread` holds the records since the /clear the endpoint may not judge (mayBeUnread): the search
  * refuses at one that names what it looks for, so a lookup with one before its record or its call
  * searches as well.
+ *
+ * `bytes` digests what it was built from, so a scan kept from before an in-place rewrite of any of it
+ * is found out (vouchedPictureSteps), and `vouched` is the file's version a read of those bytes last
+ * matched, with when that read began (performance.now(), and Date.now()).
  */
-interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][] }
-/** a record the index holds: where it starts and ends (at its newline), and its bytes' digest, a window at a time (recordShapeSteps) */
-interface IndexedPicture { start: number; end: number; digest: bigint }
+interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][]; bytes: PictureBytes; vouched: { key: string; at: number; wall: number } | null }
+/**
+ * The bytes an index was built from, [from, through): chained xxHash3 digests of PICTURE_DIGEST_BYTES
+ * pieces at fixed offsets up to `hashed` (the first piece starts at `from`), and what comes after, kept
+ * as it is until its piece is whole, so a scan that goes on later digests the same pieces.
+ */
+interface PictureBytes { from: number; hashed: number; digest: bigint; pending: Uint8Array; through: number }
+const PICTURE_DIGEST_BYTES = 64 * 1024;
+/** a record the index holds: where it starts and where it ends (at its newline) */
+interface IndexedPicture { start: number; end: number }
 
 /**
  * The uuids of records the branch does not follow (a sidechain's, most of all), by a 32-bit digest
@@ -391,7 +409,31 @@ function putMark(marks: UuidMarks, mark: number): void {
   marks.table[slot] = mark;
   marks.count += 1;
 }
-const noPictures = (): PictureIndex => ({ at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0 }, blind: null, unread: [] });
+/** an index of no pictures, of the bytes from `from` on, which the read `stream` makes now */
+const noPictures = (from: number, stream: TranscriptStream): PictureIndex => ({
+  at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0 }, blind: null, unread: [],
+  bytes: { from, hashed: from, digest: 0n, pending: new Uint8Array(0), through: from },
+  vouched: stream.version ? { key: stream.version.key, at: performance.now(), wall: Date.now() } : null,
+});
+/** the end of the digest piece `at` is in (PictureBytes) */
+const pieceEnd = (at: number): number => (Math.floor(at / PICTURE_DIGEST_BYTES) + 1) * PICTURE_DIGEST_BYTES;
+/** Digests what of `data`, the bytes at `at` on, lies past what `bytes` holds (a scan reads some of them again). */
+function digestPictureBytes(bytes: PictureBytes, data: Uint8Array, at: number): void {
+  const skip = bytes.through - at;
+  if (skip >= data.length) return;
+  // a gap would leave bytes undigested: what follows it is never vouched for
+  if (skip < 0) { bytes.through = Number.POSITIVE_INFINITY; return; }
+  let rest = data.subarray(skip);
+  let pending = bytes.pending;
+  for (let need = pieceEnd(bytes.hashed) - bytes.hashed - pending.length; rest.length >= need; need = PICTURE_DIGEST_BYTES) {
+    bytes.digest = Bun.hash.xxHash3(pending.length > 0 ? Buffer.concat([pending, rest.subarray(0, need)]) : rest.subarray(0, need), bytes.digest);
+    bytes.hashed = pieceEnd(bytes.hashed);
+    pending = new Uint8Array(0);
+    rest = rest.subarray(need);
+  }
+  bytes.pending = Buffer.concat([pending, rest]);
+  bytes.through = bytes.hashed + bytes.pending.length;
+}
 
 /**
  * Whether the endpoint may not judge this record (recordShapeSteps' UNREAD, or a call id callIdSteps
@@ -442,9 +484,7 @@ function notePicture(index: PictureIndex, ends: Map<string, number>, known: numb
   const before = picture && ((followed ? ends.size === known : ends.has(entry.uuid)) || marked(index.loose, mark));
   if (!followed) markUuid(index.loose, mark);
   if (!picture || before) return;
-  let digest = 0n;
-  for (let at = 0; at < line.length; at += IMAGE_SEARCH_WINDOW) digest = Bun.hash.xxHash3(line.subarray(at, at + IMAGE_SEARCH_WINDOW), digest);
-  index.at.set(entry.uuid, { start, end: newline, digest });
+  index.at.set(entry.uuid, { start, end: newline });
 }
 
 function keepClaudeSetting(settings: ClaudeSettings, entry: unknown, start: number, end: number): void {
@@ -492,7 +532,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // a file rewritten since a boundary was kept can still end in the tail that boundary is checked by
   let scan = fresh ? undefined : previous;
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
-    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures() } : {}) };
+    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
@@ -517,7 +557,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
         scan.floor = base + offset;
         if (scan.claude) scan.claude = { model: [], effort: [] };
         // what lies before the /clear is never judged
-        if (scan.pictures) scan.pictures = noPictures();
+        if (scan.pictures) scan.pictures = noPictures(base + offset, stream);
       }
       else if (!skipping && source !== "claude-transcript" && (source === "copilot-transcript" ? COPILOT_SETTING_TYPES : SETTING_TYPES).some((type) => line.includes(type))) {
         try {
@@ -554,6 +594,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
       scan.scanned = base + offset;
       if (++judged % RECORDS_PER_STEP === 0) yield;
     }
+    if (scan.pictures) digestPictureBytes(scan.pictures.bytes, bytes, base);
     carry = bytes.subarray(offset);
     // An oversized data record cannot be a native clear control envelope; a Claude prompt that is a
     // screenshot can still be where the session's branch forks
@@ -2400,7 +2441,7 @@ type ShapeRead = RecordShape | typeof NOT_A_RECORD | typeof UNREAD;
  * no record can hold, a nonce made for this read, and its place in `cut` (`wholeString` reads it
  * back). So a record of any size costs a window and its shape, and a picture only its own text.
  */
-function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, number], read?: { digest: bigint }): Steps<ShapeRead> {
+function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, number]): Steps<ShapeRead> {
   const nonce = randomUUID();
   const kept: Buffer[] = [];
   let size = 0;
@@ -2414,7 +2455,6 @@ function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, numb
   const keep = (bytes: Buffer) => { kept.push(Buffer.from(bytes)); size += bytes.length; };
   for (let position = start; position < end; position += IMAGE_SEARCH_WINDOW) {
     const bytes = readStream(stream, position, Math.min(end, position + IMAGE_SEARCH_WINDOW));
-    if (read) read.digest = Bun.hash.xxHash3(bytes, read.digest);
     let from = cutting ? -1 : 0;
     for (let index = 0; index < bytes.length; index += 1) {
       const byte = bytes[index]!;
@@ -2659,7 +2699,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     // a read rejected after its scan published a boundary takes that boundary back (unless a newer read replaced it):
     // it was built from bytes that no longer stand, and a later lookup must not reuse it as an append's prefix
     yield* applyHistoryBoundarySteps(path, stream, "claude-transcript", apart);
-    const picture = yield* claudePictureSteps(stream, match);
+    const picture = yield* claudePictureSteps(stream, match, apart);
     // the file held still for the whole read (its size, times and identity, by the pinned fd and by path)
     if (!apart || current(stat)) return picture;
     // a boundary kept from before the change is checked only by its tail, which a rewrite can keep
@@ -2683,7 +2723,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
     scans.push(active);
     active.current = () => current(now);
     yield* applyHistoryBoundarySteps(path, active, "claude-transcript", true, true);
-    const again = yield* claudePictureSteps(active, match);
+    const again = yield* claudePictureSteps(active, match, true);
     // a further change during this read is retried by a later request
     return again !== null && current(now) ? again : unpublish(stream, active);
   } catch { return unpublish(...scans); }
@@ -2726,20 +2766,77 @@ function forgetPictures(index: PictureIndex): void {
 /** the record judged is not the one the picture is in: the search goes on (pictureInRecordSteps) */
 const NOT_IT = "not it";
 
-function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray): Steps<TranscriptPicture | null> {
+/**
+ * A same-size rewrite within one filesystem timestamp tick keeps the version: a read of the bytes
+ * vouches for a version to a later lookup only when it began at least this long after the version's
+ * mtime and ctime (claude-command-history's RACY_MS), and to any lookup that began before it.
+ */
+const PICTURE_RACY_MS = 3000;
+/** a read that checks an index's bytes (vouchedPictureSteps), by the file version it checks: lookups of one version share it */
+interface PictureCheck { bytes: PictureBytes; began: number; wall: number; stands?: boolean }
+const pictureChecks = new Map<string, PictureCheck>();
+const vouches = (read: { at: number; wall: number } | { began: number; wall: number }, version: NonNullable<TranscriptStream["version"]>): boolean =>
+  ("at" in read ? read.at : read.began) >= version.began
+  || (Date.now() >= read.wall && read.wall - version.mtimeMs >= PICTURE_RACY_MS && read.wall - version.ctimeMs >= PICTURE_RACY_MS);
+const sameBytes = (left: PictureBytes, right: PictureBytes): boolean => left.from === right.from && left.hashed === right.hashed
+  && left.digest === right.digest && left.through === right.through && Buffer.from(left.pending).equals(right.pending);
+
+/**
+ * Trusts the stream's picture index only while the bytes it was built from are still what the file
+ * holds. A scan kept from before a rewrite in place that grew the file is checked only by the bytes just
+ * before where it ended, so a line before the record it indexed may since have become another record of
+ * that uuid, or one the endpoint cannot judge: the search would decide otherwise. A version an earlier
+ * read vouched for (PICTURE_RACY_MS) is trusted; any other is read once, from where the index starts to
+ * where the scan read, and the lookups of that version that began before the read share it. Bytes
+ * that do not match turn the index off (forgetPictures). `apart`: a cooperative lookup, which can wait for
+ * another's read.
+ */
+function* vouchedPictureSteps(stream: TranscriptStream, apart: boolean): Steps<void> {
+  const index = pictureIndexOn ? stream.pictures : undefined;
+  const version = stream.version;
+  if (index === undefined || (index.blind !== null && index.blind <= index.bytes.from)) return;
+  if (version === undefined) return forgetPictures(index);
+  if (index.vouched?.key === version.key && vouches(index.vouched, version)) return;
+  let check = pictureChecks.get(version.key);
+  if (check === undefined || !sameBytes(check.bytes, index.bytes) || !vouches(check, version) || (check.stands === undefined && !apart)) {
+    check = { bytes: { ...index.bytes }, began: performance.now(), wall: Date.now() };
+    if (apart) remember(pictureChecks, version.key, check, 32);
+    try { check.stands = yield* pictureBytesStandSteps(stream, index.bytes); }
+    finally { check.stands ??= false; }
+  }
+  while (check.stands === undefined) yield;
+  if (check.stands) index.vouched = { key: version.key, at: check.began, wall: check.wall };
+  else forgetPictures(index);
+}
+
+/** Whether the file still holds the bytes `bytes` digests, read as the scan read them (raw, every range). */
+function* pictureBytesStandSteps(stream: TranscriptStream, bytes: PictureBytes): Steps<boolean> {
+  if (bytes.through > stream.length) return false;
+  const raw = { ...stream, hidden: undefined };
+  let digest = 0n;
+  for (let at = bytes.from; at < bytes.hashed;) {
+    // whole digest pieces in each read: IMAGE_SEARCH_WINDOW is a multiple of PICTURE_DIGEST_BYTES
+    const end = Math.min(bytes.hashed, (Math.floor(at / IMAGE_SEARCH_WINDOW) + 1) * IMAGE_SEARCH_WINDOW);
+    const read = readStream(raw, at, end);
+    if (read.length !== end - at) return false;
+    for (let piece = at; piece < end; piece = Math.min(end, pieceEnd(piece))) digest = Bun.hash.xxHash3(read.subarray(piece - at, Math.min(end, pieceEnd(piece)) - at), digest);
+    at = end;
+    yield;
+  }
+  return digest === bytes.digest && readStream(raw, bytes.hashed, bytes.through).equals(bytes.pending);
+}
+
+function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray, apart: boolean): Steps<TranscriptPicture | null> {
   // the boundary scan's last read was a step's: the record's read is the next one's
   yield;
+  yield* vouchedPictureSteps(stream, apart);
   const uuid = match[1]!;
   const indexed = indexedPicture(stream, uuid);
-  // A scan kept from before an in-place rewrite that grew the file is checked only by its tail, so its
-  // record may since have moved: it is taken only while it is still a line, and the bytes the scan read
-  // there. Otherwise, or when it is not the picture's after all, the search decides, and the scan's
-  // index, which holds offsets from before that rewrite, is not used again (forgetPictures).
+  // The index is trusted only while the bytes it was built from stand (vouchedPictureSteps), its record
+  // among them. A record that is not the picture's after all leaves it to the search all the same.
   if (indexed !== undefined) {
-    const read = { digest: 0n };
-    const found = (indexed.start === 0 || readStream(stream, indexed.start - 1, indexed.start)[0] === 0x0a) && readStream(stream, indexed.end, indexed.end + 1)[0] === 0x0a
-      ? yield* pictureInRecordSteps(stream, match, [indexed.start, indexed.end], read) : NOT_IT;
-    if (found !== NOT_IT && read.digest === indexed.digest) return found;
+    const found = yield* pictureInRecordSteps(stream, match, [indexed.start, indexed.end]);
+    if (found !== NOT_IT) return found;
     forgetPictures(stream.pictures!);
     yield;
   }
@@ -2753,9 +2850,9 @@ function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray): 
 }
 
 /** The picture `match` names, judged in the record at `range` as the search judges each record it finds. */
-function* pictureInRecordSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray, range: [number, number], read?: { digest: bigint }): Steps<TranscriptPicture | null | typeof NOT_IT> {
+function* pictureInRecordSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray, range: [number, number]): Steps<TranscriptPicture | null | typeof NOT_IT> {
   let judged = 0;
-  const shape = yield* recordShapeSteps(stream, range, read);
+  const shape = yield* recordShapeSteps(stream, range);
   // a record the endpoint cannot judge could be the one the page draws: serve nothing then
   if (shape === UNREAD) return null;
   if (shape === NOT_A_RECORD) return NOT_IT;

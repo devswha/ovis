@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { forgetTranscriptState, pictureIndexForTests, transcriptImage, transcrip
 
 const roots: string[] = [];
 afterEach(() => {
+  setSystemTime();
   forgetTranscriptState();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -378,6 +379,12 @@ describe("finding a picture's record", () => {
     return cooperative;
   }
 
+  /**
+   * The clock as it stands once a session has been quiet a while: a read of its bytes then vouches for
+   * the version to every later lookup, not only to those begun before it (vouchedPictureSteps)
+   */
+  const quiet = () => setSystemTime(new Date(Date.now() + 10_000));
+
   it("reads a few windows for each tool's picture of a long transcript, not the transcript", async () => {
     // 40 MiB of records the session's branch follows, then four tool calls, each answered with a picture
     let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
@@ -387,8 +394,18 @@ describe("finding a picture's record", () => {
       text += line({ type: "user", uuid: id(11 + 2 * call), message: { content: [{ type: "tool_result", tool_use_id: `read-${call}`, content: [picture] }] } });
     }
     const path = transcript(text);
-    // the first lookup reads the whole transcript once, for the boundary it keeps
-    exact(await transcriptImageAsync(path, `${id(11)}:0:0`));
+    quiet();
+    // the first lookup reads the whole transcript once, for the boundary it keeps, which vouches for the
+    // bytes it read: they are not read again before its index is used
+    let cold = 0;
+    const counted = fs.readSync;
+    const counting = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const result = counted(...args);
+      cold += result;
+      return result;
+    }) as typeof fs.readSync);
+    try { exact(await transcriptImageAsync(path, `${id(11)}:0:0`)); } finally { counting.mockRestore(); }
+    expect(cold).toBeLessThan(Buffer.byteLength(text) * 1.2);
     for (let call = 0; call < 4; call += 1) {
       let bytes = 0;
       const read = fs.readSync;
@@ -402,6 +419,32 @@ describe("finding a picture's record", () => {
     }
   });
 
+  it("reads a transcript once for a page of pictures right after an append, while the session is not yet quiet", async () => {
+    // within the timestamp tick of the last write a kept scan's bytes are read again before its index is
+    // trusted: once for the lookups of that version begun before that read, not once for each
+    let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
+    for (let at = 0; at < 16; at += 1) text += line({ type: "progress", uuid: id(100 + at), data: "x".repeat(1024 * 1024) });
+    for (let call = 0; call < 4; call += 1) {
+      text += line({ type: "assistant", uuid: id(10 + 2 * call), message: { content: [{ type: "tool_use", id: `read-${call}`, name: "Read" }] } });
+      text += line({ type: "user", uuid: id(11 + 2 * call), message: { content: [{ type: "tool_result", tool_use_id: `read-${call}`, content: [picture] }] } });
+    }
+    const path = transcript(text);
+    exact(await transcriptImageAsync(path, `${id(11)}:0:0`));
+    appendFileSync(path, line({ type: "progress", data: "the session goes on" }));
+    let bytes = 0;
+    const read = fs.readSync;
+    const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const value = read(...args);
+      bytes += value;
+      return value;
+    }) as typeof fs.readSync);
+    try {
+      for (const image of await Promise.all([0, 1, 2, 3].map((call) => transcriptImageAsync(path, `${id(11 + 2 * call)}:0:0`)))) exact(image);
+    } finally { watch.mockRestore(); }
+    expect(bytes).toBeGreaterThan(Buffer.byteLength(text));
+    expect(bytes).toBeLessThan(Buffer.byteLength(text) + 4 * 3 * 1024 * 1024);
+  });
+
   // 40 MiB between a call and its result, in lines of 64 KiB and in lines just over a search window
   for (const kib of [64, 1025]) it(`reads about what lies between a tool's picture and a call far back (${kib} KiB lines)`, async () => {
     let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
@@ -409,6 +452,7 @@ describe("finding a picture's record", () => {
     for (let at = 0; at < Math.floor(40 * 1024 / kib); at += 1) text += line({ type: "progress", uuid: id(100 + at), data: "x".repeat(kib * 1024) });
     const result = Buffer.byteLength(text);
     const path = transcript(text + line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } }));
+    quiet();
     exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
     let bytes = 0;
     const read = fs.readSync;
@@ -564,6 +608,54 @@ describe("finding a picture's record", () => {
     expect(Buffer.from((await both(twice, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
   });
 
+  // the record itself is where it was, byte for byte: only a line before it changed, to one of the same
+  // length, and the tail a kept scan is checked by is where it was. The change lies more than a digest
+  // piece (64 KiB) before the end of what the scan read: in what it digested, not in what it kept as is
+  async function earlierRewritten(earlier: string, text: string, ref: string) {
+    const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
+    const tail = pad(256 * 1024) + line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
+    const stand = pad(Buffer.byteLength(earlier));
+    expect(Buffer.byteLength(stand)).toBe(Buffer.byteLength(earlier));
+    const path = transcript(pad(200) + stand + text + tail);
+    exact(await both(path, ref));
+    writeFileSync(path, pad(200) + earlier + text + tail);
+    appendFileSync(path, pad(100));
+    return await both(path, ref);
+  }
+  const between = line({ type: "progress", data: "a record between" });
+  const drawnOne = (image = picture) => line({ type: "user", uuid: id(1), message: { content: [image] } });
+  it("serves the picture a line rewritten in place before the record a kept scan indexed now holds, as the search does", async () => {
+    const first = await earlierRewritten(drawnOne(otherPicture), between + drawnOne(), `${id(1)}:0`);
+    expect(Buffer.from(first!.bytes).equals(other)).toBe(true);
+  });
+  it("refuses as the search does when a line before the record a kept scan indexed is rewritten in place to one it cannot judge naming the uuid", async () => {
+    expect(await earlierRewritten(unreadable(id(1)), between + drawnOne(), `${id(1)}:0`)).toBeNull();
+  });
+  it("reads a kept scan's bytes again after a same-size rewrite that kept the file's times (one timestamp tick)", async () => {
+    // on NTFS two writes a millisecond apart often keep the file's id, size, mtime and ctime: the version
+    // a lookup vouched for then names other bytes, and only a read begun past that tick vouches for it
+    const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
+    const path = transcript(pad(Buffer.byteLength(drawnOne(otherPicture))) + between + drawnOne() + pad(200));
+    exact(await both(path, `${id(1)}:0`));
+    const kept = fs.statSync(path);
+    writeFileSync(path, drawnOne(otherPicture) + between + drawnOne() + pad(200));
+    const times = { mtimeMs: kept.mtimeMs, ctimeMs: kept.ctimeMs, mtime: kept.mtime, ctime: kept.ctime };
+    const [fstat, stat] = [fs.fstatSync, fs.statSync];
+    const watches = [
+      spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => Object.assign(fstat(...args), times)) as typeof fs.fstatSync),
+      spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => { const value = stat(...args); return value && "mtimeMs" in value && args[0] === path ? Object.assign(value, times) : value; }) as typeof fs.statSync),
+    ];
+    let image: Awaited<ReturnType<typeof transcriptImageAsync>>;
+    try { image = await both(path, `${id(1)}:0`); } finally { for (const watch of watches) watch.mockRestore(); }
+    expect(Buffer.from(image!.bytes).equals(other)).toBe(true);
+  });
+
+  it("refuses as the forward search does when a line before the call is rewritten in place to one it cannot judge naming the call", async () => {
+    const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
+    const result = line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
+    expect(await earlierRewritten(unreadable("read"), call + between + result, `${id(3)}:0:0`)).toBeNull();
+  });
+
 });
 
 describe("the index against the search, on random transcripts", () => {
@@ -587,8 +679,11 @@ describe("the index against the search, on random transcripts", () => {
   const uuids = [1, 2, 3, 4, 5].map(id);
   // a call id the parser takes from a number is looked for in every spelling of it
   const calls: (string | number)[] = ["c1", "c2", 7];
-  // a record past what the endpoint holds: a million short names, and the uuid or call id it names
-  const unreadable = line({ type: "file-history-snapshot", messageId: "NAMED", snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
+  // a record past what the endpoint holds: a million short names, and the uuid or call id it names, every
+  // one of the same length (a uuid's), so one can be rewritten in place to name another
+  const unreadableLine = line({ type: "file-history-snapshot", messageId: "NAMED", snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
+  const unreadable = { replace: (_: string, named: string) => unreadableLine.replace("NAMED", named.padEnd(36, "_")) };
+  const isUnreadable = (text: string) => text.startsWith('{"type":"file-history-snapshot"');
   const tail = () => line({ type: "progress", data: "a tail longer than the sixty-four bytes a kept scan is checked by" });
 
   function records(rng: ReturnType<typeof random>, count: number, state: { fresh: number; last: string | null; answers: string[]; unread: boolean; budget: { unread: number } }) {
@@ -635,7 +730,7 @@ describe("the index against the search, on random transcripts", () => {
   function rewrite(rng: ReturnType<typeof random>, lines: string[]): string[] {
     const next = [...lines];
     const body = next.length - 1;
-    const kind = rng.int(5);
+    const kind = rng.int(6);
     if (kind === 0) {
       // another picture of the same size in place
       const at = rng.int(body);
@@ -644,6 +739,30 @@ describe("the index against the search, on random transcripts", () => {
       // two lines next to each other trade places
       const at = rng.int(body - 1);
       [next[at], next[at + 1]] = [next[at + 1]!, next[at]!];
+    } else if (kind === 5) {
+      // a line before a record that holds a picture (or before the call it answers) becomes, at the
+      // same length, another record of its uuid with a picture, or one the endpoint cannot judge naming
+      // its uuid or call: the record itself, and the tail a kept scan is checked by, stay where they were
+      const held = next.flatMap((text, at) => {
+        if (at >= body || text.length > 100_000) return [];
+        const entry = JSON.parse(text) as { uuid?: string; message?: { content?: { type?: string; tool_use_id?: string; content?: unknown }[] } };
+        const content = entry.message?.content;
+        if (typeof entry.uuid !== "string" || !Array.isArray(content)) return [];
+        const result = content.find((block) => block.type === "tool_result" && Array.isArray(block.content));
+        return content.some((block) => block.type === "image") || result ? [{ at, uuid: entry.uuid, call: result?.tool_use_id }] : [];
+      });
+      if (held.length > 0) {
+        const { at: record, uuid, call } = rng.pick(held);
+        const earlier = next.flatMap((text, at) => at < record ? [at] : []);
+        const unread = earlier.filter((at) => isUnreadable(next[at]!));
+        const at = unread.length > 0 && rng.next() < 0.5 ? rng.pick(unread) : earlier.length > 0 ? rng.pick(earlier) : -1;
+        if (at !== -1 && isUnreadable(next[at]!)) next[at] = unreadable.replace("NAMED", call !== undefined && rng.next() < 0.5 ? call : uuid);
+        else if (at !== -1) {
+          const drawn = line({ type: "user", uuid, message: { role: "user", content: [rng.pick(pictures), { type: "text", text: "" }] } });
+          const room = Buffer.byteLength(next[at]!) - Buffer.byteLength(drawn);
+          if (room >= 0) next[at] = drawn.replace('"text":""', `"text":"${" ".repeat(room)}"`);
+        }
+      }
     } else if (kind === 3 && body >= 2) {
       // two lines next to each other become one
       const at = rng.int(body - 1);
@@ -681,6 +800,17 @@ describe("the index against the search, on random transcripts", () => {
       roots.push(dir);
       const path = join(dir, "session.jsonl");
       const state = { fresh: 0, last: null as string | null, answers: [] as string[], unread: false, budget };
+      // half the rounds as a session long quiet: every write gets an mtime of its own, well before a clock
+      // set ahead, so a read vouches for a version to later lookups (vouchedPictureSteps); the others in
+      // the tick of the last write, where every lookup after a change reads the bytes again
+      const quiet = rng.next() < 0.5;
+      let writes = 0;
+      const write = (text: string) => {
+        writeFileSync(path, text);
+        if (quiet) { const at = new Date(Date.UTC(2026, 0, 1) + ++writes * 1000); utimesSync(path, at, at); }
+      };
+      if (quiet) setSystemTime(new Date(Date.now() + 3_600_000));
+      else setSystemTime();
       // now and then a record the endpoint cannot judge opens the transcript, before a picture or a call it names
       const first: string[] = [];
       if (budget.unread > 0 && rng.next() < 0.12) {
@@ -696,7 +826,7 @@ describe("the index against the search, on random transcripts", () => {
         state.last = null;
       }
       let lines = [...first, ...records(rng, 4 + rng.int(20), state), tail()];
-      writeFileSync(path, lines.join(""));
+      write(lines.join(""));
       for (let step = 0; step < 3; step += 1) {
         if (step > 0) {
           const change = rng.int(3);
@@ -706,7 +836,7 @@ describe("the index against the search, on random transcripts", () => {
             // grown: the old tail stays where it was, and records follow it
             if (change === 2) lines = [...lines, ...records(rng, 1 + rng.int(3), state), tail()];
           }
-          writeFileSync(path, lines.join(""));
+          write(lines.join(""));
         }
         // the pictures the records hold, mostly, and any ref
         const held = lines.flatMap((text) => {
