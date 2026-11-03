@@ -573,6 +573,17 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
+    // that wait ends the moment the command has exited: a plain exit is not held for it (timing is the
+    // behaviour here, bounded well past a host's start and well under the 200 ms wait plus a quiet one)
+    it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
+      const started = performance.now();
+      const ended = run("sh", ["-c", "exit 7"]);
+      try {
+        expect(await ended.exited).toBe(7);
+        expect(performance.now() - started).toBeLessThan(150);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
     // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
     // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
     it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {

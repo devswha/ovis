@@ -1241,7 +1241,7 @@ export interface HomeSignIn {
 export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | "unknown" | null> {
   // every source of the home is read on its own: one that cannot be read leaves the home unknown, whatever
   // another gives, and only then are they weighed as the list weighs them
-  let signIn: Found | undefined;
+  let signIn: (SignIn & { source: string }) | undefined;
   // every token a source holds, whichever one is in use: a token only moved between sources is not new
   const held: SignIn[] = [];
   if (provider === "claude") {
@@ -1251,7 +1251,7 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
     const file = credentialFile(join(claudeAt.dir, ".credentials.json"), claudeSignIn);
     if (keychain === "unknown" || file === "unknown") return "unknown";
     held.push(...[keychain, file].filter((entry): entry is SignIn => entry !== null));
-    signIn = keychainOrFile(keychain, file, claudeAt.source, claudeAccount(claudeAt.config))[0];
+    signIn = keychainOrFile(keychain, file, claudeAt.source, claudeAccount(claudeAt.config)).find((entry): entry is Found & SignIn => !("locked" in entry));
   } else {
     const dir = home.kind === "dir" ? home.dir : join(ctx.home, ".codex");
     const file = credentialFile(join(dir, "auth.json"), codexSignIn);
@@ -1262,7 +1262,7 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
     if (file !== null) signIn = { ...file, source: dir };
     else if (keychain !== null) signIn = { ...keychain, source: "keychain" };
   }
-  if (signIn === undefined || "locked" in signIn) return null;
+  if (signIn === undefined) return null;
   return {
     key: accountKey(provider, signIn.account, signIn.source),
     label: signIn.account?.label ?? signIn.account?.id ?? null,

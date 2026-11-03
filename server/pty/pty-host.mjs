@@ -95,31 +95,40 @@ function endGroup(signal) {
 }
 /**
  * A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. As the
- * Rust host does, the close waits EXIT_QUIET_MS for its exit; one still running then is hung up by the host,
- * and killed KILL_AFTER_MS later if it is still there, so no wait is unbounded.
+ * Rust host does, the close waits up to EXIT_QUIET_MS for its exit, and goes the moment it has exited; one
+ * still running then is hung up by the host, and killed KILL_AFTER_MS later if it is still there, so no
+ * wait is unbounded.
  */
 let closing = null;
+/** how often a held close looks whether the command has exited */
+const CLOSING_POLL_MS = 10;
 const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
   socket.destroy = (...args) => {
-    if (args[0] && !finalRead) {
-      if (closing === null) {
-        // an EIO'd pty is readable forever: reading stops, or it spins until the close
-        socket._handle?.readStop?.();
-        closing = setTimeout(() => {
-          if (running()) {
-            endGroup("SIGHUP");
-            setTimeout(() => { if (!exited) endGroup("SIGKILL"); }, KILL_AFTER_MS).unref();
-          }
-          destroy(...args);
-        }, EXIT_QUIET_MS);
-      }
+    if (args[0] && !finalRead && closing === null) {
+      // an EIO'd pty is readable forever: reading stops, or it spins until the close
+      socket._handle?.readStop?.();
+      const until = Date.now() + EXIT_QUIET_MS;
+      const close = () => { clearInterval(closing.timer); closing.done = true; destroy(...args); };
+      closing = { done: false, close, timer: setInterval(() => {
+        // exited (and reaped) by itself: its end is its own, and nothing is left to read
+        if (!running()) return close();
+        if (Date.now() < until) return;
+        endGroup("SIGHUP");
+        setTimeout(() => { if (!exited) endGroup("SIGKILL"); }, KILL_AFTER_MS).unref();
+        close();
+      }, CLOSING_POLL_MS) };
+      return socket;
+    }
+    // node-pty's own close while the close is held: the command exited, so the pty closes now, with no
+    // second quiet wait; one after it goes through
+    if (closing !== null) {
+      if (!closing.done) closing.close();
+      else destroy(...args);
       return socket;
     }
     if (finalRead || args[0]) return destroy(...args);
-    // the command exited while its close waited: the pty closes as for any exit
-    clearTimeout(closing ?? undefined);
     killGroup("SIGKILL");
     finalRead = { destroy: () => destroy(...args), heldUntil: Date.now() + EXIT_HELD_LIMIT_MS, since: null, timer: undefined };
     socket.once("close", () => clearTimeout(finalRead.timer));
