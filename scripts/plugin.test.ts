@@ -30,7 +30,7 @@ async function run(command: string, extra: Record<string, string | undefined> = 
 function launch(command: string, extra: Record<string, string | undefined> = {}) {
   const bin = join(scratch, "bin");
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
-  for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
+  for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_SESSION", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
   return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
@@ -121,19 +121,23 @@ const APP_HEALTH = { ok: true, herdr: { version: "0.9.3", protocol: 1 }, auth: {
 
 describe("the herdr socket", () => {
   /** a stand-in server that records the HERDR_SOCKET it was started with, then exits */
-  const socketSeen = async (): Promise<string> => {
+  const socketSeen = async (extra: Record<string, string> = {}): Promise<string> => {
     const root = join(scratch, "root");
     mkdirSync(join(root, "server"), { recursive: true });
     writeFileSync(join(root, "server", "managed.ts"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(scratch, "seen"))}, process.env.HERDR_SOCKET ?? "unset");\n`);
     const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
     const port = probe.port;
     await probe.stop(true);
-    await run("start", { HERDR_PLUGIN_ROOT: root, HERDR_SOCKET_PATH: "/herdr/own.sock", PORT: String(port) });
+    await run("start", { HERDR_PLUGIN_ROOT: root, HERDR_SOCKET_PATH: "/herdr/own.sock", PORT: String(port), ...extra });
     return readFileSync(join(scratch, "seen"), "utf8");
   };
 
   it("passes herdr's socket on to the server", async () => {
     expect(await socketSeen()).toBe("/herdr/own.sock");
+  });
+
+  it("shows the default session when a named session starts it", async () => {
+    expect(await socketSeen({ HERDR_SESSION: "assistant", HERDR_SOCKET_PATH: "/herdr/sessions/assistant/herdr.sock" })).toBe("/herdr/herdr.sock");
   });
 
   it("keeps a HERDR_SOCKET set in the plugin config over herdr's socket", async () => {

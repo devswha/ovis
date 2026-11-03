@@ -14,8 +14,9 @@
  * for later starts and for `status`, `pair` and `phone`.
  *
  * Two pieces of herdr's runtime environment have to be translated:
- * - herdr injects HERDR_SOCKET_PATH; the server reads HERDR_SOCKET. Without the
- *   mapping a named session's plugin would talk to the default socket.
+ * - herdr injects HERDR_SOCKET_PATH; the server reads HERDR_SOCKET. A named session's plugin
+ *   still hands on the default session's socket: Ovis shows the default session, so one started
+ *   for something else (an assistant, say) stays out of view whichever session starts Ovis first.
  * - plugin commands inherit herdr's environment, not the user's shell, so the
  *   token and any overrides are read from `env` and `.env` in HERDR_PLUGIN_CONFIG_DIR.
  */
@@ -163,6 +164,13 @@ const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) 
 const env = mergeEnvLayers([process.env, ...fileVars]);
 /** HERDR_SOCKET the user put in the config files: it names the session to show, so herdr's own socket does not replace it */
 const configuredSocket = fileVars.some((vars) => (vars["HERDR_SOCKET"] ?? "") !== "");
+/** The default session's socket, from the one herdr handed this plugin: a named session's is sessions/<name>/herdr.sock beside it */
+function defaultSocket(own: string): string {
+  const session = env["HERDR_SESSION"] ?? "";
+  if (session === "" || session === "default") return own;
+  const sessions = dirname(dirname(own));
+  return basename(sessions) === "sessions" ? join(dirname(sessions), basename(own)) : own;
+}
 const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 /** the app's own state, as the server finds it (server/update-state.ts): the same path with or without herdr's env */
 const APP_STATE_DIR = defaultStateDir(env);
@@ -519,7 +527,7 @@ async function startInTurn(): Promise<number> {
       PORT: String(port),
       // herdr hands the plugin HERDR_SOCKET_PATH; the server (and the attach it
       // spawns) reads HERDR_SOCKET. A HERDR_SOCKET set in the config files wins.
-      ...(env["HERDR_SOCKET_PATH"] !== undefined && !configuredSocket ? { HERDR_SOCKET: env["HERDR_SOCKET_PATH"] } : {}),
+      ...(env["HERDR_SOCKET_PATH"] !== undefined && !configuredSocket ? { HERDR_SOCKET: defaultSocket(env["HERDR_SOCKET_PATH"]) } : {}),
     },
   });
   child.unref();
