@@ -799,6 +799,10 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
   agent that reports none shows no status. A turn is done only when the program itself reports
   its turn finished (`done`, or `working` then `idle`); `error` shows no status.
+- **Pinned agents:** an agent pinned in Ovis is pinned in the Herdr app, and one pinned or
+  unpinned in the app is pinned or unpinned in Ovis, through herdr-core's `herdr.pinned`
+  terminal label; a pin made in the app joins the end of the pinned list. When the two first
+  meet, a pin on either side is kept. Pinned workspaces stay Ovis's own.
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
   it or resized it: the app's window, or your phone once you type or open it there.

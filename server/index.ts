@@ -22,9 +22,10 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { hcBin, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, hcBin, servingCore, startRuntime } from "./herdr-core/runtime.ts";
+import { bridgePins } from "./herdr-core/pin-label.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
-import type { HerdrCoreFacts } from "../shared/machines.ts";
+import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
@@ -223,6 +224,8 @@ export function createServer(
   const merge = options.siblingStateDir ? mergeSiblingState(stateDir, options.siblingStateDir) : null;
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null);
   const preferences = new PreferenceStore(stateDir);
+  // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
+  const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE) : null;
   // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
   try {
     rmSync(join(stateDir, "claude-rewinds.json"), { force: true });
@@ -384,6 +387,7 @@ export function createServer(
         releaseOpenCodeNative();
       });
       piReader.close();
+      stopPinBridge?.();
       // the followed sign-ins run in this server's own terminals: no dialog could reach them once it stops
       void usageLogin.stopAll();
       void shellAgents.stop();
