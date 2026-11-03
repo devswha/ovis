@@ -161,20 +161,32 @@ describe("cooperative Claude images", () => {
 
   for (const change of ["replace", "truncate", "rewrite", "rewrite and grow", "clear", "rewind"] as const) it(`rejects an image after an in-flight ${change}`, async () => {
     const { path, ref } = fixture();
-    const reading = transcriptImageAsync(path, ref);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (change === "replace") { writeFileSync(`${path}.new`, line({ type: "user", uuid: id(3), message: { content: [picture] } })); renameSync(`${path}.new`, path); }
-    if (change === "truncate") truncateSync(path, 0);
-    if (change === "rewrite" || change === "rewrite and grow") {
-      const bytes = await Bun.file(path).bytes();
-      // Keep the tail and inode: a prefix rewrite must not pass an append-only check.
-      bytes[Buffer.from(bytes).indexOf('"read"') + 1] = 120;
-      writeFileSync(path, bytes);
-      if (change === "rewrite and grow") appendFileSync(path, line({ type: "progress", data: "appended" }));
-    }
-    if (change === "clear") appendFileSync(path, line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } }));
-    if (change === "rewind") appendFileSync(path, line({ type: "user", uuid: id(4), parentUuid: null, message: { content: "new branch" } }));
-    expect(await reading).toBeNull();
+    const apply = () => {
+      if (change === "replace") { writeFileSync(`${path}.new`, line({ type: "user", uuid: id(3), message: { content: [picture] } })); renameSync(`${path}.new`, path); }
+      if (change === "truncate") truncateSync(path, 0);
+      if (change === "rewrite" || change === "rewrite and grow") {
+        const bytes = fs.readFileSync(path);
+        // Keep the tail and inode: a prefix rewrite must not pass an append-only check.
+        bytes[bytes.indexOf('"read"') + 1] = 120;
+        writeFileSync(path, bytes);
+        if (change === "rewrite and grow") appendFileSync(path, line({ type: "progress", data: "appended" }));
+      }
+      if (change === "clear") appendFileSync(path, line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } }));
+      if (change === "rewind") appendFileSync(path, line({ type: "user", uuid: id(4), parentUuid: null, message: { content: "new branch" } }));
+    };
+    // In flight by construction, not by scheduling: the change lands right after the lookup's first
+    // read of the file returns, so the lookup holds bytes from before it whatever the machine's speed.
+    let applied = false;
+    const read = fs.readSync;
+    const watching = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const result = read(...args);
+      if (!applied) { applied = true; apply(); }
+      return result;
+    }) as typeof fs.readSync);
+    try {
+      expect(await transcriptImageAsync(path, ref)).toBeNull();
+      expect(applied).toBe(true);
+    } finally { watching.mockRestore(); }
     // A failed old read cannot leave a half-built or obsolete shared boundary behind.
     if (change === "rewrite" || change === "rewrite and grow") {
       exact(await transcriptImageAsync(path, ref));
