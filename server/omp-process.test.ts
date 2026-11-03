@@ -100,9 +100,10 @@ it.skipIf(process.platform !== "linux")("a stalled memory read has a deadline an
 });
 
 it.skipIf(process.platform !== "linux")("times only the read, not a helper that is slow to start on a loaded PC (#2648)", async () => {
-  // the helper says it runs only after the read deadline has passed since its spawn
-  const late = `setTimeout(() => { console.log(${JSON.stringify(PROBE_STARTED)}); console.log(JSON.stringify({ start: "1", argv: ["omp"], environ: [] })); }, 300)`;
-  const read = createOmpProcessProbe({ timeoutMs: 100, startTicks: () => "1", command: () => [process.execPath, "-e", late] });
+  // the helper says it runs only after the read deadline has passed since its spawn, then answers in
+  // the same write, so the read deadline has nothing left to time but the helper's exit
+  const late = `setTimeout(() => console.log(${JSON.stringify(PROBE_STARTED)} + "\\n" + JSON.stringify({ start: "1", argv: ["omp"], environ: [] })), 1500)`;
+  const read = createOmpProcessProbe({ timeoutMs: 1000, startTicks: () => "1", command: () => [process.execPath, "-e", late] });
   expect((await read(1, true))?.argv).toEqual(["omp"]);
 });
 

@@ -110,7 +110,7 @@ export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxP
     if (live >= maxProcesses) {
       if (!warned) {
         warned = true;
-        console.warn(`omp: ${maxProcesses} process reads are still stuck in the kernel; omp chat cannot find transcripts until they exit or the server restarts`);
+        console.warn(`omp: ${maxProcesses} process reads are still starting or stuck in the kernel; omp chat cannot find transcripts until they exit or the server restarts`);
       }
       return Promise.resolve(null);
     }
@@ -149,6 +149,8 @@ export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxP
               // the helper runs: from here on only its read of the target is timed
               started = true;
               output = output.slice(end + 1);
+              // the bound is on the answer alone, as before the start line
+              bytes = Buffer.byteLength(output);
               clearTimeout(timer);
               timer = setTimeout(() => finish(null), timeoutMs);
             }
