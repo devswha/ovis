@@ -1,5 +1,5 @@
 import { paneRead } from "../herdr/client.ts";
-import { ANSI_RE, type OmoAsk, PI_MODEL_HINT_RE, type ParsedPrompt, SOLID_RULE_RE, cleanLine, findLastIndex, isDivider, wrapped } from "./shared.ts";
+import { ANSI_RE, type OmoAsk, PI_MODEL_HINT_RE, PROMPT_LINE_RE, type ParsedPrompt, SOLID_RULE_RE, cleanLine, findLastIndex, isDivider, wrapped } from "./shared.ts";
 import { registry } from "./registry.ts";
 import { CODEX_ASK_HINT_RE, CODEX_ASYNC_ASK_HINT_RE, CODEX_CONTINUE_HINT_RE } from "./codex.ts";
 import { OMO_FOOTER_LINES, OMO_HINT_LINES, OMO_NOT_FOOTER_RE, OMO_OPTIONS_HINT_RE, OMO_PENDING_HINT_RE, OMO_REVIEW_HINT_RE, OMO_TYPING_HINT_RE, omoModelListWaits } from "./omo.ts";
@@ -197,13 +197,6 @@ const PI_FOOTER_LINES = 2;
  * it starts: every part has a fixed prefix (pi 1.4.0's footer).
  */
 const PI_STATS_LINE_RE = /^(?:[↑↓]\d|[RW]\d|CH\d|\$\d|(?:\d+(?:\.\d+)?%|\?)\/\d)/u;
-
-/**
- * A composer or a shell's prompt: one starting with its mark (`❯`, `$ `, oh-my-zsh's `➜`), or ending
- * with it (`user@host:~/app$`). Never an ending `%`: a usage status ends with one (`usage 12%`), so
- * zsh's `host%` prompt, the rarer case, is not recognised.
- */
-const PROMPT_LINE_RE = /^(?:[❯›>➜]|[$#](?:\s|$))|[❯›>$#]$/u;
 
 /**
  * An extension's `ctx.ui.setStatus` adds a third footer line under the stats line: pi joins every
