@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { openSync, closeSync, readSync, statSync, fstatSync } from "node:fs";
 
 import { MAX_PI_ENTRY_BYTES, MAX_PI_INDEX_ENTRIES } from "./pi-tree.ts";
-import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
+import { skillPromptMessage } from "./skill-activity.ts";
 import { piMessage, record, resultText } from "./transcript-records.ts";
 
 export interface PiDeliveryAnchor {
@@ -65,8 +65,9 @@ export class PiReceiptCapacity<Owner extends object> {
 }
 
 /** `at`: Pi's own submission time of a user message, or null where the record carries none. */
-/** `raw`: the record's own text where `text` reads a skill's record back as typed */
-type BranchEntry = { id: string; parent: string | null; role: string; text: string; raw?: string; at: number | null; start: number; end: number };
+/** `skill`: the skill and request of a record that is Pi's own expansion of `/skill:name request` */
+type PiSkillSend = { name: string; request: string };
+type BranchEntry = { id: string; parent: string | null; role: string; text: string; skill?: PiSkillSend; at: number | null; start: number; end: number };
 const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
 /** Permanent for this anchor: retrying cannot shrink its append or retained history. */
@@ -120,10 +121,10 @@ function parseEntry(bytes: Buffer, start: number, end: number): BranchEntry {
   const message = piMessage(entry), user = message?.role === "user";
   const skill = user ? skillPromptMessage(entry) : null;
   const at = user && typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : null;
-  const raw = user && !skill ? resultText(message.content) : "";
-  const text = user ? skill?.request ?? typedSkill(raw) : "";
+  const text = user ? skill?.request ?? resultText(message.content) : "";
+  const expansion = user && !skill ? piSkillExpansion(text) : undefined;
   return { id: entry.id, parent: typeof entry.parentId === "string" ? entry.parentId : null,
-    role: typeof message?.role === "string" ? message.role : "", text, ...(raw && raw !== text ? { raw } : {}), at, start, end };
+    role: typeof message?.role === "string" ? message.role : "", text, ...(expansion ? { skill: expansion } : {}), at, start, end };
 }
 
 /** What Pi's submit handler reads of `text` sent from Chat: tabs as its editor pastes them, trimmed. */
@@ -132,28 +133,32 @@ export function piRecordText(text: string): string {
 }
 
 /**
- * `/skill:name request` as a skill's record reads back (typedSkill): Pi takes the name up to the first
- * space and trims the request. Only where Pi knows the skill; otherwise it records the text as sent,
- * so a receipt matches either.
+ * The skill a `/skill:name request` send asks for, as Pi's `_expandSkillCommand` reads it: the name up
+ * to the first space, the rest trimmed. Where Pi knows no such skill it records the text as sent, so
+ * the send also matches its own text literally.
  */
-function skillRecordText(text: string): string | undefined {
-  const typed = /^(\/skill:\S+) ([\s\S]*)$/u.exec(text);
-  if (!typed) return undefined;
-  const request = typed[2]!.trim();
-  const read = `${typed[1]}${request ? ` ${request}` : ""}`;
-  return read === text ? undefined : read;
+function piSkillSend(text: string): PiSkillSend | undefined {
+  if (!text.startsWith("/skill:")) return undefined;
+  const space = text.indexOf(" ");
+  const name = text.slice(7, space === -1 ? undefined : space);
+  return name ? { name, request: space === -1 ? "" : text.slice(space + 1).trim() } : undefined;
 }
 
+// Pi 1.4's skill block: `References are relative to` the skill file's own directory, then the body.
+const PI_SKILL = /^<skill name="([^"\r\n]+)" location="([^"\r\n]+)">\nReferences are relative to ([^\r\n]+)\.\n\n[\s\S]*?\n<\/skill>(?:\n\n([\s\S]+))?$/;
+
 /**
- * Pi records `/skill:name request` as a user message holding the whole SKILL.md (`<skill name location>`,
- * then the request), never as typed: read back as typed, so the receipt of the send can match it.
- * Chained skills (`<skill-instruction>` blocks) are not one typed command and stay as recorded, so
- * such a send's receipt is not confirmed.
+ * Pi records `/skill:name request` as a user message holding the whole SKILL.md, never as typed. Only
+ * a record in exactly the form Pi writes is read as that expansion, so a literal record (or one merely
+ * shaped like a skill block) is compared by its own text. Chained skills (`<skill-instruction>`
+ * blocks) are not one typed command, so such a send's receipt is not confirmed.
  */
-function typedSkill(text: string): string {
-  const invocation = skillInvocationPrompt(text);
-  if (invocation?.skills.length !== 1) return text;
-  return `/skill:${invocation.skills[0]!.name}${invocation.request ? ` ${invocation.request}` : ""}`;
+function piSkillExpansion(text: string): PiSkillSend | undefined {
+  const block = PI_SKILL.exec(text);
+  if (!block) return undefined;
+  const [, name, location, baseDir, request = ""] = block;
+  const slash = Math.max(location!.lastIndexOf("/"), location!.lastIndexOf("\\"));
+  return slash > 0 && location!.slice(0, slash) === baseDir ? { name: name!, request } : undefined;
 }
 
 /** Read just the final complete record, not the old branch or the shared tree index. */
@@ -280,9 +285,9 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       }
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
-      const skill = skillRecordText(candidate.text);
+      const skill = piSkillSend(candidate.text);
       const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
-        && (entry.text === candidate.text || entry.raw === candidate.text || (skill !== undefined && entry.text === skill))
+        && (entry.text === candidate.text || (skill !== undefined && entry.skill?.name === skill.name && entry.skill.request === skill.request))
         && !consumedEntries.has(key(entry)));
       const match = same.find((entry) => entry.at === null || entry.at >= anchor.at);
       const earlier = match ? undefined : same[0];
