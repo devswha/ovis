@@ -1069,14 +1069,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         resumeInput = null;
         if (resumeTimer !== null) window.clearTimeout(resumeTimer);
         resumeTimer = null;
-        return resumed !== null && resumed.pane === paneRef.current ? resumed : null;
+        if (resumed === null || resumed.pane === paneRef.current) return resumed;
+        // another pane is shown now: its draft is not where these keys belong, so they are told as not sent, never lost in silence
+        if (resumed.items.length > 0) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        return null;
       };
-      // what waited and will not go by itself: text to the draft, and a key the draft cannot hold (Escape, an arrow) told, never lost in silence
+      // what waited and will not go by itself: text to the draft, and a key the draft cannot hold (Escape, Enter, an arrow) told, never lost in silence
       const retainResumed = (pane: string, items: Typed[]): void => {
         const secretNow = secretRef.current !== null;
         for (const typed of items) retainTyped(pane, typed, secretNow);
-        if (!secretNow && items.some((typed) => !typed.chord && !typed.secret && !/^(\x1b\[[IO]|[\x7f\b\r\n]+)$/.test(typed.input)
-          && applyToDraft(EMPTY_DRAFT, typed.input) === EMPTY_DRAFT)) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        if (!secretNow && items.some((typed) => !typed.chord && !typed.secret && applyToDraft(EMPTY_DRAFT, typed.input) === EMPTY_DRAFT)) {
+          setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        }
       };
       const failResume = (): void => {
         const resumed = takeResume();
@@ -1086,7 +1090,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const flushResume = (): void => {
         const resumed = takeResume();
         if (resumed === null) return;
-        if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS) retainResumed(resumed.pane, resumed.items);
+        // a masked prompt that appeared while the keys waited is never typed into by them
+        if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS || secretRef.current !== null) retainResumed(resumed.pane, resumed.items);
         else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
       };
       const startResume = (pane: string): void => {
@@ -1294,6 +1299,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // text still pending in the editor was composed without the role: it is committed while
           // observing still refuses it, so the next accepted key cannot carry it into the pane
           if (observeRef.current && !nowObserving) commitPendingText();
+          // keys waiting for an attach were typed with the role this connection no longer has: held, never sent later
+          if (nowObserving) failResume();
           observeRef.current = nowObserving;
           // no fit runs while observing: a font shrunk for this client's own grid would stay
           if (nowObserving) {
@@ -1590,9 +1597,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
         // typed while the pane's attach is still opening on a live connection (a key pressed right as the terminal
         // opens): it waits for that attach to take input as the keys taking an idle pane back do, never dropped
-        if (resumeInput === null && !secret && socket.awaitsInput(current)) startResume(current);
+        // xterm's own replies (focus, cursor position, device attributes) answer a moment that is gone by then: never kept
+        const reply = !typed.chord && /^\x1b\[([?>]?[\d;]*[cnRIO])$/.test(input);
+        if (resumeInput === null && !secret && !reply && socket.awaitsInput(current)) startResume(current);
         // a mouse report is for the grid it was pressed on: the attach redraws the pane at another, so it is not kept
-        if (resumeInput !== null && /^\x1b\[(<|M)/.test(input)) return;
+        if (resumeInput !== null && (reply || /^\x1b\[(<|M)/.test(input))) return;
+        // a connection that is not plainly open (a liveness probe, a reconnect) holds typing for review: what waited is held with it
+        if (resumeInput !== null && socket.state !== "open") failResume();
         if (resumeInput !== null && !secret) {
           resumeInput.items.push(typed);
           return;
