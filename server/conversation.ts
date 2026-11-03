@@ -2475,9 +2475,11 @@ function* linesWithSteps(stream: TranscriptStream, text: string, from: number, t
     for (let offset = 0; ;) {
       const newline = bytes.indexOf("\n", offset);
       if (!hit) {
-        const seen = tail + bytes.slice(offset, newline === -1 ? bytes.length : newline);
-        hit = pattern.test(seen);
-        tail = span > 1 ? seen.slice(-(span - 1)) : "";
+        const piece = bytes.slice(offset, newline === -1 ? bytes.length : newline);
+        // the piece alone, and text the window's edge cut in two (it starts in the tail, so it ends within
+        // `span` characters of the piece): a long line is not copied onto the tail to be searched
+        hit = pattern.test(piece) || (tail.length > 0 && pattern.test(tail + piece.slice(0, span)));
+        tail = span <= 1 ? "" : piece.length >= span - 1 ? piece.slice(-(span - 1)) : (tail + piece).slice(-(span - 1));
       }
       if (newline === -1) break;
       if (hit) found.push([start, position + newline]);

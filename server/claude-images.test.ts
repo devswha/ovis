@@ -616,6 +616,18 @@ describe("finding a picture's record", () => {
     expect(reads).toBeLessThan(3 * lines);
   });
 
+  it("finds a tool's call whose id a search window's edge cuts in two", async () => {
+    // the forward search reads a MiB at a time from the floor: the call's id is put across the first edge
+    const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read-across-the-edge", name: "Read" }] } });
+    const head = (pad: number) => line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "x".repeat(pad) } });
+    const pad = 1024 * 1024 - Buffer.byteLength(head(0)) - call.indexOf("read-across-the-edge") - 8;
+    const text = head(pad) + call;
+    expect(Buffer.byteLength(head(pad)) + call.indexOf("read-across-the-edge")).toBe(1024 * 1024 - 8);
+    const path = transcript(text + line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read-across-the-edge", content: [picture] }] } }));
+    exact(await asMain(path, `${id(3)}:0:0`));
+    exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
+  });
+
   it("finds a tool's call however far back it was made, and only the last block naming it decides", async () => {
     const padding = line({ type: "progress", data: "x".repeat(1024 * 1024) }).repeat(3);
     const call = (uuid: number) => line({ type: "assistant", uuid: id(uuid), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
