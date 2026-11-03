@@ -3,6 +3,7 @@ import type { DevicePairedEvent, Machine, MachineEvent } from "../../shared/mach
 import { ApiError, authenticate, fetchMachines, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepEventStream } from "./eventStream.ts";
+import { usePageVisible } from "./visibility.ts";
 import { receiveSeen } from "./seenFinishes.ts";
 import { withPairedNotice } from "./pairedNotices.ts";
 import { takeAuthTokenFromUrl } from "./authLink.ts";
@@ -143,7 +144,8 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
     if (refetchTimer.current !== null) return;
     refetchTimer.current = window.setTimeout(() => {
       refetchTimer.current = null;
-      if (lockedRef.current !== true) void load();
+      // hidden, the page loads on return (its polls pick up at once, the stream brings a full roster)
+      if (lockedRef.current !== true && document.visibilityState !== "hidden") void load();
     }, REFETCH_DEBOUNCE_MS);
   }, [load]);
 
@@ -184,7 +186,10 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
   setPairedNotices: Dispatch<SetStateAction<readonly DevicePairedEvent[]>>;
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
-  // One SSE subscription watches every PC, even when no terminal is selected.
+  // One SSE subscription watches every PC, even when no terminal is selected. Hidden (a phone app in the
+  // background) it is opened again as a lighter one, `?hidden=1`: status and exits for the in-app alerts, a
+  // roster only when a PC or pane comes or goes. Shown again, a full one brings the page up to date.
+  const visible = usePageVisible();
   useEffect(() => {
     if (locked !== false) return;
     const onMessage = (event: MessageEvent<string>) => {
@@ -252,7 +257,7 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
       }
       if (message.type === "session-changed" || message.type === "pane-exited") scheduleRefetch();
     };
-    return keepEventStream("/api/machines/events", {
+    return keepEventStream(visible ? "/api/machines/events" : "/api/machines/events?hidden=1", {
       // opened or reopened: a shared-settings save paused by failures gets a new round
       opened: () => preferencesResubscribedRef.current(),
       // lost (the browser reconnects by itself): a shared-settings save waits for that instead of retrying
@@ -263,5 +268,5 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
       closed: () => preferencesClosedRef.current(),
       message: onMessage,
     });
-  }, [locked, scheduleRefetch, dropIn, chime, reorderCoordinator]);
+  }, [locked, visible, scheduleRefetch, dropIn, chime, reorderCoordinator]);
 }

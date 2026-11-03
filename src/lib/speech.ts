@@ -105,7 +105,17 @@ export function useSpeechStatus(id: string): SpeechStatus {
   );
 }
 
+/** A running context holds the phone's audio output (and a wakelock) open, so it is let go while nothing is read. `speak` resumes it from the tap. */
+function rest(): void {
+  void context?.suspend().catch(() => undefined);
+}
+
 export function stopSpeech(): void {
+  halt();
+  rest();
+}
+
+function halt(): void {
   session += 1;
   abort?.abort();
   abort = null;
@@ -147,7 +157,7 @@ function schedule(buffer: AudioBuffer, at: number): Promise<void> {
  * only a user gesture start audio, so the AudioContext is made and resumed before anything is awaited.
  */
 export function speak(id: string, markdown: string, voice: SpeechVoice): void {
-  stopSpeech();
+  halt();
   const text = speechText(markdown);
   const chunks = speechChunks(text);
   if (chunks.length === 0 || typeof AudioContext === "undefined") return;
@@ -180,9 +190,9 @@ export function speak(id: string, markdown: string, voice: SpeechVoice): void {
         if (playback.status === "loading") set({ id, status: "playing" });
       }
       await played;
-      if (mine === session) set({ id: "", status: "idle" });
+      if (mine === session) { set({ id: "", status: "idle" }); rest(); }
     } catch {
-      if (mine === session) set({ id, status: "failed" });
+      if (mine === session) { set({ id, status: "failed" }); rest(); }
     }
   })();
 }

@@ -2007,8 +2007,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         release(true);
       };
+      // A page nobody sees (a phone app in the background, its screen off) reads nothing: the view would stream
+      // to a frozen page and keep the radio awake. It stops there, and starts again once the page is shown;
+      // the return takes the pane back with an attach, whose first frame is whole.
+      let viewPaused = false;
       // the pane's screen starts again from the view, as on a pane switch; the view's first frame is whole
       const watch = (pane: string): void => {
+        viewPaused = document.visibilityState === "hidden";
+        if (viewPaused) return;
         const generation = ++outputGeneration;
         if (!presentedRef.current) {
           // the view of a hidden tab is parsed on its return, starting with this reset (watch-data)
@@ -2066,6 +2072,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const resume = (): void => {
         if (!presentedRef.current) return;
         deferredAttach = false;
+        viewPaused = false;
         setReleased(false);
         const current = paneRef.current;
         if (!current) return;
@@ -2188,6 +2195,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         else {
           leave();
           if (hiddenOnTouch()) release();
+          const pane = paneRef.current;
+          if (document.visibilityState === "hidden") {
+            if (pane && watchingRef.current) {
+              socket.unwatch(pane);
+              setWatching(false);
+              viewPaused = true;
+            }
+          } else if (viewPaused && pane && releasedRef.current && !watchingRef.current && !cachedRef.current) watch(pane);
         }
       };
       // Another device can size the pty while this window keeps its focus (a phone used beside a

@@ -4,6 +4,7 @@ import { t } from "../lib/i18n.ts";
 import { NO_STICKY_MODIFIERS, hasModifiers, type StickyModifiers } from "../lib/keys.ts";
 import type { KeyBarKeyItem } from "../lib/keyBar.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { usePageVisible } from "../lib/visibility.ts";
 import { useSettings } from "../lib/settings.ts";
 import { keepComputerLogin, readComputerLogin, useComputerSettings, viewerOptions, type ComputerSettings } from "../lib/computerSettings.ts";
 import { KeyBar } from "./KeyBar.tsx";
@@ -41,8 +42,11 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
   computerRef.current = computer;
   const tuningRef = useRef<HTMLDivElement | null>(null);
   const [typing, setTyping] = useState(false);
-  const hiddenRef = useRef(hidden);
-  hiddenRef.current = hidden;
+  // out of sight: under another view, or the whole page in the background (a phone's screen off), where the viewer stays quiet too
+  const pageVisible = usePageVisible();
+  const away = hidden || !pageVisible;
+  const awayRef = useRef(away);
+  awayRef.current = away;
   const [modifiers, setModifiers] = useState<StickyModifiers>(NO_STICKY_MODIFIERS);
   const modifiersRef = useRef(modifiers);
   modifiersRef.current = modifiers;
@@ -85,13 +89,13 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
     if (own === undefined && hasModifiers(modifiersRef.current)) setModifiers(NO_STICKY_MODIFIERS);
   }, [post]);
 
+  useEffect(() => { post({ screen: "shown", shown: !away }); }, [away, post]);
   useEffect(() => {
-    post({ screen: "shown", shown: !hidden });
     if (!hidden) return;
     fieldRef.current?.blur();
     setFull(false);
     setTuning(false);
-  }, [hidden, post]);
+  }, [hidden]);
 
   useEffect(() => post({ screen: "options", options: viewerOptions(computer) }), [computer, post]);
   useEffect(() => {
@@ -105,7 +109,7 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
       const login = readComputerLogin(machineId);
       if (login) post({ screen: "login", login });
       // the frame's load comes before the viewer listens: it hears whether it is hidden, and stays quiet, only now
-      post({ screen: "shown", shown: !hiddenRef.current });
+      post({ screen: "shown", shown: !awayRef.current });
     };
     addEventListener("message", ready);
     return () => removeEventListener("message", ready);
@@ -164,7 +168,7 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
     <div ref={viewRef} className={`computer-view${full ? " is-full" : ""}${hidden ? " is-hidden" : ""}`}>
       <div className="computer-view-desktop">
         <iframe ref={frameRef} src={screen.src} title={t("{name}'s desktop", { name: machineName })} allow="autoplay; clipboard-read; clipboard-write"
-          onLoad={() => post({ screen: "shown", shown: !hidden })} />
+          onLoad={() => post({ screen: "shown", shown: !away })} />
         <div ref={tuningRef} className="computer-view-corner" onKeyDown={(event) => { if (event.key === "Escape" && tuning) { event.stopPropagation(); setTuning(false); } }}>
           <button type="button" className="computer-view-button" aria-label={t("View settings")} title={t("View settings")} aria-expanded={tuning}
             onClick={() => setTuning((value) => !value)}>

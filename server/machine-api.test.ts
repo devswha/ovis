@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MachineEvent } from "../shared/machines.ts";
+import type { Machine, MachineEvent } from "../shared/machines.ts";
 import { handleMachineRequest, machineEventsClock, machineEventsQueuedBytes } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { OmarchyThemeStore } from "./omarchy-themes.ts";
@@ -42,9 +42,9 @@ const large = (bytes: number): MachineEvent => ({
 });
 const frameBytes = (event: MachineEvent): number => `data: ${JSON.stringify(event)}\n\n`.length;
 
-async function open(manager: MachineManager, onRevoke?: (end: () => void) => () => void) {
+async function open(manager: MachineManager, onRevoke?: (end: () => void) => () => void, search = "") {
   const abort = new AbortController();
-  const response = await handleMachineRequest(new Request("http://127.0.0.1:7317/api/machines/events", { signal: abort.signal }), manager, onRevoke);
+  const response = await handleMachineRequest(new Request(`http://127.0.0.1:7317/api/machines/events${search}`, { signal: abort.signal }), manager, onRevoke);
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -338,6 +338,62 @@ describe("the machine events stream", () => {
       expect(listening()).toBe(8);
     } finally {
       await Promise.all(next.map((stream) => stream.close()));
+    }
+  });
+});
+
+describe("the machine events stream of a page nobody sees", () => {
+  const roster = (title: string, ...panes: string[]): MachineEvent => ({
+    type: "machines",
+    machines: [{ id: "local", name: "Local", kind: "local", enabled: true, state: "connected", error: null, snapshot: { panes: panes.map((pane_id) => ({ pane_id, title })) } } as unknown as Machine],
+  });
+  const message = (type: string): MachineEvent => ({ type: "machine-message", machine_id: "local", message: { type, pane_id: "p1" } as never });
+  const told = (events: MachineEvent[]): string[] => events.map((event) => event.type === "machine-message" ? event.message.type : event.type);
+
+  it("tells the roster first, then only when a pane comes or goes, and only the status and exit of a pane", async () => {
+    const { manager, emit } = managerStandIn();
+    const stream = await open(manager, undefined, "?hidden=1");
+    try {
+      emit(roster("a", "p1"));
+      emit(roster("b", "p1")); // a title moved: nothing an alert reads
+      emit(message("session-changed"));
+      emit(message("pane-focused"));
+      emit(status(1));
+      emit(roster("b", "p1", "p2"));
+      emit(message("pane-exited"));
+      expect(await stream.readUntil(4)).toBe("open");
+      expect(told(stream.events)).toEqual(["machines", "pane-status", "machines", "pane-exited"]);
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("tells every roster to a page that is shown", async () => {
+    const { manager, emit } = managerStandIn();
+    const stream = await open(manager);
+    try {
+      emit(roster("a", "p1"));
+      emit(roster("b", "p1"));
+      emit(message("session-changed"));
+      expect(await stream.readUntil(3)).toBe("open");
+      expect(told(stream.events)).toEqual(["machines", "machines", "session-changed"]);
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("keeps the stream warm once a minute instead of every 15 seconds", async () => {
+    const intervals: (number | undefined)[] = [];
+    const heartbeat = spyOn(machineEventsClock, "heartbeat").mockImplementation((_send, ms) => { intervals.push(ms); return setInterval(() => {}, 1 << 30); });
+    const { manager } = managerStandIn();
+    const hidden = await open(manager, undefined, "?hidden=1");
+    const shown = await open(manager);
+    try {
+      expect(intervals).toEqual([60_000, undefined]);
+    } finally {
+      await hidden.close();
+      await shown.close();
+      heartbeat.mockRestore();
     }
   });
 });

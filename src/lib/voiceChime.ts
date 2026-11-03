@@ -31,11 +31,20 @@ function samples(kind: VoiceChimeKind): Float32Array<ArrayBuffer> {
 // made on the tap that opens a call, so the chimes can play later with no tap of their own
 let context: AudioContext | null = null;
 const buffers = new Map<VoiceChimeKind, AudioBuffer>();
+let sounding = 0;
+
+/** A running context holds the phone's audio output (and a wakelock) open; once the page is out of sight and no chime plays, let it go. The next chime resumes it. */
+function rest(): void {
+  if (sounding === 0 && document.visibilityState === "hidden") void context?.suspend().catch(() => undefined);
+}
 
 function chimeContext(): AudioContext | null {
   const AudioContextClass = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) return null;
-  context ??= new AudioContextClass();
+  if (!context) {
+    context = new AudioContextClass();
+    document.addEventListener("visibilitychange", rest);
+  }
   return context;
 }
 
@@ -58,5 +67,9 @@ export function playVoiceChime(kind: VoiceChimeKind): void {
   const source = target.createBufferSource();
   source.buffer = buffer;
   source.connect(target.destination);
-  void target.resume().then(() => source.start(), () => undefined);
+  void target.resume().then(() => {
+    sounding += 1;
+    source.onended = () => { sounding -= 1; rest(); };
+    source.start();
+  }, () => undefined);
 }

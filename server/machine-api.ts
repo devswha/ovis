@@ -14,6 +14,7 @@ import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { crossSiteFileRead } from "./file-view.ts";
 import { decidedRowTokens, reportedTokenValues, snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
+import { HIDDEN_HEARTBEAT_MS, hiddenEvents } from "./hidden-events.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
 
@@ -44,7 +45,7 @@ export const MACHINE_EVENTS_CEILING_BYTES = 64 * 1024 * 1024;
 /** When a browser last took from its queue is read from this; tests move it on instead of waiting. */
 export const machineEventsClock = {
   now: (): number => performance.now(),
-  heartbeat: (send: () => void): ReturnType<typeof setInterval> => setInterval(send, 15_000),
+  heartbeat: (send: () => void, ms = 15_000): ReturnType<typeof setInterval> => setInterval(send, ms),
 };
 
 /** Relay source queues share the channel's bounded payload budget, without the large-roster exception. */
@@ -174,6 +175,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "events" && parts.length === 1 && request.method === "GET") {
       setRequestRoute("/api/machines/events");
+      // the page is in the background: it takes what an in-app alert reads, not every roster (server/hidden-events.ts)
+      const hidden = url.searchParams.get("hidden") === "1" ? hiddenEvents() : undefined;
       let stop: (() => void) | undefined;
       let stopPreferences: (() => void) | undefined;
       let stopSidebar: (() => void) | undefined;
@@ -281,8 +284,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             return `data: ${told}\n\n`;
           };
           const sendSidebar = () => { const frame = sidebarFrame(reported); if (frame) send(frame); };
-          const sendRoster = (machines: Machine[]) => {
+          const sendRoster = (machines: Machine[], force = false) => {
             roster = machines;
+            if (hidden && !hidden.sendsRoster(machines, force)) return;
             const shown = withoutHiddenTokens(rows, machines);
             const incoming = reportedTokenValues(shown);
             const frame = sidebarFrame(reported, incoming);
@@ -291,6 +295,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           };
           stop = manager.subscribe((event) => {
             if (event.type === "machines") { sendRoster(event.machines); return; }
+            if (hidden && !hidden.sendsMessage(event)) return;
             // a PC's own snapshot, relayed as it came: told as the roster is, without what the rows hide
             const told = event.type === "machine-message" && event.message.type === "snapshot"
               ? { ...event, message: { ...event.message, snapshot: snapshotWithoutHiddenTokens(rows, event.message.snapshot) } }
@@ -303,7 +308,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           stopPreferences = preferences?.subscribe(sendPreferences);
           if (preferences) sendPreferences(preferences.get());
           sendSidebar();
-          stopSidebar = herdrSidebar?.subscribe((next) => { rows = next; if (roster) sendRoster(roster); else sendSidebar(); });
+          stopSidebar = herdrSidebar?.subscribe((next) => { rows = next; if (roster) sendRoster(roster, true); else sendSidebar(); });
           const sendSeen = (finishes: SeenFinish[]) => send(`data: ${JSON.stringify({ type: "seen", finishes } satisfies MachineEvent)}\n\n`);
           if (seen) sendSeen(seen.list());
           stopSeen = seen?.subscribe((finish) => sendSeen([finish]));
@@ -319,7 +324,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             sendTheme(omarchyThemes.get(listener.device));
           }
           if (closed) { cleanup(); return; }
-          heartbeat = machineEventsClock.heartbeat(() => send(": heartbeat\n\n"));
+          heartbeat = machineEventsClock.heartbeat(() => send(": heartbeat\n\n"), hidden ? HIDDEN_HEARTBEAT_MS : undefined);
           request.signal.addEventListener("abort", aborted, { once: true });
           if (request.signal.aborted) aborted();
         },
