@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageLoginFollowed, UsageLoginPrompt } from "../shared/usage-login.ts";
@@ -165,4 +165,37 @@ it("refuses account removal from a watching device", async () => {
     body: JSON.stringify({ account: "claude:expired" }),
   });
   expect(response.status).toBe(403);
+});
+
+const keys = (report: UsageReport | { providers?: readonly { key: string }[] } | undefined) => (report?.providers ?? []).map((entry) => entry.key).sort();
+
+it("lists a removed account under removed, and POST lists it again", async () => {
+  const host = fixture().start();
+  const account = (method: string) => fetch(`${host.origin}/api/usage/accounts`, {
+    method, headers: { "content-type": "application/json" }, body: JSON.stringify({ account: "claude:work" }),
+  });
+  expect((await account("DELETE")).status).toBe(204);
+  const hidden: UsageReport = await (await fetch(`${host.origin}/api/usage`)).json();
+  expect(keys(hidden)).toEqual(["claude:expired", "claude:home"]);
+  expect(hidden.removed?.map((entry) => entry.key)).toEqual(["claude:work"]);
+  expect((await account("POST")).status).toBe(204);
+  const restored: UsageReport = await (await fetch(`${host.origin}/api/usage`)).json();
+  expect(keys(restored)).toEqual(["claude:expired", "claude:home", "claude:work"]);
+  expect(restored.removed).toBeUndefined();
+});
+
+it("sets a damaged removed-accounts list aside instead of failing the usage report", async () => {
+  const { root, start } = fixture();
+  const state = join(root, "state");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "usage-removed.json"), "{not json");
+  const host = start();
+  const response = await fetch(`${host.origin}/api/usage`);
+  expect(response.status).toBe(200);
+  expect(keys(await response.json())).toEqual(["claude:expired", "claude:home", "claude:work"]);
+  expect(readdirSync(state).filter((name) => name.startsWith("usage-removed.json.corrupt-"))).toHaveLength(1);
+  expect((await fetch(`${host.origin}/api/usage/accounts`, {
+    method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ account: "claude:work" }),
+  })).status).toBe(204);
+  expect(keys(await (await fetch(`${host.origin}/api/usage`)).json())).toEqual(["claude:expired", "claude:home"]);
 });

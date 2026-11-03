@@ -109,7 +109,12 @@ for await (const code of console) {
     try {
       await open();
       const agent = page.locator(".agents-item[data-agent='claude']");
-      const rows = agent.locator(".usage-accounts-row");
+      const rows = agent.locator("ol.agents-accounts > .usage-accounts-row");
+      const removedRows = agent.locator(".usage-removed .usage-accounts-row");
+      const dialogFits = async () => {
+        const box = await page.locator(".usage-account-dialog").first().boundingBox();
+        assert.ok(box !== null && box.x + box.width <= await page.evaluate(() => innerWidth));
+      };
       assert.equal(await rows.count(), 3);
       await capture("1-accounts");
       const expired = rows.filter({ hasText: "expired@example.test" });
@@ -118,8 +123,9 @@ for await (const code of console) {
         const dialog = page.getByRole("dialog", { name: "Sign in to Claude Code", exact: true });
         await dialog.getByLabel("Paste the code the page shows", { exact: true }).fill(code);
         await dialog.getByRole("button", { name: "Send code", exact: true }).click();
-        await dialog.getByRole(code === "fail" ? "alert" : "status").filter({ hasText: code === "fail" ? "without signing in" : "finished" }).waitFor();
+        await dialog.getByRole(code === "fail" ? "alert" : "status").filter({ hasText: code === "fail" ? "without signing in" : "Signed in as expired@example.test." }).waitFor();
         await capture(code === "fail" ? "2-failed-login" : "3-renewed");
+        await dialogFits();
         await dialog.getByRole("button", { name: "Done", exact: true }).click();
       }
       await expired.getByText("Signed in", { exact: true }).waitFor();
@@ -132,6 +138,7 @@ for await (const code of console) {
       await adding.getByLabel("Paste the code the page shows", { exact: true }).fill("success");
       await adding.getByRole("button", { name: "Send code", exact: true }).click();
       await adding.getByText("Signed in as added@example.test.", { exact: true }).waitFor();
+      await dialogFits();
       await adding.getByRole("button", { name: "Done", exact: true }).click();
       await rows.filter({ hasText: "added@example.test" }).waitFor();
       assert.equal(await rows.count(), 4);
@@ -145,10 +152,13 @@ for await (const code of console) {
       await confirmation.getByRole("button", { name: "Remove", exact: true }).click();
       await work.waitFor({ state: "detached" });
       assert.equal(readFileSync(workCredentials, "utf8"), original);
+      await removedRows.filter({ hasText: "work@example.test" }).waitFor();
+      const before = await rows.locator(".usage-accounts-account").allTextContents();
       const saved = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/preferences" && response.request().method() === "PUT");
       await rows.last().getByRole("button", { name: /^Move .* up$/ }).click();
       assert.equal((await saved).status(), 200);
       const order = await rows.locator(".usage-accounts-account").allTextContents();
+      assert.deepEqual(order, [...before.slice(0, -2), before[before.length - 1], before[before.length - 2]]);
       assert.equal(await rows.first().getByRole("button", { name: /^Move .* up$/ }).isVisible(), false);
       assert.equal(await rows.last().getByRole("button", { name: /^Move .* down$/ }).isVisible(), false);
       await capture("5-removed-reordered");
@@ -159,8 +169,16 @@ for await (const code of console) {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal(await rows.evaluateAll((rows) => rows.every((row) => row.scrollWidth <= row.clientWidth)), true);
       await capture("6-after-restart");
+      // the removed account waits under Removed from Ovis, and Restore lists it again
+      const removedWork = removedRows.filter({ hasText: "work@example.test" });
+      await removedWork.getByRole("button", { name: /^Restore .*work@example\.test$/ }).click();
+      await work.waitFor();
+      await removedWork.waitFor({ state: "detached" });
+      assert.equal(await agent.locator(".usage-removed").count(), 0);
+      assert.equal(readFileSync(workCredentials, "utf8"), original);
+      await capture("7-restored");
       assert.deepEqual(errors, []);
-      console.log(`PASS account-specific re-login, failed-login outcome, add, confirmed removal, credential preservation, reorder, reload and server restart (${at})`);
+      console.log(`PASS account-specific re-login, failed-login outcome, add, confirmed removal, restore, credential preservation, reorder, reload and server restart (${at})`);
     } finally {
       await context.close();
       api.stop(); api = undefined;

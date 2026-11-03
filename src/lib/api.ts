@@ -156,6 +156,11 @@ export async function removeUsageAccount(account: string): Promise<void> {
   await sendJson("/api/usage/accounts", "DELETE", { account } satisfies UsageAccountRemoval);
 }
 
+/** Lists a removed account in Ovis again. */
+export async function restoreUsageAccount(account: string): Promise<void> {
+  await sendJson("/api/usage/accounts", "POST", { account } satisfies UsageAccountRemoval);
+}
+
 /** Settings → Agents' plan limits: whether Claude's limits are read from its status line on the server's PC. */
 export function fetchStatusline(): Promise<StatuslineState> {
   return getJson<StatuslineState>("/api/usage/statusline", { cache: "no-store" });
