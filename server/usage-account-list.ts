@@ -51,7 +51,8 @@ export class UsageAccountList {
   async report(refresh = false): Promise<UsageReport> {
     const report = await this.usage.report(refresh);
     let removed: Set<string>;
-    try { removed = new Set(this.read()); }
+    // under the guard too: a damaged file is set aside only while no other server can have replaced it
+    try { removed = new Set(withOwnerGuard(this.path, () => this.read())); }
     catch (error) {
       // an unreadable list hides nothing: every meter stays rather than none
       console.warn("Could not read the removed accounts list", error instanceof Error ? error.message : String(error));
