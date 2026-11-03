@@ -398,6 +398,33 @@ describe("Ovis-origin Pi transcript receipts", () => {
     expect(receipts.filter((item) => ["/model", "/thinking high", "!git status"].includes(item.text) && item.error?.code?.includes("transcript"))).toEqual([]);
   }, 20_000);
 
+  it("confirms a receipt queued behind a Pi command once its record lands, each sent once and in order", async () => {
+    const transcript = piFile("pi-command-queue");
+    const f = await setup("pi-command-queue", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    const command = await f.queue(910, "/model sonnet");
+    const message = await f.queue(911, "after the switch");
+    const from = f.socket.seen.length;
+    await f.state("idle");
+    await f.removed(command.id, "sent");
+    await f.waitBytes(`${paste("/model sonnet")}\r`);
+    // the queue advances one message per turn
+    await f.state("working"); await f.state("idle");
+    await f.removed(message.id, "sent");
+    // the command left no receipt to wait for, so the message behind it is not held back
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending"), from);
+    const receipt = sent.messages.find((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending");
+    expect(receipt.id).not.toBe(message.id);
+    expect(f.bytes()).toBe(`${paste("/model sonnet")}\r${paste("after the switch")}\r`);
+    const receipts = f.socket.seen.slice(from).flatMap((frame) => frame.type === "pending-messages" ? frame.messages as PendingMessage[] : []);
+    expect(receipts.filter((item) => item.text === "/model sonnet" && item.error?.code?.includes("transcript"))).toEqual([]);
+    // Pi records the switch as nothing a user typed, and the message as typed
+    appendFileSync(transcript, piLine("u1", "a0", "user", "after the switch"));
+    await f.removed(receipt.id, "consumed");
+    expect(f.bytes()).toBe(`${paste("/model sonnet")}\r${paste("after the switch")}\r`);
+  }, 20_000);
+
   it("keeps explicit Send now non-resendable while Pi works", async () => {
     const transcript = piFile("pi-send-now");
     const f = await setup("pi-send-now", "pi", "› Message\n", {}, false, transcript);
