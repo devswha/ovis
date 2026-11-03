@@ -132,6 +132,16 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "/deploy", anchor), candidate("two", "/skill:commit and push", anchor)]).consumed).toEqual(["one", "two"]);
   });
 
+  it("leaves every copy of a record to the later receipts that claim them all", () => {
+    const path = join(dir(), "command-skills.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const skill = `<skill name="commit" location="/s/SKILL.md">\nReferences are relative to /s.\n\nCommit.\n</skill>\n\nand push`;
+    appendFileSync(path, entry("s1", "base", "user", skill) + entry("s2", "s1", "user", skill));
+    expect(matchPiDeliveries(path, [candidate("one", "/deploy", anchor), candidate("two", "/skill:commit and push", anchor),
+      candidate("three", "/skill:commit and push", anchor)]).consumed).toEqual(["one", "two", "three"]);
+  });
+
   it("gives a template's expansion to it where a later message of the same text has its own record", () => {
     const path = join(dir(), "template-same-text.jsonl");
     writeFileSync(path, header() + entry("base", null, "assistant", "working"));

@@ -330,11 +330,12 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
         ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
         : undefined;
       if (first && first.text !== candidate.text) {
-        // Pi ran it: settle it. The record is its expansion, unless it is a later receipt's own and
-        // no second such record follows, as when an extension's command recorded nothing.
+        // Pi ran it: settle it. The record is its expansion, unless the later receipts it could be
+        // theirs claim every copy of it, as when an extension's command recorded nothing.
         consumed.push(candidate.id);
-        const owner = candidates.slice(index + 1).find((later) => piRecordOf(later.text, first));
-        if (!owner || chain.some((entry) => entry.start > first.start && piRecordOf(owner.text, entry) && !consumedEntries.has(key(entry)))) {
+        const claims = candidates.slice(index + 1).filter((later) => piRecordOf(later.text, first)).length;
+        const copies = chain.filter((entry) => entry.start >= first.start && entry.role === "user" && entry.text === first.text && !consumedEntries.has(key(entry))).length;
+        if (copies > claims) {
           matchedEntries.push(key(first)); afterMatched = first.start;
         }
         continue;
