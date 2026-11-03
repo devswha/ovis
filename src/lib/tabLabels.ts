@@ -97,10 +97,15 @@ const NOT_A_NAME = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/]|```|~~~)/;
  * An attached file's mention, `@` and its absolute path (lib/compose.ts imageMention), which names
  * nothing a tab could be told by (#2637). An upload's path may hold spaces (a folder under
  * ~/Library), so one in the shape an upload takes (server/paste.ts: `<name>-<YYYYMMDD>-<HHMMSS>-
- * <8 hex>.<ext>`) is taken whole up to the next mention, as lib/chatImages.ts reads it; any other
- * path ends at a space.
+ * <8 hex>.<ext>`, a name with no space) is taken whole up to the next mention, as lib/chatImages.ts
+ * reads it; any other path ends at a space.
  */
-const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s@).){0,1024}?-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[^\s\\/]+)?(?=\s|$)|\S*)/gi;
+const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s@).){0,1024}?[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|\S*)/giu;
+
+/** A label an Ovis before #2637 learned from an attachment's mention: it is never shown, and a new one takes its place. */
+export function attachmentTabLabel(label: string): boolean {
+  return /^@(?:\/|~[\\/]|[A-Za-z]:[\\/])/.test(label);
+}
 
 /**
  * What the tab shows of a message: its first line that says something (not a slash command, a path
@@ -169,6 +174,7 @@ export function settleTabLabels(machines: readonly Pick<Machine, "id" | "state" 
   const keep = (map: Readonly<Record<string, string>>): Record<string, string> => {
     const kept: Record<string, string> = {};
     for (const [key, label] of Object.entries(map)) {
+      if (attachmentTabLabel(label)) continue;
       if (liveKeys.has(key)) { seen.add(key); kept[key] = label; continue; }
       if (seen.has(key) && authoritative.some((machine) => onPc(key, machine.id))) { seen.delete(key); gone.add(key); }
       if (!gone.has(key)) kept[key] = label;

@@ -64,13 +64,23 @@ describe("tab names", () => {
       expect(autoTabLabel(tab, [pane({ title: "Retry budget", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Retry budget");
       expect(autoTabLabel(tab, [pane({ label: "Payments", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Payments");
       expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Investigate the flaky retry test in CI | app" })], "local", {})).toBe("Investigate the flaky\u2026");
+      // a title that starts with the agent's name still names the conversation
+      expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Codex login failure | app" })], "local", labels)).toBe("Codex login failure");
+      // herdr's pane title loses the chrome its terminal title does
+      expect(autoTabLabel(tab, [pane({ agent: "omp", title: "\u03c0 \u280b app", terminal_title_stripped: "\u03c0 \u280b Review parser" })], "local", labels)).toBe("Review parser");
+      // a pane's name is kept whole, as a tab's is
+      expect(autoTabLabel(tab, [pane({ label: "/api" })], "local", labels)).toBe("/api");
     });
 
     it("leaves the first message's label where the agent's title only says which agent runs where", () => {
-      for (const [agent, title] of [["claude", "\u2733 Claude Code"], ["codex", "codex"], ["codex", "codex --yolo"], ["codex", " | app"], ["omp", "\u03c0 \u280b app"], ["codex", "/Users/me/app"], ["codex", "~/app"], ["codex", "\u280b"], ["codex", null]] as const) {
+      for (const [agent, title] of [["claude", "\u2733 Claude Code"], ["codex", "codex"], ["codex", "codex --yolo"], ["codex", " | app"], ["omp", "\u03c0 \u280b app"], ["codex", "/Users/me/app"], ["codex", "/Users/me/other"], ["codex", "~/app"], ["claude", "claude --resume 3f2a"], ["codex", "\u280b"], ["codex", null]] as const) {
         expect(autoTabLabel(tab, [pane({ agent, terminal_title_stripped: title })], "local", labels)).toBe("Fix the login redirect\u2026");
       }
       expect(autoTabLabel(tab, [pane({ cwd: null })], "local", {})).toBeNull();
+    });
+
+    it("never shows an attachment's path an earlier version learned", () => {
+      expect(autoTabLabel(tab, [pane({})], "local", { "w1:p2|term_b": "@/Users/example/Library/\u2026" })).toBeNull();
     });
 
     it("never names a shell's tab by its title, nor covers a name someone gave the tab", () => {
