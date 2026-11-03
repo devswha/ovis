@@ -370,8 +370,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Switch": "切换",
   "Show the Herdr app's terminals?": "要显示 Herdr 应用的终端吗？",
   "Show herdr TUI's terminals?": "要显示 herdr TUI 的终端吗？",
-  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so herdr TUI's stay for when you switch back.": "Ovis 会重启并显示 Herdr 应用的终端而不是 herdr TUI 的，本页会自动重新连接。herdr 的窗格继续运行。固定、静音的提醒和未发送的草稿属于各运行时的窗格，因此 herdr TUI 的会保留，等你切换回来。",
-  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so the Herdr app's stay for when you switch back.": "Ovis 会重启并显示 herdr TUI 的终端而不是 Herdr 应用的，本页会自动重新连接。应用的终端继续运行。固定、静音的提醒和未发送的草稿属于各运行时的窗格，因此 Herdr 应用的会保留，等你切换回来。",
+  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running.": "Ovis 会重启并显示 Herdr 应用的终端而不是 herdr TUI 的，本页会自动重新连接。herdr 的窗格继续运行。",
+  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.": "Ovis 会重启并显示 herdr TUI 的终端而不是 Herdr 应用的，本页会自动重新连接。应用的终端继续运行。",
   "Switch and restart": "切换并重启",
   "Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.": "重启后 Ovis 一直没有响应。请稍后重新加载本页；如果仍无响应，请在这台电脑上重新启动 Ovis。",
 };

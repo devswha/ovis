@@ -370,8 +370,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Switch": "전환",
   "Show the Herdr app's terminals?": "Herdr 앱의 터미널을 볼까요?",
   "Show herdr TUI's terminals?": "herdr TUI의 터미널을 볼까요?",
-  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so herdr TUI's stay for when you switch back.": "Ovis가 다시 시작해 herdr TUI 대신 Herdr 앱의 터미널을 보여 주고, 이 페이지는 저절로 다시 연결됩니다. herdr의 패널은 계속 실행됩니다. 고정, 알림 끄기, 보내지 않은 초안은 런타임마다 따로라서 herdr TUI의 것은 다시 돌아올 때를 위해 그대로 남습니다.",
-  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so the Herdr app's stay for when you switch back.": "Ovis가 다시 시작해 Herdr 앱 대신 herdr TUI의 터미널을 보여 주고, 이 페이지는 저절로 다시 연결됩니다. 앱의 터미널은 계속 실행됩니다. 고정, 알림 끄기, 보내지 않은 초안은 런타임마다 따로라서 Herdr 앱의 것은 다시 돌아올 때를 위해 그대로 남습니다.",
+  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running.": "Ovis가 다시 시작해 herdr TUI 대신 Herdr 앱의 터미널을 보여 주고, 이 페이지는 저절로 다시 연결됩니다. herdr의 패널은 계속 실행됩니다.",
+  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.": "Ovis가 다시 시작해 Herdr 앱 대신 herdr TUI의 터미널을 보여 주고, 이 페이지는 저절로 다시 연결됩니다. 앱의 터미널은 계속 실행됩니다.",
   "Switch and restart": "전환하고 다시 시작",
   "Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.": "다시 시작한 뒤로 Ovis가 응답하지 않습니다. 잠시 뒤 이 페이지를 새로 고치고, 그래도 응답이 없으면 이 PC에서 Ovis를 다시 실행하세요.",
 };

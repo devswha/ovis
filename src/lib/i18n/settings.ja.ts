@@ -370,8 +370,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Switch": "切り替え",
   "Show the Herdr app's terminals?": "Herdr アプリのターミナルを表示しますか？",
   "Show herdr TUI's terminals?": "herdr TUI のターミナルを表示しますか？",
-  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so herdr TUI's stay for when you switch back.": "Ovis が再起動し、herdr TUI の代わりに Herdr アプリのターミナルを表示して、このページは自動で再接続します。herdr のペインは動き続けます。ピン留め、ミュートした通知、未送信の下書きはランタイムごとのペインに属するため、herdr TUI のものは戻ったときのために残ります。",
-  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so the Herdr app's stay for when you switch back.": "Ovis が再起動し、Herdr アプリの代わりに herdr TUI のターミナルを表示して、このページは自動で再接続します。アプリのターミナルは動き続けます。ピン留め、ミュートした通知、未送信の下書きはランタイムごとのペインに属するため、Herdr アプリのものは戻ったときのために残ります。",
+  "Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running.": "Ovis が再起動し、herdr TUI の代わりに Herdr アプリのターミナルを表示して、このページは自動で再接続します。herdr のペインは動き続けます。",
+  "Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.": "Ovis が再起動し、Herdr アプリの代わりに herdr TUI のターミナルを表示して、このページは自動で再接続します。アプリのターミナルは動き続けます。",
   "Switch and restart": "切り替えて再起動",
   "Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.": "再起動してから Ovis が応答しません。少ししてからこのページを再読み込みし、それでも応答がなければこの PC で Ovis を起動し直してください。",
 };

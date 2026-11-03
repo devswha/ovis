@@ -1100,8 +1100,8 @@ function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted
         <ConfirmDialog
           title={toCore ? t("Show the Herdr app's terminals?") : t("Show herdr TUI's terminals?")}
           body={toCore
-            ? t("Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so herdr TUI's stay for when you switch back.")
-            : t("Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so the Herdr app's stay for when you switch back.")}
+            ? t("Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running.")
+            : t("Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.")}
           confirmLabel={t("Switch and restart")}
           onConfirm={async () => {
             // the bridge answering now (its boot id needs no herdr): any other one after the switch is the restarted server

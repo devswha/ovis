@@ -54,6 +54,9 @@ it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", asyn
     expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
     rmSync(trace);
   }
+  // a herdr OVIS_HERDR_BIN names outside those places is the TUI Ovis runs
+  touch(join(root, "opt", "herdr"));
+  expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_HERDR_BIN: join(root, "opt", "herdr") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
   expect(looked).toBe(0);
 });
 

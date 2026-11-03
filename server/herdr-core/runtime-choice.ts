@@ -18,7 +18,7 @@ type Env = Record<string, string | undefined>;
 
 /** What is on this PC, read from files alone: nothing is run and nothing is connected to. */
 export interface RuntimeTraces {
-  /** herdr's TUI is installed: a herdr on the PATH or in ~/.local/bin, or its config.toml */
+  /** herdr's TUI is installed: OVIS_HERDR_BIN's herdr, a herdr on the PATH or in ~/.local/bin, or its config.toml */
   tuiInstalled: boolean;
   /** herdr's TUI server runs: its socket is there (HERDR_SOCKET, else the default one) */
   tuiRunning: boolean;
@@ -46,7 +46,9 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
   const herdrDirs = [...new Set([join(config, "herdr"), join(home, ".config", "herdr")])];
   const herdrOnPath = (env["PATH"] ?? "").split(platform === "win32" ? ";" : delimiter).filter((dir) => dir !== "")
     .some((dir) => isFile(join(dir, `herdr${exe}`)));
-  const tuiInstalled = herdrOnPath || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")));
+  // OVIS_HERDR_BIN names the herdr Ovis runs, wherever it is
+  const named = env["OVIS_HERDR_BIN"];
+  const tuiInstalled = herdrOnPath || (named !== undefined && named !== "" && isFile(named)) || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")));
   // the socket HERDR_SOCKET names and the default one are both traces: a stale variable hides no running TUI
   const tuiRunning = [env["HERDR_SOCKET"], ...herdrDirs.map((dir) => join(dir, "herdr.sock"))].some((socket) => socket !== undefined && socket !== "" && exists(socket));
   const systemApps = options.systemAppDirs ?? (platform === "darwin" ? ["/Applications"] : []);
