@@ -377,6 +377,22 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["typed on core p1", "typed on herdr p1"]);
   });
 
+  it("lets another page follow a switch back too, once storage says the switching page cleared its history", () => {
+    const storage = new MemoryStorage();
+    const clicked = page(storage);
+    const other = page(storage);
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-core")], title);
+    other.paneStorage.setItem(DRAFT, "core draft");
+    // the page that switched back clears the history; the other hears of it as a storage event
+    clicked.runtimeSwitched("local");
+    other.storageChanged("ovis:pane-lifetimes-retired:local");
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
+    expect(other.generation("local")).toBe("herdr-tui");
+    expect(other.paneStorage.getItem(DRAFT)).toBeNull();
+    expect(other.unsent().map(({ text }) => text)).toEqual(["core draft"]);
+  });
+
   it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);

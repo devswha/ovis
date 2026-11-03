@@ -71,7 +71,8 @@ async function boundedStop(try_: Promise<void>, directory: string): Promise<void
 
 export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   root = resolve(root);
-  const port = Number(process.env["PORT"] ?? DEFAULT_PORT);
+  // as the server reads it (server/index.ts): an empty PORT is the default, and both name the same saved runtime file
+  const port = Number(process.env["PORT"] || DEFAULT_PORT);
   const host = process.env["HOST"] ?? "127.0.0.1";
   const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") ? `[${host}]` : host;
   const origin = `http://${probeHost}:${port}`;

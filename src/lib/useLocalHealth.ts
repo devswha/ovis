@@ -1,4 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { LOCAL_MACHINE } from "../../shared/machines.ts";
+import { paneLifetimes } from "./paneLifetime.ts";
 import { fetchHealth, type HealthInfo } from "./api.ts";
 import { applyHealthRead, healthFreshness, machineHealth, type HealthBook } from "./healthPresentation.ts";
 import { sameData } from "./useMachineRoster.ts";
@@ -24,5 +26,8 @@ export function useLocalHealth() {
     setLocalHealth((previous) => sameData(previous, { confirmed, failures }) ? previous : { confirmed, failures });
   }, []);
 
+  // a runtime switch, from this page or any other device: snapshots of a runtime this page left may come back
+  const localRuntime = health?.herdr?.runtime ?? null;
+  useEffect(() => { if (localRuntime !== null) paneLifetimes.runtimeChanged(LOCAL_MACHINE); }, [localRuntime]);
   return { localHealth, health, localFreshness, shownHealth, readLocalHealth };
 }

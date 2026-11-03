@@ -1070,7 +1070,7 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
     // unanswered: the whole health answer's facts stand, as they did before this read
     fetchBridgeHealth().then((health) => { if (live) setBridgeFacts(health.herdr_runtime ?? null); }, () => {});
     return () => { live = false; };
-  }, [restarting, bootId]);
+  }, [restarting, bootId, core?.version]);
   if (restarting !== null) {
     return (
       <SettingsGroup title={t("Terminals")} section="runtime">

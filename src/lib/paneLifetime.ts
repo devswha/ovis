@@ -142,15 +142,27 @@ export class PaneLifetimes {
    * held goes to recovery as the next snapshot names the other, as for any herdr that replaced one.
    */
   runtimeSwitched(machineId: string): void {
-    this.outlived.delete(machineId);
+    this.runtimeChanged(machineId);
     try { this.storage().removeItem(RETIRED_PREFIX + machineId); } catch { /* storage refused: a herdr it lists stays in this page */ }
   }
+
+  /** The PC serves another runtime than this page last read (a switch made on another device too): the herdr it left may come back. */
+  runtimeChanged(machineId: string): void { this.outlived.delete(machineId); }
 
   /** Called with a PC once its generation changed: the stores drop what they read for it. */
   onRetire(forget: (machineId: string) => void): () => void { this.retired.add(forget); return () => { this.retired.delete(forget); }; }
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private notify(): void { this.unsentCache = null; for (const listener of this.listeners) listener(); }
-  storageChanged(key: string | null): void { if (key === null || key.startsWith(UNSENT_PREFIX)) this.notify(); }
+  storageChanged(key: string | null): void {
+    // another page switched this PC's runtime (runtimeSwitched): the herdr it left may come back here too
+    if (key === null) this.outlived.clear();
+    else if (key.startsWith(RETIRED_PREFIX)) {
+      let gone = false;
+      try { gone = this.storage().getItem(key) === null; } catch { /* unreadable: the history stands */ }
+      if (gone) this.outlived.delete(key.slice(RETIRED_PREFIX.length));
+    }
+    if (key === null || key.startsWith(UNSENT_PREFIX)) this.notify();
+  }
 
   /**
    * Each roster before it is drawn (useMachineRoster): a PC whose snapshot names another herdr than
