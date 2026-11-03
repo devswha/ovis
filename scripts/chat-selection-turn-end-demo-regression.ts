@@ -186,6 +186,9 @@ try {
             await frames(page);
             await endTurn(page);
           }
+          // watched until the fold has slid shut, and the frames the list measures it in after
+          await page.waitForFunction(() => document.querySelector(".chat-view-virtual .animated-height.is-moving") === null, undefined, WAIT);
+          await frames(page);
           await frames(page);
           const tops = await stopWatch(page);
           const shown = tops.map((top) => top.toFixed(2)).join(", ");
@@ -207,6 +210,39 @@ try {
         } finally {
           await context.close();
         }
+      }
+
+      // A reader who scrolls up while words stand selected, with no input this page sees (a screen
+      // reader, find in page), has left the end: letting the selection go leaves them where they are.
+      const label = "desktop-1280-reader-away";
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+      try {
+        await context.addInitScript((id) => {
+          localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex" }));
+          localStorage.setItem(`ovis:view:${id}`, "chat");
+        }, PANE);
+        const page = await context.newPage();
+        page.setDefaultTimeout(WAIT.timeout);
+        await page.goto(url);
+        await page.getByText(LATER, { exact: false }).waitFor(WAIT);
+        await frames(page);
+        await wordsBox(page, LATER);
+        await page.evaluate(() => { const selection = getSelection()!; selection.removeAllRanges(); selection.addRange((window as unknown as { wordsRange: Range }).wordsRange); });
+        await frames(page);
+        const gap = () => page.evaluate(() => { const node = document.querySelector<HTMLElement>(".chat-view-virtual")!; return Math.round(node.scrollHeight - node.clientHeight - node.scrollTop); });
+        assert.equal(await gap(), 0, `${label}: at the end before scrolling`);
+        for (let step = 0; step < 3; step++) {
+          await page.evaluate(() => { document.querySelector<HTMLElement>(".chat-view-virtual")!.scrollTop -= 30; });
+          await frames(page);
+        }
+        assert.equal(await gap(), 90, `${label}: the scroll stands under the selection`);
+        await page.evaluate(() => getSelection()?.removeAllRanges());
+        await frames(page);
+        await frames(page);
+        assert.equal(await gap(), 90, `${label}: still away from the end once the selection is gone`);
+        console.log(`PASS ${label}`);
+      } finally {
+        await context.close();
       }
     } finally {
       await browser.close();
