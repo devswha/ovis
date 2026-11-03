@@ -5789,6 +5789,10 @@ describe("access facts on /api/health", () => {
       expect((await secured.read(bearer)).body.herdr_runtime).toEqual(facts);
       expect((await secured.read({ cookie: `ovis_device=${token}`, "x-forwarded-for": "192.168.0.20" })).body.herdr_runtime).toBeUndefined();
       expect((await secured.read({})).body.herdr_runtime).toBeUndefined();
+      // the bridge's own answer, which needs no herdr, tells the same owner the same, so a stopped TUI keeps the way back
+      expect((await secured.read(bearer, "?scope=bridge")).body.herdr_runtime).toEqual(facts);
+      expect((await secured.read({ cookie: `ovis_device=${token}`, "x-forwarded-for": "192.168.0.20" }, "?scope=bridge")).body.herdr_runtime).toBeUndefined();
+      expect((await secured.read({}, "?scope=bridge")).body.herdr_runtime).toBeUndefined();
       // nobody but a driving owner, and only through the app's own request header
       expect((await post({})).status).toBe(401);
       expect((await post({ cookie: `ovis_device=${token}`, "x-forwarded-for": "192.168.0.20", "x-herdr-update": "1" })).status).toBe(403);

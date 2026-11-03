@@ -353,6 +353,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "This PC serves": "이 PC가 보여 주는 것",
   "Herdr app": "Herdr 앱",
   "herdr TUI": "herdr (TUI)",
+  "herdr's TUI server is not running.": "herdr의 TUI 서버가 실행 중이 아닙니다.",
   "Version {version}.": "버전 {version}.",
   "herdr-core {version}, session {session}.": "herdr-core {version}, 세션 {session}.",
   "herdr-core {version}.": "herdr-core {version} 사용 중.",

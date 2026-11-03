@@ -136,6 +136,16 @@ export class PaneLifetimes {
     removeItem: (key) => { if (this.routed(key)) this.storage().removeItem(key); else this.memory.delete(key); },
   };
 
+  /**
+   * This page switched the PC's runtime (Settings, lib/runtimeSwitch.ts): the herdr it left may come
+   * back with a switch back, so none it outlived is a stale read any more. What each runtime's panes
+   * held goes to recovery as the next snapshot names the other, as for any herdr that replaced one.
+   */
+  runtimeSwitched(machineId: string): void {
+    this.outlived.delete(machineId);
+    try { this.storage().removeItem(RETIRED_PREFIX + machineId); } catch { /* storage refused: a herdr it lists stays in this page */ }
+  }
+
   /** Called with a PC once its generation changed: the stores drop what they read for it. */
   onRetire(forget: (machineId: string) => void): () => void { this.retired.add(forget); return () => { this.retired.delete(forget); }; }
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };

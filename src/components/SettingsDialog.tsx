@@ -19,6 +19,7 @@ import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/th
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
+import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { KeyBarSettings } from "./KeyBarSettings.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Stepper, Toggle } from "./SettingsControls.tsx";
@@ -27,7 +28,7 @@ import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiF
 import { canListInstalledFonts, filterFamilies, isMonospaceFamily, queryInstalledFonts } from "../lib/installedFonts.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
-import type { HerdrCoreFacts, HerdrRuntimeFacts, Machine, MachineSettings } from "../../shared/machines.ts";
+import { LOCAL_MACHINE, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
@@ -1056,11 +1057,20 @@ function PluginsGroup() {
  * restarts Ovis on it; once a new server answers, the app reads it again in place (no reload). Where the switch cannot run,
  * one quiet line says why, or how to switch by hand.
  */
-function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted }: { version: string | null; runtime: "herdr" | "herdr-core" | null; core: HerdrCoreFacts | null; facts: HerdrRuntimeFacts | null; bootId: string | null; onServerRestarted?: () => void }) {
+function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onServerRestarted }: { version: string | null; runtime: "herdr" | "herdr-core" | null; core: HerdrCoreFacts | null; facts: HerdrRuntimeFacts | null; bootId: string | null; onServerRestarted?: () => void }) {
   const t = useT();
   const [confirming, setConfirming] = useState(false);
   // the wait for the restarted server outlives this page of Settings (lib/runtimeSwitch.ts)
   const restarting = useSyncExternalStore(subscribeRestart, restartState);
+  // the bridge's own answer needs no herdr: with herdr's TUI stopped it still says what to switch back to
+  const [bridgeFacts, setBridgeFacts] = useState<HerdrRuntimeFacts | null>(null);
+  useEffect(() => {
+    if (restarting !== null) return;
+    let live = true;
+    // unanswered: the whole health answer's facts stand, as they did before this read
+    fetchBridgeHealth().then((health) => { if (live) setBridgeFacts(health.herdr_runtime ?? null); }, () => {});
+    return () => { live = false; };
+  }, [restarting, bootId]);
   if (restarting !== null) {
     return (
       <SettingsGroup title={t("Terminals")} section="runtime">
@@ -1069,12 +1079,17 @@ function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted
       </SettingsGroup>
     );
   }
-  if (runtime === null || version === null) return null;
-  const onCore = runtime === "herdr-core";
+  const facts = bridgeFacts ?? healthFacts;
+  // the runtime the bridge serves now; the last health answer's version only when it was about that runtime
+  const served = facts?.serving ?? runtime;
+  const known = served === runtime ? version : null;
+  if (served === null || (known === null && facts === null)) return null;
+  const onCore = served === "herdr-core";
   const vars = { version: core?.version ?? "", setting: "OVIS_RUNTIME=herdr-core", command: "herdr plugin config-dir devswha.ovis" };
-  const detail = !onCore ? t("Version {version}.", { version })
-    : core?.session ? t("herdr-core {version}, session {session}.", { version, session: core.session })
-    : t("herdr-core {version}.", { version });
+  const coreVersion = known ?? core?.version ?? "";
+  const detail = !onCore ? (known !== null ? t("Version {version}.", { version: known }) : t("herdr's TUI server is not running."))
+    : core?.session ? t("herdr-core {version}, session {session}.", { version: coreVersion, session: core.session })
+    : t("herdr-core {version}.", { version: coreVersion });
   const target = facts?.switch_to ?? null;
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = facts?.fallback === "no_herdr_core" ? t("The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.")
@@ -1107,12 +1122,14 @@ function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted
             // the bridge answering now (its boot id needs no herdr): any other one after the switch is the restarted server
             const from = await fetchBridgeHealth().then((health) => health.web_ui?.boot_id ?? bootId, () => bootId);
             await switchRuntime(target);
+            // this PC's panes come from the other runtime next, which may be one the page drew before
+            paneLifetimes.runtimeSwitched(LOCAL_MACHINE);
             setConfirming(false);
             awaitRestart(target, {
               from,
               // the bridge's own answer needs no herdr, and says whether the launcher took it as its own
               boot: () => fetchBridgeHealth().then((health) => health.web_ui ? { id: health.web_ui.boot_id, accepted: health.accepted === true } : null),
-              onBack: () => onServerRestarted?.(),
+              onBack: () => { paneLifetimes.runtimeSwitched(LOCAL_MACHINE); onServerRestarted?.(); },
             });
           }}
           onClose={() => setConfirming(false)}

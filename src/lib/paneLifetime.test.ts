@@ -355,6 +355,28 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["line:typed here"]);
   });
 
+  it("follows a runtime switch back to a herdr the page left, and never shows one runtime's draft in the other's pane", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-tui")], title);
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-core")], title);
+    lifetimes.paneStorage.setItem(DRAFT, "typed on core p1");
+    // switched back in place: the TUI's snapshot is no stale read
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-tui")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-tui");
+    expect(lifetimes.stored("local")).toBe(true);
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    lifetimes.paneStorage.setItem(DRAFT, "typed on herdr p1");
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-core")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-core");
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    // neither text is lost: both wait in recovery
+    expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["typed on core p1", "typed on herdr p1"]);
+  });
+
   it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);

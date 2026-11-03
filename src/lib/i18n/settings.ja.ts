@@ -353,6 +353,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "This PC serves": "この PC が表示するもの",
   "Herdr app": "Herdr アプリ",
   "herdr TUI": "herdr (TUI)",
+  "herdr's TUI server is not running.": "herdr の TUI サーバーは動いていません。",
   "Version {version}.": "バージョン {version}。",
   "herdr-core {version}, session {session}.": "herdr-core {version}、セッション {session}。",
   "herdr-core {version}.": "herdr-core {version}。",

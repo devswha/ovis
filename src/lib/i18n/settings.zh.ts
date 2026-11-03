@@ -353,6 +353,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "This PC serves": "这台电脑提供",
   "Herdr app": "Herdr 应用",
   "herdr TUI": "herdr（TUI）",
+  "herdr's TUI server is not running.": "herdr 的 TUI 服务器没有运行。",
   "Version {version}.": "版本 {version}。",
   "herdr-core {version}, session {session}.": "herdr-core {version}，会话 {session}。",
   "herdr-core {version}.": "herdr-core {version}。",

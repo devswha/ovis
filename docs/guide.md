@@ -783,7 +783,8 @@ looked, rather than run an `hc` that may not be herdr-core's.
 **Settings → About → Terminals** says which runtime this PC serves and, when the PC has the
 other one too, offers to switch: **Switch** asks first, saves the choice and restarts Ovis on it,
 on the same port and state folder, and Settings shows the new runtime once the restarted server
-answers. Pins, muted alerts and unsent drafts belong to each runtime's panes and stay with them.
+answers. Text left unsent in one runtime's panes waits in **Recover unsent text** once the other's
+are shown; pins and muted alerts are kept for the panes shown, so the other runtime's may be cleared.
 A start that fails on the chosen runtime goes back to the previous one, and a saved Herdr app
 whose core is gone starts herdr instead and says so there. Only a device that drives this PC can
 switch, never a watching one or a stranger on an open install, and the switch needs Ovis's own
