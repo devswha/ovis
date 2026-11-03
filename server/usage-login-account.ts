@@ -1,16 +1,41 @@
-import { resolve } from "node:path";
-import { accountKey, USAGE_PROVIDERS, type CredentialHome, type UsageContext } from "./usage.ts";
+import { homeSignIn, type CredentialHome, type UsageContext } from "./usage.ts";
 
-/** Identifies only the sign-in written in this login's home; never returns a token or a path. */
-export async function loginAccount(ctx: UsageContext, target: { readonly provider: "claude" | "codex"; readonly home: CredentialHome }): Promise<string | null> {
-  const provider = USAGE_PROVIDERS.find((provider) => provider.id === target.provider);
-  if (!provider) return null;
-  for (const found of await provider.signIns(ctx)) {
-    if ("locked" in found || found.home === undefined) continue;
-    const home = found.home;
-    const matches = target.home.kind === "default" ? home.kind === "default"
-      : home.kind === "dir" && resolve(home.dir) === resolve(target.home.dir);
-    if (matches && (found.expiresAt === null || found.expiresAt > ctx.now())) return accountKey(target.provider, found.account, found.source);
+/** The credential home a followed sign-in's CLI writes, as its environment points it there. */
+export interface LoginTarget {
+  readonly provider: "claude" | "codex";
+  readonly home: CredentialHome;
+}
+
+/** The account a followed sign-in signed in, as the list keys and names it; never a token or a path. */
+export interface LoginAccount {
+  readonly key: string;
+  readonly label: string | null;
+}
+
+/**
+ * What the login's home holds before its CLI starts: the digests of every token its sources hold (none
+ * when it holds no sign-in), undefined when it could not be read (locked, unreadable: then no end of this
+ * login can be told from what was there, and none is counted as signed in).
+ */
+export async function homeBefore(ctx: UsageContext, target: LoginTarget): Promise<readonly string[] | undefined> {
+  try {
+    const found = await homeSignIn(ctx, target.provider, target.home);
+    return found === "unknown" ? undefined : found?.digests ?? [];
+  } catch {
+    // never put a credential reader's contents in an error
+    console.warn("Could not read a credential home before its sign-in");
+    return undefined;
   }
-  return null;
+}
+
+/**
+ * The account a CLI that exited 0 signed in: its own home now holds a usable sign-in it wrote, a token none
+ * of the home's sources held before it started (one only moved from its keychain to its file is not new). An exit code alone proves nothing (a CLI can exit 0 having signed
+ * nothing in), nor does a sign-in that was there already or one written in another home.
+ */
+export async function loginAccount(ctx: UsageContext, target: LoginTarget, before: readonly string[] | undefined): Promise<LoginAccount | null> {
+  if (before === undefined) return null;
+  const after = await homeSignIn(ctx, target.provider, target.home);
+  if (after === null || after === "unknown" || before.includes(after.digest) || (after.expiresAt !== null && after.expiresAt <= ctx.now())) return null;
+  return { key: after.key, label: after.label };
 }
