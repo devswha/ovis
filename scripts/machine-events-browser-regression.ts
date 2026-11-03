@@ -14,8 +14,9 @@ const previous = process.env["OVIS_MACHINE_EVENTS_WS"];
 delete process.env["OVIS_MACHINE_EVENTS_WS"];
 const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false });
 const base = `http://127.0.0.1:${server.port}`;
-const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
+  browser = await chromium.launch({ executablePath: chromePath(), headless: true });
   const context = await browser.newContext();
   let sse = 0;
   context.on("request", (request) => { if (new URL(request.url()).pathname === "/api/machines/events") sse++; });
@@ -59,6 +60,6 @@ try {
   writeFileSync(process.env["MACHINE_EVENTS_REPORT"] ?? join(tmpdir(), "ovis-machine-events-browser-report.json"), JSON.stringify(report, null, 2));
   await context.close();
 } finally {
-  await browser.close(); server.stop(); rmSync(stateDir, { recursive: true, force: true });
+  await browser?.close(); server.stop(); rmSync(stateDir, { recursive: true, force: true });
   if (previous === undefined) delete process.env["OVIS_MACHINE_EVENTS_WS"]; else process.env["OVIS_MACHINE_EVENTS_WS"] = previous;
 }
