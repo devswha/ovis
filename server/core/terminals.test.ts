@@ -288,16 +288,47 @@ it("never paints herdr's takeover diagnostic when the displaced attach exits aft
   expect(pane.painted().endsWith("\x1b[?1049l\x1b[?25h\x1b[0 q")).toBe(true);
 });
 
-it("passes on the start of a takeover diagnostic that never completes once the hold runs out", async () => {
+it("passes on the start of a takeover diagnostic that never completes once the exit wait runs out", async () => {
   using pane = await resizableAttach();
   pane.attach.onData(herdrScreen(80, 24, "pane text", true));
   const partial = TAKEOVER.slice(0, TAKEOVER.indexOf("taken"));
   pane.attach.onData(partial);
-  // right after the screen, the refusal guard holds the line for one hold, then the tail for one more
-  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+  // right after the screen, the refusal guard holds the line for one hold, then the tail waits for the rest or the exit
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS + terminalProcess.ATTACH_TAKEOVER_EXIT_MS - 1);
   expect(pane.painted()).not.toContain("herdr: server shut down");
-  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+  jest.advanceTimersByTime(1);
   expect(pane.painted().endsWith(partial)).toBe(true);
+});
+
+// #2630 review: reads more than a hold apart split the diagnostic, and its words were painted without their teardown
+for (const cut of [TAKEOVER.indexOf("herdr"), TAKEOVER.indexOf(" down"), 3]) {
+  it(`never paints herdr's takeover diagnostic split ${cut} bytes in, its reads far apart`, async () => {
+    using pane = await resizableAttach();
+    pane.attach.onData(herdrScreen(80, 24, "pane text", true));
+    // past the refusal guard's window: only the tail stands between these reads and the tab
+    jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 10);
+    pane.attach.onData(TAKEOVER.slice(0, cut));
+    jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 5);
+    pane.attach.onData(TAKEOVER.slice(cut));
+    jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 5);
+    pane.attach.onExit(1);
+    expect(pane.painted()).not.toContain("herdr");
+    expect(pane.painted().endsWith("\x1b[?1049l\x1b[?25h\x1b[0 q")).toBe(true);
+  });
+}
+
+// #2630 review: each later read restarted the wait, and text shaped like the diagnostic stayed hidden for seconds
+it("waits one bounded time from the diagnostic's first byte, however many line ends follow it", async () => {
+  using pane = await resizableAttach();
+  pane.attach.onData(herdrScreen(80, 24, "pane text", true));
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 10);
+  pane.attach.onData(TAKEOVER);
+  jest.advanceTimersByTime(terminalProcess.ATTACH_TAKEOVER_EXIT_MS - 500);
+  pane.attach.onData("\r\n");
+  jest.advanceTimersByTime(499);
+  expect(pane.painted()).not.toContain("terminal attach taken over");
+  jest.advanceTimersByTime(1);
+  expect(pane.painted().endsWith(TAKEOVER + "\r\n")).toBe(true);
 });
 
 it("passes on a pane's own takeover words when no exit follows them", async () => {

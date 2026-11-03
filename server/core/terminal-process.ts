@@ -379,8 +379,11 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       const probes = onCore ? null : new AttachStartupProbes();
       const outputTail = new AttachOutputTail();
       let tailTimer: ReturnType<typeof setTimeout> | undefined;
+      /** when the words held now have waited long enough: set by their first byte, never moved by later reads */
+      let tailDeadline: number | null = null;
       const flushTail = (taken = false): void => {
         clearTimeout(tailTimer);
+        tailDeadline = null;
         const data = outputTail.flush(taken);
         if (data) forward(data);
       };
@@ -388,10 +391,14 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         clearTimeout(tailTimer);
         const visible = outputTail.push(data);
         if (visible) forward(visible);
-        // A pane may print the same bytes without exiting: never keep its text indefinitely.
+        // A pane may print the same bytes without exiting: never keep its text past one deadline.
         // A line the guard below still holds may be the rest of the diagnostic held here: its own
         // timer publishes it here again, and the two are judged together.
-        if (outputTail.pending) tailTimer = setTimeout(() => { if (!guarded) flushTail(); }, outputTail.complete ? ATTACH_TAKEOVER_EXIT_MS : holdFor);
+        if (!outputTail.pending) tailDeadline = null;
+        else {
+          tailDeadline ??= Date.now() + ATTACH_TAKEOVER_EXIT_MS;
+          tailTimer = setTimeout(() => { if (!guarded) flushTail(); }, Math.max(0, tailDeadline - Date.now()));
+        }
       };
       // After an early release, until the hold would have ended, what may be a refusal line waits
       // for the exit: a refusal is dropped then, anything else is passed on when the window ends.
