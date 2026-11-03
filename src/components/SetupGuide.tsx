@@ -439,7 +439,7 @@ function RelayBox({ relay, auth, closesGate, onPaired, onOther }: { relay: Relay
           </div>
         </>
       )}
-      {step === "online" && <RelayPairing />}
+      {step === "online" && <RelayQr />}
       {pairedSelf && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is paired first: other browsers now need pairing too.")}</span>}
       {/* a failed start's reason shows once, in its own line, when the relay says it did not start; any other failure (a retry's own pairing) shows here */}
       {error !== null && (step !== "not-started" || error !== status.error) && <p className="setup-error" role="alert">{error}</p>}
@@ -447,6 +447,43 @@ function RelayBox({ relay, auth, closesGate, onPaired, onOther }: { relay: Relay
       <button type="button" className="setup-link setup-phone-other" disabled={busy} onClick={onOther}>{t("Use Tailscale or Wi-Fi instead")}</button>
     </div>
   );
+}
+
+/**
+ * The relay's pairing QR code in the guide (RelayPairing, as Settings shows it), and the phone that
+ * used it: its code is single-use, so once a new device is listed the QR gives way to Paired and New
+ * code, as the address QR does (PhoneQr). Devices listed when it opened are the ones before it.
+ */
+function RelayQr() {
+  const t = useT();
+  const [paired, setPaired] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    if (paired !== null) return;
+    let live = true;
+    let asked = false;
+    let known: ReadonlySet<string> | null = null;
+    const look = (): void => {
+      if (asked) return;
+      asked = true;
+      void fetchDevices().then((devices) => {
+        if (!live) return;
+        if (known === null) { known = new Set(devices.map((device) => device.id)); return; }
+        const fresh = devices.find((device) => !known!.has(device.id));
+        if (fresh !== undefined) setPaired(fresh.label);
+      }, () => { /* asked again on the next turn */ }).finally(() => { asked = false; });
+    };
+    look();
+    const poll = window.setInterval(look, PAIRING_POLL_MS);
+    return () => { live = false; window.clearInterval(poll); };
+  }, [paired]);
+  if (paired !== null) return (
+    <p className="setup-phone-relay-state">
+      <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("Paired: {name}.", { name: paired })}</span>{" "}
+      <button type="button" className="setup-link" onClick={() => { setPaired(null); setRound((count) => count + 1); }}>{t("New code")}</button>
+    </p>
+  );
+  return <RelayPairing key={round} />;
 }
 
 /**

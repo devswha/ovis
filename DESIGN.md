@@ -3667,7 +3667,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it on closes the gate, and "Turn on the Ovis relay" as the primary button (the tap is the consent).
   A browser in only because nothing is paired yet pairs itself first, as the relay closes the gate.
   Then the relay's state while it connects, a failed start with Try again, and once online the same
-  pairing QR code Settings shows (`RelayPairing`). A quiet "Use Tailscale or Wi-Fi instead" link under
+  pairing QR code Settings shows (`RelayPairing`), which gives way to Paired and New code once a
+  new device is listed, since its code is single-use. A quiet "Use Tailscale or Wi-Fi instead" link under
   it, and the whole box where the relay cannot lead, shows the other way: a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
   code. The code is asked for when the box opens and never renewed behind the user's back (it would
   replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again.

@@ -54,9 +54,10 @@ function announceFromRelay(code: PairingCode): void {
  * The QR code of the pending pairing offer, counted down to its expiry. An offer is asked for when
  * this opens with the relay online, when the Devices group starts a new code (the server keeps one
  * pending code, so both show the same), when the code ran out, and on New code, which starts a
- * new code first; never on a timer or a render. A code another relay QR announces (the setup guide's
- * and Settings' can be up at once) is not answered with an offer of this panel's own, or the two would
- * keep replacing each other's: this one's code is gone, so it says it expired and waits for New code.
+ * new code first; never on a timer or a render. The setup guide's and Settings' relay QR codes can be
+ * up at once: a code another one announces is the one this shows already, or this asks for the offer
+ * again without announcing it (the server's offer reuses its pending code), so the two never keep
+ * answering each other.
  */
 export function RelayPairing({ phone = false }: { phone?: boolean }) {
   const t = useT();
@@ -68,10 +69,15 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
   const [generation, setGeneration] = useState(0);
   // this panel's own announcement must not make it ask twice
   const announcing = useRef(false);
+  // the code on screen, and an ask for the offer that is not announced (another relay QR's code)
+  const shown = useRef<string | null>(null);
+  const quiet = useRef(false);
   const again = () => setGeneration((value) => value + 1);
 
   useEffect(() => {
     let cancelled = false;
+    const silent = quiet.current;
+    quiet.current = false;
     setState("minting");
     requestRelayOffer().then((next) => {
       if (cancelled) return;
@@ -80,7 +86,8 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
       // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
       // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)
       const code = decodeOffer(next.url)?.code;
-      if (code !== undefined) {
+      shown.current = code ?? null;
+      if (code !== undefined && !silent) {
         announcing.current = true;
         try { announceFromRelay({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
       }
@@ -94,9 +101,13 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
   }, [generation]);
 
   useEffect(() => {
-    const onCode = () => {
+    const onCode = (event: Event) => {
       if (announcing.current) return;
-      if (relayAnnouncing) { setOffer(null); setState("expired"); return; }
+      const code = (event as CustomEvent<PairingCode | undefined>).detail?.code;
+      if (relayAnnouncing) {
+        if (code === undefined || code !== shown.current) { quiet.current = true; again(); }
+        return;
+      }
       again();
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);

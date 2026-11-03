@@ -110,9 +110,10 @@ describe("Connect a phone on a phone", () => {
     // the setup guide's and Settings' relay QR codes can be up at once
     await mount(<><RelayPairing /><RelayPairing /></>);
     for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
-    expect(requests.filter((path) => path === "/api/relay/offer")).toHaveLength(2);
-    expect(qrCodes()).toHaveLength(1);
-    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(1);
+    // the server's offer reuses its pending code: both show it, and neither asks again for the other's
+    expect(requests.filter((path) => path === "/api/relay/offer").length).toBeLessThanOrEqual(3);
+    expect(qrCodes()).toHaveLength(2);
+    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(0);
   });
 
   it("pairs this phone through the relay in one tap: its own offer opens in this browser", async () => {
