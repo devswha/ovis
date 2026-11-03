@@ -3,7 +3,8 @@
  * demo's fixture transport: the frames leave the page but never reach the server (a relay carrier that
  * stopped before the mux wrote them, or a socket gone half-open), then the connection closes. Nothing
  * confirmed them, so the text comes back as held input for the user to send or discard, and nothing is
- * sent on its own after the reconnect.
+ * sent on its own after the reconnect. Held text that looks like a key stays on screen but is never
+ * written to storage.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -96,31 +97,46 @@ try {
   } });
   const origin = `http://127.0.0.1:${server.port}${PREFIX}`;
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  try {
+  /** One fresh page: `text` typed into a socket that loses it, the drop, then the reconnect. */
+  const scenario = async (text: string): Promise<{ held: string | null; swallowed: string; resent: string; stored: string[] }> => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
-    await context.addInitScript(({ key, pane }) => {
-      localStorage.setItem(key, JSON.stringify({ language: "en", theme: "dark", terminalInputMode: "direct", defaultView: "terminal" }));
-      localStorage.setItem(`ovis:view:${pane}`, "terminal");
-    }, { key: SETTINGS_KEY, pane: panes.shell });
-    const page = await context.newPage();
-    page.setDefaultTimeout(10_000);
-    const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await open(page, origin);
-
-    const lost = await typeThenDrop(page, "echo lost");
-    console.log(`lost frames: ${JSON.stringify(lost)}`);
+    try {
+      await context.addInitScript(({ key, pane }) => {
+        localStorage.setItem(key, JSON.stringify({ language: "en", theme: "dark", terminalInputMode: "direct", defaultView: "terminal" }));
+        localStorage.setItem(`ovis:view:${pane}`, "terminal");
+      }, { key: SETTINGS_KEY, pane: panes.shell });
+      const page = await context.newPage();
+      page.setDefaultTimeout(10_000);
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await open(page, origin);
+      const lost = await typeThenDrop(page, text);
+      await page.clock.resume();
+      await page.locator(".conn-live").waitFor({ state: "attached", timeout: 20_000 });
+      await page.locator(".pane-frame:not(.is-hidden) .terminal-banner-draft .draft-text, .composer-notice code").first().waitFor();
+      const after = await page.evaluate(() => ({
+        resent: (window as unknown as QaWindow).delivered.filter((frame) => frame.type === "input").map((frame) => frame.text).join(""),
+        stored: Object.keys(localStorage).filter((key) => key.startsWith("ovis:terminal-draft:")).map((key) => localStorage.getItem(key) ?? ""),
+      }));
+      assert.deepEqual(errors, []);
+      return { ...lost, ...after };
+    } finally { await context.close(); }
+  };
+  try {
+    const lost = await scenario("echo lost");
+    console.log(`lost typing: ${JSON.stringify(lost)}`);
     assert.equal(lost.swallowed, "echo lost", "the typing left the page as input frames the server never read");
     assert.equal(lost.held, "“echo lost”", "typing the server never confirmed comes back as held input");
     console.log("PASS unconfirmed typing is held when the connection closes");
-
-    // the reconnect sends none of it on its own: the held text waits for Send or Discard
-    await page.clock.resume();
-    await page.locator(".conn-live").waitFor({ state: "attached", timeout: 20_000 });
-    await page.locator(".pane-frame:not(.is-hidden) .terminal-banner-draft .draft-text, .composer-notice code").first().waitFor();
-    const resent = await page.evaluate(() => (window as unknown as QaWindow).delivered.filter((frame) => frame.type === "input").map((frame) => frame.text).join(""));
-    assert.ok(!resent.includes("echo lost"), `nothing held is sent after the reconnect (${JSON.stringify(resent)})`);
+    assert.ok(!lost.resent.includes("echo lost"), `nothing held is sent after the reconnect (${JSON.stringify(lost.resent)})`);
     console.log("PASS the reconnect sends none of it");
-    assert.deepEqual(errors, []);
+    assert.ok(lost.stored.some((value) => value.includes("echo lost")), "held input is kept across a reload");
+
+    const token = "export TOKEN=Ab12Cd34Ef56Gh78Ij90Kl12Mn34";
+    const key = await scenario(token);
+    console.log(`lost key: ${JSON.stringify({ ...key, stored: key.stored.length })}`);
+    assert.equal(key.held, `“${token}”`, "a key typed and lost is held on screen like any typing");
+    assert.ok(key.stored.every((value) => !value.includes("Ab12Cd34Ef56Gh78Ij90Kl12Mn34")), "but never written to storage");
+    console.log("PASS held text that looks like a key is never written to storage");
   } finally { await browser.close(); server.stop(true); }
 } finally { rmSync(app, { recursive: true, force: true }); }
