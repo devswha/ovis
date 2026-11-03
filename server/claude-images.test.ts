@@ -528,6 +528,10 @@ describe("finding a picture's record", () => {
     // the picture before them is indexed; the one after them is searched for
     expect(await cost(`${id(5)}:0`)).toBeLessThan(1024 * 1024);
     expect(await cost(`${id(4)}:0`)).toBeGreaterThan(Buffer.byteLength(text) / 2);
+    // after an append no read has vouched for the index yet: a picture it holds no record of is searched
+    // for once, as with the index off, not read for the index's sake on top of that
+    appendFileSync(path, line({ type: "progress", data: "appended" }));
+    expect(await cost(`${id(4)}:0`)).toBeLessThan(Buffer.byteLength(text) * 1.5);
   });
 
   it("still knows a sidechain's uuid after the scan has looked it up for a hundred pictures", async () => {
@@ -682,6 +686,16 @@ describe("finding a picture's record", () => {
     const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
     const result = line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
     expect(await earlierRewritten(unreadable("read"), call + between + result, `${id(3)}:0:0`)).toBeNull();
+  });
+  it("refuses as the forward search does for a tool's picture past the uuids it keeps, when a line before the call is rewritten in place to one it cannot judge naming the call", async () => {
+    // the result is past MARKS_LIMIT, so no record of it is indexed: a lookup that has not read the bytes
+    // again must not go back from the result by what the kept scan noted, which misses the rewritten line
+    const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
+    const sidechain = (uuid: number) => line({ type: "user", uuid: id(uuid), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
+    let sidechains = "";
+    for (let at = 0; at <= 128 * 1024; at += 1) sidechains += sidechain(100_000 + at);
+    const result = line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
+    expect(await earlierRewritten(unreadable("read"), call + sidechains + between + result, `${id(3)}:0:0`)).toBeNull();
   });
 
 });

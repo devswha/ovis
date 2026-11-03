@@ -371,7 +371,8 @@ interface IndexedPicture { start: number; end: number }
  * logged. The log is folded into the table once lookups have read it MARKS_FOLD_AFTER times over, so
  * a file of few pictures never builds the table, and one of many lookups does not read a long log
  * each time. Two uuids with one digest read as seen, which only sends a lookup to the search.
- * Past MARKS_LIMIT marks since the /clear none is kept (`full`), and every uuid reads as seen.
+ * Past MARKS_LIMIT marks since the /clear none is kept (`full`): every uuid would read as seen, so
+ * the scan indexes no more records (notePicture).
  */
 interface UuidMarks { table: Uint32Array; count: number; log: Uint32Array; logged: number; read: number; full: boolean }
 const MARKS_FOLD_AFTER = 64;
@@ -383,7 +384,6 @@ const MARKS_FOLD_AFTER = 64;
 const MARKS_LIMIT = 128 * 1024;
 const uuidMark = (uuid: string): number => Bun.hash.xxHash32(uuid) || 1;
 function marked(marks: UuidMarks, mark: number): boolean {
-  if (marks.full) return true;
   const last = marks.table.length - 1;
   for (let slot = mark & last; marks.table.length > 0 && marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return true;
   if (marks.logged === 0) return false;
@@ -486,6 +486,8 @@ function holdsPicture(block: unknown): boolean {
 
 /** Index the record followClaudeBranch just read (`line`, [start, newline)), when it holds a picture; `known` is how many uuids `ends` held before it. */
 function notePicture(index: PictureIndex, ends: Map<string, number>, known: number, parsed: unknown, line: Buffer, start: number, newline: number): void {
+  // past MARKS_LIMIT no mark is kept and every uuid reads as seen: no record is indexed, and none is hashed
+  if (index.loose.full) return;
   const entry = parsed as TranscriptEntry | null | undefined;
   if (entry === null || typeof entry !== "object" || typeof entry.uuid !== "string") return;
   const followed = ends.get(entry.uuid) === newline + 1;
@@ -2791,6 +2793,8 @@ const pictureChecks = new Map<string, PictureCheck>();
 const vouches = (read: { at: number; wall: number } | { began: number; wall: number }, version: NonNullable<TranscriptStream["version"]>): boolean =>
   ("at" in read ? read.at : read.began) >= version.began
   || (Date.now() >= read.wall && read.wall - version.mtimeMs >= PICTURE_RACY_MS && read.wall - version.ctimeMs >= PICTURE_RACY_MS);
+const vouchedFor = (index: PictureIndex, version: TranscriptStream["version"]): boolean =>
+  version !== undefined && index.vouched?.key === version.key && vouches(index.vouched, version);
 const sameBytes = (left: PictureBytes, right: PictureBytes): boolean => left.from === right.from && left.hashed === right.hashed
   && left.digest === right.digest && left.through === right.through && Buffer.from(left.pending).equals(right.pending);
 
@@ -2809,7 +2813,7 @@ function* vouchedPictureSteps(stream: TranscriptStream, apart: boolean): Steps<v
   const version = stream.version;
   if (index === undefined || (index.blind !== null && index.blind <= index.bytes.from)) return;
   if (version === undefined) return forgetPictures(index);
-  if (index.vouched?.key === version.key && vouches(index.vouched, version)) return;
+  if (vouchedFor(index, version)) return;
   let check = pictureChecks.get(version.key);
   if (check === undefined || !sameBytes(check.bytes, index.bytes) || !vouches(check, version) || (check.stands === undefined && !apart)) {
     check = { bytes: { ...index.bytes }, began: performance.now(), wall: Date.now() };
@@ -2842,8 +2846,14 @@ function* pictureBytesStandSteps(stream: TranscriptStream, bytes: PictureBytes):
 function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray, apart: boolean): Steps<TranscriptPicture | null> {
   // the boundary scan's last read was a step's: the record's read is the next one's
   yield;
-  yield* vouchedPictureSteps(stream, apart);
   const uuid = match[1]!;
+  const index = pictureIndexOn ? stream.pictures : undefined;
+  // A picture the index holds no record of would use it only for the call search, which goes back by what
+  // it noted (unread, blind): that stands only for bytes a read vouched for. When none has for this
+  // version, the lookup is the search alone, as with the index off, rather than a read of the bytes on top
+  // of it, and it neither vouches for nor forgets the index.
+  if (index !== undefined && indexedPicture(stream, uuid) === undefined && !vouchedFor(index, stream.version)) stream = { ...stream, pictures: undefined };
+  else yield* vouchedPictureSteps(stream, apart);
   const indexed = indexedPicture(stream, uuid);
   // The index is trusted only while the bytes it was built from stand (vouchedPictureSteps), its record
   // among them. A record that is not the picture's after all leaves it to the search all the same.
