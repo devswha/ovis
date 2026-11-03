@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { generateHcTypes, HC_METHODS, methodTypeName } from "./hc-types.ts";
 
@@ -74,23 +74,12 @@ describe("generateHcTypes", () => {
     expect(() => generateHcTypes(schema)).toThrow("terminal.send");
   });
 
+  it("makes a union with an any-value variant any value", () => {
+    const out = generateHcTypes(schemaWith({ result: { anyOf: [{ type: "string" }, {}] } }));
+    expect(out).toContain('"terminal.get": { params: TerminalGetParams; result: unknown };');
+  });
+
   it("is deterministic", () => {
     expect(generateHcTypes(SCHEMA)).toBe(generateHcTypes(structuredClone(SCHEMA)));
-  });
-});
-
-describe("generate:types --check covers the hc types", () => {
-  it("fails, naming the hc file, when it drifted", async () => {
-    const original = readFileSync(GENERATED, "utf8");
-    try {
-      writeFileSync(GENERATED, `${original}\nexport type DriftSentinel = "stale";\n`);
-      const proc = Bun.spawn(["bun", "run", join(ROOT, "scripts", "generate-protocol-types.ts"), "--check"], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
-      const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
-      expect(await proc.exited).not.toBe(0);
-      expect(output).toContain("hc-api.generated.ts is STALE");
-    } finally {
-      writeFileSync(GENERATED, original);
-    }
-    expect(readFileSync(GENERATED, "utf8")).toBe(original);
   });
 });

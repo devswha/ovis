@@ -71,9 +71,8 @@ function tsType(def: unknown, indent: string): string {
   if (node.anyOf || node.oneOf) {
     const variants: unknown[] = node.anyOf ?? node.oneOf;
     const rendered = [...new Set(variants.map((variant) => tsType(variant, indent)))];
-    // `T | unknown` collapses to `unknown`: an untyped variant is dropped while a typed one exists
-    const meaningful = rendered.filter((type) => type !== "unknown");
-    return (meaningful.length > 0 ? meaningful : rendered).join(" | ");
+    // a variant that admits any value makes the whole union any value
+    return rendered.includes("unknown") ? "unknown" : rendered.join(" | ");
   }
   const types: string[] = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
   const nullable = types.includes("null");
