@@ -49,6 +49,9 @@ describe("buildSnapshot", () => {
     expect(snapshot.panes.map((pane) => [pane.pane_id, pane.agent_status])).toEqual([
       ["t1", "done"], ["t2", "idle"], ["t3", "idle"], ["t4", "working"], ["t5", "blocked"], ["t6", "idle"], ["t7", "done"], ["t8", "unknown"],
     ]);
+    // without the label, a turn ended since the server first saw the terminal is done
+    const since = buildSnapshot([resting("t6", "idle", 3), resting("t9", "idle", 2)], { spaces: [] }, "0.1.17", () => 2);
+    expect(since.panes.map((pane) => [pane.pane_id, pane.agent_status])).toEqual([["t6", "done"], ["t9", "idle"]]);
   });
 
   it("names an unnamed space and tab as the app labels their terminals", () => {

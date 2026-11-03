@@ -77,14 +77,16 @@ export function seenTurnOf(labels: Readonly<Record<string, string>> | undefined)
 /**
  * The status a terminal shows: its program's word, except that an agent at rest (`idle`, `done`)
  * whose terminal carries `herdr.seen` is done while a turn ended after the one last looked at, and
- * idle once someone looked, on whichever client.
+ * idle once someone looked, on whichever client. Without the label, Ovis's own rule: a turn that
+ * ended since this server first saw the terminal (`firstTurn`) is done, as the program's word is
+ * otherwise.
  */
-export function shownStatusOf(status: HcStatus | null | undefined, turn: number | undefined, labels: Readonly<Record<string, string>> | undefined): AgentStatus {
+export function shownStatusOf(status: HcStatus | null | undefined, turn: number | undefined, labels: Readonly<Record<string, string>> | undefined, firstTurn?: number): AgentStatus {
   const word = agentStatusOf(status);
   if (word !== "idle" && word !== "done") return word;
   const seen = seenTurnOf(labels);
-  if (seen === null) return word;
-  return (turn ?? 0) > seen ? "done" : "idle";
+  if (seen !== null) return (turn ?? 0) > seen ? "done" : "idle";
+  return firstTurn !== undefined && (turn ?? 0) > firstTurn ? "done" : word;
 }
 
 export function agentOfStatus(status: HcStatus | null | undefined): string | null {
@@ -235,7 +237,10 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   return shown;
 }
 
-function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string): PaneInfo {
+/** The turn a terminal had when this server first saw it (adapter.ts): without `herdr.seen`, what ended since is done. */
+export type FirstTurn = (terminal: Pick<HcTerminal, "address" | "turn">) => number;
+
+function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, firstTurn?: FirstTurn): PaneInfo {
   const cwd = terminal.foreground?.cwd ?? terminal.cwd;
   return {
     pane_id: terminal.address,
@@ -243,7 +248,7 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string): PaneI
     workspace_id: workspaceId,
     tab_id: tabId,
     agent: agentOf(terminal),
-    agent_status: shownStatusOf(terminal.status, terminal.turn, terminal.labels),
+    agent_status: shownStatusOf(terminal.status, terminal.turn, terminal.labels, firstTurn?.(terminal)),
     cwd,
     foreground_cwd: cwd,
     title: terminal.title ?? null,
@@ -276,7 +281,7 @@ export function agentInfoOf(pane: PaneInfo): AgentInfo {
  * window, and no pane is in front of anyone the way a herdr TUI's is. Each pane's layout rect is
  * its terminal's own grid, the size an observer attaches at, at its place in the tab's splits.
  */
-export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string): SessionSnapshot {
+export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string, firstTurn?: FirstTurn): SessionSnapshot {
   const workspaces: WorkspaceInfo[] = [];
   const tabs: TabInfo[] = [];
   const panes: PaneInfo[] = [];
@@ -284,7 +289,7 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
   for (const [index, group] of groups(terminals, layout).entries()) {
     const groupPanes: PaneInfo[] = [];
     for (const [tabIndex, tab] of group.tabs.entries()) {
-      const tabPanes = tab.placed.map(({ terminal }) => paneOf(terminal, group.id, tab.id));
+      const tabPanes = tab.placed.map(({ terminal }) => paneOf(terminal, group.id, tab.id, firstTurn));
       groupPanes.push(...tabPanes);
       tabs.push({ tab_id: tab.id, workspace_id: group.id, label: tab.label, number: tabIndex + 1, agent_status: rollUp(tabPanes.map((pane) => pane.agent_status)), focused: false, pane_count: tabPanes.length });
       layouts.push({
