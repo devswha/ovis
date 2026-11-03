@@ -156,6 +156,20 @@ it("refuses a switch, and saves nothing, where something else decides the runtim
   expect(readSavedRuntime(state, 7)).toBeNull();
 });
 
+it("saves no switch over a start the launcher has not taken yet, which it may still roll back", () => {
+  const { home, state, env, touch } = scratch();
+  touch(join(home, ".config", "herdr", "config.toml"));
+  let accepted = false;
+  const restarts: string[] = [];
+  const service = runtimeService({ stateDir: state, port: 7, serving: "herdr", source: "detected", env, core: () => ({ version: "0.1.17", session: "test", running: true }), restart: (id) => { restarts.push(id); }, platform: "linux", managed: true, systemAppDirs: [], accepted: () => accepted });
+  expect(service.request("herdr-core")).toMatchObject({ ok: false, status: 409, code: "runtime_switching" });
+  expect(readSavedRuntime(state, 7)).toBeNull();
+  expect(restarts).toEqual([]);
+  accepted = true;
+  expect(service.request("herdr-core")).toEqual({ ok: true });
+  expect(restarts).toHaveLength(1);
+});
+
 it("puts back only the choice the failed switch saved, never a later one", () => {
   const { state } = scratch();
   saveRuntime(state, 7, { runtime: "herdr-core", previous: "herdr", id: "first" });

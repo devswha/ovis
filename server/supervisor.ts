@@ -93,6 +93,8 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let active: Release | null = null;
   let switching = true, stopping = false;
+  // a switch a bridge saved while an update replaced it: the update's start runs on that choice, and its rollback puts it back
+  let replacedSwitch: string | null = null;
   // The bridge answers before its first health check has passed here. An install taken in that
   // gap stopped the bridge under the check, and the start failed: commands wait for the start.
   const started = Promise.withResolvers<void>();
@@ -134,7 +136,10 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
           // a bridge an update replaced meanwhile already started on the saved choice: only the asking one restarts
           void started.promise.then(() => {
             if (child === candidate) void restartForRuntime(id);
-            else console.log("A runtime switch came from a bridge already replaced; the bridge now running started on the saved choice.");
+            else {
+              if (switching) replacedSwitch = id;
+              console.log("A runtime switch came from a bridge already replaced; the bridge now running started on the saved choice.");
+            }
           });
         }
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
@@ -239,16 +244,19 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     activate(next, commit) {
       return exclusive(async () => {
         switching = true;
+        replacedSwitch = null;
         try {
           await stopChild();
           try { await launch(next); commit(); }
           catch (error) {
             await stopChild();
+            // the update's start may have failed on a runtime switched to meanwhile: the previous version starts on the one before it
+            if (replacedSwitch !== null && restoreRuntime(appStateDir, port, replacedSwitch)) console.error("Going back to the runtime from before the switch made during the update.");
             await launch(active);
             throw new Error(`${error instanceof Error ? error.message : error} Previous version restored.`);
           }
           active = next;
-        } finally { switching = false; checkBridge(); }
+        } finally { replacedSwitch = null; switching = false; checkBridge(); }
       });
     },
   });

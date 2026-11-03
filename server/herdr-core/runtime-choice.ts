@@ -139,6 +139,8 @@ export interface RuntimeServiceOptions {
   platform?: NodeJS.Platform;
   managed?: boolean;
   systemAppDirs?: readonly string[];
+  /** the launcher took this server past its startup check: until then a failed start may still roll back, so no switch is saved over it */
+  accepted?: () => boolean;
 }
 
 export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
@@ -162,7 +164,7 @@ export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
       if (target !== "herdr" && target !== "herdr-core") return { ok: false, status: 400, code: "invalid_runtime", message: "runtime must be herdr or herdr-core" };
       const now = facts();
       if (now.locked !== null) return { ok: false, status: 409, code: "runtime_locked", message: now.locked === "env" ? "OVIS_RUNTIME in the server's environment decides the runtime" : now.locked === "unmanaged" ? "this server was not started by Ovis's launcher, so it cannot restart itself" : "herdr-core is served on Linux and macOS only" };
-      if (requested) return { ok: false, status: 409, code: "runtime_switching", message: "the server is already restarting on another runtime" };
+      if (requested || options.accepted?.() === false) return { ok: false, status: 409, code: "runtime_switching", message: requested ? "the server is already restarting on another runtime" : "the server is still starting; switch once it is up" };
       if (now.switch_to !== target) return { ok: false, status: 409, code: "runtime_unavailable", message: target === now.serving ? `this server already serves ${target}` : `${target} is not on this PC` };
       const id = randomUUID();
       saveRuntime(options.stateDir, options.port, { runtime: target, previous: options.serving, id, ...(options.source === "detected" ? { previous_detected: true } : {}) });
