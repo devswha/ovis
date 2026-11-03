@@ -251,11 +251,32 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   };
   // the pinned card keeps the pin order, where a helper need not follow its agent: no row steps in there
   const restDepths = useMemo(() => depths(split.rest), [split]);
+  // the tree line of each helper: it runs on (`more`) while a later helper of the same agent follows before a
+  // shallower row, and a depth-2 row has its agent's line pass through it (`through`) when that line runs on
+  const restLines = useMemo(() => {
+    const level = split.rest.map((row) => Math.min(2, restDepths.get(row) ?? 0));
+    const more = level.map((depth, index) => {
+      if (depth === 0) return false;
+      for (let next = index + 1; next < level.length; next++) {
+        if (level[next]! < depth) return false;
+        if (level[next] === depth) return true;
+      }
+      return false;
+    });
+    const lines = new Map<AgentRow, { more: boolean; through: boolean }>();
+    let parentMore = false;
+    split.rest.forEach((row, index) => {
+      if (level[index] === 1) parentMore = more[index]!;
+      lines.set(row, { more: more[index]!, through: level[index] === 2 && parentMore });
+    });
+    return lines;
+  }, [split, restDepths]);
 
   const agentItem = (row: AgentRow) => {
     const { machine, entry } = row;
     const { pane, agent } = entry;
     const depth = Math.min(2, restDepths.get(row) ?? 0);
+    const line = restLines.get(row);
     const parentRow = depth > 0 ? allRows.find((candidate) => candidate.machine.id === machine.id && candidate.entry.pane.pane_id === pane.parent_pane_id) : undefined;
     const selected = machine.id === selectedMachineId && pane.pane_id === selectedPaneId;
     // under the filter a row it did not match is there for the selection: drawn as context, and said so
@@ -273,7 +294,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
-    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined}
+    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined}
       onMouseDownCapture={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
       onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
       <button type="button" className="agent-select agent-row" disabled={!online} aria-current={selected ? "true" : undefined} title={tooltip} onClick={() => onSelect(machine.id, pane.pane_id)}

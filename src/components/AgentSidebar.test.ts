@@ -138,4 +138,16 @@ describe("AgentSidebar, what herdr-core reports", () => {
     expect(tooltips(html)[0]).toContain("Progress 40%");
     expect(tooltips(html)[1]).toContain("Started by t1");
   });
+
+  test("a helper's tree line runs on past its own helper to its next sibling", () => {
+    const html = render([machine([
+      pane("t1", { agent_status: "working" }),
+      pane("t2", { agent_status: "working", parent_pane_id: "t1" }),
+      pane("t5", { agent_status: "working", parent_pane_id: "t2" }),
+      pane("t3", { agent_status: "working", parent_pane_id: "t1" }),
+      pane("t4", { agent_status: "working" }),
+    ])]);
+    const lines = [...html.matchAll(/<li [^>]*data-pane="([^"]+)"[^>]*>/g)].map((match) => [match[1], /data-more=""/.test(match[0]), /data-through=""/.test(match[0])]);
+    expect(lines).toEqual([["t1", false, false], ["t2", true, false], ["t5", false, true], ["t3", false, false], ["t4", false, false]]);
+  });
 });
