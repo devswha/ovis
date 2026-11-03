@@ -548,3 +548,168 @@ describe("finding a picture's record", () => {
   });
 
 });
+
+describe("the index against the search, on random transcripts", () => {
+  // a seeded generator (mulberry32): the same transcripts on every run
+  function random(seed: number) {
+    let state = seed >>> 0;
+    const next = () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    return { next, int: (n: number) => Math.floor(next() * n), pick: <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]! };
+  }
+  const pictures = [0, 1, 2].map((variant) => {
+    const bytes = Buffer.from(png);
+    if (variant > 0) bytes[40] = bytes[40]! ^ variant;
+    return { type: "image", source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") } };
+  });
+  const uuids = [1, 2, 3, 4, 5].map(id);
+  // a call id the parser takes from a number is looked for in every spelling of it
+  const calls: (string | number)[] = ["c1", "c2", 7];
+  // a record past what the endpoint holds: a million short names, and the uuid or call id it names
+  const unreadable = line({ type: "file-history-snapshot", messageId: "NAMED", snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
+  const tail = () => line({ type: "progress", data: "a tail longer than the sixty-four bytes a kept scan is checked by" });
+
+  function records(rng: ReturnType<typeof random>, count: number, state: { fresh: number; last: string | null; answers: string[]; unread: boolean; budget: { unread: number } }) {
+    const out: string[] = [];
+    const uuid = () => rng.next() < 0.6 ? rng.pick(uuids) : id(100 + state.fresh++);
+    const chain = (entry: Record<string, unknown>) => {
+      const own = uuid();
+      const record = { parentUuid: state.last, ...entry, uuid: own };
+      if (entry.isSidechain !== true) state.last = own;
+      if (entry.type === "assistant") state.answers.push(own);
+      return line(record);
+    };
+    const pictured = () => rng.next() < 0.3 ? [{ type: "text", text: "see" }, rng.pick(pictures)] : [rng.pick(pictures), ...(rng.next() < 0.3 ? [rng.pick(pictures)] : [])];
+    for (let at = 0; at < count; at += 1) {
+      const kind = rng.int(13);
+      if (kind === 0) out.push(chain({ type: "user", message: { role: "user", content: "a prompt" } }));
+      else if (kind === 1) out.push(chain({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "an answer" }] } }));
+      else if (kind === 2) out.push(chain({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: rng.pick(calls), name: "Read" }] } }));
+      else if (kind === 3 || kind === 4) out.push(chain({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: String(rng.pick(calls)), content: pictured() }] } }));
+      else if (kind === 5) out.push(chain({ type: "user", message: { role: "user", content: pictured() } }));
+      else if (kind === 6) {
+        // a record written twice under one uuid, the second time with another picture
+        const first = chain({ type: "user", message: { role: "user", content: [pictures[0]] } });
+        out.push(first, first.replace(pictures[0]!.source.data, pictures[1 + rng.int(2)]!.source.data));
+      }
+      else if (kind === 7) out.push(chain({ type: "user", isSidechain: true, message: { role: "user", content: rng.next() < 0.5 ? pictured() : "a sidechain's prompt" } }));
+      else if (kind === 8) out.push(chain({ type: "user", isMeta: true, message: { role: "user", content: pictured() } }));
+      else if (kind === 9) out.push(line({ type: "progress", data: `${rng.pick(uuids)} ${"p".repeat(rng.int(400))}`, toolUseID: String(rng.pick(calls)) }));
+      else if (kind === 10) { if (rng.next() < 0.3) out.push(line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })); }
+      else if (kind === 11) {
+        // a prompt sent again from an earlier answer: a rewind
+        if (state.answers.length > 0) { state.last = rng.pick(state.answers); out.push(chain({ type: "user", message: { role: "user", content: "a prompt again" } })); }
+      } else if (!state.unread && state.budget.unread > 0 && rng.next() < 0.1) {
+        // each costs the search its shape: a few of them, across all the transcripts
+        state.unread = true;
+        state.budget.unread -= 1;
+        out.push(unreadable.replace("NAMED", String(rng.next() < 0.5 ? rng.pick(uuids) : rng.pick(calls))));
+      }
+    }
+    return out;
+  }
+
+  /** Rewrites the file in place: the same size (a kept scan is dropped), or grown, keeping the tail a kept scan is checked by where it was. */
+  function rewrite(rng: ReturnType<typeof random>, lines: string[]): string[] {
+    const next = [...lines];
+    const body = next.length - 1;
+    const kind = rng.int(5);
+    if (kind === 0) {
+      // another picture of the same size in place
+      const at = rng.int(body);
+      for (const [from, to] of [[0, 1], [1, 2], [2, 0]] as const) if (next[at]!.includes(pictures[from]!.source.data)) { next[at] = next[at]!.replace(pictures[from]!.source.data, pictures[to]!.source.data); break; }
+    } else if (kind === 1 && body >= 2) {
+      // two lines next to each other trade places
+      const at = rng.int(body - 1);
+      [next[at], next[at + 1]] = [next[at + 1]!, next[at]!];
+    } else if (kind === 3 && body >= 2) {
+      // two lines next to each other become one
+      const at = rng.int(body - 1);
+      next[at] = next[at]!.slice(0, -1) + " ";
+    } else if (kind === 4 && body >= 2) {
+      // a line goes, and the line before the tail takes its length, so the lines between move back by it:
+      // most often one as long as the line after it, which then starts where the line after that did
+      const even = next.slice(0, body - 1).flatMap((text, at) => Buffer.byteLength(text) === Buffer.byteLength(next[at + 1]!) ? [at] : []);
+      const [gone] = next.splice(even.length > 0 && rng.next() < 0.7 ? rng.pick(even) : rng.int(body - 1), 1);
+      next.splice(body - 1, 0, line({ type: "progress", data: "q".repeat(Math.max(0, Buffer.byteLength(gone!) - 31)) }).slice(0, -1).padEnd(Buffer.byteLength(gone!) - 1, " ") + "\n");
+    } else {
+      // bytes move from one padded line to another
+      const padded = next.map((text, at) => at < body && text.startsWith('{"type":"progress","data":"') ? at : -1).filter((at) => at !== -1);
+      if (padded.length >= 2) {
+        const from = rng.pick(padded), to = rng.pick(padded);
+        const moved = Math.min(rng.int(300), next[from]!.match(/p+/)?.[0].length ?? 0);
+        if (from !== to && moved > 0) {
+          next[from] = next[from]!.replace(/p+/, (run) => run.slice(moved));
+          next[to] = next[to]!.replace(/ (p*)"/, (_, run: string) => ` ${run}${"p".repeat(moved)}"`);
+        }
+      }
+    }
+    return next;
+  }
+
+  it("serves what the search serves for every lookup, through appends and rewrites in place", async () => {
+    const rng = random(2627);
+    const refs = uuids.flatMap((uuid) => [`${uuid}:0`, `${uuid}:1`, `${uuid}:0:0`, `${uuid}:1:0`, `${uuid}:0:1`]);
+    const digest = (image: Awaited<ReturnType<typeof transcriptImageAsync>>) => image === null ? "none" : Bun.hash.xxHash3(image.bytes).toString(16);
+    let compared = 0, served = 0;
+    const budget = { unread: 8 };
+    const differences: string[] = [];
+    for (let round = 0; round < 200; round += 1) {
+      const dir = mkdtempSync(join(tmpdir(), "ovis-claude-fuzz-"));
+      roots.push(dir);
+      const path = join(dir, "session.jsonl");
+      const state = { fresh: 0, last: null as string | null, answers: [] as string[], unread: false, budget };
+      // now and then a record the endpoint cannot judge opens the transcript, before a picture or a call it names
+      const first: string[] = [];
+      if (budget.unread > 0 && rng.next() < 0.12) {
+        budget.unread -= 1;
+        state.unread = true;
+        const named = rng.next() < 0.5 ? rng.pick(uuids) : rng.pick(calls);
+        first.push(unreadable.replace("NAMED", String(named)));
+        if (typeof named === "string" && uuids.includes(named)) first.push(line({ type: "user", uuid: named, parentUuid: null, message: { role: "user", content: [pictures[0]] } }));
+        else {
+          first.push(line({ type: "assistant", uuid: id(90), parentUuid: null, message: { role: "assistant", content: [{ type: "tool_use", id: named, name: "Read" }] } }));
+          first.push(line({ type: "user", uuid: rng.pick(uuids), parentUuid: id(90), message: { role: "user", content: [{ type: "tool_result", tool_use_id: String(named), content: [pictures[0]] }] } }));
+        }
+        state.last = null;
+      }
+      let lines = [...first, ...records(rng, 4 + rng.int(20), state), tail()];
+      writeFileSync(path, lines.join(""));
+      for (let step = 0; step < 3; step += 1) {
+        if (step > 0) {
+          const change = rng.int(3);
+          if (change === 0) lines = [...lines, ...records(rng, 1 + rng.int(4), state), tail()];
+          else {
+            lines = rewrite(rng, lines);
+            // grown: the old tail stays where it was, and records follow it
+            if (change === 2) lines = [...lines, ...records(rng, 1 + rng.int(3), state), tail()];
+          }
+          writeFileSync(path, lines.join(""));
+        }
+        // the pictures the records hold, mostly, and any ref
+        const held = lines.flatMap((text) => {
+          if (text.length > 100_000) return [];
+          const entry = JSON.parse(text) as { uuid?: string; message?: { content?: unknown } };
+          if (typeof entry.uuid !== "string" || !Array.isArray(entry.message?.content)) return [];
+          return (entry.message.content as { type?: string; content?: unknown[] }[]).flatMap((block, at) => block.type === "image" ? [`${entry.uuid}:${at}`]
+            : block.type === "tool_result" && Array.isArray(block.content) ? block.content.map((_, nested) => `${entry.uuid}:${at}:${nested}`) : []);
+        });
+        for (let pick = 0; pick < 8; pick += 1) {
+          const ref = held.length > 0 && rng.next() < 0.7 ? rng.pick(held) : rng.pick(refs);
+          const [indexed, searched] = [digest(await transcriptImageAsync(path, ref)), digest(await asMain(path, ref))];
+          compared += 1;
+          if (searched !== "none") served += 1;
+          if (indexed !== searched) differences.push(`round ${round} step ${step} ${ref}: ${indexed} where the search gives ${searched}`);
+        }
+      }
+    }
+    expect(differences).toEqual([]);
+    // the transcripts hold pictures to serve, not only misses
+    expect(served).toBeGreaterThan(compared / 10);
+  }, 60_000);
+});
