@@ -353,7 +353,9 @@ const clearScans = new Map<string, { id: string; scanned: number; floor: number;
  * is found out (vouchedPictureSteps), and `vouched` is the file's version a read of those bytes last
  * matched, with when that read began (performance.now(), and Date.now()).
  */
-interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][]; bytes: PictureBytes; vouched: { key: string; at: number; wall: number } | null }
+interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][]; bytes: PictureBytes; vouched: ({ key: string } & PictureRead) | null }
+/** a read of a file's bytes: when it began, by performance.now(), and by Date.now() to set beside the file's times */
+interface PictureRead { began: number; wall: number }
 /**
  * The bytes an index was built from, [from, through): chained xxHash3 digests of PICTURE_DIGEST_BYTES
  * pieces at fixed offsets up to `hashed` (the first piece starts at `from`), and what comes after, kept
@@ -426,7 +428,7 @@ function putMark(marks: UuidMarks, mark: number): void {
 const noPictures = (from: number, stream: TranscriptStream): PictureIndex => ({
   at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0, full: false }, blind: null, unread: [],
   bytes: { from, hashed: from, digest: 0n, pending: new Uint8Array(0), through: from },
-  vouched: stream.version ? { key: stream.version.key, at: performance.now(), wall: Date.now() } : null,
+  vouched: stream.version ? { key: stream.version.key, began: performance.now(), wall: Date.now() } : null,
 });
 /** the end of the digest piece `at` is in (PictureBytes) */
 const pieceEnd = (at: number): number => (Math.floor(at / PICTURE_DIGEST_BYTES) + 1) * PICTURE_DIGEST_BYTES;
@@ -1129,6 +1131,7 @@ export function forgetTranscriptState(): void {
   liveTranscriptTurns.clear();
   transcriptRevisions.clear();
   clearScans.clear();
+  pictureChecks.clear();
   paneReads.clear();
   copilotBindings.clear();
   forgetAllCodexState();
@@ -2783,16 +2786,28 @@ const NOT_IT = "not it";
 
 /**
  * A same-size rewrite within one filesystem timestamp tick keeps the version: a read of the bytes
- * vouches for a version to a later lookup only when it began at least this long after the version's
- * mtime and ctime (claude-command-history's RACY_MS), and to any lookup that began before it.
+ * vouches for a version to any lookup that began before it, and to a later one only when it began at
+ * least this long after the version's mtime and ctime (claude-command-history's RACY_MS) and those
+ * times tick finer than that (fineTimes).
  */
 const PICTURE_RACY_MS = 3000;
-/** a read that checks an index's bytes (vouchedPictureSteps), by the file version it checks: lookups of one version share it */
-interface PictureCheck { bytes: PictureBytes; began: number; wall: number; stands?: boolean }
+/**
+ * Whether the version's ctime, which every write sets and no writer can, has a fraction of a second: then
+ * the filesystem's timestamps tick finer than PICTURE_RACY_MS, and a write made well after them moves it.
+ * A source of whole seconds (or of times held for a while, as a coarse or cached one reports them) can
+ * keep a version's times across such a rewrite, so no read vouches for that version to a later lookup.
+ * A fine ctime that falls on a whole second only costs a read.
+ */
+const fineTimes = (version: NonNullable<TranscriptStream["version"]>): boolean => version.ctimeMs % 1000 !== 0;
+/**
+ * A read that checks an index's bytes (vouchedPictureSteps), by the file version it checks: the lookups
+ * of that version that began before it share it, and none that began after it (that lookup's own version
+ * may name bytes rewritten since the read took them, its times kept)
+ */
+interface PictureCheck extends PictureRead { bytes: PictureBytes; stands?: boolean }
 const pictureChecks = new Map<string, PictureCheck>();
-const vouches = (read: { at: number; wall: number } | { began: number; wall: number }, version: NonNullable<TranscriptStream["version"]>): boolean =>
-  ("at" in read ? read.at : read.began) >= version.began
-  || (Date.now() >= read.wall && read.wall - version.mtimeMs >= PICTURE_RACY_MS && read.wall - version.ctimeMs >= PICTURE_RACY_MS);
+const vouches = (read: PictureRead, version: NonNullable<TranscriptStream["version"]>): boolean => read.began >= version.began
+  || (fineTimes(version) && Date.now() >= read.wall && read.wall - version.mtimeMs >= PICTURE_RACY_MS && read.wall - version.ctimeMs >= PICTURE_RACY_MS);
 const vouchedFor = (index: PictureIndex, version: TranscriptStream["version"]): boolean =>
   version !== undefined && index.vouched?.key === version.key && vouches(index.vouched, version);
 const sameBytes = (left: PictureBytes, right: PictureBytes): boolean => left.from === right.from && left.hashed === right.hashed
@@ -2804,7 +2819,7 @@ const sameBytes = (left: PictureBytes, right: PictureBytes): boolean => left.fro
  * before where it ended, so a line before the record it indexed may since have become another record of
  * that uuid, or one the endpoint cannot judge: the search would decide otherwise. A version an earlier
  * read vouched for (PICTURE_RACY_MS) is trusted; any other is read once, from where the index starts to
- * where the scan read, and the lookups of that version that began before the read share it. Bytes
+ * where the scan read, and the lookups of that version that began before the read share it (PictureCheck). Bytes
  * that do not match turn the index off (forgetPictures). `apart`: a cooperative lookup, which can wait for
  * another's read.
  */
@@ -2815,14 +2830,14 @@ function* vouchedPictureSteps(stream: TranscriptStream, apart: boolean): Steps<v
   if (version === undefined) return forgetPictures(index);
   if (vouchedFor(index, version)) return;
   let check = pictureChecks.get(version.key);
-  if (check === undefined || !sameBytes(check.bytes, index.bytes) || !vouches(check, version) || (check.stands === undefined && !apart)) {
+  if (check === undefined || !sameBytes(check.bytes, index.bytes) || check.began < version.began || (check.stands === undefined && !apart)) {
     check = { bytes: { ...index.bytes }, began: performance.now(), wall: Date.now() };
     if (apart) remember(pictureChecks, version.key, check, 32);
     try { check.stands = yield* pictureBytesStandSteps(stream, index.bytes); }
     finally { check.stands ??= false; }
   }
   while (check.stands === undefined) yield;
-  if (check.stands) index.vouched = { key: version.key, at: check.began, wall: check.wall };
+  if (check.stands) index.vouched = { key: version.key, began: check.began, wall: check.wall };
   else forgetPictures(index);
 }
 

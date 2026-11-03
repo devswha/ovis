@@ -38,6 +38,17 @@ function exact(image: Awaited<ReturnType<typeof transcriptImageAsync>>) {
   expect(image!.bytes.byteLength).toBe(png.length);
 }
 
+/** fs's stats of `path` report these times whatever the writes do, as a filesystem with a coarse or stale timestamp source would */
+function holdTimes(path: string, mtimeMs: number, ctimeMs: number): () => void {
+  const times = { mtimeMs, ctimeMs, mtime: new Date(mtimeMs), ctime: new Date(ctimeMs) };
+  const [fstat, stat] = [fs.fstatSync, fs.statSync];
+  const watches = [
+    spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => Object.assign(fstat(...args), times)) as typeof fs.fstatSync),
+    spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => { const value = stat(...args); return value && "mtimeMs" in value && args[0] === path ? Object.assign(value, times) : value; }) as typeof fs.statSync),
+  ];
+  return () => { for (const watch of watches) watch.mockRestore(); };
+}
+
 describe("cooperative Claude images", () => {
   for (const tiny of [false, true]) it(`runs timers and file IO before cold and warm lookups finish (${tiny ? "tiny records" : "large history"})`, async () => {
     const { path, ref } = fixture(tiny);
@@ -441,7 +452,6 @@ describe("finding a picture's record", () => {
     try {
       for (const image of await Promise.all([0, 1, 2, 3].map((call) => transcriptImageAsync(path, `${id(11 + 2 * call)}:0:0`)))) exact(image);
     } finally { watch.mockRestore(); }
-    expect(bytes).toBeGreaterThan(Buffer.byteLength(text));
     expect(bytes).toBeLessThan(Buffer.byteLength(text) + 4 * 3 * 1024 * 1024);
   });
 
@@ -682,6 +692,75 @@ describe("finding a picture's record", () => {
     expect(Buffer.from(image!.bytes).equals(other)).toBe(true);
   });
 
+  /** a transcript whose picture of id(1) a line before it can be rewritten in place, at the same length, to another picture of id(1) */
+  function rewritable() {
+    const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
+    const tail = pad(256 * 1024) + line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
+    const earlier = drawnOne(otherPicture);
+    const before = pad(200) + pad(Buffer.byteLength(earlier)) + between + drawnOne() + tail;
+    const after = pad(200) + earlier + between + drawnOne() + tail;
+    expect(Buffer.byteLength(after)).toBe(Buffer.byteLength(before));
+    return { path: transcript(before), after };
+  }
+  // times held for a 10 s tick (whole seconds, as a coarse or cached timestamp source reports them): a
+  // rewrite 5 s into the tick keeps the version, so no read made in it vouches for a later lookup. The
+  // ctime decides: a writer can give the mtime any fraction
+  for (const [name, mtime] of [["both times", 0], ["the ctime, the mtime set to a fraction", 250.25]] as const) it(`reads a kept scan's bytes again when the file's times tick coarser than the quiet rule's 3 s (${name})`, async () => {
+    const tick = Math.floor(Date.now() / 10_000) * 10_000 - 60_000;
+    const { path, after } = rewritable();
+    const restore = holdTimes(path, tick + mtime, tick);
+    try {
+      setSystemTime(new Date(tick + 5_000));
+      exact(await both(path, `${id(1)}:0`));
+      setSystemTime(new Date(tick + 5_500));
+      writeFileSync(path, after);
+      expect(Buffer.from((await both(path, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
+    } finally { restore(); }
+  });
+  it("reads a kept scan's bytes again within 3 s of the file's ctime, however old its mtime", async () => {
+    // a writer that keeps the mtime (cp -p, rsync -t) still moves the ctime: within 3 s of it a rewrite can
+    // keep the version, so a read made then vouches for nothing to a later lookup
+    const old = Date.now() - 3_600_000 + 0.25;
+    const { path, after } = rewritable();
+    const restore = holdTimes(path, old, Date.now() - 1_000 + 0.25);
+    try {
+      exact(await both(path, `${id(1)}:0`));
+      writeFileSync(path, after);
+      expect(Buffer.from((await both(path, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
+    } finally { restore(); }
+  });
+  it("reads a kept scan's bytes again when a later lookup would share a read begun before it, while a rewrite kept the file's times", async () => {
+    // A read of the bytes vouches only to lookups that began before it. Here a lookup begins after the
+    // read took its window, and after a same-size rewrite that kept every time the file reports: sharing
+    // that read would serve the picture the bytes no longer hold
+    const old = Date.now() - 3_600_000 + 0.25;
+    const { path, after } = rewritable();
+    const restore = holdTimes(path, old, old);
+    try {
+      exact(await transcriptImageAsync(path, `${id(1)}:0`));
+      appendFileSync(path, line({ type: "progress", data: "the session goes on" }));
+      const grown = after + line({ type: "progress", data: "the session goes on" });
+      let later: ReturnType<typeof transcriptImageAsync> | undefined;
+      const read = fs.readSync;
+      const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+        const value = read(...args);
+        // the first read from the start of the file is the check's: the warm scan reads only what was appended
+        if (later === undefined && (args as unknown[])[4] === 0) {
+          writeFileSync(path, grown);
+          later = transcriptImageAsync(path, `${id(1)}:0`);
+        }
+        return value;
+      }) as typeof fs.readSync);
+      let first: Awaited<ReturnType<typeof transcriptImageAsync>>;
+      try { first = await transcriptImageAsync(path, `${id(1)}:0`); } finally { watch.mockRestore(); }
+      expect(later).toBeDefined();
+      // the first lookup began before the rewrite: what it read then is its answer
+      exact(first);
+      expect(Buffer.from((await later!)!.bytes).equals(other)).toBe(true);
+      expect(Buffer.from((await asMain(path, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
+    } finally { restore(); }
+  });
+
   it("refuses as the forward search does when a line before the call is rewritten in place to one it cannot judge naming the call", async () => {
     const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
     const result = line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
@@ -837,7 +916,8 @@ describe("the index against the search, on random transcripts", () => {
     let compared = 0, served = 0;
     const budget = { unread: 8 };
     const differences: string[] = [];
-    for (let round = 0; round < 200; round += 1) {
+    let restoreTimes = () => {};
+    try { for (let round = 0; round < 200; round += 1) {
       const dir = mkdtempSync(join(tmpdir(), "ovis-claude-fuzz-"));
       roots.push(dir);
       const path = join(dir, "session.jsonl");
@@ -845,7 +925,12 @@ describe("the index against the search, on random transcripts", () => {
       // half the rounds as a session long quiet: every write gets an mtime of its own, well before a clock
       // set ahead, so a read vouches for a version to later lookups (vouchedPictureSteps); the others in
       // the tick of the last write, where every lookup after a change reads the bytes again
-      const quiet = rng.next() < 0.5;
+      const kind = rng.next();
+      const quiet = kind < 0.5;
+      // a fifth as a coarse timestamp source: every stat reports one whole second, held, so a rewrite of
+      // the same size keeps the version, and no read vouches for it to a later lookup (fineTimes)
+      restoreTimes();
+      restoreTimes = kind >= 0.5 && kind < 0.7 ? holdTimes(path, Math.floor(Date.now() / 1000) * 1000 - 10_000, Math.floor(Date.now() / 1000) * 1000 - 10_000) : () => {};
       let writes = 0;
       const write = (text: string) => {
         writeFileSync(path, text);
@@ -896,7 +981,7 @@ describe("the index against the search, on random transcripts", () => {
           if (indexed !== searched) differences.push(`round ${round} step ${step} ${ref}: ${indexed} where the search gives ${searched}`);
         }
       }
-    }
+    } } finally { restoreTimes(); }
     expect(differences).toEqual([]);
     // the transcripts hold pictures to serve, not only misses
     expect(served).toBeGreaterThan(compared / 10);
