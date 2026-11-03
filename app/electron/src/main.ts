@@ -7,7 +7,9 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
 import { existsSync, readFileSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
-import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { pathToFileURL } from "node:url";
+import type { ChildProcess } from "node:child_process";
+import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStart, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { updatePlan } from "./updates.ts";
 
 type StepState = "pending" | "ok" | "failed";
@@ -28,13 +30,17 @@ const savedPath = join(app.getPath("userData"), "desktop.json");
 const stateDir = process.env["OVIS_STATE_DIR"] || join(app.getPath("userData"), "server");
 // from the app's root (this folder, or app.asar): the bundler fixes __dirname to where it was built
 const connectPage = join(app.getAppPath(), "renderer", "connect.html");
+const connectPageUrl = pathToFileURL(connectPage).href;
 const preload = join(app.getAppPath(), "out", "preload.js");
 const iconPath = app.isPackaged ? join(process.resourcesPath, "icon.png") : join(app.getAppPath(), "..", "assets", "icon-only.png");
 
 let window: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let server: RunningServer | null = null;
-let starting = false;
+/** the start or restart in progress; another one asked for meanwhile is dropped */
+let busy: Promise<void> | null = null;
+/** the server being started, before it says where it listens */
+let spawning: ChildProcess | null = null;
 let quitting = false;
 let stopped = false;
 let updateReady: (() => void) | null = null;
@@ -70,9 +76,26 @@ function showWindow(): void {
   window!.focus();
 }
 
-async function start(): Promise<void> {
-  if (starting || quitting) return;
-  starting = true;
+function lifecycle(task: () => Promise<void>): Promise<void> {
+  if (busy !== null || quitting) return busy ?? Promise.resolve();
+  busy = task().finally(() => {
+    busy = null;
+    rebuildTrayMenu();
+  });
+  rebuildTrayMenu();
+  return busy;
+}
+
+const start = () => lifecycle(launch);
+
+const restart = () => lifecycle(async () => {
+  const running = server;
+  server = null;
+  if (running) await stopServer(running);
+  await launch();
+});
+
+async function launch(): Promise<void> {
   setStatus({ core: "pending", server: "pending", detail: "" });
   showConnect();
   let log: WriteStream | null = null;
@@ -95,14 +118,21 @@ async function start(): Promise<void> {
     if (await endLeftover(saved.server)) await waitUntilEnded(saved.server!.pid, 10_000);
     const port = await choosePort(saved.port);
     try {
-      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log);
-      // a quit while it started: it gets its SIGTERM now, and stops on its own as the app goes
+      // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
+      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
+        spawning = child;
+        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.bun, started: null } });
+        void processStart(child.pid!).then((started) => {
+          if (spawning === child || server?.child === child) writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.bun, started } });
+        });
+      });
+      spawning = null;
       if (quitting) {
-        void stopServer(running);
+        await stopServer(running);
+        writeSaved(savedPath, { port, server: null });
         return;
       }
       server = running;
-      writeSaved(savedPath, { port, server: { pid: running.child.pid!, bun: programs.bun } });
       void running.exited.then((code) => {
         if (server !== running) return;
         server = null;
@@ -115,12 +145,12 @@ async function start(): Promise<void> {
       setStatus({ server: "ok" });
       await window?.loadURL(running.url);
     } catch (error) {
+      spawning = null;
+      writeSaved(savedPath, { port, server: null });
       setStatus({ server: "failed", detail: message(error) });
     }
   } finally {
-    starting = false;
     if (log && !server) log.end();
-    rebuildTrayMenu();
   }
 }
 
@@ -134,16 +164,12 @@ async function waitUntilEnded(pid: number, timeoutMs: number): Promise<void> {
 /** stops the server once; a quit (or an update's) waits for it, then goes ahead */
 async function stopForQuit(): Promise<void> {
   quitting = true;
+  // a server still starting ends now; the start in progress then returns
+  spawning?.kill("SIGTERM");
+  await busy;
   const running = server;
   if (running) await stopServer(running).catch(() => {});
   stopped = true;
-}
-
-async function restart(): Promise<void> {
-  const running = server;
-  server = null;
-  if (running) await stopServer(running);
-  await start();
 }
 
 function message(error: unknown): string {
@@ -170,19 +196,30 @@ function createWindow(): void {
     window?.hide();
   });
   window.on("closed", () => { window = null; });
-  const contents = window.webContents;
-  // the server's own pages may open more Ovis windows; any other address goes to the default browser
+  guard(window.webContents);
+  void window.loadFile(connectPage);
+}
+
+/**
+ * The server's own pages may open more Ovis windows; any other address goes to the default browser.
+ * A blank window a page opens to send somewhere next (a sign-in) is allowed: once it heads for
+ * another address, that address opens in the default browser and the window closes.
+ */
+function guard(contents: Electron.WebContents, blank?: BrowserWindow): void {
   contents.setWindowOpenHandler(({ url }) => {
-    if (ours(url)) return { action: "allow", overrideBrowserWindowOptions: { autoHideMenuBar: true, backgroundColor: "#12100e", webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } } };
+    if (ours(url) || (url === "about:blank" && ours(contents.getURL()))) {
+      return { action: "allow", overrideBrowserWindowOptions: { autoHideMenuBar: true, backgroundColor: "#12100e", webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } } };
+    }
     openOutside(url);
     return { action: "deny" };
   });
+  contents.on("did-create-window", (child, { url }) => guard(child.webContents, url === "about:blank" ? child : undefined));
   contents.on("will-navigate", (event, url) => {
-    if (ours(url) || url.startsWith("file:")) return;
+    if (ours(url) || url === connectPageUrl) return;
     event.preventDefault();
     openOutside(url);
+    blank?.close();
   });
-  void window.loadFile(connectPage);
 }
 
 function rebuildTrayMenu(): void {
@@ -192,7 +229,7 @@ function rebuildTrayMenu(): void {
     { label: "Open Ovis", click: showWindow },
     { label: "Open in Browser", enabled: url !== null, click: () => url && openOutside(url) },
     { type: "separator" },
-    { label: "Restart Ovis Server", enabled: !starting, click: () => void restart() },
+    { label: "Restart Ovis Server", enabled: busy === null, click: () => void restart() },
     ...(updateReady ? [{ label: "Restart to Update", click: updateReady }] : []),
     { type: "separator" },
     { label: "Quit Ovis", click: () => app.quit() },
@@ -230,10 +267,21 @@ function createMenu(): void {
 }
 
 function allowPermissions(): void {
-  // the Ovis page may use the microphone (dictation), the clipboard and notifications; nothing else asks
-  const allowed = new Set(["media", "clipboard-sanitized-write", "clipboard-read", "notifications", "fullscreen"]);
-  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => callback(allowed.has(permission) && ours(details.requestingUrl)));
-  session.defaultSession.setPermissionCheckHandler((_contents, permission, origin) => allowed.has(permission) && ours(origin));
+  // the Ovis page may use the microphone (dictation, never the camera), the clipboard and notifications; nothing else asks
+  const allowed = new Set(["clipboard-sanitized-write", "clipboard-read", "notifications", "fullscreen"]);
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    if (!ours(details.requestingUrl)) return callback(false);
+    if (permission === "media") {
+      const types = "mediaTypes" in details ? details.mediaTypes ?? [] : [];
+      return callback(types.length > 0 && types.every((type) => type === "audio"));
+    }
+    callback(allowed.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, origin, details) => {
+    if (!ours(origin)) return false;
+    if (permission === "media") return details.mediaType === "audio";
+    return allowed.has(permission);
+  });
 }
 
 async function startUpdates(): Promise<void> {

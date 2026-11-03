@@ -11,6 +11,18 @@ import { dirname, join } from "node:path";
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * Chromium keeps files, sockets and pipes open without close-on-exec, so a program the app starts
+ * would hold them, and the core (which outlives the app) for good. Started through this, bash
+ * closes every descriptor above stderr, then becomes the program (same pid). Without /bin/bash
+ * (NixOS) the program starts directly.
+ */
+const CLOSE_INHERITED = `for fd in $(ls /proc/$/fd 2>/dev/null || ls /dev/fd); do if [ "$fd" -gt 2 ] 2>/dev/null; then eval "exec $fd>&-" 2>/dev/null; fi; done; exec "$@"`;
+
+export function withoutInherited(command: string, args: string[], bash = "/bin/bash"): [string, string[]] {
+  return isFile(bash) ? [bash, ["-c", CLOSE_INHERITED, "ovis", command, ...args]] : [command, args];
+}
+
 /** Where the staged programs sit: `resources/ovis` in a packaged app, `app/electron/stage` in development. */
 export interface Layout {
   bun: string;
@@ -31,6 +43,8 @@ export const HC_SESSION = "ovis";
  */
 export function coreEnv(base: Env): Env {
   const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
+  // the app's own core: never one another client named with HC_SOCKET
+  delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
   delete env["ELECTRON_NO_ATTACH_CONSOLE"];
   return env;
@@ -113,8 +127,10 @@ const LISTENING = /^Ovis listening on (http:\/\/\S+)$/m;
  * Runs the Ovis server and resolves once it says where it listens. It fails when the server ends
  * first or says nothing within `timeoutMs`, with the end of its output.
  */
-export function startServer(layout: Layout, env: Env, log: WriteStream, timeoutMs = 60_000): Promise<RunningServer> {
-  const child = spawn(layout.bun, [join(layout.server, "server", "index.ts")], { cwd: layout.server, env, stdio: ["ignore", "pipe", "pipe"] });
+export function startServer(layout: Layout, env: Env, log: WriteStream, timeoutMs = 60_000, onSpawn?: (child: ChildProcess) => void): Promise<RunningServer> {
+  const [command, args] = withoutInherited(layout.bun, [join(layout.server, "server", "index.ts")]);
+  const child = spawn(command, args, { cwd: layout.server, env, stdio: ["ignore", "pipe", "pipe"] });
+  if (child.pid !== undefined) onSpawn?.(child);
   const exited = new Promise<number | null>((resolve) => {
     child.once("exit", (code) => resolve(code));
     child.once("error", () => resolve(null));
@@ -197,15 +213,17 @@ export async function choosePort(saved: number | null): Promise<number> {
 /** What the app keeps between runs, in `desktop.json` of its data folder. */
 export interface Saved {
   port: number | null;
-  /** the server it ran last, so a run after a crash can end one left behind */
-  server: { pid: number; bun: string } | null;
+  /** the server it ran last, so a run after a crash can end one left behind; `started` is its start time (`ps -o lstart=`) */
+  server: { pid: number; bun: string; started: string | null } | null;
 }
 
 export function readSaved(path: string): Saved {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<Saved>;
     const port = typeof value.port === "number" ? value.port : null;
-    const server = value.server && typeof value.server.pid === "number" && typeof value.server.bun === "string" ? value.server : null;
+    const server = value.server && typeof value.server.pid === "number" && typeof value.server.bun === "string"
+      ? { pid: value.server.pid, bun: value.server.bun, started: typeof value.server.started === "string" ? value.server.started : null }
+      : null;
     return { port, server };
   } catch {
     return { port: null, server: null };
@@ -218,15 +236,22 @@ export function writeSaved(path: string, saved: Saved): void {
   renameSync(`${path}.tmp`, path);
 }
 
+export interface ProcessProbe {
+  command: (pid: number) => Promise<string | null>;
+  started: (pid: number) => Promise<string | null>;
+}
+
 /**
  * Ends the server an earlier run left behind (the app was killed before it could stop it), so two
- * never share one state folder. Only a process that still runs this app's Bun on its server is
- * ended: a pid the system has since given to another program is left alone.
+ * never share one state folder. Only the same process is ended: it still runs this app's Bun on its
+ * server and, when its start time was recorded, started at that time. A pid the system has since
+ * given to another program, or to another server, is left alone.
  */
-export async function endLeftover(saved: Saved["server"], command: (pid: number) => Promise<string | null> = processCommand): Promise<boolean> {
+export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = { command: processCommand, started: processStart }): Promise<boolean> {
   if (saved === null) return false;
-  const line = await command(saved.pid);
+  const line = await probe.command(saved.pid);
   if (line === null || !line.startsWith(saved.bun) || !line.includes(join("server", "index.ts"))) return false;
+  if (saved.started !== null && await probe.started(saved.pid) !== saved.started) return false;
   try { process.kill(saved.pid, "SIGTERM"); } catch { return false; }
   return true;
 }
@@ -236,10 +261,16 @@ export async function processCommand(pid: number): Promise<string | null> {
   return code === 0 && output.trim() !== "" ? output.trim() : null;
 }
 
+export async function processStart(pid: number): Promise<string | null> {
+  const { code, output } = await run("ps", ["-o", "lstart=", "-p", String(pid)], { ...process.env, LC_ALL: "C" }, null, 5_000);
+  return code === 0 && output.trim() !== "" ? output.trim() : null;
+}
+
 async function run(command: string, args: string[], env: Env, log: WriteStream | null, timeoutMs: number): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve) => {
     let output = "";
-    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const [program, argv] = withoutInherited(command, args);
+    const child = spawn(program, argv, { env, stdio: ["ignore", "pipe", "pipe"] });
     const take = (chunk: Buffer) => {
       log?.write(chunk);
       output += chunk.toString("utf8");

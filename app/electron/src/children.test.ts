@@ -3,7 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { choosePort, coreEnv, endLeftover, installCore, layout, openLog, portFree, readSaved, serverEnv, startServer, stopServer, writeSaved } from "./children.ts";
+import { spawnSync } from "node:child_process";
+import { choosePort, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, readSaved, serverEnv, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
 const listeners: Server[] = [];
@@ -33,12 +34,28 @@ describe("environments", () => {
     expect(coreEnv({ PATH: "/bin" })["HC_SESSION"]).toBe("ovis");
     expect(coreEnv({ HC_SESSION: " test-1 " })["HC_SESSION"]).toBe("test-1");
     expect(coreEnv({ ELECTRON_RUN_AS_NODE: "1" })).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
+    expect(coreEnv({ HC_SOCKET: "/run/user/1000/herdr-core/default.sock" })).not.toHaveProperty("HC_SOCKET");
   });
 
   it("runs the server on herdr-core through the bundled hc, on loopback, in the app's state folder", () => {
     const env = serverEnv({ PATH: "/bin", HOST: "0.0.0.0", HERDR_PLUGIN_ROOT: "/p", OVIS_MANAGED: "1", HERDR_SOCKET: "/s", OVIS_TOKEN: "t" }, { hc: "/app/bin/herdr-core", stateDir: "/data/server", port: 4321 });
     expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis" });
     for (const name of ["HERDR_PLUGIN_ROOT", "OVIS_MANAGED", "HERDR_SOCKET", "OVIS_TOKEN"]) expect(env).not.toHaveProperty(name);
+  });
+});
+
+describe("withoutInherited", () => {
+  it.if(process.platform === "linux")("starts a program without the descriptors its parent left open", () => {
+    const [command, args] = withoutInherited("ls", ["/proc/self/fd"]);
+    // the parent holds fd 9 and 23 open across exec, as Chromium does
+    const listed = spawnSync("/bin/bash", ["-c", 'exec 9</dev/null 23</dev/null; exec "$@"', "parent", command, ...args], { encoding: "utf8" });
+    expect(listed.stdout.split("\n").filter(Boolean).map(Number).filter((fd) => fd > 3)).toEqual([]);
+    const control = spawnSync("/bin/bash", ["-c", 'exec 9</dev/null 23</dev/null; exec "$@"', "parent", "ls", "/proc/self/fd"], { encoding: "utf8" });
+    expect(control.stdout.split("\n")).toContain("23");
+  });
+
+  it("starts the program directly without bash", () => {
+    expect(withoutInherited("/app/bin/bun", ["index.ts"], "/no/bash")).toEqual(["/app/bin/bun", ["index.ts"]]);
   });
 });
 
@@ -148,24 +165,36 @@ describe("saved settings", () => {
     const dir = tempDir();
     const path = join(dir, "desktop.json");
     expect(readSaved(path)).toEqual({ port: null, server: null });
-    writeSaved(path, { port: 4321, server: { pid: 99, bun: "/app/bin/bun" } });
-    expect(readSaved(path)).toEqual({ port: 4321, server: { pid: 99, bun: "/app/bin/bun" } });
+    writeSaved(path, { port: 4321, server: { pid: 99, bun: "/app/bin/bun", started: "Wed Nov  4 08:00:00 2026" } });
+    expect(readSaved(path)).toEqual({ port: 4321, server: { pid: 99, bun: "/app/bin/bun", started: "Wed Nov  4 08:00:00 2026" } });
     writeFileSync(path, "{");
     expect(readSaved(path)).toEqual({ port: null, server: null });
   });
 });
 
 describe("endLeftover", () => {
-  it("ends only a process that still runs this app's Bun on its server", async () => {
+  it("ends only the same process: this app's Bun on its server, started at the recorded time", async () => {
     const programs = fakeServer(`process.on("SIGTERM", () => process.exit(0)); console.log("Ovis listening on http://127.0.0.1:1"); setInterval(() => {}, 1000);`);
     const log = openLog(join(tempDir(), "ovis.log"));
-    const server = await startServer(programs, process.env, log, 20_000);
+    let spawned = 0;
+    const server = await startServer(programs, process.env, log, 20_000, () => { spawned += 1; });
+    expect(spawned).toBe(1);
     const pid = server.child.pid!;
-    expect(await endLeftover({ pid, bun: programs.bun }, async () => `/other/bun ${programs.server}/server/index.ts`)).toBe(false);
-    expect(await endLeftover({ pid, bun: programs.bun }, async () => null)).toBe(false);
+    const ours = { command: async () => `${programs.bun} ${programs.server}/server/index.ts`, started: async () => "then" };
+    expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, command: async () => `/other/bun ${programs.server}/server/index.ts` })).toBe(false);
+    expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, command: async () => null })).toBe(false);
+    expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, started: async () => "later" })).toBe(false);
     expect(server.child.exitCode).toBeNull();
-    expect(await endLeftover({ pid, bun: programs.bun }, async () => `${programs.bun} ${programs.server}/server/index.ts`)).toBe(true);
+    expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, ours)).toBe(true);
     expect(await server.exited).toBe(0);
     log.end();
+  });
+
+  it("reads a live process's start time and command, and nothing for one that is gone", async () => {
+    expect(await processStart(process.pid)).toMatch(/\d{4}$/);
+    expect(await processCommand(process.pid)).toContain("bun");
+    const gone = Bun.spawn(["true"]);
+    await gone.exited;
+    expect(await processStart(gone.pid)).toBeNull();
   });
 });

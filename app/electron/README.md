@@ -11,7 +11,7 @@ The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this ap
 
 1. Starts the app's own hc core: `hc server start` with `HC_SESSION=ovis`, so it never shares a
    core with another hc client on the PC (the Herdr app uses the `default` session). Set
-   `HC_SESSION` to use another one. The core runs apart from the app, as hc runs it for every client:
+   `HC_SESSION` to use another one (`HC_SOCKET` is not passed on). The core runs apart from the app, as hc runs it for every client:
    quitting the app leaves the terminals running, and the next start finds them. So the core runs
    from a copy in `<user data>/bin/herdr-core`, not from the app (an AppImage's files go away with
    it, and an update replaces the app); a newer bundled hc replaces that copy with
@@ -31,11 +31,16 @@ Until the server answers, or when it stops, the window shows the connection scre
   On a Linux desktop without a tray (GNOME without an AppIndicator extension), starting the app
   again shows the window: only one copy runs.
 - **Links**: the server's own pages may open more Ovis windows; any other address opens in the
-  default browser. Only the microphone (dictation), the clipboard, notifications and full screen
-  are granted, and only to the server's own pages.
-- **After a crash**: the app records the server it started (`<user data>/desktop.json`). When the
-  app was killed before it could stop it, the next start ends that server first, only when the
-  process still runs this app's Bun on its server, so two never share one state folder.
+  default browser. A blank window a page opens for a sign-in sends its address to the default
+  browser and closes. Only the microphone (dictation, never the camera), the clipboard,
+  notifications and full screen are granted, and only to the server's own pages.
+- **Open files**: the core and the server start through `/bin/bash`, which closes every descriptor
+  Chromium left open before it becomes the program, so the core (which outlives the app) holds none
+  of the app's files or sockets.
+- **After a crash**: the app records the server as soon as it starts it (`<user data>/desktop.json`,
+  with its start time). When the app was killed before it could stop it, the next start ends that
+  server first, only when the process still runs this app's Bun on its server and started at the
+  recorded time, so two never share one state folder.
 
 `<user data>` is Electron's: `~/.config/Ovis` on Linux, `~/Library/Application Support/Ovis` on macOS.
 
@@ -68,7 +73,11 @@ bun run dist                 # stage, bundle, then dist/Ovis-<version>-<arch>.Ap
 `bun scripts/build.ts stage` downloads herdr-core 0.1.17 and Bun 1.4.2 for this machine
 (`scripts/runtimes.ts` pins their SHA-256; a mismatch stops the build), checks that each runs and
 says its version, builds the client (`bun run build` at the repository root) and copies the server
-with its production packages into `stage/`. `bun run start` then runs the app from `stage/`
+with its production packages into `stage/`. Each build checks the cached downloads against their
+pins again and unpacks them afresh. It also adds the release's Rust PTY host
+(`scripts/pty-sidecar.ts install`, checked against the release manifest) when the release named
+by `package.json` was built from this checkout's PTY host sources, as on a release tag; otherwise
+the server uses Node for the few things that need a PTY host of its own, where the PC has Node. `bun run start` then runs the app from `stage/`
 without packaging it. Nothing downloaded is committed.
 
 To try it without touching your own hc core or Ovis state, give it a fresh user data folder and hc

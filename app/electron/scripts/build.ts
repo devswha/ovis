@@ -10,7 +10,7 @@
  */
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget } from "./runtimes.ts";
+import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sha256, type Pinned } from "./runtimes.ts";
 
 const here = resolve(import.meta.dir, "..");
 const repo = resolve(here, "..", "..");
@@ -27,18 +27,26 @@ async function sh(argv: string[], cwd: string, env: Record<string, string | unde
   return output;
 }
 
-async function fetchRuntimes(): Promise<void> {
-  const stamp = join(cache, "pins.json");
-  const pins = JSON.stringify({ hc: HC[target], bun: BUN[target], license: BUN_LICENSE });
-  if (existsSync(stamp) && readFileSync(stamp, "utf8") === pins) return;
-  rmSync(cache, { recursive: true, force: true });
-  mkdirSync(join(cache, "hc"), { recursive: true });
-  writeFileSync(join(cache, "hc.tar.gz"), await download(HC[target]));
-  await sh(["tar", "-xzf", join(cache, "hc.tar.gz"), "-C", join(cache, "hc"), "herdr-core", "LICENSE", "THIRD-PARTY-NOTICES"], cache);
-  writeFileSync(join(cache, "bun.zip"), await download(BUN[target]));
-  await sh(["unzip", "-q", "-o", join(cache, "bun.zip"), "-d", cache], cache);
-  writeFileSync(join(cache, "bun-LICENSE.md"), await download(BUN_LICENSE));
-  writeFileSync(stamp, pins);
+/** a pinned download, kept in the cache; a cached copy is used only while it still hashes to its pin */
+async function cached(name: string, pin: Pinned): Promise<string> {
+  const path = join(cache, name);
+  if (!existsSync(path) || sha256(readFileSync(path)) !== pin.sha256) writeFileSync(path, await download(pin));
+  return path;
+}
+
+/** the checked archives, unpacked afresh into extracted/ on every build: nothing unpacked earlier is trusted */
+async function fetchRuntimes(): Promise<string> {
+  mkdirSync(cache, { recursive: true });
+  const hc = await cached("hc.tar.gz", HC[target]);
+  const bun = await cached("bun.zip", BUN[target]);
+  const license = await cached("bun-LICENSE.md", BUN_LICENSE);
+  const out = join(cache, "extracted");
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(join(out, "hc"), { recursive: true });
+  await sh(["tar", "-xzf", hc, "-C", join(out, "hc"), "herdr-core", "LICENSE", "THIRD-PARTY-NOTICES"], out);
+  await sh(["unzip", "-q", bun, "-d", out], out);
+  cpSync(license, join(out, "bun-LICENSE.md"));
+  return out;
 }
 
 function copyExecutable(from: string, to: string): void {
@@ -47,13 +55,13 @@ function copyExecutable(from: string, to: string): void {
 }
 
 async function stageAll(): Promise<void> {
-  await fetchRuntimes();
+  const runtimes = await fetchRuntimes();
   rmSync(stage, { recursive: true, force: true });
   for (const dir of ["bin", "licenses/herdr-core", "licenses/bun", "server/scripts"]) mkdirSync(join(stage, dir), { recursive: true });
-  copyExecutable(join(cache, "hc", "herdr-core"), join(stage, "bin", "herdr-core"));
-  copyExecutable(join(cache, BUN[target].folder, "bun"), join(stage, "bin", "bun"));
-  for (const name of ["LICENSE", "THIRD-PARTY-NOTICES"]) cpSync(join(cache, "hc", name), join(stage, "licenses", "herdr-core", name));
-  cpSync(join(cache, "bun-LICENSE.md"), join(stage, "licenses", "bun", "LICENSE.md"));
+  copyExecutable(join(runtimes, "hc", "herdr-core"), join(stage, "bin", "herdr-core"));
+  copyExecutable(join(runtimes, BUN[target].folder, "bun"), join(stage, "bin", "bun"));
+  for (const name of ["LICENSE", "THIRD-PARTY-NOTICES"]) cpSync(join(runtimes, "hc", name), join(stage, "licenses", "herdr-core", name));
+  cpSync(join(runtimes, "bun-LICENSE.md"), join(stage, "licenses", "bun", "LICENSE.md"));
   const hc = (await sh([join(stage, "bin", "herdr-core"), "--version"], stage)).trim();
   if (hc !== `hc ${HC_VERSION}`) throw new Error(`The staged herdr-core says "${hc}", not hc ${HC_VERSION}`);
   const bun = (await sh([join(stage, "bin", "bun"), "--version"], stage)).trim();
@@ -70,6 +78,17 @@ async function stageAll(): Promise<void> {
   await sh([join(stage, "bin", "bun"), "install", "--production", "--frozen-lockfile", "--ignore-scripts"], server, { ...process.env, BUN_INSTALL_CACHE_DIR: join(here, ".cache", "bun-install") });
   // package-manager links: nothing runs them, and an installer need not carry symlinks
   rmSync(join(server, "node_modules", ".bin"), { recursive: true, force: true });
+  // the release's Rust PTY host (checked against the release manifest), which a sign-in the server
+  // follows in a terminal of its own needs on a PC without Node; without it the build goes on
+  await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
+  const host = join(repo, "bin", "ovis-pty-sidecar");
+  if (existsSync(host)) {
+    mkdirSync(join(server, "bin"));
+    copyExecutable(host, join(server, "bin", "ovis-pty-sidecar"));
+    if (existsSync(`${host}.json`)) cpSync(`${host}.json`, join(server, "bin", "ovis-pty-sidecar.json"));
+  } else {
+    console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
+  }
   writeFileSync(join(stage, "versions.json"), JSON.stringify({ hc: HC_VERSION, bun: BUN_VERSION }));
   cpSync(join(repo, "app", "web", "ovis-logo.png"), join(here, "renderer", "ovis-logo.png"));
   console.log(`staged herdr-core ${HC_VERSION}, Bun ${BUN_VERSION} and the Ovis server for ${target} in ${stage}`);
