@@ -23,6 +23,17 @@ describe("tab labels from the first message", () => {
     for (const text of ["a".repeat(500), "👩‍💻".repeat(30), "로그인".repeat(40)]) expect(shortTabLabel(text)!.length).toBeLessThanOrEqual(MAX_TAB_LABEL_LENGTH);
   });
 
+  it("leaves attached files' mentions out, an upload's path with spaces included (#2637)", () => {
+    const upload = "@/Users/example/Library/Mobile Documents/com~apple~CloudDocs/app/.ovis/paste-20261104-101500-0a1b2c3d.png";
+    expect(shortTabLabel(`${upload} Why does the login button overlap?`)).toBe("Why does the login\u2026");
+    expect(shortTabLabel(`${upload} @/tmp/shots/b.png @C:\\shots\\c.png Fix the footer`)).toBe("Fix the footer");
+    expect(shortTabLabel(`/review ${upload} the footer`)).toBeNull();
+    expect(shortTabLabel(`${upload}\nCheck the footer`)).toBe("Check the footer");
+    expect(shortTabLabel(upload)).toBeNull();
+    // a file named in the message, not attached, says something
+    expect(shortTabLabel("Fix @src/app.ts")).toBe("Fix @src/app.ts");
+  });
+
   it("counts a wide character as two columns, and never splits one", () => {
     expect(shortTabLabel("로그인리다이렉트를고쳐주세요세션이만료된뒤에도계속")).toBe("로그인리다이렉트를고쳐주…");
     expect(shortTabLabel("로그인 리다이렉트를 고쳐 주세요")).toBe("로그인 리다이렉트를…");

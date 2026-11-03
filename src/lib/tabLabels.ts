@@ -94,13 +94,22 @@ function characters(text: string): string[] {
 const NOT_A_NAME = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/]|```|~~~)/;
 
 /**
+ * An attached file's mention, `@` and its absolute path (lib/compose.ts imageMention), which names
+ * nothing a tab could be told by (#2637). An upload's path may hold spaces (a folder under
+ * ~/Library), so one in the shape an upload takes (server/paste.ts: `<name>-<YYYYMMDD>-<HHMMSS>-
+ * <8 hex>.<ext>`) is taken whole up to the next mention, as lib/chatImages.ts reads it; any other
+ * path ends at a space.
+ */
+const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s@).){0,1024}?-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[^\s\\/]+)?(?=\s|$)|\S*)/gi;
+
+/**
  * What the tab shows of a message: its first line that says something (not a slash command, a path
- * or a code fence), its spaces collapsed, a few words of it cut at a word's end when one is near
+ * or a code fence) once attached files' mentions are left out, its spaces collapsed, a few words of it cut at a word's end when one is near
  * the limit, else at the limit (a language written without spaces), with an ellipsis when anything
  * was cut; null for a message with nothing to name a tab by.
  */
 export function shortTabLabel(text: string): string | null {
-  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "" && !NOT_A_NAME.test(part));
+  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => part.replace(ATTACHMENT, "$1").replace(/\s+/g, " ").trim()).find((part) => part !== "" && !NOT_A_NAME.test(part));
   if (line === undefined) return null;
   const head: string[] = [];
   let columns = 0;

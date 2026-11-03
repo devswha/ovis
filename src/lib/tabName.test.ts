@@ -52,4 +52,30 @@ describe("tab names", () => {
       expect(autoTabLabel({ label: "2", number: 2 }, panes, "pc-2", { "remote:pc-2:w1%3Ap2|term_b": "Ship it" })).toBe("Ship it");
     });
   });
+
+  describe("an agent's own name for its conversation (#2637)", () => {
+    const tab = { label: "2", number: 2 };
+    const labels = { "w1:p2|term_b": "Fix the login redirect\u2026" };
+    const pane = (fields: Record<string, string | null>) => ({ pane_id: "w1:p2", terminal_id: "term_b", agent: "codex", cwd: "/Users/me/app", ...fields });
+
+    it("names the tab over its first message", () => {
+      expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Fix login footer overlap | app" })], "local", labels)).toBe("Fix login footer overlap");
+      expect(autoTabLabel(tab, [pane({ agent: "claude", terminal_title_stripped: "\u2733 Review the parser" })], "local", labels)).toBe("Review the parser");
+      expect(autoTabLabel(tab, [pane({ title: "Retry budget", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Retry budget");
+      expect(autoTabLabel(tab, [pane({ label: "Payments", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Payments");
+      expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Investigate the flaky retry test in CI | app" })], "local", {})).toBe("Investigate the flaky\u2026");
+    });
+
+    it("leaves the first message's label where the agent's title only says which agent runs where", () => {
+      for (const [agent, title] of [["claude", "\u2733 Claude Code"], ["codex", "codex"], ["codex", "codex --yolo"], ["codex", " | app"], ["omp", "\u03c0 \u280b app"], ["codex", "/Users/me/app"], ["codex", "~/app"], ["codex", "\u280b"], ["codex", null]] as const) {
+        expect(autoTabLabel(tab, [pane({ agent, terminal_title_stripped: title })], "local", labels)).toBe("Fix the login redirect\u2026");
+      }
+      expect(autoTabLabel(tab, [pane({ cwd: null })], "local", {})).toBeNull();
+    });
+
+    it("never names a shell's tab by its title, nor covers a name someone gave the tab", () => {
+      expect(autoTabLabel(tab, [pane({ agent: null, terminal_title_stripped: "vim notes.md" })], "local", {})).toBeNull();
+      expect(autoTabLabel({ label: "build", number: 2 }, [pane({ terminal_title_stripped: "Fix login footer overlap | app" })], "local", labels)).toBeNull();
+    });
+  });
 });
