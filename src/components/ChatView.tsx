@@ -1317,8 +1317,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // The paging away is the reader opening something (readOpened): it holds in a chat still too short to scroll.
   const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
-  // How far the view has been trimmed up without input under the selection in progress (onScroll)
-  const heldTrim = useRef(0);
+  // where the chat itself last put the view (a follow, or the selection hold's correction)
+  const placedAt = useRef<number | null>(null);
   // The last row and where it started in the transcript, and the transcript's height, at the
   // previous scroll event (#2042).
   const lastRowOffset = useRef<{ key: string; offset: number } | null>(null);
@@ -1331,7 +1331,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const scrollbarPress = useRef<{ y: number; movedUp: boolean } | null>(null);
   const onScrollRef = useRef<() => void>(() => undefined);
   // the timeline put the view at the end itself: a move from there is read from there
-  const followed = useCallback((top: number) => { lastScrollTop.current = top; }, []);
+  const followed = useCallback((top: number) => { lastScrollTop.current = top; placedAt.current = top; }, []);
   const signature = useRef("");
   // Older pages sit above the newest one. Once any shows, the newest page is
   // polled from its start at that moment, so the two always meet.
@@ -1990,7 +1990,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
-    const up = lastScrollTop.current - node.scrollTop;
     lastScrollTop.current = node.scrollTop;
     // A pointer press alone is not intent: a drag must also move the transcript up. A held scrollbar
     // thumb's move is decided when it is let go (the pointerup above): while it rests, the layout
@@ -2028,12 +2027,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // excuses a move up.
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
     // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
-    // browser trims it to a whole pixel as the transcript shrinks under it: a move up of a pixel at
-    // most, without the reader's input, is the layout's, up to the layout allowance in all. Past it
-    // the moves are the reader's, however small, as without a selection.
-    if (!selecting.current) heldTrim.current = 0;
-    const trimmed = selecting.current && scrollingUp && up <= READER_ALLOWANCE_PX && heldTrim.current + up <= LAYOUT_ALLOWANCE_PX;
-    if (trimmed && !byReader) heldTrim.current += up;
+    // browser can trim it a pixel from there as the transcript shrinks under it: without the
+    // reader's input, that pixel is the layout's. Any further from where the chat put it, the move is
+    // the reader's, as without a selection.
+    const trimmed = selecting.current && placedAt.current !== null && placedAt.current - node.scrollTop <= READER_ALLOWANCE_PX;
     const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
