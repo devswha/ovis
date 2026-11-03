@@ -1,6 +1,7 @@
 {
   "name": "ovis-desktop",
   "productName": "Ovis",
+  "desktopName": "ovis.desktop",
   "private": true,
   "version": "0.0.0",
   "description": "Ovis for the desktop: the Ovis server, herdr-core and Bun in one app (README.md)",

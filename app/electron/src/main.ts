@@ -268,7 +268,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", (event) => {
     if (stopped) return;
     event.preventDefault();
-    if (!quitting) void stopForQuit().then(() => app.quit());
+    // quit again only once this cancelled quit is over: a quit asked for inside it is dropped
+    if (!quitting) void stopForQuit().then(() => setImmediate(() => app.quit()));
   });
   app.on("activate", showWindow);
   // the app stays in the tray with its window closed

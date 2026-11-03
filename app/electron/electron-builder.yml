@@ -19,6 +19,7 @@ linux:
   target: AppImage
   category: Development
   executableName: ovis
+  syncDesktopName: true
   artifactName: Ovis-${version}-${arch}.${ext}
 mac:
   target:
